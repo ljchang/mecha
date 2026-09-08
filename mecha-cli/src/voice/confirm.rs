@@ -633,6 +633,7 @@ mod tests {
 
     fn item(id: &str, kind: OutboxKind, args: serde_json::Value, tainted: bool) -> OutboxItem {
         OutboxItem {
+            delivery_attempts: Vec::new(),
             output: None,
             author: Default::default(),
             filled_defaults: Vec::new(),
@@ -889,6 +890,7 @@ mod echo_at_the_confirmation_door {
 
     pub(super) fn draft() -> OutboxItem {
         OutboxItem {
+            delivery_attempts: Vec::new(),
             output: None,
             author: Default::default(),
             filled_defaults: vec!["account".into()],

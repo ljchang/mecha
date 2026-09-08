@@ -12,11 +12,9 @@
 //! variable: same turns, same tool results, and the only thing left that can
 //! differ is what the model chose to do with them.
 //!
-//! What a replayed result is not: provenance. The transcript does not record
-//! which results actually came from outside, so replayed outputs are returned
-//! without the `external` marking and the replay's taint may be *less* armed
-//! than the recording's was. Refusals the interlock produced at record time
-//! were recorded as results, so they replay verbatim regardless.
+//! Recorded outputs preserve their per-call provenance. Older recordings
+//! remain unknown and conservatively external; recorded harness refusals
+//! have explicit false provenance and stay harness-owned.
 
 use crate::agent::{Agent, Conversation, RunContext, ToolCallTrace};
 use crate::message::Message;
@@ -76,7 +74,7 @@ struct ReplayState {
 
 /// What one call decided to do, resolved under the lock and acted on after it.
 enum Action {
-    Recorded(String, bool),
+    Recorded(String, bool, Option<bool>),
     Refuse(String),
     Live,
 }
@@ -249,7 +247,11 @@ impl ReplayTool {
         // recorded result for materially different arguments is the price of
         // not pretending to know which differences matter — which is what the
         // name-only fallback above is, once the exact match has been tried.
-        let out = Action::Recorded(st.calls[hit].output.clone(), st.calls[hit].is_error);
+        let out = Action::Recorded(
+            st.calls[hit].output.clone(),
+            st.calls[hit].is_error,
+            st.calls[hit].external,
+        );
         st.consumed[hit] = true;
         while st.cursor < st.calls.len() && st.consumed[st.cursor] {
             st.cursor += 1;
@@ -309,10 +311,10 @@ impl Tool for ReplayTool {
         // Decided under the lock, executed after it: a live call awaits, and a
         // std mutex must not be held across an await point.
         match self.decide(&input) {
-            Action::Recorded(content, is_error) => Ok(ToolOutput {
+            Action::Recorded(content, is_error, external) => Ok(ToolOutput {
                 content,
                 is_error,
-                external: false,
+                external: external.unwrap_or(true),
                 refusal: false,
             }),
             Action::Refuse(msg) => Ok(ToolOutput::err(msg)),
@@ -649,10 +651,24 @@ pub async fn drive_branch(
     call_base: usize,
 ) -> Result<ReplayReport> {
     let base = call_base.min(trajectory.calls.len());
-    // A fresh default taint, as `drive` starts with: replayed results carry no
-    // `external` marking, so the branch may be less armed than the recording
-    // was — the module doc's standing caveat, unchanged here.
-    let mut convo = Conversation::resumed(seed, Default::default());
+    // The prefix is history, not a new security boundary. Private capability
+    // metadata was not recorded, so treat prior tool results conservatively
+    // as private; external provenance distinguishes outside content from
+    // known harness results. This especially matters for live divergence.
+    let mut taint = crate::agent::Taint::default();
+    for message in &seed {
+        for block in &message.content {
+            if let crate::message::Block::ToolResult { tool_use_id, .. } = block {
+                taint.private = true;
+                taint.untrusted |= message
+                    .tool_provenance
+                    .get(tool_use_id)
+                    .copied()
+                    .unwrap_or(true);
+            }
+        }
+    }
+    let mut convo = Conversation::resumed(seed, taint);
     let mut stats = crate::session::RunStats {
         usage_complete: true,
         ..Default::default()
@@ -746,6 +762,7 @@ mod tests {
             Some(&fallback),
             &[],
             vec![RecordedCall {
+                external: None,
                 name: NeverRun.name().to_string(),
                 input: json!({}),
                 output: "the recorded answer".into(),
@@ -915,11 +932,30 @@ mod tests {
         r
     }
 
+    #[tokio::test]
+    async fn replay_preserves_external_results_and_refusals_and_keeps_unknown_untrusted() {
+        for external in [Some(true), Some(false), None] {
+            let cancel = CancellationToken::new();
+            let mut call = recorded("echo", json!({}), "recorded bytes");
+            call.external = external;
+            let registry = replay_reg(vec![call], OnDivergence::Stop, &cancel);
+            let output = registry
+                .get("echo")
+                .unwrap()
+                .call(json!({}), &ToolCtx::default())
+                .await
+                .unwrap();
+            assert_eq!(output.external, external.unwrap_or(true));
+            assert_eq!(output.content, "recorded bytes");
+        }
+    }
+
     /// A recorded call with no batch marker — its own batch of one, and so the
     /// strict matching. Kept for the tests written against that behaviour; the
     /// batch-tolerance tests say what they mean with [`batched`].
     fn recorded(name: &str, input: Value, output: &str) -> RecordedCall {
         RecordedCall {
+            external: None,
             name: name.into(),
             input,
             output: output.into(),
@@ -990,6 +1026,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let reg = replay_reg(
             vec![RecordedCall {
+                external: None,
                 name: "echo".into(),
                 input: json!({}),
                 output: "no such file".into(),
@@ -1211,6 +1248,7 @@ mod tests {
             None,
             &specs,
             vec![RecordedCall {
+                external: None,
                 name: recorded_spec.name.clone(),
                 input: json!({"name": "Yuqi"}),
                 output: "the recorded entity".into(),
@@ -1795,6 +1833,7 @@ mod divergence_reason_tests {
             None,
             &[],
             vec![RecordedCall {
+                external: None,
                 name: "recorded_tool".into(),
                 input: json!({}),
                 output: "recorded".into(),
@@ -1850,6 +1889,7 @@ mod divergence_reason_tests {
             None,
             &[],
             vec![RecordedCall {
+                external: None,
                 name: "expected".into(),
                 input: json!({}),
                 output: "recorded".into(),
@@ -1887,6 +1927,7 @@ mod divergence_reason_tests {
             None,
             &[],
             vec![RecordedCall {
+                external: None,
                 name: "expected".into(),
                 input: json!({}),
                 output: "recorded".into(),

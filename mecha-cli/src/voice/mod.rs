@@ -2120,6 +2120,7 @@ mod tests {
         assert!(is_plain_user_text(&plain));
 
         let results = Message {
+            tool_provenance: Default::default(),
             role: Role::User,
             content: vec![
                 Block::ToolResult {
@@ -2183,6 +2184,7 @@ mod tests {
             input: serde_json::json!({}),
         }]));
         convo.messages.push(Message {
+            tool_provenance: Default::default(),
             role: Role::User,
             content: vec![Block::ToolResult {
                 tool_use_id: "t1".into(),

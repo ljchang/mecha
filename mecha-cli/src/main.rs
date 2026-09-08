@@ -89,6 +89,10 @@ pub struct GlobalOpts {
     #[arg(long = "tool", global = true)]
     pub tools: Vec<String>,
 
+    /// Stable tool subset: research, assistant, or coding. Narrows any --tool selection.
+    #[arg(long, global = true)]
+    pub tool_profile: Option<mecha_core::tool::profile::ToolProfile>,
+
     /// Set by the trigger runner, never by a flag: the allowlist above came
     /// from a trigger file's `tools` line — durable, deliberate config. The
     /// subagent-skip notice stays quiet then, on the outbox warning's own
@@ -366,6 +370,8 @@ pub enum Command {
     /// The same board `/tasks` shows and the model reads through `kg_task_*`
     /// — one store, reached through the tool surface from every side.
     Tasks(commands::tasks::Args),
+    /// Durable follow-through, commitments, completion checks and today’s priorities.
+    Workflow(commands::workflow::Args),
 
     /// What a delegated run got stuck on, and answering it — which resumes
     /// the run that asked, with your answer as its next turn.
@@ -486,6 +492,7 @@ async fn dispatch() -> Result<()> {
         Command::Frontdoor(args) => commands::frontdoor::run(&cli.global, args).await,
         Command::Mail(args) => commands::mail::run(&cli.global, args).await,
         Command::Tasks(args) => commands::tasks::run(&cli.global, args).await,
+        Command::Workflow(args) => commands::workflow::run(&cli.global, args).await,
         Command::Questions(args) => commands::questions::run(&cli.global, args).await,
         Command::Polls(args) => commands::polls::run(&cli.global, args).await,
         Command::Kg(args) => commands::kg::run(&cli.global, args).await,

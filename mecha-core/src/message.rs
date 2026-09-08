@@ -134,6 +134,10 @@ pub fn image_media_type(path: &std::path::Path) -> Option<&'static str> {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
+    /// Local provenance keyed by tool-use id. Absent means unknown for old
+    /// recordings; provider encoders never put this metadata on the wire.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub tool_provenance: std::collections::BTreeMap<String, bool>,
     pub role: Role,
     pub content: Vec<Block>,
 }
@@ -141,6 +145,7 @@ pub struct Message {
 impl Message {
     pub fn user(text: impl Into<String>) -> Self {
         Message {
+            tool_provenance: Default::default(),
             role: Role::User,
             content: vec![Block::text(text)],
         }
@@ -148,6 +153,7 @@ impl Message {
 
     pub fn assistant(content: Vec<Block>) -> Self {
         Message {
+            tool_provenance: Default::default(),
             role: Role::Assistant,
             content,
         }
@@ -157,6 +163,7 @@ impl Message {
     /// across messages teaches the model to stop calling tools in parallel.
     pub fn tool_results(results: Vec<Block>) -> Self {
         Message {
+            tool_provenance: Default::default(),
             role: Role::User,
             content: results,
         }
@@ -327,6 +334,8 @@ impl std::str::FromStr for Effort {
 /// One request to a provider. Stateless — the full history goes every time.
 #[derive(Debug, Clone)]
 pub struct CompletionRequest {
+    /// Requested constrained JSON output. Providers must reject unsupported requests.
+    pub response_schema: Option<serde_json::Value>,
     pub model: String,
     pub system: Option<String>,
     pub messages: Vec<Message>,

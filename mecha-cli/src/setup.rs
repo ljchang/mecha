@@ -372,6 +372,9 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // refusal is the correct answer and `tasks set` is the correct caller.
     crate::closure_guard::guard(&mut registry);
     for profile in &cfg.subagents {
+        if opts.tool_profile.is_some() && profile.tools.iter().any(|t| registry.get(t).is_none()) {
+            continue;
+        }
         // `--tool` narrows the pool deliberately, and a subagent whose profile
         // names something the narrowing excluded is not a misconfiguration —
         // it is a subagent the caller has just said they do not want. Skip it,
@@ -452,6 +455,16 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // The agent's config with the block appended; `cfg` itself stays as
     // loaded, since `provider_cfg` above still borrows it.
     let mut agent_cfg = cfg.agent.clone();
+    if opts.tool_profile.is_some() || outbox.is_some() {
+        let routed: Vec<String> = outbox
+            .as_ref()
+            .map(|r| r.routed().map(str::to_owned).collect())
+            .unwrap_or_default();
+        let capabilities = mecha_core::tool::profile::capability_prompt(&registry, &routed);
+        let base = agent_cfg.resolve_system_prompt()?.unwrap_or_default();
+        agent_cfg.system_prompt = Some(format!("{base}\n\n{capabilities}"));
+        agent_cfg.system_prompt_file = None;
+    }
     let mut rules = mecha_core::learning::RulesCarried::none();
     if !opts.no_learned_rules {
         if let Some(store) = mecha_core::learning::LearningStore::open_existing_default() {
@@ -512,7 +525,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
             .on(surface);
             rules = store.rules_carried_for(mecha_core::learning::RUN_DOMAINS, &situation)?;
             if let Some(block) = rules.block.clone() {
-                let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
+                let base = agent_cfg.resolve_system_prompt()?.unwrap_or_default();
                 agent_cfg.system_prompt = Some(if base.is_empty() {
                     block
                 } else {
@@ -1270,6 +1283,10 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
             })
         };
     let (approver, denials) = scripted_refusals(approver)?;
+
+    if let Some(profile) = opts.tool_profile {
+        profile.narrow(&mut registry, &cfg.outbox.tools);
+    }
 
     // An MCP server may legitimately shadow `todo` (registered after the
     // built-ins, deliberately). The handle would then be live but frozen —

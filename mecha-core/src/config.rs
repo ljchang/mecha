@@ -324,6 +324,7 @@ impl Default for Config {
                 vision: None,
                 max_retries: None,
                 retry_after_cap_secs: None,
+                structured_output: StructuredOutput::Disabled,
                 fallbacks: Vec::new(),
             },
         );
@@ -351,9 +352,21 @@ impl Default for Config {
     }
 }
 
+/// Endpoint schema dialect; accepting a request is not evidence of enforcement.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StructuredOutput {
+    #[default]
+    Disabled,
+    JsonSchema,
+    LlamaJson,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProviderConfig {
+    /// Explicit wire contract for constrained extraction; disabled until verified on the endpoint.
+    pub structured_output: StructuredOutput,
     /// `anthropic` | `openai` | `local`
     pub kind: String,
     pub model: Option<String>,
@@ -1102,19 +1115,9 @@ impl Config {
             if let Some(o) = layer.outbox.as_mut() {
                 if let Some(tools) = o.tools.as_mut() {
                     let before = tools.len();
-                    // Only an entry that would *add* a route goes. One that
-                    // re-declares a route the global config already has
-                    // changes nothing and stays — dropping it emptied the
-                    // project's list, which `apply` then assigned wholesale,
-                    // wiping the operator's own route and with it the `setup`
-                    // refusal of the global `allow` behind it (PR #148's
-                    // review). And when the cut empties the list, the key goes
-                    // with it rather than an empty list reaching `apply`: a
-                    // project routing *only* ruled tools was still wiping
-                    // every operator route while the warning said "ignored"
-                    // (the same review, one pass later). The wholesale assign
-                    // is the AUDIT-RESEARCH §2 row; this keeps the new code
-                    // from aiming it at exactly the tools the operator ruled on.
+                    // Projects may add staging requirements, never remove the
+                    // owner's routes. Preserve existing routes after filtering
+                    // additions that would route around an owner rule.
                     let already = self.outbox.tools.clone();
                     tools.retain(|t| {
                         already.contains(t) || !self.rules.iter().any(|r| &r.tool == t)
@@ -1130,9 +1133,24 @@ impl Config {
                             path.display()
                         );
                     }
-                    if tools.is_empty() && before > 0 {
-                        o.tools = None;
+                    for inherited in &self.outbox.tools {
+                        if !tools.contains(inherited) {
+                            tools.push(inherited.clone());
+                        }
                     }
+                }
+                if let Some(kinds) = o.publish_tools.as_mut() {
+                    for inherited in &self.outbox.publish_tools {
+                        if !kinds.contains(inherited) {
+                            kinds.push(inherited.clone());
+                        }
+                    }
+                }
+                if o.dir.take().is_some() {
+                    tracing::warn!(
+                        "[outbox] dir in {} is ignored — the review store loads from global config only",
+                        path.display()
+                    );
                 }
             }
         }
@@ -1651,8 +1669,8 @@ impl ConfigLayer {
         }
         if let Some(x) = self.outbox {
             let t = &mut cfg.outbox;
-            // Wholesale: a project must be able to un-route a tool the global
-            // config routes, and vice versa.
+            // Global layers replace; merge_file unions project routes with
+            // inherited routes before this assignment.
             if let Some(v) = x.tools {
                 t.tools = v;
             }
@@ -2525,6 +2543,35 @@ match = ["rm -rf build"]
             vec![(0, false)],
             "a project file must not launder the operator's contradiction"
         );
+    }
+
+    #[test]
+    fn a_project_cannot_remove_outbox_routes_or_redirect_the_store() {
+        let dir = std::env::temp_dir().join(format!("mecha-outbox-layer-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let project = dir.join("mecha.toml");
+        for tools in ["[]", "[\"send_email\"]", "[\"another_send\"]"] {
+            std::fs::write(
+                &project,
+                format!(
+                    "[outbox]\ntools = {tools}\npublish_tools = []\ndir = '/tmp/project-outbox'\n"
+                ),
+            )
+            .unwrap();
+            let mut cfg = Config::default();
+            cfg.outbox.tools = vec!["send_email".into(), "publish".into()];
+            cfg.outbox.publish_tools = vec!["publish".into()];
+            cfg.outbox.dir = Some(dir.join("owner-outbox"));
+            cfg.merge_file(&project, LayerTrust::Project).unwrap();
+            assert!(cfg.outbox.tools.contains(&"send_email".into()));
+            assert!(cfg.outbox.tools.contains(&"publish".into()));
+            assert!(cfg.outbox.publish_tools.contains(&"publish".into()));
+            assert_eq!(cfg.outbox.dir, Some(dir.join("owner-outbox")));
+            if tools.contains("another_send") {
+                assert!(cfg.outbox.tools.contains(&"another_send".into()));
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// The fix for a guard that fell through: an unparseable zone used to be

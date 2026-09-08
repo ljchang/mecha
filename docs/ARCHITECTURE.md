@@ -104,6 +104,15 @@ recorded bug). Empty by default: strict beats silently answering with a
 different model. `mecha eval` forces `--no-fallback`, like MCP, hooks and the
 outbox, because a scorecard grades the model it names.
 
+**Structured output is an explicit endpoint capability.**
+`CompletionRequest::response_schema` carries a provider-neutral JSON schema;
+`Provider::structured_output` defaults false, and `ProviderConfig::structured_output`
+selects the tested endpoint dialect. The encoders refuse unsupported requests,
+`Failover` skips unsupported fallbacks, and quarantined passes keep their no-tools,
+one-message boundary. A schema controls syntax; typed/semantic validation and
+untrusted-content handling still apply. Compatible HTTP is not proof that a server
+enforces the schema.
+
 ## The local model server
 
 **`docs/LLAMA-SERVER.md` is the reference** — slot geometry, the KV arithmetic,
@@ -2251,6 +2260,39 @@ not in `tools` warns on every start, like a routed name that matches nothing,
 because it means the tool executes unstaged while config reads as though it were
 under review.
 
+**Delivery attempts precede dispatch.** `begin_delivery` fsyncs an unknown
+attempt before `Surface::release` calls the remote tool. A crash, tool error or
+ambiguous response leaves that uncertainty intact; edits, rejection and retries
+are refused until owner reconciliation records delivery or non-delivery with
+evidence. A confirmed non-delivery permits a newly reviewed attempt. A confirmed
+delivery resolves without dispatch. This is necessary because a generic tool's
+error cannot establish that the remote service did nothing.
+
+## Assistant workflows
+
+`workflow.rs` owns orchestration references, never a second task board. The graph
+continues to own tasks; the workflow links its IDs to transcripts, questions,
+drafts, dependencies and owner-specified checks. Every mutation takes a file lock
+and persists atomically. `WorkflowRun` records early exits while a long-lived host
+remains alive; a dead pid is recognized on observation. Session-linked drafts and
+questions are rediscovered after crashes, so a missing final record cannot erase
+partial effects. Starting a dependent run requires completed predecessors, and
+adding dependencies checks for cycles. No reminder grants permission or resets
+conversation taint.
+
+Completion is evidence, never the model's last sentence. `check_evidence` reads
+bounded regular files through `ToolCtx::resolve` or confirmed outbox delivery.
+No checks, unknown checks, missing records and failed reads cannot verify. Today
+rereads artifacts; closure rechecks and preserves the separate owner gate on graph
+task closure. Cancelling tracking is recorded separately from completing work.
+
+Commitments and attention policy live in the owner's workflow store, outside
+project configuration. The trigger tick refreshes linked events and runs the same
+deterministic reminder computation as `workflow tick --dry-run`. In-app reminders
+are coalesced and persisted, with timezone-aware quiet hours, snoozing and daily
+deduplication. The daily view still shows overdue work during a snooze. Nothing
+here automatically starts an agent or sends a notification to another service.
+
 ## The meeting poll lifecycle
 
 `docs/MEETING-POLL-UX-DESIGN.md` is the authority; the invariants a session is
@@ -4196,3 +4238,18 @@ Fixtures under `eval/workspace/{audit,reports,kata}` are generated:
 the cases must assert, and checks that each kata fails as shipped *and* is
 solvable by a reference fix. A gold answer typed by hand is a guess, and a
 wrong one measures nothing.
+
+
+
+`Expect::tools_any` expresses interchangeable tool paths (for example calendar
+listing or free/busy lookup); `tools` still requires every listed call. Neither
+is proof of the resulting state, which is why the artifact checks below exist.
+
+**Assistant lifetime postconditions** (`fixture_check.rs`, `Principal::postconditions`)
+run after the principal's owner actions, while that position still owns its fixture
+world. They grade bounded JSON/JSONL records inside the trial fixture jail and
+combine with the trace grade; later positions are never retroactively checked
+against a changed world. Exact row counts catch duplicate sends, field comparisons
+catch wrong thread/time/attendee, and missing files fail unless explicitly admitted
+as empty. `Trial::owner_actions` counts requested owner verbs, including failed
+ones; it is a count of actions, not a measure of human time.

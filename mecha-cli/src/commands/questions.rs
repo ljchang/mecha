@@ -435,6 +435,25 @@ async fn answer_and_resume(
     if cx.budget.max_turns.is_none() {
         cx.budget.max_turns = Some(super::tasks::TASK_MAX_TURNS);
     }
+    let workflow = q
+        .task_id
+        .as_deref()
+        .map(|id| {
+            let store = mecha_core::workflow::WorkflowStore::default_store()?;
+            let guard = store.start_task(
+                id,
+                id,
+                &q.session_id,
+                &prepared.workspace,
+                chrono::Utc::now(),
+            )?;
+            store.update(id, |w| {
+                w.outbox_root = prepared.config.outbox.dir.clone();
+                Ok(())
+            })?;
+            Ok::<_, anyhow::Error>((store, id.to_string(), guard))
+        })
+        .transpose()?;
     let outcome = crate::interrupt::run_interruptible_watching(
         &prepared.agent,
         &cx,
@@ -453,6 +472,19 @@ async fn answer_and_resume(
     .await;
     if let Some(task) = q.task_id.as_deref() {
         run_markers.clear(task);
+    }
+    if let Some((store, id, _guard)) = &workflow {
+        if let Err(e) = store.finish_task(
+            id,
+            outcome.is_err(),
+            crate::setup::staged_ids(&q.session_id)
+                .into_iter()
+                .collect(),
+            asker.parked().to_vec(),
+            chrono::Utc::now(),
+        ) {
+            eprintln!("warning: workflow outcome could not be recorded: {e:#}");
+        }
     }
     session.record_run(&recorded, &convo)?;
     session.append(&Record::Taint(convo.taint))?;

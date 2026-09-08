@@ -244,6 +244,8 @@ fn detail_json(
         // reason on disk two fields away. A queue that cannot say why it is
         // stuck is a queue that grows.
         "error": item.error,
+        "delivery_uncertain": item.delivery_uncertain(),
+        "delivery_attempts": item.delivery_attempts,
         "args": item.args,
         "session_id": item.session_id,
         "sources": sources.iter().map(|s| serde_json::json!({
@@ -695,6 +697,42 @@ pub struct EditBody {
 /// CLI, exactly as the TUI modal does.
 pub async fn approve(State(state): St, UrlPath(id): UrlPath<String>) -> Response {
     verb(&state, &["outbox", "approve", &id, "--yes"]).await
+}
+
+#[derive(serde::Deserialize)]
+pub struct ReconcileBody {
+    pub outcome: String,
+    pub evidence: String,
+}
+
+/// Record the owner's delivery finding. This never invokes the send tool.
+pub async fn reconcile(
+    State(state): St,
+    UrlPath(id): UrlPath<String>,
+    Json(body): Json<ReconcileBody>,
+) -> Response {
+    if !matches!(body.outcome.as_str(), "delivered" | "not-delivered")
+        || body.evidence.trim().is_empty()
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            "choose delivered or not-delivered and record evidence",
+        )
+            .into_response();
+    }
+    verb(
+        &state,
+        &[
+            "outbox",
+            "reconcile",
+            &id,
+            "--outcome",
+            &body.outcome,
+            "--evidence",
+            &body.evidence,
+        ],
+    )
+    .await
 }
 
 /// POST /api/outbox/{id}/reject — a reason is required: it returns to the
@@ -1172,6 +1210,7 @@ mod tests {
 
     fn item(id: &str, status: &str, created: &str) -> OutboxItem {
         OutboxItem {
+            delivery_attempts: Vec::new(),
             output: None,
             author: Default::default(),
             filled_defaults: Vec::new(),

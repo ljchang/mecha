@@ -483,6 +483,9 @@ pub struct Principal {
     /// with no ceiling of its own.
     #[serde(default = "principal_timeout")]
     pub timeout_secs: u64,
+    /// Per-case artifact checks run after owner acts, against the fixture store.
+    #[serde(default)]
+    pub postconditions: BTreeMap<String, Vec<crate::fixture_check::FixtureCheck>>,
 }
 
 fn principal_timeout() -> u64 {
@@ -715,7 +718,7 @@ pub fn release_target_is_fixture(tool: &str, fixtures: &[String]) -> bool {
 /// approvals under the driver, in long and short form. Every `--no-*`
 /// lever flag is refused by prefix. `mecha-cli` tests that each of these
 /// is a global option it really defines.
-pub const PRINCIPAL_BLOCKED_OPTIONS: [&str; 19] = [
+pub const PRINCIPAL_BLOCKED_OPTIONS: [&str; 20] = [
     "--workspace",
     "-w",
     "--provider",
@@ -727,6 +730,7 @@ pub const PRINCIPAL_BLOCKED_OPTIONS: [&str; 19] = [
     "--system",
     "-s",
     "--tool",
+    "--tool-profile",
     "--skill",
     "--yes",
     "-y",
@@ -1456,6 +1460,36 @@ impl Manifest {
                     "a `lifetime` names its sequence in `[tasks] ids`; the case file's order is not a design"
                 );
                 if let Some(p) = &self.principal {
+                    for (case, checks) in &p.postconditions {
+                        anyhow::ensure!(self.tasks.ids.contains(case) && !checks.is_empty(), "postconditions must name a scheduled case and at least one check: {case}");
+                        for check in checks {
+                            let path = Path::new(&check.file);
+                            anyhow::ensure!(
+                                !path.is_absolute()
+                                    && path
+                                        .components()
+                                        .all(|c| matches!(c, std::path::Component::Normal(_))),
+                                "fixture check must stay inside a named fixture"
+                            );
+                            let server = path
+                                .components()
+                                .next()
+                                .and_then(|c| c.as_os_str().to_str())
+                                .unwrap_or_default();
+                            anyhow::ensure!(
+                                self.fixtures.names().iter().any(|n| n == server),
+                                "fixture check names unconfigured server {server}"
+                            );
+                            anyhow::ensure!(
+                                check
+                                    .equals
+                                    .keys()
+                                    .chain(check.contains.keys())
+                                    .all(|p| p.is_empty() || p.starts_with('/')),
+                                "fixture field selections use JSON pointers"
+                            );
+                        }
+                    }
                     anyhow::ensure!(
                         !p.command.is_empty(),
                         "`[principal] command` names no executable"
@@ -1533,6 +1567,8 @@ impl Manifest {
             let provider = arm.provider.as_deref().unwrap_or(provider);
             let model = arm.model.as_deref().unwrap_or(model);
             let row = |task: &String, seed: Option<u64>, rep: u32, position: Option<u32>| Trial {
+                owner_actions: None,
+                fixture_checked: None,
                 id: trial_id(arm_name, task, seed, rep),
                 arm: arm_name.clone(),
                 task: task.clone(),
@@ -1812,6 +1848,11 @@ fn fnv64(bytes: &[u8]) -> String {
 /// trial moves; read by `status` and `judge`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Trial {
+    /// Number of owner verbs requested after the task; includes approvals and answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_actions: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixture_checked: Option<bool>,
     pub id: String,
     pub arm: String,
     pub task: String,
@@ -3463,6 +3504,8 @@ rationale = "no notice, fewer turns"
 
     fn done(arm: &str, task: &str, seed: u64, passed: bool, turns: u32) -> Trial {
         Trial {
+            owner_actions: None,
+            fixture_checked: None,
             id: trial_id(arm, task, Some(seed), 1),
             arm: arm.into(),
             task: task.into(),
@@ -4999,5 +5042,19 @@ seed = "seed"
         old.as_object_mut().unwrap().remove("fixtures");
         let back: PrincipalInput = serde_json::from_value(old).unwrap();
         assert!(back.fixtures.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod assistant_manifest_tests {
+    use super::*;
+    #[test]
+    fn assistant_lifetime_has_repeated_seeds_and_post_delivery_checks() {
+        let manifest = Manifest::parse(include_str!("../../eval/assistant-lifetime.toml")).unwrap();
+        assert_eq!(manifest.seeds.len(), 3);
+        let principal = manifest.principal.as_ref().unwrap();
+        assert_eq!(principal.postconditions.len(), manifest.tasks.ids.len());
+        let roundtrip = toml::to_string(&manifest).unwrap();
+        Manifest::parse(&roundtrip).unwrap();
     }
 }

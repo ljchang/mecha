@@ -33,7 +33,7 @@ mecha sessions appraise --appraise   # the quarantined appraiser's second opinio
 Almost nothing consumes an appraisal yet, and that is deliberate — the number
 worth reading first is **how many runs come back with no label at all**. On the
 120-session corpus this was built against, 119 came back `neutral`. See
-[the finding](#the-finding-most-runs-have-no-label) before building on it.
+[the finding](#the-finding-most-runs-had-no-label-and-why-the-gate-moved) before building on it.
 :::
 
 ## When appraisal happens
@@ -79,7 +79,7 @@ The record exists so that five things can happen. Three already do:
   said by how the session went.
 
 Two more are what the *sign* makes possible, and both deliberately wait on
-[the finding](#the-finding-most-runs-have-no-label) below:
+[the finding](#the-finding-most-runs-had-no-label-and-why-the-gate-moved) below:
 
 - **A positive half for learning.** Today `learn` consolidates the writing
   domain from edited drafts only — it can learn what displeased and never what

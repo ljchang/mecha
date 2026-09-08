@@ -675,8 +675,29 @@ async fn run_lifetimes(
                             "  ↳ principal (after_task) · skipped: a later position had already finished"
                         );
                     }
+                    trial.owner_actions = Some(run.acts.len());
                     store.record_stage(&run)?;
                     ledger.push(run);
+                    store.save_trial(&trial)?;
+                }
+                // Grade state while this position still owns the world. A later
+                // task may legitimately change it, so never regrade historical rows.
+                if world_ready
+                    && !late
+                    && trial.fixture_checked.is_none()
+                    && matches!(trial.status, TrialStatus::Done | TrialStatus::Failed)
+                {
+                    if let Some(checks) = principal.postconditions.get(&case.id) {
+                        let results: Vec<_> = checks
+                            .iter()
+                            .map(|c| c.grade(&home.join("fixtures")))
+                            .collect();
+                        let passed = !results.is_empty() && results.iter().all(|c| c.passed);
+                        trial.passed = Some(trial.passed == Some(true) && passed);
+                        trial.fixture_checked = Some(passed);
+                        trial.checks.extend(results);
+                        store.save_trial(&trial)?;
+                    }
                 }
             }
             for stage in stages_due(&manifest.schedule, position, &stages_off, &ledger) {

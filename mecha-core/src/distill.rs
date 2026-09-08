@@ -730,6 +730,7 @@ mod tests {
 
     fn msg(role: Role, text: &str) -> Message {
         Message {
+            tool_provenance: Default::default(),
             role,
             content: vec![Block::Text { text: text.into() }],
         }

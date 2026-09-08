@@ -603,6 +603,7 @@ mod tests {
     fn the_goals_a_run_named_are_read_off_its_ask_user_calls() {
         use crate::message::{Block, Message, Role};
         let call = |id: &str, input: Value| Message {
+            tool_provenance: Default::default(),
             role: Role::Assistant,
             content: vec![Block::ToolUse {
                 id: id.into(),
@@ -628,6 +629,7 @@ mod tests {
             ),
             // Not this tool's call, whatever its arguments say.
             Message {
+                tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
                     id: "d".into(),

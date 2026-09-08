@@ -57,7 +57,7 @@ Two shapes worth knowing:
   an unanchored visual analogue scale measures nothing.
 - A `times` question stands alone in its poll. Its candidates arrive from the
   freebusy pipeline and never from the spec — see [the times
-  poll](#the-times-poll-is-still-its-own-flow) below.
+  poll](#the-meeting-poll-runs-itself) below.
 
 ## Writing a spec
 

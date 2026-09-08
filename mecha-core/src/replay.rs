@@ -50,6 +50,9 @@ pub struct RecordedCall {
     /// type is stored rather than a migration anyone is mid-way through.
     #[serde(default)]
     pub batch: Option<u32>,
+    /// None denotes a recording that did not retain provenance.
+    #[serde(default)]
+    pub external: Option<bool>,
 }
 
 /// A transcript reduced to what a replay needs.
@@ -136,6 +139,7 @@ pub fn extract(messages: &[Message]) -> Trajectory {
                             output,
                             is_error,
                             batch: Some(batch),
+                            external: message.tool_provenance.get(&id).copied(),
                         });
                     }
                 }
@@ -452,6 +456,7 @@ mod tests {
     /// struct update syntax so the grouping is visible at each call site.
     fn one(name: &str, input: Value) -> RecordedCall {
         RecordedCall {
+            external: None,
             name: name.into(),
             input,
             output: String::new(),
@@ -668,6 +673,7 @@ mod tests {
     #[test]
     fn a_fork_in_a_reordered_batch_is_reported_where_decide_stopped() {
         let batched = |name: &str, input: Value| RecordedCall {
+            external: None,
             batch: Some(0),
             ..one(name, input)
         };
@@ -828,6 +834,7 @@ mod tests {
     #[test]
     fn an_identical_replay_has_nothing_to_report() {
         let recorded = vec![RecordedCall {
+            external: None,
             name: "fs_read".into(),
             input: json!({"path": "a.md"}),
             output: "hello".into(),
@@ -845,6 +852,7 @@ mod tests {
         // company; reporting all of it buries the one fact that matters.
         let recorded = vec![
             RecordedCall {
+                external: None,
                 name: "fs_read".into(),
                 input: json!({}),
                 output: String::new(),
@@ -852,6 +860,7 @@ mod tests {
                 batch: None,
             },
             RecordedCall {
+                external: None,
                 name: "fs_read".into(),
                 input: json!({}),
                 output: String::new(),
@@ -859,6 +868,7 @@ mod tests {
                 batch: None,
             },
             RecordedCall {
+                external: None,
                 name: "fs_read".into(),
                 input: json!({}),
                 output: String::new(),
@@ -889,6 +899,7 @@ mod tests {
     #[test]
     fn the_same_tool_with_different_arguments_is_reported_but_not_structural() {
         let recorded = vec![RecordedCall {
+            external: None,
             name: "fs_read".into(),
             input: json!({"path": "a.md"}),
             output: String::new(),
@@ -908,6 +919,7 @@ mod tests {
     #[test]
     fn running_long_and_stopping_early_are_different_findings() {
         let one = |name: &str| RecordedCall {
+            external: None,
             name: name.into(),
             input: json!({}),
             output: String::new(),
@@ -948,6 +960,7 @@ mod tests {
         // Within *one* batch the opposite holds — see
         // `a_batch_replayed_in_another_order_is_not_a_divergence`.
         let one = |b: u32, p: &str| RecordedCall {
+            external: None,
             name: "fs_read".into(),
             input: json!({"path": p}),
             output: String::new(),
@@ -971,6 +984,7 @@ mod tests {
     fn diff_from_reports_indices_in_the_full_recordings_coordinates() {
         let recorded_tail = vec![
             RecordedCall {
+                external: None,
                 name: "fs_read".into(),
                 input: json!({}),
                 output: String::new(),
@@ -978,6 +992,7 @@ mod tests {
                 batch: None,
             },
             RecordedCall {
+                external: None,
                 name: "fs_read".into(),
                 input: json!({}),
                 output: String::new(),
@@ -1008,6 +1023,7 @@ mod tests {
     #[test]
     fn whitespace_in_arguments_does_not_count_as_a_change() {
         let recorded = vec![RecordedCall {
+            external: None,
             name: "shell".into(),
             input: json!({"command": "ls -la"}),
             output: String::new(),

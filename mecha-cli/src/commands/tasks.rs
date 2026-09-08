@@ -2208,6 +2208,18 @@ async fn work(
     // live run owns this session — the cross-process half of "one
     // conversation, one writer", which every `resume` surface needs and none
     // of them could see.
+    let workflows = mecha_core::workflow::WorkflowStore::default_store()?;
+    let _workflow_run = workflows.start_task(
+        task_id,
+        &name,
+        &session.meta.id,
+        &prepared.workspace,
+        chrono::Utc::now(),
+    )?;
+    workflows.update(task_id, |w| {
+        w.outbox_root = prepared.config.outbox.dir.clone();
+        Ok(())
+    })?;
     run_markers.mark_running_for(task_id, None, Some(&session.meta.id))?;
     // Belt and braces on `mark_running`'s own sweep: a cancel written in the
     // window between `tasks stop`'s liveness check and the previous run's
@@ -2323,6 +2335,16 @@ async fn work(
     // this *is* the question's taint — and where a question shared a turn
     // with something that armed it, over-tainting is the direction to err in.
     asker.stamp_taint(convo.taint);
+    let workflow_recording = workflows.finish_task(
+        task_id,
+        outcome.is_err(),
+        staged_ids(&session.meta.id).into_iter().collect(),
+        asker.parked().to_vec(),
+        chrono::Utc::now(),
+    );
+    if let Err(e) = workflow_recording {
+        eprintln!("warning: workflow final state could not be saved: {e:#}");
+    }
 
     // Only a failed *run* restores the status. A run that worked and then
     // failed to record is a task that genuinely is waiting on the owner —
@@ -2330,7 +2352,7 @@ async fn work(
     // `next` would be the lie in the other direction. The warning above is the
     // right response to a torn transcript; a status change is not.
     if let Err(e) = outcome {
-        // Nothing happened, so the board must not say something did. A task
+        // The run failed; partial effects remain in the transcript and workflow. A task
         // parked in `waiting` by a run that died is the queue growing for a
         // reason nobody can see — which is the whole failure `/queues` exists
         // to catch, reproduced one store over.
@@ -2338,7 +2360,7 @@ async fn work(
         {
             eprintln!("warning: could not put {task_id} back to {was}: {restore:#}");
         }
-        bail!("the run failed, nothing staged: {e:#}");
+        bail!("the run failed; partial files or drafts may exist. Review the task session and outbox before retrying: {e:#}");
     }
 
     // The run is over, so the ball is yours — whether it staged drafts, parked

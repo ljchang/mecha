@@ -6,6 +6,7 @@
 
 pub mod ask;
 pub mod builtin;
+pub mod profile;
 pub mod recall;
 pub mod skill;
 pub mod todo;

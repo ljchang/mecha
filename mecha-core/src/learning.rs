@@ -3507,6 +3507,7 @@ mod tests {
             Message::user("do the thing"),
             Message::assistant(vec![tool_use("t1")]),
             Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![
                     result("t1", "ok", false),
@@ -3533,6 +3534,7 @@ mod tests {
             Message::user("do the thing"),
             Message::assistant(vec![tool_use("t1")]),
             Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![result("t1", "ok", false), Block::text("skip the rest")],
             },
@@ -4031,6 +4033,7 @@ mod tests {
             // A boredom notice: text riding beside tool results, which the
             // miner reads as a steer.
             Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![
                     Block::ToolResult {
@@ -4082,6 +4085,7 @@ mod tests {
                 input: serde_json::json!({}),
             }]),
             Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![
                     Block::ToolResult {
@@ -4110,6 +4114,7 @@ mod tests {
                 input: serde_json::json!({}),
             }]),
             Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![
                     Block::ToolResult {
@@ -4164,6 +4169,7 @@ mod tests {
                 input: serde_json::json!({}),
             }]),
             Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![
                     Block::ToolResult {
@@ -4464,6 +4470,7 @@ mod tests {
 
         // A tool-results message carrying steering text is not a followup turn.
         let steered = vec![Message {
+            tool_provenance: Default::default(),
             role: Role::User,
             content: vec![
                 Block::ToolResult {
@@ -5271,6 +5278,7 @@ mod tests {
             Message::user("do the thing"),
             Message::assistant(vec![tool_use("t1")]),
             Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![
                     result("t1", "ok", false),

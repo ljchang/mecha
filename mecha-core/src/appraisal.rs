@@ -3260,6 +3260,7 @@ mod tests {
     fn draft(id: &str, status: &str, edited: bool) -> crate::outbox::OutboxItem {
         let before = serde_json::json!({"body_markdown": "Dear Dirk,"});
         crate::outbox::OutboxItem {
+            delivery_attempts: Vec::new(),
             output: None,
             author: Default::default(),
             filled_defaults: Vec::new(),
@@ -4064,6 +4065,7 @@ mod tests {
                 input: serde_json::json!({}),
             }]),
             crate::message::Message {
+                tool_provenance: Default::default(),
                 role: crate::message::Role::User,
                 content: vec![
                     crate::message::Block::ToolResult {
@@ -4116,6 +4118,7 @@ mod tests {
                 input: serde_json::json!({}),
             }]),
             crate::message::Message {
+                tool_provenance: Default::default(),
                 role: crate::message::Role::User,
                 content: vec![
                     crate::message::Block::ToolResult {
