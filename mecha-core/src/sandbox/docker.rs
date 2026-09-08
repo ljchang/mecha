@@ -176,6 +176,7 @@ impl Control {
 pub(crate) struct DockerContainer {
     name: String,
     control: Control,
+    removed: std::sync::atomic::AtomicBool,
 }
 
 impl DockerContainer {
@@ -189,6 +190,7 @@ impl DockerContainer {
         }
         let mut owned = Self {
             name: format!("mecha-mcp-{}", uuid::Uuid::new_v4()),
+            removed: std::sync::atomic::AtomicBool::new(false),
             control: Control {
                 program: command.get_program().to_owned(),
                 env: command
@@ -228,6 +230,29 @@ impl DockerContainer {
         rx.await.context("Docker creation worker stopped")?
     }
 
+    /// A service supervisor may kill remaining children as soon as the
+    /// harness exits. Finish removal while the daemon is still alive.
+    pub(crate) async fn close(&self) -> Result<()> {
+        if self.removed.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(());
+        }
+        let control = self.control.clone();
+        let name = self.name.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::Builder::new()
+            .name("mecha-docker-close".into())
+            .spawn(move || {
+                let _ = tx.send(control.remove(&name));
+            })
+            .context("starting Docker close worker")?;
+        rx.await
+            .context("Docker close worker stopped")?
+            .with_context(|| format!("removing MCP container {}", self.name))?;
+        self.removed
+            .store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
     pub(crate) fn start_command(&self) -> tokio::process::Command {
         let mut command = self.control.command();
         command.args(["start", "--attach", "--interactive", &self.name]);
@@ -237,6 +262,9 @@ impl DockerContainer {
 
 impl Drop for DockerContainer {
     fn drop(&mut self) {
+        if self.removed.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
         let control = self.control.clone();
         let name = self.name.clone();
         // Launch before returning: an ordinary CLI may exit immediately

@@ -1534,6 +1534,49 @@ than asserted: the run records `taint {private: true, untrusted: false}`.
 
 ## Browser request and attachment boundaries
 
+**Shutdown closes admission before waiting for work.** `serve::execute` owns
+process signals and drains chat and mounted voice together. `ChatState::stop`
+and `Facade::shutdown` gate new work under the locks that admit it; closing a
+`TaskTracker` by itself does not prevent new spawns. Track through transcript
+recording, not just the model future. Pending browser questions must close
+permanently during shutdown: clearing the current map alone leaves a later
+approval waiting out its normal timeout. Tools retain their ordinary deadlines
+and safe cancellation points. SSE closes explicitly, voice request reads yield,
+and voice socket writes gain a five-second deadline during shutdown, so idle
+clients cannot retain the process. Normal streaming preserves backpressure. A
+failed write permanently closes further writes on that connection: cancelling
+a partly written chunk and appending a trailer would corrupt the HTTP body.
+`ShutdownSignals` keeps SIGINT and SIGTERM receivers alive through the drain;
+a second signal forces return through normal runtime teardown, allowing
+remaining task owners to drop. Dropping Tokio's signal receiver alone does
+not restore the operating system's default handler. Forced shutdown may lose
+unfinished turns; the ordinary first-signal path still waits for recording.
+The web host previously had no signal handler, making its voice cleanup
+unreachable and losing active partial turns on systemd stops. The shipped
+serve/voice units use `KillMode=mixed`: signal the main process first, then
+let it drain without terminating MCP children in the same first signal.
+`McpClient::close` drops stdin to deliver EOF and keeps output readers alive
+while the server flushes. A bounded grace period precedes TERM/KILL escalation;
+closing stdin alone cannot stop a server that ignores EOF. Child termination
+and Docker removal finish before the daemon returns; relying on asynchronous
+Drop cleanup here lets the supervisor kill the removal subprocess when the main process exits. Drop remains the
+fallback for failed initialization, cancellation, and ordinary CLI callers.
+
+**Broadcast acceptance once and correlate the sender's acknowledgement.**
+Typed and spoken turns reach every session subscriber. Typed requests carry a
+bounded UI request id, echoed in the event but never inserted into model
+history. `receiveInput` uses that id across POST and SSE, not text equality;
+identical words can be two different requests. Steering broadcasts at admission
+as queued, then `QueuedInput` produces a delivery receipt for that existing
+bubble. Receipt ids are appended while the text-queue lock is still held and
+consumed in FIFO order by the event forwarder. Leftover receipts become
+`QueuedDiscarded` under the session admission lock before clearing `live`;
+checking earlier races a final send during hand-back. The browser keeps early
+receipts across a late POST response and labels discarded input as not delivered.
+Previously only spoken input broadcast, leaving another device with the reply
+but no typed prompt; simply echoing steering at admission also blurred accepted
+input with input the model actually received.
+
 **Tailnet identity proves who, not intent.** `serve::owner_guard` requires
 `X-Mecha-Request: 1` on every unsafe method and refuses foreign
 `Sec-Fetch-Site` values. `web/src/lib/api.js::apiFetch` supplies the header,

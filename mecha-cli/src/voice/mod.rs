@@ -486,6 +486,8 @@ struct Shared {
     agent: Arc<Agent>,
     mount: Mount,
     slots: Mutex<HashMap<String, SlotState>>,
+    stopping: CancellationToken,
+    handlers: tokio_util::task::TaskTracker,
     session_dir: PathBuf,
     outbox_root: PathBuf,
     provider_name: String,
@@ -566,6 +568,8 @@ impl Facade {
                 agent,
                 mount,
                 slots: Mutex::new(HashMap::new()),
+                stopping: CancellationToken::new(),
+                handlers: Default::default(),
                 session_dir: Session::default_dir()?,
                 outbox_root,
                 provider_name,
@@ -600,21 +604,28 @@ impl Facade {
             tokio::select! {
                 accepted = listener.accept() => {
                     let (stream, _) = accepted?;
+                    // Serialize admission with shutdown: closing a tracker
+                    // alone does not prevent a late spawn into it.
+                    let slots = self.shared.slots.lock().await;
+                    if self.shared.stopping.is_cancelled() {
+                        return Ok(());
+                    }
                     let shared = Arc::clone(&self.shared);
-                    tokio::spawn(async move {
+                    self.shared.handlers.spawn(async move {
                         if let Err(e) = handle(stream, shared).await {
                             tracing::debug!("voice connection ended: {e}");
                         }
                     });
+                    drop(slots);
                 }
                 _ = stop.cancelled() => return Ok(()),
             }
         }
     }
 
-    /// Cancel everything in flight, then wait (bounded) for handlers to
-    /// record their runs and return the slots — exiting without this tears
-    /// down the runtime mid-record.
+    /// Close admission, cancel runs cooperatively, and wait for handlers
+    /// through recording. Socket I/O is bounded during shutdown; tools keep
+    /// their normal deadlines and are never aborted midway through a side effect.
     pub async fn shutdown(&self) {
         {
             let slots = self.shared.slots.lock().await;
@@ -623,17 +634,11 @@ impl Facade {
                     tok.cancel(mecha_core::agent::CancelReason::Shutdown);
                 }
             }
+            // Record Shutdown before a woken writer reports a disconnect.
+            self.shared.stopping.cancel();
         }
-        for _ in 0..150 {
-            let busy = {
-                let slots = self.shared.slots.lock().await;
-                slots.values().any(|s| matches!(s, SlotState::Running(_)))
-            };
-            if !busy {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        self.shared.handlers.close();
+        self.shared.handlers.wait().await;
     }
 }
 
@@ -688,17 +693,26 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
     // SIGTERM is how systemd stops this service, so it must mean what
     // Ctrl-C means: cancel, let partial turns land in their transcripts,
     // then go.
+    let mut signals = crate::interrupt::ShutdownSignals::new()?;
     let stop = CancellationToken::new();
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let listener = facade.bind(args.port).await?;
     let server = facade.serve(listener, stop.clone());
     tokio::pin!(server);
     tokio::select! {
         r = &mut server => r?,
-        _ = tokio::signal::ctrl_c() => stop.cancel(),
-        _ = sigterm.recv() => stop.cancel(),
+        _ = signals.recv() => stop.cancel(),
     }
-    facade.shutdown().await;
+    signals
+        .drain_or_force(async {
+            facade.shutdown().await;
+            futures::future::join_all(prepared._mcp.iter().map(|client| async {
+                if let Err(e) = client.close().await {
+                    tracing::warn!(server = client.name(), "MCP shutdown did not finish: {e:#}");
+                }
+            }))
+            .await;
+        })
+        .await;
     println!("\nvoice-serve: shutting down.");
     Ok(())
 }
@@ -762,11 +776,34 @@ fn auth_ok(required: &Option<String>, header: &Option<String>) -> bool {
     }
 }
 
-async fn handle(mut stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
+/// Keep shutdown and write-failure state with the socket. A cancelled partial
+/// chunk must never be followed by another HTTP chunk on that connection.
+struct VoiceStream {
+    socket: TcpStream,
+    stop: CancellationToken,
+    failed: bool,
+}
+
+impl VoiceStream {
+    fn new(socket: TcpStream, stop: CancellationToken) -> Self {
+        Self {
+            socket,
+            stop,
+            failed: false,
+        }
+    }
+}
+
+async fn handle(stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
+    let mut stream = VoiceStream::new(stream, shared.stopping.clone());
     let mut buf = Vec::with_capacity(8192);
     let head = loop {
         let mut chunk = [0u8; 8192];
-        let n = stream.read(&mut chunk).await?;
+        let n = tokio::select! {
+            biased;
+            _ = shared.stopping.cancelled() => return Ok(()),
+            n = stream.socket.read(&mut chunk) => n?,
+        };
         if n == 0 {
             return Ok(()); // closed before a full request
         }
@@ -790,13 +827,25 @@ async fn handle(mut stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
     let mut body = buf[head.body_start..].to_vec();
     while body.len() < head.content_length {
         let mut chunk = [0u8; 8192];
-        let n = stream.read(&mut chunk).await?;
+        let n = tokio::select! {
+            biased;
+            _ = shared.stopping.cancelled() => return Ok(()),
+            n = stream.socket.read(&mut chunk) => n?,
+        };
         if n == 0 {
             anyhow::bail!("connection closed mid-body");
         }
         body.extend_from_slice(&chunk[..n]);
     }
 
+    if shared.stopping.is_cancelled() {
+        return write_json(
+            &mut stream,
+            503,
+            &json!({"error": "server is shutting down"}),
+        )
+        .await;
+    }
     // Routing ignores the query string; `/v1/mecha-affect` is the only
     // route that reads one, off `head.path` itself.
     let route = head.path.split('?').next().unwrap_or(&head.path);
@@ -820,7 +869,7 @@ async fn handle(mut stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
 /// response through the real `openai` SDK's typed models — an unrecognised
 /// top-level field there is silently dropped before any pipecat frame
 /// processor ever sees it, so that channel cannot carry this.
-async fn affect_status(stream: &mut TcpStream, shared: &Arc<Shared>, head: &Head) -> Result<()> {
+async fn affect_status(stream: &mut VoiceStream, shared: &Arc<Shared>, head: &Head) -> Result<()> {
     let Some(session) = query_param(&head.path, "session") else {
         return write_json(stream, 400, &json!({"error": "missing ?session="})).await;
     };
@@ -834,9 +883,11 @@ async fn affect_status(stream: &mut TcpStream, shared: &Arc<Shared>, head: &Head
     match label {
         Some(label) => write_json(stream, 200, &json!({"affect": label})).await,
         None => {
-            stream
-                .write_all(b"HTTP/1.1 204 No Content\r\nconnection: close\r\n\r\n")
-                .await?;
+            write_bytes(
+                stream,
+                b"HTTP/1.1 204 No Content\r\nconnection: close\r\n\r\n",
+            )
+            .await?;
             Ok(())
         }
     }
@@ -903,7 +954,33 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-async fn write_json(stream: &mut TcpStream, status: u16, body: &Value) -> Result<()> {
+/// Preserve normal backpressure. Once shutdown begins, a stalled writer has
+/// five seconds to finish its current write; failure permanently closes writes
+/// so no later chunk can be appended after a partly written frame.
+async fn write_bytes(stream: &mut VoiceStream, bytes: &[u8]) -> std::io::Result<()> {
+    if stream.failed {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "voice stream write already failed",
+        ));
+    }
+    let stop = stream.stop.clone();
+    let result = {
+        let write = stream.socket.write_all(bytes);
+        tokio::pin!(write);
+        tokio::select! {
+            result = &mut write => result,
+            _ = stop.cancelled() => tokio::time::timeout(Duration::from_secs(5), &mut write)
+                .await.unwrap_or_else(|_| Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "voice client stopped reading during shutdown"))),
+        }
+    };
+    if result.is_err() {
+        stream.failed = true;
+    }
+    result
+}
+
+async fn write_json(stream: &mut VoiceStream, status: u16, body: &Value) -> Result<()> {
     let text = body.to_string();
     let reason = match status {
         200 => "OK",
@@ -916,8 +993,8 @@ async fn write_json(stream: &mut TcpStream, status: u16, body: &Value) -> Result
         "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
         text.len()
     );
-    stream.write_all(head.as_bytes()).await?;
-    stream.write_all(text.as_bytes()).await?;
+    write_bytes(stream, head.as_bytes()).await?;
+    write_bytes(stream, text.as_bytes()).await?;
     Ok(())
 }
 
@@ -979,12 +1056,10 @@ fn sse_chunk(id: &str, model: &str, delta: Value, finish: Option<&str>) -> Strin
     format!("data: {payload}\n\n")
 }
 
-async fn write_chunk(stream: &mut TcpStream, data: &[u8]) -> std::io::Result<()> {
-    stream
-        .write_all(format!("{:x}\r\n", data.len()).as_bytes())
-        .await?;
-    stream.write_all(data).await?;
-    stream.write_all(b"\r\n").await
+async fn write_chunk(stream: &mut VoiceStream, data: &[u8]) -> std::io::Result<()> {
+    write_bytes(stream, format!("{:x}\r\n", data.len()).as_bytes()).await?;
+    write_bytes(stream, data).await?;
+    write_bytes(stream, b"\r\n").await
 }
 
 /// Take the session's slot, cancelling any run in flight (barge-in) and
@@ -1008,6 +1083,9 @@ async fn take_slot(
     for _ in 0..200 {
         {
             let mut slots = shared.slots.lock().await;
+            if shared.stopping.is_cancelled() {
+                return Ok(None);
+            }
             match slots.remove(key) {
                 None => {
                     let token = mecha_core::agent::CancelHandle::new();
@@ -1146,7 +1224,7 @@ fn keep_tail(s: &mut String, cap: usize) {
 }
 
 async fn pump(
-    stream: &mut TcpStream,
+    stream: &mut VoiceStream,
     id: &str,
     model: &str,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
@@ -1206,7 +1284,7 @@ async fn pump(
 /// Close the SSE body. A failure must be *audible*: a clean "stop" after
 /// silence reads as the assistant ignoring the user, and the server-side
 /// log is the one place a voice user will never look.
-async fn finish_stream(stream: &mut TcpStream, id: &str, model: &str, error: Option<&str>) {
+async fn finish_stream(stream: &mut VoiceStream, id: &str, model: &str, error: Option<&str>) {
     if let Some(e) = error {
         let spoken = sse_chunk(
             id,
@@ -1219,7 +1297,7 @@ async fn finish_stream(stream: &mut TcpStream, id: &str, model: &str, error: Opt
     let done = sse_chunk(id, model, json!({}), Some("stop"));
     let _ = write_chunk(stream, done.as_bytes()).await;
     let _ = write_chunk(stream, b"data: [DONE]\n\n").await;
-    let _ = stream.write_all(b"0\r\n\r\n").await;
+    let _ = write_bytes(stream, b"0\r\n\r\n").await;
 }
 
 /// A turn spoken into a conversation another front-end owns (D3). The
@@ -1228,7 +1306,7 @@ async fn finish_stream(stream: &mut TcpStream, id: &str, model: &str, error: Opt
 /// record this shape exists to avoid.
 #[allow(clippy::too_many_arguments)]
 async fn hosted_completion(
-    stream: &mut TcpStream,
+    stream: &mut VoiceStream,
     shared: &Arc<Shared>,
     id: &str,
     want_stream: bool,
@@ -1412,9 +1490,9 @@ async fn arm_confirmation(shared: &Arc<Shared>, confirm_key: &str, pending: conf
 /// because the journal shows the offer has not yet played in a real call.
 ///
 /// Returns false if the socket is already gone.
-async fn open_sse(stream: &mut TcpStream, id: &str, model: &str) -> bool {
+async fn open_sse(stream: &mut VoiceStream, id: &str, model: &str) -> bool {
     const HEAD: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n";
-    if stream.write_all(HEAD.as_bytes()).await.is_err() {
+    if write_bytes(stream, HEAD.as_bytes()).await.is_err() {
         return false;
     }
     let first = sse_chunk(id, model, json!({"role": "assistant"}), None);
@@ -1424,7 +1502,7 @@ async fn open_sse(stream: &mut TcpStream, id: &str, model: &str) -> bool {
 /// Say something the harness composed, on whichever channel this request
 /// wanted. One utterance, one place, so the streaming and blocking paths
 /// cannot word the same fact differently.
-async fn say(stream: &mut TcpStream, shared: &Arc<Shared>, id: &str, text: &str) -> bool {
+async fn say(stream: &mut VoiceStream, shared: &Arc<Shared>, id: &str, text: &str) -> bool {
     say_on(stream, id, &shared.model, text).await
 }
 
@@ -1435,7 +1513,7 @@ async fn say(stream: &mut TcpStream, shared: &Arc<Shared>, id: &str, text: &str)
 /// hang-up during the last delta leaves that flag stale, and arming on it is
 /// the same shape as the bug the compose/arm split was extracted to fix, one
 /// step narrower.
-async fn say_on(stream: &mut TcpStream, id: &str, model: &str, text: &str) -> bool {
+async fn say_on(stream: &mut VoiceStream, id: &str, model: &str, text: &str) -> bool {
     let chunk = sse_chunk(id, model, json!({"content": text}), None);
     write_chunk(stream, chunk.as_bytes()).await.is_ok()
 }
@@ -1447,7 +1525,7 @@ async fn say_on(stream: &mut TcpStream, id: &str, model: &str, text: &str) -> bo
 /// pending confirmations — dropped rather than held, so a "yes" three turns
 /// later cannot land on a draft nobody was talking about any more.
 async fn answer_completion(
-    stream: &mut TcpStream,
+    stream: &mut VoiceStream,
     shared: &Arc<Shared>,
     id: &str,
     want_stream: bool,
@@ -1584,7 +1662,7 @@ async fn answer_completion(
 /// with nothing armed against it.
 #[allow(clippy::too_many_arguments)]
 async fn reply_then_arm(
-    stream: &mut TcpStream,
+    stream: &mut VoiceStream,
     shared: &Arc<Shared>,
     id: &str,
     want_stream: bool,
@@ -1603,7 +1681,7 @@ async fn reply_then_arm(
 
 /// Close out a harness-authored reply on whichever channel was asked for.
 async fn finish_with(
-    stream: &mut TcpStream,
+    stream: &mut VoiceStream,
     shared: &Arc<Shared>,
     id: &str,
     want_stream: bool,
@@ -1638,7 +1716,7 @@ async fn finish_with(
 }
 
 async fn completion(
-    stream: &mut TcpStream,
+    stream: &mut VoiceStream,
     shared: &Arc<Shared>,
     head: &Head,
     body: &[u8],
@@ -2546,11 +2624,56 @@ mod the_reply_reaches_the_wire {
     }
 
     #[tokio::test]
+    async fn a_slow_voice_reader_waits_until_shutdown_and_a_failed_write_stays_closed() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stop = CancellationToken::new();
+        let stopping = stop.clone();
+        let mut writer = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut stream = VoiceStream::new(socket, stopping);
+            let payload = vec![0; 16 * 1024 * 1024];
+            let failed = write_bytes(&mut stream, &payload).await.unwrap_err();
+            assert_eq!(failed.kind(), std::io::ErrorKind::TimedOut);
+            stream
+        });
+        let mut reader = TcpStream::connect(addr).await.unwrap();
+        // Keep the real socket full past the previous five-second deadline.
+        assert!(
+            tokio::time::timeout(Duration::from_secs(6), &mut writer)
+                .await
+                .is_err(),
+            "a live slow reader cancelled the write"
+        );
+        stop.cancel();
+        let mut stream = tokio::time::timeout(Duration::from_secs(6), writer)
+            .await
+            .expect("shutdown did not bound the stalled write")
+            .unwrap();
+        let later = tokio::time::timeout(
+            Duration::from_secs(1),
+            write_bytes(&mut stream, b"must never follow a partial chunk"),
+        )
+        .await
+        .expect("a failed stream tried to write again")
+        .unwrap_err();
+        assert_eq!(later.kind(), std::io::ErrorKind::BrokenPipe);
+        drop(stream);
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await.unwrap();
+        assert!(
+            bytes.iter().all(|byte| *byte == 0),
+            "a failed chunk was followed by more bytes"
+        );
+    }
+
+    #[tokio::test]
     async fn a_harness_authored_reply_opens_a_real_response() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            let (mut sock, _) = listener.accept().await.unwrap();
+            let (sock, _) = listener.accept().await.unwrap();
+            let mut sock = VoiceStream::new(sock, CancellationToken::new());
             let opened = open_sse(&mut sock, "cmpl-test", "a-model").await;
             assert!(opened, "the socket was live and the head did not go out");
             say_on(&mut sock, "cmpl-test", "a-model", "Sent.").await;

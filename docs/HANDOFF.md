@@ -23,21 +23,27 @@ maps which document holds what.
 ## Where the work is
 
 **2026-09-08 review fixes:** PR #213 merged as `a3f1682d` and was installed
-with its web bundle; serve, Slack, triggers and drain restarted at 14:15 UTC.
-The running web route rejects writes without the request header and the HTTPS
-door serves the installed bundle. The follow-up branch
-`fix/chat-and-container-lifecycle` adds explicit chat opening with read-only
-transcript/event routes and Docker MCP container ownership. Those follow-up
-changes await PR review and CI and have not been installed.
-The eval fixture remains **36 cases, 15 tags**, counted from `eval/cases.jsonl`.
-Local validation in a dedicated worktree target directory: **2,512 passed,
-2 ignored** across the workspace (CLI 796, first-run 20, process-exit 3,
-core 1,442, fixtures 4, MCP 11, sandbox 9, mail 150 plus its
-binary test, Slack 75, and one doctest). Build, format, clippy with warnings
-denied, web tests/build, and all 15 browser render checks pass. Sandbox and MCP
-integration suites also pass with `MECHA_TEST_REQUIRE_BACKENDS=1`.
-Source-verified corrections to the older open-work list are recorded in
-`HISTORY.md` under this date; dated measurements retain their original scope.
+with its web bundle at 14:15 UTC. PR #214 merged as `a75b9467`; its explicit
+chat opening and Docker MCP ownership fixes have not been installed by this
+session. The current branch, `fix/serve-shutdown-and-chat-sync`, adds SIGTERM
+and Ctrl-C draining for serve and broadcasts typed/steered input across devices
+with request-id correlation. Review and CI are tracked on PR #217.
+**Deployment is on hold at the owner's request until the other sessions finish.**
+The deferred update must also install the checked-in serve/voice unit files
+and reload the user systemd manager: their new `KillMode=mixed` and 180-second
+stop window are part of graceful shutdown. Read-only verification of the live
+serve unit still reports `control-group` and 90 seconds; no unit was installed
+or reloaded during this session.
+The eval fixture remains **36 cases, 15 tags**, recounted from `eval/cases.jsonl`.
+Validation on top of PR #215 in a dedicated target directory: **2,538 passed,
+2 ignored** (CLI 799, first-run 20, process-exit 3, serve lifecycle 5,
+core 1,458, fixtures 4, MCP 13, sandbox 9, mail 150 plus its binary test,
+Slack 75, and one doctest), with `MECHA_TEST_REQUIRE_BACKENDS=1`.
+Format, clippy with warnings denied, web tests/build, docs build, and all
+16 compiled-browser checks pass. These describe source, not the installed
+binary. The previous full open-item audit remains applicable except for the
+shutdown and typed-broadcast gaps closed in this branch; source evidence is in
+`HISTORY.md` under this date.
 
 Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.16**
 (2026-08-29 — the appraisal system survives its own review: PRs #111/#112,
@@ -2591,20 +2597,6 @@ the mechanism and every decision. What it left standing:
   accumulates across both doors. Still worth revisiting: a label true of
   one door and not the other is the shape this project usually refuses,
   and if voice ever grows spoken approvals, that flag is what they replace.
-- **`mecha serve` never drains its chat runs on shutdown**, and since D3
-  that gap covers spoken turns too. Not a regression in practice —
-  `axum::serve` is not wrapped in `with_graceful_shutdown` and there is no
-  SIGTERM handler, so systemd's stop is a hard kill and `facade.shutdown()`
-  was already unreachable there. But the standalone `mecha voice-serve`
-  *does* handle SIGTERM and the mounted one does not, which is now the only
-  place that difference shows. Closing it means deciding who owns SIGTERM
-  in a process holding SSE streams and pending approval cards.
-- **A second device watching a typed send sees the reply and not the
-  prompt.** A spoken turn broadcasts `WireEvent::User` because it has no
-  local echo anywhere; a typed send is still echoed only by the page that
-  typed it, so broadcasting it too would render it twice there. Ending it
-  properly means the page distinguishing its own echo from the broadcast,
-  which is a small change nobody has needed yet.
 - **The owner's first-day feedback backlog is `REMOTE-SURFACE-DESIGN.md`
   §12** — chat model switching, a plain mail inbox + compose, notes/tasks
   voice capture and listings, the task→agent handoff (the big one), Home
@@ -2637,12 +2629,6 @@ the mechanism and every decision. What it left standing:
     assumed, which is a reason to expect a cheap answer, not a reason to skip
     it. `scripts/slot-contention.py` is the shape; the missing arm is time,
     not concurrency.
-  - **`mecha serve` still has no graceful shutdown**, and it now costs more
-    than it did: a restart kills a conversation-owned run mid-flight, where a
-    handed-over one survives. The conversation itself survives either way
-    (the transcript is the record), so what is lost is the partial turn. Same
-    unresolved question as before — who owns SIGTERM in a process holding SSE
-    streams and pending approval cards.
 - **The task→agent handoff is built through phase 4** —
   `docs/TASK-AGENT-DESIGN.md` is its authority and HISTORY has what shipped.
   The return path and D16's card states closed on 2026-08-26 (second pass);

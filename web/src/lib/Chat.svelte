@@ -296,6 +296,22 @@
     }
   }
 
+  // A POST can resolve before or after its broadcast. Correlate by request,
+  // never by text: two devices may deliberately send identical words.
+  const receivedInputs = new Set();
+  const inputDelivery = new Map();
+  function markDelivery(ids, delivery) {
+    const changed = new Set(ids);
+    for (const id of ids) inputDelivery.set(id, delivery);
+    entries = entries.map(e => changed.has(e.request_id) ? { ...e, delivery } : e);
+  }
+  function receiveInput(ev) {
+    if (ev.request_id && receivedInputs.has(ev.request_id)) return;
+    if (ev.request_id) receivedInputs.add(ev.request_id);
+    pushEntry({ kind: 'user', text: ev.text, request_id: ev.request_id, queued: ev.type === 'queued', spoken: ev.spoken, delivery: inputDelivery.get(ev.request_id) ?? 'queued' });
+    if (ev.type === 'user') running = true;
+  }
+
   function subscribe(sessionKey) {
     // tailscale serve injects the identity header on this request too —
     // EventSource cannot set headers, and never needs to here.
@@ -307,15 +323,15 @@
           streaming += ev.text;
           scrollDown();
           break;
-        case 'queued':
-          pushEntry({ kind: 'user', text: ev.text, queued: true });
+        case 'queued_delivered':
+          markDelivery([ev.request_id], 'delivered');
           break;
+        case 'queued_discarded':
+          markDelivery(ev.request_ids, 'discarded');
+          break;
+        case 'queued':
         case 'user':
-          // Words this page did not type — spoken into the same
-          // conversation (D3). It is also the only signal that a run
-          // started, since nothing local set `running` for it.
-          pushEntry({ kind: 'user', text: ev.text, spoken: true });
-          running = true;
+          receiveInput(ev);
           break;
         case 'tool':
           // `draft` and `args` arrive with the call, so a run in flight is
@@ -425,11 +441,9 @@
           // Reset here rather than at run start: `WireEvent::Affect` is
           // always sent before `Done` within one `begin_turn`, so by the
           // time this fires the flag has already done its job for this
-          // run — and resetting only at run-start events (`data.started`,
-          // `'user'`) missed a second tab observing a *typed* turn driven
-          // from elsewhere, which emits neither: that tab's tint from an
-          // earlier run never cleared. Resetting here covers every
-          // observer, not just the one that sent the turn.
+          // run. Historically only spoken turns broadcast their start,
+          // so resetting at `Done` also covered observers of typed runs.
+          // It still covers an observer that joins after the start event.
           if (!sawAffectThisRun) {
             affect = null;
             valence = null;
@@ -513,6 +527,8 @@
   function switchTo(k) {
     if (k === key) return;
     key = k;
+    receivedInputs.clear();
+    inputDelivery.clear();
     entries = [];
     streaming = '';
     usage = null;
@@ -818,21 +834,25 @@
     }
     if (!text) return;
     draft = '';
+    const sessionKey = key;
     try {
-      const res = await fetch(`/api/chat/${key}/send`, {
+      // Tailnet HTTP pages may not expose the secure-context UUID method.
+      // This id correlates UI events; it is not an authorization token.
+      const request_id = globalThis.crypto?.randomUUID?.()
+        ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const res = await fetch(`/api/chat/${sessionKey}/send`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, request_id }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
       const data = await res.json();
-      if (data.started) {
-        pushEntry({ kind: 'user', text });
-        running = true;
-      } else if (data.steered) {
-        pushEntry({ kind: 'user', text, queued: true });
+      if (sessionKey !== key) return;
+      if (data.started || data.steered) {
+        receiveInput({ type: data.started ? 'user' : 'queued', text, request_id, spoken: false });
       }
     } catch (e) {
+      if (sessionKey !== key) return;
       pushEntry({ kind: 'notice', text: `send failed: ${e?.message ?? e}` });
     }
   }
@@ -1114,7 +1134,7 @@
       {#if entry.kind === 'user'}
         <div class="bubble" class:queued={entry.queued}>
           {entry.text}
-          {#if entry.queued}<span class="queued-tag">steered</span>{/if}
+          {#if entry.queued}<span class="queued-tag">{entry.delivery === 'discarded' ? 'not delivered — send again' : entry.delivery === 'delivered' ? 'steered' : 'queued'}</span>{/if}
           {#if entry.spoken}<span class="queued-tag">spoken</span>{/if}
         </div>
       {:else if entry.kind === 'assistant'}

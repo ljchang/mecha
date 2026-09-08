@@ -47,8 +47,8 @@ function emit(event) {
 }
 
 /** Replay `fixtures.script` into the open stream, on its own clock. */
-function replay(userText) {
-  emit({ type: 'queued', text: userText });
+function replay(userText, request_id) {
+  emit({ type: 'user', text: userText, request_id, spoken: false });
   let at = 0;
   for (const [delay, event] of fx.script) {
     at += delay;
@@ -155,14 +155,17 @@ export const ROUTES = [
     /^\/api\/chat\/[^/]+\/send$/,
     async (_url, _params, init) => {
       let typed = '';
+      let request_id;
       try {
-        typed = JSON.parse(init?.body ?? '{}').text ?? '';
+        const body = JSON.parse(init?.body ?? '{}');
+        typed = body.text ?? '';
+        request_id = body.request_id;
       } catch {
         // A body that will not parse is still a send; the script does not
         // depend on it.
       }
-      replay(typed);
-      return text('');
+      replay(typed, request_id);
+      return { started: true };
     },
   ],
   ['POST', /^\/api\/chat\/[^/]+\/cancel$/, () => text('')],

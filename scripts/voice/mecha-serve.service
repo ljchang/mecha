@@ -16,6 +16,11 @@ Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 ExecStart=/home/ljchang/.cargo/bin/mecha serve --voice-port 8990 --voice-yes
 Restart=on-failure
 RestartSec=5
+# Let the harness drain tools and close MCP transports before the supervisor
+# kills remaining children. The first signal must reach only the main process.
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=180
 
 [Install]
 WantedBy=default.target
