@@ -1552,6 +1552,10 @@ request and prevents a late response from subscribing to the old key.
 Every mutation that creates a session validates the decoded key, including
 mode changes: authentication and request intent do not make a traversal-shaped
 key safe to join into a workspace path.
+Opening retries stop on permanent 4xx responses (408 and 429 remain retryable)
+and back off from 1.5 seconds to 30 seconds on transient failures. A connected
+event stream resets the delay; a refused open must not become a permanent POST
+loop in every browser tab.
 
 **Attachments use the conversation's workspace.** `attachment_workspace`
 reads the same session entry as the agent; deriving a directory from a browser
@@ -1578,6 +1582,9 @@ before initialization also covers failed and cancelled handshakes. This
 guarantee concerns the spawned child, not arbitrary descendants it launches.
 `run::execute` releases `prepared` after transcript recording and session hooks
 but before its refusal/no-output `process::exit` calls, which skip destructors.
+`batch::execute` does the same after all results are flushed and before its
+failed-batch exit. Audit the other explicit exits when adding one: releasing
+an owner in one command does nothing for its siblings.
 **Docker needs a separate container owner.** Killing the attach CLI does not
 terminate a daemon-owned container, and `--rm` waits for its server to exit.
 `sandbox::DockerContainer` creates a uniquely named container before attaching

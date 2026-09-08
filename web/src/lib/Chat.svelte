@@ -659,11 +659,15 @@
     const controller = new AbortController();
     let source;
     let retry;
+    let retryDelay = 1500;
     const reconnect = () => {
       source?.close();
       source = null;
       clearTimeout(retry);
-      if (!controller.signal.aborted) retry = setTimeout(connect, 1500);
+      if (!controller.signal.aborted) {
+        retry = setTimeout(connect, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 30_000);
+      }
     };
     async function connect() {
       try {
@@ -672,9 +676,20 @@
         const res = await fetch(`/api/chat/${sessionKey}`, {
           method: 'POST', signal: controller.signal,
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).trim()}`);
+        if (!res.ok) {
+          const message = `HTTP ${res.status}: ${(await res.text()).trim()}`;
+          if (controller.signal.aborted) return;
+          // Authentication, invalid keys and other permanent client errors
+          // need intervention, not an endless POST loop from every tab.
+          if (res.status >= 400 && res.status < 500 && ![408, 429].includes(res.status)) {
+            error = message;
+            return;
+          }
+          throw new Error(message);
+        }
         if (controller.signal.aborted) return;
         source = subscribe(sessionKey);
+        source.onopen = () => { retryDelay = 1500; };
         source.onerror = reconnect;
         await load(sessionKey, controller.signal);
         if (!controller.signal.aborted) loadRail();

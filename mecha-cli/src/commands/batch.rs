@@ -90,6 +90,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         summary.elapsed_ms as f64 / 1000.0
     );
 
+    // Every item has finished and its result is flushed. Release the agent
+    // and its MCP clients before the failure exit skips their destructors.
+    drop(prepared);
     if summary.failed > 0 {
         std::process::exit(1);
     }
