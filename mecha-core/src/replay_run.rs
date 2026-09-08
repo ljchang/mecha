@@ -9,12 +9,18 @@
 //! Replaying against *live* tools would re-read a filesystem and a web that
 //! have both moved since the recording, so a divergence would tell you nothing
 //! about the harness or the model. Answering from the recording isolates the
-//! variable: same turns, same tool results, and the only thing left that can
-//! differ is what the model chose to do with them.
+//! external data, but does not guarantee an identical model-facing transcript:
+//! the loop reapplies its output limits and untrusted-content warning envelope.
 //!
-//! Recorded outputs preserve their per-call provenance. Older recordings
-//! remain unknown and conservatively external; recorded harness refusals
-//! have explicit false provenance and stay harness-owned.
+//! New recordings preserve per-call provenance, including explicit false for
+//! harness refusals. Legacy results have unknown provenance and conservatively
+//! count as external, even if the original result was harness-owned. They may
+//! gain a warning, or a second envelope when the recording already had one.
+//! Under live divergence the stronger taint can also block a send the original
+//! run allowed. These are harness differences, not evidence of model regression;
+//! `mecha replay` discloses them in its note and JSON report. Both comparison
+//! arms must replay under the same policy. Never mark unknown results clean to
+//! improve fidelity: live divergence can execute real tools.
 
 use crate::agent::{Agent, Conversation, RunContext, ToolCallTrace};
 use crate::message::Message;

@@ -13,6 +13,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Recent recovery context; transcripts retain the full conversation history.
+const EVENT_HISTORY_LIMIT: usize = 128;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Check {
@@ -79,6 +82,9 @@ pub struct Workflow {
     pub snoozed_until: Option<DateTime<Utc>>,
     #[serde(default)]
     pub events: Vec<Event>,
+    /// Persists beyond the bounded event list so pruning cannot reuse notice keys.
+    #[serde(default)]
+    pub event_sequence: u64,
     #[serde(default)]
     pub last_notice_key: Option<String>,
     #[serde(default)]
@@ -153,6 +159,7 @@ impl Workflow {
             commitment: None,
             snoozed_until: None,
             events: vec![],
+            event_sequence: 0,
             last_notice_key: None,
             notice: None,
             closed_at: None,
@@ -160,11 +167,19 @@ impl Workflow {
     }
     pub fn record(&mut self, kind: &str, detail: impl Into<String>, now: DateTime<Utc>) {
         self.updated_at = now;
+        // Legacy records lack a sequence; seed it from their retained history.
+        self.event_sequence = self
+            .event_sequence
+            .max(self.events.len() as u64)
+            .saturating_add(1);
         self.events.push(Event {
             at: now,
             kind: kind.into(),
             detail: detail.into(),
         });
+        if self.events.len() > EVENT_HISTORY_LIMIT {
+            self.events.drain(..self.events.len() - EVENT_HISTORY_LIMIT);
+        }
         // Every material event invalidates old verification; refresh never manufactures success.
         self.verified_at = None;
         self.verification.clear();
@@ -403,7 +418,7 @@ impl Workflow {
         let key = format!(
             "{}:{}:{}:{:?}",
             now.with_timezone(&policy.timezone).date_naive(),
-            self.events.len(),
+            self.event_sequence.max(self.events.len() as u64),
             urgent,
             self.snoozed_until
         );
@@ -754,6 +769,28 @@ mod tests {
     fn at(s: &str) -> DateTime<Utc> {
         s.parse().unwrap()
     }
+    #[test]
+    fn event_history_is_bounded_without_suppressing_new_notices_after_restart() {
+        let h = Home::new();
+        let mut w = h.workflow();
+        let now = at("2026-09-08T13:00:00Z");
+        for i in 0..256 {
+            w.record("source_changed", i.to_string(), now);
+        }
+        assert_eq!(w.events.len(), 128);
+        assert_eq!(w.events.first().unwrap().detail, "128");
+        assert_eq!(w.events.last().unwrap().detail, "255");
+        assert!(w.tick(&AttentionPolicy::default(), now));
+        let first_key = w.last_notice_key.clone();
+        h.store().create(w).unwrap();
+        let mut restored = h.store().get("flow-one").unwrap();
+        assert!(!restored.tick(&AttentionPolicy::default(), now));
+        restored.record("source_changed", "another change", now);
+        assert_eq!(restored.events.len(), 128);
+        assert!(restored.tick(&AttentionPolicy::default(), now));
+        assert_ne!(restored.last_notice_key, first_key);
+    }
+
     #[test]
     fn a_multi_day_workflow_requires_real_artifacts_and_delivery_after_restart() {
         let h = Home::new();

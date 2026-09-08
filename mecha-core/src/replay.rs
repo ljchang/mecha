@@ -29,7 +29,8 @@ use serde_json::Value;
 pub struct RecordedCall {
     pub name: String,
     pub input: Value,
-    /// What the tool returned at record time. Replayed verbatim.
+    /// Stored tool-result bytes. The replay loop may recap and rewrap them;
+    /// see `replay_run` for legacy provenance and fidelity limitations.
     pub output: String,
     pub is_error: bool,
     /// Which batch of concurrently-issued calls this one belonged to.

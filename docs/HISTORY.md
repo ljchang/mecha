@@ -14,6 +14,15 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-08 — workflow history and legacy replay disclosure.** PR #216's second
+review identified unbounded per-turn workflow history and overstated replay
+fidelity for old transcripts. Workflows now retain 128 recent events with a
+persisted sequence for reminder deduplication; a regression reproduced the old
+growth and verifies new notices after pruning and restart. Replay keeps unknown
+provenance external, while its CLI note, JSON report and module documentation name
+the possible extra warning envelopes and stronger live-send restrictions. Those
+are harness differences, not proof of a model regression.
+
 **2026-09-08 — final assistant measurement.** On `b9d4be61` (base
 `a75b9467`), the five sequential synthetic assistant tasks across three seeds
 passed 15/15, including all 15 artifact postcondition sets and six grounding

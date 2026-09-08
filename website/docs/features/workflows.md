@@ -14,6 +14,8 @@ Delegating a task creates a workflow automatically. The same record follows its
 web conversation, background work and answered questions. It links the existing
 task and conversation to drafts, questions and completion checks. After a crash,
 partial drafts remain discoverable and the workflow shows the interruption.
+The workflow retains its latest 128 lifecycle events; session transcripts keep the
+full conversations. Reminder deduplication survives history pruning and restarts.
 
 ## Track a commitment
 
