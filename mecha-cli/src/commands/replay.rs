@@ -1,8 +1,9 @@
 //! `mecha replay` — re-run a recorded session and report what changed.
 //!
-//! The recorded tool results are replayed verbatim; the only live component is
-//! the model. That isolates the variable: same turns, same results, and a
-//! divergence is a change in what the model chose, not in what the world said.
+//! Tool answers come from the recording, but current output limits and warning
+//! envelopes still apply. Legacy unknown provenance is conservatively external;
+//! that can change presentation and live-send policy. The report discloses this
+//! limitation so harness differences are not mistaken for model regressions.
 //!
 //! The run is rebuilt from the session's `RunConfig` — its system prompt, tool
 //! surface, budgets — not from today's flags, because a replay under different
@@ -78,6 +79,23 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let trajectory = extract(&convo.messages);
     if trajectory.turns.is_empty() {
         bail!("the transcript contains no user turns; nothing to replay");
+    }
+    let legacy_provenance_calls = trajectory
+        .calls
+        .iter()
+        .filter(|call| call.external.is_none())
+        .count();
+    let provenance_note = (!trajectory.calls.is_empty()).then(|| {
+        format!(
+            "Replay reapplies output limits and external-content warnings, which can add a second \
+         envelope. {legacy_provenance_calls} recorded call(s) have unknown provenance and are \
+         conservatively treated as external, including any legacy harness refusals. In live \
+         mode this can block sends the recording allowed. These harness differences are not \
+         evidence of a model regression."
+        )
+    });
+    if let Some(note) = &provenance_note {
+        eprintln!("note: {note}");
     }
     if trajectory.steered {
         eprintln!(
@@ -233,6 +251,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 "provider": provider_name,
                 "model": model,
                 "recorded_calls": report.recorded_calls,
+                "legacy_provenance_calls": legacy_provenance_calls,
+                "provenance_note": provenance_note,
                 "replayed_calls": report.replayed_calls.len(),
                 "turns": report.turns,
                 "stopped_early": report.stopped_early,
