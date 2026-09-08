@@ -2266,7 +2266,10 @@ ambiguous response leaves that uncertainty intact; edits, rejection and retries
 are refused until owner reconciliation records delivery or non-delivery with
 evidence. A confirmed non-delivery permits a newly reviewed attempt. A confirmed
 delivery resolves without dispatch. This is necessary because a generic tool's
-error cannot establish that the remote service did nothing.
+error cannot establish that the remote service did nothing. This deliberately
+includes `ToolOutput::is_error` / MCP `isError`: neither flag is a contract that
+no partial effect occurred. Even an apparently expired-token batch needs owner
+reconciliation unless a provider-specific no-effect contract is implemented.
 
 ## Assistant workflows
 
@@ -2278,7 +2281,11 @@ remains alive; a dead pid is recognized on observation. Session-linked drafts an
 questions are rediscovered after crashes, so a missing final record cannot erase
 partial effects. Starting a dependent run requires completed predecessors, and
 adding dependencies checks for cycles. No reminder grants permission or resets
-conversation taint.
+conversation taint. PIDs alone cannot distinguish a reused PID after a crash or
+reboot. The owner can clear stale ownership with `workflow recover --reason` only
+after confirming the old runner stopped. Recovery preserves partial effects and
+delivery uncertainty; `finish_task` requires the originating `run_id`, so an old
+completion or dropped guard cannot overwrite a replacement run.
 
 The workflow keeps its latest 128 lifecycle events; full conversations remain in
 session transcripts. A persisted `event_sequence` advances even when history is

@@ -33,9 +33,9 @@ and 15 tags; the additional assistant set has five cases and six tags. Source
 verification of the open-work section removed stale completed entries below;
 remote deployments and sibling-repository work were not reverified.
 
-Final branch verification on 2026-09-08, rebased onto `f22992c5`: **2,560
+Final branch verification on 2026-09-08, rebased onto `f22992c5`: **2,561
 workspace tests passed**, three ignored (796 CLI, 20 first-run, 3 process-exit,
-1,488 core, 5 fixture, 11 MCP, 9 sandbox, 151 mail library, 1 mail binary,
+1,489 core, 5 fixture, 11 MCP, 9 sandbox, 151 mail library, 1 mail binary,
 75 Slack, 1 doctest). The whole workspace ran with `MECHA_TEST_REQUIRE_BACKENDS=1`.
 Formatting, Clippy with warnings denied, all-targets build, frontend tests/build
 and documentation build passed. Demo endpoint coverage and all 15 browser
@@ -66,7 +66,11 @@ workspace and documentation checks rerun. The third pass resolves declined
 actions without satisfying delivery checks, uses exact outbox lookups with legacy
 prefix fallback, and includes owner closure in bounded event bookkeeping. The
 reported replay-image gap was disproved by an end-to-end live-divergence test:
-`Agent::run_in` already arms images before tool execution.
+`Agent::run_in` already arms images before tool execution. The fourth pass adds
+owner-evidenced recovery for stale PIDs and gates completion by originating run ID.
+A real CLI smoke confirms recovery evidence is required, partial drafts survive,
+and reopening works; an old runner cannot overwrite its replacement. Generic
+structured tool errors deliberately remain unknown delivery outcomes.
 
 ## Where the work is
 

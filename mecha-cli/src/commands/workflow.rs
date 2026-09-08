@@ -82,6 +82,12 @@ pub enum Cmd {
     Reopen {
         id: String,
     },
+    /// Clear stale ownership only after confirming the previous runner stopped.
+    Recover {
+        id: String,
+        #[arg(long)]
+        reason: String,
+    },
     /// Wait for another workflow to be completed before this one can run.
     Depend {
         id: String,
@@ -343,7 +349,11 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             w.notice = None;
             Ok(())
         })?)?,
+        Cmd::Recover { id, reason } => serde_json::to_value(store.recover(&id, &reason, now)?)?,
         Cmd::Reopen { id } => serde_json::to_value(store.update(&id, |w| {
+            ensure!(w.state != "running", "stop the runner first; if it already stopped, use `mecha workflow recover {id} --reason ...`");
+            w.runner_pid = None;
+            w.run_id = None;
             w.closed_at = None;
             w.state = "idle".into();
             w.record("reopened", "Owner reopened workflow", now);
@@ -357,7 +367,7 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             let out = outbox(Some(&w))?;
             let qs = questions()?;
             let w = store.refresh(&id, out.as_ref(), qs.as_ref(), now)?;
-            ensure!(w.observed.values().all(|s| matches!(s.as_str(), "sent" | "answered" | "closed")), "resolve outstanding questions, drafts, deliveries, or dependencies before resuming");
+            ensure!(w.actions_resolved(), "resolve outstanding questions, drafts, deliveries, or dependencies before resuming");
             let task = w
                 .task_id
                 .as_deref()
