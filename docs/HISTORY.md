@@ -14,6 +14,34 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-08 — merged assistant features installed.** After the owner merged
+PR #216 as `c3f33f4c` and requested an update, the shared main checkout advanced
+from `f22992c5` without changing the model or Parakeet launch files. The installed
+CLI, four mail/doc executables, graph CLI/MCP and web assets were refreshed;
+the graph release build verified the nightly artifact against current source. Serve, Slack, triggers, drain and the voice worker
+restarted at 19:58:54 UTC. Copying the two serve units and reloading systemd made
+PR #217's `KillMode=mixed` and 180-second drain window effective. Live HTTPS
+checks proved the new bundle, Today, graph access and write guards; an isolated
+installed-workflow smoke proved fresh artifact checks still gate closure.
+The static benchmark binary was rebuilt from the same source and its static
+ARM64 linkage and new recovery command were verified. The full required-backend
+suite again passed 2,575 tests, with three ignored.
+Factory client/server were already current at 0.2.9 and were verified read-only;
+the obsolete open task to deploy the droplet from 0.2.8 was removed on that
+evidence, without attributing its deployment to this session. The matching
+sandbox toolchain needed no rebuild. One old graph child remains
+owned by an existing Claude session, recorded in HANDOFF rather than terminated.
+This update supersedes the earlier deployment hold and the branch-only deployment
+statements below. It publishes no release and does not relabel the older 15/15
+live evaluations as measurements of the deployed commit.
+
+The handoff pass moved the repeated implementation/review narrative to this
+existing history and rechecked the remaining shutdown and synchronization claims
+against `ChatState::{stop, drain, close_mcp}`, `McpClient::close`,
+`chat::{send, begin_turn}` and `Chat.svelte::{receiveInput, markDelivery}`.
+PR #217's historical pre-integration validation remains 2,538 passed, two ignored
+and 16 browser checks; #216's integrated tree passed 2,575 and 17 respectively.
+
 **2026-09-08 — assistant changes integrated with serve shutdown and chat sync.**
 Rebasing PR #216 over merged PR #217 preserved both lifecycle paths: `begin_turn`
 checks shutdown admission, records input, claims the workflow, then broadcasts
