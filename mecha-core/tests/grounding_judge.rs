@@ -32,9 +32,11 @@ async fn known_grounding_errors_fail_and_qualified_answers_pass() {
         {"type":"tool_use", "id":"thread", "name":"mail__mail_get_thread", "input":{"account":"work","thread_id":"t-aurora-aims"}},
         {"type":"tool_result", "tool_use_id":"thread", "is_error":false, "content":"From: Ada; Date: 2026-10-12T12:00:00Z; Thursday at 3pm works for me. Please bring the tracked-changes version."}
     ]).to_string();
+    let evidence = json!({"recorded_run_context":[{"system_prompt":"Today is Tuesday, 13 October 2026; the user's timezone is UTC. Give times in that zone unless asked otherwise."}],"tool_evidence":serde_json::from_str::<serde_json::Value>(&evidence).unwrap()}).to_string();
     let good = "Your reply was sent yesterday, October 12, agreeing to Thursday at 3pm and asking Priya to bring the tracked-changes version.";
     let controls = [
         ("concise_grounded", good.to_string(), true),
+        ("uses_recorded_timezone", good.replace("3pm", "3pm UTC"), true),
         ("explicit_unknowns", format!("{good} Whether Priya read it is unknown. I have not checked the calendar."), true),
         ("negation_is_not_a_claim", format!("{good} The unread flag does not mean Priya has not read it; it describes your own mailbox."), true),
         ("invented_unread_receipt", format!("{good} Priya has not read it because the thread is unread."), false),
@@ -48,6 +50,10 @@ async fn known_grounding_errors_fail_and_qualified_answers_pass() {
             .check_with_evidence(&case, &answer, &evidence)
             .await
             .unwrap();
+        println!(
+            "CONTROL {name}: expected={expected}, observed={}",
+            check.passed
+        );
         results.push(json!({"name":name,"answer":answer,"expected_pass":expected,"actual_pass":check.passed,"reason":check.detail,"correct":check.passed==expected}));
     }
     let report = json!({"model":judge.model(),"controls":results});

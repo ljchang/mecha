@@ -3994,6 +3994,14 @@ value is worse than none, because the derived threshold trusts it.
 
 ## Timezones
 
+`date_context::render` computes a local-date reference from yesterday through
+seven days ahead, alongside the timezone stamp. Calendar-day arithmetic happens
+after converting the instant to the owner's zone, so DST, year and leap-day
+boundaries cannot shift a weekday/date pair. A clocked follow-up had called
+Wednesday October 14 “Thursday” despite knowing today was Tuesday; near-term
+calendar facts now come from the harness and are available to the grounded judge.
+
+
 **Experiment clocks are fixture state, not the host clock.** `Fixtures::clock`
 names an RFC3339 instant for every explicitly scheduled task, in nondecreasing
 order, and is allowed only with fixture servers. `apply_clock` persists it before
@@ -4268,8 +4276,10 @@ ones; it is a count of actions, not a measure of human time.
 
 **Grounded rubric checks in experiments** reuse `eval::Judge` under an explicit
 manifest `[judge] provider/model`; a case with a rubric and no judge is refused
-before execution. `tool_evidence` passes actual calls and results (bounded at
-128 KiB, error on excess) to the quarantined judge. Missing evidence or failed
+before execution. `grounding_evidence` passes recorded system context (including date and timezone)
+and actual calls/results (bounded at 128 KiB, error on excess) to the quarantined
+judge. Omitting the context falsely rejected a valid UTC interpretation in the
+first grounded run; the judge must receive the facts the assistant had. Missing evidence or failed
 grading produces a failed check. The rubric must state ground truth and the
 unsupported claims it rejects. A same-model judge is not independent; run the
 opt-in `grounding_judge` controls and read the transcripts alongside the score.
