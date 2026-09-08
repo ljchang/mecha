@@ -57,6 +57,18 @@
         {:else}<p class="empty">Nothing here.</p>{/each}
       </section>
     {/each}
+    {#if data.closed?.length}
+      <details class="finished">
+        <summary>Finished workflows <span>{data.closed.length}</span></summary>
+        {#each data.closed as item (item.id)}
+          <article>
+            <h3>{item.title}</h3>
+            <p>{item.state === 'cancelled' ? 'Cancelled' : 'Finished'} · {new Date(item.closed_at).toLocaleString()}</p>
+            <button disabled={busy === item.id} onclick={() => act(item.id, 'reopen')}>Reopen workflow</button>
+          </article>
+        {/each}
+      </details>
+    {/if}
   {/if}
 </section>
 <style>
@@ -69,5 +81,8 @@
   .empty { margin: 0; } .actions { display: flex; flex-wrap: wrap; gap: 8px; }
   button { color: var(--text); background: transparent; border: 1px solid var(--accent-900); border-radius: 6px; min-height: 44px; padding: 8px 12px; cursor: pointer; }
   button:disabled { opacity: .5; cursor: wait; }
+  .finished { margin-top: 24px; }
+  summary { cursor: pointer; min-height: 44px; font-size: 15px; padding: 10px 0; }
+  summary span { color: var(--text-muted); margin-left: 8px; }
   [role=alert] { color: var(--hazard); }
 </style>

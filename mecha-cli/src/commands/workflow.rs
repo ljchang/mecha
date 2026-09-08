@@ -169,9 +169,14 @@ pub fn today() -> Result<serde_json::Value> {
     let questions = questions()?;
     let now = Utc::now();
     let mut items = vec![];
+    let mut closed = vec![];
     let mut linked_outbox = std::collections::HashSet::new();
     let mut linked_questions = std::collections::HashSet::new();
     for mut w in store.list()? {
+        if w.closed_at.is_some() {
+            closed.push(serde_json::json!({"id":w.id, "title":w.title, "state":w.state, "closed_at":w.closed_at}));
+            continue;
+        }
         let out = outbox(Some(&w))?;
         w.observe(out.as_ref(), questions.as_ref(), now);
         store.observe_dependencies(&mut w, now);
@@ -180,9 +185,6 @@ pub fn today() -> Result<serde_json::Value> {
         }
         linked_outbox.extend(w.outbox.iter().cloned());
         linked_questions.extend(w.questions.iter().cloned());
-        if w.closed_at.is_some() {
-            continue;
-        }
         let waiting_for: std::collections::BTreeSet<_> = w
             .observed
             .iter()
@@ -224,7 +226,8 @@ pub fn today() -> Result<serde_json::Value> {
             items.push(serde_json::json!({"id":q.id,"title":q.asked(),"section":"decisions","state":"answer needed","task_id":q.task_id,"session_id":q.session_id,"questions":[q.id]}));
         }
     }
-    Ok(serde_json::json!({"as_of":now,"items":items}))
+    closed.sort_by(|a, b| b["closed_at"].as_str().cmp(&a["closed_at"].as_str()));
+    Ok(serde_json::json!({"as_of":now,"items":items,"closed":closed}))
 }
 pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
     let store = WorkflowStore::default_store()?;
