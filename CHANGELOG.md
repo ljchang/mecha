@@ -18,7 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A Today view groups urgent items, decisions, verified work and waiting, with
   commitments, quiet hours, coalesced reminders and snoozing. Refreshes share
   source reads across workflows; finished work can be explicitly reopened.
-  Failed chat recording preserves prior workflow completion evidence.
+  Failed chat recording preserves prior workflow completion evidence. Blocked
+  question resumes leave the question open and create no running marker.
+- Batch outbox rejection continues past uncertain deliveries, preserving their
+  records and reporting partial failures with a nonzero exit status.
 - Explicit structured-output provider capabilities for quarantined extraction,
   plus stable research, assistant and coding tool profiles.
 - Repeated assistant lifetime fixtures check actual sent messages and calendar

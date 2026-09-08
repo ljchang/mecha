@@ -14,6 +14,16 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-08 — gates precede question consumption; batch refusals are counted.**
+PR #216's eighth review found the question-resume workflow gate after question
+closure, board movement and run-marker creation. It now precedes those effects;
+a real CLI regression failed before the fix and confirms cancellation and unmet
+dependencies preserve the question bytes and leave no running marker. Batch
+outbox rejection now continues past a refused uncertain delivery, reports each
+failure and totals, and exits nonzero for partial failure. Its CLI regression
+also failed before the fix and confirms both eligible drafts are rejected while
+the uncertain record stays byte-for-byte unchanged.
+
 **2026-09-08 — failed recording is not an interrupted run.** PR #216's seventh
 review found that web/voice task turns claimed a workflow before appending the
 user message. Either append failure dropped the run guard, erased verification
