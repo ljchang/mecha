@@ -14,6 +14,51 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-08 — explicit chat opening and Docker container ownership.**
+`serve::chat::open` creates a session through a guarded, idempotent POST;
+`transcript` and `events` only look up existing sessions. The browser awaits
+opening before GET/SSE, abandons late opens after navigation, and reopens on
+reconnection. A route regression first reproduced GET creating a session;
+browser checks cover opening, navigation during opening and lost server state.
+`sandbox::DockerContainer` owns creation through a worker that survives caller
+cancellation, then attaches only after creation succeeds. Drop launches
+container removal directly and monitors/retries outside Tokio, retaining the
+same Docker context. Three real Docker regressions first reproduced containers
+surviving last-client drop, failed initialization and cancelled initialization;
+all pass, including a server that ignores EOF. Two control-worker tests cover
+late creation and runtime teardown. These source changes close the container
+gap recorded below; they are not yet installed.
+
+PR review found that `run::execute` used `process::exit` while `prepared`
+still owned the clients. It now releases them after recording and session
+hooks, before either special exit. Two real-binary regressions reproduce the
+refusal and no-output container leaks and pass with cleanup enabled. Control
+errors also retain a bounded stderr tail while continuously draining Docker's
+progress output. The review's adjacent mode-route finding was reproduced with
+a percent-encoded traversal key; `set_mode` and `answer` now validate keys like
+the other handlers. The CI sandbox job requires the process-exit tests too.
+
+A second pass found the sibling `batch::execute` exit; it now releases its
+prepared agent after flushing results, measured by a third real-binary Docker
+regression that first failed on exit code 1. The remaining explicit CLI exits
+were checked: diagnostics/configuration commands hold no MCP clients, `main`
+exits after dispatch has returned, and eval's agent and optional fixture clients
+are scoped to `run_arm`, which returns before its caller's failure exit.
+Browser retries now stop on permanent 4xx responses and back off on transient
+failures, resetting after the event stream connects. A compiled-browser test
+first reproduced repeated 403s and missing backoff before verifying the fix.
+
+**2026-09-08 — PR #213 deployed after merge.** After CI and automated review,
+`a3f1682d` was installed with `cargo install --path mecha-cli --locked --force`
+and a fresh web build. Serve, Slack, triggers and drain restarted at 14:15 UTC.
+The installed binary contains the new guard literal; a harmless invalid upload
+returns 403 without the request header and reaches validation (400) with it.
+The HTTPS door serves the installed `index-DwEoLNed.js` bundle. The prior binary
+and web assets are backed up under `~/.mecha/deploy-backups/pr-213/`. This
+deployment includes the earlier browser/attachment/process fixes below, not
+the follow-up chat/container changes above. Python workers and the model server
+were not restarted.
+
 **2026-09-08 — browser boundaries, attachments, and process lifetime.**
 `serve::owner_guard` now requires a non-simple header for browser writes;
 `apiFetch` and hosted voice offers carry it. `WorkspaceFiles` reserves uploads
@@ -24,7 +69,7 @@ backpressure; `FsRead` limits allocation and decoding while selecting lines.
 `McpClient` owns its reader tasks and enables child termination on drop before
 initialization, including the failed-handshake path. For Docker confinement,
 the killed child is the Docker CLI; containers whose servers ignore EOF can
-still outlive it. Container lifecycle cleanup remains open. Regression tests first
+still outlive it. That gap is closed by the follow-up recorded above. Regression tests first
 reproduced cross-site writes, upload escapes, resumed-workspace mismatches,
 and a child surviving its client; the fixes pass those tests. Graph route
 state and charter drag state also stopped producing Svelte build warnings.
@@ -6962,6 +7007,26 @@ check the timestamp before re-running anything.**
 
 
 ### Environment
+
+**An executable path can be right while its bytes belong to another tree.**
+During the 2026-09-08 lifecycle checks, integration tests launched Cargo's
+named binary from a shared target directory, but tracing showed the older
+`docker run` path instead of the branch's create/start path. A library test
+filter also found zero tests while the named test existed in source. Final
+validation moved to a target directory dedicated to this worktree. The lesson:
+sharing build outputs across worktrees weakens artifact identity; require the
+expected test to run and verify the executable's behavior before trusting a
+passing or failing result.
+
+**A detached cleanup thread does not outlive the process.** The Docker MCP
+lifetime fix initially delegated all removal work to a new thread. A one-shot
+CLI can return before that thread is scheduled, so no removal command runs.
+`DockerContainer::drop` now launches the cleanup subprocess synchronously and
+delegates only waiting and retries. The general rule: when cleanup must survive
+normal process exit, establish its independent owner before returning; a
+scheduled task is not ownership. Creation has the inverse race: removing before
+the daemon finishes creating can miss a late resource. The creation worker must
+own that result even after its caller abandons it.
 
 **2026-09-05 — user units need PATH without a login.** The box rebooted at
 06:15Z and nobody logged in at the console. A user unit's PATH is the

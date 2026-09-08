@@ -139,6 +139,7 @@ export const ROUTES = [
   ['GET', /^\/api\/sessions$/, () => fx.sessions],
   ['GET', /^\/api\/history$/, () => fx.history],
   ['GET', /^\/api\/chat\/[^/]+$/, () => fx.transcript],
+  ['POST', /^\/api\/chat\/[^/]+$/, () => text('')],
   // Never reached: `EventSource` is replaced wholesale below, so the stream
   // does not go through `fetch` at all. Listed anyway, because `check-demo`
   // asks this table whether every endpoint the app reaches is accounted for,
@@ -266,9 +267,9 @@ export function installDemo() {
     return answer instanceof Response ? answer : json(answer);
   };
 
-  // EventSource, minus the network. Only `onmessage` is implemented, because
-  // that is the only handler `Chat.svelte` sets — an unused `addEventListener`
-  // stub would be a claim this object is a polyfill, which it is not.
+  // EventSource, minus the network. The demo emits messages; render-check
+  // also invokes the page's onerror handler to exercise reconnect ordering.
+  // This is a fixture, not a general EventSource polyfill.
   class DemoEventSource {
     constructor(url) {
       this.url = url;

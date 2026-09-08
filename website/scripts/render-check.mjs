@@ -189,6 +189,108 @@ for (const route of ROUTES) {
   await context.close();
 }
 
+// Chat creation is a POST, before either transcript GET or EventSource.
+// Delay the opening response, leave the view, then simulate a server restart:
+// this measures cancellation and reconnects in the actual compiled component.
+{
+  const context = await browser.newContext({viewport: {width: 420, height: 900}});
+  const page = await context.newPage();
+  try {
+    await page.goto(`${base}#home`, {waitUntil: 'networkidle'});
+    await page.evaluate(() => {
+      const originalFetch = globalThis.fetch;
+      const OriginalSource = globalThis.EventSource;
+      const probe = window.chatProbe = {opens: 0, reads: 0, streams: [], violations: [], opened: false};
+      globalThis.fetch = async (url, options) => {
+        if (/^\/api\/chat\/[^/]+$/.test(url)) {
+          if (options?.method === 'POST') {
+            probe.opens++;
+            if (new Headers(options.headers).get('x-mecha-request') !== '1') probe.violations.push('unguarded open');
+            if (probe.opens === 1) await new Promise(resolve => { probe.release = resolve; });
+            probe.opened = true;
+          } else {
+            probe.reads++;
+            if (!probe.opened) probe.violations.push('read before open');
+          }
+        }
+        return originalFetch(url, options);
+      };
+      globalThis.EventSource = class extends OriginalSource {
+        constructor(url) {
+          super(url);
+          if (!probe.opened) probe.violations.push('stream before open');
+          probe.streams.push(this);
+        }
+      };
+      location.hash = 'chat';
+    });
+    await page.waitForFunction(() => window.chatProbe.release, null, {timeout: 5000});
+    await page.evaluate(() => { location.hash = 'home'; });
+    await page.waitForTimeout(100);
+    await page.evaluate(() => window.chatProbe.release());
+    await page.waitForTimeout(100);
+    const abandoned = await page.evaluate(() => window.chatProbe.reads + window.chatProbe.streams.length);
+    if (abandoned !== 0) failures.push('chat connection: an abandoned open loaded or subscribed');
+    await page.evaluate(() => { location.hash = 'chat'; });
+    await page.waitForFunction(() => window.chatProbe.reads >= 1 && window.chatProbe.streams.length >= 1, null, {timeout: 5000});
+    await page.evaluate(() => {
+      window.chatProbe.opened = false; // the restarted server lost its session map
+      window.chatProbe.streams.at(-1).onerror();
+    });
+    await page.waitForFunction(() => window.chatProbe.opens >= 3 && window.chatProbe.reads >= 2 && window.chatProbe.streams.length >= 2, null, {timeout: 5000});
+    const violations = await page.evaluate(() => window.chatProbe.violations);
+    if (violations.length) failures.push(`chat connection: ${violations.join(', ')}`);
+  } catch (e) {
+    failures.push(`chat connection: ${String(e.message).split('\n')[0]}`);
+  }
+  checked++;
+  await context.close();
+}
+
+// Permanent opening refusals stop; transient failures back off. Exercise
+// the compiled component with real timers so the retry policy is observable.
+{
+  const context = await browser.newContext({viewport: {width: 420, height: 900}});
+  const page = await context.newPage();
+  try {
+    await page.goto(`${base}#home`, {waitUntil: 'networkidle'});
+    await page.evaluate(() => {
+      const originalFetch = globalThis.fetch;
+      const probe = window.retryProbe = {mode: 'forbidden', attempts: []};
+      globalThis.fetch = async (url, options) => {
+        if (/^\/api\/chat\/[^/]+$/.test(url) && options?.method === 'POST') {
+          probe.attempts.push(Date.now());
+          if (probe.mode === 'forbidden') return new Response('not the owner', {status: 403});
+          if (probe.attempts.length <= 2) return new Response('unavailable', {status: 503});
+        }
+        return originalFetch(url, options);
+      };
+      location.hash = 'chat';
+    });
+    await page.waitForFunction(() => window.retryProbe.attempts.length > 0);
+    await page.waitForTimeout(1800);
+    if (await page.evaluate(() => window.retryProbe.attempts.length !== 1)) {
+      failures.push('chat retry: repeated a permanent opening refusal');
+    }
+    await page.evaluate(() => { location.hash = 'home'; });
+    await page.waitForTimeout(100);
+    await page.evaluate(() => {
+      window.retryProbe.mode = 'transient';
+      window.retryProbe.attempts = [];
+      location.hash = 'chat';
+    });
+    await page.waitForFunction(() => window.retryProbe.attempts.length >= 3, null, {timeout: 8000});
+    const times = await page.evaluate(() => window.retryProbe.attempts);
+    if (times[1] - times[0] < 1400 || times[2] - times[1] < 2900) {
+      failures.push('chat retry: transient opening failures did not back off');
+    }
+  } catch (e) {
+    failures.push(`chat retry: ${String(e.message).split('\n')[0]}`);
+  }
+  checked++;
+  await context.close();
+}
+
 await browser.close();
 server.close();
 

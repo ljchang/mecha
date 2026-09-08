@@ -251,11 +251,12 @@
     }
   }
 
-  async function load() {
+  async function load(sessionKey = key, signal) {
     try {
-      const res = await fetch(`/api/chat/${key}`);
+      const res = await fetch(`/api/chat/${sessionKey}`, { signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).trim()}`);
       const data = await res.json();
+      if (signal?.aborted || sessionKey !== key) return;
       entries = data.entries.map((e) =>
         e.kind === 'tool' ? { ...e, pending: false } : e
       );
@@ -291,14 +292,14 @@
       error = null;
       scrollDown();
     } catch (e) {
-      error = String(e?.message ?? e);
+      if (!signal?.aborted && sessionKey === key) error = String(e?.message ?? e);
     }
   }
 
-  function subscribe() {
+  function subscribe(sessionKey) {
     // tailscale serve injects the identity header on this request too —
     // EventSource cannot set headers, and never needs to here.
-    const source = new EventSource(`/api/chat/${key}/events`);
+    const source = new EventSource(`/api/chat/${sessionKey}/events`);
     source.onmessage = (raw) => {
       const ev = JSON.parse(raw.data);
       switch (ev.type) {
@@ -654,10 +655,56 @@
   // Re-subscribe whenever the key changes; the server owns every
   // conversation, so switching is just pointing the rendering elsewhere.
   $effect(() => {
-    const source = subscribe();
-    load();
-    loadRail();
-    return () => source.close();
+    const sessionKey = key;
+    const controller = new AbortController();
+    let source;
+    let retry;
+    let retryDelay = 1500;
+    const reconnect = () => {
+      source?.close();
+      source = null;
+      clearTimeout(retry);
+      if (!controller.signal.aborted) {
+        retry = setTimeout(connect, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 30_000);
+      }
+    };
+    async function connect() {
+      try {
+        // GET and EventSource only read existing chats. Opening one is an
+        // explicit, guarded mutation, also repeated after a server restart.
+        const res = await fetch(`/api/chat/${sessionKey}`, {
+          method: 'POST', signal: controller.signal,
+        });
+        if (!res.ok) {
+          const message = `HTTP ${res.status}: ${(await res.text()).trim()}`;
+          if (controller.signal.aborted) return;
+          // Authentication, invalid keys and other permanent client errors
+          // need intervention, not an endless POST loop from every tab.
+          if (res.status >= 400 && res.status < 500 && ![408, 429].includes(res.status)) {
+            error = message;
+            return;
+          }
+          throw new Error(message);
+        }
+        if (controller.signal.aborted) return;
+        source = subscribe(sessionKey);
+        source.onopen = () => { retryDelay = 1500; };
+        source.onerror = reconnect;
+        await load(sessionKey, controller.signal);
+        if (!controller.signal.aborted) loadRail();
+      } catch (e) {
+        if (controller.signal.aborted) return;
+        error = String(e?.message ?? e);
+        reconnect();
+      }
+    }
+    connect();
+    return () => {
+      controller.abort();
+      clearTimeout(retry);
+      source?.close();
+    };
   });
   const railTimer = setInterval(loadRail, 20_000);
   $effect(() => () => clearInterval(railTimer));
