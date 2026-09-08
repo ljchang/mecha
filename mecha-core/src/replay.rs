@@ -250,7 +250,21 @@ fn batch_width(recorded: &[RecordedCall], i: usize) -> usize {
 /// had already spent #0 on the `{z}` call and fed the `{a}` call #1's output.
 /// The report would clear the exact position the run got wrong. Agreement by
 /// construction beats two implementations staying in step.
+///
+/// **The premise that makes it construction rather than coincidence**: `got`
+/// is in the order the model emitted the calls (`ToolCallTrace` follows
+/// `join_all`'s input order), and `decide` sees a batch in that same order
+/// because `JoinAll` polls in index order and `ReplayTool::call` reaches
+/// `decide` synchronously, before its first await. Both hold today. If the
+/// batch ever moves to `tokio::spawn`, or a wrapper lands between the registry
+/// and `ReplayTool` that awaits first, these two greedy walks pair differently
+/// on any batch with a repeated tool and one changed argument — the case this
+/// block is about — and it would fail nondeterministically rather than loudly.
+/// Whoever changes the loop should check this still holds.
 fn pair_batch(want: &[RecordedCall], got: &[ToolCallTrace]) -> Option<Vec<(usize, usize)>> {
+    // `diff` slices `got` to at most `want.len()`, so this cannot fire from
+    // there; it is here so a second caller cannot get a silently wrong pairing
+    // out of a wider batch.
     if got.len() > want.len() {
         return None;
     }
@@ -318,10 +332,12 @@ pub fn diff(recorded: &[RecordedCall], replayed: &[ToolCallTrace]) -> Vec<Diverg
                 }
                 // Every replayed call was answered, but the batch ran out of
                 // them: the run stopped inside the batch rather than calling
-                // something else. Those recorded calls went `Missing` — naming
-                // them a `Tool` fork would be a *structural* divergence over a
-                // run `decide` never stopped, and structural is the class the
-                // probes drop on.
+                // something else, so those recorded calls went `Missing`. That
+                // is simply what happened — `Missing` is structural exactly as
+                // `Tool` is (`is_structural` excludes only `Arguments`) and at
+                // the same index, so nothing downstream drops differently. The
+                // reason to get it right is that `Tool` says the run called
+                // something else, which it did not.
                 if got.len() < want.len() {
                     for w in (0..want.len()).filter(|w| !pairs.iter().any(|(p, _)| p == w)) {
                         out.push(Divergence::Missing {
