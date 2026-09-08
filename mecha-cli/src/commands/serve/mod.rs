@@ -24,6 +24,7 @@
 //!   do, and the `depth: null` convention ("could not look" is not
 //!   "nothing waiting") arrives for free because the verb already speaks it.
 
+use std::future::IntoFuture;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -139,9 +140,15 @@ pub async fn execute(args: Args) -> Result<()> {
         offer_target,
         voices_dir: config.web.voices_dir.clone().map(Arc::new),
     };
+    // 127.0.0.1 by construction — the address is not configurable.
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("binding {addr}"))?;
+    let mut signals = crate::interrupt::ShutdownSignals::new()?;
     // Mount the voice facade on the same agent: one provider connection,
     // one cached prefix, two dialects. It rides this process's lifetime;
-    // its own graceful drain runs after axum returns.
+    // its graceful drain runs alongside the chat drain when the host stops.
     let voice = match (&state.chat, args.voice_port) {
         (Some(chat), port) if port != 0 => {
             let (agent, provider, model, config, levers_off, rules, outbox_root) =
@@ -197,11 +204,6 @@ pub async fn execute(args: Args) -> Result<()> {
 
     let app = router(state.clone(), assets.as_deref());
 
-    // 127.0.0.1 by construction — the address is not configurable.
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("binding {addr}"))?;
     match &assets {
         Some(dir) => tracing::info!(%addr, assets = %dir.display(), "mecha serve up"),
         None => tracing::info!(%addr, "mecha serve up (API only — no [web] assets configured)"),
@@ -211,13 +213,54 @@ pub async fn execute(args: Args) -> Result<()> {
         state.owner_login
     );
 
-    let served = axum::serve(listener, app).await.context("serving");
-    if let Some((facade, stop, task)) = voice {
-        stop.cancel();
-        facade.shutdown().await;
-        let _ = task.await;
+    let stop = tokio_util::sync::CancellationToken::new();
+    let server = axum::serve(listener, app)
+        .with_graceful_shutdown(stop.clone().cancelled_owned())
+        .into_future();
+    tokio::pin!(server);
+    let served = tokio::select! {
+        result = &mut server => Some(result),
+        _ = signals.recv() => None,
+    };
+    tracing::info!("mecha serve: stopping admission and recording active turns");
+    let drained = signals
+        .drain_or_force(async {
+            if let Some(chat) = &state.chat {
+                chat.stop().await;
+            }
+            if let Some((_, voice_stop, _)) = &voice {
+                voice_stop.cancel();
+            }
+            stop.cancel();
+            let drain_chat = async {
+                if let Some(chat) = &state.chat {
+                    chat.drain().await;
+                }
+            };
+            let drain_voice = async {
+                if let Some((facade, _, task)) = voice {
+                    facade.shutdown().await;
+                    let _ = task.await;
+                }
+            };
+            tokio::join!(drain_chat, drain_voice);
+            if let Some(chat) = &state.chat {
+                chat.close_mcp().await;
+            }
+        })
+        .await;
+    if !drained {
+        return Ok(());
     }
-    served?;
+    // Model work and recording have finished. An incomplete HTTP request or
+    // a client that stopped reading must not keep the daemon alive forever.
+    match served {
+        Some(result) => result.context("serving")?,
+        None => match tokio::time::timeout(std::time::Duration::from_secs(5), &mut server).await {
+            Ok(result) => result.context("serving")?,
+            Err(_) => tracing::warn!("closing HTTP connections after shutdown drain"),
+        },
+    }
     Ok(())
 }
 
@@ -1655,6 +1698,30 @@ mod boundary_tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert!(!home.dir.join("sessions").exists());
         assert!(!home.dir.join("escape").exists());
+    }
+
+    #[tokio::test]
+    async fn shutdown_refuses_typed_and_hosted_voice_admission() {
+        use crate::voice::SessionHost;
+        let home = crate::testenv::HomeGuard::new("web-shutdown-admission");
+        let chat = chat::test_chat();
+        chat.stop().await;
+        let mut request = post("/api/chat/new/send", r#"{"text":"too late"}"#);
+        request
+            .headers_mut()
+            .insert("content-type", HeaderValue::from_static("application/json"));
+        assert_eq!(
+            app(chat.clone()).oneshot(request).await.unwrap().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert!(matches!(
+            chat::VoiceHost(chat.clone())
+                .speak("new", "too late", false)
+                .await,
+            crate::voice::Hosted::Failed(_)
+        ));
+        chat.drain().await;
+        assert!(!home.dir.join("sessions").exists());
     }
 
     #[tokio::test]

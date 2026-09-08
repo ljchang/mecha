@@ -429,6 +429,40 @@ async fn a_server_asking_for_confinement_with_no_backend_never_starts() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+#[tokio::test]
+async fn close_waits_for_the_server_to_flush_on_eof() {
+    if unavailable("python3", python3_available()) {
+        return;
+    }
+    let dir = tmpdir("mcp-eof-close");
+    let script = r#"import json, sys
+from pathlib import Path
+for line in sys.stdin:
+    req = json.loads(line)
+    if 'id' in req:
+        print(json.dumps({'jsonrpc':'2.0', 'id':req['id'], 'result':{}}), flush=True)
+# Cleanup may itself write more than a pipe's capacity. The host must keep
+# draining stdout while it waits, rather than aborting its reader first.
+print(json.dumps({'jsonrpc':'2.0', 'method':'notifications/flush', 'params':{'data':'x' * 131072}}), flush=True)
+Path('flushed').write_text('saved on EOF')
+"#;
+    let cfg = McpServerConfig {
+        name: "eof-close".into(),
+        command: "python3".into(),
+        args: vec!["-u".into(), "-c".into(), script.into()],
+        ..Default::default()
+    };
+    let client = McpClient::connect(&cfg, &unconfined(), &dir).await.unwrap();
+    client.close().await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("flushed")).ok().as_deref(),
+        Some("saved on EOF")
+    );
+    client.close().await.unwrap();
+    drop(client);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// EOF is a request to stop, not proof the third-party process stopped.
 /// The fixture stays alive until the test releases it, so even the failing
 /// implementation leaves no orphan after this test completes.
@@ -510,6 +544,11 @@ async fn docker_server_is_removed_after_a_cancelled_handshake() {
     docker_lifecycle("cancel").await;
 }
 
+#[tokio::test]
+async fn docker_close_finishes_before_the_client_is_dropped() {
+    docker_lifecycle("close").await;
+}
+
 async fn docker_lifecycle(mode: &str) {
     if unavailable("docker", docker_available()) || unavailable(IMAGE, docker_image_present(IMAGE))
     {
@@ -559,13 +598,23 @@ while True:
         cid.bytes().all(|c| c.is_ascii_hexdigit()),
         "invalid test container id"
     );
+    let mut retained = None;
     if mode == "cancel" {
         connecting.abort();
         assert!(matches!(connecting.await, Err(e) if e.is_cancelled()));
     } else {
         let connected = connecting.await.unwrap();
         assert_eq!(connected.is_err(), mode == "reject");
-        drop(connected);
+        if mode == "close" {
+            let client = connected.unwrap();
+            client.close().await.unwrap();
+            // A second close is safe; holding the Arc prevents Drop cleanup
+            // from making a no-op close appear to work.
+            client.close().await.unwrap();
+            retained = Some(client);
+        } else {
+            drop(connected);
+        }
     }
     let removed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
@@ -590,4 +639,5 @@ while True:
         .await;
     std::fs::remove_dir_all(dir).unwrap();
     assert!(removed, "{mode}: container survived its MCP client");
+    drop(retained);
 }
