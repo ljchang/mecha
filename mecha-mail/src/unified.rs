@@ -277,7 +277,7 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
     json!([
         {
             "name": "mail_search",
-            "description": "Search mail. With no `account`, every configured account is searched and each result row is tagged with the account it came from. from:/to:/subject: filters work on all providers; date filters are provider-specific (Gmail: after:YYYY/MM/DD; Outlook: received>=YYYY-MM-DD), so name an account when using one. Returns metadata and snippets; use mail_get_thread to read full messages.",
+            "description": "Search mail. With no `account`, every configured account is searched and each result row is tagged with the account it came from. from:/to:/subject: filters work on all providers; date filters are provider-specific (Gmail: after:YYYY/MM/DD; Outlook: received>=YYYY-MM-DD), so name an account when using one. Returns metadata and snippets; use mail_get_thread to read full messages. `unread` is the owner mailbox state, not a recipient read receipt. Recipient read status is unknown.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -787,6 +787,8 @@ fn render_rows(mut rows: Vec<(Provider, String, Email)>) -> String {
                 "date": e.date_received,
                 "snippet": e.snippet,
                 "unread": !e.is_read,
+                "unread_scope": "owner_mailbox",
+                "recipient_read_status": "unknown",
                 "has_attachments": e.has_attachments,
                 // The deterministic bulk signal, surfaced so the triage
                 // pre-filter can dispose of a thread without a model call.

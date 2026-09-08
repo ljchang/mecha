@@ -39,8 +39,7 @@ import tempfile
 TRIAGE_ACTIONS = ["archive", "read", "unread", "spam", "trash"]
 
 
-def now_dt():
-    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+from fixture_clock import now_dt
 
 
 def iso(d):
@@ -205,6 +204,8 @@ def row(account, thread, m):
         "date": m["date"],
         "snippet": (m.get("body", "").strip().splitlines() or [""])[0][:160],
         "unread": bool(m.get("unread", False)),
+        "unread_scope": "owner_mailbox",
+        "recipient_read_status": "unknown",
         "has_attachments": bool(m.get("attachments")),
         "bulk": bool(m.get("bulk", False)),
     }
@@ -559,7 +560,7 @@ ACCOUNT = {"type": "string", "description": "The account, by name. Omit for ever
 TOOLS = [
     {
         "name": "mail_search",
-        "description": "Search mail. With no `account`, every configured account is searched and each result row is tagged with the account it came from. from:/to:/subject: filters work. Returns metadata and snippets; use mail_get_thread to read full messages.",
+        "description": "Search mail. With no `account`, every configured account is searched and each result row is tagged with the account it came from. from:/to:/subject: filters work. Returns metadata and snippets; use mail_get_thread to read full messages. `unread` is the owner mailbox state, not a recipient read receipt. Recipient read status is unknown.",
         "inputSchema": {
             "type": "object",
             "properties": {"query": {"type": "string"}, "account": ACCOUNT, "max_results": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10}},

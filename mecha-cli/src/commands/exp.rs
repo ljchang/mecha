@@ -161,21 +161,9 @@ async fn cases_for(manifest: &Manifest) -> Result<Vec<mecha_core::eval::EvalCase
         ordered
     };
     anyhow::ensure!(!cases.is_empty(), "the manifest names no tasks");
-    // `eval::grade` is pure and never sees `expect.judge`; eval appends the
-    // judge's verdict afterwards, and this driver does not build one yet.
-    // A case whose only assertion is a rubric would then pass every arm
-    // unconditionally — a tie on every pair — with nothing on the row
-    // saying the rubric evaporated. Refused by name until the driver can
-    // grade it (found on review).
-    let judged: Vec<&str> = cases
-        .iter()
-        .filter(|c| c.expect.judge.is_some())
-        .map(|c| c.id.as_str())
-        .collect();
     anyhow::ensure!(
-        judged.is_empty(),
-        "case(s) {} carry an `expect.judge` rubric, which `mecha exp` cannot grade yet; name cases with deterministic checks",
-        judged.join(", ")
+        cases.iter().all(|c| c.expect.judge.is_none()) || manifest.judge.is_some(),
+        "cases with expect.judge require an explicit [judge] provider and model"
     );
     Ok(cases)
 }
@@ -375,6 +363,11 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool) -> Result<()> {
         }
         return Ok(());
     }
+    if cases.iter().any(|c| c.expect.judge.is_some()) {
+        let judge = experiment_judge(&manifest, &real)?;
+        eprintln!("  rubric judge: {} (model verdicts require transcript review; a shared model is not independent)", judge.model());
+        judge.preflight().await?;
+    }
     let mecha = std::env::current_exe().context("locating this binary")?;
     let ran = match manifest.kind {
         TrialKind::Single => {
@@ -538,7 +531,12 @@ async fn run_lifetimes(
                     // render that failed only inside `run_one` left the
                     // stages running against a home with no config for the
                     // position (found on review).
-                    if let Err(e) = render_home(manifest, real, arm, trial.seed, &home, false) {
+                    if let Err(e) = render_home(manifest, real, arm, trial.seed, &home, false)
+                        .and_then(|r| {
+                            manifest.fixtures.apply_clock(&home, &case.id)?;
+                            Ok(r)
+                        })
+                    {
                         world_ready = false;
                         world_error = format!("{e:#}");
                         trial.status = TrialStatus::Failed;
@@ -1543,6 +1541,21 @@ fn render_home(
     })
 }
 
+fn experiment_judge(
+    manifest: &Manifest,
+    cfg: &mecha_core::config::Config,
+) -> Result<mecha_core::eval::Judge> {
+    let spec = manifest
+        .judge
+        .as_ref()
+        .context("no experiment judge configured")?;
+    let (_, provider_cfg) = cfg.provider(Some(&spec.provider))?;
+    Ok(mecha_core::eval::Judge::new(
+        mecha_core::provider::build(provider_cfg)?,
+        Some(spec.model.clone()),
+    ))
+}
+
 /// One trial: the arm's home and config, a fresh workspace, the child, the
 /// grade, the stats. Everything the trial learned is on its row when this
 /// returns; a failure anywhere is the row's `error`, never a missing row.
@@ -1580,6 +1593,7 @@ async fn run_one(
         // what the last task left (found on review).
         manifest.kind == TrialKind::Single,
     )?;
+    manifest.fixtures.apply_clock(&home, &case.id)?;
     // A knob is pinned for this task if the arm moves it *or* the home's
     // own loop did: the case's ceiling flag below must not override
     // either, since a flag beats the rendered config.
@@ -1721,6 +1735,33 @@ async fn run_one(
         .map(str::to_string);
 
     let mut graded = mecha_core::eval::grade(case, &result);
+    if case.expect.judge.is_some() {
+        // The judge is quarantined and sees recorded evidence, not tool access.
+        // A missing/corrupt transcript cannot become a passing grounding check.
+        let checked = async {
+            let id = trial
+                .session_id
+                .as_ref()
+                .context("no session for rubric evidence")?;
+            let (_, conversation) = mecha_core::session::Session::load(
+                &home.join("sessions").join(format!("{id}.jsonl")),
+            )?;
+            let evidence = mecha_core::eval::tool_evidence(&conversation.messages)?;
+            let judge = experiment_judge(manifest, real)?;
+            Ok::<_, anyhow::Error>(
+                judge
+                    .check_with_evidence(case, &result.text, &evidence)
+                    .await
+                    .expect("rubric present"),
+            )
+        }
+        .await;
+        graded.add_check(checked.unwrap_or_else(|e| mecha_core::eval::Check {
+            name: "judge".into(),
+            passed: false,
+            detail: format!("cannot grade recorded evidence: {e:#}"),
+        }));
+    }
     // What the run left behind, checked the way eval checks it: `grade` is
     // pure and never sees `expect.verify`, and a codegen case whose only
     // assertion is the verify command would otherwise pass every arm with
