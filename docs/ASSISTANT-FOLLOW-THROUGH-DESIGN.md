@@ -4,8 +4,8 @@
 without moving the task board out of the graph or weakening the owner boundary.
 Implementation authorized by the owner after the harness review.
 
-Implemented on `feat/personal-assistant-follow-through`; see `HISTORY.md`'s
-2026-09-08 entry. This branch is not installed. The first implementation accepts
+Merged as PR #216 and installed from `main` at `c3f33f4c` on 2026-09-08; see
+`HISTORY.md` and the verified update in `HANDOFF.md`. The first implementation accepts
 commitments through owner commands, produces in-app reminders, and verifies
 explicit workflow criteria. Automatic promise extraction/proposal acceptance,
 external push notifications and a general in-loop convergence engine remain
@@ -58,6 +58,7 @@ encoding tests and fixture-backed assistant evaluations supplement scripted loop
 The final checks are workspace build/test, formatting, Clippy, frontend tests and
 build, documentation updates, and the repository handoff procedure.
 
-No release or service restart is part of implementing this branch. Existing running
-services and other worktrees are preserved. Native provider idempotency is used only
+The implementation phase did not deploy services. The owner subsequently authorized
+the 2026-09-08 installation recorded in `HANDOFF.md`; no release was published.
+Native provider idempotency is used only
 where its contract is known; unsupported effects retain the reconciliation boundary.
