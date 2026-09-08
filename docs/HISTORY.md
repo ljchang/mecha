@@ -14,6 +14,15 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-08 — failed recording is not an interrupted run.** PR #216's seventh
+review found that web/voice task turns claimed a workflow before appending the
+user message. Either append failure dropped the run guard, erased verification
+and raised a false partial-work alarm. `begin_turn` now accepts the transcript
+write first, retaining the conversation on a later launch refusal and updating
+voice continuity only on success. The actual entry-point regression failed
+before the fix and covers both append/fold failures, untouched workflow bytes,
+preserved taint, and memory/transcript agreement after a closed-workflow refusal.
+
 **2026-09-08 — refresh reads scale by source store.** PR #216's sixth review
 found repeated source-directory parsing and global config loading on every
 workflow in Today and scheduled ticks. Request-scoped caches now share scans,
