@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use mecha_core::{
     outbox::OutboxStore,
     questions::QuestionStore,
-    workflow::{AttentionPolicy, Check, Commitment, Workflow, WorkflowStore},
+    workflow::{AttentionPolicy, Check, Commitment, ObservationCache, Workflow, WorkflowStore},
 };
 
 #[derive(clap::Args, Debug)]
@@ -23,7 +23,8 @@ pub enum Cmd {
         id: String,
         number: usize,
     },
-    /// Stop tracking this work without claiming it was completed. Reopen restores it.
+    /// Cancel tracking and block further task/chat/trigger runs until explicitly reopened.
+    /// Does not claim completion or stop an active runner.
     Cancel {
         id: String,
         #[arg(long)]
@@ -114,18 +115,46 @@ pub enum Cmd {
         digest_hour: u32,
     },
 }
-fn outbox(w: Option<&Workflow>) -> Result<Option<OutboxStore>> {
-    let root = match w.and_then(|w| w.outbox_root.clone()) {
-        Some(p) => p,
-        None => mecha_core::config::Config::load_global()?
-            .outbox
-            .dir
-            .unwrap_or(OutboxStore::default_root()?),
-    };
+fn default_outbox_root() -> Result<std::path::PathBuf> {
+    match mecha_core::config::Config::load_global()?.outbox.dir {
+        Some(root) => Ok(root),
+        None => OutboxStore::default_root(),
+    }
+}
+fn open_outbox(root: std::path::PathBuf) -> Result<Option<OutboxStore>> {
     if root.try_exists()? {
         Ok(Some(OutboxStore::open(root)?))
     } else {
         Ok(None)
+    }
+}
+fn outbox(w: Option<&Workflow>) -> Result<Option<OutboxStore>> {
+    open_outbox(match w.and_then(|w| w.outbox_root.clone()) {
+        Some(root) => root,
+        None => default_outbox_root()?,
+    })
+}
+/// One config read and one store handle per root, scoped to a Today/tick request.
+struct OutboxPool {
+    default_root: std::path::PathBuf,
+    stores: std::collections::BTreeMap<std::path::PathBuf, Option<OutboxStore>>,
+}
+impl OutboxPool {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            default_root: default_outbox_root()?,
+            stores: Default::default(),
+        })
+    }
+    fn get(&mut self, w: Option<&Workflow>) -> Result<Option<&OutboxStore>> {
+        let root = w
+            .and_then(|w| w.outbox_root.as_ref())
+            .unwrap_or(&self.default_root)
+            .clone();
+        if let std::collections::btree_map::Entry::Vacant(entry) = self.stores.entry(root.clone()) {
+            entry.insert(open_outbox(root.clone())?);
+        }
+        Ok(self.stores[&root].as_ref())
     }
 }
 fn questions() -> Result<Option<QuestionStore>> {
@@ -140,18 +169,24 @@ pub fn tick(dry_run: bool) -> Result<serde_json::Value> {
     let store = WorkflowStore::default_store()?;
     let policy = store.policy()?;
     let questions = questions()?;
+    let mut outboxes = OutboxPool::new()?;
+    let mut cache = ObservationCache::default();
     let now = Utc::now();
     let mut notices = vec![];
     for mut w in store.list()? {
-        let out = outbox(Some(&w))?;
+        if w.closed_at.is_some() {
+            continue;
+        }
+        let out = outboxes.get(Some(&w))?;
         if dry_run {
-            w.observe(out.as_ref(), questions.as_ref(), now);
+            w.observe_cached(&mut cache, out, questions.as_ref(), now);
             store.observe_dependencies(&mut w, now);
             if w.tick(&policy, now) {
                 notices.push(serde_json::json!({"id":w.id, "notice":w.notice}));
             }
         } else {
-            let refreshed = store.refresh(&w.id, out.as_ref(), questions.as_ref(), now)?;
+            let refreshed =
+                store.refresh_cached(&w.id, &mut cache, out, questions.as_ref(), now)?;
             let mut emitted = false;
             let row = store.update(&refreshed.id, |w| {
                 emitted = w.tick(&policy, now);
@@ -167,6 +202,8 @@ pub fn tick(dry_run: bool) -> Result<serde_json::Value> {
 pub fn today() -> Result<serde_json::Value> {
     let store = WorkflowStore::default_store()?;
     let questions = questions()?;
+    let mut outboxes = OutboxPool::new()?;
+    let mut cache = ObservationCache::default();
     let now = Utc::now();
     let mut items = vec![];
     let mut closed = vec![];
@@ -177,11 +214,11 @@ pub fn today() -> Result<serde_json::Value> {
             closed.push(serde_json::json!({"id":w.id, "title":w.title, "state":w.state, "closed_at":w.closed_at}));
             continue;
         }
-        let out = outbox(Some(&w))?;
-        w.observe(out.as_ref(), questions.as_ref(), now);
+        let out = outboxes.get(Some(&w))?;
+        w.observe_cached(&mut cache, out, questions.as_ref(), now);
         store.observe_dependencies(&mut w, now);
         if w.state != "running" && !w.checks.is_empty() {
-            w.check_evidence(out.as_ref(), now)?;
+            w.check_evidence(out, now)?;
         }
         linked_outbox.extend(w.outbox.iter().cloned());
         linked_questions.extend(w.questions.iter().cloned());
@@ -207,20 +244,20 @@ pub fn today() -> Result<serde_json::Value> {
             "waiting_for":waiting_for, "depends_on":w.depends_on, "commitment":w.commitment, "notice":w.notice, "verified_at":w.verified_at,
             "verification":w.verification, "snoozed_until":w.snoozed_until, "workflow":true}));
     }
-    if let Some(out) = outbox(None)? {
-        for d in out
-            .items_strict()?
-            .into_iter()
+    if let Some(out) = outboxes.get(None)? {
+        for d in cache
+            .outbox_items(out)?
+            .iter()
             .filter(|d| d.status == "pending" && !linked_outbox.contains(&d.id))
         {
             items.push(serde_json::json!({"id":d.id,"title":d.summary,"section":if d.delivery_uncertain() {"urgent"} else {"decisions"}, "state":if d.delivery_uncertain() {"delivery uncertain"} else {"draft ready for review"},"outbox":[d.id]}));
         }
     }
     if let Some(qs) = questions {
-        let (rows, skipped) = qs.items_counting()?;
+        let (rows, skipped) = cache.question_items(&qs)?;
         ensure!(skipped == 0, "{skipped} question records could not be read");
         for q in rows
-            .into_iter()
+            .iter()
             .filter(|q| q.is_open() && !linked_questions.contains(&q.id))
         {
             items.push(serde_json::json!({"id":q.id,"title":q.asked(),"section":"decisions","state":"answer needed","task_id":q.task_id,"session_id":q.session_id,"questions":[q.id]}));
@@ -367,6 +404,7 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         }
         Cmd::Resume { id } => {
             let w = store.get(&id)?;
+            w.ensure_open()?;
             let out = outbox(Some(&w))?;
             let qs = questions()?;
             let w = store.refresh(&id, out.as_ref(), qs.as_ref(), now)?;
