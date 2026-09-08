@@ -895,9 +895,14 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         // In the user's zone, not the machine's. A server runs in UTC, and
         // answering "what's on Thursday" four hours off is wrong in the worst
         // way — internally consistent, so it reads as correct.
+        let now = mecha_core::experiment::fixture_now(
+            &mecha_core::work::mecha_home()?,
+            mecha_core::experiment::ExperimentRef::from_env().is_some(),
+        )?
+        .unwrap_or_else(chrono::Utc::now);
         let stamp = match cfg.agent.timezone() {
             Some(tz) => {
-                let now = chrono::Utc::now().with_timezone(&tz);
+                let now = now.with_timezone(&tz);
                 format!(
                     "Today is {}, and the user's timezone is {tz} (currently {}). \
                      Give times in that zone unless asked otherwise, and work out \
@@ -910,7 +915,7 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
             None => format!(
                 "Today is {}. Work out relative dates (\"next Tuesday\", \
                  \"this week\") from it rather than guessing.",
-                chrono::Local::now().format("%A, %-d %B %Y")
+                now.with_timezone(&chrono::Local).format("%A, %-d %B %Y")
             ),
         };
         cfg.agent.system_prompt = Some(if base.is_empty() {

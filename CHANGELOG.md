@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Explicit per-task fixture clocks and recorded rubric judges for assistant
+  experiments; answer checks receive actual tool evidence and fail on grading errors.
+
+
 - Durable workflows link task conversations, questions, drafts and dependencies;
   owner-specified completion checks inspect artifacts and confirmed delivery.
 - A Today view groups urgent items, decisions, verified work and waiting, with
@@ -480,6 +484,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the save rather than dropped silently.
 
 ### Fixed
+
+- Mail read-state metadata now identifies the owner's mailbox and unknown recipient
+  read status. Assistant guidance requires source-backed calendar and relative-date claims.
+
 
 - Project configuration can no longer remove inherited outbox routes or redirect
   the global review store.

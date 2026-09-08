@@ -3994,6 +3994,17 @@ value is worse than none, because the derived threshold trusts it.
 
 ## Timezones
 
+**Experiment clocks are fixture state, not the host clock.** `Fixtures::clock`
+names an RFC3339 instant for every explicitly scheduled task, in nondecreasing
+order, and is allowed only with fixture servers. `apply_clock` persists it before
+the run and principal; both fixture servers read `MECHA_FIXTURE_CLOCK`, and
+`setup` uses it only on a run carrying `ExperimentRef`. The recorded system prompt
+therefore preserves the date on replay. Audit timestamps and budgets retain wall
+time. Clock and explicit judge identity enter the experiment condition hash;
+corrupt clock data is an error. The old “next-day” prompt advanced no clock and
+therefore measured a misleading date premise instead of next-day recall.
+
+
 `[agent] timezone` is an IANA name (`America/New_York`). The machine runs
 UTC and the model has no clock, so without it every "what's on Thursday" is
 answered four hours off — and wrongly in the worst way, since the times stay
@@ -4253,3 +4264,19 @@ against a changed world. Exact row counts catch duplicate sends, field compariso
 catch wrong thread/time/attendee, and missing files fail unless explicitly admitted
 as empty. `Trial::owner_actions` counts requested owner verbs, including failed
 ones; it is a count of actions, not a measure of human time.
+
+
+**Grounded rubric checks in experiments** reuse `eval::Judge` under an explicit
+manifest `[judge] provider/model`; a case with a rubric and no judge is refused
+before execution. `tool_evidence` passes actual calls and results (bounded at
+128 KiB, error on excess) to the quarantined judge. Missing evidence or failed
+grading produces a failed check. The rubric must state ground truth and the
+unsupported claims it rejects. A same-model judge is not independent; run the
+opt-in `grounding_judge` controls and read the transcripts alongside the score.
+This grades claims after a run; it is not a runtime guarantee of factual accuracy.
+
+**Mail read state has an owner.** `unified::render_rows` retains `unread` and adds
+`unread_scope = owner_mailbox` and `recipient_read_status = unknown`; fixtures
+mirror it. A mailbox flag cannot certify a recipient read receipt. Capability
+guidance makes that distinction even when no default prompt file is installed,
+and limits calendar absence claims to the source, account and range actually read.

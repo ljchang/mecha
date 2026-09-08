@@ -121,6 +121,16 @@ pub struct Manifest {
     /// mailbox are the dataset and D12 holds for them too.
     #[serde(default)]
     pub fixtures: Fixtures,
+    /// Explicit grading provider/model for cases with `expect.judge`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge: Option<JudgeConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JudgeConfig {
+    pub provider: String,
+    pub model: String,
 }
 
 /// What the trial home carries in place of the operator's world: fixture
@@ -157,6 +167,9 @@ pub struct Fixtures {
     /// The servers. Named like `[[mcp]]` entries, minus what a fixture never
     /// needs (an `env`, a passthrough, a sandbox), plus a `seed`.
     pub mcp: Vec<FixtureServer>,
+    /// UTC instants for each scheduled task. Shared by the prompt and fixture
+    /// servers; audit timestamps and run budgets still use the real clock.
+    pub clock: BTreeMap<String, String>,
 }
 
 /// One fixture MCP server on the manifest.
@@ -185,6 +198,27 @@ pub struct FixtureServer {
 /// The variable a fixture server reads its store directory from — under
 /// the trial home, set by the driver, never by the manifest.
 pub const FIXTURE_DIR_ENV: &str = "MECHA_FIXTURE_DIR";
+pub const FIXTURE_CLOCK_ENV: &str = "MECHA_FIXTURE_CLOCK";
+
+pub fn fixture_clock_path(home: &Path) -> PathBuf {
+    home.join("fixture-clock.json")
+}
+
+/// Ordinary runs ignore this experiment-only state. Corrupt experiment clocks
+/// fail rather than silently changing the date the trial is measuring.
+pub fn fixture_now(home: &Path, experiment: bool) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    if !experiment {
+        return Ok(None);
+    }
+    let path = fixture_clock_path(home);
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(Some(
+            serde_json::from_slice(&bytes).context("invalid fixture clock")?,
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).context("reading fixture clock"),
+    }
+}
 
 /// The marker a seeded fixture store carries, written after the seed
 /// landed; its absence means the store is torn and is rebuilt.
@@ -223,6 +257,29 @@ pub fn resolve_file_args(argv: &mut [String], base: &Path) {
 }
 
 impl Fixtures {
+    pub fn apply_clock(&self, home: &Path, task: &str) -> Result<()> {
+        let path = fixture_clock_path(home);
+        match self.clock.get(task) {
+            Some(value) => {
+                let instant = chrono::DateTime::parse_from_rfc3339(value)?;
+                crate::create_private_dir(home)?;
+                let tmp = home.join(format!(".fixture-clock-{}.tmp", uuid::Uuid::new_v4()));
+                std::fs::write(
+                    &tmp,
+                    serde_json::to_vec(&instant.with_timezone(&chrono::Utc))?,
+                )?;
+                std::fs::rename(tmp, path)?;
+            }
+            None if self.clock.is_empty() => match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            },
+            None => anyhow::bail!("no fixture clock for task {task}"),
+        }
+        Ok(())
+    }
+
     pub fn is_empty(&self) -> bool {
         self.mcp.is_empty()
     }
@@ -393,6 +450,12 @@ impl Fixtures {
                 FIXTURE_DIR_ENV.to_string(),
                 dir.to_string_lossy().into_owned(),
             );
+            if !self.clock.is_empty() {
+                env.insert(
+                    FIXTURE_CLOCK_ENV.into(),
+                    fixture_clock_path(home).to_string_lossy().into_owned(),
+                );
+            }
             out.push(crate::config::McpServerConfig {
                 name: s.name.clone(),
                 command,
@@ -1338,6 +1401,7 @@ impl Manifest {
             schedule: Schedule::default(),
             principal: None,
             fixtures: Fixtures::default(),
+            judge: None,
         };
         m.validate()?;
         Ok(m)
@@ -1375,6 +1439,7 @@ impl Manifest {
             schedule: Schedule::default(),
             principal: None,
             fixtures: Fixtures::default(),
+            judge: None,
         };
         m.validate()?;
         Ok(m)
@@ -1395,6 +1460,37 @@ impl Manifest {
     }
 
     fn validate(&self) -> Result<()> {
+        if let Some(judge) = &self.judge {
+            anyhow::ensure!(
+                !judge.provider.trim().is_empty() && !judge.model.trim().is_empty(),
+                "judge needs an explicit provider and model"
+            );
+        }
+        if !self.fixtures.clock.is_empty() {
+            anyhow::ensure!(
+                !self.fixtures.is_empty() && !self.tasks.ids.is_empty(),
+                "a fixture clock requires fixture servers and explicit task ids"
+            );
+            anyhow::ensure!(
+                self.fixtures.clock.len() == self.tasks.ids.len(),
+                "fixture clock must cover exactly the scheduled tasks"
+            );
+            let mut previous = None;
+            for task in &self.tasks.ids {
+                let stamp = self
+                    .fixtures
+                    .clock
+                    .get(task)
+                    .with_context(|| format!("no fixture clock for task {task}"))?;
+                let instant = chrono::DateTime::parse_from_rfc3339(stamp)
+                    .context("fixture clock needs RFC3339 instants")?;
+                anyhow::ensure!(
+                    previous.is_none_or(|p| instant >= p),
+                    "fixture clock must not move backwards"
+                );
+                previous = Some(instant);
+            }
+        }
         anyhow::ensure!(!self.name.is_empty(), "the manifest needs a name");
         crate::work::valid_producer(&self.name)
             .context("the experiment name is a directory name and a producer name")?;
@@ -1539,6 +1635,19 @@ impl Manifest {
     /// condition hash. `provider` and `model` are the operator's defaults;
     /// an arm that names its own overrides them, and the hash follows the
     /// arm. Pure: the store decides which have run.
+    fn with_grading_clock_hash(&self, original: String) -> String {
+        if self.fixtures.clock.is_empty() && self.judge.is_none() {
+            return original;
+        }
+        fnv64(
+            format!(
+                "{original}|clock={:?}|judge={:?}",
+                self.fixtures.clock, self.judge
+            )
+            .as_bytes(),
+        )
+    }
+
     pub fn trials(&self, task_ids: &[String], provider: &str, model: &str) -> Vec<Trial> {
         self.trials_with_world(task_ids, provider, model, None)
     }
@@ -1574,7 +1683,7 @@ impl Manifest {
                 task: task.clone(),
                 seed,
                 repetition: rep,
-                condition_hash: condition_hash_world(
+                condition_hash: self.with_grading_clock_hash(condition_hash_world(
                     &resolved,
                     &arm.overrides,
                     provider,
@@ -1584,7 +1693,7 @@ impl Manifest {
                     &fixtures,
                     &route,
                     charter_digest,
-                ),
+                )),
                 status: TrialStatus::Pending,
                 session_id: None,
                 started_at: None,
@@ -5056,5 +5165,74 @@ mod assistant_manifest_tests {
         assert_eq!(principal.postconditions.len(), manifest.tasks.ids.len());
         let roundtrip = toml::to_string(&manifest).unwrap();
         Manifest::parse(&roundtrip).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod grounding_tests {
+    use super::*;
+    fn manifest() -> Manifest {
+        Manifest::parse(include_str!("../../eval/assistant-lifetime.toml")).unwrap()
+    }
+
+    #[test]
+    fn fixture_clock_advances_persists_and_never_changes_ordinary_runs() {
+        let home = std::env::temp_dir().join(format!("mecha-clock-{}", uuid::Uuid::new_v4()));
+        let m = manifest();
+        assert_eq!(fixture_now(&home, true).unwrap(), None);
+        m.fixtures.apply_clock(&home, "assistant-reply").unwrap();
+        let day_one = fixture_now(&home, true).unwrap().unwrap();
+        assert_eq!(day_one.to_rfc3339(), "2026-10-12T12:00:00+00:00");
+        assert_eq!(fixture_now(&home, false).unwrap(), None);
+        m.fixtures.apply_clock(&home, "assistant-next-day").unwrap();
+        assert_eq!(
+            (fixture_now(&home, true).unwrap().unwrap() - day_one).num_days(),
+            1
+        );
+        std::fs::write(fixture_clock_path(&home), b"bad clock").unwrap();
+        assert!(fixture_now(&home, true).is_err());
+        assert_eq!(fixture_now(&home, false).unwrap(), None);
+        Fixtures::default().apply_clock(&home, "any").unwrap();
+        assert_eq!(fixture_now(&home, true).unwrap(), None);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn clocks_require_complete_forward_fixture_time_and_change_the_condition_hash() {
+        let m = manifest();
+        let hash = m.trials(&m.tasks.ids, "local", "model")[0]
+            .condition_hash
+            .clone();
+        for bad in ["not-a-date", "2026-10-11T12:00:00Z"] {
+            let mut changed = m.clone();
+            changed
+                .fixtures
+                .clock
+                .insert("assistant-next-day".into(), bad.into());
+            assert!(changed.validate().is_err());
+        }
+        let mut changed = m.clone();
+        changed.fixtures.clock.remove("assistant-next-day");
+        assert!(changed.validate().is_err());
+        let mut changed = m.clone();
+        changed.fixtures.mcp.clear();
+        assert!(changed.validate().is_err());
+        let mut changed = m.clone();
+        changed
+            .fixtures
+            .clock
+            .insert("assistant-next-day".into(), "2026-10-13T13:00:00Z".into());
+        assert_ne!(
+            hash,
+            changed.trials(&changed.tasks.ids, "local", "model")[0].condition_hash
+        );
+        changed = m.clone();
+        changed.judge.as_mut().unwrap().model = "different-judge".into();
+        assert_ne!(
+            hash,
+            changed.trials(&changed.tasks.ids, "local", "model")[0].condition_hash
+        );
+        let encoded = toml::to_string_pretty(&m).unwrap();
+        assert_eq!(Manifest::parse(&encoded).unwrap().fixtures.clock.len(), 5);
     }
 }

@@ -138,3 +138,22 @@ mecha exp export assistant-follow-through
 The fixture world is isolated from live mail and calendar accounts. Restart,
 ambiguous-delivery, stale-artifact and reminder-timing scenarios also have
 deterministic workspace tests.
+
+
+The assistant lifetime manifest also sets `[fixtures.clock]`: each task gets an
+explicit simulated instant shared by the model's date prompt and the fixture
+mail and board servers. The follow-up now occurs on the next simulated day.
+This does not change the machine clock or audit timestamps.
+
+Cases with `expect.judge` require an explicit `[judge]` provider and model in an
+experiment manifest. The judge receives recorded tool evidence, and a failed or
+unavailable judge fails its check. These checks supplement artifact checks;
+model verdicts still need review. The assistant manifest uses the local Qwen
+model as its judge, so its verdict is not independent of the model under test.
+Run the opt-in calibration before interpreting its scores:
+
+```bash
+MECHA_GROUNDING_ENDPOINT=http://127.0.0.1:8080 \
+MECHA_GROUNDING_MODEL=qwen3.6-35b-a3b \
+cargo test -p mecha-core --test grounding_judge -- --ignored --nocapture
+```
