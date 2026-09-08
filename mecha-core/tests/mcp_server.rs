@@ -429,6 +429,40 @@ async fn a_server_asking_for_confinement_with_no_backend_never_starts() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+#[tokio::test]
+async fn close_waits_for_the_server_to_flush_on_eof() {
+    if unavailable("python3", python3_available()) {
+        return;
+    }
+    let dir = tmpdir("mcp-eof-close");
+    let script = r#"import json, sys
+from pathlib import Path
+for line in sys.stdin:
+    req = json.loads(line)
+    if 'id' in req:
+        print(json.dumps({'jsonrpc':'2.0', 'id':req['id'], 'result':{}}), flush=True)
+# Cleanup may itself write more than a pipe's capacity. The host must keep
+# draining stdout while it waits, rather than aborting its reader first.
+print(json.dumps({'jsonrpc':'2.0', 'method':'notifications/flush', 'params':{'data':'x' * 131072}}), flush=True)
+Path('flushed').write_text('saved on EOF')
+"#;
+    let cfg = McpServerConfig {
+        name: "eof-close".into(),
+        command: "python3".into(),
+        args: vec!["-u".into(), "-c".into(), script.into()],
+        ..Default::default()
+    };
+    let client = McpClient::connect(&cfg, &unconfined(), &dir).await.unwrap();
+    client.close().await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("flushed")).ok().as_deref(),
+        Some("saved on EOF")
+    );
+    client.close().await.unwrap();
+    drop(client);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// EOF is a request to stop, not proof the third-party process stopped.
 /// The fixture stays alive until the test releases it, so even the failing
 /// implementation leaves no orphan after this test completes.
