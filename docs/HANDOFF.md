@@ -2155,9 +2155,8 @@ is recoverable without the checkout's cwd. Record:
   `mecha-mail` — nothing under it changed and it has no `mecha-core`
   dependency. Graph binaries and the benchmark musl build checked and
   current; the factory client and the droplet were 0.2.8 and current
-  *then* — superseded by the 2026-09-06 bullet above (client 0.2.9,
-  droplet 0.2.8 and behind); the sandbox image's toolchain matches the
-  host.
+  *then* — both since verified at 0.2.9; see the 2026-09-08 update in
+  **Environment as left**. The sandbox image's toolchain matched the host.
 
   **The installed binary was verified by what it can do, not by its mtime:**
   `strings ~/.cargo/bin/mecha` finds all three of #158's new literals
