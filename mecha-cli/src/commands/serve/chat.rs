@@ -268,6 +268,29 @@ pub(super) fn session_workspace(key: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// File routes must use the same session entry as tool calls. In particular,
+/// a resumed conversation's key is not the directory its transcript names.
+/// Creation goes through ensure_session so uploading before the first prompt
+/// still works and leaves one authoritative workspace in the session map.
+pub(super) async fn attachment_workspace(
+    state: &super::WebState,
+    key: &str,
+    create: bool,
+) -> Result<PathBuf, Box<axum::response::Response>> {
+    let chat = chat_state(state).map_err(Box::new)?;
+    let mut sessions = chat.sessions.lock().await;
+    if !create {
+        return sessions
+            .get(key)
+            .map(|session| session.workspace.clone())
+            .ok_or_else(|| Box::new((StatusCode::NOT_FOUND, "no such session\n").into_response()));
+    }
+    let session = ensure_session(chat, &mut sessions, key).map_err(|e| {
+        Box::new((StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response())
+    })?;
+    Ok(session.workspace.clone())
+}
+
 // ---------------------------------------------------------------------------
 // The wire: what the page receives, over SSE and in the transcript read.
 // Pure functions of core types, so they are testable without a server.
@@ -3093,4 +3116,51 @@ mod wire_tests {
             }]
         );
     }
+}
+
+#[cfg(test)]
+pub(super) fn test_chat() -> Arc<ChatState> {
+    struct NoRequests;
+    #[async_trait::async_trait]
+    impl mecha_core::provider::Provider for NoRequests {
+        fn id(&self) -> &str {
+            "test"
+        }
+        fn default_model(&self) -> &str {
+            "test"
+        }
+        async fn complete(
+            &self,
+            _: &mecha_core::message::CompletionRequest,
+            _: Option<&mecha_core::provider::StreamSink>,
+        ) -> Result<mecha_core::message::CompletionResponse> {
+            panic!("file routes must never call a provider")
+        }
+    }
+    let config = Config::default();
+    let agent = Agent::new(
+        Box::new(NoRequests),
+        mecha_core::tool::Registry::new(),
+        Arc::new(mecha_core::tool::ModeApprover {
+            mode: PermissionMode::ReadOnly,
+        }),
+        ToolCtx::default(),
+        config.agent.clone(),
+        None,
+    )
+    .unwrap();
+    Arc::new(ChatState {
+        agent: Arc::new(agent),
+        routes: Arc::default(),
+        config,
+        provider_name: "test".into(),
+        model: "test".into(),
+        levers_off: vec![],
+        rules: Default::default(),
+        context_window: None,
+        outbox_root: OutboxStore::default_root().unwrap(),
+        sessions: Mutex::new(HashMap::new()),
+        todo: None,
+        _mcp: vec![],
+    })
 }

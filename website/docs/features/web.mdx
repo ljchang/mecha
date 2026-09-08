@@ -59,7 +59,7 @@ the shipped app.
 
 ## The door
 
-Three rules, and the first two are the whole security model:
+The door checks both identity and request intent:
 
 - **The bind is `127.0.0.1`, and there is no flag to widen it.** Reaching
   the app from your phone is [`tailscale serve`](https://tailscale.com/kb/1242/tailscale-serve)'s
@@ -73,6 +73,11 @@ Three rules, and the first two are the whole security model:
 - **`[web]` is global-file-only.** Like `[slack]`, it is stripped out of
   project-level `mecha.toml` files, so a cloned repository cannot describe
   the door to your own machine.
+- **Writes must come through the app's request wrapper.** The browser sends
+  `X-Mecha-Request: 1` on mutations, and requests identified as coming from
+  another site are refused. This stops a foreign page from submitting an
+  action using your ambient tailnet identity. Reload the app after upgrading;
+  scripted API clients must include that header on writes too.
 
 ```toml
 [web]

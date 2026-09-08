@@ -1,4 +1,5 @@
 <script>
+  import { apiFetch as fetch } from './api.js';
   import { tick } from 'svelte';
   import {
     readingStands,
@@ -260,7 +261,7 @@
   // ── Re-ranking by drag ─────────────────────────────────────────────────
   // Pointer events, not HTML5 drag-and-drop: this surface is a phone first,
   // and dragstart/dragover never fire for touch.
-  let listEl;
+  let listEl = $state(null);
   let dragUid = $state(null);
   let dragDy = $state(0);
   let dragEl = null;

@@ -1,4 +1,5 @@
 <script>
+  import { apiFetch as fetch } from './api.js';
   import { readVoicePrefs, writeVoicePrefs } from '../../../scripts/voice/voice-core.js';
 
   // The voice pane: how calls sound, and the references the local cloner

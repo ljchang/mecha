@@ -120,6 +120,7 @@ export function writeVoicePrefs(patch) {
 export function createVoiceSession(opts = {}) {
   const cfg = {
     offerUrl: "/api/offer",
+    offerHeaders: {},
     sessionKey: null,
     onState: () => {},
     onTranscript: () => {},
@@ -412,7 +413,7 @@ export function createVoiceSession(opts = {}) {
     if (cfg.sessionKey) offerBody.request_data = { session: cfg.sessionKey };
     const resp = await fetch(cfg.offerUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...cfg.offerHeaders },
       body: JSON.stringify(offerBody),
     }).catch(() => null);
     if (!resp || !resp.ok) { end("could not reach mecha — tap to retry"); return; }

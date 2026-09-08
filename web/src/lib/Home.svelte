@@ -1,4 +1,5 @@
 <script>
+  import { apiFetch as fetch } from './api.js';
   // The read-only dashboard: `mecha review queues --json` and
   // `mecha doctor --json`, rendered. A null depth is a dash — "nothing
   // waiting" and "could not look" are opposite findings.
