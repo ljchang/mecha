@@ -1743,10 +1743,13 @@ async fn run_one(
                 .session_id
                 .as_ref()
                 .context("no session for rubric evidence")?;
-            let (_, conversation) = mecha_core::session::Session::load(
+            let transcript = mecha_core::session::Session::read(
                 &home.join("sessions").join(format!("{id}.jsonl")),
             )?;
-            let evidence = mecha_core::eval::tool_evidence(&conversation.messages)?;
+            let evidence = mecha_core::eval::grounding_evidence(
+                &transcript.convo.messages,
+                &transcript.configs,
+            )?;
             let judge = experiment_judge(manifest, real)?;
             Ok::<_, anyhow::Error>(
                 judge
