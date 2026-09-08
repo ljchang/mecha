@@ -62,6 +62,9 @@ tool. A failed release records the error and leaves the item **pending**: the
 draft is still good, the delivery was not, and the next `send` retries.
 Resolution rewrites the item in place rather than archiving it, so the file is
 its own audit record; a rejection stays on disk as the record of the refusal.
+`mecha outbox reject --all` processes every selected pending draft. An uncertain
+delivery remains pending for reconciliation; other eligible drafts are rejected.
+The command reports rejection/failure counts and exits nonzero if any item fails.
 
 ## A reply is shown with the message it replies to
 
