@@ -29,6 +29,15 @@ all pass, including a server that ignores EOF. Two control-worker tests cover
 late creation and runtime teardown. These source changes close the container
 gap recorded below; they are not yet installed.
 
+PR review found that `run::execute` used `process::exit` while `prepared`
+still owned the clients. It now releases them after recording and session
+hooks, before either special exit. Two real-binary regressions reproduce the
+refusal and no-output container leaks and pass with cleanup enabled. Control
+errors also retain a bounded stderr tail while continuously draining Docker's
+progress output. The review's adjacent mode-route finding was reproduced with
+a percent-encoded traversal key; `set_mode` and `answer` now validate keys like
+the other handlers. The CI sandbox job requires the process-exit tests too.
+
 **2026-09-08 — PR #213 deployed after merge.** After CI and automated review,
 `a3f1682d` was installed with `cargo install --path mecha-cli --locked --force`
 and a fresh web build. Serve, Slack, triggers and drain restarted at 14:15 UTC.
@@ -6988,6 +6997,16 @@ check the timestamp before re-running anything.**
 
 
 ### Environment
+
+**An executable path can be right while its bytes belong to another tree.**
+During the 2026-09-08 lifecycle checks, integration tests launched Cargo's
+named binary from a shared target directory, but tracing showed the older
+`docker run` path instead of the branch's create/start path. A library test
+filter also found zero tests while the named test existed in source. Final
+validation moved to a target directory dedicated to this worktree. The lesson:
+sharing build outputs across worktrees weakens artifact identity; require the
+expected test to run and verify the executable's behavior before trusting a
+passing or failing result.
 
 **A detached cleanup thread does not outlive the process.** The Docker MCP
 lifetime fix initially delegated all removal work to a new thread. A one-shot

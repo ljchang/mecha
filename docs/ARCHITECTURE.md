@@ -1549,6 +1549,9 @@ before subscribing and loading, including on reconnection after a server
 restart. Otherwise a foreign page can create stores through GET even though
 every unsafe method is guarded. Abandoning an opening chat aborts its pending
 request and prevents a late response from subscribing to the old key.
+Every mutation that creates a session validates the decoded key, including
+mode changes: authentication and request intent do not make a traversal-shaped
+key safe to join into a workspace path.
 
 **Attachments use the conversation's workspace.** `attachment_workspace`
 reads the same session entry as the agent; deriving a directory from a browser
@@ -1573,6 +1576,8 @@ Holding a Tokio `Child` without that option does not terminate it, and closing
 stdin alone does not stop a server that ignores EOF. Constructing the owner
 before initialization also covers failed and cancelled handshakes. This
 guarantee concerns the spawned child, not arbitrary descendants it launches.
+`run::execute` releases `prepared` after transcript recording and session hooks
+but before its refusal/no-output `process::exit` calls, which skip destructors.
 **Docker needs a separate container owner.** Killing the attach CLI does not
 terminate a daemon-owned container, and `--rm` waits for its server to exit.
 `sandbox::DockerContainer` creates a uniquely named container before attaching
@@ -1587,8 +1592,12 @@ standard thread for bounded waits and retries. Merely scheduling an async task
 or a thread loses cleanup when the runtime or ordinary CLI exits immediately.
 A successful empty container listing proves an already-removed container;
 daemon errors never count as absence. Exhausted cleanup retries log the name
-for recovery. This is normal-lifetime ownership, not crash recovery: an
-unavailable daemon, host crash, or forced termination can still leave resources.
+for recovery. Control commands drain stderr continuously and retain a bounded
+tail for failures: discarding it turns missing images and inaccessible daemons
+into the same unexplained exit code, while reading only after exit can block
+Docker on a full progress-output pipe. This is normal-lifetime ownership, not
+crash recovery: an unavailable daemon, host crash, or forced termination can
+still leave resources.
 
 ## Hooks
 

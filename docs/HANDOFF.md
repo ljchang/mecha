@@ -30,8 +30,9 @@ door serves the installed bundle. The follow-up branch
 transcript/event routes and Docker MCP container ownership. Those follow-up
 changes await PR review and CI and have not been installed.
 The eval fixture remains **36 cases, 15 tags**, counted from `eval/cases.jsonl`.
-Local validation: **2,507 passed, 2 ignored** across the workspace (CLI 795,
-first-run 20, core 1,441, fixtures 4, MCP 11, sandbox 9, mail 150 plus its
+Local validation in a dedicated worktree target directory: **2,511 passed,
+2 ignored** across the workspace (CLI 796, first-run 20, process-exit 2,
+core 1,442, fixtures 4, MCP 11, sandbox 9, mail 150 plus its
 binary test, Slack 75, and one doctest). Build, format, clippy with warnings
 denied, web tests/build, and all 14 browser render checks pass. Sandbox and MCP
 integration suites also pass with `MECHA_TEST_REQUIRE_BACKENDS=1`.
