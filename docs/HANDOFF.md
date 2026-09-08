@@ -22,6 +22,19 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-08 review fixes:** branch `fix/review-security-and-lifecycle`
+contains the browser request guard, confined attachment I/O using the recorded
+session workspace, MCP child cleanup, bounded file reads, and Svelte state
+fixes. PR review and CI are the remaining release gate; no deployment occurred.
+The eval fixture remains **36 cases, 15 tags**, counted from `eval/cases.jsonl`.
+Local validation: **2,501 passed, 2 ignored** across the workspace (CLI 794,
+first-run 20, core 1,439, fixtures 4, MCP 8, sandbox 9, mail 150 plus its
+binary test, Slack 75, and one doctest). Build, format, clippy with warnings
+denied, web tests/build, and all 13 browser render checks pass. Sandbox and MCP
+integration suites also pass with `MECHA_TEST_REQUIRE_BACKENDS=1`.
+Source-verified corrections to the older open-work list are recorded in
+`HISTORY.md` under this date; dated measurements retain their original scope.
+
 Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.16**
 (2026-08-29 — the appraisal system survives its own review: PRs #111/#112,
 failed-turn transcript integrity, positional configs for the probe,
@@ -527,6 +540,16 @@ binary is absent |
 `cargo clippy --all-targets` is clean and should stay that way.
 
 ## Environment as left
+
+**Verification boundary, 2026-09-08:** the read-only local `/props` probe
+reported `model_alias = qwen3.6-35b-a3b`, `total_slots = 4`,
+`default_generation_settings.n_ctx = 262144`, and vision enabled. Unit-file
+checks found the serve, slack, drain, triggers, parakeet and voice-worker
+services enabled, plus frontdoor, mail-classify, ruminate and slots timers.
+This is configuration evidence, not proof of each service's running build.
+No binary was installed or service restarted in this session; older installed
+artifact, credential, private-store and remote deployment claims below remain
+dated observations, not freshly verified current state.
 
 > **This checkout is a live service's `ExecStart`. Do not `git stash`, `git
 > checkout --`, `git restore` — or `git checkout <branch>`.**
@@ -2244,37 +2267,6 @@ tested, but has never been exercised against the real box by a person:
 
 Everything else below is independent of that.
 
-**Swept again 2026-08-25**, and that pass is the reason this section carries
-a warning. The mail section below had listed six shipped phases as unbuilt
-since 2026-08-19 — see the trap in [`HISTORY.md`](HISTORY.md) under Measuring.
-Two further items closed the same day and moved out (the candidate-class gap
-and `show_file`'s call-time config read). The blanket sentence that follows
-was true of the items it names and was **not** true of the mail section, which
-is why a claim of full coverage now needs the evidence beside it.
-
-Every item below was re-verified against source on **2026-08-24** (a
-72-item sweep after the day the phone became a terminal — the web-surface
-and voice arcs, 45 commits). Almost everything held its verdict; the items
-that changed are rewritten in place below, chiefly: the approval race is
-now solved once (`serve/present.rs`) with routing to Slack still open, the
-`mecha serve` item part-shipped as a third front-end rather than a shared
-backend, and the "Slack `ask_user` is structurally absent" claim is half
-false since `Asker::ask_in` landed. A new subsection right after the
-remote-control one holds what the new code left open. The prior full pass
-was **2026-08-20** — MCP
-resources (`mecha-core/src/mcp.rs:206` still advertises `"capabilities": {}`),
-HTTP/SSE transports, the subagent workspace field, per-command approval, the
-seccomp half of the sandbox item, `Rule`'s missing scope, the raw reflection
-window, file watchers and a TUI export are each still absent from the file the
-item names, and `gossip`/`vet`/`corroborate` are still in `mecha-cli/src/commands/`.
-Three items changed that pass. **Skills** and **Google Docs/Sheets/Slides
-write access** both said "not built" and are fully shipped
-(`mecha-core/src/skill.rs`; `mecha-mail/src/google/docs.rs`,
-`google/docs_server.rs` and a 323-line `bin/mecha-docs.rs`), so both moved to
-[`HISTORY.md`](HISTORY.md). The **task store** item shipped in part — the
-`/tasks` modal and direct capture exist and the store turned out to be the
-graph's board rather than a new one under `~/.mecha/` — and has been rewritten
-under Triggers to describe only the escalation half that is still missing.
 Ordered by value per unit of effort, not by size.
 
 ### The scheduling instrument — live since 2026-08-08
@@ -2629,17 +2621,6 @@ the mechanism and every decision. What it left standing:
     what the owner asked for — *"when the question is answered it should
     resume in the queue"*. Worth building only if refusals actually happen;
     the permit files make that countable.
-  - **PR #84 is open and unmerged**, with the last three findings from the
-    #78 review: the pressure line stating a cost and a turn count derived from
-    different numbers (a 400-token pace read as *"~1k each, so about 224
-    more"* against a 100k limit), an unreachable match arm beside it, and
-    `replay.rs` / `harness_probe.rs` building `ToolCtx::default()` so a
-    recorded compaction answers *"compaction is not enabled for this run"* —
-    false of the run being replayed, a divergence under
-    `--on-divergence=live`, and in a harness probe a `compact_at_tokens`
-    candidate measured on runs that never compacted. 1,566 tests and clean
-    lint locally; **CI unverified** — it had not reported when the session
-    ended. Check it before merging rather than trusting this line.
   - **The overnight half of R3 is still unmeasured.** The contention half was
     run (see the measurement record) and answered the question R1 rested on.
     What §3.4 also asks — *does a conversation parked overnight get its prefix
@@ -2726,9 +2707,8 @@ the mechanism and every decision. What it left standing:
     decided against on: the seed asks on the user turn because that is the
     channel this model obeys, and here it obeyed the *content* of the
     instruction (ask first, one question, list every unknown) while ignoring
-    its *mechanism*. Worth a second look before concluding anything — if it
-    repeats, the cheap fix is naming the tool call in the sentence that
-    already says what to ask.
+    its *mechanism*. `work_prompt` now explicitly names one `ask_user` call
+    covering every unknown; the effect on this failure remains unmeasured.
   - **D12, the plan gate — decided against as written, on 2026-08-26, and
     the cheap half shipped instead.** Do not build it from the design doc;
     read `work_prompt`'s doc comment in `commands/tasks.rs` first, which
@@ -2760,8 +2740,6 @@ the mechanism and every decision. What it left standing:
     stage, and the downside of letting a run go is bounded by construction.
     That stops being true the moment a delegated run can get approval from a
     present human.
-  - **Phase 6** is admission control (R1) — explicitly not worth building
-    until more than one delegation at a time is routine.
   Two things found while building the return path are worth knowing before
   touching this arc again. **A task run's `Record::Outcome` only exists from
   2026-08-26 (second pass) onward** — `tasks work` and `questions answer`
@@ -3198,8 +3176,7 @@ against the run's registry (`rules_carried_for`), and `RunConfig::rules_hash`
 + `rule_ids` beside `RunStats::delivered`. **Open from item 3, named in the
 §17.4 built note:** mid-run delivery on a recurring condition (§17.7 item 2
 keeps it off by default until the null-step and restart counters are read),
-region widening and narrowing in consolidation, per-region validation
-budgets, the situation backfill (§17.7 item 6 — **built 2026-09-04 night
+the situation backfill (§17.7 item 6 — **built 2026-09-04 night
 as `mecha reflect --backfill-situations`, `feat/situation-backfill`;
 the owner ran the write 2026-09-04 23:12Z: 37 of 45 recomputed, 8 absent
 with reasons, learning-store commit `5767dc4`**), and
@@ -3415,14 +3392,11 @@ repeated here.
   sensors (with the seven containments §3.6/§3.11 of the review's reply
   name — never a `Metric`, never in the prompt, id-join attribution, doctor
   reports saturation, the editor shows the reading; designed since at
-  `GOAL-SYSTEM-DESIGN.md` §11.1). **Open, in order:** the `Interrupted`
-  split (parked vs cancelled; `questions.rs`'s cancel is the one park
-  site; unblocked now that #139's lenient `stop_cause` read is on `main`)
-  and cancel-and-re-prompt as an intervention; phase B's leftovers — the
+  `GOAL-SYSTEM-DESIGN.md` §11.1). **Open, in order:** phase B's leftovers — the
   three trajectory counters and the trigger read receipt; phase C — firing
   `Mismatch` (one per step, three per run), the reflection that cites turn
-  ids, the next-turn prior and the per-kind retrieval prior; charter
-  sensors, from the design section; the tamper count folded into
+  ids, the next-turn prior and the per-kind retrieval prior; the remaining
+  `board_overdue` and `cost` charter sensors; the tamper count folded into
   `RunStats`; and the experiments and ablations the owner asked for now
   that this round has landed (`EXPERIMENT-DESIGN.md`, structural switches
   forced off under `mecha eval`, never a prompt). The corpus numbers in
@@ -3910,12 +3884,8 @@ is true now:
   `subagent.rs` passes the caller's `ToolCtx` verbatim, so a child's jail is
   always exactly its parent's. A subagent that should only read one directory
   cannot be expressed.
-- **Per-command approval policy.** `ModeApprover::approve` takes the tool input
-  and ignores it (`mecha-core/src/tool/mod.rs`), branching only on mode and
-  `read_only`. So `shell: ls` and `shell: rm -rf` are the same decision. There
-  is no per-command rule surface in config to hang this on yet.
-- **Structured output has no provider abstraction.** The `Provider` trait exposes
-  only `id`/`default_model`/`complete`. GBNF, `guided_json` and
+- **Structured output has no provider abstraction.** The `Provider` trait has
+  no structured-output request contract. GBNF, `guided_json` and
   `output_config.format` are all spellings of the same idea and none is reachable.
 - **A seccomp layer on the sandbox.** Landlock itself shipped 2026-08-16
   (`Backend::Landlock`, `sandbox.rs` — no-privilege file confinement, hard
@@ -3970,9 +3940,8 @@ What is missing beyond that is refinement:
   run whose registry matches it. What is still missing is the §17.4
   *Delivery* half — one line on a tool's result the first time a recorded
   condition recurs, ruled off-by-default in `GOAL-SYSTEM-DESIGN.md` §17.7
-  item 2 — plus consolidation's widening across sub-regions and the
-  per-region validation budget; without widening a rule stays as narrow as
-  the batch that learned it.
+  item 2. Consolidation widening and regional validation are implemented by
+  `learning::finalize_region_rules` and `validate::cover_selection`.
 - **Rules that are facts should graduate to pkg.** No classifier routes
   fact-shaped rules into `kg_upsert` as staged candidates; `distill.rs` pushes
   episodes only.
@@ -3990,8 +3959,6 @@ What is missing beyond that is refinement:
   answer worth acting on.
 - **The CIPHER tier** — per-context preferences, embedded and retrieved top-k —
   exists as a comment and nothing else.
-- **A `/learning` TUI view.** The store is files by design so it can be read
-  without tooling, but nothing surfaces it in the interface.
 
 ### Triggers
 
@@ -4008,8 +3975,8 @@ What is missing beyond that is refinement:
   somewhere to hang the state, and nothing hangs it. Design in
   `PUBLIC-SURFACE-DESIGN.md` §3.2–3.3.
 - **Policy questions as a new `proposals` kind — not a third queue.**
-  `ask_user` is absent from unattended runs by construction, so a trigger can
-  stage but cannot ask. (2026-08-24 sharpened the premise without changing
+  Ordinary unattended triggers can stage but cannot ask; delegated tasks
+  already have `questions::ParkingAsker`. (2026-08-24 sharpened the premise without changing
   the conclusion: `Asker::ask_in` proves a *shared* agent can route a
   question to the right present human — the web surface does it — but
   unattended still means nobody to route to, which is what this item is
@@ -4093,8 +4060,6 @@ the authority** — restated here only far enough to be choosable:
   clean` has the policy shape, but an archived verdict is also the eval fixture
   and the few-shot pool, so deleting costs what sweeping the work directory
   does not. §7.6.
-- **Whether `t` can point back at the thread.** `kg_task_create` has no field
-  for it, so it lives in the name or needs a pkg change. §7.2.
 
 **Local state in no repository**, and the next session will want it:
 
@@ -4129,7 +4094,7 @@ the authority** — restated here only far enough to be choosable:
 
 - **Steering and queuing are the same key.** Enter starts a run when idle and
   steers one already going; there is no way to queue a follow-up instead.
-- **No `/export` or copy.** `NAMES` lists twenty-five commands
+- **No `/export` or copy.** `command::NAMES` lists the available commands
   (`tui/command.rs:314`, re-counted 2026-08-25 after `/entity` landed;
   twenty-four on 2026-08-24, twenty-one on 2026-08-21,
   after `/docs`, `/send` and `/remote-control`) and none of them get the
@@ -4181,15 +4146,16 @@ the authority** — restated here only far enough to be choosable:
 mecha-graph shipped 2026-08-16 (repo public, three crates at 0.1.0, tools
 unprefixed, store at `~/.mecha-graph/`). What that arc left open:
 
-- **Notes have a home and no way in.** The graph already treats notes as a
+- **Notes lack automated source sync.** Reflect ZIP ingestion is implemented
+  by `IngestSource::Reflect` and `sources::reflect::ingest_zip`; `source add`
+  and `source sync` integration, and other notes apps, remain missing.
+  The graph already treats notes as a
   first-class *user-authored* source — `reflect.note` is an episode kind keyed
   by the note's stable id, `content_hash` catches an edited note as an update
   rather than a duplicate, and `reflect-process` promotes a structured note
   (`Type: #person/#company/#book`) into entities with identifiers and facts.
-  That is the hard half and it is built. What is missing is **ingestion**:
-  Reflect appears nowhere in `INTEGRATIONS.md`'s sources table, so notes reach
-  the graph only if something else puts them there, and no other note
-  application is understood at all.
+  That processing is built; the remaining gap is ongoing source ingestion
+  without repeatedly supplying an export.
 
   Worth doing because notes are the highest-confidence source the graph has —
   they are the user's own words about their own world, where mail and Slack are
@@ -4216,8 +4182,8 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   mecha introduction's integration table deliberately omits notes for exactly
   that reason, and should gain a row only when a source exists.
 
-- **No release workflow.** The three crates were hand-published; the repo has
-  no CI at all. mecha's tag-driven workflow with Trusted Publishing is the
+- **No release workflow.** The three crates were hand-published. The graph
+  repo has denylist and review CI, but no release workflow. mecha's tag-driven workflow with Trusted Publishing is the
   template, and the half-published-workspace trap it documents applies
   verbatim to a three-crate workspace with an internal dependency.
 - **The dependency inversion is scoped and unstarted.** `vet`, `gossip`, and
@@ -4260,11 +4226,13 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   class's rung, human record, Wilson LB and pending count, and
   `ladder --promote` re-derives rungs one rung per pass — run live, it
   unstuck `works_on`/`member_of`/`located_in` and the queue fell 7,296 →
-  6,569 the same day. Deliberately **never demotes**: demotion stays
-  correction-driven (D3), so `llm/works_at` still sits at `sampled` on an LB
+  6,569 the same day. `ladder::recompute` does not demote from acceptance
+  statistics; retrieval-utility demotion exists in `ladder::utility_demotions`
+  alongside correction-driven D3. The dated observation was `llm/works_at`
+  at `sampled` on an LB
   of ~0.49 — under the 0.65 floor, auto-accepting nine in ten on evidence
   that no longer justifies it. What remains is that ruling (statistical
-  demotion, or leave D3 as the only path down) and wiring `--promote` into
+  demotion, or retain only the existing demotion paths) and wiring `--promote` into
   the nightly before precheck so threshold changes take effect without a
   review session. Note `reviewed_by` (V017, same day) now labels machine
   accepts, so the human record the recompute reads is exact going forward.
@@ -4307,29 +4275,6 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   17,600, about 44 nights — and bumping `PROMPT_VERSION` re-queues the whole
   corpus. Add the field; fix the comment before it sizes another batch.
 
-- ~~`mecha-graph fork` is broken~~ **Fixed 2026-08-26 evening** (graph
-  `237b686`), so there is a working test bed again — `fork --out …` completes
-  on the live 202 MB store in 1m38s with counts matching exactly. It was
-  never a bug in `fork`: all three copy paths run migrate-then-copy, the
-  harrier switch (2026-08-20) left the source's `vec0` tables wider than
-  `run_migrations` builds them, and the reconciliation had been added to
-  **one** of the three. `encrypt_in_place` was broken too and nobody noticed,
-  because `fork` is the only one of the three people run on a whim — so a bug
-  in two paths read as "forking is broken". Now in `copy_all_tables`, which
-  every path calls. **A step every copy path needs belongs in the function
-  every copy path calls**, and this trio has now broken together twice from a
-  change to the destination's schema made before the copy; the first was a
-  migration seeding a node.
-
-- **Gossip's rotation cannot fill its quota.** `probe-targets` returns exactly
-  10 candidates; `GOSSIP_ENTITIES=3` with `GOSSIP_COOLDOWN_DAYS=7` demands 21
-  distinct targets a week from those 10, so nights silently under-fill (2 on
-  08-22, 1 on 08-17, 2 on 08-16). Either drop to 2 a night, cut the cooldown
-  to 3 days, or do the upstream fix `nightly-mecha.sh` already names — stop
-  counting gossip's own reads as `retrieval_touch` demand. The
-  self-reinforcement it warns about is visible in the current ranking: Frank
-  Chang leads at 26 touches *because* he was probed.
-
 - **`--create-subjects` will mint the next placeholder, and nothing stops
   it.** The 2026-08-26 repair merged away 30 topic nodes whose *display name*
   was another node's id, all created by `accept --create-subjects` answering
@@ -4367,9 +4312,6 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   documents one level up, and an inventory of "what is running" that only
   lists things with a `--version` will always miss a cron job.
 
-- **A stranger-facing README pass.** The public README still reads like the
-  private repo's; nothing in it walks a person from `cargo install
-  mecha-graph` to a populated graph.
 - **Cosmetic**: the private checkout still lives at
   `~/Github/personalized_knowledge_graph` (paths baked into mecha's config
   `command =`, two crontab lines, and the gitignored OPERATIONS.md), and
@@ -4659,11 +4601,6 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   is right and is why — the cost is that config is a wire format between
   versions, and long-lived processes must be restarted after a config key is
   added, not only after an install.
-
-  Worth a look if it recurs: `show_file` loads the **whole global config** at
-  call time for one number (`slack.max_upload_mb`), which is what couples an
-  unrelated section's strictness to a tool call mid-run. Capturing it at
-  registration would decouple them.
 
   **`~/.mecha/config.toml` gained `vision = true` on `[providers.local]`**, and
   that file is in no repository — a fresh clone gets the code, the projector

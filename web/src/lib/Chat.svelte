@@ -1,4 +1,5 @@
 <script>
+  import { apiFetch as fetch } from './api.js';
   // The chat view: a rendering of the conversation the server owns, plus a
   // live SSE feed of the run in flight. Sending during a run steers it —
   // the server folds the text into the tool-results turn.
@@ -697,6 +698,7 @@
       // Same-origin: serve proxies to the loopback runner, so the offer
       // rides the owner guard and no cross-origin fetch exists to fail.
       offerUrl: '/api/offer',
+      offerHeaders: { 'X-Mecha-Request': '1' },
       // D3: the call is this conversation. Read at connect time rather
       // than bound reactively — switching sessions mid-call must not
       // silently redirect the words being spoken into a different one.

@@ -146,6 +146,7 @@
 </script>
 
 <script>
+  import { apiFetch as fetch } from './api.js';
   // The graph queue on the phone, at the TUI /queues modal's three depths:
   // proposers → one proposer's classes (with the evidence-tier filter) →
   // either a random sample deck or the class's similarity groups.

@@ -172,3 +172,6 @@ mod process_alive_tests {
         );
     }
 }
+
+#[cfg(unix)]
+pub mod workspace_files;
