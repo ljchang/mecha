@@ -20,7 +20,8 @@ maps which document holds what.
 
 ---
 
-**2026-09-08 implementation branch:** `feat/personal-assistant-follow-through`,
+**2026-09-08 implementation branch:** PR [#216](https://github.com/ljchang/mecha/pull/216),
+`feat/personal-assistant-follow-through`,
 in the isolated `/tmp/mecha-personal-assistant` worktree. The new workflow,
 delivery, provenance, extraction and evaluation features are described in
 `HISTORY.md` and `ASSISTANT-FOLLOW-THROUGH-DESIGN.md`; no installation or service
@@ -32,9 +33,9 @@ and 15 tags; the additional assistant set has five cases and six tags. Source
 verification of the open-work section removed stale completed entries below;
 remote deployments and sibling-repository work were not reverified.
 
-Final branch verification on 2026-09-08, rebased onto `a75b9467`: **2,539
+Final branch verification on 2026-09-08, rebased onto `f22992c5`: **2,556
 workspace tests passed**, three ignored (796 CLI, 20 first-run, 3 process-exit,
-1,467 core, 5 fixture, 11 MCP, 9 sandbox, 151 mail library, 1 mail binary,
+1,484 core, 5 fixture, 11 MCP, 9 sandbox, 151 mail library, 1 mail binary,
 75 Slack, 1 doctest). The whole workspace ran with `MECHA_TEST_REQUIRE_BACKENDS=1`.
 Formatting, Clippy with warnings denied, all-targets build, frontend tests/build
 and documentation build passed. Demo endpoint coverage and all 15 browser
@@ -52,7 +53,10 @@ all final answers found no recurrence of the targeted grounding errors. Runs
 are preserved in `results/assistant-follow-through-2026-09-08.json` and
 `results/assistant-grounding-2026-09-08.json`. General runtime truth enforcement
 remains unbuilt; the rubric grades after the run and the local judge is the same
-model as the assistant, not independent evidence.
+model as the assistant, not independent evidence. The final live measurement
+preceded integration of PR #215; that replay-only change does not participate in
+the live fixture run. A regression covers provenance following matched arguments
+when replay batches are reordered.
 
 ## Where the work is
 
