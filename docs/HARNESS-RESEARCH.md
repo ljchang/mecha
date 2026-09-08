@@ -331,3 +331,87 @@ budgets derived from the window.
    four mechanisms that push toward re-checking yourself (learned rules,
    carried state, summary validation, loop guard). Measure that stack with
    `--ab-rules` and pass^k before adding a fifth.
+
+---
+
+## 9. The replay corpus cannot measure a config knob (2026-09-08)
+
+**A measurement whose sample is selected by the thing it measures reports
+nothing, however honest its gate is.** The nightly `harness ruminate` pass has
+proposed and measured config candidates since 2026-09-02, and every one has
+come back `0+ 0- n=` — no arm ever wins, loses, or could.
+
+### What the gate actually sees
+
+`harness_probe` draws episodes from the run corpus, replays each under two
+arms, and drops any episode whose replay leaves the recording. On 2026-09-08,
+measuring `effort=low`, **12 of 16 drawn episodes diverged and were dropped**,
+leaving 3 paired in the selection and 1 in the holdout against a floor of 8.
+That is not one bad night — across every candidate ever measured the paired
+count has been 3 or 4, and the floor has never once been cleared:
+
+```
+$ grep -h -oE 'only [0-9]+ paired episode' ~/.mecha/learning/logs/2026-0*.log | sort | uniq -c
+      5 only 3 paired episode
+      9 only 4 paired episode
+```
+
+The four survivors on 2026-09-08 were four copies of one scripted smoke test
+whose prompt reads *"follow these steps literally and exactly, in order …
+do not skip any call"*. **That is the selection effect: surviving replay
+requires a deterministic tool sequence, and the only prompts that produce one
+are the prompts that dictate it — which are exactly the prompts no config knob
+can move.** The gate is not under-powered; it is selecting for zero power. The
+candidate record already says so in three prior rejections, each independently
+rediscovering it.
+
+### The two causes, classified
+
+Every divergence on the 2026-09-08 pass, checked against the assistant turn
+that issued the call:
+
+| cause | episodes | shape |
+|---|---|---|
+| batch order | 4 of 12 | the model issued the *same* batch, in another order |
+| a different decision | 8 of 12 | a genuinely different tool, usually at call #0–#4 |
+
+The first is fixed, in `replay::RecordedCall::batch` and the batch search in
+`replay_run::ReplayTool::decide`: one assistant turn's calls are issued
+together and run through `join_all`, so their order carries no decision, and
+`replay::diff` groups by the same marker so the report agrees with what the
+cursor accepted. Order *between* batches is still the trajectory — the second
+call was chosen after seeing the first one's result — and an unmarked call
+from a pre-marker recording is its own batch, which is the old strict
+behaviour. Falsifiable: on a comparable draw the paired count should move from
+3 to about 5, still under the floor.
+
+The second cause is intrinsic. `replay_run::drive_branch` exists because
+`drive` "makes reaching a mid-run probe point a lottery … 11 of 12 steer
+probes were lost to pre-point divergence, most at call #1", and the validation
+lane migrated to it. **The harness lane cannot follow**: a `Config` candidate
+must apply to the whole run, so branching mid-run would measure a config the
+run never had. Re-deciding from turn 0 is correct for what it measures and is
+also what makes it a lottery.
+
+### Where this goes, unresolved
+
+Three options, none of them a bug fix, listed against what each costs:
+
+1. **Widen the pool** to every recorded session rather than the recent slice,
+   so the survivors are numerous enough to include unscripted ones. Cheapest,
+   and does nothing about the survivors all being scripted — it buys n, not
+   variance.
+2. **Measure config candidates in `experiment.rs` instead.** The manifest,
+   one trial per arm × task × seed, and an isolated home per arm are already
+   built, and they compare *outcomes on tasks* rather than step-for-step
+   reproduction — which is the comparison a config knob actually admits. The
+   honest reading is that replay was the wrong instrument for this class from
+   the start, and the run corpus is the right instrument for the other classes
+   (`Architecture`, `Prose`) it was built for.
+3. **Retire config candidates from the nightly** until one of the above lands,
+   so the pass stops producing measurements that read like evidence.
+
+(2) is the recommendation. It is a design change to which store owns which
+candidate class, so it is the owner's call, not a lane's — and per the
+standing rule a lane must not promote itself, a `Config` candidate that
+auto-applies on a measurement this weak is the case that rule exists for.

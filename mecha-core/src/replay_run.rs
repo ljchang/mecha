@@ -50,7 +50,16 @@ pub enum OnDivergence {
 /// order calls happen in *is* the trajectory, whichever tool they went to.
 struct ReplayState {
     calls: Vec<RecordedCall>,
+    /// The first recorded call not yet answered. Only ever moves forward, and
+    /// only over calls `consumed` marks done.
     cursor: usize,
+    /// Which recorded calls have been answered.
+    ///
+    /// A flag rather than removing them from `calls`: the divergence messages
+    /// and `call_base` both count in the recording's own coordinates, and
+    /// shifting the vector out from under those is how an offset report gets
+    /// written. Needed at all because a batch may be answered out of order.
+    consumed: Vec<bool>,
     /// Set at the first structural divergence. From then on the recording has
     /// nothing truthful left to say.
     dead: bool,
@@ -156,7 +165,11 @@ impl ReplayTool {
             };
         }
 
-        let Some(want) = st.calls.get(st.cursor) else {
+        while st.cursor < st.calls.len() && st.consumed[st.cursor] {
+            st.cursor += 1;
+        }
+
+        if st.cursor >= st.calls.len() {
             // The model kept going past the end of the recording.
             let why = format!(
                 "the recording ended after {} call(s) and has no result for this one",
@@ -171,14 +184,29 @@ impl ReplayTool {
                     Action::Refuse(format!("replay: {why}; stopping"))
                 }
             };
+        }
+
+        // Anywhere in the current batch, not just at the cursor. The calls in
+        // one assistant turn are issued together and run concurrently, so the
+        // order the model emitted them in is not a decision — insisting on it
+        // killed four of the twelve episodes the 2026-09-08 harness pass
+        // dropped, each on a batch it had reproduced exactly. An unmarked call
+        // is its own batch, which is the old strict behaviour, and
+        // `replay::diff` groups by the same marker so the report agrees with
+        // what this accepted.
+        let batch = st.calls[st.cursor].batch;
+        let name = self.inner.name();
+        let hit = match batch {
+            None => (st.calls[st.cursor].name == name).then_some(st.cursor),
+            Some(_) => (st.cursor..st.calls.len())
+                .take_while(|&j| st.calls[j].batch == batch)
+                .find(|&j| !st.consumed[j] && st.calls[j].name == name),
         };
 
-        if want.name != self.inner.name() {
+        let Some(hit) = hit else {
             let why = format!(
                 "recorded call #{} was `{}`, not `{}`",
-                st.cursor,
-                want.name,
-                self.inner.name()
+                st.cursor, st.calls[st.cursor].name, name
             );
             let msg = format!("replay: {why}; stopping");
             st.dead = true;
@@ -190,7 +218,7 @@ impl ReplayTool {
                     Action::Refuse(msg)
                 }
             };
-        }
+        };
 
         // Same tool. Different arguments are *not* grounds to stop: a path
         // spelled differently is the same decision, and the final diff reports
@@ -198,8 +226,11 @@ impl ReplayTool {
         // recorded result for materially different arguments is the price of
         // not pretending to know which differences matter.
         let _ = input;
-        let out = Action::Recorded(want.output.clone(), want.is_error);
-        st.cursor += 1;
+        let out = Action::Recorded(st.calls[hit].output.clone(), st.calls[hit].is_error);
+        st.consumed[hit] = true;
+        while st.cursor < st.calls.len() && st.consumed[st.cursor] {
+            st.cursor += 1;
+        }
         out
     }
 }
@@ -298,6 +329,7 @@ pub fn replay_registry_reporting(
     cancel: CancellationToken,
 ) -> Result<(Registry, DivergenceProbe)> {
     let state = Arc::new(Mutex::new(ReplayState {
+        consumed: vec![false; calls.len()],
         calls,
         cursor: 0,
         dead: false,
@@ -695,6 +727,7 @@ mod tests {
                 input: json!({}),
                 output: "the recorded answer".into(),
                 is_error: false,
+                batch: None,
             }],
             OnDivergence::Stop,
             CancellationToken::new(),
@@ -859,12 +892,24 @@ mod tests {
         r
     }
 
+    /// A recorded call with no batch marker — its own batch of one, which is
+    /// the strict positional matching a pre-marker recording gets. The batched
+    /// tests below say so explicitly with [`batched`].
     fn recorded(name: &str, input: Value, output: &str) -> RecordedCall {
         RecordedCall {
             name: name.into(),
             input,
             output: output.into(),
             is_error: false,
+            batch: None,
+        }
+    }
+
+    /// A recorded call issued as part of batch `batch`.
+    fn batched(batch: u32, name: &str, input: Value, output: &str) -> RecordedCall {
+        RecordedCall {
+            batch: Some(batch),
+            ..recorded(name, input, output)
         }
     }
 
@@ -926,6 +971,7 @@ mod tests {
                 input: json!({}),
                 output: "no such file".into(),
                 is_error: true,
+                batch: None,
             }],
             OnDivergence::Stop,
             &cancel,
@@ -1146,6 +1192,7 @@ mod tests {
                 input: json!({"name": "Yuqi"}),
                 output: "the recorded entity".into(),
                 is_error: false,
+                batch: None,
             }],
             OnDivergence::Stop,
             CancellationToken::new(),
@@ -1447,6 +1494,108 @@ mod tests {
         assert_eq!(structural[0].index(), 1, "{:?}", report.divergences);
     }
 
+    /// The regression, at the driver. The model issued the recorded batch in
+    /// the other order — the same two calls, which the loop runs concurrently
+    /// anyway — and the replay must not stop. Before this the cursor compared
+    /// against one position and cancelled at call #0; four of the twelve
+    /// episodes the 2026-09-08 harness pass dropped died exactly here, on
+    /// batches they had reproduced exactly.
+    #[tokio::test]
+    async fn a_batch_replayed_in_another_order_does_not_stop_the_replay() {
+        let calls = vec![
+            batched(0, "echo", json!({"value": "a"}), "first"),
+            batched(0, "other", json!({}), "second"),
+        ];
+        let trajectory = Trajectory {
+            turns: vec!["do the thing".into()],
+            calls: calls.clone(),
+            final_text: "done".into(),
+            steered: false,
+        };
+
+        let report = drive_scripted(
+            vec![
+                assistant(
+                    vec![
+                        tool_use("t1", "other", json!({})),
+                        tool_use("t2", "echo", json!({"value": "a"})),
+                    ],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            calls,
+            &trajectory,
+        )
+        .await;
+
+        assert!(!report.stopped_early, "{:?}", report.divergences);
+        assert!(report.divergences.is_empty(), "{:?}", report.divergences);
+        assert_eq!(report.replayed_calls.len(), 2);
+        assert_eq!(report.final_text, "done");
+    }
+
+    /// And each call is answered with the result recorded for *it*, not with
+    /// whatever sat at the cursor. Getting this wrong would be worse than
+    /// stopping: the run continues on another call's output.
+    #[tokio::test]
+    async fn a_reordered_batch_answers_each_call_with_its_own_output() {
+        let cancel = CancellationToken::new();
+        let reg = replay_reg(
+            vec![
+                batched(0, "echo", json!({"value": "a"}), "first"),
+                batched(0, "other", json!({}), "second"),
+            ],
+            OnDivergence::Stop,
+            &cancel,
+        );
+        let ctx = ToolCtx::default();
+
+        let out = reg
+            .get("other")
+            .unwrap()
+            .call(json!({}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out.content, "second");
+
+        let out = reg
+            .get("echo")
+            .unwrap()
+            .call(json!({"value": "a"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out.content, "first");
+        assert!(!cancel.is_cancelled(), "a reordered batch is not a fork");
+    }
+
+    /// The tolerance stops at the batch edge. `other` belongs to the next
+    /// turn, chosen after seeing this turn's results, so reaching for it early
+    /// is a real divergence and still stops the run.
+    #[tokio::test]
+    async fn a_call_from_the_next_batch_still_stops_the_replay() {
+        let cancel = CancellationToken::new();
+        let reg = replay_reg(
+            vec![
+                batched(0, "echo", json!({"value": "a"}), "first"),
+                batched(1, "other", json!({}), "second"),
+            ],
+            OnDivergence::Stop,
+            &cancel,
+        );
+
+        let out = reg
+            .get("other")
+            .unwrap()
+            .call(json!({}), &ToolCtx::default())
+            .await
+            .unwrap();
+
+        assert!(out.is_error, "{out:?}");
+        assert!(out.content.contains("recorded call #0"), "{}", out.content);
+        assert!(cancel.is_cancelled());
+    }
+
     #[tokio::test]
     async fn a_divergent_replay_stops_early_and_reports_it() {
         let calls = vec![
@@ -1531,6 +1680,7 @@ mod divergence_reason_tests {
                 input: json!({}),
                 output: "recorded".into(),
                 is_error: false,
+                batch: None,
             }],
             OnDivergence::Stop,
             CancellationToken::new(),
@@ -1585,6 +1735,7 @@ mod divergence_reason_tests {
                 input: json!({}),
                 output: "recorded".into(),
                 is_error: false,
+                batch: None,
             }],
             OnDivergence::Stop,
             CancellationToken::new(),
@@ -1621,6 +1772,7 @@ mod divergence_reason_tests {
                 input: json!({}),
                 output: "recorded".into(),
                 is_error: false,
+                batch: None,
             }],
             OnDivergence::Stop,
             CancellationToken::new(),
