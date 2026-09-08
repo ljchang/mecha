@@ -221,6 +221,7 @@ export const ROUTES = [
         [
           'chat/[^/]+/(answer|upload)',
           'outbox/[^/]+/[^/]+',
+          'workflows/[^/]+/[^/]+',
           'mail/(act|compose)',
           'notes(/edit)?',
           'entity/(alias|unalias)',
