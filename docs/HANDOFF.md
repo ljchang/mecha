@@ -2064,6 +2064,14 @@ is recoverable without the checkout's cwd. Record:
 
 ## What to do next
 
+- **Docker-confined MCP container cleanup remains open.** `McpClient` now
+  terminates its spawned process on drop, including failed initialization,
+  but `Sandbox::docker_args` starts a daemon-owned container through
+  `docker run --rm -i`. Killing that CLI does not stop a server that ignores
+  EOF, and `--rm` waits for the server to exit. Explicitly own the container
+  identity and remove it on shutdown and failed/cancelled startup; verify
+  with a real Docker server that ignores EOF, not only the direct-child test.
+
 - **The droplet is one release behind, and only the owner deploys it
   (2026-09-06).** `gate.mecha-factory.ai` serves factory 0.2.8 while
   v0.2.9's musl asset is attached to its GitHub release; `factory-deploy
@@ -4095,7 +4103,7 @@ the authority** — restated here only far enough to be choosable:
 - **Steering and queuing are the same key.** Enter starts a run when idle and
   steers one already going; there is no way to queue a follow-up instead.
 - **No `/export` or copy.** `command::NAMES` lists the available commands
-  (`tui/command.rs:314`, re-counted 2026-08-25 after `/entity` landed;
+  (`tui/command.rs`, re-counted 2026-08-25 after `/entity` landed;
   twenty-four on 2026-08-24, twenty-one on 2026-08-21,
   after `/docs`, `/send` and `/remote-control`) and none of them get the
   transcript out. **OSC 52 is no longer the answer to assume.** `/docs` writes

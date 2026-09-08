@@ -1545,7 +1545,7 @@ requests even though JSON handlers happened to reject them.
 **Attachments use the conversation's workspace.** `attachment_workspace`
 reads the same session entry as the agent; deriving a directory from a browser
 key loses the original jail when a task conversation is resumed. Downloads
-only look up an existing entry; a read must not create a session.
+only look up an existing entry; a download must not create a session.
 
 **Hold directories across file operations.** `workspace_files::WorkspaceFiles`
 uses descriptor-relative opens with `O_NOFOLLOW`, and reserves upload names
@@ -1565,6 +1565,11 @@ Holding a Tokio `Child` without that option does not terminate it, and closing
 stdin alone does not stop a server that ignores EOF. Constructing the owner
 before initialization also covers failed and cancelled handshakes. This
 guarantee concerns the spawned child, not arbitrary descendants it launches.
+**Docker is a specific exception:** the spawned child is the `docker run`
+CLI, and killing it does not terminate the daemon-owned container. `--rm`
+removes a container after its server exits, not after the CLI dies; a server
+that ignores stdin EOF can keep its workspace mount alive. Container cleanup
+needs a separately owned container identity and remains open.
 
 ## Hooks
 

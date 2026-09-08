@@ -198,6 +198,7 @@ diagnose.rs  the one place a model authors a change: counters in, a typed candid
 replay.rs    re-run a transcript against its recorded tool results
 replay_run.rs  the driver behind that, shared with the validation probes
 work.rs      ~/.mecha/work/<producer>/ — a run's workspace, and its retention
+workspace_files.rs descriptor-relative upload and download I/O in a session jail
 batch.rs     bounded-concurrency fan-out over many prompts
 eval.rs      case types, graders, the LLM judge
 experiment.rs a designed comparison over a chosen set of runs: the manifest
