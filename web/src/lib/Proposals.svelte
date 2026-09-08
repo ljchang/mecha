@@ -1,4 +1,5 @@
 <script>
+  import { apiFetch as fetch } from './api.js';
   // The proposal stores on the phone: harness candidates, rule proposals and
   // the graph's entity proposals. One pane over three stores, because they
   // answer the same shape and take the same verbs — the same argument the

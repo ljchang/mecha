@@ -428,3 +428,69 @@ async fn a_server_asking_for_confinement_with_no_backend_never_starts() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// EOF is a request to stop, not proof the third-party process stopped.
+/// The fixture stays alive until the test releases it, so even the failing
+/// implementation leaves no orphan after this test completes.
+#[tokio::test]
+async fn dropping_the_last_client_terminates_a_server_that_ignores_eof() {
+    assert_server_shutdown(false).await;
+}
+
+#[tokio::test]
+async fn a_failed_handshake_does_not_leave_a_server_running() {
+    assert_server_shutdown(true).await;
+}
+
+async fn assert_server_shutdown(reject: bool) {
+    if unavailable("python3", python3_available()) {
+        return;
+    }
+    let dir = tmpdir("mcp-drop");
+    let script = r#"import json, os, sys, time
+from pathlib import Path
+Path('pid').write_text(str(os.getpid()))
+for line in sys.stdin:
+    req = json.loads(line)
+    if 'id' in req:
+        reply = {'jsonrpc': '2.0', 'id': req['id']}
+        reply.update({'error': {'code': -32603, 'message': 'refused'}} if sys.argv[1] == 'reject' else {'result': {}})
+        print(json.dumps(reply), flush=True)
+while not Path('exit').exists():
+    time.sleep(0.01)
+"#;
+    let cfg = McpServerConfig {
+        name: "drop-test".into(),
+        command: "python3".into(),
+        args: vec![
+            "-u".into(),
+            "-c".into(),
+            script.into(),
+            if reject { "reject" } else { "accept" }.into(),
+        ],
+        ..Default::default()
+    };
+    let client = McpClient::connect(&cfg, &unconfined(), &dir).await;
+    assert_eq!(client.is_err(), reject);
+    let pid: i32 = std::fs::read_to_string(dir.join("pid"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    drop(client);
+    let exited = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            // SAFETY: signal 0 only checks this test child's existence.
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok();
+    std::fs::write(dir.join("exit"), "").unwrap();
+    // Let an unfixed child consume the exit marker before cleaning the fixture.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    std::fs::remove_dir_all(dir).unwrap();
+    assert!(exited, "MCP process outlived its final client");
+}

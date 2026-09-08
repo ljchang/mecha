@@ -1,5 +1,6 @@
 <script>
-  import { tick } from 'svelte';
+  import { apiFetch as fetch } from './api.js';
+  import { tick, untrack } from 'svelte';
   import Dictate from './Dictate.svelte';
   // The graph tab: one surface over one store (NOTES-GRAPH-DESIGN.md).
   // The old notes and graph tabs were two disjoint halves of this — capture
@@ -27,7 +28,7 @@
   let { initial = null } = $props();
 
   // ---- find ----
-  let query = $state(initial ? decodeURIComponent(initial) : '');
+  let query = $state('');
   let results = $state(null); // kg_search items
   let hitEntities = $state([]); // entity names the search surfaced
   let searching = $state(false);
@@ -252,7 +253,13 @@
       busy = false;
     }
   }
-  if (query) lookup(query);
+  $effect(() => {
+    const name = initial ? decodeURIComponent(initial) : '';
+    untrack(() => {
+      query = name;
+      if (name) lookup(name);
+    });
+  });
 
   async function loadRelated(name) {
     try {

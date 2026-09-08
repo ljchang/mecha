@@ -14,6 +14,130 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-08 — browser boundaries, attachments, and process lifetime.**
+`serve::owner_guard` now requires a non-simple header for browser writes;
+`apiFetch` and hosted voice offers carry it. `WorkspaceFiles` reserves uploads
+without following inbox or filename symlinks and opens downloads through held
+directory descriptors. Both handlers use `attachment_workspace`, so resuming
+a task conversation preserves its attachment jail. Downloads stream with
+backpressure; `FsRead` limits allocation and decoding while selecting lines.
+`McpClient` owns its reader tasks and enables child termination on drop before
+initialization, including the failed-handshake path. Regression tests first
+reproduced cross-site writes, upload escapes, resumed-workspace mismatches,
+and a child surviving its client; the fixes pass those tests. Graph route
+state and charter drag state also stopped producing Svelte build warnings.
+This records source changes, not an installation or deployment.
+
+**2026-09-08 — handoff reconciliation against source.** Older open items
+already implemented were removed: pressure formatting (`Pressure::fmt`),
+compaction enabled in `replay::run` and `harness_probe::run_episode`, admission
+control (`Permits::take`), command approval (`ExecPolicy::decide`, with both
+`Config::rules` and `ConfigLayer::rules`), and the TUI learning view
+(`LearningModal`). `work_prompt` already names a single `ask_user` call;
+whether it fixes the recorded adherence failure remains unmeasured.
+`CancelReason` and `appraisal::stops_of` implement the cancellation split and
+cancel-and-reprompt attribution. Charter sensor infrastructure is implemented;
+the remaining sensor kinds stay in HANDOFF. Scope widening and regional
+validation are in `finalize_region_rules` and `cover_selection`; mid-run
+delivery remains open. Mail task capture already passes `captured_from`, and
+`ShowFile::new` captures the prepared upload limit. In the graph sibling,
+Reflect ZIP ingestion, README onboarding, gossip quota fallback and
+retrieval-utility demotion exist; automated notes sync, release automation and
+acceptance-statistics demotion remain separate gaps. Removed historical
+observations are retained below with their original dates and measurements;
+their old open/unmerged claims are superseded by this source verification.
+
+**Swept again 2026-08-25**, and that pass is the reason this section carries
+a warning. The mail section below had listed six shipped phases as unbuilt
+since 2026-08-19 — see the trap in [`HISTORY.md`](HISTORY.md) under Measuring.
+Two further items closed the same day and moved out (the candidate-class gap
+and `show_file`'s call-time config read). The blanket sentence that follows
+was true of the items it names and was **not** true of the mail section, which
+is why a claim of full coverage now needs the evidence beside it.
+
+Every item below was re-verified against source on **2026-08-24** (a
+72-item sweep after the day the phone became a terminal — the web-surface
+and voice arcs, 45 commits). Almost everything held its verdict; the items
+that changed are rewritten in place below, chiefly: the approval race is
+now solved once (`serve/present.rs`) with routing to Slack still open, the
+`mecha serve` item part-shipped as a third front-end rather than a shared
+backend, and the "Slack `ask_user` is structurally absent" claim is half
+false since `Asker::ask_in` landed. A new subsection right after the
+remote-control one holds what the new code left open. The prior full pass
+was **2026-08-20** — MCP
+resources (`mecha-core/src/mcp.rs:206` still advertises `"capabilities": {}`),
+HTTP/SSE transports, the subagent workspace field, per-command approval, the
+seccomp half of the sandbox item, `Rule`'s missing scope, the raw reflection
+window, file watchers and a TUI export are each still absent from the file the
+item names, and `gossip`/`vet`/`corroborate` are still in `mecha-cli/src/commands/`.
+Three items changed that pass. **Skills** and **Google Docs/Sheets/Slides
+write access** both said "not built" and are fully shipped
+(`mecha-core/src/skill.rs`; `mecha-mail/src/google/docs.rs`,
+`google/docs_server.rs` and a 323-line `bin/mecha-docs.rs`), so both moved to
+[`HISTORY.md`](HISTORY.md). The **task store** item shipped in part — the
+`/tasks` modal and direct capture exist and the store turned out to be the
+graph's board rather than a new one under `~/.mecha/` — and has been rewritten
+under Triggers to describe only the escalation half that is still missing.
+
+**PR #84 is open and unmerged**, with the last three findings from the
+  #78 review: the pressure line stating a cost and a turn count derived from
+  different numbers (a 400-token pace read as *"~1k each, so about 224
+  more"* against a 100k limit), an unreachable match arm beside it, and
+  `replay.rs` / `harness_probe.rs` building `ToolCtx::default()` so a
+  recorded compaction answers *"compaction is not enabled for this run"* —
+  false of the run being replayed, a divergence under
+  `--on-divergence=live`, and in a harness probe a `compact_at_tokens`
+  candidate measured on runs that never compacted. 1,566 tests and clean
+  lint locally; **CI unverified** — it had not reported when the session
+  ended. Check it before merging rather than trusting this line.
+
+**Phase 6** is admission control (R1) — explicitly not worth building
+  until more than one delegation at a time is routine.
+
+**Per-command approval policy.** `ModeApprover::approve` takes the tool input
+and ignores it (`mecha-core/src/tool/mod.rs`), branching only on mode and
+`read_only`. So `shell: ls` and `shell: rm -rf` are the same decision. There
+is no per-command rule surface in config to hang this on yet.
+
+**A `/learning` TUI view.** The store is files by design so it can be read
+without tooling, but nothing surfaces it in the interface.
+
+**Whether `t` can point back at the thread.** `kg_task_create` has no field
+for it, so it lives in the name or needs a pkg change. §7.2.
+
+`mecha-graph fork` is broken **Fixed 2026-08-26 evening** (graph
+`237b686`), so there is a working test bed again — `fork --out …` completes
+on the live 202 MB store in 1m38s with counts matching exactly. It was
+never a bug in `fork`: all three copy paths run migrate-then-copy, the
+harrier switch (2026-08-20) left the source's `vec0` tables wider than
+`run_migrations` builds them, and the reconciliation had been added to
+**one** of the three. `encrypt_in_place` was broken too and nobody noticed,
+because `fork` is the only one of the three people run on a whim — so a bug
+in two paths read as "forking is broken". Now in `copy_all_tables`, which
+every path calls. **A step every copy path needs belongs in the function
+every copy path calls**, and this trio has now broken together twice from a
+change to the destination's schema made before the copy; the first was a
+migration seeding a node.
+
+**Gossip's rotation cannot fill its quota.** `probe-targets` returns exactly
+10 candidates; `GOSSIP_ENTITIES=3` with `GOSSIP_COOLDOWN_DAYS=7` demands 21
+distinct targets a week from those 10, so nights silently under-fill (2 on
+08-22, 1 on 08-17, 2 on 08-16). Either drop to 2 a night, cut the cooldown
+to 3 days, or do the upstream fix `nightly-mecha.sh` already names — stop
+counting gossip's own reads as `retrieval_touch` demand. The
+self-reinforcement it warns about is visible in the current ranking: Frank
+Chang leads at 26 touches *because* he was probed.
+
+**A stranger-facing README pass.** The public README still reads like the
+private repo's; nothing in it walks a person from `cargo install
+mecha-graph` to a populated graph.
+
+Worth a look if it recurs: `show_file` loads the **whole global config** at
+call time for one number (`slack.max_upload_mb`), which is what couples an
+unrelated section's strictness to a tool call mid-run. Capturing it at
+registration would decouple them.
+
+
 **2026-08-02 — the harness.** The first day put the whole spine in place: the
 provider-agnostic message types, the Anthropic and OpenAI-compatible backends,
 the tool registry and its approver, and the agent loop itself. `mecha eval`

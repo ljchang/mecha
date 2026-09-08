@@ -1,4 +1,5 @@
 <script>
+  import { apiFetch as fetch } from './api.js';
   // The front door on the phone — strangers' requests, worked from the
   // couch. The list is typed fields plus the extraction's own summary; the
   // raw prose opens only on tap, marked as third-party text with the

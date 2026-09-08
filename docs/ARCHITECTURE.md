@@ -1532,6 +1532,40 @@ arms through `fs_read` — which already declares `private_data` — rather than
 parallel route someone has to label by hand. Verified in a transcript rather
 than asserted: the run records `taint {private: true, untrusted: false}`.
 
+## Browser request and attachment boundaries
+
+**Tailnet identity proves who, not intent.** `serve::owner_guard` requires
+`X-Mecha-Request: 1` on every unsafe method and refuses foreign
+`Sec-Fetch-Site` values. `web/src/lib/api.js::apiFetch` supplies the header,
+as does the hosted voice offer. The header forces foreign browser requests
+through a CORS preflight; no middleware may grant those requests access.
+Raw uploads and bodyless approval routes previously accepted simple form
+requests even though JSON handlers happened to reject them.
+
+**Attachments use the conversation's workspace.** `attachment_workspace`
+reads the same session entry as the agent; deriving a directory from a browser
+key loses the original jail when a task conversation is resumed. Downloads
+only look up an existing entry; a read must not create a session.
+
+**Hold directories across file operations.** `workspace_files::WorkspaceFiles`
+uses descriptor-relative opens with `O_NOFOLLOW`, and reserves upload names
+with `O_CREAT | O_EXCL`. An `exists()` check followed by a write both races
+other uploads and treats a dangling symlink as free. Downloads first use
+`ToolCtx::resolve`, then open canonical components relative to held directory
+descriptors, refuse nonregular files, and stream the resulting handle with
+backpressure. Images alone may render inline; other content stays inert.
+
+**Apply read limits before accumulating file contents.** `FsRead` selects
+lines and caps bytes in `read_text_window`; truncating a completed
+`read_to_string` caps the answer but leaves allocation and decoding unbounded.
+
+**An MCP client's lifetime owns its child and readers.** `McpClient` enables
+`kill_on_drop` before spawning and aborts its reader task handles on drop.
+Holding a Tokio `Child` without that option does not terminate it, and closing
+stdin alone does not stop a server that ignores EOF. Constructing the owner
+before initialization also covers failed and cancelled handshakes. This
+guarantee concerns the spawned child, not arbitrary descendants it launches.
+
 ## Hooks
 
 `[[hook]]` commands run at `pre_tool`, `post_tool` and `session_end`, with the
@@ -4079,4 +4113,3 @@ Fixtures under `eval/workspace/{audit,reports,kata}` are generated:
 the cases must assert, and checks that each kata fails as shipped *and* is
 solvable by a reference fix. A gold answer typed by hand is a guess, and a
 wrong one measures nothing.
-

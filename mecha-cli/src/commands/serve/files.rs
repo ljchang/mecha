@@ -9,8 +9,9 @@
 //! rather than a parallel route someone has to label by hand.
 //!
 //! Downloads prove containment the way every model-supplied path does:
-//! canonicalize, then require the result to sit inside the session's
-//! workspace. Outside — or missing, or a symlink pointing out — is the same
+//! canonicalize, require containment, then open canonical components through
+//! held directory descriptors without following replacement symlinks.
+//! Outside — or missing, or a symlink pointing out — is the same
 //! 404, deliberately: an authenticated probe should not learn which failure
 //! it hit.
 //!
@@ -21,12 +22,14 @@
 //! type and everything else is `application/octet-stream` with an
 //! attachment disposition — inert bytes the phone can save.
 
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use mecha_core::workspace_files::WorkspaceFiles;
 use serde::Deserialize;
+use tokio::io::AsyncReadExt;
 
 type St = State<super::WebState>;
 
@@ -70,7 +73,7 @@ pub struct UploadQuery {
 /// second must not silently replace the first under a prompt that already
 /// names it.
 pub async fn upload(
-    State(_state): St,
+    State(state): St,
     UrlPath(key): UrlPath<String>,
     Query(q): Query<UploadQuery>,
     body: Bytes,
@@ -81,33 +84,23 @@ pub async fn upload(
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, "empty upload\n").into_response();
     }
-    let ws = match super::chat::session_workspace(&key) {
+    let ws = match super::chat::attachment_workspace(&state, &key, true).await {
         Ok(ws) => ws,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
+        Err(response) => return response,
     };
-    let inbox = ws.join("inbox");
-    if let Err(e) = std::fs::create_dir_all(&inbox) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response();
+    let name = tame_filename(&q.name);
+    let bytes = body.len();
+    let written =
+        tokio::task::spawn_blocking(move || WorkspaceFiles::open(&ws)?.upload(&name, &body)).await;
+    match written {
+        Ok(Ok(path)) => Json(serde_json::json!({ "path": path, "bytes": bytes })).into_response(),
+        Ok(Err(e)) => (StatusCode::CONFLICT, format!("cannot save upload: {e}\n")).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("upload failed: {e}\n"),
+        )
+            .into_response(),
     }
-    let tamed = tame_filename(&q.name);
-    let mut candidate = tamed.clone();
-    let mut n = 1;
-    while inbox.join(&candidate).exists() {
-        n += 1;
-        candidate = match tamed.rsplit_once('.') {
-            Some((stem, ext)) => format!("{stem}-{n}.{ext}"),
-            None => format!("{tamed}-{n}"),
-        };
-    }
-    let target = inbox.join(&candidate);
-    if let Err(e) = std::fs::write(&target, &body) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response();
-    }
-    Json(serde_json::json!({
-        "path": format!("inbox/{candidate}"),
-        "bytes": body.len(),
-    }))
-    .into_response()
 }
 
 #[derive(Deserialize)]
@@ -134,36 +127,39 @@ fn inline_image_type(path: &std::path::Path) -> Option<&'static str> {
 
 /// GET /api/chat/{key}/file?path= — one file out of the session jail.
 pub async fn download(
-    State(_state): St,
+    State(state): St,
     UrlPath(key): UrlPath<String>,
     Query(q): Query<DownloadQuery>,
 ) -> Response {
     if !super::chat::valid_key(&key) {
         return (StatusCode::BAD_REQUEST, "bad session key\n").into_response();
     }
-    let ws = match super::chat::session_workspace(&key) {
+    let ws = match super::chat::attachment_workspace(&state, &key, false).await {
         Ok(ws) => ws,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
+        Err(response) => return response,
     };
-    // Canonicalize both sides and require containment — the path jail's
-    // proof, restated here because this route serves bytes rather than
-    // running a tool and so never passes through `ToolCtx::resolve`.
-    let (Ok(ws_real), Ok(target)) = (ws.canonicalize(), ws.join(&q.path).canonicalize()) else {
-        return (StatusCode::NOT_FOUND, "no such file\n").into_response();
+    let opened = tokio::task::spawn_blocking(move || {
+        let (file, target) = WorkspaceFiles::open(&ws)?.read(&q.path)?;
+        let len = file.metadata()?.len();
+        Ok::<_, std::io::Error>((file, target, len))
+    })
+    .await;
+    let (file, target, len) = match opened {
+        Ok(Ok(opened)) => opened,
+        _ => return (StatusCode::NOT_FOUND, "no such file\n").into_response(),
     };
-    if !target.starts_with(&ws_real) || !target.is_file() {
-        return (StatusCode::NOT_FOUND, "no such file\n").into_response();
-    }
-    let bytes = match std::fs::read(&target) {
-        Ok(b) => b,
-        Err(_) => return (StatusCode::NOT_FOUND, "no such file\n").into_response(),
-    };
+    // Bound reads to the opened file's size and let HTTP backpressure pull
+    // each chunk. No whole-file buffer and no disk I/O on the runtime worker.
+    let file = tokio::fs::File::from_std(file).take(len);
+    let body = Body::from_stream(tokio_util::io::ReaderStream::new(file));
+
     let name = target
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("file");
+    let name = tame_filename(name);
     let mut response = match inline_image_type(&target) {
-        Some(mime) => ([(header::CONTENT_TYPE, mime.to_string())], bytes).into_response(),
+        Some(mime) => ([(header::CONTENT_TYPE, mime.to_string())], body).into_response(),
         None => (
             [
                 (header::CONTENT_TYPE, "application/octet-stream".to_string()),
@@ -172,10 +168,13 @@ pub async fn download(
                     format!("attachment; filename=\"{name}\""),
                 ),
             ],
-            bytes,
+            body,
         )
             .into_response(),
     };
+    response
+        .headers_mut()
+        .insert(header::CONTENT_LENGTH, len.into());
     response.headers_mut().insert(
         header::X_CONTENT_TYPE_OPTIONS,
         header::HeaderValue::from_static("nosniff"),
