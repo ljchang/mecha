@@ -1631,10 +1631,6 @@ impl Manifest {
         Ok(())
     }
 
-    /// Every trial the design calls for, in a stable order, each with its
-    /// condition hash. `provider` and `model` are the operator's defaults;
-    /// an arm that names its own overrides them, and the hash follows the
-    /// arm. Pure: the store decides which have run.
     fn with_grading_clock_hash(&self, original: String) -> String {
         if self.fixtures.clock.is_empty() && self.judge.is_none() {
             return original;
@@ -1648,6 +1644,10 @@ impl Manifest {
         )
     }
 
+    /// Every trial the design calls for, in a stable order, each with its
+    /// condition hash. `provider` and `model` are the operator's defaults;
+    /// an arm that names its own overrides them, and the hash follows the
+    /// arm. Pure: the store decides which have run.
     pub fn trials(&self, task_ids: &[String], provider: &str, model: &str) -> Vec<Trial> {
         self.trials_with_world(task_ids, provider, model, None)
     }

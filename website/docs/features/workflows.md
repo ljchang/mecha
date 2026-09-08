@@ -57,6 +57,10 @@ or replace an obsolete check explicitly with `workflow uncheck` and `workflow ch
 reopen FLOW_ID` restores it. Closing a workflow leaves graph task closure to
 `mecha tasks set`.
 
+In the web interface, expand **Finished workflows** at the bottom of Today and
+choose **Reopen workflow** to continue a finished or cancelled task conversation.
+This preserves the launch gates while making completion reversible from a phone.
+
 If a crash or reboot leaves a task blocked by a stale running process ID, first
 confirm the previous run has stopped, then record that evidence:
 

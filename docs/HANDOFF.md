@@ -38,7 +38,7 @@ workspace tests passed**, three ignored (796 CLI, 20 first-run, 3 process-exit,
 1,489 core, 5 fixture, 11 MCP, 9 sandbox, 151 mail library, 1 mail binary,
 75 Slack, 1 doctest). The whole workspace ran with `MECHA_TEST_REQUIRE_BACKENDS=1`.
 Formatting, Clippy with warnings denied, all-targets build, frontend tests/build
-and documentation build passed. Demo endpoint coverage and all 15 browser
+and documentation build passed. Demo endpoint coverage and all 16 browser
 render checks passed. The opt-in live judge calibration also passed
 all ten known-answer controls, including the incoming-message weekday false
 negative found by manual review. The earlier isolated workflow CLI smoke covered
@@ -70,7 +70,9 @@ reported replay-image gap was disproved by an end-to-end live-divergence test:
 owner-evidenced recovery for stale PIDs and gates completion by originating run ID.
 A real CLI smoke confirms recovery evidence is required, partial drafts survive,
 and reopening works; an old runner cannot overwrite its replacement. Generic
-structured tool errors deliberately remain unknown delivery outcomes.
+structured tool errors deliberately remain unknown delivery outcomes. The fifth
+pass adds a Finished workflows section with web reopening; the real CLI data
+smoke and mobile close/reopen test now pass, including guarded POST requests.
 
 ## Where the work is
 
