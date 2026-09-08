@@ -2280,6 +2280,13 @@ partial effects. Starting a dependent run requires completed predecessors, and
 adding dependencies checks for cycles. No reminder grants permission or resets
 conversation taint.
 
+The workflow keeps its latest 128 lifecycle events; full conversations remain in
+session transcripts. A persisted `event_sequence` advances even when history is
+pruned, so a full history cannot suppress a new reminder or reuse an acknowledged
+notice key. Legacy records seed the sequence from their existing event count.
+Per-turn lifecycle writes remain necessary to record interruption and invalidate
+checks when a new run may change its artifacts.
+
 Completion is evidence, never the model's last sentence. `check_evidence` reads
 bounded regular files through `ToolCtx::resolve` or confirmed outbox delivery.
 No checks, unknown checks, missing records and failed reads cannot verify. Today
@@ -2841,6 +2848,13 @@ and a blocked call never reaches the cursor, so the arm died one call later
 for a harness reason graded as the model's. `private_data` stays, or the
 replay under-taints; under `Live`, where tools genuinely run, nothing
 narrows.
+
+Replay fidelity has a provenance limit: the loop reapplies output limits and
+warning envelopes, and old results with missing provenance remain conservatively
+external. Legacy harness refusals can gain a warning, existing warnings can nest,
+and live-divergence sends can be blocked by the stronger taint. The replay CLI
+reports this in prose and JSON; these differences must not be read as model-only
+regressions. Both comparison arms must use the same replay policy.
 
 ## The goal system
 
