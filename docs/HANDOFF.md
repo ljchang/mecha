@@ -33,8 +33,8 @@ and 15 tags; the additional assistant set has five cases and six tags. Source
 verification of the open-work section removed stale completed entries below;
 remote deployments and sibling-repository work were not reverified.
 
-Final branch verification on 2026-09-08, rebased onto `f22992c5`: **2,563
-workspace tests passed**, three ignored (797 CLI, 20 first-run, 3 process-exit,
+Final branch verification on 2026-09-08, rebased onto `f22992c5`: **2,565
+workspace tests passed**, three ignored (797 CLI, 22 first-run, 3 process-exit,
 1,490 core, 5 fixture, 11 MCP, 9 sandbox, 151 mail library, 1 mail binary,
 75 Slack, 1 doctest). The whole workspace ran with `MECHA_TEST_REQUIRE_BACKENDS=1`.
 Formatting, Clippy with warnings denied, all-targets build, frontend tests/build
@@ -80,6 +80,9 @@ repeated-read behavior and verifies fresh requests detect corruption. The sevent
 pass records web/voice input before claiming a workflow run, so failed transcript
 writes preserve prior verification. Its entry-point regression failed before the
 fix and now covers both recording branches and a closed-workflow launch refusal.
+The eighth pass puts question-resume gates before question/board/marker effects
+and makes batch rejection continue past uncertain items with counts and a failing
+exit status. Both real CLI regressions failed before their fixes and now pass.
 
 Remaining review follow-ups for the owner: TUI delivery reconciliation still uses
 `mecha outbox reconcile`; Today still spawns a subprocess and reads artifacts on

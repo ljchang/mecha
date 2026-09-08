@@ -865,3 +865,153 @@ fn a_workspace_containing_the_mecha_home_is_refused_with_a_reason() {
         "and say what to do instead: {said}"
     );
 }
+
+#[test]
+fn refused_question_resume_keeps_the_answer_available_and_leaves_no_running_marker() {
+    use mecha_core::{
+        questions::QuestionStore,
+        session::{Session, SessionKind, SessionMeta},
+        workflow::{Workflow, WorkflowStore},
+    };
+    let home = Home::new("question-workflow-refusal");
+    std::fs::write(
+        home.path().join("config.toml"),
+        r#"
+default_provider = "fixture"
+[providers.fixture]
+kind = "openai-compatible"
+base_url = "http://127.0.0.1:9"
+model = "fixture"
+max_retries = 0
+[tools]
+enabled = ["fs_read", "fs_write"]
+[outbox]
+tools = ["fs_write"]
+"#,
+    )
+    .unwrap();
+    let workflows = WorkflowStore::at(home.path().join("workflows"));
+    let questions = QuestionStore::open(home.path().join("questions")).unwrap();
+    let now = chrono::Utc::now();
+    workflows
+        .create(Workflow::new(
+            "predecessor".into(),
+            "Not finished".into(),
+            home.work.clone(),
+            now,
+        ))
+        .unwrap();
+    for id in ["cancelled", "blocked-dependency"] {
+        let session = Session::create(
+            &home.path().join("sessions"),
+            SessionMeta {
+                id: Session::new_id(),
+                created_at: now,
+                provider: "fixture".into(),
+                model: "fixture".into(),
+                workspace: home.work.clone(),
+                title: None,
+                kind: Some(SessionKind::Test),
+            },
+        )
+        .unwrap();
+        session
+            .append_messages(&[
+                mecha_core::message::Message::user("Please prepare the document"),
+                mecha_core::message::Message::assistant(vec![mecha_core::message::Block::text(
+                    "Which format?",
+                )]),
+            ])
+            .unwrap();
+        let mut workflow = Workflow::new(id.into(), id.into(), home.work.clone(), now);
+        if id == "cancelled" {
+            workflow.closed_at = Some(now);
+            workflow.state = "cancelled".into();
+        } else {
+            workflow.depends_on.push("predecessor".into());
+        }
+        workflows.create(workflow).unwrap();
+        let q = questions
+            .park(
+                "Which format?",
+                vec![],
+                &session.meta.id,
+                Some(id.into()),
+                Some(home.work.clone()),
+                Default::default(),
+                None,
+            )
+            .unwrap();
+        let original = std::fs::read(home.path().join(format!("questions/{}.json", q.id))).unwrap();
+        let out = mecha(&home, &["questions", "answer", &q.id, "Markdown"]);
+        let error = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "workflow must refuse the run");
+        assert!(
+            error.contains(if id == "cancelled" {
+                "workflow is cancelled"
+            } else {
+                "dependency predecessor must be completed"
+            }),
+            "unexpected refusal: {error}"
+        );
+        assert_eq!(
+            std::fs::read(home.path().join(format!("questions/{}.json", q.id))).unwrap(),
+            original,
+            "refusal must not consume the answer"
+        );
+        assert!(
+            !home.path().join(format!("taskruns/{id}.running")).exists(),
+            "refusal must not leave a running marker"
+        );
+        assert!(questions.get(&q.id).unwrap().is_open());
+        questions
+            .answer(&q.id, "Markdown")
+            .expect("the same question remains answerable after the refusal");
+    }
+}
+
+#[test]
+fn reject_all_continues_past_uncertain_delivery_and_reports_partial_failure() {
+    use mecha_core::outbox::{OutboxKind, OutboxStore};
+    let home = Home::new("reject-all-uncertain");
+    let store = OutboxStore::open(home.path().join("outbox")).unwrap();
+    for body in ["first", "second", "third"] {
+        store
+            .stage(
+                "mail_send",
+                OutboxKind::Message,
+                serde_json::json!({"body":body}),
+                Default::default(),
+                Default::default(),
+            )
+            .unwrap();
+    }
+    let items = store.items().unwrap();
+    let uncertain = &items[1].id;
+    store.begin_delivery(uncertain).unwrap();
+    let prior = std::fs::read(store.root().join(format!("{uncertain}.json"))).unwrap();
+    let out = mecha(&home, &["outbox", "reject", "--all"]);
+    assert!(
+        !out.status.success(),
+        "partial failure must have a failing exit status"
+    );
+    for item in &items {
+        let current = store.item_exact(&item.id).unwrap().unwrap();
+        if &item.id == uncertain {
+            assert!(current.delivery_uncertain());
+            assert_eq!(current.status, "pending");
+        } else {
+            assert_eq!(
+                current.status, "rejected",
+                "an uncertain item must not prevent later rejections"
+            );
+        }
+    }
+    assert_eq!(
+        std::fs::read(store.root().join(format!("{uncertain}.json"))).unwrap(),
+        prior,
+        "rejection must not erase delivery uncertainty"
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("2 rejected, 1 failed"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains(uncertain));
+}
