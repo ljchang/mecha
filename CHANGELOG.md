@@ -488,6 +488,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The date prompt now includes a computed local calendar reference for yesterday
   through the coming week, preventing reliance on inferred weekday/date arithmetic.
 
+- Mail search rows and thread headers now include a computed calendar date and
+  weekday beside the original timestamp, in the configured mailbox timezone.
+
 - Mail read-state metadata now identifies the owner's mailbox and unknown recipient
   read status. Assistant guidance requires source-backed calendar and relative-date claims.
 
