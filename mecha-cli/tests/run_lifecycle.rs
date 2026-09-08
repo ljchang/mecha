@@ -14,6 +14,11 @@ async fn no_output_exit_removes_the_docker_mcp_container() {
     run_exit("stop", 3).await;
 }
 
+#[tokio::test]
+async fn failed_batch_exit_removes_the_docker_mcp_container() {
+    run_exit("content_filter", 1).await;
+}
+
 async fn run_exit(reason: &'static str, code: i32) {
     let available = Command::new("docker")
         .args(["image", "inspect", "python:3-slim"])
@@ -37,6 +42,10 @@ async fn run_exit(reason: &'static str, code: i32) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let app = axum::Router::new().route("/v1/chat/completions", axum::routing::post(move || async move {
+        if code == 1 {
+            let body = serde_json::json!({"choices": [{"index": 0, "message": {"role": "assistant", "content": ""}, "finish_reason": reason}]});
+            return ([("content-type", "application/json")], body.to_string());
+        }
         let chunk = serde_json::json!({"choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": reason}]});
         ([("content-type", "text/event-stream")], format!("data: {chunk}\n\ndata: [DONE]\n\n"))
     }));
@@ -82,10 +91,16 @@ sandbox = true
         ),
     )
     .unwrap();
+    std::fs::write(work.join("items.jsonl"), "\"hello\"\n").unwrap();
+    let args = if code == 1 {
+        vec!["batch", "items.jsonl"]
+    } else {
+        vec!["run", "hello", "--json", "--no-session"]
+    };
     let output = tokio::time::timeout(
         Duration::from_secs(30),
         Command::new(env!("CARGO_BIN_EXE_mecha"))
-            .args(["run", "hello", "--json", "--no-session"])
+            .args(args)
             .env("MECHA_HOME", &home)
             .env("MECHA_SESSION_KIND", "test")
             .env_remove("ANTHROPIC_API_KEY")

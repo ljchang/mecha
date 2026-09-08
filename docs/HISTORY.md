@@ -38,6 +38,16 @@ progress output. The review's adjacent mode-route finding was reproduced with
 a percent-encoded traversal key; `set_mode` and `answer` now validate keys like
 the other handlers. The CI sandbox job requires the process-exit tests too.
 
+A second pass found the sibling `batch::execute` exit; it now releases its
+prepared agent after flushing results, measured by a third real-binary Docker
+regression that first failed on exit code 1. The remaining explicit CLI exits
+were checked: diagnostics/configuration commands hold no MCP clients, `main`
+exits after dispatch has returned, and eval's agent and optional fixture clients
+are scoped to `run_arm`, which returns before its caller's failure exit.
+Browser retries now stop on permanent 4xx responses and back off on transient
+failures, resetting after the event stream connects. A compiled-browser test
+first reproduced repeated 403s and missing backoff before verifying the fix.
+
 **2026-09-08 — PR #213 deployed after merge.** After CI and automated review,
 `a3f1682d` was installed with `cargo install --path mecha-cli --locked --force`
 and a fresh web build. Serve, Slack, triggers and drain restarted at 14:15 UTC.
