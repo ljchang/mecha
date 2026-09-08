@@ -1,4 +1,5 @@
 <script>
+  import { apiFetch as fetch } from './api.js';
   import Dictate from './Dictate.svelte';
   // The GTD board, over `mecha tasks …` — which reaches the graph's own
   // store through its MCP surface. Nothing here confirms: every status is

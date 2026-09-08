@@ -86,7 +86,13 @@ impl Tool for FsRead {
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let path = ctx.resolve(arg_str(&input, "path")?)?;
-        let text = match tokio::fs::read_to_string(&path).await {
+        let offset = input
+            .get("offset")
+            .and_then(Value::as_u64)
+            .unwrap_or(1)
+            .max(1);
+        let limit = input.get("limit").and_then(Value::as_u64);
+        let text = match read_file_window(&path, offset, limit).await {
             Ok(t) => t,
             Err(e) => {
                 // **A binary file is a different failure and has to say so.**
@@ -132,26 +138,84 @@ impl Tool for FsRead {
             }
         };
 
-        let offset = input
-            .get("offset")
-            .and_then(Value::as_u64)
-            .unwrap_or(1)
-            .max(1) as usize;
-        let limit = input
-            .get("limit")
-            .and_then(Value::as_u64)
-            .map(|l| l as usize);
-        if offset == 1 && limit.is_none() {
-            return Ok(ToolOutput::ok(truncate(text, "file")));
-        }
-
-        let selected: Vec<&str> = text
-            .lines()
-            .skip(offset - 1)
-            .take(limit.unwrap_or(usize::MAX))
-            .collect();
-        Ok(ToolOutput::ok(truncate(selected.join("\n"), "selection")))
+        Ok(ToolOutput::ok(text))
     }
+}
+
+async fn read_file_window(
+    path: &std::path::Path,
+    offset: u64,
+    limit: Option<u64>,
+) -> std::io::Result<String> {
+    let mut options = tokio::fs::OpenOptions::new();
+    options.read(true);
+    // A workspace can contain a FIFO. Open without waiting for its writer,
+    // then reject anything that is not a regular file before reading it.
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NONBLOCK);
+    let file = options.open(path).await?;
+    if !file.metadata().await?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    read_text_window(&mut tokio::io::BufReader::new(file), offset, limit).await
+}
+
+/// Skip unwanted lines without allocating them; stop after the requested
+/// lines or one byte beyond the output ceiling, even for a single huge line.
+async fn read_text_window<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    offset: u64,
+    limit: Option<u64>,
+) -> std::io::Result<String> {
+    use tokio::io::AsyncBufReadExt;
+    let selected = offset != 1 || limit.is_some();
+    let mut line = 1u64;
+    let mut remaining = limit.unwrap_or(u64::MAX);
+    let mut bytes = Vec::new();
+    while remaining > 0 && bytes.len() <= MAX_OUTPUT_BYTES {
+        let buf = reader.fill_buf().await?;
+        if buf.is_empty() {
+            break;
+        }
+        let newline = buf.iter().position(|&b| b == b'\n');
+        let mut take = newline.map_or(buf.len(), |i| i + 1);
+        if line >= offset {
+            take = take.min(MAX_OUTPUT_BYTES + 1 - bytes.len());
+            bytes.extend_from_slice(&buf[..take]);
+            if newline.is_some_and(|i| i + 1 == take) {
+                remaining -= 1;
+            }
+        }
+        if newline.is_some_and(|i| i + 1 == take) {
+            line = line.saturating_add(1);
+        }
+        reader.consume(take);
+    }
+    let truncated = bytes.len() > MAX_OUTPUT_BYTES;
+    if truncated {
+        bytes.truncate(MAX_OUTPUT_BYTES);
+    }
+    // A cap may bisect a UTF-8 character. Only that incomplete suffix is
+    // dropped; an invalid sequence in the returned region is still an error.
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(text) => text,
+        Err(e) if truncated && e.error_len().is_none() => {
+            std::str::from_utf8(&bytes[..e.valid_up_to()]).expect("validated prefix")
+        }
+        Err(e) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+    };
+    let mut text = if selected {
+        text.lines().collect::<Vec<_>>().join("\n")
+    } else {
+        text.to_owned()
+    };
+    if truncated {
+        text.push_str("\n\n[truncated: byte limit reached; use offset and limit to read more]");
+    }
+    Ok(text)
 }
 
 /// Create or replace a file without following a symlink at its final
@@ -1131,5 +1195,91 @@ mod tests {
         assert!(out.content.contains("appears 2 times"));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod read_window_tests {
+    use super::*;
+    use tokio::io::{AsyncWriteExt, BufReader};
+
+    #[tokio::test]
+    async fn fs_read_does_not_decode_bytes_beyond_the_requested_lines() {
+        let root = std::env::temp_dir().join(format!("mecha-read-window-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("mixed.txt"), b"wanted\n\xff").unwrap();
+        let ctx = ToolCtx {
+            workspace: root.clone(),
+            ..ToolCtx::default()
+        };
+        let out = FsRead
+            .call(json!({"path": "mixed.txt", "limit": 1}), &ctx)
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(out.content, "wanted");
+    }
+
+    #[tokio::test]
+    async fn a_requested_line_returns_without_waiting_for_the_rest_of_the_file() {
+        let (reader, mut writer) = tokio::io::duplex(64);
+        writer.write_all(b"skip\r\nwanted\r\n").await.unwrap();
+        // The writer remains open. Reading the whole stream would time out.
+        let text = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            read_text_window(&mut BufReader::new(reader), 2, Some(1)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(text, "wanted");
+    }
+
+    #[tokio::test]
+    async fn a_huge_single_line_is_capped_before_reading_the_tail() {
+        let data = "é".repeat(MAX_OUTPUT_BYTES);
+        let mut reader = data.as_bytes();
+        let result = read_text_window(&mut reader, 1, None).await.unwrap();
+        assert!(result.starts_with(&"é".repeat(MAX_OUTPUT_BYTES / 2)));
+        assert!(result.contains("truncated"));
+        assert_eq!(reader.len(), data.len() - MAX_OUTPUT_BYTES - 1);
+    }
+
+    #[tokio::test]
+    async fn window_semantics_match_lines_and_full_reads_preserve_newlines() {
+        let data = "one\r\n\r\nthree\nfour";
+        for offset in 1..=6 {
+            for limit in [None, Some(0), Some(1), Some(3), Some(10)] {
+                let actual = read_text_window(&mut data.as_bytes(), offset, limit)
+                    .await
+                    .unwrap();
+                let expected = if offset == 1 && limit.is_none() {
+                    data.to_owned()
+                } else {
+                    data.lines()
+                        .skip(offset as usize - 1)
+                        .take(limit.unwrap_or(100) as usize)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                assert_eq!(actual, expected, "offset={offset}, limit={limit:?}");
+            }
+        }
+        assert!(read_text_window(&mut b"\xff".as_slice(), 1, None)
+            .await
+            .is_err());
+        assert_eq!(
+            read_text_window(&mut b"ok\n\xff".as_slice(), 1, Some(1))
+                .await
+                .unwrap(),
+            "ok"
+        );
+        // The cap falls inside a multibyte character and must not call it binary.
+        let data = "€".repeat(MAX_OUTPUT_BYTES);
+        assert!(read_text_window(&mut data.as_bytes(), 1, None)
+            .await
+            .unwrap()
+            .contains("truncated"));
     }
 }

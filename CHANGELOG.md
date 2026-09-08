@@ -101,6 +101,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the surface — it now names the bare `kg_*` the documented wiring
   (`prefix_tools = false`) exposes.
 
+### Fixed
+
+- Browser mutations now require a same-origin request header, including
+  bodyless actions, uploads, and voice offers. Reload the web app after
+  upgrading; scripted API clients must send `X-Mecha-Request: 1` on writes.
+- Chat uploads reserve filenames atomically and refuse symlinked inboxes;
+  resumed conversations use their recorded workspace for attachments.
+  Downloads stream from confined file handles instead of buffering whole files.
+- MCP clients terminate their spawned child process and abort reader tasks
+  when the last client is dropped, including after an unsuccessful handshake.
+  With Docker confinement this terminates the Docker CLI, not necessarily
+  its container; a server that ignores EOF can still require container cleanup.
+- `fs_read` applies line selection and its byte ceiling while reading, so a
+  small selection does not allocate or decode an entire large file.
+- Graph route updates and charter drag state now use Svelte's reactive state
+  correctly, removing the corresponding build warnings.
+
 ## [0.1.18] - 2026-09-06
 
 ### Added

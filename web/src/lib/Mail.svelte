@@ -1,4 +1,5 @@
 <script>
+  import { apiFetch as fetch } from './api.js';
   // The mail queue on the phone — the TUI /mail modal's shape: the list is a
   // store read, the reader is `mecha mail show`'s exact text (one renderer
   // of a thread), and every action drives a `mecha mail …` verb through

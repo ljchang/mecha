@@ -1,4 +1,5 @@
 <script>
+  import { apiFetch as fetch } from './api.js';
   // The outbox on the phone. The page renders the whole reviewable object —
   // taint warning, headers, prose, everything-else, and the quoted source
   // the draft answers — because approving without reading is the failure

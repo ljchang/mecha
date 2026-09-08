@@ -1,4 +1,5 @@
 <script>
+  import { apiFetch as fetch } from './api.js';
   import SettingsCharter from './SettingsCharter.svelte';
   import SettingsLearning from './SettingsLearning.svelte';
   import SettingsVoice from './SettingsVoice.svelte';

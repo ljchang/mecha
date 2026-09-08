@@ -1,4 +1,5 @@
 <script>
+  import { apiFetch as fetch } from './api.js';
   // Hold nothing, tap twice: a mic button that records, encodes 16 kHz mono
   // WAV in the page, and hands the clip to /api/dictate — the local
   // Parakeet transducer, which cannot obey speech, only transcribe it. The

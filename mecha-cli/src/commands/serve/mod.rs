@@ -449,6 +449,29 @@ async fn owner_guard(
     if presented != Some(state.owner_login.as_str()) {
         return (StatusCode::FORBIDDEN, "not the owner\n").into_response();
     }
+    // Authentication is ambient through the tailnet proxy. A form on an
+    // unrelated site can carry it too. Require a non-simple header on every
+    // mutation, including bodyless approval and raw-byte upload routes.
+    // There is deliberately no CORS middleware granting that preflight.
+    if !matches!(
+        *request.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+    ) && (request
+        .headers()
+        .get("x-mecha-request")
+        .and_then(|v| v.to_str().ok())
+        != Some("1")
+        || request
+            .headers()
+            .get("sec-fetch-site")
+            .is_some_and(|v| v != "same-origin"))
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            "request verification failed — reload the page and retry\n",
+        )
+            .into_response();
+    }
     next.run(request).await
 }
 
@@ -889,6 +912,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/settings/charter")
                     .header("Tailscale-User-Login", "owner@example.com")
+                    .header("x-mecha-request", "1")
                     .header("content-type", "application/json")
                     .body(Body::from(dup))
                     .unwrap(),
@@ -926,6 +950,7 @@ mod tests {
                         .method("POST")
                         .uri(uri)
                         .header("Tailscale-User-Login", "owner@example.com")
+                        .header("x-mecha-request", "1")
                         .header("content-type", "application/json")
                         .body(Body::from(body))
                         .unwrap(),
@@ -950,6 +975,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/settings/reflections/edit")
                     .header("Tailscale-User-Login", "owner@example.com")
+                    .header("x-mecha-request", "1")
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"id":"20260829T014200-ab12cd34","text":"   \n "}"#,
@@ -1014,6 +1040,7 @@ mod tests {
                 Request::builder()
                     .uri(uri)
                     .header("Tailscale-User-Login", "owner@example.com")
+                    .header("x-mecha-request", "1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1123,6 +1150,7 @@ mod tests {
                 Request::builder()
                     .uri("/")
                     .header("Tailscale-User-Login", "owner@example.com")
+                    .header("x-mecha-request", "1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1139,6 +1167,7 @@ mod tests {
                 Request::builder()
                     .uri("/")
                     .header("Tailscale-User-Login", "owner@example.com")
+                    .header("x-mecha-request", "1")
                     .header("If-Modified-Since", last_modified)
                     .body(Body::empty())
                     .unwrap(),
@@ -1192,6 +1221,7 @@ mod tests {
                 Request::builder()
                     .uri("/")
                     .header("Tailscale-User-Login", "owner@example.com")
+                    .header("x-mecha-request", "1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1218,6 +1248,7 @@ mod tests {
                 Request::builder()
                     .uri("/")
                     .header("Tailscale-User-Login", "owner@example.com")
+                    .header("x-mecha-request", "1")
                     .header("If-None-Match", etag.clone())
                     .body(Body::empty())
                     .unwrap(),
@@ -1262,6 +1293,7 @@ mod tests {
                 Request::builder()
                     .uri("/")
                     .header("Tailscale-User-Login", "owner@example.com")
+                    .header("x-mecha-request", "1")
                     .header("If-None-Match", etag.clone())
                     .body(Body::empty())
                     .unwrap(),
@@ -1319,6 +1351,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/settings/charter")
                     .header("Tailscale-User-Login", "owner@example.com")
+                    .header("x-mecha-request", "1")
                     .header("content-type", "application/json")
                     .body(Body::from(body))
                     .unwrap(),
@@ -1344,11 +1377,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_clone_without_the_wav_content_type_is_refused_before_the_write() {
-        // The content-type check is the CSRF boundary for the one raw-Bytes
-        // write: `audio/wav` is not a CORS-simple type, so requiring it
-        // forces a cross-origin caller through a preflight nothing answers.
-        // text/plain — the simple type a form post carries — must die at
-        // 415 with nothing written, even carrying a perfectly valid WAV.
+        // The owner guard already checks request intent. The handler also
+        // requires the declared audio format: text/plain must fail with 415
+        // and write nothing, even when the bytes happen to be a valid WAV.
         let dir = std::env::temp_dir().join(format!("mecha-clone-ct-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let response = test_router_with_voices(&dir)
@@ -1357,6 +1388,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/settings/voice/clone?name=x")
                     .header("Tailscale-User-Login", "owner@example.com")
+                    .header("x-mecha-request", "1")
                     .header("content-type", "text/plain")
                     .body(Body::from(tiny_wav(16_000, 6.0)))
                     .unwrap(),
@@ -1382,6 +1414,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/settings/voice/clone?name=guest")
                     .header("Tailscale-User-Login", "owner@example.com")
+                    .header("x-mecha-request", "1")
                     .header("content-type", "audio/wav")
                     .body(Body::from(tiny_wav(16_000, 2.0)))
                     .unwrap(),
@@ -1397,6 +1430,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/settings/voice/clone?name=guest")
                     .header("Tailscale-User-Login", "owner@example.com")
+                    .header("x-mecha-request", "1")
                     .header("content-type", "audio/wav")
                     .body(Body::from(tiny_wav(16_000, 6.0)))
                     .unwrap(),
@@ -1421,6 +1455,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/mail/act")
                     .header("Tailscale-User-Login", "owner@example.com")
+                    .header("x-mecha-request", "1")
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"verb":"trash","thread":"t","account":"a"}"#))
                     .unwrap(),
@@ -1444,5 +1479,222 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use tower::util::ServiceExt;
+
+    fn app(chat: Arc<chat::ChatState>) -> Router {
+        router(
+            WebState {
+                owner_login: Arc::new("owner@example.com".into()),
+                chat: Some(chat),
+                review: Arc::new(review::ReviewState {
+                    outbox_root: PathBuf::new(),
+                    sessions_dir: None,
+                }),
+                offer_target: None,
+                voices_dir: None,
+            },
+            None,
+        )
+    }
+    fn post(uri: &str, body: &'static str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(TAILSCALE_LOGIN, "owner@example.com")
+            .header("x-mecha-request", "1")
+            .body(Body::from(body))
+            .unwrap()
+    }
+    async fn body(response: Response) -> serde_json::Value {
+        serde_json::from_slice(&to_bytes(response.into_body(), 100_000).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn mutations_require_a_non_simple_header_before_any_handler_runs() {
+        let _home = crate::testenv::HomeGuard::new("web-csrf");
+        let app = app(chat::test_chat());
+        for uri in [
+            "/api/chat/main/upload?name=x.txt",
+            "/api/outbox/known-id/approve",
+            "/api/chat/main/cancel",
+            "/api/settings/charter",
+        ] {
+            let mut req = post(uri, "forged");
+            req.headers_mut().remove("x-mecha-request");
+            req.headers_mut()
+                .insert("content-type", HeaderValue::from_static("text/plain"));
+            req.headers_mut().insert(
+                "origin",
+                HeaderValue::from_static("https://untrusted.example"),
+            );
+            req.headers_mut()
+                .insert("sec-fetch-site", HeaderValue::from_static("cross-site"));
+            assert_eq!(
+                app.clone().oneshot(req).await.unwrap().status(),
+                StatusCode::FORBIDDEN,
+                "{uri}"
+            );
+        }
+        assert!(!mecha_core::work::producer_dir("web")
+            .unwrap()
+            .join("main")
+            .exists());
+        // Non-browser clients may omit Fetch Metadata, but still need the
+        // custom header. A foreign browser context is refused even with it.
+        for (intent, site, expected) in [
+            (None, None, StatusCode::FORBIDDEN),
+            (Some("wrong"), Some("same-origin"), StatusCode::FORBIDDEN),
+            (Some("1"), Some("same-site"), StatusCode::FORBIDDEN),
+            (Some("1"), Some("cross-site"), StatusCode::FORBIDDEN),
+            (Some("1"), Some("same-origin"), StatusCode::NOT_FOUND),
+            (Some("1"), None, StatusCode::NOT_FOUND),
+        ] {
+            // Disabled voice offers return 404 once the guard admits them;
+            // this route exercises raw bytes without a JSON extractor.
+            let mut req = post("/api/offer", "{}");
+            req.headers_mut().remove("x-mecha-request");
+            if let Some(value) = intent {
+                req.headers_mut()
+                    .insert("x-mecha-request", HeaderValue::from_static(value));
+            }
+            if let Some(value) = site {
+                req.headers_mut()
+                    .insert("sec-fetch-site", HeaderValue::from_static(value));
+            }
+            assert_eq!(app.clone().oneshot(req).await.unwrap().status(), expected);
+        }
+        let req = Request::builder()
+            .method("OPTIONS")
+            .uri("/api/chat/main/upload?name=x")
+            .header(TAILSCALE_LOGIN, "owner@example.com")
+            .header("origin", "https://untrusted.example")
+            .header("access-control-request-method", "POST")
+            .header("access-control-request-headers", "x-mecha-request")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(req).await.unwrap();
+        assert!(!response
+            .headers()
+            .contains_key("access-control-allow-origin"));
+    }
+
+    #[tokio::test]
+    async fn uploads_cannot_follow_symlinks_or_overwrite_an_existing_file() {
+        let home = crate::testenv::HomeGuard::new("web-file-jail");
+        let app = app(chat::test_chat());
+        let ws = chat::session_workspace("main").unwrap();
+        let outside = home.dir.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, ws.join("inbox")).unwrap();
+        let response = app
+            .clone()
+            .oneshot(post("/api/chat/main/upload?name=x.txt", "probe"))
+            .await
+            .unwrap();
+        assert!(!response.status().is_success());
+        assert!(!outside.join("x.txt").exists());
+        std::fs::remove_file(ws.join("inbox")).unwrap();
+        std::fs::create_dir(ws.join("inbox")).unwrap();
+        std::os::unix::fs::symlink(outside.join("x.txt"), ws.join("inbox/x.txt")).unwrap();
+        let response = app
+            .clone()
+            .oneshot(post("/api/chat/main/upload?name=x.txt", "first"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let first = body(response).await;
+        assert!(!outside.join("x.txt").exists());
+        let response = app
+            .oneshot(post("/api/chat/main/upload?name=x.txt", "second"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let second = body(response).await;
+        assert_ne!(first["path"], second["path"]);
+        assert_eq!(
+            std::fs::read_to_string(ws.join(first["path"].as_str().unwrap())).unwrap(),
+            "first"
+        );
+    }
+
+    #[tokio::test]
+    async fn downloading_from_an_unknown_chat_creates_no_session_or_workspace() {
+        let home = crate::testenv::HomeGuard::new("web-read-creates-nothing");
+        let app = app(chat::test_chat());
+        let request = Request::builder()
+            .uri("/api/chat/unknown/file?path=x.txt")
+            .header(TAILSCALE_LOGIN, "owner@example.com")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.oneshot(request).await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
+        assert!(!home.dir.join("work/web/unknown").exists());
+        assert!(!home.dir.join("sessions").exists());
+    }
+
+    #[tokio::test]
+    async fn resumed_attachments_use_the_recorded_workspace_and_stream_downloads() {
+        let home = crate::testenv::HomeGuard::new("web-resume-files");
+        let app = app(chat::test_chat());
+        let ws = home.dir.join("task-workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let session = mecha_core::session::Session::create(
+            &mecha_core::session::Session::default_dir().unwrap(),
+            mecha_core::session::SessionMeta {
+                id: mecha_core::session::Session::new_id(),
+                created_at: chrono::Utc::now(),
+                provider: "test".into(),
+                model: "test".into(),
+                workspace: ws.clone(),
+                title: Some("test attachment resume".into()),
+                kind: Some(mecha_core::session::SessionKind::Test),
+            },
+        )
+        .unwrap();
+        let mut req = post("/api/resume", "");
+        req.headers_mut()
+            .insert("content-type", HeaderValue::from_static("application/json"));
+        *req.body_mut() = Body::from(serde_json::json!({"id": session.meta.id}).to_string());
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let key = body(response).await["key"].as_str().unwrap().to_string();
+        let response = app
+            .clone()
+            .oneshot(post(
+                &format!("/api/chat/{key}/upload?name=x.txt"),
+                "in the original jail",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let path = body(response).await["path"].as_str().unwrap().to_string();
+        assert_eq!(
+            std::fs::read_to_string(ws.join(&path)).unwrap(),
+            "in the original jail"
+        );
+        let req = Request::builder()
+            .uri(format!("/api/chat/{key}/file?path={path}"))
+            .header(TAILSCALE_LOGIN, "owner@example.com")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()["content-type"],
+            "application/octet-stream"
+        );
+        assert_eq!(
+            to_bytes(response.into_body(), 100).await.unwrap().as_ref(),
+            b"in the original jail"
+        );
     }
 }

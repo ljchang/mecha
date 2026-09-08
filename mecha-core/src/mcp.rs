@@ -52,6 +52,18 @@ pub struct McpClient {
     workspace: PathBuf,
     /// Held so the child is killed when the client drops.
     _child: Child,
+    readers: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for McpClient {
+    fn drop(&mut self) {
+        // Reader tasks own the pipes and a pending-map reference. They must
+        // not outlive the connection, including a failed/cancelled handshake.
+        // The child's kill_on_drop requests termination and Tokio reaps it.
+        for task in &self.readers {
+            task.abort();
+        }
+    }
 }
 
 impl McpClient {
@@ -130,6 +142,7 @@ impl McpClient {
         let mut command = Self::build_command(cfg, sandbox, workspace)?;
 
         command
+            .kill_on_drop(true)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             // The MCP convention is that stderr is the server's log, not part
@@ -145,14 +158,15 @@ impl McpClient {
 
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
+        let mut readers = Vec::new();
         if let Some(stderr) = child.stderr.take() {
             let server = cfg.name.clone();
-            tokio::spawn(async move {
+            readers.push(tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     tracing::debug!(server = %server, "{line}");
                 }
-            });
+            }));
         }
 
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>> =
@@ -163,7 +177,7 @@ impl McpClient {
         {
             let pending = Arc::clone(&pending);
             let server = cfg.name.clone();
-            tokio::spawn(async move {
+            readers.push(tokio::spawn(async move {
                 let mut lines = BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     let line = line.trim();
@@ -184,7 +198,7 @@ impl McpClient {
                 // Stdout closed: the server exited. Wake everyone still waiting
                 // rather than leaving them to time out one by one.
                 pending.lock().unwrap().clear();
-            });
+            }));
         }
 
         let client = Arc::new(McpClient {
@@ -196,6 +210,7 @@ impl McpClient {
             next_id: AtomicU64::new(1),
             workspace: workspace.to_path_buf(),
             _child: child,
+            readers,
         });
 
         client

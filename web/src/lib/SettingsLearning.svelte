@@ -1,4 +1,5 @@
 <script>
+  import { apiFetch as fetch } from './api.js';
   // The learning pane: what mecha has been taught, at the two stages the
   // owner can act on. A *reflection* is one lesson mined from one of the
   // owner's own interventions; a *rule* is what several consolidate into,

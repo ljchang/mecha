@@ -14,6 +14,82 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-08 — browser boundaries, attachments, and process lifetime.**
+`serve::owner_guard` now requires a non-simple header for browser writes;
+`apiFetch` and hosted voice offers carry it. `WorkspaceFiles` reserves uploads
+without following inbox or filename symlinks and opens downloads through held
+directory descriptors. Both handlers use `attachment_workspace`, so resuming
+a task conversation preserves its attachment jail. Downloads stream with
+backpressure; `FsRead` limits allocation and decoding while selecting lines.
+`McpClient` owns its reader tasks and enables child termination on drop before
+initialization, including the failed-handshake path. For Docker confinement,
+the killed child is the Docker CLI; containers whose servers ignore EOF can
+still outlive it. Container lifecycle cleanup remains open. Regression tests first
+reproduced cross-site writes, upload escapes, resumed-workspace mismatches,
+and a child surviving its client; the fixes pass those tests. Graph route
+state and charter drag state also stopped producing Svelte build warnings.
+This records source changes, not an installation or deployment.
+
+**2026-09-08 — handoff reconciliation against source.** Older open items
+already implemented were removed: pressure formatting (`Pressure::fmt`),
+compaction enabled in `replay::run` and `harness_probe::run_episode`, admission
+control (`Permits::take`), command approval (`ExecPolicy::decide`, with both
+`Config::rules` and `ConfigLayer::rules`), and the TUI learning view
+(`LearningModal`). `work_prompt` already names a single `ask_user` call;
+whether it fixes the recorded adherence failure remains unmeasured.
+`CancelReason` and `appraisal::stops_of` implement the cancellation split and
+cancel-and-reprompt attribution. Charter sensor infrastructure is implemented;
+the remaining sensor kinds stay in HANDOFF. Scope widening and regional
+validation are in `finalize_region_rules` and `cover_selection`; mid-run
+delivery remains open. Mail task capture already passes `captured_from`, and
+`ShowFile::new` captures the prepared upload limit. In the graph sibling,
+Reflect ZIP ingestion, README onboarding, gossip quota fallback and
+retrieval-utility demotion exist; automated notes sync, release automation and
+acceptance-statistics demotion remain separate gaps. Removed historical
+observations are retained below with their original dates and measurements;
+their old open/unmerged claims are superseded by this source verification.
+
+**Earlier handoff observations, reconciled 2026-09-08.** The 2026-08-25
+sweep found six mail phases that had been listed as unbuilt since August 19.
+The preceding August 24 sweep covered 72 open items after 45 commits; that
+coverage concerned the handoff's open-work list, not this chronological ledger.
+The August 20 pass had already closed skills and Google document write access,
+and narrowed the task-store gap to escalation. Later command-policy and scoped
+learning changes superseded that sweep's remaining-gap inventory.
+
+The old PR #84 note recorded a 400-token pace displayed as “~1k each, so about
+224 more” against a 100k limit, plus an unreachable arm and replay/probe contexts
+that never enabled compaction. It reported 1,566 local tests with CI unverified
+at that time. Those defects are now fixed in `Pressure::fmt`, `replay::run`, and
+`harness_probe::run_episode`; the old instruction to check the unmerged PR is
+obsolete. Admission control, once deferred as phase 6, is implemented by
+`Permits::take`. The old claim that shell commands had no configurable approval
+policy is superseded by `ExecPolicy::decide` and the config rule layers. The
+proposed `/learning` view exists as `LearningModal`, mail tasks carry their
+thread in `captured_from`, and `ShowFile::new` captures the prepared upload limit
+instead of rereading the entire config at call time.
+
+**2026-08-26 — graph copy repair (historical measurement).** Graph `237b686`
+fixed the shared copy path: `fork --out …` completed on the then-live 202 MB
+store in 1m38s with matching counts. The August 20 harrier switch had left
+source `vec0` tables wider than the migration-created destination. Only one
+of three copy paths had reconciled the width, so both fork and encryption
+failed; `copy_all_tables` now owns the reconciliation every caller needs.
+This was the second shared-copy failure after a destination schema change
+(the earlier migration seeded a node): a step every copy needs belongs in
+the function every copy calls. The source repair was reverified September 8;
+the timing was not rerun.
+
+The old gossip quota observation used 10 candidates, three targets per night
+and a seven-day cooldown, requiring 21 distinct targets: nights under-filled
+with two on August 22, one on August 17 and two on August 16. It also recorded
+Frank Chang at 26 retrieval touches and suspected the probe's own reads.
+The quota defect is superseded by the graph nightly's 25 candidates and
+least-recently-probed fallback when fresh candidates run out; those original
+figures remain historical observations. The proposed stranger-facing graph
+README pass is also complete: installation, synthetic-data onboarding and
+MCP wiring are in the sibling's README.
+
 **2026-08-02 — the harness.** The first day put the whole spine in place: the
 provider-agnostic message types, the Anthropic and OpenAI-compatible backends,
 the tool registry and its approver, and the agent loop itself. `mecha eval`
