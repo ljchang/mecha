@@ -31,6 +31,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+mod docker;
+pub(crate) use docker::DockerContainer;
+
 /// Push a run of arguments. A closure would borrow the vector for its whole
 /// lifetime, which collides with the interleaved dynamic pushes below.
 macro_rules! args {

@@ -494,3 +494,100 @@ while not Path('exit').exists():
     std::fs::remove_dir_all(dir).unwrap();
     assert!(exited, "MCP process outlived its final client");
 }
+
+#[tokio::test]
+async fn docker_server_is_removed_when_the_last_client_drops() {
+    docker_lifecycle("drop").await;
+}
+
+#[tokio::test]
+async fn docker_server_is_removed_after_a_failed_handshake() {
+    docker_lifecycle("reject").await;
+}
+
+#[tokio::test]
+async fn docker_server_is_removed_after_a_cancelled_handshake() {
+    docker_lifecycle("cancel").await;
+}
+
+async fn docker_lifecycle(mode: &str) {
+    if unavailable("docker", docker_available()) || unavailable(IMAGE, docker_image_present(IMAGE))
+    {
+        return;
+    }
+    let dir = tmpdir("mcp-docker-lifecycle");
+    let script = r#"import json, socket, sys, time
+from pathlib import Path
+Path('cid').write_text(socket.gethostname())
+for line in sys.stdin:
+    req = json.loads(line)
+    if 'id' in req and sys.argv[1] != 'cancel':
+        reply = {'jsonrpc': '2.0', 'id': req['id']}
+        reply.update({'error': {'code': -32603, 'message': 'refused'}} if sys.argv[1] == 'reject' else {'result': {}})
+        print(json.dumps(reply), flush=True)
+while True:
+    time.sleep(0.01)
+"#;
+    let cfg = McpServerConfig {
+        name: "docker-lifecycle".into(),
+        command: "python3".into(),
+        args: vec!["-u".into(), "-c".into(), script.into(), mode.into()],
+        sandbox: true,
+        ..Default::default()
+    };
+    let sandbox = Sandbox::new(SandboxConfig {
+        kind: Backend::Docker,
+        image: IMAGE.into(),
+        ..Default::default()
+    });
+    let workspace = dir.clone();
+    let connecting =
+        tokio::spawn(async move { McpClient::connect(&cfg, &sandbox, &workspace).await });
+    let cid = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            if let Ok(cid) = std::fs::read_to_string(dir.join("cid")) {
+                if !cid.is_empty() {
+                    break cid;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the real container never started");
+    assert!(
+        cid.bytes().all(|c| c.is_ascii_hexdigit()),
+        "invalid test container id"
+    );
+    if mode == "cancel" {
+        connecting.abort();
+        assert!(matches!(connecting.await, Err(e) if e.is_cancelled()));
+    } else {
+        let connected = connecting.await.unwrap();
+        assert_eq!(connected.is_err(), mode == "reject");
+        drop(connected);
+    }
+    let removed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let out = tokio::process::Command::new("docker")
+                .args(["ps", "--all", "--quiet", "--filter", &format!("id={cid}")])
+                .output()
+                .await
+                .unwrap();
+            assert!(out.status.success(), "cannot inspect test container");
+            if out.stdout.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        }
+    })
+    .await
+    .is_ok();
+    // Also clean the unfixed implementation's container before asserting.
+    let _ = tokio::process::Command::new("docker")
+        .args(["rm", "--force", &cid])
+        .output()
+        .await;
+    std::fs::remove_dir_all(dir).unwrap();
+    assert!(removed, "{mode}: container survived its MCP client");
+}

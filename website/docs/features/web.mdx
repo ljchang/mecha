@@ -78,6 +78,11 @@ The door checks both identity and request intent:
   another site are refused. This stops a foreign page from submitting an
   action using your ambient tailnet identity. Reload the app after upgrading;
   scripted API clients must include that header on writes too.
+- **Opening a chat is explicit.** The app opens it before loading the transcript
+  and subscribing to events, and repeats this when reconnecting. Scripted
+  clients should first send `POST /api/chat/{key}` with `X-Mecha-Request: 1`;
+  repeated opens are safe. Transcript and event-stream reads return 404 for a
+  chat that has not been opened and never create one themselves.
 
 ```toml
 [web]
