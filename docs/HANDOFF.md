@@ -32,9 +32,10 @@ and 15 tags; the additional assistant set has five cases and six tags. Source
 verification of the open-work section removed stale completed entries below;
 remote deployments and sibling-repository work were not reverified.
 
-Final branch verification on 2026-09-08: workspace tests passed (790 CLI,
-20 first-run, 1,452 core, 4 fixture, 6 MCP, 9 sandbox, 150 mail library,
-1 mail binary, 75 Slack, 1 doctest; two ignored tests). Formatting, Clippy
+Final branch verification on 2026-09-08: workspace tests passed after rebasing onto `a3f1682d` (794 CLI,
+20 first-run, 1,464 core, 5 fixture, 8 MCP, 9 sandbox, 150 mail library,
+1 mail binary, 75 Slack, 1 doctest; three ignored tests, including the opt-in
+live judge calibration). Formatting, Clippy
 with warnings denied, workspace/all-targets build, frontend tests/build and
 documentation build passed. The sandbox suite also passed with
 `MECHA_TEST_REQUIRE_BACKENDS=1`. The isolated CLI smoke exercised artifact
@@ -42,9 +43,14 @@ verification, FIFO refusal, reminders, closure, reopening and cancellation.
 The local model's three seeded assistant lifetimes scored **12/15 overall,
 15/15 artifact postcondition sets**, with six requested principal actions;
 `results/assistant-follow-through-2026-09-08.json` preserves the original checks
-and records subsequent grader calibration. Unsupported recipient-read and
-relative-date/calendar claims remain a narrative-quality gap; the artifact
-checks do not grade those claims.
+and records subsequent grader calibration. The grounding follow-up adds explicit
+fixture dates shared by mail, board and the model prompt, clarifies mailbox
+read-state semantics, and enables evidence-backed rubrics with an explicit
+manifest judge. Eight live known-answer controls classified correctly, including a valid timezone
+interpretation. `date_context::render` now supplies computed local weekday/date
+pairs from yesterday through the coming week, with DST/year/leap-day coverage. General
+runtime truth enforcement remains unbuilt; these rubrics grade after the run,
+and the local judge is the same model as the assistant, not independent evidence.
 
 ## Where the work is
 
