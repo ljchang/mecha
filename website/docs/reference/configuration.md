@@ -28,7 +28,7 @@ they exist; `mecha config show` prints the merged result.
 |---|---|
 | `[providers.X]` | Merged by key. A project file can add `[providers.local]` without restating `[providers.anthropic]`. |
 | `[agent]`, `[tools]`, `[security]`, `[sandbox]` | Merged field by field. Naming one key leaves the rest alone. |
-| `[outbox]` | `tools` and `dir` each replace wholesale, so a project can un-route a tool the global config routes. |
+| `[outbox]` | Project routes add to inherited routes; inherited publish classification stays. `dir` is global-only. |
 | `[[mcp]]`, `[[hook]]`, `[[subagent]]`, `[[search]]` | Replaced wholesale. Merging lists by name would make it impossible for a project to turn a global entry off. |
 
 ### Where the project layer is not read
@@ -87,6 +87,7 @@ enforced by the merge, not asked for in a comment. See
 | `context_window` | integer | unset | How many tokens this model's context holds. |
 | `max_retries` | integer | `3` | Retries per request on transient failures (429, 5xx, transport). `0` disables. |
 | `retry_after_cap_secs` | integer | `60` | A `Retry-After` above this is surfaced as a failure instead of slept through. |
+| `structured_output` | string | `"disabled"` | Explicit endpoint schema dialect: `json_schema` or `llama_json`. Enable after verifying server/model support. |
 | `fallbacks` | array of strings | `[]` | Provider entries to try, in order, when this one exhausts its retries on a transient failure. |
 
 Both price fields are required for cost budgets and cost reporting: knowing one is

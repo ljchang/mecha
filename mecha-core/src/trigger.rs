@@ -211,6 +211,8 @@ pub struct Trigger {
     /// anything else.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_profile: Option<crate::tool::profile::ToolProfile>,
 
     /// Skills this run may load. **Empty means none**, which is the opposite
     /// of the `tools` field above and is deliberate.
@@ -285,6 +287,7 @@ impl Trigger {
             workspace: None,
             permission_mode: default_permission(),
             tools: Vec::new(),
+            tool_profile: None,
             skills: Vec::new(),
             no_mcp: false,
             max_turns: None,

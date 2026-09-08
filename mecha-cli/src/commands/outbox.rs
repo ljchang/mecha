@@ -17,7 +17,9 @@
 //! editing neither the draft nor anything a reader sees.
 
 use anyhow::{bail, Context, Result};
-use mecha_core::outbox::{DraftView, OutboxItem, OutboxKind, OutboxLock, OutboxStore};
+use mecha_core::outbox::{
+    DeliveryOutcome, DraftView, OutboxItem, OutboxKind, OutboxLock, OutboxStore,
+};
 use mecha_core::outbox_source::SourceRead;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -118,6 +120,15 @@ pub enum Cmd {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+    /// Record the observed outcome of an uncertain delivery. Does not resend.
+    Reconcile {
+        id: String,
+        #[arg(long, value_parser = ["delivered", "not-delivered"])]
+        outcome: String,
+        /// What you checked at the destination, including any receipt or event id.
+        #[arg(long)]
+        evidence: String,
+    },
     /// Refuse items. They stay on file as the record of the refusal.
     Reject {
         #[command(flatten)]
@@ -143,6 +154,24 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         } => edit(&store, &id, json, body_file.as_deref()),
         Cmd::Review { selection } => review(global, &store, &selection).await,
         Cmd::Approve { selection, yes } => send(global, &store, &selection, yes).await,
+        Cmd::Reconcile {
+            id,
+            outcome,
+            evidence,
+        } => {
+            let _lock = store.lock()?;
+            let outcome = if outcome == "delivered" {
+                DeliveryOutcome::Delivered
+            } else {
+                DeliveryOutcome::NotDelivered
+            };
+            let item = store.reconcile_delivery(&id, outcome, &evidence)?;
+            println!(
+                "{}: {} — reconciliation recorded; nothing sent",
+                item.id, item.status
+            );
+            Ok(())
+        }
         Cmd::Reject { selection, reason } => reject(&store, &selection, reason),
     }
 }
@@ -800,6 +829,7 @@ fn claim_for_release(store: &OutboxStore, reviewed: &OutboxItem) -> Result<Outbo
         current.id,
         current.status
     );
+    current.ensure_delivery_ready()?;
     Ok(current)
 }
 
@@ -874,6 +904,9 @@ impl Surface {
             store.record_error(&item.id, &msg)?;
             bail!("{msg}");
         };
+        // Durable before dispatch. A crash, timeout or lost acknowledgement
+        // must leave uncertainty, never a pending draft that retries blindly.
+        store.begin_delivery(&item.id)?;
         let output = match tool.call(item.args.clone(), &self.ctx).await {
             Ok(out) => out,
             Err(e) => {
@@ -1065,7 +1098,7 @@ async fn send(
     // worked is not a success, and a script that fans out on this needs to
     // know without parsing prose.
     if failed > 0 {
-        bail!("{failed} of {} item(s) did not send", items.len());
+        bail!("{failed} of {} item(s) could not be confirmed sent; inspect their delivery state before retrying", items.len());
     }
     Ok(())
 }
@@ -1250,6 +1283,7 @@ mod tests {
 
     fn item(id: &str, status: &str, kind: OutboxKind, tool: &str) -> OutboxItem {
         OutboxItem {
+            delivery_attempts: Vec::new(),
             output: None,
             author: Default::default(),
             filled_defaults: Vec::new(),

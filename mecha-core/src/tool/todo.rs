@@ -1871,6 +1871,7 @@ mod tests {
             .map(|(c, s)| json!({"content": c, "status": s}))
             .collect();
         Message {
+            tool_provenance: Default::default(),
             role: Role::Assistant,
             content: vec![Block::ToolUse {
                 id: id.into(),
@@ -1882,6 +1883,7 @@ mod tests {
 
     fn result(id: &str, is_error: bool) -> Message {
         Message {
+            tool_provenance: Default::default(),
             role: Role::User,
             content: vec![Block::ToolResult {
                 tool_use_id: id.into(),
@@ -1946,6 +1948,7 @@ mod tests {
         // not one block, which is what this test asserted until it failed and
         // sent me back to read `rebuild`.
         let head = Message {
+            tool_provenance: Default::default(),
             role: Role::User,
             content: vec![
                 Block::text("the original task"),
@@ -1972,6 +1975,7 @@ mod tests {
         let ws = PathBuf::from("/w/a");
         let msgs = vec![
             Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::text(format!(
                     "{CARRIED_HEADER}\n\n## todo\n0/1 done\n[ ] stale\n"
@@ -3677,6 +3681,7 @@ mod tests {
         }) + "\n\nthe check for step \"wire it\" was changed on or after the write that marked it done; the check it was completed against stands, and the change is recorded";
         let messages = vec![
             Message {
+                tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
                     id: "t1".into(),
@@ -3685,6 +3690,7 @@ mod tests {
                 }],
             },
             Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
                     tool_use_id: "t1".into(),
@@ -3747,6 +3753,7 @@ mod tests {
         });
         let messages = vec![
             Message {
+                tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
                     id: "t1".into(),
@@ -3755,6 +3762,7 @@ mod tests {
                 }],
             },
             Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
                     tool_use_id: "t1".into(),
@@ -3763,6 +3771,7 @@ mod tests {
                 }],
             },
             Message {
+                tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
                     id: "t2".into(),
@@ -3771,6 +3780,7 @@ mod tests {
                 }],
             },
             Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
                     tool_use_id: "t2".into(),
@@ -3854,6 +3864,7 @@ mod tests {
             .collect();
         let mut messages = vec![
             Message {
+                tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
                     id: "t1".into(),
@@ -3862,6 +3873,7 @@ mod tests {
                 }],
             },
             Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
                     tool_use_id: "t1".into(),
@@ -3979,6 +3991,7 @@ mod tests {
             .collect();
         let mut messages = vec![
             Message {
+                tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
                     id: "t1".into(),
@@ -3987,6 +4000,7 @@ mod tests {
                 }],
             },
             Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
                     tool_use_id: "t1".into(),
@@ -3995,6 +4009,7 @@ mod tests {
                 }],
             },
             Message {
+                tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
                     id: "t2".into(),
@@ -4003,6 +4018,7 @@ mod tests {
                 }],
             },
             Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
                     tool_use_id: "t2".into(),
@@ -4087,6 +4103,7 @@ mod tests {
             .collect();
         let messages = vec![
             Message {
+                tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
                     id: "t1".into(),
@@ -4095,6 +4112,7 @@ mod tests {
                 }],
             },
             Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
                     tool_use_id: "t1".into(),
@@ -4149,10 +4167,12 @@ mod tests {
         });
         let messages = vec![
             Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::Text { text: carried }],
             },
             Message {
+                tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
                     id: "t2".into(),
@@ -4161,6 +4181,7 @@ mod tests {
                 }],
             },
             Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
                     tool_use_id: "t2".into(),

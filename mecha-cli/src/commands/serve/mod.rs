@@ -285,6 +285,15 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
     let api = Router::new()
         .route("/api/ping", get(ping))
         .route("/api/summary", get(summary))
+        .route("/api/today", get(today))
+        .route(
+            "/api/workflows/{id}/{action}",
+            axum::routing::post(workflow_action),
+        )
+        .route(
+            "/api/outbox/{id}/reconcile",
+            axum::routing::post(review::reconcile),
+        )
         .route("/api/sessions", get(chat::sessions))
         .route("/api/history", get(chat::history))
         .route("/api/resume", axum::routing::post(chat::resume))
@@ -746,6 +755,36 @@ async fn summary(State(state): State<WebState>) -> Json<serde_json::Value> {
     }))
 }
 
+async fn today() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    match self_cli_json(&["workflow", "today"], false).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            format!("Today could not be read: {e:#}"),
+        )
+            .into_response(),
+    }
+}
+
+async fn workflow_action(
+    State(state): State<WebState>,
+    axum::extract::Path((id, action)): axum::extract::Path<(String, String)>,
+    Json(body): Json<serde_json::Value>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    match action.as_str() {
+        "verify" | "ack" | "close" | "reopen" => {
+            review::verb(&state, &["workflow", &action, &id]).await
+        }
+        "snooze" => match body["until"].as_str() {
+            Some(until) => review::verb(&state, &["workflow", "snooze", &id, until]).await,
+            None => (axum::http::StatusCode::BAD_REQUEST, "snooze needs until").into_response(),
+        },
+        _ => (axum::http::StatusCode::NOT_FOUND, "unknown workflow action").into_response(),
+    }
+}
+
 /// Run our own binary with `args` and parse its stdout as JSON.
 ///
 /// `exit_one_ok` admits commands whose exit 1 means "findings" rather than
@@ -860,6 +899,10 @@ mod tests {
         // clone verbs beside it. A probe without the header learns nothing,
         // not even that these routes exist.
         for (method, uri) in [
+            ("GET", "/api/today"),
+            ("POST", "/api/workflows/test/close"),
+            ("POST", "/api/workflows/test/snooze"),
+            ("POST", "/api/outbox/test/reconcile"),
             ("GET", "/api/settings/charter"),
             ("POST", "/api/settings/charter"),
             ("GET", "/api/settings/rules"),

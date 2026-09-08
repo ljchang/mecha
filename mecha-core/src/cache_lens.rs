@@ -171,6 +171,7 @@ mod tests {
 
     fn request(messages: Vec<Message>) -> CompletionRequest {
         CompletionRequest {
+            response_schema: None,
             model: "m".into(),
             system: Some("system".into()),
             messages,

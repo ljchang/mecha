@@ -20,6 +20,32 @@ maps which document holds what.
 
 ---
 
+**2026-09-08 implementation branch:** `feat/personal-assistant-follow-through`,
+in the isolated `/tmp/mecha-personal-assistant` worktree. The new workflow,
+delivery, provenance, extraction and evaluation features are described in
+`HISTORY.md` and `ASSISTANT-FOLLOW-THROUGH-DESIGN.md`; no installation or service
+restart was performed. Historical deployment paragraphs below retain their dates
+and are not claims about this branch's deployment. Read-only verification today:
+local `/props` reports `qwen3.6-35b-a3b`, four slots, per-slot context 262144,
+vision enabled; the user has 15 mecha unit files. The base eval set has 36 cases
+and 15 tags; the additional assistant set has five cases and six tags. Source
+verification of the open-work section removed stale completed entries below;
+remote deployments and sibling-repository work were not reverified.
+
+Final branch verification on 2026-09-08: workspace tests passed (790 CLI,
+20 first-run, 1,452 core, 4 fixture, 6 MCP, 9 sandbox, 150 mail library,
+1 mail binary, 75 Slack, 1 doctest; two ignored tests). Formatting, Clippy
+with warnings denied, workspace/all-targets build, frontend tests/build and
+documentation build passed. The sandbox suite also passed with
+`MECHA_TEST_REQUIRE_BACKENDS=1`. The isolated CLI smoke exercised artifact
+verification, FIFO refusal, reminders, closure, reopening and cancellation.
+The local model's three seeded assistant lifetimes scored **12/15 overall,
+15/15 artifact postcondition sets**, with six requested principal actions;
+`results/assistant-follow-through-2026-09-08.json` preserves the original checks
+and records subsequent grader calibration. Unsupported recipient-read and
+relative-date/calendar claims remain a narrative-quality gap; the artifact
+checks do not grade those claims.
+
 ## Where the work is
 
 **2026-09-08 review fixes:** PR #213 merged as `a3f1682d` and was installed
@@ -3878,9 +3904,8 @@ is true now:
   `subagent.rs` passes the caller's `ToolCtx` verbatim, so a child's jail is
   always exactly its parent's. A subagent that should only read one directory
   cannot be expressed.
-- **Structured output has no provider abstraction.** The `Provider` trait has
-  no structured-output request contract. GBNF, `guided_json` and
-  `output_config.format` are all spellings of the same idea and none is reachable.
+
+
 - **A seccomp layer on the sandbox.** Landlock itself shipped 2026-08-16
   (`Backend::Landlock`, `sandbox.rs` — no-privilege file confinement, hard
   ABI-3 floor, a preflight that plants a home file and requires the confined
@@ -3889,14 +3914,13 @@ is true now:
   filtering: no `seccomp` anywhere in `mecha-core/src/`. Also note this box
   stays on docker for `shell` anyway — docker's `network = false` earns the
   interlock relaxation that Landlock, honestly, cannot.
-- **In-run verification / a convergence primitive.** Nothing in `agent.rs` tests
-  a post-condition; there is no runtime "is it done yet". The research's own
-  answer is the starting point: it has to be a command's exit code, not a
-  model's opinion. `compact_validate` is the only in-run verifier that exists.
-  Narrowed 2026-08-19: `RunOutcome::ended_on_failed_call` (`agent.rs`) now names
-  the *post-hoc* case — a run that stopped of its own accord with its last call
-  failed — which is the silent-failure shape a judge cannot catch. It is a
-  report, not a convergence test; the gap above is unchanged.
+- **Automatic in-run convergence remains open.** `Workflow::check_evidence`
+  and `WorkflowStore::verify` now check explicit artifact content and confirmed
+  delivery; Today rereads evidence and owner closure verifies again. These are
+  workflow checks outside the agent loop. `TodoItem::check` remains a recorded
+  declaration, and the loop does not execute a general postcondition before
+  accepting the model's stop.
+
 - **Programmatic tool calling** (a `code` tool that calls other tools from inside
   a program). Two hazards to solve first, both named in the research: taint must
   update *within* a running program, and approval for a program that makes
@@ -3956,18 +3980,14 @@ What is missing beyond that is refinement:
 
 ### Triggers
 
-- **Deadline escalation, on top of the task surface that now exists.** The
-  `/tasks` modal and `mecha tasks` shipped 2026-08-20 — direct capture, status,
-  scheduling — so *direct capture* and *the modal* are done and the store is
-  the graph's board, reached over `kg_task_*` rather than built in `~/.mecha/`.
-  What that arc did **not** build is the part that turns silence into a state:
-  no task is created from an inbound request's SLA, none from a **commitment
-  the user made** (extractable from released outbox items, where mecha already
-  knows what went out), there is no `Origin` per task so nothing can decide
-  which tasks may escalate unattended, and nothing escalates. Recurrence still
-  wants `cron.rs`. An unanswered message is still invisible; there is now
-  somewhere to hang the state, and nothing hangs it. Design in
-  `PUBLIC-SURFACE-DESIGN.md` §3.2–3.3.
+- **Automatic commitment capture remains open.** Owner-recorded commitments
+  now have a source, counterparty, deadline and follow-up time in
+  `workflow::Commitment`. `Workflow::tick`, called by the trigger tick, provides
+  persistent in-app reminders with quiet hours, snoozing, daily deduplication and
+  overdue prominence. Extraction from inbound SLAs or delivered messages,
+  proposal acceptance, task-origin policy and recurring commitments remain
+  unbuilt. Reminders do not autonomously resume agents or send messages.
+
 - **Policy questions as a new `proposals` kind — not a third queue.**
   Ordinary unattended triggers can stage but cannot ask; delegated tasks
   already have `questions::ParkingAsker`. (2026-08-24 sharpened the premise without changing

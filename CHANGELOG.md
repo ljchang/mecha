@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Durable workflows link task conversations, questions, drafts and dependencies;
+  owner-specified completion checks inspect artifacts and confirmed delivery.
+- A Today view groups urgent items, decisions, verified work and waiting, with
+  commitments, quiet hours, coalesced reminders and snoozing.
+- Explicit structured-output provider capabilities for quarantined extraction,
+  plus stable research, assistant and coding tool profiles.
+- Repeated assistant lifetime fixtures check actual sent messages and calendar
+  events after review, detect duplicates, and record owner-action counts.
+- Outbox delivery reconciliation in the CLI and web, with durable attempts that
+  prevent automatic retry after an uncertain outcome.
+
+
 - **A learned rule can be scoped to a surface.** The front-end that owns
   a run tells `prepare` its kind (`GlobalOpts::surface`, never a flag),
   the learned-rules block is matched against it, and the run record keeps
@@ -468,6 +480,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the save rather than dropped silently.
 
 ### Fixed
+
+- Project configuration can no longer remove inherited outbox routes or redirect
+  the global review store.
+- Replays retain per-result provenance and treat legacy unknown results as untrusted.
+- Assistant guidance no longer claims that delegation clears conversation taint;
+  failed task runs now acknowledge possible partial files and drafts.
 
 - **Six-lane harness review** (PRs #139 and #142): a dangling symlink no
   longer passes the path jail as a new file and both writers open with

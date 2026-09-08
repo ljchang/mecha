@@ -2934,7 +2934,9 @@ pub async fn classify_with(
         // by default, which is right here: there is nothing to share a prefix
         // with, and caching other people's mail across calls is a property
         // nobody asked for.
-        let request = crate::quarantine::QuarantinedPass::new(model, 4096).ask(attempt.clone());
+        let request = crate::quarantine::QuarantinedPass::new(model, 4096)
+            .response_schema(provider.structured_output().then(verdict_schema))
+            .ask(attempt.clone());
         let response = provider.complete(&request, None).await?;
 
         if response.stop_reason == crate::message::StopReason::Refusal {
@@ -2977,4 +2979,18 @@ pub async fn classify_with(
         }
     }
     anyhow::bail!("classification failed after a retry: {last_error}")
+}
+
+/// Constrained syntax complements, but never replaces, semantic validation.
+fn verdict_schema() -> serde_json::Value {
+    let mut request_types: Vec<serde_json::Value> =
+        REQUEST_TYPES.iter().map(|s| serde_json::json!(s)).collect();
+    request_types.push(serde_json::Value::Null);
+    serde_json::json!({"type":"object", "additionalProperties":false,
+        "properties": {"reasoning":{"type":"string"}, "bucket":{"type":"string","enum":["respond","notify","ignore"]},
+        "urgency":{"type":"string","enum":["now","today","week","none"]}, "one_line":{"type":"string"},
+        "tags":{"type":"array","items":{"type":"string","enum":TAGS}},
+        "proposed":{"type":"string","enum":["reply","archive","spam","schedule","task","forward","none"]},
+        "deadline":{"type":["string","null"]}, "request_type":{"type":["string","null"],"enum":request_types}},
+        "required":["reasoning","bucket","urgency","one_line","tags","proposed","deadline","request_type"]})
 }
