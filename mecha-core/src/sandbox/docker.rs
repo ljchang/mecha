@@ -64,7 +64,7 @@ impl Control {
         command
             .args(args)
             .stdin(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         command.stdout(if capture {
             Stdio::piped()
         } else {
@@ -76,6 +76,36 @@ impl Control {
 
     fn wait(mut child: Child, timeout: Duration) -> Result<Vec<u8>> {
         let start = Instant::now();
+        // Docker may emit pull progress exceeding a pipe's capacity. Drain
+        // continuously, retaining only the diagnostic tail; waiting for exit
+        // before reading can deadlock an otherwise successful creation.
+        let stderr = if let Some(mut pipe) = child.stderr.take() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            if let Err(e) = std::thread::Builder::new()
+                .name("mecha-docker-stderr".into())
+                .spawn(move || {
+                    let mut tail = Vec::new();
+                    let mut buf = [0; 4096];
+                    while let Ok(n) = pipe.read(&mut buf) {
+                        if n == 0 {
+                            break;
+                        }
+                        tail.extend_from_slice(&buf[..n]);
+                        if tail.len() > 4096 {
+                            tail.drain(..tail.len() - 4096);
+                        }
+                    }
+                    let _ = tx.send(tail);
+                })
+            {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e).context("starting Docker diagnostic reader");
+            }
+            Some(rx)
+        } else {
+            None
+        };
         loop {
             let status = match child.try_wait() {
                 Ok(status) => status,
@@ -87,7 +117,14 @@ impl Control {
             };
             if let Some(status) = status {
                 if !status.success() {
-                    bail!("Docker control command exited with {status}");
+                    // Bound the wait even if a helper inherited stderr.
+                    let tail = stderr
+                        .and_then(|rx| rx.recv_timeout(Duration::from_millis(100)).ok())
+                        .unwrap_or_default();
+                    bail!(
+                        "Docker control command exited with {status}: {}",
+                        String::from_utf8_lossy(&tail).trim()
+                    );
                 }
                 let mut bytes = Vec::new();
                 if let Some(stdout) = child.stdout.take() {
@@ -233,6 +270,24 @@ impl Drop for DockerContainer {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn control_errors_keep_a_bounded_diagnostic_without_blocking_on_progress() {
+        let control = Control {
+            program: "/bin/sh".into(),
+            env: vec![],
+            cwd: std::env::temp_dir(),
+        };
+        let error = control.run(
+            &["-c".into(), "i=0; while [ $i -lt 10000 ]; do printf 'pull progress........'; i=$((i+1)); done >&2; printf 'Cannot connect to the Docker daemon' >&2; exit 125".into()],
+            Duration::from_secs(5), false,
+        ).unwrap_err().to_string();
+        assert!(
+            error.contains("Cannot connect to the Docker daemon"),
+            "{error}"
+        );
+        assert!(error.len() < 5000, "diagnostics must stay bounded");
+    }
 
     fn fixture() -> (PathBuf, tokio::process::Command) {
         let dir =

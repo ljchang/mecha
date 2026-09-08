@@ -185,7 +185,7 @@ jobs:
       - name: Integration tests, with skips promoted to failures
         env:
           MECHA_TEST_REQUIRE_BACKENDS: "1"
-        run: cargo test --workspace --locked --test sandbox_backends --test mcp_server
+        run: cargo test --workspace --locked --test sandbox_backends --test mcp_server --test run_lifecycle
 
   # `mecha tools` runs with no provider configured, which makes it the cheapest
   # end-to-end check that the binary starts and the tool registry builds.

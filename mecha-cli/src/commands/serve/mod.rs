@@ -1642,6 +1642,22 @@ mod boundary_tests {
     }
 
     #[tokio::test]
+    async fn chat_mode_rejects_a_decoded_path_escape_before_creating_state() {
+        let home = crate::testenv::HomeGuard::new("web-mode-path");
+        let mut request = post(
+            "/api/chat/%2E%2E%2F%2E%2E%2Fescape/mode",
+            r#"{"mode":"ask"}"#,
+        );
+        request
+            .headers_mut()
+            .insert("content-type", HeaderValue::from_static("application/json"));
+        let response = app(chat::test_chat()).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(!home.dir.join("sessions").exists());
+        assert!(!home.dir.join("escape").exists());
+    }
+
+    #[tokio::test]
     async fn chat_reads_never_create_and_explicit_open_is_guarded_and_idempotent() {
         let home = crate::testenv::HomeGuard::new("web-explicit-open");
         let app = app(chat::test_chat());

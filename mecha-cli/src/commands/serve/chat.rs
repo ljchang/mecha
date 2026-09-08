@@ -2024,6 +2024,9 @@ pub async fn answer(
     axum::extract::Path(key): axum::extract::Path<String>,
     Json(body): Json<AnswerBody>,
 ) -> axum::response::Response {
+    if !valid_key(&key) {
+        return (StatusCode::BAD_REQUEST, "bad session key\n").into_response();
+    }
     let chat = match chat_state(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
@@ -2079,6 +2082,9 @@ pub async fn set_mode(
     axum::extract::Path(key): axum::extract::Path<String>,
     Json(body): Json<ModeBody>,
 ) -> axum::response::Response {
+    if !valid_key(&key) {
+        return (StatusCode::BAD_REQUEST, "bad session key\n").into_response();
+    }
     let chat = match chat_state(&state) {
         Ok(c) => c,
         Err(resp) => return resp,

@@ -106,10 +106,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Chat transcript and event-stream reads no longer create sessions. The app
   explicitly opens chats and repeats that step when reconnecting; scripted
   clients must first `POST /api/chat/{key}` with `X-Mecha-Request: 1`.
+  Mode changes now reject invalid keys before creating a workspace.
 - Docker-confined MCP clients now own and remove their containers when the
   last client drops, including failed or cancelled startup and servers that
   ignore stdin EOF. Cleanup also works after the async runtime shuts down;
-  daemon failures are retried and reported.
+  `mecha run` releases clients before refusal and empty-output exit codes.
+  Daemon failures are retried and reported with bounded Docker diagnostics.
 - Browser mutations now require a same-origin request header, including
   bodyless actions, uploads, and voice offers. Reload the web app after
   upgrading; scripted API clients must send `X-Mecha-Request: 1` on writes.
