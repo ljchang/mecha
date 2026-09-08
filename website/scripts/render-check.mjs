@@ -291,6 +291,87 @@ for (const route of ROUTES) {
   await context.close();
 }
 
+// Two independent pages receive the same broadcast. Equal text from two
+// requests must remain two messages, whichever arrives first: POST or SSE.
+{
+  const contexts = await Promise.all([browser.newContext(), browser.newContext()]);
+  const pages = await Promise.all(contexts.map(context => context.newPage()));
+  let order = 'event-first';
+  let steered = false;
+  let reject = false;
+  const deferred = [];
+  const broadcast = async (event) => Promise.all(pages.map(page => page.evaluate(ev => {
+    window.syncProbe.source.onmessage({data: JSON.stringify(ev)});
+  }, event)));
+  try {
+    for (const page of pages) {
+      await page.exposeBinding('sendInput', async (_source, body) => {
+        if (reject) return {error: 'server is shutting down'};
+        const event = {type: steered ? 'queued' : 'user', text: body.text, request_id: body.request_id, spoken: false};
+        if (order === 'event-first') {
+          await broadcast(event);
+          if (!steered) await broadcast({type: 'done', ok: true, stop: 'Completed'});
+        } else deferred.push(event);
+        return steered ? {steered: true} : {started: true};
+      });
+      await page.goto(`${base}#home`, {waitUntil: 'networkidle'});
+      await page.evaluate(() => {
+        const originalFetch = globalThis.fetch;
+        const OriginalSource = globalThis.EventSource;
+        window.syncProbe = {};
+        globalThis.EventSource = class extends OriginalSource {
+          constructor(url) { super(url); window.syncProbe.source = this; }
+        };
+        globalThis.fetch = async (url, options) => {
+          if (/^\/api\/chat\/[^/]+\/send$/.test(url)) {
+            const result = await window.sendInput(JSON.parse(options.body));
+            return new Response(JSON.stringify(result), {status: result.error ? 503 : 200});
+          }
+          return originalFetch(url, options);
+        };
+        location.hash = 'chat';
+      });
+      await page.waitForFunction(() => window.syncProbe.source);
+      await page.waitForTimeout(100);
+    }
+    const submit = async (page, text) => {
+      await page.locator('textarea').last().fill(text);
+      await page.keyboard.press('Enter');
+    };
+    const count = (page, text) => page.locator('.bubble').filter({hasText: text}).count();
+    await submit(pages[0], 'cross-device identical input');
+    await pages[0].waitForTimeout(150);
+    for (const page of pages) {
+      if (await count(page, 'cross-device identical input') !== 1) throw new Error('event-first input was missing or duplicated');
+      if (await page.locator('textarea').last().getAttribute('placeholder') !== 'Ask mecha…') throw new Error('late POST response restarted a completed turn');
+    }
+    order = 'response-first';
+    await submit(pages[1], 'cross-device identical input');
+    await pages[1].waitForTimeout(150);
+    for (const ev of deferred.splice(0)) await broadcast(ev);
+    for (const page of pages) {
+      if (await count(page, 'cross-device identical input') !== 2) throw new Error('equal inputs from different devices were merged or duplicated');
+    }
+    steered = true;
+    order = 'event-first';
+    await submit(pages[0], 'cross-device steering');
+    await pages[0].waitForTimeout(150);
+    for (const page of pages) {
+      if (await count(page, 'cross-device steering') !== 1) throw new Error('steering was missing or duplicated');
+    }
+    reject = true;
+    await submit(pages[0], 'rejected input');
+    await pages[0].waitForTimeout(150);
+    for (const page of pages) {
+      if (await count(page, 'rejected input')) throw new Error('a rejected send appeared as accepted');
+    }
+  } catch (e) {
+    failures.push(`chat synchronization: ${String(e.message).split('\n')[0]}`);
+  }
+  checked++;
+  await Promise.all(contexts.map(context => context.close()));
+}
+
 await browser.close();
 server.close();
 

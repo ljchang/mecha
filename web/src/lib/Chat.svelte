@@ -296,6 +296,16 @@
     }
   }
 
+  // A POST can resolve before or after its broadcast. Correlate by request,
+  // never by text: two devices may deliberately send identical words.
+  const receivedInputs = new Set();
+  function receiveInput(ev) {
+    if (ev.request_id && receivedInputs.has(ev.request_id)) return;
+    if (ev.request_id) receivedInputs.add(ev.request_id);
+    pushEntry({ kind: 'user', text: ev.text, queued: ev.type === 'queued', spoken: ev.spoken });
+    if (ev.type === 'user') running = true;
+  }
+
   function subscribe(sessionKey) {
     // tailscale serve injects the identity header on this request too —
     // EventSource cannot set headers, and never needs to here.
@@ -308,14 +318,8 @@
           scrollDown();
           break;
         case 'queued':
-          pushEntry({ kind: 'user', text: ev.text, queued: true });
-          break;
         case 'user':
-          // Words this page did not type — spoken into the same
-          // conversation (D3). It is also the only signal that a run
-          // started, since nothing local set `running` for it.
-          pushEntry({ kind: 'user', text: ev.text, spoken: true });
-          running = true;
+          receiveInput(ev);
           break;
         case 'tool':
           // `draft` and `args` arrive with the call, so a run in flight is
@@ -513,6 +517,7 @@
   function switchTo(k) {
     if (k === key) return;
     key = k;
+    receivedInputs.clear();
     entries = [];
     streaming = '';
     usage = null;
@@ -818,21 +823,22 @@
     }
     if (!text) return;
     draft = '';
+    const sessionKey = key;
+    const request_id = crypto.randomUUID();
     try {
-      const res = await fetch(`/api/chat/${key}/send`, {
+      const res = await fetch(`/api/chat/${sessionKey}/send`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, request_id }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
       const data = await res.json();
-      if (data.started) {
-        pushEntry({ kind: 'user', text });
-        running = true;
-      } else if (data.steered) {
-        pushEntry({ kind: 'user', text, queued: true });
+      if (sessionKey !== key) return;
+      if (data.started || data.steered) {
+        receiveInput({ type: data.started ? 'user' : 'queued', text, request_id, spoken: false });
       }
     } catch (e) {
+      if (sessionKey !== key) return;
       pushEntry({ kind: 'notice', text: `send failed: ${e?.message ?? e}` });
     }
   }

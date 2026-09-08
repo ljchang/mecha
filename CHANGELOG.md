@@ -103,6 +103,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Stopping the web service preserves active turns.** SIGTERM and Ctrl-C
+  close pending questions, cancel chat and mounted voice work cooperatively,
+  and wait for partial transcripts and outcomes before exiting. Idle event
+  streams and voice clients no longer prevent shutdown.
+- **Chat input appears on every connected device.** Typed messages and steering
+  are broadcast with request IDs, avoiding duplicate echoes on the sender and
+  preserving separate messages with identical text.
+
 - Chat transcript and event-stream reads no longer create sessions. The app
   explicitly opens chats and repeats that step when reconnecting; scripted
   clients must first `POST /api/chat/{key}` with `X-Mecha-Request: 1`.

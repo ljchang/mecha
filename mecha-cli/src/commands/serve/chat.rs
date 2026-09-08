@@ -87,6 +87,8 @@ pub struct ChatState {
     context_window: Option<u64>,
     outbox_root: PathBuf,
     sessions: Mutex<HashMap<String, WebSession>>,
+    stopping: tokio_util::sync::CancellationToken,
+    runs: tokio_util::task::TaskTracker,
     /// The todo tool the shared agent is using, so a resumed session can have
     /// its plan restored from its own transcript (D15). One handle, many
     /// sessions: the list is keyed by each run's jail, which for this surface
@@ -219,6 +221,8 @@ impl ChatState {
             context_window,
             outbox_root,
             sessions: Mutex::new(HashMap::new()),
+            stopping: Default::default(),
+            runs: Default::default(),
             todo: prepared.todo,
             config: prepared.config,
             _mcp: prepared._mcp.clone(),
@@ -227,6 +231,25 @@ impl ChatState {
 }
 
 impl ChatState {
+    /// Close admission under the same lock used to start and steer turns.
+    pub async fn stop(&self) {
+        let sessions = self.sessions.lock().await;
+        self.stopping.cancel();
+        for ws in sessions.values() {
+            ws.questions.shutdown();
+            if let Some(live) = &ws.live {
+                live.cancel
+                    .cancel(mecha_core::agent::CancelReason::Shutdown);
+            }
+        }
+        self.runs.close();
+    }
+
+    /// Includes transcript recording and hand-back, not just model work.
+    pub async fn drain(&self) {
+        self.runs.wait().await;
+    }
+
     /// What the mounted voice facade needs from the shared build — the
     /// unification seam: one agent, one prefix, two dialects
     /// (docs/VOICE-RESEARCH.md, the serve unification entry).
@@ -405,16 +428,16 @@ pub enum WireEvent {
     Delta {
         text: String,
     },
-    /// A turn started with words the page did not type — today that means
-    /// spoken (D3). A typed send echoes locally, so broadcasting it too
-    /// would render it twice on the page that sent it; what a second device
-    /// watching the same session misses is a separate gap, and this is not
-    /// the place to half-close it.
+    /// Accepted input, shared by every browser watching the conversation.
+    /// The request id correlates a typed POST response with its SSE echo.
     User {
         text: String,
+        spoken: bool,
+        request_id: Option<String>,
     },
     Queued {
         text: String,
+        request_id: Option<String>,
     },
     /// A call the run just made — its name, and what it was called with.
     ///
@@ -557,7 +580,8 @@ pub enum WireEvent {
 fn wire_event(event: &AgentEvent, context_window: Option<u64>) -> Option<WireEvent> {
     match event {
         AgentEvent::TextDelta(text) => Some(WireEvent::Delta { text: text.clone() }),
-        AgentEvent::QueuedInput(text) => Some(WireEvent::Queued { text: text.clone() }),
+        // Acceptance is broadcast by send; draining it must not echo it again.
+        AgentEvent::QueuedInput(_) => None,
         AgentEvent::ToolCall {
             id, name, input, ..
         } => Some(WireEvent::Tool {
@@ -748,6 +772,7 @@ fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
 #[derive(serde::Deserialize)]
 pub struct SendBody {
     pub text: String,
+    pub request_id: Option<String>,
 }
 
 type Chat = State<super::WebState>;
@@ -854,6 +879,7 @@ pub(super) async fn open_task_conversation(
             &key,
             &seed,
             TurnOpts {
+                request_id: None,
                 spoken: false,
                 approve_all: false,
             },
@@ -982,6 +1008,7 @@ fn ensure_session_as<'a>(
     key: &str,
     init: SessionInit,
 ) -> Result<&'a mut WebSession> {
+    anyhow::ensure!(!chat.stopping.is_cancelled(), "server is shutting down");
     if !sessions.contains_key(key) {
         // Picking one back up, or starting one. `Session::load` restores the
         // messages *and* the recorded taint, so a conversation that read a
@@ -1182,12 +1209,18 @@ pub async fn send(
     if !valid_key(&key) {
         return (StatusCode::BAD_REQUEST, "bad session key\n").into_response();
     }
+    if body.request_id.as_ref().is_some_and(|id| id.len() > 128) {
+        return (StatusCode::BAD_REQUEST, "request id too long\n").into_response();
+    }
     let text = body.text.trim().to_string();
     if text.is_empty() {
         return (StatusCode::BAD_REQUEST, "empty message\n").into_response();
     }
 
     let mut sessions = chat.sessions.lock().await;
+    if chat.stopping.is_cancelled() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "server is shutting down\n").into_response();
+    }
     let ws = match ensure_session(&chat, &mut sessions, &key) {
         Ok(ws) => ws,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
@@ -1197,7 +1230,11 @@ pub async fn send(
     // the loop (never a bare user message — two in a row are invalid).
     if let Some(live) = &ws.live {
         if let Ok(mut queue) = live.queue.lock() {
-            queue.push_back(text);
+            queue.push_back(text.clone());
+            let _ = ws.events.send(WireEvent::Queued {
+                text,
+                request_id: body.request_id,
+            });
             return Json(serde_json::json!({ "steered": true })).into_response();
         }
         return (
@@ -1215,6 +1252,7 @@ pub async fn send(
         TurnOpts {
             spoken: false,
             approve_all: false,
+            request_id: body.request_id,
         },
     ) {
         Ok(_started) => Json(serde_json::json!({ "started": true })).into_response(),
@@ -1231,9 +1269,9 @@ pub async fn send(
 
 /// Which door a turn came through, and what that changes about it.
 struct TurnOpts {
-    /// Spoken rather than typed (D3). Two consequences and no others: the
-    /// D10 voice block opens the turn when the last one was typed, and the
-    /// user's words are broadcast because there is no page-side echo.
+    request_id: Option<String>,
+    /// Spoken rather than typed (D3): the voice block opens a spoken
+    /// stretch, and the browser labels its words as spoken.
     spoken: bool,
     /// `--voice-yes`: run with approvals off. Deliberately a property of
     /// the *turn*, not of the conversation — a typed turn in the same
@@ -1291,6 +1329,7 @@ mod narrowing_tests {
 
     fn spoken_yes() -> TurnOpts {
         TurnOpts {
+            request_id: None,
             spoken: true,
             approve_all: true,
         }
@@ -1316,6 +1355,7 @@ mod narrowing_tests {
         // "Only ever narrows" — the page's mode is a decision a person made
         // about typing, and hearing ourselves says nothing about it.
         let typed = TurnOpts {
+            request_id: None,
             spoken: false,
             approve_all: true,
         };
@@ -1325,6 +1365,7 @@ mod narrowing_tests {
     #[test]
     fn without_the_flag_there_is_nothing_to_narrow() {
         let off = TurnOpts {
+            request_id: None,
             spoken: true,
             approve_all: false,
         };
@@ -1402,6 +1443,9 @@ fn begin_turn(
     text: &str,
     opts: TurnOpts,
 ) -> Result<Started, TurnError> {
+    if chat.stopping.is_cancelled() {
+        return Err(TurnError::Failed("server is shutting down".into()));
+    }
     let ws = sessions
         .get_mut(key)
         .ok_or_else(|| TurnError::Failed("no such session".into()))?;
@@ -1467,14 +1511,17 @@ fn begin_turn(
         conversation.messages.clone()
     };
 
-    // A typed turn is echoed by the page that typed it; a spoken one has no
-    // local echo anywhere, so it is announced — with the voice block
-    // stripped, which is harness plumbing and not the owner's words.
-    if opts.spoken {
-        let _ = ws.events.send(WireEvent::User {
-            text: strip_voice_preamble(&text).to_string(),
-        });
-    }
+    // Every observer sees accepted input. A typed request id lets its sender
+    // reconcile this event with the POST response; voice has no local echo.
+    let _ = ws.events.send(WireEvent::User {
+        text: if opts.spoken {
+            strip_voice_preamble(&text).to_string()
+        } else {
+            text.clone()
+        },
+        spoken: opts.spoken,
+        request_id: opts.request_id,
+    });
 
     let cancel = mecha_core::agent::CancelHandle::new();
     let queue: Arc<StdMutex<VecDeque<String>>> = Arc::default();
@@ -1564,7 +1611,7 @@ fn begin_turn(
     let (tap_tx, tap_rx) = tokio::sync::mpsc::unbounded_channel();
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
 
-    tokio::spawn(async move {
+    chat.runs.spawn(async move {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let forwarder = {
             let bcast = bcast.clone();
@@ -1800,12 +1847,15 @@ fn begin_turn(
         // that keeps the name it has, which is why nothing above depends on
         // it and why the miss is logged rather than shown.
         if name_it {
-            let named = mecha_core::title::summarise(
-                state_for_task.agent.provider(),
-                &state_for_task.model,
-                &owner_turns,
-            )
-            .await;
+            let named = tokio::select! {
+                biased;
+                _ = state_for_task.stopping.cancelled() => return,
+                named = mecha_core::title::summarise(
+                    state_for_task.agent.provider(),
+                    &state_for_task.model,
+                    &owner_turns,
+                ) => named,
+            };
 
             let recorded = match &named {
                 Ok(Some(name)) => {
@@ -1916,6 +1966,7 @@ impl crate::voice::SessionHost for VoiceHost {
                         key,
                         utterance,
                         TurnOpts {
+                            request_id: None,
                             spoken: true,
                             approve_all,
                         },
@@ -1986,18 +2037,24 @@ pub async fn events(
             None => return (StatusCode::NOT_FOUND, "no such session\n").into_response(),
         }
     };
-    let stream = futures::stream::unfold(rx, |mut rx| async move {
-        match rx.recv().await {
+    let stop = chat.stopping.clone();
+    let stream = futures::stream::unfold((rx, stop), |(mut rx, stop)| async move {
+        let received = tokio::select! {
+            biased;
+            _ = stop.cancelled() => return None,
+            received = rx.recv() => received,
+        };
+        match received {
             Ok(wire) => {
                 let event = SseEvent::default().json_data(&wire).ok()?;
-                Some((Ok::<_, std::convert::Infallible>(event), rx))
+                Some((Ok::<_, std::convert::Infallible>(event), (rx, stop)))
             }
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 let notice = WireEvent::Notice {
                     text: format!("{n} events missed — reload for the full transcript"),
                 };
                 let event = SseEvent::default().json_data(&notice).ok()?;
-                Some((Ok(event), rx))
+                Some((Ok(event), (rx, stop)))
             }
             Err(broadcast::error::RecvError::Closed) => None,
         }
@@ -2100,6 +2157,9 @@ pub async fn set_mode(
         }
     };
     let mut sessions = chat.sessions.lock().await;
+    if chat.stopping.is_cancelled() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "server is shutting down\n").into_response();
+    }
     let ws = match ensure_session(chat, &mut sessions, &key) {
         Ok(ws) => ws,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
@@ -2923,6 +2983,8 @@ mod wire_tests {
         // here would leave spoken turns arriving and nothing rendering
         // them, which looks exactly like voice not being wired at all.
         let wire = serde_json::to_value(WireEvent::User {
+            spoken: true,
+            request_id: None,
             text: "book the room".into(),
         })
         .unwrap();
@@ -3179,6 +3241,8 @@ pub(super) fn test_chat() -> Arc<ChatState> {
         context_window: None,
         outbox_root: OutboxStore::default_root().unwrap(),
         sessions: Mutex::new(HashMap::new()),
+        stopping: Default::default(),
+        runs: Default::default(),
         todo: None,
         _mcp: vec![],
     })

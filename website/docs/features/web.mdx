@@ -121,6 +121,15 @@ and there is exactly one implementation of each verb.
 | **Tasks** | The GTD board, with the views in a drawer and one tap per status change |
 | **Settings** | Behind the gear — upper-right on *every* view, since settings is chrome rather than a place to be. An index of three features, each opening its own pane: the [charter](/docs/features/appraisal#the-charter--what-mecha-is-for-in-your-own-words) (edited as a list — tap a line, drag its grip to re-rank — behind a validated two-tap save), the [learning](/docs/features/learning) store — reflections and rules, read, edited and refused — and the [voice](/docs/features/voice) stack's health and preferences. Each row says what is in there — a count, or a dash where the store could not be read |
 
+Open the same chat on multiple devices to follow one conversation. Typed
+messages, spoken turns, and steering appear on every connected page; sending
+from one device does not duplicate its message there.
+
+Stopping `mecha serve` with Ctrl-C or SIGTERM stops new turns, closes pending
+questions, and saves active chat and voice turns before exiting. Tool calls
+finish at their normal safe stopping points, so shutdown can wait for a tool
+already in progress. Reload after restarting to read the saved partial turn.
+
 ### Settings, and what a browser may write
 
 Four things on this page write, and each is fenced for what it is putting on
