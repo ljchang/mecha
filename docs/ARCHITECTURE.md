@@ -2291,7 +2291,10 @@ Completion is evidence, never the model's last sentence. `check_evidence` reads
 bounded regular files through `ToolCtx::resolve` or confirmed outbox delivery.
 No checks, unknown checks, missing records and failed reads cannot verify. Today
 rereads artifacts; closure rechecks and preserves the separate owner gate on graph
-task closure. Cancelling tracking is recorded separately from completing work.
+task closure. Rejected drafts and abandoned questions are resolved owner decisions;
+they do not block a corrected outcome, but never satisfy an explicit delivery
+check. `Workflow::close` preserves that checked evidence while sharing the bounded
+event append path. Cancelling tracking is recorded separately from completing work.
 
 Commitments and attention policy live in the owner's workflow store, outside
 project configuration. The trigger tick refreshes linked events and runs the same

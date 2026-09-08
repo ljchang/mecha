@@ -328,21 +328,7 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             let verified = store.verify(&id, out.as_ref(), now)?;
             if close {
                 ensure!(verified.verified(), "completion checks or linked actions are unresolved; inspect `mecha workflow verify {id}`");
-                serde_json::to_value(store.update(&id, |w| {
-                    ensure!(
-                        w.verified(),
-                        "workflow changed since verification; verify it again"
-                    );
-                    w.closed_at = Some(now);
-                    w.state = "closed".into();
-                    w.notice = None;
-                    w.events.push(mecha_core::workflow::Event {
-                        at: now,
-                        kind: "owner_closed".into(),
-                        detail: "Owner closed after verification; graph task unchanged".into(),
-                    });
-                    Ok(())
-                })?)?
+                serde_json::to_value(store.update(&id, |w| w.close(now))?)?
             } else {
                 serde_json::to_value(verified)?
             }

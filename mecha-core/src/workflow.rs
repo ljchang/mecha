@@ -165,7 +165,7 @@ impl Workflow {
             closed_at: None,
         }
     }
-    pub fn record(&mut self, kind: &str, detail: impl Into<String>, now: DateTime<Utc>) {
+    fn append_event(&mut self, kind: &str, detail: impl Into<String>, now: DateTime<Utc>) {
         self.updated_at = now;
         // Legacy records lack a sequence; seed it from their retained history.
         self.event_sequence = self
@@ -180,6 +180,9 @@ impl Workflow {
         if self.events.len() > EVENT_HISTORY_LIMIT {
             self.events.drain(..self.events.len() - EVENT_HISTORY_LIMIT);
         }
+    }
+    pub fn record(&mut self, kind: &str, detail: impl Into<String>, now: DateTime<Utc>) {
+        self.append_event(kind, detail, now);
         // Every material event invalidates old verification; refresh never manufactures success.
         self.verified_at = None;
         self.verification.clear();
@@ -189,10 +192,34 @@ impl Workflow {
             && !self
                 .observed
                 .values()
-                .any(|s| !matches!(s.as_str(), "sent" | "answered" | "closed"))
+                // Declining an action resolves that decision, not a delivery
+                // requirement. Every explicit completion check must still pass.
+                .any(|s| {
+                    !matches!(
+                        s.as_str(),
+                        "sent" | "answered" | "closed" | "rejected" | "abandoned"
+                    )
+                })
             && !self.checks.is_empty()
             && self.verification.len() == self.checks.len()
             && self.verification.iter().all(|c| c.passed)
+    }
+    /// Owner closure retains the evidence it just checked, while sharing the
+    /// bounded history and sequence bookkeeping of every other event.
+    pub fn close(&mut self, now: DateTime<Utc>) -> Result<()> {
+        ensure!(
+            self.state != "running" && self.verified(),
+            "workflow changed since verification; verify it again"
+        );
+        self.closed_at = Some(now);
+        self.state = "closed".into();
+        self.notice = None;
+        self.append_event(
+            "owner_closed",
+            "Owner closed after verification; graph task unchanged",
+            now,
+        );
+        Ok(())
     }
     pub fn section(&self, now: DateTime<Utc>) -> &'static str {
         if self.closed_at.is_some() {
@@ -287,7 +314,7 @@ impl Workflow {
         );
         for id in &self.outbox {
             let state = outbox
-                .and_then(|s| s.item(id).ok())
+                .and_then(|s| delivery_item(s, id).ok())
                 .map(|d| {
                     if d.delivery_uncertain() {
                         "delivery_unknown".into()
@@ -368,7 +395,7 @@ impl Workflow {
                         Ok(format!("Required content observed in {path}"))
                     }
                     Check::Delivered { outbox_id } => {
-                        let d = outbox.context("outbox unavailable")?.item(outbox_id)?;
+                        let d = delivery_item(outbox.context("outbox unavailable")?, outbox_id)?;
                         ensure!(
                             d.status == "sent" && !d.delivery_uncertain(),
                             "delivery not confirmed"
@@ -439,6 +466,18 @@ impl Workflow {
             urgent,
         });
         true
+    }
+}
+
+/// Stored links normally hold full IDs. Legacy owner-entered prefixes retain
+/// their lookup behavior; a corrupt exact record fails closed without a rescan.
+fn delivery_item(
+    store: &crate::outbox::OutboxStore,
+    id: &str,
+) -> Result<crate::outbox::OutboxItem> {
+    match store.item_exact(id)? {
+        Some(item) => Ok(item),
+        None => store.item(id),
     }
 }
 
@@ -770,6 +809,68 @@ mod tests {
         s.parse().unwrap()
     }
     #[test]
+    fn rejected_draft_does_not_block_its_delivered_replacement_or_count_as_delivery() {
+        let h = Home::new();
+        let out = OutboxStore::open(h.0.join("outbox")).unwrap();
+        let stage = |body: &str| {
+            out.stage(
+                "mail_reply",
+                OutboxKind::Message,
+                serde_json::json!({"body_markdown": body}),
+                Default::default(),
+                Provenance::default(),
+            )
+            .unwrap()
+        };
+        let rejected = stage("wrong tone");
+        let replacement = stage("corrected reply");
+        let _lock = out.lock().unwrap();
+        out.resolve(&rejected.id, "rejected", Some("replace this draft".into()))
+            .unwrap();
+        let mut w = h.workflow();
+        w.outbox = vec![rejected.id.clone(), replacement.id.clone()];
+        fs::write(h.0.join("reply.md"), "corrected reply").unwrap();
+        w.checks = vec![
+            Check::ArtifactContains {
+                path: "reply.md".into(),
+                text: "corrected reply".into(),
+            },
+            Check::Delivered {
+                outbox_id: replacement.id.clone(),
+            },
+        ];
+        let now = at("2026-09-08T13:00:00Z");
+        w.observe(Some(&out), None, now);
+        w.check_evidence(Some(&out), now).unwrap();
+        assert!(!w.verified(), "a pending replacement is unresolved");
+        out.begin_delivery(&replacement.id).unwrap();
+        w.observe(Some(&out), None, now);
+        w.check_evidence(Some(&out), now).unwrap();
+        assert!(!w.verified(), "an uncertain replacement is unresolved");
+        out.resolve(&replacement.id, "sent", None).unwrap();
+        w.observe(Some(&out), None, now);
+        w.check_evidence(Some(&out), now).unwrap();
+        assert!(
+            w.verified(),
+            "the rejected draft must not poison completed work"
+        );
+        w.observed
+            .insert("question:declined".into(), "abandoned".into());
+        assert!(
+            w.verified(),
+            "an owner-declined question is a resolved decision"
+        );
+        w.checks.push(Check::Delivered {
+            outbox_id: rejected.id,
+        });
+        w.check_evidence(Some(&out), now).unwrap();
+        assert!(
+            !w.verified(),
+            "rejection cannot satisfy an explicit delivery check"
+        );
+    }
+
+    #[test]
     fn event_history_is_bounded_without_suppressing_new_notices_after_restart() {
         let h = Home::new();
         let mut w = h.workflow();
@@ -789,6 +890,20 @@ mod tests {
         assert_eq!(restored.events.len(), 128);
         assert!(restored.tick(&AttentionPolicy::default(), now));
         assert_ne!(restored.last_notice_key, first_key);
+        fs::write(h.0.join("done.txt"), "finished").unwrap();
+        restored.checks.push(Check::ArtifactContains {
+            path: "done.txt".into(),
+            text: "finished".into(),
+        });
+        restored.check_evidence(None, now).unwrap();
+        let sequence = restored.event_sequence;
+        restored.close(now).unwrap();
+        assert!(
+            restored.verified(),
+            "owner closure retains checked evidence"
+        );
+        assert_eq!(restored.events.len(), 128);
+        assert_eq!(restored.event_sequence, sequence + 1);
     }
 
     #[test]
