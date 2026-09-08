@@ -299,10 +299,16 @@
   // A POST can resolve before or after its broadcast. Correlate by request,
   // never by text: two devices may deliberately send identical words.
   const receivedInputs = new Set();
+  const inputDelivery = new Map();
+  function markDelivery(ids, delivery) {
+    const changed = new Set(ids);
+    for (const id of ids) inputDelivery.set(id, delivery);
+    entries = entries.map(e => changed.has(e.request_id) ? { ...e, delivery } : e);
+  }
   function receiveInput(ev) {
     if (ev.request_id && receivedInputs.has(ev.request_id)) return;
     if (ev.request_id) receivedInputs.add(ev.request_id);
-    pushEntry({ kind: 'user', text: ev.text, queued: ev.type === 'queued', spoken: ev.spoken });
+    pushEntry({ kind: 'user', text: ev.text, request_id: ev.request_id, queued: ev.type === 'queued', spoken: ev.spoken, delivery: inputDelivery.get(ev.request_id) ?? 'queued' });
     if (ev.type === 'user') running = true;
   }
 
@@ -316,6 +322,12 @@
         case 'delta':
           streaming += ev.text;
           scrollDown();
+          break;
+        case 'queued_delivered':
+          markDelivery([ev.request_id], 'delivered');
+          break;
+        case 'queued_discarded':
+          markDelivery(ev.request_ids, 'discarded');
           break;
         case 'queued':
         case 'user':
@@ -516,6 +528,7 @@
     if (k === key) return;
     key = k;
     receivedInputs.clear();
+    inputDelivery.clear();
     entries = [];
     streaming = '';
     usage = null;
@@ -1121,7 +1134,7 @@
       {#if entry.kind === 'user'}
         <div class="bubble" class:queued={entry.queued}>
           {entry.text}
-          {#if entry.queued}<span class="queued-tag">steered</span>{/if}
+          {#if entry.queued}<span class="queued-tag">{entry.delivery === 'discarded' ? 'not delivered — send again' : entry.delivery === 'delivered' ? 'steered' : 'queued'}</span>{/if}
           {#if entry.spoken}<span class="queued-tag">spoken</span>{/if}
         </div>
       {:else if entry.kind === 'assistant'}

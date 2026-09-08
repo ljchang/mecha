@@ -157,6 +157,7 @@ struct Live {
     /// the owner*, and the outcome records `Stopped`.
     cancel: mecha_core::agent::CancelHandle,
     queue: Arc<StdMutex<VecDeque<String>>>,
+    queued_ids: Arc<StdMutex<VecDeque<String>>>,
 }
 
 impl ChatState {
@@ -248,6 +249,15 @@ impl ChatState {
     /// Includes transcript recording and hand-back, not just model work.
     pub async fn drain(&self) {
         self.runs.wait().await;
+    }
+
+    pub async fn close_mcp(&self) {
+        futures::future::join_all(self._mcp.iter().map(|client| async {
+            if let Err(e) = client.close().await {
+                tracing::warn!(server = client.name(), "MCP shutdown did not finish: {e:#}");
+            }
+        }))
+        .await;
     }
 
     /// What the mounted voice facade needs from the shared build — the
@@ -439,6 +449,12 @@ pub enum WireEvent {
         text: String,
         request_id: Option<String>,
     },
+    QueuedDelivered {
+        request_id: String,
+    },
+    QueuedDiscarded {
+        request_ids: Vec<String>,
+    },
     /// A call the run just made — its name, and what it was called with.
     ///
     /// The name alone is a claim the reader cannot check: two `fs_write`
@@ -580,7 +596,7 @@ pub enum WireEvent {
 fn wire_event(event: &AgentEvent, context_window: Option<u64>) -> Option<WireEvent> {
     match event {
         AgentEvent::TextDelta(text) => Some(WireEvent::Delta { text: text.clone() }),
-        // Acceptance is broadcast by send; draining it must not echo it again.
+        // The turn forwarder sends a delivery receipt, without a second bubble.
         AgentEvent::QueuedInput(_) => None,
         AgentEvent::ToolCall {
             id, name, input, ..
@@ -1212,6 +1228,7 @@ pub async fn send(
     if body.request_id.as_ref().is_some_and(|id| id.len() > 128) {
         return (StatusCode::BAD_REQUEST, "request id too long\n").into_response();
     }
+    let request_id = body.request_id.unwrap_or_else(Session::new_id);
     let text = body.text.trim().to_string();
     if text.is_empty() {
         return (StatusCode::BAD_REQUEST, "empty message\n").into_response();
@@ -1230,10 +1247,18 @@ pub async fn send(
     // the loop (never a bare user message — two in a row are invalid).
     if let Some(live) = &ws.live {
         if let Ok(mut queue) = live.queue.lock() {
+            let Ok(mut ids) = live.queued_ids.lock() else {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "steering receipts unavailable\n",
+                )
+                    .into_response();
+            };
+            ids.push_back(request_id.clone());
             queue.push_back(text.clone());
             let _ = ws.events.send(WireEvent::Queued {
                 text,
-                request_id: body.request_id,
+                request_id: Some(request_id),
             });
             return Json(serde_json::json!({ "steered": true })).into_response();
         }
@@ -1252,7 +1277,7 @@ pub async fn send(
         TurnOpts {
             spoken: false,
             approve_all: false,
-            request_id: body.request_id,
+            request_id: Some(request_id),
         },
     ) {
         Ok(_started) => Json(serde_json::json!({ "started": true })).into_response(),
@@ -1525,9 +1550,11 @@ fn begin_turn(
 
     let cancel = mecha_core::agent::CancelHandle::new();
     let queue: Arc<StdMutex<VecDeque<String>>> = Arc::default();
+    let queued_ids: Arc<StdMutex<VecDeque<String>>> = Arc::default();
     ws.live = Some(Live {
         cancel: cancel.clone(),
         queue: Arc::clone(&queue),
+        queued_ids: Arc::clone(&queued_ids),
     });
 
     // Per-run context on the shared agent: jail, approver, budget, cancel,
@@ -1616,8 +1643,19 @@ fn begin_turn(
         let forwarder = {
             let bcast = bcast.clone();
             let last_usage = Arc::clone(&last_usage);
+            let queued_ids = Arc::clone(&queued_ids);
             tokio::spawn(async move {
                 while let Some(event) = rx.recv().await {
+                    // Core drains steering in FIFO order. The ids are appended
+                    // while send still holds the text queue lock, so an input
+                    // cannot be consumed before its receipt exists.
+                    if let AgentEvent::QueuedInput(_) = &event {
+                        if let Some(request_id) =
+                            queued_ids.lock().ok().and_then(|mut ids| ids.pop_front())
+                        {
+                            let _ = bcast.send(WireEvent::QueuedDelivered { request_id });
+                        }
+                    }
                     if let AgentEvent::TurnUsage(usage) = &event {
                         if let Ok(mut slot) = last_usage.lock() {
                             *slot = Some(usage.clone());
@@ -1714,20 +1752,6 @@ fn begin_turn(
             }
         }
 
-        // Leftover steering that never reached a drain point: dropped with a
-        // notice rather than silently (auto-resubmit is the TUI's move and
-        // needs a recursion this phase does not want).
-        if let Ok(queue) = queue.lock() {
-            if !queue.is_empty() {
-                let _ = bcast.send(WireEvent::Notice {
-                    text: format!(
-                        "{} queued message(s) arrived too late for this run — send again",
-                        queue.len()
-                    ),
-                });
-            }
-        }
-
         // `ReviewMode::Now`, which the TUI and Slack have had all along and
         // this surface never did: a draft you just asked for is a draft you
         // are about to read, so the run's own drafts are put in front of you
@@ -1789,6 +1813,23 @@ fn begin_turn(
         let mut sessions = state_for_task.sessions.lock().await;
         let mut name_it = false;
         if let Some(ws) = sessions.get_mut(&key_for_task) {
+            // The forwarder has finished, and the admission lock prevents
+            // a final send from arriving between this check and live=None.
+            let discarded: Vec<String> = queued_ids
+                .lock()
+                .map(|mut ids| ids.drain(..).collect())
+                .unwrap_or_default();
+            if !discarded.is_empty() {
+                let _ = bcast.send(WireEvent::Notice {
+                    text: format!(
+                        "{} queued message(s) arrived too late for this run — send again",
+                        discarded.len()
+                    ),
+                });
+                let _ = bcast.send(WireEvent::QueuedDiscarded {
+                    request_ids: discarded,
+                });
+            }
             ws.conversation = Some(conversation);
             ws.live = None;
             // Only an ordinary chat is renamed: a delegation already carries

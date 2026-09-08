@@ -18,24 +18,45 @@ impl Drop for FixtureCleanup {
 
 #[tokio::test]
 async fn sigterm_closes_sse_and_records_the_partial_turn() {
-    check_shutdown(false, false).await;
+    check_shutdown(Case::Partial).await;
 }
 
 #[tokio::test]
 async fn sigterm_resolves_a_pending_question() {
-    check_shutdown(true, false).await;
+    check_shutdown(Case::Question).await;
 }
 
 #[tokio::test]
 async fn a_second_ctrl_c_forces_shutdown_during_a_blocked_mcp_call() {
-    check_shutdown(false, true).await;
+    check_shutdown(Case::Force).await;
 }
 
-async fn check_shutdown(question: bool, force: bool) {
-    let root = std::env::temp_dir().join(format!(
-        "mecha-serve-exit-{}-{question}-{force}",
-        std::process::id()
-    ));
+#[tokio::test]
+async fn steering_that_arrives_in_the_final_answer_is_retracted_on_every_device() {
+    check_shutdown(Case::Undelivered).await;
+}
+
+#[tokio::test]
+async fn folded_steering_is_acknowledged_once_and_recorded() {
+    check_shutdown(Case::Delivered).await;
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Case {
+    Partial,
+    Question,
+    Force,
+    Undelivered,
+    Delivered,
+}
+
+async fn check_shutdown(case: Case) {
+    let question = matches!(case, Case::Question);
+    let force = matches!(case, Case::Force);
+    let delivered = matches!(case, Case::Delivered);
+    let finish_normally = matches!(case, Case::Delivered | Case::Undelivered);
+    let root =
+        std::env::temp_dir().join(format!("mecha-serve-exit-{}-{case:?}", std::process::id()));
     let _cleanup = FixtureCleanup(root.clone());
     let home = root.join("home");
     let work = root.join("work");
@@ -43,20 +64,37 @@ async fn check_shutdown(question: bool, force: bool) {
     std::fs::create_dir_all(&work).unwrap();
     let provider = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let provider_addr = provider.local_addr().unwrap();
-    let app = axum::Router::new().route("/v1/chat/completions", axum::routing::post(move || async move {
-        use futures::StreamExt;
-        let chunk = if force {
-            serde_json::json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"hang-1","type":"function","function":{"name":"fixture__hang","arguments":"{}"}}]},"finish_reason":"tool_calls"}]})
-        } else if question {
-            serde_json::json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"ask-1","type":"function","function":{"name":"ask_user","arguments":"{\"question\":\"Continue?\"}"}}]},"finish_reason":"tool_calls"}]})
-        } else {
-            serde_json::json!({"choices":[{"index":0,"delta":{"content":"Saved partial answer"},"finish_reason":null}]})
-        };
-        let first = futures::stream::once(async move {
-            Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().data(chunk.to_string()))
-        });
-        let rest = if question || force { futures::stream::empty().boxed() } else { futures::stream::pending().boxed() };
-        axum::response::Sse::new(first.chain(rest))
+    let finish = tokio_util::sync::CancellationToken::new();
+    let finish_provider = finish.clone();
+    let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let app = axum::Router::new().route("/v1/chat/completions", axum::routing::post(move || {
+        let finish = finish_provider.clone();
+        let first_call = requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0;
+        async move {
+            use futures::StreamExt;
+            let chunk = if force {
+                serde_json::json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"hang-1","type":"function","function":{"name":"fixture__hang","arguments":"{}"}}]},"finish_reason":"tool_calls"}]})
+            } else if question {
+                serde_json::json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"ask-1","type":"function","function":{"name":"ask_user","arguments":"{\"question\":\"Continue?\"}"}}]},"finish_reason":"tool_calls"}]})
+            } else if delivered && first_call {
+                serde_json::json!({"choices":[{"index":0,"delta":{"content":"Saved partial answer","tool_calls":[{"index":0,"id":"read-1","type":"function","function":{"name":"fs_read","arguments":"{\"path\":\"missing.txt\"}"}}]},"finish_reason":null}]})
+            } else {
+                serde_json::json!({"choices":[{"index":0,"delta":{"content":"Saved partial answer"},"finish_reason":if delivered {Some("stop")} else {None}}]})
+            };
+            let first = futures::stream::once(async move {
+                Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().data(chunk.to_string()))
+            });
+            let rest = if question || force || (delivered && !first_call) {
+                futures::stream::empty().boxed()
+            } else {
+                futures::stream::once(async move {
+                    finish.cancelled().await;
+                    let reason = if delivered { "tool_calls" } else { "stop" };
+                    Ok(axum::response::sse::Event::default().data(serde_json::json!({"choices":[{"index":0,"delta":{},"finish_reason":reason}]}).to_string()))
+                }).boxed()
+            };
+            axum::response::Sse::new(first.chain(rest))
+        }
     }));
     let provider_task = tokio::spawn(async move { axum::serve(provider, app).await.unwrap() });
     let mcp_script = root.join("mcp.py");
@@ -221,11 +259,28 @@ sandbox = false
         );
         assert_eq!(seen.matches("request-2").count(), 1);
     }
+    if finish_normally {
+        finish.cancel();
+        for response in [&mut events, &mut observer] {
+            let seen = read_until(response, "\"type\":\"done\"").await;
+            let receipt = if delivered {
+                "queued_delivered"
+            } else {
+                "queued_discarded"
+            };
+            assert!(seen.contains(receipt), "missing {receipt}: {seen}");
+            assert_eq!(
+                seen.matches("request-2").count(),
+                1,
+                "receipt must update one existing input"
+            );
+        }
+    }
     // A connection still reading its request must also leave on shutdown.
     let _idle_voice = tokio::net::TcpStream::connect(("127.0.0.1", voice_port))
         .await
         .unwrap();
-    let mut voice = if !question && !force {
+    let mut voice = if !question && !force && !finish_normally {
         let mut response = client.post(format!("http://127.0.0.1:{voice_port}/v1/chat/completions"))
             .json(&serde_json::json!({"model":"fixture", "stream":true, "messages":[{"role":"user", "content":"speak"}]}))
             .send().await.unwrap();
@@ -299,17 +354,28 @@ sandbox = false
     }
     if !force {
         assert!(
-            transcripts.contains("\"stop_cause\":\"shutdown\""),
+            transcripts.contains(if finish_normally {
+                "\"stop_cause\":\"completed\""
+            } else {
+                "\"stop_cause\":\"shutdown\""
+            }),
             "shutdown outcome was not recorded: {transcripts}"
         );
         assert!(transcripts.contains("\"taint\""), "taint was not recorded");
-        if !question {
+        if !question && !finish_normally {
             assert_eq!(
                 transcripts.matches("\"stop_cause\":\"shutdown\"").count(),
                 2,
                 "both typed and unhosted voice runs must finish recording"
             );
         }
+    }
+    if finish_normally {
+        assert_eq!(
+            transcripts.contains("same words"),
+            delivered,
+            "only delivered steering belongs in the transcript"
+        );
     }
     let pid = std::fs::read_to_string(mcp_pid).unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {

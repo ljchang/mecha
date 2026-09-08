@@ -51,7 +51,7 @@ pub struct McpClient {
     /// [`Tool::fixed_workspace`]).
     workspace: PathBuf,
     /// Held so the child is killed when the client drops.
-    _child: Child,
+    child: tokio::sync::Mutex<Child>,
     readers: Vec<tokio::task::JoinHandle<()>>,
     _container: Option<DockerContainer>,
 }
@@ -217,7 +217,7 @@ impl McpClient {
             pending,
             next_id: AtomicU64::new(1),
             workspace: workspace.to_path_buf(),
-            _child: child,
+            child: tokio::sync::Mutex::new(child),
             readers,
             _container: container,
         });
@@ -238,6 +238,31 @@ impl McpClient {
             .notify("notifications/initialized", json!({}))
             .await?;
         Ok(client)
+    }
+
+    /// Finish transport cleanup before a daemon exits. The host must stop
+    /// dispatching and drain its runs first. Drop remains the fallback for
+    /// failed handshakes, cancellation, and callers without a shutdown phase.
+    pub async fn close(&self) -> Result<()> {
+        for task in &self.readers {
+            task.abort();
+        }
+        self.pending.lock().unwrap().clear();
+        let stopped = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut child = self.child.lock().await;
+            if child.try_wait()?.is_none() {
+                child.kill().await?;
+            }
+            Ok::<_, std::io::Error>(())
+        })
+        .await
+        .context("waiting for MCP process to exit")
+        .and_then(|result| result.context("stopping MCP process"));
+        // Removal is still attempted if stopping the attach process failed.
+        if let Some(container) = &self._container {
+            container.close().await?;
+        }
+        stopped
     }
 
     pub fn name(&self) -> &str {

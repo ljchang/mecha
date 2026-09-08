@@ -31,7 +31,8 @@ child cleanup.
 steering when accepted. `Chat.svelte::receiveInput` correlates a browser's
 request id across SSE and its POST response, so identical words from different
 requests remain distinct and a late acknowledgement cannot restart a completed
-run. The model's steering-drain event no longer repeats the accepted message.
+run. The model's steering-drain event updates the accepted message instead of
+repeating it.
 Sixteen compiled-browser checks include two independent pages, both arrival
 orders, steering and rejected sends. These changes close the three duplicate
 shutdown/broadcast open items; deployment remains explicitly deferred.
@@ -45,6 +46,25 @@ on plain HTTP origins; request-id generation now has a fallback inside the
 send error handler. The two-browser regression disables that method, reproduced
 the lost message, and passes with the fallback. Normal voice socket writes
 also use the five-second deadline; it is not limited to shutdown.
+
+The service-unit follow-through found `KillMode=control-group`, which sends
+SIGTERM to MCP children before their host can finish a tool call. The checked-in
+serve/voice units now use `mixed` and a 180-second stop window. Both daemons
+await `McpClient::close` after their runs and voice handlers finish; Docker
+removal completes before main exits, since systemd can otherwise kill that
+cleanup subprocess too. A real-container test holds the client Arc across
+explicit close, so Drop cannot make missing awaited removal look successful.
+The live unit files were only read; installation/reload remains deferred.
+
+The second PR review caught acceptance being mistaken for delivery: input
+queued during a final answer can miss every drain point. `QueuedDelivered`
+now updates its existing bubble when core actually folds it in; a receipt
+left at hand-back becomes `QueuedDiscarded`, checked under the admission lock
+so a final send cannot slip past. The browser says queued, steered, or not
+delivered and retains an early receipt through a late POST acknowledgement.
+Two actual-daemon tests distinguish folded input (present in the transcript)
+from late input (absent and retracted on both subscribers); the browser test
+first failed on the old premature delivery label.
 
 **2026-09-08 — explicit chat opening and Docker container ownership.**
 `serve::chat::open` creates a session through a guarded, idempotent POST;

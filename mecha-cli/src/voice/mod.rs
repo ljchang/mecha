@@ -701,7 +701,17 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         r = &mut server => r?,
         _ = signals.recv() => stop.cancel(),
     }
-    signals.drain_or_force(facade.shutdown()).await;
+    signals
+        .drain_or_force(async {
+            facade.shutdown().await;
+            futures::future::join_all(prepared._mcp.iter().map(|client| async {
+                if let Err(e) = client.close().await {
+                    tracing::warn!(server = client.name(), "MCP shutdown did not finish: {e:#}");
+                }
+            }))
+            .await;
+        })
+        .await;
     println!("\nvoice-serve: shutting down.");
     Ok(())
 }
