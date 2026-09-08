@@ -107,10 +107,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   close pending questions, cancel chat and mounted voice work cooperatively,
   and wait for partial transcripts and outcomes before exiting. A second
   Ctrl-C or SIGTERM forces termination if needed. Idle event streams and voice
-  clients no longer prevent shutdown.
+  clients no longer prevent shutdown. Updated serve/voice service units signal
+  the daemon first, and MCP cleanup finishes before it exits.
 - **Chat input appears on every connected device.** Typed messages and steering
   are broadcast with request IDs, avoiding duplicate echoes on the sender and
-  preserving separate messages with identical text.
+  preserving separate messages with identical text. Steering distinguishes
+  queued, delivered, and too-late input instead of claiming everything was sent.
 
 - Chat transcript and event-stream reads no longer create sessions. The app
   explicitly opens chats and repeats that step when reconnecting; scripted

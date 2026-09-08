@@ -1549,16 +1549,28 @@ remaining task owners to drop. Dropping Tokio's signal receiver alone does
 not restore the operating system's default handler. Forced shutdown may lose
 unfinished turns; the ordinary first-signal path still waits for recording.
 The web host previously had no signal handler, making its voice cleanup
-unreachable and losing active partial turns on systemd stops.
+unreachable and losing active partial turns on systemd stops. The shipped
+serve/voice units use `KillMode=mixed`: signal the main process first, then
+let it drain without terminating MCP children in the same first signal.
+`McpClient::close` finishes child termination and Docker removal before the
+daemon returns; relying on asynchronous Drop cleanup here lets the supervisor
+kill the removal subprocess when the main process exits. Drop remains the
+fallback for failed initialization, cancellation, and ordinary CLI callers.
 
 **Broadcast acceptance once and correlate the sender's acknowledgement.**
 Typed and spoken turns reach every session subscriber. Typed requests carry a
 bounded UI request id, echoed in the event but never inserted into model
 history. `receiveInput` uses that id across POST and SSE, not text equality;
-identical words can be two different requests. Steering broadcasts at admission,
-so the model's later `QueuedInput` event must not render it a second time.
+identical words can be two different requests. Steering broadcasts at admission
+as queued, then `QueuedInput` produces a delivery receipt for that existing
+bubble. Receipt ids are appended while the text-queue lock is still held and
+consumed in FIFO order by the event forwarder. Leftover receipts become
+`QueuedDiscarded` under the session admission lock before clearing `live`;
+checking earlier races a final send during hand-back. The browser keeps early
+receipts across a late POST response and labels discarded input as not delivered.
 Previously only spoken input broadcast, leaving another device with the reply
-but no typed prompt.
+but no typed prompt; simply echoing steering at admission also blurred accepted
+input with input the model actually received.
 
 **Tailnet identity proves who, not intent.** `serve::owner_guard` requires
 `X-Mecha-Request: 1` on every unsafe method and refuses foreign

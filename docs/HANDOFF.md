@@ -27,12 +27,17 @@ with its web bundle at 14:15 UTC. PR #214 merged as `a75b9467`; its explicit
 chat opening and Docker MCP ownership fixes have not been installed by this
 session. The current branch, `fix/serve-shutdown-and-chat-sync`, adds SIGTERM
 and Ctrl-C draining for serve and broadcasts typed/steered input across devices
-with request-id correlation. It awaits PR review and CI. **Deployment is on
-hold at the owner's request until the other sessions finish.**
+with request-id correlation. Review and CI are tracked on PR #217.
+**Deployment is on hold at the owner's request until the other sessions finish.**
+The deferred update must also install the checked-in serve/voice unit files
+and reload the user systemd manager: their new `KillMode=mixed` and 180-second
+stop window are part of graceful shutdown. Read-only verification of the live
+serve unit still reports `control-group` and 90 seconds; no unit was installed
+or reloaded during this session.
 The eval fixture remains **36 cases, 15 tags**, recounted from `eval/cases.jsonl`.
-Validation on top of PR #215 in a dedicated target directory: **2,533 passed,
-2 ignored** (CLI 798, first-run 20, process-exit 3, serve lifecycle 3,
-core 1,458, fixtures 4, MCP 11, sandbox 9, mail 150 plus its binary test,
+Validation on top of PR #215 in a dedicated target directory: **2,536 passed,
+2 ignored** (CLI 798, first-run 20, process-exit 3, serve lifecycle 5,
+core 1,458, fixtures 4, MCP 12, sandbox 9, mail 150 plus its binary test,
 Slack 75, and one doctest), with `MECHA_TEST_REQUIRE_BACKENDS=1`.
 Format, clippy with warnings denied, web tests/build, docs build, and all
 16 compiled-browser checks pass. These describe source, not the installed

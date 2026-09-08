@@ -510,6 +510,11 @@ async fn docker_server_is_removed_after_a_cancelled_handshake() {
     docker_lifecycle("cancel").await;
 }
 
+#[tokio::test]
+async fn docker_close_finishes_before_the_client_is_dropped() {
+    docker_lifecycle("close").await;
+}
+
 async fn docker_lifecycle(mode: &str) {
     if unavailable("docker", docker_available()) || unavailable(IMAGE, docker_image_present(IMAGE))
     {
@@ -559,13 +564,23 @@ while True:
         cid.bytes().all(|c| c.is_ascii_hexdigit()),
         "invalid test container id"
     );
+    let mut retained = None;
     if mode == "cancel" {
         connecting.abort();
         assert!(matches!(connecting.await, Err(e) if e.is_cancelled()));
     } else {
         let connected = connecting.await.unwrap();
         assert_eq!(connected.is_err(), mode == "reject");
-        drop(connected);
+        if mode == "close" {
+            let client = connected.unwrap();
+            client.close().await.unwrap();
+            // A second close is safe; holding the Arc prevents Drop cleanup
+            // from making a no-op close appear to work.
+            client.close().await.unwrap();
+            retained = Some(client);
+        } else {
+            drop(connected);
+        }
     }
     let removed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
@@ -590,4 +605,5 @@ while True:
         .await;
     std::fs::remove_dir_all(dir).unwrap();
     assert!(removed, "{mode}: container survived its MCP client");
+    drop(retained);
 }

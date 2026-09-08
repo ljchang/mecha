@@ -244,6 +244,9 @@ pub async fn execute(args: Args) -> Result<()> {
                 }
             };
             tokio::join!(drain_chat, drain_voice);
+            if let Some(chat) = &state.chat {
+                chat.close_mcp().await;
+            }
         })
         .await;
     if !drained {

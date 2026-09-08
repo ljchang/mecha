@@ -299,6 +299,8 @@ for (const route of ROUTES) {
   let order = 'event-first';
   let steered = false;
   let reject = false;
+  let discard = false;
+  const steeringIds = [];
   const deferred = [];
   const broadcast = async (event) => Promise.all(pages.map(page => page.evaluate(ev => {
     window.syncProbe.source.onmessage({data: JSON.stringify(ev)});
@@ -308,8 +310,10 @@ for (const route of ROUTES) {
       await page.exposeBinding('sendInput', async (_source, body) => {
         if (reject) return {error: 'server is shutting down'};
         const event = {type: steered ? 'queued' : 'user', text: body.text, request_id: body.request_id, spoken: false};
+        if (steered) steeringIds.push(body.request_id);
         if (order === 'event-first') {
           await broadcast(event);
+          if (discard) await broadcast({type: 'queued_discarded', request_ids: [body.request_id]});
           if (!steered) await broadcast({type: 'done', ok: true, stop: 'Completed'});
         } else deferred.push(event);
         return steered ? {steered: true} : {started: true};
@@ -361,6 +365,19 @@ for (const route of ROUTES) {
     await pages[0].waitForTimeout(150);
     for (const page of pages) {
       if (await count(page, 'cross-device steering') !== 1) throw new Error('steering was missing or duplicated');
+      if (await page.locator('.bubble').filter({hasText: 'cross-device steering'}).locator('.queued-tag').innerText() !== 'queued') throw new Error('acceptance claimed delivery');
+    }
+    await broadcast({type: 'queued_delivered', request_id: steeringIds.at(-1)});
+    for (const page of pages) {
+      if (await count(page, 'cross-device steering') !== 1) throw new Error('delivery duplicated the bubble');
+      if (await page.locator('.bubble').filter({hasText: 'cross-device steering'}).locator('.queued-tag').innerText() !== 'steered') throw new Error('delivery receipt was ignored');
+    }
+    discard = true;
+    await submit(pages[0], 'too-late steering');
+    await pages[0].waitForTimeout(150);
+    for (const page of pages) {
+      if (await count(page, 'too-late steering') !== 1) throw new Error('retraction duplicated the bubble');
+      if (await page.locator('.bubble').filter({hasText: 'too-late steering'}).locator('.queued-tag').innerText() !== 'not delivered — send again') throw new Error('an undelivered input still claimed delivery');
     }
     reject = true;
     await submit(pages[0], 'rejected input');
