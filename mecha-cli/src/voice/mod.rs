@@ -692,17 +692,16 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
     // SIGTERM is how systemd stops this service, so it must mean what
     // Ctrl-C means: cancel, let partial turns land in their transcripts,
     // then go.
+    let mut signals = crate::interrupt::ShutdownSignals::new()?;
     let stop = CancellationToken::new();
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let listener = facade.bind(args.port).await?;
     let server = facade.serve(listener, stop.clone());
     tokio::pin!(server);
     tokio::select! {
         r = &mut server => r?,
-        _ = tokio::signal::ctrl_c() => stop.cancel(),
-        _ = sigterm.recv() => stop.cancel(),
+        _ = signals.recv() => stop.cancel(),
     }
-    facade.shutdown().await;
+    signals.drain_or_force(facade.shutdown()).await;
     println!("\nvoice-serve: shutting down.");
     Ok(())
 }

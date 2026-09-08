@@ -36,6 +36,16 @@ Sixteen compiled-browser checks include two independent pages, both arrival
 orders, steering and rejected sends. These changes close the three duplicate
 shutdown/broadcast open items; deployment remains explicitly deferred.
 
+PR #217's first review found that no handler observed a second signal during
+the drain. `ShutdownSignals` now keeps both receivers alive and lets a second
+SIGINT or SIGTERM force termination through normal runtime teardown, retaining
+MCP destructor cleanup. A real blocked-MCP regression covers the two-signal
+path and child cleanup. The other finding was `crypto.randomUUID` being absent
+on plain HTTP origins; request-id generation now has a fallback inside the
+send error handler. The two-browser regression disables that method, reproduced
+the lost message, and passes with the fallback. Normal voice socket writes
+also use the five-second deadline; it is not limited to shutdown.
+
 **2026-09-08 — explicit chat opening and Docker container ownership.**
 `serve::chat::open` creates a session through a guarded, idempotent POST;
 `transcript` and `events` only look up existing sessions. The browser awaits

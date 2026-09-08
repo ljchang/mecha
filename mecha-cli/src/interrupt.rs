@@ -10,6 +10,44 @@ use mecha_core::agent::{Agent, AgentEvent, CancelReason, Conversation, RunContex
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
+/// Daemons keep both receivers alive across their first signal and drain.
+/// Dropping a Tokio receiver does not restore the OS default disposition.
+pub struct ShutdownSignals {
+    interrupt: tokio::signal::unix::Signal,
+    terminate: tokio::signal::unix::Signal,
+}
+
+impl ShutdownSignals {
+    pub fn new() -> std::io::Result<Self> {
+        use tokio::signal::unix::{signal, SignalKind};
+        Ok(Self {
+            interrupt: signal(SignalKind::interrupt())?,
+            terminate: signal(SignalKind::terminate())?,
+        })
+    }
+
+    pub async fn recv(&mut self) {
+        tokio::select! {
+            _ = self.interrupt.recv() => {},
+            _ = self.terminate.recv() => {},
+        }
+    }
+
+    /// False means the owner forced termination. The caller returns normally
+    /// to main so runtime teardown drops task-owned MCP clients; process::exit
+    /// here would skip their destructors. Unfinished turns may be lost.
+    pub async fn drain_or_force(&mut self, drain: impl std::future::Future<Output = ()>) -> bool {
+        eprintln!("mecha: finishing active turns; Ctrl-C or SIGTERM again to force shutdown.");
+        tokio::select! {
+            _ = drain => true,
+            _ = self.recv() => {
+                eprintln!("mecha: forcing shutdown; unfinished turns may not be recorded.");
+                false
+            }
+        }
+    }
+}
+
 /// Run the agent with Ctrl-C wired to cancellation.
 ///
 /// The first Ctrl-C cancels: the loop stops at the next safe point and keeps

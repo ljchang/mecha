@@ -99,7 +99,6 @@ struct WebState {
 }
 
 pub async fn execute(args: Args) -> Result<()> {
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     // Global config only, like a trigger run: this surface is the owner's
     // door, and a project file must have no say in it (config.rs strips
     // `[web]` from project layers as a second fence).
@@ -146,6 +145,7 @@ pub async fn execute(args: Args) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("binding {addr}"))?;
+    let mut signals = crate::interrupt::ShutdownSignals::new()?;
     // Mount the voice facade on the same agent: one provider connection,
     // one cached prefix, two dialects. It rides this process's lifetime;
     // its graceful drain runs alongside the chat drain when the host stops.
@@ -218,35 +218,37 @@ pub async fn execute(args: Args) -> Result<()> {
         .with_graceful_shutdown(stop.clone().cancelled_owned())
         .into_future();
     tokio::pin!(server);
-    let mut signal_result = Ok(());
     let served = tokio::select! {
         result = &mut server => Some(result),
-        result = tokio::signal::ctrl_c() => {
-            signal_result = result;
-            None
-        },
-        _ = sigterm.recv() => None,
+        _ = signals.recv() => None,
     };
     tracing::info!("mecha serve: stopping admission and recording active turns");
-    if let Some(chat) = &state.chat {
-        chat.stop().await;
+    let drained = signals
+        .drain_or_force(async {
+            if let Some(chat) = &state.chat {
+                chat.stop().await;
+            }
+            if let Some((_, voice_stop, _)) = &voice {
+                voice_stop.cancel();
+            }
+            stop.cancel();
+            let drain_chat = async {
+                if let Some(chat) = &state.chat {
+                    chat.drain().await;
+                }
+            };
+            let drain_voice = async {
+                if let Some((facade, _, task)) = voice {
+                    facade.shutdown().await;
+                    let _ = task.await;
+                }
+            };
+            tokio::join!(drain_chat, drain_voice);
+        })
+        .await;
+    if !drained {
+        return Ok(());
     }
-    if let Some((_, voice_stop, _)) = &voice {
-        voice_stop.cancel();
-    }
-    stop.cancel();
-    let drain_chat = async {
-        if let Some(chat) = &state.chat {
-            chat.drain().await;
-        }
-    };
-    let drain_voice = async {
-        if let Some((facade, _, task)) = voice {
-            facade.shutdown().await;
-            let _ = task.await;
-        }
-    };
-    tokio::join!(drain_chat, drain_voice);
     // Model work and recording have finished. An incomplete HTTP request or
     // a client that stopped reading must not keep the daemon alive forever.
     match served {
@@ -256,7 +258,6 @@ pub async fn execute(args: Args) -> Result<()> {
             Err(_) => tracing::warn!("closing HTTP connections after shutdown drain"),
         },
     }
-    signal_result.context("listening for Ctrl-C")?;
     Ok(())
 }
 
