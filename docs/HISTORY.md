@@ -14,6 +14,15 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-08 — owner recovery survives PID reuse.** PR #216 review found that a
+stale PID could look alive after a reboot and block every new run without a CLI
+repair path. `workflow recover --reason` now records the owner's assertion that
+the old runner stopped and clears only its ownership. Completion writes carry the
+originating run ID, preventing a superseded run from overwriting its replacement;
+a regression reproduced that overwrite before the guard. Partial drafts and
+unknown deliveries survive recovery. Resume and verification share terminal-action
+classification, so rejected drafts do not reintroduce the closure bug on resume.
+
 **2026-09-08 — corrected drafts can complete a workflow.** PR #216's third review
 found that a rejected draft stayed linked and blocked completion forever, even
 after its replacement was sent. Rejected drafts and owner-abandoned questions now

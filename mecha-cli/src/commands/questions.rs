@@ -476,6 +476,7 @@ async fn answer_and_resume(
     if let Some((store, id, _guard)) = &workflow {
         if let Err(e) = store.finish_task(
             id,
+            _guard.run_id(),
             outcome.is_err(),
             crate::setup::staged_ids(&q.session_id)
                 .into_iter()
