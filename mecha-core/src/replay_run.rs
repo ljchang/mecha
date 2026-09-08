@@ -950,6 +950,29 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn reordered_batch_keeps_provenance_with_the_matched_arguments() {
+        let cancel = CancellationToken::new();
+        let mut outside = batched(0, "echo", json!({"source": "outside"}), "outside bytes");
+        outside.external = Some(true);
+        let mut harness = batched(0, "echo", json!({"source": "harness"}), "harness refusal");
+        harness.external = Some(false);
+        let registry = replay_reg(vec![outside, harness], OnDivergence::Stop, &cancel);
+        let tool = registry.get("echo").unwrap();
+        for (source, content, external) in [
+            ("harness", "harness refusal", false),
+            ("outside", "outside bytes", true),
+        ] {
+            let output = tool
+                .call(json!({"source": source}), &ToolCtx::default())
+                .await
+                .unwrap();
+            assert_eq!(output.content, content);
+            assert_eq!(output.external, external);
+        }
+        assert!(!cancel.is_cancelled());
+    }
+
     /// A recorded call with no batch marker — its own batch of one, and so the
     /// strict matching. Kept for the tests written against that behaviour; the
     /// batch-tolerance tests say what they mean with [`batched`].

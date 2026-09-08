@@ -673,7 +673,6 @@ mod tests {
     #[test]
     fn a_fork_in_a_reordered_batch_is_reported_where_decide_stopped() {
         let batched = |name: &str, input: Value| RecordedCall {
-            external: None,
             batch: Some(0),
             ..one(name, input)
         };
