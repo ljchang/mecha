@@ -41,6 +41,8 @@ import os
 import sys
 import tempfile
 
+from fixture_clock import now_dt
+
 ACTIONABLE = ["next", "inbox", "scheduled", "waiting"]
 STATUSES = ACTIONABLE + ["done", "dropped"]
 CAPTURED_KINDS = {"mail", "frontdoor", "session"}
@@ -53,11 +55,11 @@ OWNER = "@owner"
 
 
 def today():
-    return dt.datetime.now(dt.timezone.utc).date().isoformat()
+    return now_dt().date().isoformat()
 
 
 def now():
-    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return now_dt().isoformat().replace("+00:00", "Z")
 
 
 def write_atomic(path, value):
