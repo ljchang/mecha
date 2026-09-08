@@ -42,9 +42,12 @@ pub struct RecordedCall {
     /// pass, each killed at call #0 or #1 by a batch it had reproduced
     /// exactly.
     ///
-    /// `None` is a recording made before the marker existed: it degrades to
-    /// its own batch of one, which is the strict positional matching this
-    /// module did throughout. Unknown is never clean.
+    /// `None` degrades to its own batch of one — the strict positional
+    /// matching this module did throughout. No production path produces it:
+    /// `Trajectory` is never persisted, and every caller derives one fresh
+    /// from a transcript (`harness_probe`, `probe`, `commands::replay`), so
+    /// `extract` marks every call. The default is defensive, for the day this
+    /// type is stored rather than a migration anyone is mid-way through.
     #[serde(default)]
     pub batch: Option<u32>,
 }
@@ -214,9 +217,10 @@ pub fn diff_from(
 
 /// How many recorded calls, starting at `i`, were issued together.
 ///
-/// One when the call carries no batch marker — the pre-marker recording's
-/// strict behaviour, reached by the same code path rather than a branch
-/// somewhere else that has to agree with it.
+/// One when the call carries no batch marker — the strict behaviour, reached
+/// by the same code path rather than a branch somewhere else that has to agree
+/// with it. See [`RecordedCall::batch`] for why nothing in production is
+/// unmarked.
 fn batch_width(recorded: &[RecordedCall], i: usize) -> usize {
     match recorded[i].batch {
         None => 1,
@@ -364,7 +368,7 @@ pub fn diff(recorded: &[RecordedCall], replayed: &[ToolCallTrace]) -> Vec<Diverg
 /// `./a.md` and `a.md` name the same file — but it is tool-specific knowledge,
 /// and the loop is not supposed to know what any particular tool means. A
 /// caller that wants it can filter on [`Divergence::is_structural`].
-fn same_arguments(a: &Value, b: &Value) -> bool {
+pub(crate) fn same_arguments(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::String(x), Value::String(y)) => x.trim() == y.trim(),
         (Value::Object(x), Value::Object(y)) => {
@@ -581,9 +585,10 @@ mod tests {
         );
     }
 
-    /// An unmarked recording — made before the batch marker existed — gets the
-    /// strict positional matching it was recorded under. Unknown is never
-    /// clean.
+    /// An unmarked call gets strict positional matching. `extract` marks every
+    /// call and `Trajectory` is never persisted, so this guards the struct's
+    /// defensive default rather than a recording anyone has — worth keeping
+    /// so the default cannot quietly become "match anything, anywhere".
     #[test]
     fn calls_with_no_batch_marker_are_matched_strictly() {
         let recorded = vec![
