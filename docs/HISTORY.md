@@ -38,8 +38,60 @@ live evaluations as measurements of the deployed commit.
 The integrated shutdown and synchronization paths are implemented by
 `ChatState::{stop, drain, close_mcp}`, `McpClient::close`,
 `chat::{send, begin_turn}` and `Chat.svelte::{receiveInput, markDelivery}`.
-PR #217's historical pre-integration validation remains 2,538 passed, two ignored
-and 16 browser checks; #216's integrated tree passed 2,575 and 17 respectively.
+The historical validation of PR #217's `fix/serve-shutdown-and-chat-sync`
+branch over PR #215 remains 2,538 passed, two ignored and 16 browser checks;
+#216's integrated tree passed 2,575 and 17 respectively.
+
+**2026-08-19–2026-09-03 — release observations retained from the old handoff.**
+The following was recorded before v0.1.18 shipped on 2026-09-06. Its present-tense
+release and installation statements describe those earlier sessions only; the
+2026-09-08 update supersedes them. The original detail is retained here rather
+than presented as current state to a reader deciding what to build next.
+
+Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.16**
+(2026-08-29 — the appraisal system survives its own review: PRs #111/#112,
+failed-turn transcript integrity, positional configs for the probe,
+unreadable-store accounting, and the owner-closure guard; v0.1.15 shipped
+2026-08-26 — five surfaces that described themselves wrongly, found by
+using them; 0.1.14 shipped 2026-08-25 — voice calls and chat became one
+conversation, three review surfaces stopped hiding what they were asking
+people to approve, and the nightly mail classifier took both mailboxes;
+0.1.13 shipped 2026-08-24 night with the web surface, voice, and the graph
+queue's similarity groups; 0.1.12 on 2026-08-22, 0.1.11 and 0.1.10 both on
+2026-08-21, 0.1.9 on 2026-08-20, and 0.1.7/0.1.8 on 2026-08-19/20 after the
+mail hold lifted).
+**Released as v0.1.17 on 2026-08-31**, carrying the ten merges beyond
+v0.1.16 that this paragraph used to list as untagged:
+the 2026-08-30 five — #125 (**four home-page queue cards did nothing**,
+plus the ExecStart-check rewrite and the `js_string_array` guard
+loosening); #126 (**the graph tab grows its notebook, composer, and the
+whole entity-curation surface** — alias add/remove, merge-with-audit-trail,
+create-on-miss, identifiers, plus the three-store `/api/proposals` pane;
+deployed the same night, so the installed binary is `main` at `ab0097b`);
+#124 (**the retirement drill ran the NoGo path
+whole, and fixed the probation leash it proved unreachable**); #120, the
+notes and graph tabs become one graph tab; #123, the docs deploy stops
+being evictable by a PR build — then #122 (2026-08-30, fifteen commits —
+**the learning loop runs itself and the instruments that grade it were
+fixed**: `learn --auto` with probation, nightly direct retirement,
+branched counterfactual probes, the surface rebuild from recorded specs);
+and the 2026-08-29 four — #114, the shadow queue on every owner surface
+(plus a web entity page and chat tool-result previews); #116, the
+`/tasks` page repair; #115, the appraisal docs-page rework; #117, the
+docs site's fixture-backed web demo and its two CI gates. All in the
+`CHANGELOG.md`. The tag was cut with the
+release workflow green, and all four crates confirmed live on crates.io
+at 0.1.17 (`mecha-core`, `mecha-cli`, `mecha-mail`, `mecha-slack`) by
+querying the registry rather than by watching the job go green. Seven of
+the merges in it had landed with no changelog entry (#119, #121, #123,
+#125, #127, #128, #130) and were written up at release time.
+**`main` now carries nine merges beyond v0.1.17 that are not yet tagged**,
+all 2026-09-02/03: the audit lane's #139 and #142 and its approval-rules
+pair #143 and #148 (each has a `CHANGELOG.md` entry under Unreleased as of
+this pass); the appraisal lane's #140, #141 and #147 (**no changelog
+entry yet** — the same trap as last time, to be written at release or by
+that lane); and the two docs merges #146 and #149. The next tag is
+v0.1.18, and the installed binary is older than all nine.
 
 **2026-09-08 — assistant changes integrated with serve shutdown and chat sync.**
 Rebasing PR #216 over merged PR #217 preserved both lifecycle paths: `begin_turn`
