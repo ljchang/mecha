@@ -1491,40 +1491,9 @@ fn begin_turn(
         text.to_string()
     };
 
-    if ws.conversation.is_none() {
-        return Err(TurnError::Held);
-    }
-    let workflow = ws
-        .task
-        .as_ref()
-        .and_then(|t| t["id"].as_str())
-        .map(|id| {
-            let store = mecha_core::workflow::WorkflowStore::default_store()?;
-            let title = ws
-                .task
-                .as_ref()
-                .and_then(|t| t["name"].as_str())
-                .unwrap_or(id);
-            let guard = store.start_task(
-                id,
-                title,
-                &ws.session.meta.id,
-                &ws.workspace,
-                chrono::Utc::now(),
-            )?;
-            store.update(id, |w| {
-                w.outbox_root = Some(chat.outbox_root.clone());
-                Ok(())
-            })?;
-            Ok::<_, anyhow::Error>((store, id.to_string(), guard))
-        })
-        .transpose()
-        .map_err(|e| TurnError::Failed(format!("workflow could not start: {e:#}")))?;
-
     let Some(mut conversation) = ws.conversation.take() else {
         return Err(TurnError::Held);
     };
-    ws.last_turn_spoken = opts.spoken;
 
     // Folded, not pushed, when the tail is already a user message — a
     // barge-in mid-tool-turn (`VoiceHost::speak` cancels the live run and
@@ -1565,6 +1534,47 @@ fn begin_turn(
         }
         conversation.messages.clone()
     };
+
+    // Only claim a workflow run after accepting the owner's input into the
+    // transcript. A recording failure is not an interrupted agent run and
+    // must leave existing completion evidence intact.
+    let workflow = match ws
+        .task
+        .as_ref()
+        .and_then(|t| t["id"].as_str())
+        .map(|id| {
+            let store = mecha_core::workflow::WorkflowStore::default_store()?;
+            let title = ws
+                .task
+                .as_ref()
+                .and_then(|t| t["name"].as_str())
+                .unwrap_or(id);
+            let guard = store.start_task(
+                id,
+                title,
+                &ws.session.meta.id,
+                &ws.workspace,
+                chrono::Utc::now(),
+            )?;
+            store.update(id, |w| {
+                w.outbox_root = Some(chat.outbox_root.clone());
+                Ok(())
+            })?;
+            Ok::<_, anyhow::Error>((store, id.to_string(), guard))
+        })
+        .transpose()
+    {
+        Ok(workflow) => workflow,
+        Err(e) => {
+            // Keep the recorded input and conversation available for retry.
+            // A denied launch still must not run a model or reset its taint.
+            ws.conversation = Some(conversation);
+            return Err(TurnError::Failed(format!(
+                "workflow could not start: {e:#}"
+            )));
+        }
+    };
+    ws.last_turn_spoken = opts.spoken;
 
     // Every observer sees accepted input. A typed request id lets its sender
     // reconcile this event with the POST response; voice has no local echo.
@@ -3345,4 +3355,145 @@ pub(super) fn test_chat() -> Arc<ChatState> {
         todo: None,
         _mcp: vec![],
     })
+}
+
+#[cfg(test)]
+mod workflow_recording_tests {
+    use super::*;
+
+    #[test]
+    fn rejected_turn_start_preserves_workflow_evidence_and_conversation() {
+        let home = crate::testenv::HomeGuard::new("chat-recording-workflow");
+        let store = mecha_core::workflow::WorkflowStore::default_store().unwrap();
+        let chat = test_chat();
+        for case in ["append", "fold", "closed"] {
+            let now = chrono::Utc::now();
+            let workspace = home.dir.join(case);
+            std::fs::create_dir_all(&workspace).unwrap();
+            std::fs::write(workspace.join("done.txt"), "done").unwrap();
+            let mut workflow = mecha_core::workflow::Workflow::new(
+                case.into(),
+                case.into(),
+                workspace.clone(),
+                now,
+            );
+            workflow
+                .checks
+                .push(mecha_core::workflow::Check::ArtifactContains {
+                    path: "done.txt".into(),
+                    text: "done".into(),
+                });
+            workflow.check_evidence(None, now).unwrap();
+            assert!(workflow.verified());
+            if case == "closed" {
+                workflow.close(now).unwrap();
+            }
+            store.create(workflow).unwrap();
+            let prior_workflow =
+                std::fs::read(home.dir.join(format!("workflows/{case}.json"))).unwrap();
+            let session = Session::create(
+                &workspace,
+                SessionMeta {
+                    id: format!("recording-{case}"),
+                    created_at: now,
+                    provider: "test".into(),
+                    model: "test".into(),
+                    workspace: workspace.clone(),
+                    title: None,
+                    kind: Some(mecha_core::session::SessionKind::Test),
+                },
+            )
+            .unwrap();
+            let messages = if case == "fold" {
+                vec![Message::user("previous input")]
+            } else {
+                vec![
+                    Message::user("previous input"),
+                    Message::assistant(vec![Block::text("previous answer")]),
+                ]
+            };
+            session.append_messages(&messages).unwrap();
+            if case != "closed" {
+                // A directory at the transcript path forces append to fail on
+                // every platform, even when tests run with elevated privileges.
+                std::fs::remove_file(&session.path).unwrap();
+                std::fs::create_dir(&session.path).unwrap();
+            }
+            let mut conversation = Conversation::from(messages.clone());
+            conversation.taint.private = true;
+            conversation.taint.untrusted = true;
+            let (events, mut emitted) = broadcast::channel(16);
+            let mut sessions = HashMap::from([(
+                case.into(),
+                WebSession {
+                    conversation: Some(conversation),
+                    session: Arc::new(session),
+                    workspace,
+                    live: None,
+                    events,
+                    last_usage: Arc::default(),
+                    withheld: Arc::from([]),
+                    task: Some(serde_json::json!({"id":case,"name":case})),
+                    mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
+                    questions: Default::default(),
+                    titled_at: 0,
+                    last_turn_spoken: false,
+                },
+            )]);
+            let result = begin_turn(
+                &chat,
+                &mut sessions,
+                case,
+                "next input",
+                TurnOpts {
+                    request_id: Some("rejected-request".into()),
+                    spoken: true,
+                    approve_all: false,
+                },
+            );
+            let Err(TurnError::Failed(error)) = result else {
+                panic!("turn must fail before calling the provider")
+            };
+            assert!(
+                error.contains(if case == "closed" {
+                    "workflow is closed"
+                } else {
+                    "recording:"
+                }),
+                "{error}"
+            );
+            assert_eq!(
+                std::fs::read(home.dir.join(format!("workflows/{case}.json"))).unwrap(),
+                prior_workflow,
+                "a turn that never started must not alter workflow evidence"
+            );
+            let ws = &sessions[case];
+            assert!(ws.live.is_none());
+            assert!(
+                matches!(
+                    emitted.try_recv(),
+                    Err(broadcast::error::TryRecvError::Empty)
+                ),
+                "a refused turn must not broadcast accepted input"
+            );
+            assert!(
+                !ws.last_turn_spoken,
+                "a rejected start must not alter voice continuity"
+            );
+            let conversation = ws
+                .conversation
+                .as_ref()
+                .expect("conversation remains available");
+            assert!(conversation.taint.private && conversation.taint.untrusted);
+            if case != "closed" {
+                assert_eq!(conversation.messages, messages);
+            } else {
+                let (_, recorded) = Session::load(&ws.session.path).unwrap();
+                assert_eq!(
+                    recorded.messages, conversation.messages,
+                    "a denied launch retains the same input in memory and on disk"
+                );
+            }
+        }
+    }
 }
