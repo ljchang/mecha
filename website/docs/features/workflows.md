@@ -48,6 +48,9 @@ regular UTF-8 files up to 4 MiB. A delivery check requires a recorded successful
 send; a staged draft or unknown delivery cannot pass. Today rereads the evidence,
 and closing checks it again. A workflow with no checks is not marked verified.
 A content check proves the specified text exists, not that an entire document is correct.
+Rejected drafts and abandoned questions count as resolved decisions, so they do not
+block corrected work forever. Rejection never satisfies a delivery check: remove
+or replace an obsolete check explicitly with `workflow uncheck` and `workflow check`.
 
 `workflow uncheck FLOW_ID 1` removes the first check. `workflow cancel FLOW_ID
 --reason "Plans changed"` stops tracking without claiming success; `workflow

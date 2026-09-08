@@ -1499,6 +1499,93 @@ mod tests {
     /// after the branch point — and a faithful continuation reports nothing,
     /// while a fork reports its divergence in the *recording's* coordinates.
     #[tokio::test]
+    async fn an_image_only_branch_seed_blocks_a_live_send_after_external_content() {
+        struct BoundaryTool {
+            name: &'static str,
+            external: bool,
+        }
+        #[async_trait]
+        impl Tool for BoundaryTool {
+            fn name(&self) -> &str {
+                self.name
+            }
+            fn description(&self) -> &str {
+                "Test a replay boundary"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            fn capabilities(&self) -> Capabilities {
+                if self.external {
+                    Capabilities::default().untrusted()
+                } else {
+                    Capabilities::default().sends()
+                }
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                assert!(self.external, "image-bearing replay executed a live send");
+                Ok(ToolOutput::ok("external bytes").from_outside())
+            }
+        }
+        let mut live = Registry::new();
+        live.insert(Arc::new(BoundaryTool {
+            name: "fetch",
+            external: true,
+        }));
+        live.insert(Arc::new(BoundaryTool {
+            name: "send",
+            external: false,
+        }));
+        let cancel = CancellationToken::new();
+        let registry = replay_registry(
+            &["fetch".into(), "send".into()],
+            &live,
+            None,
+            &[],
+            vec![],
+            OnDivergence::Live,
+            cancel.clone(),
+        )
+        .unwrap();
+        let approver = Arc::new(ModeApprover {
+            mode: PermissionMode::Allow,
+        });
+        let agent = Agent::new(
+            Box::new(Scripted(Mutex::new(vec![
+                assistant(
+                    vec![tool_use("t1", "fetch", json!({}))],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![tool_use("t2", "send", json!({}))], StopReason::ToolUse),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ]))),
+            registry,
+            approver.clone(),
+            ToolCtx::default(),
+            AgentConfig::default(),
+            None,
+        )
+        .unwrap();
+        let seed = vec![Message {
+            role: crate::message::Role::User,
+            content: vec![Block::image(
+                "image/png",
+                b"pixels",
+                Some("shot.png".into()),
+            )],
+            tool_provenance: Default::default(),
+        }];
+        let cx = RunContext::new(ToolCtx::default(), approver).with_cancel(cancel);
+        let report = drive_branch(&agent, &cx, seed, &Trajectory::default(), 0)
+            .await
+            .unwrap();
+        assert_eq!(report.stats.blocked_sends, 1);
+    }
+
+    #[tokio::test]
     async fn a_branch_continues_the_recording_instead_of_regenerating_it() {
         let calls = vec![
             recorded("echo", json!({"value": "a"}), "first"),
