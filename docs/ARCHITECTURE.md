@@ -2287,6 +2287,13 @@ after confirming the old runner stopped. Recovery preserves partial effects and
 delivery uncertainty; `finish_task` requires the originating `run_id`, so an old
 completion or dropped guard cannot overwrite a replacement run.
 
+Web/voice turns record the incoming message before claiming the workflow run.
+A rejected transcript append leaves prior workflow verification untouched; it
+must not manufacture an interrupted run. A subsequent launch refusal keeps the
+recorded conversation available with its taint, and voice continuity changes only
+after the launch succeeds. Workflow-store failures still prevent execution: the
+same journal enforces dependency, cancellation and single-runner gates.
+
 Today and scheduled ticks share an `ObservationCache` within each refresh: each
 source directory scan and linked-record read is cached per store root, including
 errors. Store handles and global configuration are loaded once per request.

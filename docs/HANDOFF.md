@@ -33,8 +33,8 @@ and 15 tags; the additional assistant set has five cases and six tags. Source
 verification of the open-work section removed stale completed entries below;
 remote deployments and sibling-repository work were not reverified.
 
-Final branch verification on 2026-09-08, rebased onto `f22992c5`: **2,562
-workspace tests passed**, three ignored (796 CLI, 20 first-run, 3 process-exit,
+Final branch verification on 2026-09-08, rebased onto `f22992c5`: **2,563
+workspace tests passed**, three ignored (797 CLI, 20 first-run, 3 process-exit,
 1,490 core, 5 fixture, 11 MCP, 9 sandbox, 151 mail library, 1 mail binary,
 75 Slack, 1 doctest). The whole workspace ran with `MECHA_TEST_REQUIRE_BACKENDS=1`.
 Formatting, Clippy with warnings denied, all-targets build, frontend tests/build
@@ -76,7 +76,15 @@ smoke and mobile close/reopen test now pass, including guarded POST requests.
 The sixth pass shares source reads and store handles within each Today/tick
 request, preserves fresh completion checks and documents cancellation's launch
 gate with an exact reopening command. The cache regression reproduces the old
-repeated-read behavior and verifies fresh requests detect corruption.
+repeated-read behavior and verifies fresh requests detect corruption. The seventh
+pass records web/voice input before claiming a workflow run, so failed transcript
+writes preserve prior verification. Its entry-point regression failed before the
+fix and now covers both recording branches and a closed-workflow launch refusal.
+
+Remaining review follow-ups for the owner: TUI delivery reconciliation still uses
+`mecha outbox reconcile`; Today still spawns a subprocess and reads artifacts on
+each 30-second poll; the public Rust struct changes need an appropriate breaking
+release version before publishing. The PR does not release or deploy this code.
 
 ## Where the work is
 
