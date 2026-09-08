@@ -14,6 +14,18 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-08 — final assistant measurement.** On `b9d4be61` (base
+`a75b9467`), the five sequential synthetic assistant tasks across three seeds
+passed 15/15, including all 15 artifact postcondition sets and six grounding
+rubrics. All ten positive/negative live judge controls passed. Manual review
+of the final answers and supporting calendar reads found no recurrence of the
+targeted date, read-receipt, calendar-absence or delivery-state errors. The
+original and intermediate failures remain in the two assistant result reports;
+this small same-model-judge measurement is not independent factuality
+certification. Demo route coverage also caught an omitted workflow-mutation
+route; adding its explicit demo refusal restored coverage and all 15 browser
+render checks passed.
+
 **2026-09-08 — source weekdays and a judge false negative.** The calendar-reference
 run passed all 15 automated trials, but manual review found one background sentence
 calling the incoming Sunday email Monday. The automated score is retained with
