@@ -86,7 +86,7 @@ pub async fn upload(
     }
     let ws = match super::chat::attachment_workspace(&state, &key, true).await {
         Ok(ws) => ws,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let name = tame_filename(&q.name);
     let bytes = body.len();
@@ -136,7 +136,7 @@ pub async fn download(
     }
     let ws = match super::chat::attachment_workspace(&state, &key, false).await {
         Ok(ws) => ws,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let opened = tokio::task::spawn_blocking(move || {
         let (file, target) = WorkspaceFiles::open(&ws)?.read(&q.path)?;
