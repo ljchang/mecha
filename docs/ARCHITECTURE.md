@@ -1534,6 +1534,27 @@ than asserted: the run records `taint {private: true, untrusted: false}`.
 
 ## Browser request and attachment boundaries
 
+**Shutdown closes admission before waiting for work.** `serve::execute` owns
+process signals and drains chat and mounted voice together. `ChatState::stop`
+and `Facade::shutdown` gate new work under the locks that admit it; closing a
+`TaskTracker` by itself does not prevent new spawns. Track through transcript
+recording, not just the model future. Pending browser questions must close
+permanently during shutdown: clearing the current map alone leaves a later
+approval waiting out its normal timeout. Tools retain their ordinary deadlines
+and safe cancellation points. SSE closes explicitly, voice request reads yield,
+and socket writes are bounded, so idle clients cannot retain the process.
+The web host previously had no signal handler, making its voice cleanup
+unreachable and losing active partial turns on systemd stops.
+
+**Broadcast acceptance once and correlate the sender's acknowledgement.**
+Typed and spoken turns reach every session subscriber. Typed requests carry a
+bounded UI request id, echoed in the event but never inserted into model
+history. `receiveInput` uses that id across POST and SSE, not text equality;
+identical words can be two different requests. Steering broadcasts at admission,
+so the model's later `QueuedInput` event must not render it a second time.
+Previously only spoken input broadcast, leaving another device with the reply
+but no typed prompt.
+
 **Tailnet identity proves who, not intent.** `serve::owner_guard` requires
 `X-Mecha-Request: 1` on every unsafe method and refuses foreign
 `Sec-Fetch-Site` values. `web/src/lib/api.js::apiFetch` supplies the header,

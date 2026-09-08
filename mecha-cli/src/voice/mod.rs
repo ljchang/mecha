@@ -486,6 +486,8 @@ struct Shared {
     agent: Arc<Agent>,
     mount: Mount,
     slots: Mutex<HashMap<String, SlotState>>,
+    stopping: CancellationToken,
+    handlers: tokio_util::task::TaskTracker,
     session_dir: PathBuf,
     outbox_root: PathBuf,
     provider_name: String,
@@ -566,6 +568,8 @@ impl Facade {
                 agent,
                 mount,
                 slots: Mutex::new(HashMap::new()),
+                stopping: CancellationToken::new(),
+                handlers: Default::default(),
                 session_dir: Session::default_dir()?,
                 outbox_root,
                 provider_name,
@@ -600,40 +604,40 @@ impl Facade {
             tokio::select! {
                 accepted = listener.accept() => {
                     let (stream, _) = accepted?;
+                    // Serialize admission with shutdown: closing a tracker
+                    // alone does not prevent a late spawn into it.
+                    let slots = self.shared.slots.lock().await;
+                    if self.shared.stopping.is_cancelled() {
+                        return Ok(());
+                    }
                     let shared = Arc::clone(&self.shared);
-                    tokio::spawn(async move {
+                    self.shared.handlers.spawn(async move {
                         if let Err(e) = handle(stream, shared).await {
                             tracing::debug!("voice connection ended: {e}");
                         }
                     });
+                    drop(slots);
                 }
                 _ = stop.cancelled() => return Ok(()),
             }
         }
     }
 
-    /// Cancel everything in flight, then wait (bounded) for handlers to
-    /// record their runs and return the slots — exiting without this tears
-    /// down the runtime mid-record.
+    /// Close admission, cancel runs cooperatively, and wait for handlers
+    /// through recording. Socket I/O is bounded; tools keep their normal
+    /// deadlines and are never aborted midway through a side effect.
     pub async fn shutdown(&self) {
         {
             let slots = self.shared.slots.lock().await;
+            self.shared.stopping.cancel();
             for state in slots.values() {
                 if let SlotState::Running(tok) = state {
                     tok.cancel(mecha_core::agent::CancelReason::Shutdown);
                 }
             }
         }
-        for _ in 0..150 {
-            let busy = {
-                let slots = self.shared.slots.lock().await;
-                slots.values().any(|s| matches!(s, SlotState::Running(_)))
-            };
-            if !busy {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        self.shared.handlers.close();
+        self.shared.handlers.wait().await;
     }
 }
 
@@ -766,7 +770,11 @@ async fn handle(mut stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
     let mut buf = Vec::with_capacity(8192);
     let head = loop {
         let mut chunk = [0u8; 8192];
-        let n = stream.read(&mut chunk).await?;
+        let n = tokio::select! {
+            biased;
+            _ = shared.stopping.cancelled() => return Ok(()),
+            n = stream.read(&mut chunk) => n?,
+        };
         if n == 0 {
             return Ok(()); // closed before a full request
         }
@@ -790,13 +798,25 @@ async fn handle(mut stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
     let mut body = buf[head.body_start..].to_vec();
     while body.len() < head.content_length {
         let mut chunk = [0u8; 8192];
-        let n = stream.read(&mut chunk).await?;
+        let n = tokio::select! {
+            biased;
+            _ = shared.stopping.cancelled() => return Ok(()),
+            n = stream.read(&mut chunk) => n?,
+        };
         if n == 0 {
             anyhow::bail!("connection closed mid-body");
         }
         body.extend_from_slice(&chunk[..n]);
     }
 
+    if shared.stopping.is_cancelled() {
+        return write_json(
+            &mut stream,
+            503,
+            &json!({"error": "server is shutting down"}),
+        )
+        .await;
+    }
     // Routing ignores the query string; `/v1/mecha-affect` is the only
     // route that reads one, off `head.path` itself.
     let route = head.path.split('?').next().unwrap_or(&head.path);
@@ -834,9 +854,11 @@ async fn affect_status(stream: &mut TcpStream, shared: &Arc<Shared>, head: &Head
     match label {
         Some(label) => write_json(stream, 200, &json!({"affect": label})).await,
         None => {
-            stream
-                .write_all(b"HTTP/1.1 204 No Content\r\nconnection: close\r\n\r\n")
-                .await?;
+            write_bytes(
+                stream,
+                b"HTTP/1.1 204 No Content\r\nconnection: close\r\n\r\n",
+            )
+            .await?;
             Ok(())
         }
     }
@@ -903,6 +925,15 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// A stalled listener must not hold a completed run (or shutdown) forever.
+async fn write_bytes(stream: &mut TcpStream, bytes: &[u8]) -> std::io::Result<()> {
+    tokio::time::timeout(Duration::from_secs(5), stream.write_all(bytes))
+        .await
+        .map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "voice client stopped reading")
+        })?
+}
+
 async fn write_json(stream: &mut TcpStream, status: u16, body: &Value) -> Result<()> {
     let text = body.to_string();
     let reason = match status {
@@ -916,8 +947,8 @@ async fn write_json(stream: &mut TcpStream, status: u16, body: &Value) -> Result
         "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
         text.len()
     );
-    stream.write_all(head.as_bytes()).await?;
-    stream.write_all(text.as_bytes()).await?;
+    write_bytes(stream, head.as_bytes()).await?;
+    write_bytes(stream, text.as_bytes()).await?;
     Ok(())
 }
 
@@ -980,11 +1011,9 @@ fn sse_chunk(id: &str, model: &str, delta: Value, finish: Option<&str>) -> Strin
 }
 
 async fn write_chunk(stream: &mut TcpStream, data: &[u8]) -> std::io::Result<()> {
-    stream
-        .write_all(format!("{:x}\r\n", data.len()).as_bytes())
-        .await?;
-    stream.write_all(data).await?;
-    stream.write_all(b"\r\n").await
+    write_bytes(stream, format!("{:x}\r\n", data.len()).as_bytes()).await?;
+    write_bytes(stream, data).await?;
+    write_bytes(stream, b"\r\n").await
 }
 
 /// Take the session's slot, cancelling any run in flight (barge-in) and
@@ -1008,6 +1037,9 @@ async fn take_slot(
     for _ in 0..200 {
         {
             let mut slots = shared.slots.lock().await;
+            if shared.stopping.is_cancelled() {
+                return Ok(None);
+            }
             match slots.remove(key) {
                 None => {
                     let token = mecha_core::agent::CancelHandle::new();
@@ -1219,7 +1251,7 @@ async fn finish_stream(stream: &mut TcpStream, id: &str, model: &str, error: Opt
     let done = sse_chunk(id, model, json!({}), Some("stop"));
     let _ = write_chunk(stream, done.as_bytes()).await;
     let _ = write_chunk(stream, b"data: [DONE]\n\n").await;
-    let _ = stream.write_all(b"0\r\n\r\n").await;
+    let _ = write_bytes(stream, b"0\r\n\r\n").await;
 }
 
 /// A turn spoken into a conversation another front-end owns (D3). The
@@ -1414,7 +1446,7 @@ async fn arm_confirmation(shared: &Arc<Shared>, confirm_key: &str, pending: conf
 /// Returns false if the socket is already gone.
 async fn open_sse(stream: &mut TcpStream, id: &str, model: &str) -> bool {
     const HEAD: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n";
-    if stream.write_all(HEAD.as_bytes()).await.is_err() {
+    if write_bytes(stream, HEAD.as_bytes()).await.is_err() {
         return false;
     }
     let first = sse_chunk(id, model, json!({"role": "assistant"}), None);

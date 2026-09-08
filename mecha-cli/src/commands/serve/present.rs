@@ -21,7 +21,7 @@
 //! sees the cancel token.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
@@ -50,6 +50,7 @@ pub enum Answer {
 #[derive(Clone, Default)]
 pub struct Questions {
     next: Arc<AtomicU64>,
+    closed: Arc<AtomicBool>,
     pending: Arc<StdMutex<HashMap<u64, PendingQuestion>>>,
 }
 
@@ -67,7 +68,9 @@ impl Questions {
         let qid = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let (tx, rx) = oneshot::channel();
         if let Ok(mut pending) = self.pending.lock() {
-            pending.insert(qid, PendingQuestion { tx, card: None });
+            if !self.closed.load(Ordering::Relaxed) {
+                pending.insert(qid, PendingQuestion { tx, card: None });
+            }
         }
         (qid, rx)
     }
@@ -102,6 +105,15 @@ impl Questions {
         match sender {
             Some(q) => q.tx.send(answer).is_ok(),
             None => false,
+        }
+    }
+
+    /// Unlike cancelling one turn, shutdown also refuses later questions.
+    /// Both the flag and pending map are changed under the insertion lock.
+    pub fn shutdown(&self) {
+        if let Ok(mut pending) = self.pending.lock() {
+            self.closed.store(true, Ordering::Relaxed);
+            pending.clear();
         }
     }
 
@@ -358,6 +370,21 @@ impl Asker for WebAsker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn shutdown_drops_pending_questions_and_refuses_later_ones() {
+        let questions = Questions::default();
+        let (_, pending) = questions.open();
+        questions.shutdown();
+        assert!(pending.await.is_err());
+        let (_, late) = questions.open();
+        assert!(tokio::time::timeout(Duration::from_millis(100), late)
+            .await
+            .unwrap()
+            .is_err());
+        assert!(questions.cards().is_empty());
+    }
+
     use anyhow::Result;
     use mecha_core::tool::{Capabilities, ToolOutput};
 

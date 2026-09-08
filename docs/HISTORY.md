@@ -14,6 +14,28 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-08 — serve shutdown and shared chat input (branch, not deployed).**
+`serve::execute` owns SIGTERM and Ctrl-C, stops HTTP admission, and drains
+chat and the mounted facade together. `ChatState::stop` serializes shutdown
+with turn admission and permanently closes `Questions` before cancelling
+active runs. Its task tracker waits through transcript/taint/outcome recording;
+background title generation yields to shutdown. `Facade::shutdown` likewise
+closes admission and waits for handlers, including owned voice slots; request
+reads yield to shutdown and socket writes have deadlines. An actual daemon
+regression first exited with SIGTERM instead of success, then passed with a
+partial answer recorded. The expanded tests cover simultaneous typed/voice
+runs, waiting questions, two SSE subscribers, idle voice sockets and stdio MCP
+child cleanup.
+
+`chat::begin_turn` broadcasts typed and spoken input; `send` broadcasts
+steering when accepted. `Chat.svelte::receiveInput` correlates a browser's
+request id across SSE and its POST response, so identical words from different
+requests remain distinct and a late acknowledgement cannot restart a completed
+run. The model's steering-drain event no longer repeats the accepted message.
+Sixteen compiled-browser checks include two independent pages, both arrival
+orders, steering and rejected sends. These changes close the three duplicate
+shutdown/broadcast open items; deployment remains explicitly deferred.
+
 **2026-09-08 — explicit chat opening and Docker container ownership.**
 `serve::chat::open` creates a session through a guarded, idempotent POST;
 `transcript` and `events` only look up existing sessions. The browser awaits
