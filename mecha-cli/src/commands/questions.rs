@@ -358,6 +358,28 @@ async fn answer_and_resume(
     let staged_before = staged_ids(&q.session_id);
     let tctx = std::sync::Arc::clone(&prepared.agent.context().tools);
 
+    // Claim the workflow before consuming the question or changing board/run
+    // state. A refused launch must leave the owner's answer retryable.
+    let workflow = q
+        .task_id
+        .as_deref()
+        .map(|id| {
+            let store = mecha_core::workflow::WorkflowStore::default_store()?;
+            let guard = store.start_task(
+                id,
+                id,
+                &q.session_id,
+                &prepared.workspace,
+                chrono::Utc::now(),
+            )?;
+            store.update(id, |w| {
+                w.outbox_root = prepared.config.outbox.dir.clone();
+                Ok(())
+            })?;
+            Ok::<_, anyhow::Error>((store, id.to_string(), guard))
+        })
+        .transpose()?;
+
     // The resumed run is a run: it sets `waiting_on` to the agent, so every
     // surface renders "mecha is on it" *and a stop button* — and without a
     // marker that button found nothing to stop, printed "nothing is running",
@@ -435,25 +457,6 @@ async fn answer_and_resume(
     if cx.budget.max_turns.is_none() {
         cx.budget.max_turns = Some(super::tasks::TASK_MAX_TURNS);
     }
-    let workflow = q
-        .task_id
-        .as_deref()
-        .map(|id| {
-            let store = mecha_core::workflow::WorkflowStore::default_store()?;
-            let guard = store.start_task(
-                id,
-                id,
-                &q.session_id,
-                &prepared.workspace,
-                chrono::Utc::now(),
-            )?;
-            store.update(id, |w| {
-                w.outbox_root = prepared.config.outbox.dir.clone();
-                Ok(())
-            })?;
-            Ok::<_, anyhow::Error>((store, id.to_string(), guard))
-        })
-        .transpose()?;
     let outcome = crate::interrupt::run_interruptible_watching(
         &prepared.agent,
         &cx,

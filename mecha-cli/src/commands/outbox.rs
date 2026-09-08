@@ -1221,15 +1221,29 @@ async fn review(global: &GlobalOpts, store: &OutboxStore, selection: &Selection)
 fn reject(store: &OutboxStore, selection: &Selection, reason: Option<String>) -> Result<()> {
     let _lock = store.lock()?;
     let items = select(store.items()?, selection)?;
+    let (mut rejected, mut failed) = (0usize, 0usize);
     for item in &items {
-        // Rejecting sends nothing, so — unlike `send` — a batch of them needs
-        // no confirmation. The draft stays on file either way; what is lost is
-        // the queue entry, not the work.
-        let resolved = store.resolve(&item.id, "rejected", reason.clone())?;
-        println!("rejected {}; nothing was sent", resolved.id);
+        // Rejecting sends nothing and needs no batch confirmation. An uncertain
+        // delivery still refuses; continue with other items without erasing it.
+        match store.resolve(&item.id, "rejected", reason.clone()) {
+            Ok(resolved) => {
+                rejected += 1;
+                println!("rejected {}; nothing was sent", resolved.id);
+            }
+            Err(e) => {
+                failed += 1;
+                eprintln!("failed {}: {e:#}", item.id);
+            }
+        }
     }
-    if items.len() > 1 {
-        println!("{} rejected", items.len());
+    if items.len() > 1 || failed > 0 {
+        println!("{rejected} rejected, {failed} failed");
+    }
+    if failed > 0 {
+        bail!(
+            "{failed} of {} item(s) could not be rejected; inspect the reported items",
+            items.len()
+        );
     }
     Ok(())
 }

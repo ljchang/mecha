@@ -1151,7 +1151,9 @@ becomes the next user turn of the conversation that asked, in the jail it
 asked from, with its plan rehydrated. No slot and no cached prefix are held
 overnight, and the ball-passing needed no new noun, because `waiting_on`
 alternating between owner and agent is the GTD semantics the board already
-has.
+has. The workflow launch gate runs before the question is answered, the board
+moves to the agent, or a running marker is written. Cancellation, unmet
+dependencies and store failures must leave the question open for retry.
 
 Two rules on the surfaces over it. **Reading is a store read and every
 mutation is a `mecha …` child**, which is `review.rs`'s split rather than
@@ -2270,6 +2272,10 @@ error cannot establish that the remote service did nothing. This deliberately
 includes `ToolOutput::is_error` / MCP `isError`: neither flag is a contract that
 no partial effect occurred. Even an apparently expired-token batch needs owner
 reconciliation unless a provider-specific no-effect contract is implemented.
+
+Batch outbox rejection retains delivery-uncertainty refusals, continues with
+eligible items, and reports counts with a failing exit status when any item
+could not be rejected.
 
 ## Assistant workflows
 
