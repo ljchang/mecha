@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Durable workflows link task conversations, questions, drafts and dependencies;
   owner-specified completion checks inspect artifacts and confirmed delivery.
 - A Today view groups urgent items, decisions, verified work and waiting, with
-  commitments, quiet hours, coalesced reminders and snoozing.
+  commitments, quiet hours, coalesced reminders and snoozing. Refreshes share
+  source reads across workflows; finished work can be explicitly reopened.
 - Explicit structured-output provider capabilities for quarantined extraction,
   plus stable research, assistant and coding tool profiles.
 - Repeated assistant lifetime fixtures check actual sent messages and calendar

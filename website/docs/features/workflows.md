@@ -53,9 +53,10 @@ block corrected work forever. Rejection never satisfies a delivery check: remove
 or replace an obsolete check explicitly with `workflow uncheck` and `workflow check`.
 
 `workflow uncheck FLOW_ID 1` removes the first check. `workflow cancel FLOW_ID
---reason "Plans changed"` stops tracking without claiming success; `workflow
-reopen FLOW_ID` restores it. Closing a workflow leaves graph task closure to
-`mecha tasks set`.
+--reason "Plans changed"` cancels tracking and blocks further task, chat and
+trigger runs for that workflow until you run `mecha workflow reopen FLOW_ID`.
+Cancellation does not claim success and requires an active runner to be stopped
+first. Closing a workflow leaves graph task closure to `mecha tasks set`.
 
 In the web interface, expand **Finished workflows** at the bottom of Today and
 choose **Reopen workflow** to continue a finished or cancelled task conversation.

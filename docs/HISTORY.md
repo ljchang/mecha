@@ -14,6 +14,16 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-08 — refresh reads scale by source store.** PR #216's sixth review
+found repeated source-directory parsing and global config loading on every
+workflow in Today and scheduled ticks. Request-scoped caches now share scans,
+linked-record reads and handles, including failures; subsequent requests and
+completion checks reread the owning stores. A regression failed before caching
+and covers shared reads, fresh corruption detection and retained scan errors.
+Cancellation help now states that it also blocks future task/chat/trigger runs,
+and resume errors give the explicit reopening command. The intended owner gate
+remains in place; cancellation never claims completion.
+
 **2026-09-08 — web completion has a web recovery path.** PR #216's fifth review
 found that finishing a workflow hid it from Today and blocked further task-chat
 turns, with reopening available only in the CLI. Today now retains finished and

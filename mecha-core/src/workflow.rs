@@ -135,6 +135,75 @@ impl AttentionPolicy {
         }
     }
 }
+// Source reads are shared only within one refresh. Errors are cached too; a
+// subsequent refresh and every explicit completion check read the stores again.
+type ReadResult<T> = std::result::Result<T, String>;
+#[derive(Default)]
+pub struct ObservationCache {
+    outboxes: BTreeMap<PathBuf, ReadResult<Vec<crate::outbox::OutboxItem>>>,
+    questions: BTreeMap<PathBuf, ReadResult<(Vec<crate::questions::Question>, usize)>>,
+    deliveries: BTreeMap<(PathBuf, String), ReadResult<crate::outbox::OutboxItem>>,
+    answers: BTreeMap<(PathBuf, String), ReadResult<crate::questions::Question>>,
+}
+impl ObservationCache {
+    pub fn outbox_items(
+        &mut self,
+        store: &crate::outbox::OutboxStore,
+    ) -> Result<&[crate::outbox::OutboxItem]> {
+        let result = self
+            .outboxes
+            .entry(store.root().to_path_buf())
+            .or_insert_with(|| store.items_strict().map_err(|e| format!("{e:#}")));
+        result
+            .as_ref()
+            .map(Vec::as_slice)
+            .map_err(|e| anyhow::anyhow!(e.clone()))
+    }
+    pub fn question_items(
+        &mut self,
+        store: &crate::questions::QuestionStore,
+    ) -> Result<(&[crate::questions::Question], usize)> {
+        let result = self
+            .questions
+            .entry(store.root().to_path_buf())
+            .or_insert_with(|| store.items_counting().map_err(|e| format!("{e:#}")));
+        result
+            .as_ref()
+            .map(|(items, skipped)| (items.as_slice(), *skipped))
+            .map_err(|e| anyhow::anyhow!(e.clone()))
+    }
+    fn delivery(
+        &mut self,
+        store: &crate::outbox::OutboxStore,
+        id: &str,
+    ) -> Option<&crate::outbox::OutboxItem> {
+        // Preserve exact lookup semantics: an unrelated corrupt draft must not
+        // turn a known linked delivery into an unknown one.
+        self.deliveries
+            .entry((store.root().to_path_buf(), id.into()))
+            .or_insert_with(|| delivery_item(store, id).map_err(|e| format!("{e:#}")))
+            .as_ref()
+            .ok()
+    }
+    fn answer(
+        &mut self,
+        store: &crate::questions::QuestionStore,
+        id: &str,
+    ) -> Option<&crate::questions::Question> {
+        if id.is_empty()
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return None;
+        }
+        self.answers
+            .entry((store.root().to_path_buf(), id.into()))
+            .or_insert_with(|| store.get(id).map_err(|e| format!("{e:#}")))
+            .as_ref()
+            .ok()
+    }
+}
 impl Workflow {
     pub fn new(id: String, title: String, workspace: PathBuf, now: DateTime<Utc>) -> Self {
         Self {
@@ -203,6 +272,16 @@ impl Workflow {
             && self.verification.len() == self.checks.len()
             && self.verification.iter().all(|c| c.passed)
     }
+    /// Closed and cancelled work requires an explicit owner reopening.
+    pub fn ensure_open(&self) -> Result<()> {
+        ensure!(
+            self.closed_at.is_none(),
+            "workflow is {}; reopen with `mecha workflow reopen {}` before continuing",
+            self.state,
+            self.id
+        );
+        Ok(())
+    }
     /// Owner closure retains the evidence it just checked, while sharing the
     /// bounded history and sequence bookkeeping of every other event.
     pub fn close(&mut self, now: DateTime<Utc>) -> Result<()> {
@@ -258,17 +337,27 @@ impl Workflow {
         questions: Option<&crate::questions::QuestionStore>,
         now: DateTime<Utc>,
     ) {
+        self.observe_cached(&mut ObservationCache::default(), outbox, questions, now);
+    }
+    /// Share source reads across workflows in one refresh, never across requests.
+    pub fn observe_cached(
+        &mut self,
+        cache: &mut ObservationCache,
+        outbox: Option<&crate::outbox::OutboxStore>,
+        questions: Option<&crate::questions::QuestionStore>,
+        now: DateTime<Utc>,
+    ) {
         let mut scan_errors = BTreeMap::new();
         if let Some(session) = &self.session_id {
             if let Some(store) = outbox {
-                match store.items_strict() {
+                match cache.outbox_items(store) {
                     Ok(items) => {
                         for d in items
-                            .into_iter()
+                            .iter()
                             .filter(|d| d.session_id.as_deref() == Some(session))
                         {
                             if !self.outbox.contains(&d.id) {
-                                self.outbox.push(d.id);
+                                self.outbox.push(d.id.clone());
                             }
                         }
                     }
@@ -278,11 +367,11 @@ impl Workflow {
                 }
             }
             if let Some(store) = questions {
-                match store.items_counting() {
+                match cache.question_items(store) {
                     Ok((items, skipped)) => {
-                        for q in items.into_iter().filter(|q| &q.session_id == session) {
+                        for q in items.iter().filter(|q| &q.session_id == session) {
                             if !self.questions.contains(&q.id) {
-                                self.questions.push(q.id);
+                                self.questions.push(q.id.clone());
                             }
                         }
                         if skipped > 0 {
@@ -313,12 +402,12 @@ impl Workflow {
         );
         for id in &self.outbox {
             let state = outbox
-                .and_then(|s| delivery_item(s, id).ok())
+                .and_then(|s| cache.delivery(s, id))
                 .map(|d| {
                     if d.delivery_uncertain() {
                         "delivery_unknown".into()
                     } else {
-                        d.status
+                        d.status.clone()
                     }
                 })
                 .unwrap_or("unreadable".into());
@@ -326,18 +415,8 @@ impl Workflow {
         }
         for id in &self.questions {
             let state = questions
-                .and_then(|s| {
-                    if id.is_empty()
-                        || !id
-                            .bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-                    {
-                        None
-                    } else {
-                        s.get(id).ok()
-                    }
-                })
-                .map(|q| q.status)
+                .and_then(|s| cache.answer(s, id))
+                .map(|q| q.status.clone())
                 .unwrap_or("unreadable".into());
             observed.insert(format!("question:{id}"), state);
         }
@@ -630,10 +709,7 @@ impl WorkflowStore {
             !w.runner_pid.is_some_and(crate::process_alive),
             "workflow already has a live runner; after confirming it has stopped, use `mecha workflow recover {task} --reason ...` to clear stale ownership"
         );
-        ensure!(
-            w.closed_at.is_none(),
-            "workflow is closed; reopen it before starting another run"
-        );
+        w.ensure_open()?;
         for dependency in &w.depends_on {
             let predecessor = self.get(dependency)?;
             ensure!(
@@ -718,8 +794,18 @@ impl WorkflowStore {
         questions: Option<&crate::questions::QuestionStore>,
         now: DateTime<Utc>,
     ) -> Result<Workflow> {
+        self.refresh_cached(id, &mut ObservationCache::default(), outbox, questions, now)
+    }
+    pub fn refresh_cached(
+        &self,
+        id: &str,
+        cache: &mut ObservationCache,
+        outbox: Option<&crate::outbox::OutboxStore>,
+        questions: Option<&crate::questions::QuestionStore>,
+        now: DateTime<Utc>,
+    ) -> Result<Workflow> {
         self.update(id, |w| {
-            w.observe(outbox, questions, now);
+            w.observe_cached(cache, outbox, questions, now);
             self.observe_dependencies(w, now);
             Ok(())
         })
@@ -1158,6 +1244,51 @@ mod tests {
             .unwrap();
         drop(fresh);
         assert_eq!(store.get("flow-one").unwrap().state, "awaiting_owner");
+    }
+
+    #[test]
+    fn workflows_in_one_refresh_share_a_snapshot_and_the_next_refresh_rereads() {
+        let h = Home::new();
+        let out = OutboxStore::open(h.0.join("outbox")).unwrap();
+        let draft = out
+            .stage(
+                "mail_reply",
+                OutboxKind::Message,
+                serde_json::json!({"body_markdown":"draft"}),
+                Default::default(),
+                Provenance::default(),
+            )
+            .unwrap();
+        let now = at("2026-09-08T13:00:00Z");
+        let mut first = h.workflow();
+        first.outbox.push(draft.id.clone());
+        let mut second = first.clone();
+        let mut cache = ObservationCache::default();
+        let questions = crate::questions::QuestionStore::open(h.0.join("questions")).unwrap();
+        assert_eq!(cache.outbox_items(&out).unwrap().len(), 1);
+        assert_eq!(cache.question_items(&questions).unwrap().1, 0);
+        first.observe_cached(&mut cache, Some(&out), None, now);
+        fs::write(out.root().join(format!("{}.json", draft.id)), "{").unwrap();
+        fs::write(questions.root().join("broken.json"), "{").unwrap();
+        second.observe_cached(&mut cache, Some(&out), None, now);
+        assert_eq!(cache.outbox_items(&out).unwrap().len(), 1);
+        assert_eq!(cache.question_items(&questions).unwrap().1, 0);
+        let mut fresh = ObservationCache::default();
+        assert!(fresh.outbox_items(&out).is_err());
+        assert_eq!(fresh.question_items(&questions).unwrap().1, 1);
+        // A failed scan also remains failed for this refresh after a repair.
+        fs::remove_file(out.root().join(format!("{}.json", draft.id))).unwrap();
+        assert!(fresh.outbox_items(&out).is_err());
+        let key = format!("outbox:{}", draft.id);
+        assert_eq!(
+            second.observed[&key], "pending",
+            "the second workflow must use the same read snapshot"
+        );
+        second.observe(Some(&out), None, now);
+        assert_eq!(
+            second.observed[&key], "unreadable",
+            "a new refresh must reread and fail closed on corruption"
+        );
     }
 
     #[test]
