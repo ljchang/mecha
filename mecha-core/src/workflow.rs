@@ -187,19 +187,18 @@ impl Workflow {
         self.verified_at = None;
         self.verification.clear();
     }
+    /// Owner dispositions resolve decisions; delivery requirements are separate checks.
+    pub fn actions_resolved(&self) -> bool {
+        self.observed.values().all(|s| {
+            matches!(
+                s.as_str(),
+                "sent" | "answered" | "closed" | "rejected" | "abandoned"
+            )
+        })
+    }
     pub fn verified(&self) -> bool {
         self.verified_at.is_some()
-            && !self
-                .observed
-                .values()
-                // Declining an action resolves that decision, not a delivery
-                // requirement. Every explicit completion check must still pass.
-                .any(|s| {
-                    !matches!(
-                        s.as_str(),
-                        "sent" | "answered" | "closed" | "rejected" | "abandoned"
-                    )
-                })
+            && self.actions_resolved()
             && !self.checks.is_empty()
             && self.verification.len() == self.checks.len()
             && self.verification.iter().all(|c| c.passed)
@@ -492,6 +491,11 @@ pub struct WorkflowRun {
     id: String,
     run_id: String,
 }
+impl WorkflowRun {
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+}
 impl Drop for WorkflowRun {
     fn drop(&mut self) {
         let store = WorkflowStore::at(self.root.clone());
@@ -624,7 +628,7 @@ impl WorkflowStore {
         };
         ensure!(
             !w.runner_pid.is_some_and(crate::process_alive),
-            "workflow already has a live runner"
+            "workflow already has a live runner; after confirming it has stopped, use `mecha workflow recover {task} --reason ...` to clear stale ownership"
         );
         ensure!(
             w.closed_at.is_none(),
@@ -655,12 +659,17 @@ impl WorkflowStore {
     pub fn finish_task(
         &self,
         id: &str,
+        run_id: &str,
         failed: bool,
         drafts: Vec<String>,
         questions: Vec<String>,
         now: DateTime<Utc>,
     ) -> Result<Workflow> {
         self.update(id, |w| {
+            ensure!(
+                w.state == "running" && w.run_id.as_deref() == Some(run_id),
+                "workflow run was superseded; its outcome cannot overwrite current work"
+            );
             w.state = if failed { "failed" } else { "awaiting_owner" }.into();
             w.runner_pid = None;
             for id in drafts {
@@ -678,6 +687,26 @@ impl WorkflowStore {
                 "Review recorded artifacts and linked actions",
                 now,
             );
+            Ok(())
+        })
+    }
+    /// Owner assertion that the previous runner stopped. Does not stop a process,
+    /// discard partial effects, reconcile deliveries, or grant permission to send.
+    pub fn recover(&self, id: &str, reason: &str, now: DateTime<Utc>) -> Result<Workflow> {
+        ensure!(
+            !reason.trim().is_empty(),
+            "record why the previous runner is known to have stopped"
+        );
+        self.update(id, |w| {
+            ensure!(w.closed_at.is_none(), "workflow is closed; reopen it first");
+            let detail = format!(
+                "Owner confirmed previous runner stopped (pid {:?}, run {:?}): {}",
+                w.runner_pid, w.run_id, reason
+            );
+            w.runner_pid = None;
+            w.run_id = None;
+            w.state = "interrupted".into();
+            w.record("owner_recovered", detail, now);
             Ok(())
         })
     }
@@ -1094,6 +1123,44 @@ mod tests {
         assert!(h.store().list().is_err());
     }
     #[test]
+    fn owner_recovery_clears_stale_ownership_without_accepting_a_superseded_finish() {
+        let h = Home::new();
+        let store = h.store();
+        let now = at("2026-09-08T13:00:00Z");
+        let old = store
+            .start_task("flow-one", "work", "old", &h.0, now)
+            .unwrap();
+        assert!(store
+            .start_task("flow-one", "work", "new", &h.0, now)
+            .is_err());
+        // Model the owner's recovery of a recorded PID that now belongs to
+        // another process. The old identity must never finish the new run.
+        assert!(store.recover("flow-one", " ", now).is_err());
+        store
+            .recover("flow-one", "Host rebooted; old runner is gone", now)
+            .unwrap();
+        let recovered = store.get("flow-one").unwrap();
+        assert!(recovered.runner_pid.is_none() && recovered.run_id.is_none());
+        assert_eq!(recovered.state, "interrupted");
+        let fresh = store
+            .start_task("flow-one", "work", "new", &h.0, now)
+            .unwrap();
+        assert!(
+            store
+                .finish_task("flow-one", old.run_id(), false, vec![], vec![], now)
+                .is_err(),
+            "a superseded runner must not overwrite the replacement run"
+        );
+        drop(old);
+        assert_eq!(store.get("flow-one").unwrap().state, "running");
+        store
+            .finish_task("flow-one", fresh.run_id(), false, vec![], vec![], now)
+            .unwrap();
+        drop(fresh);
+        assert_eq!(store.get("flow-one").unwrap().state, "awaiting_owner");
+    }
+
+    #[test]
     fn concurrent_writers_preserve_every_event() {
         let h = Home::new();
         h.store().create(h.workflow()).unwrap();
@@ -1156,7 +1223,7 @@ mod lifecycle_tests {
             .unwrap();
         let guard = store.start_task("send", "send", "s", &root, now).unwrap();
         store
-            .finish_task("send", false, vec![], vec![], now)
+            .finish_task("send", guard.run_id(), false, vec![], vec![], now)
             .unwrap();
         drop(guard);
         assert_eq!(

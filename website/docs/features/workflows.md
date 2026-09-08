@@ -57,6 +57,17 @@ or replace an obsolete check explicitly with `workflow uncheck` and `workflow ch
 reopen FLOW_ID` restores it. Closing a workflow leaves graph task closure to
 `mecha tasks set`.
 
+If a crash or reboot leaves a task blocked by a stale running process ID, first
+confirm the previous run has stopped, then record that evidence:
+
+```bash
+mecha workflow recover FLOW_ID --reason "Host rebooted; previous run ended"
+mecha workflow resume FLOW_ID
+```
+
+Recovery clears the stale runner record. It does not stop a process or resolve
+pending drafts, questions or uncertain deliveries; review those before resuming.
+
 ## Continue work in order
 
 ```bash

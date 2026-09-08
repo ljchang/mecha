@@ -2337,6 +2337,7 @@ async fn work(
     asker.stamp_taint(convo.taint);
     let workflow_recording = workflows.finish_task(
         task_id,
+        _workflow_run.run_id(),
         outcome.is_err(),
         staged_ids(&session.meta.id).into_iter().collect(),
         asker.parked().to_vec(),

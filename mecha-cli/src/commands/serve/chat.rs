@@ -1706,6 +1706,7 @@ fn begin_turn(
         if let Some((store, id, _guard)) = &workflow {
             if let Err(e) = store.finish_task(
                 id,
+                _guard.run_id(),
                 outcome.is_err(),
                 Vec::new(),
                 Vec::new(),
