@@ -51,6 +51,19 @@ enum Case {
 }
 
 async fn check_shutdown(case: Case) {
+    let available = tokio::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .await
+        .is_ok_and(|out| out.status.success());
+    if !available {
+        assert!(
+            std::env::var_os("MECHA_TEST_REQUIRE_BACKENDS").is_none(),
+            "python3 is required for the serve lifecycle fixture"
+        );
+        eprintln!("skipping: python3 unavailable for the serve lifecycle fixture");
+        return;
+    }
     let question = matches!(case, Case::Question);
     let force = matches!(case, Case::Force);
     let delivered = matches!(case, Case::Delivered);
