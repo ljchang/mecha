@@ -20,106 +20,48 @@ maps which document holds what.
 
 ---
 
-**2026-09-08 implementation branch:** PR [#216](https://github.com/ljchang/mecha/pull/216),
-`feat/personal-assistant-follow-through`,
-in the isolated `/tmp/mecha-personal-assistant` worktree. The new workflow,
-delivery, provenance, extraction and evaluation features are described in
-`HISTORY.md` and `ASSISTANT-FOLLOW-THROUGH-DESIGN.md`; no installation or service
-restart was performed. Historical deployment paragraphs below retain their dates
-and are not claims about this branch's deployment. Read-only verification today:
-local `/props` reports `qwen3.6-35b-a3b`, four slots, per-slot context 262144,
-vision enabled; the user has 15 mecha unit files. The base eval set has 36 cases
-and 15 tags; the additional assistant set has five cases and six tags. Source
-verification of the open-work section removed stale completed entries below;
-remote deployments and sibling-repository work were not reverified.
-
-Final branch verification on 2026-09-08, rebased onto `1ebfb752` (PR #217): **2,575
-workspace tests passed**, three ignored (800 CLI, 22 first-run, 3 process-exit, 5 serve-lifecycle,
-1,490 core, 5 fixture, 13 MCP, 9 sandbox, 151 mail library, 1 mail binary,
-75 Slack, 1 doctest). The whole workspace ran with `MECHA_TEST_REQUIRE_BACKENDS=1`.
-Formatting, Clippy with warnings denied, all-targets build, frontend tests/build
-and documentation build passed. Demo endpoint coverage and all 17 browser
-render checks passed. The opt-in live judge calibration also passed
-all ten known-answer controls, including the incoming-message weekday false
-negative found by manual review. The earlier isolated workflow CLI smoke covered
-artifact changes, FIFO refusal, reminders, closure, reopening and cancellation.
-
-The grounding implementation now has shared fixture dates, owner-mailbox read
-semantics, recorded context for rubric grading, computed near-term date facts and
-computed source weekdays in mail results. The original and subsequent measurements
-finished at **15/15 live trials**, with 15/15 artifact postcondition sets,
-6/6 grounding rubrics and six requested fixture owner actions. Manual review of
-all final answers found no recurrence of the targeted grounding errors. Runs
-are preserved in `results/assistant-follow-through-2026-09-08.json` and
-`results/assistant-grounding-2026-09-08.json`. General runtime truth enforcement
-remains unbuilt; the rubric grades after the run and the local judge is the same
-model as the assistant, not independent evidence. The final live measurement
-preceded integration of PR #215; that replay-only change does not participate in
-the live fixture run. A regression covers provenance following matched arguments
-when replay batches are reordered. PR review fixes restore unconditional
-untrusted-output warnings, report profile exclusions, remove duplicate scheduled
-scans, and correct retry/taint documentation; the spoofed-envelope regression
-failed before the fix and passes afterward. The second pass bounds workflow
-events to 128 while preserving reminder deduplication and discloses legacy replay
-provenance differences in CLI text and JSON. Both regressions pass, with full
-workspace and documentation checks rerun. The third pass resolves declined
-actions without satisfying delivery checks, uses exact outbox lookups with legacy
-prefix fallback, and includes owner closure in bounded event bookkeeping. The
-reported replay-image gap was disproved by an end-to-end live-divergence test:
-`Agent::run_in` already arms images before tool execution. The fourth pass adds
-owner-evidenced recovery for stale PIDs and gates completion by originating run ID.
-A real CLI smoke confirms recovery evidence is required, partial drafts survive,
-and reopening works; an old runner cannot overwrite its replacement. Generic
-structured tool errors deliberately remain unknown delivery outcomes. The fifth
-pass adds a Finished workflows section with web reopening; the real CLI data
-smoke and mobile close/reopen test now pass, including guarded POST requests.
-The sixth pass shares source reads and store handles within each Today/tick
-request, preserves fresh completion checks and documents cancellation's launch
-gate with an exact reopening command. The cache regression reproduces the old
-repeated-read behavior and verifies fresh requests detect corruption. The seventh
-pass records web/voice input before claiming a workflow run, so failed transcript
-writes preserve prior verification. Its entry-point regression failed before the
-fix and now covers both recording branches and a closed-workflow launch refusal.
-The eighth pass puts question-resume gates before question/board/marker effects
-and makes batch rejection continue past uncertain items with counts and a failing
-exit status. Both real CLI regressions failed before their fixes and now pass.
-
-The merge rebase preserves PR #217's shutdown admission gate, tracked run drain,
-request-id broadcasts and steering delivery receipts. The workflow startup guard
-still follows successful transcript recording and precedes accepted-input
-broadcasts; the regression now also checks refused starts emit no acceptance.
-Both the two-device chat test and mobile workflow recovery test are retained.
-
-Remaining review follow-ups for the owner: TUI delivery reconciliation still uses
-`mecha outbox reconcile`; Today still spawns a subprocess and reads artifacts on
-each 30-second poll; the public Rust struct changes need an appropriate breaking
-release version before publishing. The PR does not release or deploy this code.
-
 ## Where the work is
 
-**2026-09-08 review fixes:** PR #213 merged as `a3f1682d` and was installed
-with its web bundle at 14:15 UTC. PR #214 merged as `a75b9467`; its explicit
-chat opening and Docker MCP ownership fixes have not been installed by this
-session. PR #217 merged as `1ebfb752`, adding SIGTERM and Ctrl-C draining for
-serve and typed/steered input broadcasts across devices with request-id
-correlation. The assistant branch includes those changes; PR #217's dated
-validation record follows below.
-**Deployment is on hold at the owner's request until the other sessions finish.**
-The deferred update must also install the checked-in serve/voice unit files
-and reload the user systemd manager: their new `KillMode=mixed` and 180-second
-stop window are part of graceful shutdown. Read-only verification of the live
-serve unit still reports `control-group` and 90 seconds; no unit was installed
-or reloaded during this session.
-The eval fixture remains **36 cases, 15 tags**, recounted from `eval/cases.jsonl`.
-Validation on top of PR #215 in a dedicated target directory: **2,538 passed,
-2 ignored** (CLI 799, first-run 20, process-exit 3, serve lifecycle 5,
-core 1,458, fixtures 4, MCP 13, sandbox 9, mail 150 plus its binary test,
-Slack 75, and one doctest), with `MECHA_TEST_REQUIRE_BACKENDS=1`.
-Format, clippy with warnings denied, web tests/build, docs build, and all
-16 compiled-browser checks pass. These describe source, not the installed
-binary. The previous full open-item audit remains applicable except for the
-shutdown and typed-broadcast gaps closed in this branch; source evidence is in
-`HISTORY.md` under this date.
+**2026-09-08 update:** PR [#216](https://github.com/ljchang/mecha/pull/216)
+is merged into `main` at `c3f33f4c`, including PR #217's graceful shutdown and
+cross-device chat input. The shared checkout was cleanly fast-forwarded to that
+commit. The owner authorized the update after merging, superseding the earlier
+deployment hold. Installed binaries, web assets and the five long-running
+assistant services now use this source; see **Environment as left** for the
+artifact probes and remaining stale client process. No release was published.
+Implementation and review history live in `HISTORY.md`; feature scope lives in
+`ASSISTANT-FOLLOW-THROUGH-DESIGN.md`.
+
+**Verification, 2026-09-08:** the exact merged tree matches the previously tested
+branch tree. The workspace suite was rerun during this update with
+`MECHA_TEST_REQUIRE_BACKENDS=1`: **2,575 passed, three ignored** (800 CLI,
+22 first-run, 3 process-exit, 5 serve-lifecycle, 1,490 core, 5 fixture, 13 MCP,
+9 sandbox, 151 mail library, 1 mail binary, 75 Slack, 1 doctest). All-targets
+build, formatting, Clippy with warnings denied, frontend tests/build, docs build,
+demo coverage and 17 browser checks passed on that same tree before merge.
+The web app was rebuilt for installation. An installed-binary smoke in a temporary
+`MECHA_HOME` confirmed artifact changes block closure, followed by successful
+closure, reopening and cancellation after restoring the evidence.
+The base eval set remains **36 cases, 15 tags**; the assistant set has **five
+cases, six tags**, both recounted during this update.
+
+**Live evaluation boundary:** the preserved synthetic runs reached **15/15
+trials**, all 15 artifact postcondition sets and 6/6 grounding rubrics, with six
+requested fixture owner actions. Ten known-answer judge controls also passed,
+and all final answers were manually reviewed. These measurements predate the
+later review fixes and integration with #215/#217; they are not a fresh live
+model evaluation of the installed commit. The reports retain their measured
+commits in `results/assistant-follow-through-2026-09-08.json` and
+`results/assistant-grounding-2026-09-08.json`. The local judge is the same model
+as the assistant. General runtime truth enforcement remains open.
+
+**Remaining follow-ups:** uncertain delivery needs a distinct TUI/doctor label
+and a TUI reconciliation action (`mecha outbox reconcile` and web reconciliation
+are available); Today spawns a subprocess and reads artifacts on each 30-second
+poll; public Rust struct changes need an appropriate breaking release version
+before publishing. The previous source audit remains applicable; the follow-up
+audit confirms graceful serve shutdown, awaited MCP teardown and typed/steered
+input broadcasts are implemented on main, with evidence in `HISTORY.md`.
 
 Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.16**
 (2026-08-29 — the appraisal system survives its own review: PRs #111/#112,
@@ -627,19 +569,56 @@ binary is absent |
 
 ## Environment as left
 
-**Verification boundary, 2026-09-08:** the read-only local `/props` probe
-reported `model_alias = qwen3.6-35b-a3b`, `total_slots = 4`,
-`default_generation_settings.n_ctx = 262144`, and vision enabled. Unit-file
-checks found the serve, slack, drain, triggers, parakeet and voice-worker
-services enabled, plus frontdoor, mail-classify, ruminate and slots timers.
-This is configuration evidence, not proof of each service's running build.
-PR #213's `mecha` binary and web bundle were installed from merged `a3f1682d`.
-Serve, Slack, drain and triggers restarted at 14:15 UTC and are active; the
-installed guard literal and live 403/400 request-header boundary were verified,
-as was the web bundle through the HTTPS door. Backups are in
-`~/.mecha/deploy-backups/pr-213/`. The Python workers and model server were not
-restarted. Older credential, private-store, other installed-artifact and remote
-deployment claims below remain dated observations, not freshly verified state.
+**Verified update, 2026-09-08, services restarted at 19:58:54 UTC:** the
+shared checkout is `main` at `c3f33f4c`. `cargo install --locked --force`
+installed `mecha` and all four mail/doc binaries from that source (version
+0.1.18); installed command help exposes workflow recovery, delivery reconciliation
+and tool profiles. The isolated workflow smoke exercises the installed executable.
+The rebuilt web app at `~/.mecha/web/dist` serves `index-DNZNOS00.js` through
+HTTPS :8443, byte-identical to the installed file (SHA-256
+`054f5d04b837664723388a1ddb424b580b7fa4dd040686a58c9dcd37f142d073`).
+The page, bundle, Today and graph-backed task routes return 200; workflow and
+outbox reconciliation POSTs without the request header return 403.
+
+Serve, Slack, triggers, drain and the voice worker restarted after installation.
+Fresh journal entries show both serve doors, Slack's connection, the trigger tick
+schedule and Uvicorn on :7860; drain holds a new `factory-publish drain --wait 25`
+child. The running serve/Slack/trigger executables resolve to the installed path,
+without deleted inodes. Both checked-in serve unit files were copied and the user
+manager reloaded: effective `KillMode=mixed`, `TimeoutStopUSec=3min`. The
+standalone voice-serve unit remains disabled/inactive. The serve PATH drop-in is
+preserved; every active or timer-fired mecha caller has `~/.cargo/bin` in its
+effective PATH. The five-verb slots sweep and required outbox classifications
+were verified. Timer-fired jobs were left to their normal schedule.
+
+Both graph binaries were reinstalled from clean public `mecha-graph` main
+`940c806` (0.1.5); `cargo build --release` also verified the release artifact
+used by the nightly job against that source.
+The installed MCP answers with 13 tools; the full installed mecha registry
+reports 63. One existing Claude process (PID 4002136) still owns a deleted graph
+MCP executable (PID 4002189); restart that host session to refresh its child.
+It was left running because it belongs to another session.
+
+The benchmark executable was rebuilt with `bench/build-portable.sh` from the
+same merged source. `file target-musl/release/mecha` confirms static ARM64
+linkage, and the executable exposes `workflow recover --reason`; SHA-256 is
+`4ff02133a02821b03f17f8747ceb509347698a4b893b81e84492a3cd71fbf3c1`.
+
+Factory main was fetched and is clean at `5359783`; installed client and the
+active remote server both report 0.2.9, matching the latest release. The server
+version was also checked through its running `/proc/<pid>/exe`; it has zero
+automatic restarts. The remote checks were read-only. Sandbox and host both report Cargo 1.97.1, so no sandbox
+rebuild was needed. The local model still reports `qwen3.6-35b-a3b`, four slots,
+per-slot context 262144 and vision enabled. The 15 mecha unit files retain their
+enablement. Neither model server nor Parakeet required a restart: their launch
+files were unchanged across the checkout fast-forward. No live config or trigger
+file was edited. Rollback copies of web assets and both unit files are in
+`/tmp/mecha-update-backup/`; update logs are `/tmp/mecha-update-*.log`.
+During the update, unrelated edits appeared in the shared checkout at
+`website/docs/getting-started/configuration.md` and
+`website/docs/reference/configuration.md`; they were left untouched. This
+handoff is isolated on `docs/assistant-update-handoff`. Older credential and
+private-store claims below remain dated observations.
 
 > **This checkout is a live service's `ExecStart`. Do not `git stash`, `git
 > checkout --`, `git restore` — or `git checkout <branch>`.**
@@ -2153,14 +2132,6 @@ is recoverable without the checkout's cwd. Record:
 ---
 
 ## What to do next
-
-- **The droplet is one release behind, and only the owner deploys it
-  (2026-09-06).** `gate.mecha-factory.ai` serves factory 0.2.8 while
-  v0.2.9's musl asset is attached to its GitHub release; `factory-deploy
-  v0.2.9` over the deploy key (the `update` skill, §6) downloads, checksums,
-  proves, swaps and health-checks, and `--rollback` restores `factory.prev`.
-  It is production for people who are not the owner, so it waits for the
-  owner's word rather than for "update everything".
 
 - **Machine state as of 2026-09-04 10:04, verified surface by surface
   (mecha-26).** `main` is `188b823`; the shared checkout `~/Github/mecha` is
