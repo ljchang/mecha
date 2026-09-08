@@ -3756,6 +3756,7 @@ fn submit(
         }
     } else {
         let user = Message {
+            tool_provenance: Default::default(),
             role: mecha_core::message::Role::User,
             content: blocks,
         };

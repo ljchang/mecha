@@ -677,6 +677,7 @@ mod tests {
 
     fn item(id: &str, status: &str, kind: OutboxKind) -> OutboxItem {
         OutboxItem {
+            delivery_attempts: Vec::new(),
             output: None,
             author: Default::default(),
             filled_defaults: Vec::new(),

@@ -1688,6 +1688,7 @@ mod tests {
         use mecha_core::agent::Taint;
         use mecha_core::outbox::OutboxKind;
         OutboxItem {
+            delivery_attempts: Vec::new(),
             output: None,
             author: Default::default(),
             filled_defaults: Vec::new(),

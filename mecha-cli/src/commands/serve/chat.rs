@@ -1491,6 +1491,36 @@ fn begin_turn(
         text.to_string()
     };
 
+    if ws.conversation.is_none() {
+        return Err(TurnError::Held);
+    }
+    let workflow = ws
+        .task
+        .as_ref()
+        .and_then(|t| t["id"].as_str())
+        .map(|id| {
+            let store = mecha_core::workflow::WorkflowStore::default_store()?;
+            let title = ws
+                .task
+                .as_ref()
+                .and_then(|t| t["name"].as_str())
+                .unwrap_or(id);
+            let guard = store.start_task(
+                id,
+                title,
+                &ws.session.meta.id,
+                &ws.workspace,
+                chrono::Utc::now(),
+            )?;
+            store.update(id, |w| {
+                w.outbox_root = Some(chat.outbox_root.clone());
+                Ok(())
+            })?;
+            Ok::<_, anyhow::Error>((store, id.to_string(), guard))
+        })
+        .transpose()
+        .map_err(|e| TurnError::Failed(format!("workflow could not start: {e:#}")))?;
+
     let Some(mut conversation) = ws.conversation.take() else {
         return Err(TurnError::Held);
     };
@@ -1673,6 +1703,24 @@ fn begin_turn(
 
         let outcome = agent.run_in(&cx, &mut conversation, Some(tx)).await;
         let _ = forwarder.await;
+        if let Some((store, id, _guard)) = &workflow {
+            if let Err(e) = store.finish_task(
+                id,
+                outcome.is_err(),
+                Vec::new(),
+                Vec::new(),
+                chrono::Utc::now(),
+            ) {
+                tracing::error!("workflow outcome could not be recorded: {e:#}");
+            }
+            // The store discovers drafts/questions by session, including partial effects.
+            let out = OutboxStore::open(&outbox_root).ok();
+            let questions = mecha_core::questions::QuestionStore::open_existing_default();
+            if let Err(e) = store.refresh(id, out.as_ref(), questions.as_ref(), chrono::Utc::now())
+            {
+                tracing::error!("workflow references could not be refreshed: {e:#}");
+            }
+        }
 
         match &outcome {
             Ok(o) => {
@@ -2766,6 +2814,7 @@ mod rollback_tests {
                 input: serde_json::json!({}),
             }]));
         conversation.messages.push(Message {
+            tool_provenance: Default::default(),
             role: Role::User,
             content: vec![Block::ToolResult {
                 tool_use_id: "t1".into(),
@@ -2811,6 +2860,7 @@ mod rollback_tests {
                 input: serde_json::json!({}),
             }]));
         conversation.messages.push(Message {
+            tool_provenance: Default::default(),
             role: Role::User,
             content: vec![Block::ToolResult {
                 tool_use_id: "t1".into(),
@@ -2940,10 +2990,12 @@ mod wire_tests {
     fn transcript_names_a_tool_result_from_its_call() {
         let messages = vec![
             Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::Text { text: "hi".into() }],
             },
             Message {
+                tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![
                     Block::Text {
@@ -2957,6 +3009,7 @@ mod wire_tests {
                 ],
             },
             Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
                     tool_use_id: "t1".into(),
@@ -3005,6 +3058,7 @@ mod wire_tests {
     #[test]
     fn a_spoken_turn_reads_back_as_the_owners_words() {
         let messages = vec![Message {
+            tool_provenance: Default::default(),
             role: Role::User,
             content: vec![Block::Text {
                 text: crate::voice::open_spoken_turn("book the room", false),
@@ -3177,6 +3231,7 @@ mod wire_tests {
         let input = serde_json::json!({"command": "ls -la"});
         let messages = vec![
             Message {
+                tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
                     id: "t1".into(),
@@ -3185,6 +3240,7 @@ mod wire_tests {
                 }],
             },
             Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
                     tool_use_id: "t1".into(),
@@ -3219,6 +3275,7 @@ mod wire_tests {
     #[test]
     fn a_tool_result_only_message_adds_no_empty_user_entry() {
         let messages = vec![Message {
+            tool_provenance: Default::default(),
             role: Role::User,
             content: vec![Block::ToolResult {
                 tool_use_id: "t9".into(),

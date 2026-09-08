@@ -96,6 +96,11 @@ pub trait Provider: Send + Sync {
         false
     }
 
+    /// Whether this endpoint is configured to enforce a response schema.
+    fn structured_output(&self) -> bool {
+        false
+    }
+
     /// Run one turn. With `sink`, stream and emit deltas as they arrive; the
     /// accumulated response is still returned.
     async fn complete(
@@ -440,6 +445,9 @@ fn failover_worthy(e: &anyhow::Error) -> bool {
 
 #[async_trait]
 impl Provider for Failover {
+    fn structured_output(&self) -> bool {
+        self.primary.structured_output()
+    }
     fn id(&self) -> &str {
         self.primary.id()
     }
@@ -462,6 +470,10 @@ impl Provider for Failover {
         req: &CompletionRequest,
         sink: Option<&StreamSink>,
     ) -> Result<CompletionResponse> {
+        anyhow::ensure!(
+            req.response_schema.is_none() || self.structured_output(),
+            "primary provider does not support structured output"
+        );
         let mut last = match self.primary.complete(req, sink).await {
             Ok(response) => return Ok(response),
             Err(e) if failover_worthy(&e) => e,
@@ -469,6 +481,10 @@ impl Provider for Failover {
         };
 
         for (name, provider) in &self.fallbacks {
+            if req.response_schema.is_some() && !provider.structured_output() {
+                tracing::warn!(fallback = %name, "skipping fallback without structured output support");
+                continue;
+            }
             tracing::warn!(
                 error = %last,
                 fallback = %name,
@@ -557,6 +573,7 @@ mod failover_tests {
 
     fn req() -> CompletionRequest {
         CompletionRequest {
+            response_schema: None,
             model: "primary-model".into(),
             system: None,
             messages: vec![Message::user("hi")],
@@ -683,5 +700,84 @@ mod failover_tests {
         let err = failover.complete(&req(), None).await.unwrap_err();
         assert!(err.to_string().contains("stream aborted"));
         assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[cfg(test)]
+mod schema_failover_tests {
+    use super::*;
+    struct Endpoint {
+        schema: bool,
+        fail: bool,
+    }
+    #[async_trait]
+    impl Provider for Endpoint {
+        fn id(&self) -> &str {
+            "endpoint"
+        }
+        fn default_model(&self) -> &str {
+            "fallback-model"
+        }
+        fn structured_output(&self) -> bool {
+            self.schema
+        }
+        async fn complete(
+            &self,
+            req: &CompletionRequest,
+            _: Option<&StreamSink>,
+        ) -> Result<CompletionResponse> {
+            assert!(self.schema, "an unsupported fallback must never be called");
+            if self.fail {
+                return Err(retry::ProviderError::Overloaded.into());
+            }
+            assert_eq!(req.model, "fallback-model");
+            assert_eq!(
+                req.response_schema,
+                Some(serde_json::json!({"type":"object"}))
+            );
+            Ok(CompletionResponse {
+                message: crate::message::Message::assistant(vec![crate::message::Block::text(
+                    "{}",
+                )]),
+                stop_reason: crate::message::StopReason::EndTurn,
+                usage: Usage::default(),
+                refusal: None,
+                model: req.model.clone(),
+                malformed_tool_args: 0,
+            })
+        }
+    }
+    #[tokio::test]
+    async fn failover_preserves_the_schema_and_skips_incompatible_endpoints() {
+        let p = Failover::new(
+            Box::new(Endpoint {
+                schema: true,
+                fail: true,
+            }),
+            vec![
+                (
+                    "incompatible".into(),
+                    Box::new(Endpoint {
+                        schema: false,
+                        fail: false,
+                    }),
+                ),
+                (
+                    "compatible".into(),
+                    Box::new(Endpoint {
+                        schema: true,
+                        fail: false,
+                    }),
+                ),
+            ],
+        );
+        let request = crate::quarantine::QuarantinedPass::new("primary-model", 100)
+            .response_schema(Some(serde_json::json!({"type":"object"})))
+            .ask("JSON please");
+        assert!(p.structured_output());
+        assert_eq!(
+            p.complete(&request, None).await.unwrap().model,
+            "fallback-model"
+        );
     }
 }

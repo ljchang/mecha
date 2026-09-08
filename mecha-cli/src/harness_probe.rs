@@ -557,6 +557,7 @@ mod tests {
                     input: serde_json::json!({}),
                 }]),
                 Message {
+                    tool_provenance: Default::default(),
                     role: mecha_core::message::Role::User,
                     content: vec![Block::ToolResult {
                         tool_use_id: "t1".into(),
@@ -695,6 +696,7 @@ mod tests {
                 Message::user("do the thing"),
                 Message::assistant(calls),
                 Message {
+                    tool_provenance: Default::default(),
                     role: mecha_core::message::Role::User,
                     content: results,
                 },
@@ -816,6 +818,7 @@ mod tests {
                     input: serde_json::json!({}),
                 }]),
                 Message {
+                    tool_provenance: Default::default(),
                     role: mecha_core::message::Role::User,
                     content: vec![Block::ToolResult {
                         tool_use_id: "t1".into(),

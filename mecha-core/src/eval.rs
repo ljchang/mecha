@@ -183,6 +183,8 @@ pub fn stage_workspace(fixture: &Path, dest: &Path) -> Result<()> {
 pub struct Expect {
     /// These tools must each be called at least once, in any order.
     pub tools: Vec<String>,
+    /// At least one equivalent tool must be called (for example, events or free/busy).
+    pub tools_any: Vec<String>,
     /// These tools must be called in this relative order (other calls may be
     /// interleaved). Use for genuine dependencies, not incidental sequence.
     pub tools_in_order: Vec<String>,
@@ -400,6 +402,18 @@ pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
             } else {
                 format!("called: {}", fmt(&called))
             },
+        });
+    }
+
+    if !case.expect.tools_any.is_empty() {
+        checks.push(Check {
+            name: format!("calls one of {}", case.expect.tools_any.join(", ")),
+            passed: case
+                .expect
+                .tools_any
+                .iter()
+                .any(|tool| called.iter().any(|name| name == tool)),
+            detail: format!("called: {}", fmt(&called)),
         });
     }
 
@@ -1155,6 +1169,26 @@ mod tests {
             ..Default::default()
         };
         assert!(!grade(&case(expect), &clean).passed);
+    }
+
+    #[test]
+    fn equivalent_read_tools_are_accepted_but_skipping_the_read_fails() {
+        let c = case(Expect {
+            tools_any: vec!["calendar_list_events".into(), "calendar_freebusy".into()],
+            ..Default::default()
+        });
+        assert!(!grade(&c, &result_with(vec![], "No conflicts")).passed);
+        for name in ["calendar_list_events", "calendar_freebusy"] {
+            let trace = ToolCallTrace {
+                name: name.into(),
+                input: json!({}),
+                is_error: false,
+                denied: false,
+                unknown: false,
+                staged: false,
+            };
+            assert!(grade(&c, &result_with(vec![trace], "No conflicts")).passed);
+        }
     }
 
     #[test]

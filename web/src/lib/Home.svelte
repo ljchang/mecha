@@ -1,5 +1,6 @@
 <script>
   import { apiFetch as fetch } from './api.js';
+  import Today from './Today.svelte';
   // The read-only dashboard: `mecha review queues --json` and
   // `mecha doctor --json`, rendered. A null depth is a dash — "nothing
   // waiting" and "could not look" are opposite findings.
@@ -117,6 +118,7 @@
 </header>
 
 <main>
+  <Today {navigate} />
   {#if error}
     <div class="card notice">
       {@render hazardGlyph(16)}

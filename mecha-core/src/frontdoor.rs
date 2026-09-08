@@ -648,7 +648,8 @@ pub async fn extract(
     // The frame is uncached by default, which is right here — there is nothing
     // to share a prefix with, and caching a stranger's text across calls is a
     // property nobody asked for.
-    let pass = crate::quarantine::QuarantinedPass::new(model, 4096);
+    let pass = crate::quarantine::QuarantinedPass::new(model, 4096)
+        .response_schema(provider.structured_output().then(extraction_schema));
 
     for round in 0..2 {
         let request = pass.ask(attempt.clone());
@@ -701,6 +702,15 @@ pub async fn extract(
         }
     }
     anyhow::bail!("the extractor produced nothing parseable: {last_error}")
+}
+
+/// Closed wire shape; free text remains display-only even when schema-constrained.
+fn extraction_schema() -> serde_json::Value {
+    serde_json::json!({"type":"object", "additionalProperties":false,
+        "properties": {"reading":{"type":"string"}, "topic":{"type":"string"},
+            "urgency_claimed":{"type":"string"}, "dates_mentioned":{"type":"array","items":{"type":"string"}},
+            "institution":{"type":"string"}, "reads_like_instructions":{"type":"boolean"}},
+        "required":["reading","topic","urgency_claimed","dates_mentioned","institution","reads_like_instructions"]})
 }
 
 #[cfg(test)]

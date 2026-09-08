@@ -63,6 +63,7 @@ pub mod distill;
 pub mod doctor;
 pub mod eval;
 pub mod experiment;
+pub mod fixture_check;
 pub mod frontdoor;
 pub mod goal;
 pub mod gossip;
@@ -104,6 +105,7 @@ pub mod title;
 pub mod tool;
 pub mod trigger;
 pub mod work;
+pub mod workflow;
 
 pub use agent::{Agent, AgentEvent, RunOutcome};
 pub use config::Config;

@@ -883,6 +883,7 @@ impl State {
         let mut content = vec![Block::text(&prompt)];
         content.extend(attached_images);
         conversation.messages.push(Message {
+            tool_provenance: Default::default(),
             role: mecha_core::message::Role::User,
             content,
         });
@@ -2590,6 +2591,7 @@ mod tests {
 
     fn draft(id: &str, tainted: bool, summary: &str) -> mecha_core::outbox::OutboxItem {
         mecha_core::outbox::OutboxItem {
+            delivery_attempts: Vec::new(),
             output: None,
             author: Default::default(),
             filled_defaults: Vec::new(),

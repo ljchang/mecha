@@ -1550,6 +1550,7 @@ async fn ab_config(
 /// and learned rules are set in both directions, because `run_arm` builds
 /// the treatment arm from the same `opts` it built the baseline from.
 fn force_reproducible(opts: &mut GlobalOpts, allow_mcp: bool, allow_learned_rules: bool) {
+    opts.tool_profile = None;
     let mut allow = Vec::new();
     if allow_mcp {
         allow.push(Lever::Mcp);
@@ -1765,6 +1766,8 @@ mod tests {
             .unwrap()
         };
         let planned = mecha_core::experiment::Trial {
+            owner_actions: None,
+            fixture_checked: None,
             id: "bare__c__r1".into(),
             arm: "bare".into(),
             task: "c".into(),

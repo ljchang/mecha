@@ -65,6 +65,7 @@ pub struct QuarantinedPass {
     max_tokens: u32,
     effort: Option<Effort>,
     cache_prompt: bool,
+    response_schema: Option<serde_json::Value>,
 }
 
 impl QuarantinedPass {
@@ -81,6 +82,7 @@ impl QuarantinedPass {
             max_tokens,
             effort: None,
             cache_prompt: false,
+            response_schema: None,
         }
     }
 
@@ -103,6 +105,12 @@ impl QuarantinedPass {
         self
     }
 
+    /// Constrain the answer while retaining the no-tools, no-history boundary.
+    pub fn response_schema(mut self, schema: Option<serde_json::Value>) -> Self {
+        self.response_schema = schema;
+        self
+    }
+
     pub fn model(&self) -> &str {
         &self.model
     }
@@ -114,6 +122,7 @@ impl QuarantinedPass {
     /// reasoning summary. Calling it twice yields two independent requests.
     pub fn ask(&self, user: impl Into<String>) -> CompletionRequest {
         CompletionRequest {
+            response_schema: self.response_schema.clone(),
             model: self.model.clone(),
             system: self.system.clone(),
             messages: vec![Message::user(user.into())],

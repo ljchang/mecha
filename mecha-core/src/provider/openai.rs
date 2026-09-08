@@ -45,6 +45,7 @@ pub struct OpenAiCompatible {
     seed: Option<u64>,
     id: String,
     vision: bool,
+    structured_output: crate::config::StructuredOutput,
     retry: crate::provider::retry::RetryPolicy,
 }
 
@@ -68,6 +69,7 @@ impl OpenAiCompatible {
             seed: cfg.seed,
             id: cfg.kind.clone(),
             vision: cfg.vision_enabled(),
+            structured_output: cfg.structured_output,
             retry: crate::provider::retry::RetryPolicy::from_config(cfg),
         })
     }
@@ -87,6 +89,17 @@ impl OpenAiCompatible {
             "messages": messages,
         });
         let obj = body.as_object_mut().unwrap();
+        if let Some(schema) = &req.response_schema {
+            let format = match self.structured_output {
+                crate::config::StructuredOutput::LlamaJson => {
+                    json!({"type":"json_object", "schema":schema})
+                }
+                _ => {
+                    json!({"type":"json_schema", "json_schema":{"name":"extraction", "strict":true, "schema":schema}})
+                }
+            };
+            obj.insert("response_format".into(), format);
+        }
         if let Some(t) = self.temperature {
             obj.insert("temperature".into(), json!(t));
         }
@@ -132,6 +145,9 @@ impl OpenAiCompatible {
 
 #[async_trait]
 impl Provider for OpenAiCompatible {
+    fn structured_output(&self) -> bool {
+        self.structured_output != crate::config::StructuredOutput::Disabled
+    }
     fn id(&self) -> &str {
         &self.id
     }
@@ -149,6 +165,7 @@ impl Provider for OpenAiCompatible {
         req: &CompletionRequest,
         sink: Option<&StreamSink>,
     ) -> Result<CompletionResponse> {
+        anyhow::ensure!(req.response_schema.is_none() || self.structured_output(), "provider does not support structured output; configure structured_output after verifying endpoint support");
         let body = self.body(req, sink.is_some());
         // Retries cover the send and the status line — nothing has streamed
         // yet. Mid-stream failures below propagate without a `ProviderError`,
@@ -789,6 +806,7 @@ mod tests {
 
     fn plain_req() -> CompletionRequest {
         CompletionRequest {
+            response_schema: None,
             model: "m".into(),
             system: None,
             messages: vec![Message::user("hi")],
@@ -1409,6 +1427,7 @@ mod tests {
     #[test]
     fn an_image_rides_as_a_parts_array_only_when_the_model_can_see() {
         let msg = Message {
+            tool_provenance: Default::default(),
             role: Role::User,
             content: vec![
                 Block::text("what is this?"),
@@ -1493,5 +1512,54 @@ mod tests {
             serde_json::from_str::<Value>(args).unwrap(),
             json!({"path": "a.md"})
         );
+    }
+}
+
+#[cfg(test)]
+mod structured_output_tests {
+    use super::*;
+    #[tokio::test]
+    async fn schema_dialects_are_explicit_and_unsupported_requests_fail_before_network() {
+        let schema = json!({"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false});
+        let req = crate::quarantine::QuarantinedPass::new("test", 100)
+            .response_schema(Some(schema.clone()))
+            .ask("JSON please");
+        for mode in [
+            crate::config::StructuredOutput::JsonSchema,
+            crate::config::StructuredOutput::LlamaJson,
+        ] {
+            let p = OpenAiCompatible::from_config(&ProviderConfig {
+                kind: "local".into(),
+                structured_output: mode,
+                ..Default::default()
+            })
+            .unwrap();
+            assert!(p.structured_output());
+            let b = p.body(&req, false);
+            match mode {
+                crate::config::StructuredOutput::JsonSchema => {
+                    assert_eq!(b["response_format"]["json_schema"]["schema"], schema);
+                    assert_eq!(b["response_format"]["json_schema"]["strict"], true);
+                }
+                _ => {
+                    assert_eq!(b["response_format"]["type"], "json_object");
+                    assert_eq!(b["response_format"]["schema"], schema);
+                }
+            }
+            assert!(req.tools.is_empty());
+            assert_eq!(req.messages.len(), 1);
+        }
+        let disabled = OpenAiCompatible::from_config(&ProviderConfig {
+            kind: "local".into(),
+            base_url: Some("http://127.0.0.1:1".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(disabled
+            .complete(&req, None)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("does not support structured output"));
     }
 }
