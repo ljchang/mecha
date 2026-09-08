@@ -276,17 +276,18 @@ pub(super) async fn attachment_workspace(
     state: &super::WebState,
     key: &str,
     create: bool,
-) -> Result<PathBuf, axum::response::Response> {
-    let chat = chat_state(state)?;
+) -> Result<PathBuf, Box<axum::response::Response>> {
+    let chat = chat_state(state).map_err(Box::new)?;
     let mut sessions = chat.sessions.lock().await;
     if !create {
         return sessions
             .get(key)
             .map(|session| session.workspace.clone())
-            .ok_or_else(|| (StatusCode::NOT_FOUND, "no such session\n").into_response());
+            .ok_or_else(|| Box::new((StatusCode::NOT_FOUND, "no such session\n").into_response()));
     }
-    let session = ensure_session(chat, &mut sessions, key)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response())?;
+    let session = ensure_session(chat, &mut sessions, key).map_err(|e| {
+        Box::new((StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response())
+    })?;
     Ok(session.workspace.clone())
 }
 
