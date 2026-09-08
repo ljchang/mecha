@@ -5311,6 +5311,14 @@ matters is the general shape.
 
 ### Measuring
 
+**2026-09-08 — external text cannot certify its own wrapper.** PR #216 review
+caught a replay optimization that skipped the untrusted-content warning when
+tool bytes looked wrapped. An attacker could imitate the tags and suppress the
+harness preamble; the trifecta interlock still held, but the warning did not.
+Wrapping is unconditional again and a spoofed-envelope regression failed before
+the fix. **Determine trust from harness metadata, never from attacker-controlled
+content.** Nested replay warnings are preferable to a missing warning.
+
 **2026-09-08 — a grounding judge missing the run context invents a failure.**
 The first clocked assistant measurement passed 14/15 overall and all 15 artifact
 checks. Its sole rubric failure called “3pm UTC” an invented timezone, because

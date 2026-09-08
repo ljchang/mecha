@@ -301,8 +301,9 @@ purpose — a human clicking "yes" is what an injection is trying to engineer.
 Taint is a property of the **conversation**, not one run: it lives on
 `agent::Conversation` beside the messages and the session file records it,
 because a turn boundary is not a security boundary — keep the history and
-you keep the taint; a fresh `Conversation` (batch item, subagent, eval case)
-honestly starts clean.
+you keep the taint; a fresh `Conversation` (batch item or eval case) honestly
+starts clean. Subagents inherit their parent's taint; delegation does not
+create a clean boundary.
 
 Two distinctions that are easy to get wrong:
 
