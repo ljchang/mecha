@@ -14,6 +14,16 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-08 — web completion has a web recovery path.** PR #216's fifth review
+found that finishing a workflow hid it from Today and blocked further task-chat
+turns, with reopening available only in the CLI. Today now retains finished and
+cancelled workflows in a collapsed section with a protected Reopen action. Closed
+records are summarized before source scans or artifact verification. A real CLI
+close/Today/reopen smoke and a mobile browser close/reopen regression failed on
+the old behavior. The launch gates remain in force. The misplaced trial-method
+doc comment and the convenience profile's bare-name matching caveat were also
+corrected.
+
 **2026-09-08 — owner recovery survives PID reuse.** PR #216 review found that a
 stale PID could look alive after a reboot and block every new run without a CLI
 repair path. `workflow recover --reason` now records the owner's assertion that

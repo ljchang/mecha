@@ -66,6 +66,7 @@ export const ROUTES = [
   ['GET', /^\/api\/summary$/, () => fx.summary],
   ['GET', /^\/api\/today$/, () => ({
     as_of: new Date().toISOString(),
+    closed: [{ id: 'demo-finished', title: 'Prepare the conference travel summary', state: 'closed', closed_at: '2026-09-07T16:00:00Z' }],
     items: [
       { id: 'demo-reply', title: 'Review the reply about the grant meeting', section: 'decisions', state: 'draft ready for review', outbox: ['demo-reply'] },
       { id: 'demo-waiting', title: 'Prepare for the lab meeting', section: 'waiting', state: 'waiting for your answer', task_id: 'demo-task' },

@@ -1,5 +1,7 @@
 //! Optional stable tool subsets, selected once before a run and inherited by children.
 //! Profiles are convenience filters; the path jail, approval and taint guards still govern calls.
+//! Matching uses the bare name after an MCP prefix, so a server can name a tool
+//! `server__shell` and match that profile entry. Profiles confer no authority.
 use super::Registry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

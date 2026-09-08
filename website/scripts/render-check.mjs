@@ -392,6 +392,51 @@ for (const route of ROUTES) {
   await Promise.all(contexts.map(context => context.close()));
 }
 
+// The compiled mobile UI must recover a finished workflow through guarded POSTs.
+{
+  const context = await browser.newContext({viewport: {width: 420, height: 900}});
+  const page = await context.newPage();
+  try {
+    await page.goto(`${base}#tasks`, {waitUntil: 'networkidle'});
+    await page.evaluate(() => {
+      const originalFetch = globalThis.fetch;
+      const item = {id: 'browser-workflow', title: 'Recover a finished task', section: 'ready', state: 'awaiting_owner', workflow: true};
+      const data = {items: [item], closed: []};
+      const probe = window.workflowProbe = {actions: []};
+      globalThis.fetch = async (url, options) => {
+        if (url === '/api/today') return Response.json(data);
+        if (url.startsWith('/api/workflows/browser-workflow/')) {
+          const action = url.split('/').at(-1);
+          probe.actions.push({action, method: options?.method, header: new Headers(options?.headers).get('x-mecha-request')});
+          if (action === 'close') {
+            data.items = [];
+            data.closed = [{...item, state: 'closed', closed_at: new Date().toISOString()}];
+          } else if (action === 'reopen') {
+            data.closed = [];
+            data.items = [{...item, section: 'waiting', state: 'idle'}];
+          }
+          return Response.json({ok: true});
+        }
+        return originalFetch(url, options);
+      };
+      location.hash = 'home';
+    });
+    await page.getByRole('button', {name: 'Finish workflow', exact: true}).click({timeout: 5000});
+    await page.locator('summary').filter({hasText: 'Finished workflows'}).click({timeout: 5000});
+    await page.getByRole('button', {name: 'Reopen workflow', exact: true}).click({timeout: 5000});
+    await page.getByRole('region', {name: 'In progress and waiting', exact: true})
+      .getByRole('heading', {name: 'Recover a finished task', exact: true}).waitFor({timeout: 5000});
+    const actions = await page.evaluate(() => window.workflowProbe.actions);
+    if (actions.map(a => a.action).join(',') !== 'close,reopen' || actions.some(a => a.method !== 'POST' || a.header !== '1')) {
+      failures.push(`workflow recovery: wrong mutation requests ${JSON.stringify(actions)}`);
+    }
+  } catch (e) {
+    failures.push(`workflow recovery: ${String(e.message).split('\n')[0]}`);
+  }
+  checked++;
+  await context.close();
+}
+
 await browser.close();
 server.close();
 
