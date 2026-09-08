@@ -879,9 +879,10 @@ impl Surface {
 
     /// Execute one item, resolve it, and say what happened.
     ///
-    /// Returns `Err` for a failure the *item* survives — it stays pending with
-    /// the error recorded — so a batch reports it and carries on to the next
-    /// draft rather than abandoning eight good ones over one bad address.
+    /// Returns `Err` with the failure recorded on the surviving item, so a
+    /// batch can continue with other drafts. Once dispatch begins, failure
+    /// leaves delivery unknown and retry requires owner reconciliation. A
+    /// tool error alone cannot prove that no remote effect occurred.
     ///
     /// **The caller must hold the store lock**, because the pending check is
     /// [`claim_for_release`] and it has to happen inside that lock.
@@ -959,9 +960,9 @@ impl Surfaces {
 /// workspace, an MCP server that won't start — used to reach only stderr, and
 /// the TUI spawns releases detached with stderr closed. The result was an item
 /// sitting pending with `error: null` while the watch said "still releasing"
-/// forever. `record_error` keeps the item pending — the draft is still good
-/// and the next `send` retries — with the reason where every review surface
-/// can display it.
+/// forever. `record_error` preserves the delivery attempt and exposes its
+/// reason on every review surface. Pre-dispatch failures can retry; an
+/// unknown attempt requires owner reconciliation before another `send`.
 ///
 /// **The lock guard is a parameter on purpose.** `record_error` is a
 /// read-then-write of the item with no flock of its own, and the store lock's
