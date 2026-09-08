@@ -138,9 +138,9 @@ pub fn tick(dry_run: bool) -> Result<serde_json::Value> {
     let mut notices = vec![];
     for mut w in store.list()? {
         let out = outbox(Some(&w))?;
-        w.observe(out.as_ref(), questions.as_ref(), now);
-        store.observe_dependencies(&mut w, now);
         if dry_run {
+            w.observe(out.as_ref(), questions.as_ref(), now);
+            store.observe_dependencies(&mut w, now);
             if w.tick(&policy, now) {
                 notices.push(serde_json::json!({"id":w.id, "notice":w.notice}));
             }

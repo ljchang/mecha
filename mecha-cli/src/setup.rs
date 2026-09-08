@@ -372,8 +372,23 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // refusal is the correct answer and `tasks set` is the correct caller.
     crate::closure_guard::guard(&mut registry);
     for profile in &cfg.subagents {
-        if opts.tool_profile.is_some() && profile.tools.iter().any(|t| registry.get(t).is_none()) {
-            continue;
+        if opts.tool_profile.is_some() {
+            let excluded: Vec<&str> = profile
+                .tools
+                .iter()
+                .filter(|t| registry.get(t).is_none())
+                .map(String::as_str)
+                .collect();
+            if !excluded.is_empty() {
+                if !opts.tools_from_trigger {
+                    eprintln!(
+                        "mecha: subagent `{}` not registered — `--tool-profile` excludes {}",
+                        profile.name,
+                        excluded.join(", ")
+                    );
+                }
+                continue;
+            }
         }
         // `--tool` narrows the pool deliberately, and a subagent whose profile
         // names something the narrowing excluded is not a misconfiguration —
