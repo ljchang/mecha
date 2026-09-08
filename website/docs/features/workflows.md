@@ -157,3 +157,9 @@ MECHA_GROUNDING_ENDPOINT=http://127.0.0.1:8080 \
 MECHA_GROUNDING_MODEL=qwen3.6-35b-a3b \
 cargo test -p mecha-core --test grounding_judge -- --ignored --nocapture
 ```
+
+
+The assistant's date prompt includes a computed local calendar reference from
+yesterday through the coming week. It supplies weekday/date pairs across daylight
+saving, month and year boundaries. Grounded rubric checks receive this recorded
+context as well as tool evidence.

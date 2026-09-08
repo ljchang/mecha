@@ -900,24 +900,7 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
             mecha_core::experiment::ExperimentRef::from_env().is_some(),
         )?
         .unwrap_or_else(chrono::Utc::now);
-        let stamp = match cfg.agent.timezone() {
-            Some(tz) => {
-                let now = now.with_timezone(&tz);
-                format!(
-                    "Today is {}, and the user's timezone is {tz} (currently {}). \
-                     Give times in that zone unless asked otherwise, and work out \
-                     relative dates (\"next Tuesday\", \"this week\") from today \
-                     rather than guessing.",
-                    now.format("%A, %-d %B %Y"),
-                    now.format("%Z, UTC%:z")
-                )
-            }
-            None => format!(
-                "Today is {}. Work out relative dates (\"next Tuesday\", \
-                 \"this week\") from it rather than guessing.",
-                now.with_timezone(&chrono::Local).format("%A, %-d %B %Y")
-            ),
-        };
+        let stamp = mecha_core::date_context::render(now, cfg.agent.timezone());
         cfg.agent.system_prompt = Some(if base.is_empty() {
             stamp
         } else {
