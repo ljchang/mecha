@@ -1629,6 +1629,43 @@ mod tests {
         assert!(!cancel.is_cancelled());
     }
 
+    /// The other half of `a_repeated_tool_pairs_the_way_decide_spent_the_recording`:
+    /// what `decide` actually feeds in that case. The two must agree, and this
+    /// is the side that decides what the model reads.
+    #[tokio::test]
+    async fn a_repeated_tool_with_a_changed_argument_spends_the_recording_in_order() {
+        let cancel = CancellationToken::new();
+        let reg = replay_reg(
+            vec![
+                batched(0, "echo", json!({"value": "a"}), "A"),
+                batched(0, "echo", json!({"value": "b"}), "B"),
+            ],
+            OnDivergence::Stop,
+            &cancel,
+        );
+        let ctx = ToolCtx::default();
+
+        // No exact match, so the fallback spends recorded #0.
+        let out = reg
+            .get("echo")
+            .unwrap()
+            .call(json!({"value": "z"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out.content, "A");
+
+        // #0 is gone, so the call that *did* reproduce it gets #1 — which the
+        // diff reports at both positions rather than clearing this one.
+        let out = reg
+            .get("echo")
+            .unwrap()
+            .call(json!({"value": "a"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out.content, "B");
+        assert!(!cancel.is_cancelled());
+    }
+
     /// The fallback the arguments pass sits in front of: an argument that
     /// genuinely changed still gets the recorded answer, because a path spelled
     /// differently is the same decision and the diff is what reports it.
