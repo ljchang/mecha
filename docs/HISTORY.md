@@ -14,6 +14,15 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-08 — assistant changes integrated with serve shutdown and chat sync.**
+Rebasing PR #216 over merged PR #217 preserved both lifecycle paths: `begin_turn`
+checks shutdown admission, records input, claims the workflow, then broadcasts
+acceptance with the request id. The recording-failure regression now also checks
+that a refused launch emits no acceptance. Task tracking and steering receipts
+remain intact, and both independent browser regression blocks are retained.
+The combined workspace, required sandbox backends and 17 browser checks passed;
+no service was installed or restarted.
+
 **2026-09-08 — gates precede question consumption; batch refusals are counted.**
 PR #216's eighth review found the question-resume workflow gate after question
 closure, board movement and run-marker creation. It now precedes those effects;

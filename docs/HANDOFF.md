@@ -33,12 +33,12 @@ and 15 tags; the additional assistant set has five cases and six tags. Source
 verification of the open-work section removed stale completed entries below;
 remote deployments and sibling-repository work were not reverified.
 
-Final branch verification on 2026-09-08, rebased onto `f22992c5`: **2,565
-workspace tests passed**, three ignored (797 CLI, 22 first-run, 3 process-exit,
-1,490 core, 5 fixture, 11 MCP, 9 sandbox, 151 mail library, 1 mail binary,
+Final branch verification on 2026-09-08, rebased onto `1ebfb752` (PR #217): **2,575
+workspace tests passed**, three ignored (800 CLI, 22 first-run, 3 process-exit, 5 serve-lifecycle,
+1,490 core, 5 fixture, 13 MCP, 9 sandbox, 151 mail library, 1 mail binary,
 75 Slack, 1 doctest). The whole workspace ran with `MECHA_TEST_REQUIRE_BACKENDS=1`.
 Formatting, Clippy with warnings denied, all-targets build, frontend tests/build
-and documentation build passed. Demo endpoint coverage and all 16 browser
+and documentation build passed. Demo endpoint coverage and all 17 browser
 render checks passed. The opt-in live judge calibration also passed
 all ten known-answer controls, including the incoming-message weekday false
 negative found by manual review. The earlier isolated workflow CLI smoke covered
@@ -84,6 +84,12 @@ The eighth pass puts question-resume gates before question/board/marker effects
 and makes batch rejection continue past uncertain items with counts and a failing
 exit status. Both real CLI regressions failed before their fixes and now pass.
 
+The merge rebase preserves PR #217's shutdown admission gate, tracked run drain,
+request-id broadcasts and steering delivery receipts. The workflow startup guard
+still follows successful transcript recording and precedes accepted-input
+broadcasts; the regression now also checks refused starts emit no acceptance.
+Both the two-device chat test and mobile workflow recovery test are retained.
+
 Remaining review follow-ups for the owner: TUI delivery reconciliation still uses
 `mecha outbox reconcile`; Today still spawns a subprocess and reads artifacts on
 each 30-second poll; the public Rust struct changes need an appropriate breaking
@@ -94,9 +100,10 @@ release version before publishing. The PR does not release or deploy this code.
 **2026-09-08 review fixes:** PR #213 merged as `a3f1682d` and was installed
 with its web bundle at 14:15 UTC. PR #214 merged as `a75b9467`; its explicit
 chat opening and Docker MCP ownership fixes have not been installed by this
-session. The current branch, `fix/serve-shutdown-and-chat-sync`, adds SIGTERM
-and Ctrl-C draining for serve and broadcasts typed/steered input across devices
-with request-id correlation. Review and CI are tracked on PR #217.
+session. PR #217 merged as `1ebfb752`, adding SIGTERM and Ctrl-C draining for
+serve and typed/steered input broadcasts across devices with request-id
+correlation. The assistant branch includes those changes; PR #217's dated
+validation record follows below.
 **Deployment is on hold at the owner's request until the other sessions finish.**
 The deferred update must also install the checked-in serve/voice unit files
 and reload the user systemd manager: their new `KillMode=mixed` and 180-second
