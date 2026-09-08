@@ -15,6 +15,8 @@
   let editDraft = $state('');
   let rejectReason = $state('');
   let busy = $state(false);
+  let deliveryEvidence = $state('');
+  let deliveryOutcome = $state('delivered');
 
   async function loadList() {
     try {
@@ -65,6 +67,11 @@
     }
   }
 
+  async function reconcile() {
+    if (await act('reconcile', { outcome: deliveryOutcome, evidence: deliveryEvidence.trim() })) {
+      deliveryEvidence = ''; back();
+    }
+  }
   async function approve() {
     if (await act('approve')) back();
   }
@@ -190,9 +197,25 @@
         <div class="failline">
           {@render hazardGlyph()}
           <div>
-            <div class="failhead">The last attempt did not send</div>
+            <div class="failhead">{detail.delivery_uncertain ? 'Delivery outcome is unknown' : 'The last attempt needs attention'}</div>
             <div class="failwhy">{detail.error}</div>
           </div>
+        </div>
+      {/if}
+
+      {#if detail.delivery_uncertain}
+        <div class="card headers">
+          <p>Check the destination's sent history before deciding. Recording the outcome does not send anything.</p>
+          <label>What did you find?
+            <select bind:value={deliveryOutcome}>
+              <option value="delivered">Confirmed delivered</option>
+              <option value="not-delivered">Confirmed not delivered</option>
+            </select>
+          </label>
+          <label>Evidence
+            <textarea class="editbox" rows="3" bind:value={deliveryEvidence} placeholder="Message or event ID, or the destination check that established it was not delivered"></textarea>
+          </label>
+          <button class="btn primary" disabled={busy || !deliveryEvidence.trim()} onclick={reconcile}>Record outcome</button>
         </div>
       {/if}
 
@@ -207,7 +230,7 @@
         <div class="serves">serves <span class="serves-ref">{detail.serves.ref}</span>{detail.serves.text ? ` — ${detail.serves.text}` : ''}</div>
       {/if}
 
-      {#if !editing}
+      {#if !editing && !detail.delivery_uncertain}
         <div class="btnrow">
           <button
             class="btn"

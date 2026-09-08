@@ -151,6 +151,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let mut content = vec![mecha_core::message::Block::text(&prompt)];
         content.extend(images);
         Message {
+            tool_provenance: Default::default(),
             role: mecha_core::message::Role::User,
             content,
         }

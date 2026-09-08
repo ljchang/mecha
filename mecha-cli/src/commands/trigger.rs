@@ -562,6 +562,7 @@ fn add(global: &GlobalOpts, a: AddArgs) -> Result<()> {
         None => Some(mecha_core::work::ensure(&a.name)?),
     };
     t.tools = global.tools.clone();
+    t.tool_profile = global.tool_profile;
     t.no_mcp = global.no_mcp;
     t.max_turns = global.max_turns;
     t.max_output_tokens = global.max_output_tokens;
@@ -658,6 +659,10 @@ async fn tick(
     dry_run: bool,
     stop: Option<&CancellationToken>,
 ) -> Result<usize> {
+    // Follow-up tick is deterministic and never spends model capacity or sends.
+    if let Err(e) = super::workflow::tick(dry_run) {
+        eprintln!("mecha: workflow attention could not refresh: {e:#}");
+    }
     let store = open()?;
     let (triggers, problems) = store.list()?;
     for p in &problems {
@@ -932,6 +937,7 @@ async fn run_agent(
         max_output_tokens: t.max_output_tokens,
         max_cost: t.max_cost_usd,
         tools: t.tools.clone(),
+        tool_profile: t.tool_profile,
         tools_from_trigger: !t.tools.is_empty(),
         // Default closed: a scheduled run carries only the skills its file
         // names. See `Trigger::skills` for why this is the opposite of the

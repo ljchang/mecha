@@ -148,9 +148,34 @@ pub struct Provenance {
     pub filled_defaults: Vec<String>,
 }
 
+/// Delivery is uncertain from before dispatch until an acknowledgement or
+/// an owner's reconciliation is durably recorded. Unknown variants stay
+/// uncertain so an older binary cannot turn a new outcome into a retry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryOutcome {
+    Delivered,
+    NotDelivered,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeliveryAttempt {
+    pub id: String,
+    pub started_at: String,
+    pub outcome: DeliveryOutcome,
+    #[serde(default)]
+    pub resolved_at: Option<String>,
+    #[serde(default)]
+    pub evidence: Option<String>,
+}
+
 /// One staged outbound action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboxItem {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delivery_attempts: Vec<DeliveryAttempt>,
     pub id: String,
     /// `pending` | `sent` | `rejected`.
     pub status: String,
@@ -264,6 +289,24 @@ pub struct OutboxItem {
 }
 
 impl OutboxItem {
+    pub fn delivery_uncertain(&self) -> bool {
+        self.delivery_attempts
+            .last()
+            .is_some_and(|a| a.outcome == DeliveryOutcome::Unknown)
+    }
+
+    pub fn ensure_delivery_ready(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.status == "pending",
+            "outbox item {} is {}, not pending",
+            self.id,
+            self.status
+        );
+        anyhow::ensure!(!self.delivery_uncertain(),
+            "delivery outcome unknown for {} — inspect the destination and use `mecha outbox reconcile` before retrying; nothing was resent", self.id);
+        Ok(())
+    }
+
     /// Who wrote this draft. See [`Author`].
     pub fn author(&self) -> Author {
         Author::parse(&self.author)
@@ -542,6 +585,7 @@ impl OutboxStore {
             filled_defaults,
         } = from;
         let item = OutboxItem {
+            delivery_attempts: Vec::new(),
             id: Session::new_id(),
             status: "pending".into(),
             tool: tool.to_string(),
@@ -701,6 +745,7 @@ impl OutboxStore {
             item.id,
             item.status
         );
+        item.ensure_delivery_ready()?;
         item.args = args;
         item.summary = summarize(&item.tool, &item.args);
         self.write_item(&item)?;
@@ -728,6 +773,20 @@ impl OutboxStore {
             item.id,
             item.status
         );
+        anyhow::ensure!(
+            status == "sent" || status == "rejected",
+            "unknown outbox resolution: {status}"
+        );
+        if status == "rejected" {
+            item.ensure_delivery_ready()?;
+        }
+        if status == "sent" {
+            if let Some(attempt) = item.delivery_attempts.last_mut() {
+                attempt.outcome = DeliveryOutcome::Delivered;
+                attempt.resolved_at = Some(chrono::Utc::now().to_rfc3339());
+                attempt.evidence = output.clone();
+            }
+        }
         item.status = status.to_string();
         item.resolved_at = Some(chrono::Utc::now().to_rfc3339());
         item.reason = reason;
@@ -741,15 +800,87 @@ impl OutboxStore {
     /// is still good, and the next `send` retries.
     pub fn record_error(&self, id: &str, error: &str) -> Result<()> {
         let mut item = self.item(id)?;
-        item.error = Some(error.to_string());
+        item.error = Some(if item.delivery_uncertain() {
+            format!("Delivery outcome unknown; inspect the destination before retrying. {error}")
+        } else {
+            error.to_string()
+        });
         self.write_item(&item)
     }
 
+    /// The caller holds the store lock across this write and remote dispatch.
+    /// Persist first: failure here must prevent the external action entirely.
+    pub fn begin_delivery(&self, id: &str) -> Result<OutboxItem> {
+        let mut item = self.item(id)?;
+        item.ensure_delivery_ready()?;
+        item.delivery_attempts.push(DeliveryAttempt {
+            id: uuid::Uuid::new_v4().to_string(),
+            started_at: chrono::Utc::now().to_rfc3339(),
+            outcome: DeliveryOutcome::Unknown,
+            resolved_at: None,
+            evidence: None,
+        });
+        item.error = Some("Delivery outcome unknown until acknowledgement is recorded; reconcile before retrying.".into());
+        self.write_item(&item)?;
+        Ok(item)
+    }
+
+    /// Owner-only reconciliation after checking the destination. This does not
+    /// send anything; a confirmed non-delivery merely makes review possible again.
+    /// The caller holds the store lock. Evidence is required for either verdict.
+    pub fn reconcile_delivery(
+        &self,
+        id: &str,
+        outcome: DeliveryOutcome,
+        evidence: &str,
+    ) -> Result<OutboxItem> {
+        anyhow::ensure!(
+            outcome != DeliveryOutcome::Unknown,
+            "choose delivered or not_delivered"
+        );
+        anyhow::ensure!(
+            !evidence.trim().is_empty() && evidence.len() <= 16_384,
+            "reconciliation requires evidence (1–16384 bytes)"
+        );
+        let mut item = self.item(id)?;
+        anyhow::ensure!(
+            item.status == "pending" && item.delivery_uncertain(),
+            "{} has no uncertain delivery to reconcile",
+            item.id
+        );
+        let now = chrono::Utc::now().to_rfc3339();
+        let attempt = item
+            .delivery_attempts
+            .last_mut()
+            .expect("checked uncertain");
+        attempt.outcome = outcome;
+        attempt.resolved_at = Some(now.clone());
+        attempt.evidence = Some(evidence.trim().to_string());
+        item.error = None;
+        if outcome == DeliveryOutcome::Delivered {
+            item.status = "sent".into();
+            item.resolved_at = Some(now);
+            item.output = Some(evidence.trim().to_string());
+        }
+        self.write_item(&item)?;
+        Ok(item)
+    }
+
     fn write_item(&self, item: &OutboxItem) -> Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
         let path = self.root.join(format!("{}.json", item.id));
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(item)?)?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        file.write_all(&serde_json::to_vec_pretty(item)?)?;
+        file.sync_all()?;
         std::fs::rename(&tmp, &path)?;
+        std::fs::File::open(&self.root)?.sync_all()?;
         Ok(())
     }
 
@@ -2118,5 +2249,85 @@ mod tests {
         assert_eq!(skipped, 1);
         assert!(store.items_strict().is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn an_uncertain_delivery_survives_restart_and_cannot_be_resent_or_edited() {
+        let root = scratch("uncertain-delivery");
+        let store = OutboxStore::open(&root).unwrap();
+        let item = store
+            .stage_by_harness(
+                "mail_send",
+                json!({"to":"owner@example.test", "body":"hello"}),
+            )
+            .unwrap();
+        {
+            let _lock = store.lock().unwrap();
+            store.begin_delivery(&item.id).unwrap();
+        }
+        drop(store); // stands in for losing the process after remote dispatch
+        let reopened = OutboxStore::open(&root).unwrap();
+        let _lock = reopened.lock().unwrap();
+        assert!(reopened.item(&item.id).unwrap().delivery_uncertain());
+        assert!(reopened.begin_delivery(&item.id).is_err());
+        assert!(reopened
+            .update_args(&item.id, json!({"body":"different"}))
+            .is_err());
+        assert!(reopened.resolve(&item.id, "rejected", None).is_err());
+        reopened
+            .record_error(&item.id, "response connection lost")
+            .unwrap();
+        assert!(reopened.item(&item.id).unwrap().delivery_uncertain());
+        assert!(reopened
+            .reconcile_delivery(&item.id, DeliveryOutcome::NotDelivered, "")
+            .is_err());
+        reopened
+            .reconcile_delivery(
+                &item.id,
+                DeliveryOutcome::NotDelivered,
+                "Provider confirmed no delivery for this request",
+            )
+            .unwrap();
+        reopened.begin_delivery(&item.id).unwrap();
+        let sent = reopened
+            .resolve_with_output(&item.id, "sent", None, Some("receipt-42".into()))
+            .unwrap();
+        assert_eq!(sent.delivery_attempts.len(), 2);
+        assert_eq!(
+            sent.delivery_attempts[0].outcome,
+            DeliveryOutcome::NotDelivered
+        );
+        assert_eq!(
+            sent.delivery_attempts[1].outcome,
+            DeliveryOutcome::Delivered
+        );
+        assert!(reopened.begin_delivery(&item.id).is_err());
+    }
+
+    #[test]
+    fn reconciliation_can_record_a_delivered_action_without_dispatching_it_again() {
+        let root = scratch("delivery-reconciled");
+        let store = OutboxStore::open(&root).unwrap();
+        let item = store.stage_by_harness("send", json!({})).unwrap();
+        let _lock = store.lock().unwrap();
+        store.begin_delivery(&item.id).unwrap();
+        let sent = store
+            .reconcile_delivery(
+                &item.id,
+                DeliveryOutcome::Delivered,
+                "Found message receipt-42 in Sent",
+            )
+            .unwrap();
+        assert_eq!(sent.status, "sent");
+        assert!(!sent.delivery_uncertain());
+        assert!(store.begin_delivery(&item.id).is_err());
+        assert!(store
+            .reconcile_delivery(&item.id, DeliveryOutcome::NotDelivered, "a second verdict")
+            .is_err());
+        let legacy: OutboxItem = serde_json::from_value(json!({
+            "id":"old", "status":"pending", "tool":"send", "args":{},
+            "args_before":{}, "summary":"old", "created_at":"2026-01-01"
+        }))
+        .unwrap();
+        assert!(legacy.delivery_attempts.is_empty());
     }
 }

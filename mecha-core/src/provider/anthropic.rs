@@ -29,6 +29,7 @@ pub struct Anthropic {
     base_url: String,
     default_model: String,
     vision: bool,
+    structured_output: bool,
     retry: crate::provider::retry::RetryPolicy,
 }
 
@@ -42,6 +43,10 @@ impl Anthropic {
                  from this provider's config. Sampling cannot be pinned on this provider"
             );
         }
+        anyhow::ensure!(
+            cfg.structured_output != crate::config::StructuredOutput::LlamaJson,
+            "llama_json is not an Anthropic structured-output format"
+        );
         let api_key = cfg
             .resolve_api_key()
             .context("no Anthropic credentials found. Set ANTHROPIC_API_KEY, or put api_key_env / api_key in the provider config")?;
@@ -60,6 +65,7 @@ impl Anthropic {
                 .clone()
                 .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
             vision: cfg.vision_enabled(),
+            structured_output: cfg.structured_output == crate::config::StructuredOutput::JsonSchema,
             retry: crate::provider::retry::RetryPolicy::from_config(cfg),
         })
     }
@@ -178,6 +184,11 @@ impl Anthropic {
             obj.insert("output_config".into(), json!({"effort": effort.as_str()}));
         }
 
+        if let Some(schema) = &req.response_schema {
+            anyhow::ensure!(self.structured_output, "provider does not support structured output; configure structured_output = json_schema after verifying endpoint support");
+            obj.entry("output_config").or_insert_with(|| json!({}))["format"] =
+                json!({"type":"json_schema", "schema":schema});
+        }
         Ok(body)
     }
 
@@ -197,6 +208,9 @@ impl Anthropic {
 
 #[async_trait]
 impl Provider for Anthropic {
+    fn structured_output(&self) -> bool {
+        self.structured_output
+    }
     fn id(&self) -> &str {
         "anthropic"
     }
@@ -829,6 +843,7 @@ mod tests {
             base_url: base_url.into(),
             default_model: DEFAULT_MODEL.into(),
             vision: true,
+            structured_output: true,
             // Fast retries: these tests measure counts and outcomes, not
             // wall clock.
             retry: crate::provider::retry::RetryPolicy {
@@ -840,6 +855,7 @@ mod tests {
 
     fn req() -> CompletionRequest {
         CompletionRequest {
+            response_schema: None,
             model: DEFAULT_MODEL.into(),
             system: None,
             messages: vec![Message::user("hi")],
@@ -1141,6 +1157,7 @@ mod tests {
         let mut theirs = Vec::new();
         crate::provider::openai::encode_message_for_test(
             &Message {
+                tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![block],
             },
@@ -1225,6 +1242,7 @@ mod retry_tests {
 
     fn req() -> CompletionRequest {
         CompletionRequest {
+            response_schema: None,
             model: DEFAULT_MODEL.into(),
             system: None,
             messages: vec![Message::user("hi")],
@@ -1501,5 +1519,35 @@ mod retry_tests {
             1,
             "the retry duplicated a tool execution"
         );
+    }
+}
+
+#[cfg(test)]
+mod structured_output_tests {
+    use super::*;
+    #[test]
+    fn schema_keeps_effort_and_quarantine_and_is_not_silently_dropped() {
+        let schema =
+            json!({"type":"object","properties":{},"required":[],"additionalProperties":false});
+        let req = crate::quarantine::QuarantinedPass::new(DEFAULT_MODEL, 100)
+            .effort(Some(Effort::High))
+            .response_schema(Some(schema.clone()))
+            .ask("JSON please");
+        let mut cfg = ProviderConfig {
+            kind: "anthropic".into(),
+            api_key: Some("test".into()),
+            structured_output: crate::config::StructuredOutput::JsonSchema,
+            ..Default::default()
+        };
+        let p = Anthropic::from_config(&cfg).unwrap();
+        let body = p.body(&req, false).unwrap();
+        assert_eq!(body["output_config"]["format"]["schema"], schema);
+        assert_eq!(body["output_config"]["effort"], "high");
+        assert!(body.get("tools").is_none());
+        cfg.structured_output = crate::config::StructuredOutput::Disabled;
+        assert!(Anthropic::from_config(&cfg)
+            .unwrap()
+            .body(&req, false)
+            .is_err());
     }
 }

@@ -77,6 +77,56 @@ more than a pipe buffer before saving its exit marker first failed under the
 immediate kill and now passes. Tokio child-stdio `shutdown()` is a no-op on
 Unix, so delivering EOF requires dropping the pipe itself.
 
+**2026-09-08 — assistant follow-through, implemented on
+`feat/personal-assistant-follow-through` (not deployed).** `Config::merge_file`
+preserves global outbox routes, publish classification and review-store identity.
+`Message::tool_provenance`, `run_tools`, the session reader and replay retain
+per-result external provenance, with legacy unknown results conservatively
+untrusted. `OutboxStore::begin_delivery` persists a delivery attempt before
+`Surface::release` dispatches; unknown outcomes block retry/edit/reject until the
+owner records evidence with `reconcile_delivery`, available in CLI and web.
+This provides reconciliation, not a claim of generic exactly-once remote effects.
+
+`workflow::WorkflowStore` joins graph-task, session, question and outbox references
+under a private atomic store. Task work, web task conversations and question
+continuations record their lifecycle; `WorkflowRun` cleans up early exits, and
+`Workflow::observe` recovers partial drafts by session after a crash. Explicit
+checks read artifact bytes inside the workspace jail and confirmed deliveries;
+Today rereads them before presenting ready work, and owner closure rechecks.
+Dependency links reject cycles and gate continuation on completed predecessor
+workflows. Owner-entered commitments carry source, counterparty and timestamps;
+`Workflow::tick` persists coalesced in-app reminders under owner-only timezone,
+quiet-hour and digest policy. Snoozing suppresses reminders without hiding overdue
+work. The daily screen groups urgent work, decisions, verified work and waiting.
+Graph task closure remains the owner's existing `tasks set` action.
+
+`CompletionRequest::response_schema` and `Provider::structured_output` add an
+explicit endpoint contract for JSON schemas, used by the quarantined frontdoor and
+mail passes; unsupported fallbacks cannot silently drop it. `ToolProfile::narrow`
+selects stable research/assistant/coding tool subsets, inherited by children and
+stored on triggers, with registry-derived capability guidance. Prompt text no
+longer claims delegation can clear taint or hardcodes obsolete mail tool names.
+`FixtureCheck::grade` checks actual fixture rows after principal actions and affects
+trial success; the five-case `assistant-lifetime.toml` design repeats across three
+seeds and records requested owner-action counts. Multi-day restart, unknown-send,
+artifact, dependency and reminder tests supplement the model cases.
+
+Final verification passed the workspace suite (2,508 passed, two ignored),
+Clippy with warnings denied, formatting, all-targets build, frontend tests/build,
+and documentation build. All nine sandbox tests also passed with missing-backend
+skips disabled. A real-binary workflow smoke checked artifact changes, nonregular
+file refusal, reminder deduplication, closure, reopening and cancellation.
+The local Qwen three-seed fixture run scored 12/15 overall and 15/15 artifact
+postcondition sets with six requested principal actions. The checked-in
+`results/assistant-follow-through-2026-09-08.json` retains measured checks,
+post-run wording/tool-path calibrations and unsupported narrative claims;
+there is no control-arm improvement claim or production delivery measurement.
+
+The handoff audit also removed stale requests for features already present before
+this branch: per-command approval (`ExecPolicy`, `live_rules`), the `/learning`
+modal, mail task `captured_from` pointers, consolidation widening and regional
+validation, and registration-time `ShowFileTool` configuration. These are
+corrections to the handoff, not implementations attributed to this session.
 **2026-09-08 — explicit chat opening and Docker container ownership.**
 `serve::chat::open` creates a session through a guarded, idempotent POST;
 `transcript` and `events` only look up existing sessions. The browser awaits
@@ -5211,6 +5261,18 @@ matters is the general shape.
 
 ### Measuring
 
+**2026-09-08 — successful artifacts and correct narration are separate claims.**
+The assistant run delivered the exact reply and calendar event across all three
+fixture lifetimes, while wording checks rejected `3:00 pm` and a tool check
+rejected `calendar_freebusy`. Those graders were calibrated, with the original
+12/15 result preserved. Reading the same transcripts also found recipient-read
+and date/calendar claims unsupported by the tools. **Grade equivalent effects
+without prescribing one valid tool path, and audit narrative grounding separately;
+a passing artifact check cannot certify every sentence.** The earlier minimal-home
+smoke also exposed absent staging instructions when no default `agent.md` was
+installed. Capability guidance must accompany the configured route itself, not
+rely on an optional prompt file being present.
+
 **2026-09-02 — the instrument was measuring its own test runs.** 46 of the
 143 sessions the appraisal corpus read were smoke runs from a mecha checkout
 or a Claude scratch directory, and most rejected drafts carried reasons
@@ -6258,6 +6320,15 @@ All found by pre-push review or by running it.
   session now.
 
 ### Providers
+
+A locally generated refusal and a third-party result used to lose their distinction
+when a recording was replayed. Keep provenance with the recorded tool-use ID and
+preserve it through lenient readers; a current capability label cannot reconstruct
+what an old result actually contained. Delivery has the same distinction between
+observation and inference: a missing response does not prove that the remote action
+failed. Persist an unknown attempt before dispatch and require reconciliation
+before retrying it.
+
 
 - **A field you never read is a behaviour you never had.** The whole
   reasoning channel of every local model was discarded because

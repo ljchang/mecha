@@ -74,7 +74,14 @@ fn lenient_message(v: &serde_json::Value) -> Option<Message> {
             "a transcript message carried blocks this build cannot read; kept the rest"
         );
     }
-    Some(Message { role, content })
+    Some(Message {
+        tool_provenance: v
+            .get("tool_provenance")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default(),
+        role,
+        content,
+    })
 }
 
 /// Read a `stop_cause` that may have been written by a newer build.
@@ -3799,5 +3806,20 @@ mod rules_arm_tests {
         assert_eq!(unknown.delivered.as_ref().map(Vec::len), Some(2));
         let back: RunStats = serde_json::from_str(&serde_json::to_string(&a).unwrap()).unwrap();
         assert_eq!(back.delivered, a.delivered);
+    }
+
+    #[test]
+    fn lenient_messages_retain_known_provenance_and_legacy_messages_remain_unknown() {
+        let raw = serde_json::json!({
+            "role": "user", "tool_provenance": {"call": true},
+            "content": [{"type": "tool_result", "tool_use_id": "call", "content": "outside"},
+                        {"type": "a_future_block"}]
+        });
+        assert_eq!(
+            lenient_message(&raw).unwrap().tool_provenance.get("call"),
+            Some(&true)
+        );
+        let old = serde_json::json!({"role": "user", "content": [{"type": "text", "text": "old"}]});
+        assert!(lenient_message(&old).unwrap().tool_provenance.is_empty());
     }
 }

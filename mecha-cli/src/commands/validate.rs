@@ -697,6 +697,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let mut answers = Vec::new();
         for system in [&base_system, &with_rules] {
             let request = CompletionRequest {
+                response_schema: None,
                 model: model.clone(),
                 system: (!system.is_empty()).then(|| system.clone()),
                 messages: messages.clone(),
