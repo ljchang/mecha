@@ -191,16 +191,39 @@ impl ReplayTool {
         // order the model emitted them in is not a decision — insisting on it
         // killed four of the twelve episodes the 2026-09-08 harness pass
         // dropped, each on a batch it had reproduced exactly. An unmarked call
-        // is its own batch, which is the old strict behaviour, and
+        // is its own batch, which is the old strict behaviour — nothing in
+        // production is unmarked, see `RecordedCall::batch` — and
         // `replay::diff` groups by the same marker so the report agrees with
         // what this accepted.
         let batch = st.calls[st.cursor].batch;
         let name = self.inner.name();
         let hit = match batch {
             None => (st.calls[st.cursor].name == name).then_some(st.cursor),
-            Some(_) => (st.cursor..st.calls.len())
-                .take_while(|&j| st.calls[j].batch == batch)
-                .find(|&j| !st.consumed[j] && st.calls[j].name == name),
+            Some(_) => {
+                let end = st.cursor
+                    + st.calls[st.cursor..]
+                        .iter()
+                        .take_while(|c| c.batch == batch)
+                        .count();
+                // Arguments first, then name alone — the two passes
+                // `replay::pair_batch` makes, and for the same reason. A batch
+                // that called one tool twice has no order to say which call is
+                // which, so pairing by name would hand each call its sibling's
+                // output. The diff pairs by arguments and would then report the
+                // episode clean over it, which is worse than the strict cursor
+                // this replaced: that fed the same wrong outputs but at least
+                // reported two argument divergences. `decide` and `pair_batch`
+                // must choose the same mate.
+                (st.cursor..end)
+                    .find(|&j| {
+                        !st.consumed[j]
+                            && st.calls[j].name == name
+                            && crate::replay::same_arguments(&st.calls[j].input, input)
+                    })
+                    .or_else(|| {
+                        (st.cursor..end).find(|&j| !st.consumed[j] && st.calls[j].name == name)
+                    })
+            }
         };
 
         let Some(hit) = hit else {
@@ -224,8 +247,8 @@ impl ReplayTool {
         // spelled differently is the same decision, and the final diff reports
         // every argument difference for the caller to judge. Returning the
         // recorded result for materially different arguments is the price of
-        // not pretending to know which differences matter.
-        let _ = input;
+        // not pretending to know which differences matter — which is what the
+        // name-only fallback above is, once the exact match has been tried.
         let out = Action::Recorded(st.calls[hit].output.clone(), st.calls[hit].is_error);
         st.consumed[hit] = true;
         while st.cursor < st.calls.len() && st.consumed[st.cursor] {
@@ -892,9 +915,9 @@ mod tests {
         r
     }
 
-    /// A recorded call with no batch marker — its own batch of one, which is
-    /// the strict positional matching a pre-marker recording gets. The batched
-    /// tests below say so explicitly with [`batched`].
+    /// A recorded call with no batch marker — its own batch of one, and so the
+    /// strict matching. Kept for the tests written against that behaviour; the
+    /// batch-tolerance tests say what they mean with [`batched`].
     fn recorded(name: &str, input: Value, output: &str) -> RecordedCall {
         RecordedCall {
             name: name.into(),
@@ -1567,6 +1590,65 @@ mod tests {
             .unwrap();
         assert_eq!(out.content, "first");
         assert!(!cancel.is_cancelled(), "a reordered batch is not a fork");
+    }
+
+    /// A batch that calls one tool twice is answered by *arguments*, not by
+    /// position. `decide` and `replay::pair_batch` must choose the same mate:
+    /// pairing by name here while the diff pairs by arguments hands the run
+    /// each call's sibling output and then reports the episode clean — worse
+    /// than the strict cursor this replaced, which at least reported two
+    /// argument divergences over the same wrong outputs.
+    #[tokio::test]
+    async fn a_reordered_batch_of_one_tool_is_answered_by_arguments() {
+        let cancel = CancellationToken::new();
+        let reg = replay_reg(
+            vec![
+                batched(0, "echo", json!({"value": "a"}), "A"),
+                batched(0, "echo", json!({"value": "b"}), "B"),
+            ],
+            OnDivergence::Stop,
+            &cancel,
+        );
+        let ctx = ToolCtx::default();
+
+        let out = reg
+            .get("echo")
+            .unwrap()
+            .call(json!({"value": "b"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out.content, "B", "answered with its sibling's output");
+
+        let out = reg
+            .get("echo")
+            .unwrap()
+            .call(json!({"value": "a"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out.content, "A", "answered with its sibling's output");
+        assert!(!cancel.is_cancelled());
+    }
+
+    /// The fallback the arguments pass sits in front of: an argument that
+    /// genuinely changed still gets the recorded answer, because a path spelled
+    /// differently is the same decision and the diff is what reports it.
+    #[tokio::test]
+    async fn a_changed_argument_still_gets_the_recorded_answer() {
+        let cancel = CancellationToken::new();
+        let reg = replay_reg(
+            vec![batched(0, "echo", json!({"value": "a"}), "A")],
+            OnDivergence::Stop,
+            &cancel,
+        );
+
+        let out = reg
+            .get("echo")
+            .unwrap()
+            .call(json!({"value": "z"}), &ToolCtx::default())
+            .await
+            .unwrap();
+        assert_eq!(out.content, "A");
+        assert!(!cancel.is_cancelled());
     }
 
     /// The tolerance stops at the batch edge. `other` belongs to the next
