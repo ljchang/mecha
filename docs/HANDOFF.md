@@ -617,8 +617,10 @@ file was edited. Rollback copies of web assets and both unit files are in
 During the update, unrelated edits appeared in the shared checkout at
 `website/docs/getting-started/configuration.md` and
 `website/docs/reference/configuration.md`; they were left untouched. This
-handoff is isolated on `docs/assistant-update-handoff`. Older credential and
-private-store claims below remain dated observations.
+handoff is isolated on `docs/assistant-update-handoff`. Older credential,
+private-store, installed-artifact and remote-deployment claims below remain
+dated observations, not freshly verified state. This update supersedes their
+earlier binary, service and factory-version claims.
 
 > **This checkout is a live service's `ExecStart`. Do not `git stash`, `git
 > checkout --`, `git restore` — or `git checkout <branch>`.**
