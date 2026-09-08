@@ -32,25 +32,27 @@ and 15 tags; the additional assistant set has five cases and six tags. Source
 verification of the open-work section removed stale completed entries below;
 remote deployments and sibling-repository work were not reverified.
 
-Final branch verification on 2026-09-08: workspace tests passed after rebasing onto `a3f1682d` (794 CLI,
-20 first-run, 1,464 core, 5 fixture, 8 MCP, 9 sandbox, 150 mail library,
-1 mail binary, 75 Slack, 1 doctest; three ignored tests, including the opt-in
-live judge calibration). Formatting, Clippy
-with warnings denied, workspace/all-targets build, frontend tests/build and
-documentation build passed. The sandbox suite also passed with
-`MECHA_TEST_REQUIRE_BACKENDS=1`. The isolated CLI smoke exercised artifact
-verification, FIFO refusal, reminders, closure, reopening and cancellation.
-The local model's three seeded assistant lifetimes scored **12/15 overall,
-15/15 artifact postcondition sets**, with six requested principal actions;
-`results/assistant-follow-through-2026-09-08.json` preserves the original checks
-and records subsequent grader calibration. The grounding follow-up adds explicit
-fixture dates shared by mail, board and the model prompt, clarifies mailbox
-read-state semantics, and enables evidence-backed rubrics with an explicit
-manifest judge. Eight live known-answer controls classified correctly, including a valid timezone
-interpretation. `date_context::render` now supplies computed local weekday/date
-pairs from yesterday through the coming week, with DST/year/leap-day coverage. General
-runtime truth enforcement remains unbuilt; these rubrics grade after the run,
-and the local judge is the same model as the assistant, not independent evidence.
+Final branch verification on 2026-09-08, rebased onto `a75b9467`: **2,539
+workspace tests passed**, three ignored (796 CLI, 20 first-run, 3 process-exit,
+1,467 core, 5 fixture, 11 MCP, 9 sandbox, 151 mail library, 1 mail binary,
+75 Slack, 1 doctest). The whole workspace ran with `MECHA_TEST_REQUIRE_BACKENDS=1`.
+Formatting, Clippy with warnings denied, all-targets build, frontend tests/build
+and documentation build passed. Demo endpoint coverage and all 15 browser
+render checks passed. The opt-in live judge calibration also passed
+all ten known-answer controls, including the incoming-message weekday false
+negative found by manual review. The earlier isolated workflow CLI smoke covered
+artifact changes, FIFO refusal, reminders, closure, reopening and cancellation.
+
+The grounding implementation now has shared fixture dates, owner-mailbox read
+semantics, recorded context for rubric grading, computed near-term date facts and
+computed source weekdays in mail results. The original and subsequent measurements
+finished at **15/15 live trials**, with 15/15 artifact postcondition sets,
+6/6 grounding rubrics and six requested fixture owner actions. Manual review of
+all final answers found no recurrence of the targeted grounding errors. Runs
+are preserved in `results/assistant-follow-through-2026-09-08.json` and
+`results/assistant-grounding-2026-09-08.json`. General runtime truth enforcement
+remains unbuilt; the rubric grades after the run and the local judge is the same
+model as the assistant, not independent evidence.
 
 ## Where the work is
 
