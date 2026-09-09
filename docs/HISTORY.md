@@ -31,6 +31,12 @@ check calls use UUIDs rather than process-local run counters. Artifact grading
 uses `mismatch::has_policy_refusal` in both the run and probe paths, excluding
 harness check diagnostics while retaining refused model calls and blocked sends.
 The mining and artifact-probe regressions both failed before these corrections.
+A later review extended that boundary to correction scope and aftermath:
+`extract_interventions` excludes harness tool uses and their denial results,
+while preserving real steering beside them. Check-originated interlock blocks
+stay in the check trace but do not increment the model's `blocked_sends` counter.
+Both regressions failed before the fix; the armed-taint case verifies refusal
+still occurs.
 
 
 **2026-09-09 — invalid attribution pilot stopped; harness observations are not owner corrections.**

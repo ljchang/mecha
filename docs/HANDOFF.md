@@ -26,7 +26,7 @@ maps which document holds what.
 PR #220 (`review/appraisal-goal-feedback`) contains the prerequisite goal and
 verified-step work and its review fixes; it is not merged or installed.
 Current local verification: warning-free Clippy and workspace tests with
-`MECHA_TEST_REQUIRE_BACKENDS=1` passed (CLI 805/1 ignored, core 1520/1 ignored;
+`MECHA_TEST_REQUIRE_BACKENDS=1` passed (CLI 805/1 ignored, core 1521/1 ignored;
 other suites unchanged). Historical measurements below retain their original
 conditions. Review of the Anthropic transcript finding found that `body` uses
 adaptive thinking, whose documented rules permit an assistant turn without a
