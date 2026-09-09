@@ -1,0 +1,112 @@
+{
+  "source": "2d0902981ee3b29e97b1ab045837aee34b9322ce",
+  "harness_behavior_commit": "935d98f5",
+  "registered_at": "2026-09-09T05:38:28.792562+00:00",
+  "sha256": {
+    "target/debug/mecha": "8426ca6e56e551038f473d5a0fb27ca398b8b197606e1c736b74197936a5181b",
+    "eval/appraisal-privacy.toml": "c3a6ffd8abeb49864834465496ace8537d096da0337b456b9570aad51ba1a2fb",
+    "eval/fixtures/appraisal_source.py": "ddff3ee0192cc6f8cf1b2d5924cb2d2a76343bfd61b784d0c46f9e5fc36aec25",
+    "eval/fixtures/appraisal_v2_source.py": "cee4a51df82869e65ee6d07154d406a00615c6fd16786845f59244081dcdadd3",
+    "eval/fixtures/appraisal_artifact_source.py": "a2aa7075fac118a2daa2b2162cc74a6df6345f3f350f2e862ac996a02121c9b0",
+    "eval/fixtures/appraisal/cases.json": "4be97ca3b04c3e6e80586744e04e75468221c499370d9197f33d63b00c6308ed",
+    "eval/fixtures/appraisal-v2/charter.toml": "fa2cf88b55f7401e39dbfaed2f784edec343d72dcadee62437ad705e3970dc34",
+    "eval/fixtures/appraisal-v2/cases.json": "01c3d1865feb2090de1602425abb0d677d213f0f72f08890aa73077f50a8c06f",
+    "eval/fixtures/appraisal-v2/workspace/README.txt": "3c04d0dd0310be6181542c5ecbb0a77c66cdb726b816be846fc9662bd2cb6ed7",
+    "eval/fixtures/appraisal-v2/board/board.json": "ab39c5b4f47e4efae75aa704945d8d51526655587bf787c14fd3dd2bbd2ec48d"
+  },
+  "artifact_contract": "Every prompt explicitly requires answer.json in the workspace.",
+  "operator_config_sha256": "3a439826e567cdebc1b8bc46301196830f116abab33b88177a4d5e30ebbd11e9",
+  "limitations": [
+    "Post-discovery follow-up on two task cases, not a replacement for v2 results or an independent broad efficacy study.",
+    "Six pairs with repeated seeds are insufficient for a general promotion claim."
+  ],
+  "started_at": "2026-09-09T06:02:23.399973+00:00",
+  "server": {
+    "model_alias": "qwen3.6-35b-a3b",
+    "model_path": "/home/ljchang/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-MTP-GGUF/snapshots/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d//Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+    "total_slots": 4,
+    "default_generation_settings": {
+      "params": {
+        "seed": 4294967295,
+        "temperature": 0.6000000238418579,
+        "dynatemp_range": 0.0,
+        "dynatemp_exponent": 1.0,
+        "top_k": 20,
+        "top_p": 0.949999988079071,
+        "min_p": 0.0,
+        "top_n_sigma": -1.0,
+        "xtc_probability": 0.0,
+        "xtc_threshold": 0.10000000149011612,
+        "typical_p": 1.0,
+        "repeat_last_n": 64,
+        "repeat_penalty": 1.0,
+        "presence_penalty": 0.0,
+        "frequency_penalty": 0.0,
+        "dry_multiplier": 0.0,
+        "dry_base": 1.75,
+        "dry_allowed_length": 2,
+        "dry_penalty_last_n": 64,
+        "mirostat": 0,
+        "mirostat_tau": 5.0,
+        "mirostat_eta": 0.10000000149011612,
+        "adaptive_target": -1.0,
+        "adaptive_decay": 0.8999999761581421,
+        "max_tokens": -1,
+        "n_predict": -1,
+        "n_keep": 0,
+        "n_discard": 0,
+        "ignore_eos": false,
+        "stream": false,
+        "n_probs": 0,
+        "min_keep": 0,
+        "chat_format": "Content-only",
+        "reasoning_format": "none",
+        "reasoning_in_content": false,
+        "generation_prompt": "",
+        "samplers": [
+          "penalties",
+          "dry",
+          "top_n_sigma",
+          "top_k",
+          "typ_p",
+          "top_p",
+          "min_p",
+          "xtc",
+          "temperature"
+        ],
+        "speculative.types": "none",
+        "timings_per_token": false,
+        "post_sampling_probs": false,
+        "backend_sampling": false,
+        "lora": []
+      },
+      "n_ctx": 262144
+    }
+  },
+  "finish_observed_at": "2026-09-09T06:14:09.343106+00:00",
+  "model_at_finish": "qwen3.6-35b-a3b",
+  "files_unchanged_at_finish": {
+    "target/debug/mecha": true,
+    "eval/appraisal-privacy.toml": true,
+    "eval/fixtures/appraisal_source.py": true,
+    "eval/fixtures/appraisal_v2_source.py": true,
+    "eval/fixtures/appraisal_artifact_source.py": true,
+    "eval/fixtures/appraisal/cases.json": true,
+    "eval/fixtures/appraisal-v2/charter.toml": true,
+    "eval/fixtures/appraisal-v2/cases.json": true,
+    "eval/fixtures/appraisal-v2/workspace/README.txt": true,
+    "eval/fixtures/appraisal-v2/board/board.json": true
+  },
+  "operator_config_unchanged_at_finish": true,
+  "guidance_materialized": [
+    false,
+    true
+  ],
+  "checks_materialized": [
+    true,
+    true
+  ],
+  "final_arm_configs_equal_except_guidance": true,
+  "trial_started_at": "2026-09-09T06:02:23.472352143+00:00",
+  "trial_finished_at": "2026-09-09T06:14:09.338750034+00:00"
+}
