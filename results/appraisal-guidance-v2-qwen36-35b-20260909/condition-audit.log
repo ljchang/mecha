@@ -1,0 +1,12 @@
+{
+  "operator_config_unchanged_at_finish": true,
+  "guidance_materialized": [
+    false,
+    true
+  ],
+  "checks_materialized": [
+    true,
+    true
+  ],
+  "final_arm_configs_equal_except_guidance": true
+}
