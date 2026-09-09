@@ -2884,6 +2884,14 @@ for a harness reason graded as the model's. `private_data` stays, or the
 replay under-taints; under `Live`, where tools genuinely run, nothing
 narrows.
 
+Harness verification is not a model choice. `replay::extract` keeps its calls
+out of `Trajectory::calls` and its advice out of `steered`. Merely filtering the
+calls would still drop evidence that influenced the original model: ReplayTool
+does not run TodoTool and cannot regenerate the check queue. Until that context
+is reconstructed, `Trajectory::ensure_replayable` refuses recordings with
+harness calls at both replay drivers and all trace preparation entry points.
+Artifact-task probes grade fresh work and do not use this trajectory path.
+
 Replay fidelity has a provenance limit: the loop reapplies output limits and
 warning envelopes, and old results with missing provenance remain conservatively
 external. Legacy harness refusals can gain a warning, existing warnings can nest,

@@ -7827,6 +7827,16 @@ mod tests {
                 mode == PermissionMode::Allow && !armed,
                 "the executor emits CheckFailed only for an executed failure, not a refused check"
             );
+            let trajectory = crate::replay::extract(&convo.messages);
+            assert_eq!(
+                trajectory.calls.len(),
+                2,
+                "replay calls describe the model's two todo writes only"
+            );
+            assert!(
+                !trajectory.steered,
+                "harness check feedback is not owner steering"
+            );
             let mut with_steer = convo.messages.clone();
             let result = with_steer
                 .iter_mut()

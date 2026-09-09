@@ -20,8 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   measurements. Explicit experiment planning levers now enable disabled settings.
 
 - Goal-aware planning feedback: confirmed goals persist across turns and resume;
-  declared checks execute through the normal guards, and forecast misses, failed
-  checks and frozen-check changes can produce bounded mismatch reflections.
+  declared checks execute through the normal guards; failed criteria/checks and
+  frozen-check changes can produce bounded mismatch reflections. Forecast
+  overruns remain observations. Trace replay explicitly refuses recordings with
+  harness checks until their observations can be reconstructed.
 - `goal_context` retrieves applicable goal-linked rules and recent, clean examples
   with passing checks. Optional `agent.goal_guidance` gives fixed planning advice
   from task progress, confirmed goals and charter sensor discrepancies.

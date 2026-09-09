@@ -74,6 +74,18 @@ pub struct Trajectory {
     /// replayed. Flagged rather than silently dropped: a caller that replays a
     /// steered session anyway should know the comparison is approximate.
     pub steered: bool,
+    /// Harness calls are not model choices. Their observations must be
+    /// reconstructed before this recording can be used for a comparison.
+    #[serde(default)]
+    pub harness_calls: usize,
+}
+
+impl Trajectory {
+    pub fn ensure_replayable(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(self.harness_calls == 0,
+            "recording contains harness tool calls; replay of check observations is not yet supported");
+        Ok(())
+    }
 }
 
 /// Reduce a recorded conversation to a replayable trajectory.
@@ -83,7 +95,15 @@ pub struct Trajectory {
 /// saying something. Treating those as turns would replay a conversation with
 /// twice the turns and none of the same structure.
 pub fn extract(messages: &[Message]) -> Trajectory {
-    let mut t = Trajectory::default();
+    let harness_ids: std::collections::HashSet<&str> = messages
+        .iter()
+        .filter(|m| m.harness)
+        .flat_map(|m| m.tool_uses().into_iter().map(|(id, _, _)| id))
+        .collect();
+    let mut t = Trajectory {
+        harness_calls: harness_ids.len(),
+        ..Default::default()
+    };
     // tool_use blocks awaiting their results, in the order they were issued.
     let mut pending: Vec<(String, String, Value)> = Vec::new();
     // Results come back one message per assistant turn — the API allows no
@@ -93,6 +113,9 @@ pub fn extract(messages: &[Message]) -> Trajectory {
     for message in messages {
         match message.role {
             Role::Assistant => {
+                if message.harness {
+                    continue;
+                }
                 let text = message.text();
                 if !text.trim().is_empty() {
                     t.final_text = text;
@@ -103,6 +126,7 @@ pub fn extract(messages: &[Message]) -> Trajectory {
             }
             Role::User => {
                 let mut results = Vec::new();
+                let mut has_results = false;
                 let mut text = String::new();
                 for block in &message.content {
                     match block {
@@ -110,13 +134,22 @@ pub fn extract(messages: &[Message]) -> Trajectory {
                             tool_use_id,
                             content,
                             is_error,
-                        } => results.push((tool_use_id.clone(), content.clone(), *is_error)),
-                        Block::Text { text: t } => text.push_str(t),
+                        } => {
+                            has_results = true;
+                            if !harness_ids.contains(tool_use_id.as_str()) {
+                                results.push((tool_use_id.clone(), content.clone(), *is_error));
+                            }
+                        }
+                        Block::Text { text: t }
+                            if !message.harness && !crate::agent::is_harness_voice(t) =>
+                        {
+                            text.push_str(t)
+                        }
                         _ => {}
                     }
                 }
 
-                if results.is_empty() {
+                if !has_results {
                     // A genuine user turn.
                     if !text.trim().is_empty() {
                         t.turns.push(text);
@@ -127,6 +160,9 @@ pub fn extract(messages: &[Message]) -> Trajectory {
                 // Results coming back. Text alongside them is steering.
                 if !text.trim().is_empty() {
                     t.steered = true;
+                }
+                if results.is_empty() {
+                    continue;
                 }
                 for (id, output, is_error) in results {
                     // Match by id rather than position: calls are issued in
@@ -769,6 +805,42 @@ mod tests {
         assert_eq!(t.calls[0].output, "hello");
         assert_eq!(t.final_text, "it says hello");
         assert!(!t.steered);
+    }
+
+    #[test]
+    fn harness_calls_are_not_model_choices_and_cannot_be_silently_replayed() {
+        let mut check =
+            Message::assistant(vec![call("check", "shell", json!({"command":"verify"}))]);
+        check.harness = true;
+        let mut output = Message::tool_results(vec![result("check", "failed")]);
+        output.content.push(Block::text(format!(
+            "{}try again",
+            crate::step::CHECK_FEEDBACK_STEM
+        )));
+        let mut messages = vec![
+            Message::user("do the task"),
+            Message::assistant(vec![call("model", "todo", json!({}))]),
+            Message::tool_results(vec![result("model", "done")]),
+            check,
+            output,
+        ];
+        let t = extract(&messages);
+        assert_eq!(t.calls.len(), 1);
+        assert_eq!(t.calls[0].name, "todo");
+        assert_eq!(t.harness_calls, 1);
+        assert!(!t.steered);
+        assert!(t.ensure_replayable().is_err());
+        messages
+            .last_mut()
+            .unwrap()
+            .content
+            .push(Block::text("Use the other criterion."));
+        let t = extract(&messages);
+        assert!(
+            t.steered,
+            "real owner steering alongside a check is still recorded"
+        );
+        assert_eq!(t.turns, vec!["do the task"]);
     }
 
     #[test]
