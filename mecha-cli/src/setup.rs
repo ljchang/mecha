@@ -241,7 +241,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         provider = Box::new(mecha_core::provider::Failover::new(provider, fallbacks));
     }
 
-    let ctx = ToolCtx {
+    let mut ctx = ToolCtx {
         workspace: tools.workspace.clone(),
         shell_timeout: std::time::Duration::from_secs(cfg.tools.shell_timeout_secs),
         security: cfg.security.clone(),
@@ -538,6 +538,11 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
                 Some(&tools.workspace),
             )
             .on(surface);
+            ctx.goal_lessons = mecha_core::learning::goal_lessons(&store, &situation)?;
+            if let Ok(dir) = mecha_core::session::Session::default_dir() {
+                ctx.goal_examples =
+                    mecha_core::planning::examples(&dir, &situation).unwrap_or_default();
+            }
             rules = store.rules_carried_for(mecha_core::learning::RUN_DOMAINS, &situation)?;
             if let Some(block) = rules.block.clone() {
                 let base = agent_cfg.resolve_system_prompt()?.unwrap_or_default();
@@ -715,6 +720,8 @@ pub fn levers_off(opts: &GlobalOpts, cfg: &Config) -> Vec<Lever> {
             Lever::Charter => opts.no_charter,
             Lever::CompactTool => opts.no_compact_tool,
             Lever::StepEscalation => !agent.step_escalation,
+            Lever::StepChecks => !agent.step_checks,
+            Lever::GoalGuidance => !agent.goal_guidance,
             Lever::ApprovalRules => opts.no_rules,
             Lever::Boredom => !agent.boredom,
             Lever::CompactValidate => !agent.compact_validate,
@@ -741,6 +748,8 @@ pub fn switch_off(opts: &mut GlobalOpts, lever: Lever) {
         Lever::Charter => opts.no_charter = true,
         Lever::CompactTool => opts.no_compact_tool = true,
         Lever::StepEscalation => opts.no_step_escalation = true,
+        Lever::StepChecks => opts.no_step_checks = true,
+        Lever::GoalGuidance => opts.no_goal_guidance = true,
         Lever::ApprovalRules => opts.no_rules = true,
         Lever::Boredom => opts.no_boredom = true,
         Lever::CompactValidate => opts.no_compact_validate = true,
@@ -825,6 +834,8 @@ fn step_escalation_enabled(cfg_value: bool, no_step_escalation: bool) -> bool {
 /// `Live::levers_off`, the value the running agent was built with, because
 /// the file may have moved since and `/mode` rebuilds nothing.
 pub(crate) fn fold_agent_switches(agent: &mut mecha_core::config::AgentConfig, opts: &GlobalOpts) {
+    agent.step_checks &= !opts.no_step_checks;
+    agent.goal_guidance &= !opts.no_goal_guidance;
     agent.step_escalation = step_escalation_enabled(agent.step_escalation, opts.no_step_escalation);
     agent.boredom = agent.boredom && !opts.no_boredom;
     agent.compact_validate = agent.compact_validate && !opts.no_compact_validate;

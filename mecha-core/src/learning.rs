@@ -166,6 +166,14 @@ pub fn evidence_for(
     // and there is no ground truth in it. `GOAL-SYSTEM-DESIGN.md` §5.3 states
     // the same gap for the same reason. A label leaves that reviewable and
     // leaves the door open; an exclusion would not.
+    if i.trigger == Trigger::Mismatch {
+        // Generated observations are never owner words. Unknown or tainted
+        // evidence stays untrusted, even after redaction.
+        return match classify_origin(covering) {
+            Origin::Clean => (i.clone(), Origin::Clean, Evidence::Full),
+            _ => (i.user_evidence_only(), Origin::Untrusted, Evidence::Full),
+        };
+    }
     if crate::agent::is_harness_voice(&i.text) {
         // Redaction still runs: this early return exists as belt-and-braces
         // beside `extract_interventions` already dropping these — the second
@@ -193,6 +201,12 @@ fn evidence_for_taint(
 /// One learned note, tied to the intervention that produced it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Reflexion {
+    #[serde(
+        default,
+        deserialize_with = "crate::goal::de_lenient_vec",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub goals: Vec<crate::goal::GoalRef>,
     pub id: String,
     /// `behavior` for now; `writing` once drafting exists.
     pub domain: String,
@@ -2491,9 +2505,8 @@ pub enum Trigger {
     /// step's check rewritten after the fact. Bounded one reflection per
     /// step and three per run. A critic's false alarm is never one of
     /// these: it says something about the critic, not the agent. **The
-    /// variant is the wire format; nothing fires it yet** — the firing is
-    /// phase C of the appraisal plan, and a reader meeting `"mismatch"` in
-    /// the store before then must not choke on it.
+    /// producer consumes local planning metadata** — the firing implements
+    /// phase C of the appraisal plan. See `extract_mismatches` for the producer.
     Mismatch,
 }
 
@@ -2619,7 +2632,11 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
         match message.role {
             Role::Assistant => {
                 let mut parts: Vec<String> = Vec::new();
-                let text = message.text();
+                let text = if message.harness {
+                    String::new()
+                } else {
+                    message.text()
+                };
                 if !text.trim().is_empty() {
                     last_assistant_text = text.trim().to_string();
                     parts.push(truncate(&last_assistant_text, CONTEXT_BUDGET / 2));
@@ -2929,6 +2946,7 @@ impl Reflector {
             return Ok(None);
         }
         Ok(Some(Reflexion {
+            goals: Vec::new(),
             id: crate::session::Session::new_id(),
             domain: domain.to_string(),
             session_id: String::new(), // the caller knows; filled in by it
@@ -3507,6 +3525,8 @@ mod tests {
             Message::user("do the thing"),
             Message::assistant(vec![tool_use("t1")]),
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![
@@ -3534,6 +3554,8 @@ mod tests {
             Message::user("do the thing"),
             Message::assistant(vec![tool_use("t1")]),
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![result("t1", "ok", false), Block::text("skip the rest")],
@@ -3570,6 +3592,7 @@ mod tests {
     #[test]
     fn only_clean_reflections_are_learnable() {
         let r = |origin| Reflexion {
+            goals: Vec::new(),
             id: "r".into(),
             domain: "behavior".into(),
             session_id: "s".into(),
@@ -3762,6 +3785,7 @@ mod tests {
 
     fn stored(store: &LearningStore, id: &str, origin: Origin) -> Reflexion {
         let r = Reflexion {
+            goals: Vec::new(),
             id: id.into(),
             domain: "behavior".into(),
             session_id: "s1".into(),
@@ -3969,6 +3993,7 @@ mod tests {
     #[test]
     fn a_reflection_mined_from_the_harness_is_never_consolidated() {
         let mut r = Reflexion {
+            goals: Vec::new(),
             id: "r1".into(),
             domain: "behavior".into(),
             session_id: "s1".into(),
@@ -4033,6 +4058,8 @@ mod tests {
             // A boredom notice: text riding beside tool results, which the
             // miner reads as a steer.
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![
@@ -4085,6 +4112,8 @@ mod tests {
                 input: serde_json::json!({}),
             }]),
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![
@@ -4114,6 +4143,8 @@ mod tests {
                 input: serde_json::json!({}),
             }]),
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![
@@ -4169,6 +4200,8 @@ mod tests {
                 input: serde_json::json!({}),
             }]),
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![
@@ -4382,6 +4415,7 @@ mod tests {
     fn reflections_round_trip_and_mined_sessions_stick() {
         let store = temp_store();
         let r = Reflexion {
+            goals: Vec::new(),
             id: "r1".into(),
             domain: "behavior".into(),
             session_id: "s1".into(),
@@ -4470,6 +4504,8 @@ mod tests {
 
         // A tool-results message carrying steering text is not a followup turn.
         let steered = vec![Message {
+            harness: false,
+            planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
             content: vec![
@@ -4608,6 +4644,7 @@ mod tests {
         for id in ["r1", "r2"] {
             store
                 .append_reflexion(&Reflexion {
+                    goals: Vec::new(),
                     id: id.into(),
                     domain: "behavior".into(),
                     session_id: "s".into(),
@@ -4818,6 +4855,7 @@ mod tests {
     /// the case this does not cover.
     fn refl(domain: &str, origin: Origin) -> Reflexion {
         Reflexion {
+            goals: Vec::new(),
             id: "r1".into(),
             domain: domain.into(),
             session_id: "s".into(),
@@ -5198,6 +5236,7 @@ mod tests {
             assert_eq!(evidence, Evidence::UserTurns);
             assert!(!input.context.contains("tainted excerpt"));
             let r = Reflexion {
+                goals: Vec::new(),
                 id: "r".into(),
                 domain: "behavior".into(),
                 session_id: "s".into(),
@@ -5278,6 +5317,8 @@ mod tests {
             Message::user("do the thing"),
             Message::assistant(vec![tool_use("t1")]),
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![
@@ -5888,6 +5929,7 @@ mod situation_tests {
 
     fn refl(id: &str, tools: &[&str], trigger: &str) -> Reflexion {
         Reflexion {
+            goals: Vec::new(),
             id: id.into(),
             domain: "behavior".into(),
             session_id: "s".into(),
@@ -6910,4 +6952,75 @@ mod situation_tests {
         assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(), mtime);
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// At most one grounded mismatch per goal/step and three per recorded run.
+/// Only harness metadata can produce this trigger; arbitrary tool prose cannot.
+pub fn extract_mismatches(messages: &[Message], outcomes: &[Option<usize>]) -> Vec<Intervention> {
+    let mut found = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut counts = std::collections::HashMap::<usize, usize>::new();
+    for (at, message) in messages.iter().enumerate() {
+        let run = outcomes
+            .iter()
+            .position(|end| end.is_some_and(|end| end > at))
+            .unwrap_or(outcomes.len());
+        let Some(feedback) = &message.planning else {
+            continue;
+        };
+        for step in &feedback.steps {
+            let key = (
+                run,
+                step.goal.as_ref().map(ToString::to_string),
+                step.step.clone(),
+            );
+            if !step.mismatch() || seen.contains(&key) || *counts.get(&run).unwrap_or(&0) >= 3 {
+                continue;
+            }
+            seen.insert(key);
+            *counts.entry(run).or_default() += 1;
+            found.push(Intervention {
+                trigger: Trigger::Mismatch,
+                context: serde_json::to_string(step).unwrap_or_default(),
+                text: "A declared plan prediction disagreed with the observed outcome. Learn from the recorded evidence; do not infer that an unverified step succeeded.".into(),
+                aftermath: String::new(), at,
+                tools_before: vec!["todo".into()], tools_after: Vec::new(),
+            });
+        }
+    }
+    found
+}
+
+/// Goal associations come from source reflections, never an abstraction's prose.
+/// Keep every existing rule eligibility and situation gate on this retrieval path.
+pub fn goal_lessons(
+    store: &LearningStore,
+    situation: &Situation,
+) -> anyhow::Result<Vec<crate::planning::Lesson>> {
+    let sources = store.reflexions()?;
+    let mut lessons = Vec::new();
+    for domain in RUN_DOMAINS {
+        for rule in store.learned_rules(domain)? {
+            if !rule.active() || !rule.scope.as_ref().is_none_or(|s| s.matches(situation)) {
+                continue;
+            }
+            for source in sources.iter().filter(|s| {
+                rule.sources.contains(&s.id) && s.provenance() == Origin::Clean && s.learnable()
+            }) {
+                for goal in &source.goals {
+                    if !lessons
+                        .iter()
+                        .any(|l: &crate::planning::Lesson| &l.goal == goal && l.text == rule.text)
+                    {
+                        lessons.push(crate::planning::Lesson {
+                            goal: goal.clone(),
+                            text: rule.text.clone(),
+                            source: source.id.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(lessons)
 }

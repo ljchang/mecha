@@ -2120,6 +2120,8 @@ mod tests {
         assert!(is_plain_user_text(&plain));
 
         let results = Message {
+            harness: false,
+            planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
             content: vec![
@@ -2184,6 +2186,8 @@ mod tests {
             input: serde_json::json!({}),
         }]));
         convo.messages.push(Message {
+            harness: false,
+            planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
             content: vec![Block::ToolResult {

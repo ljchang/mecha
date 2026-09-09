@@ -1734,6 +1734,8 @@ mod grounding_tests {
                 },
                 Block::text("private-thinking"),
             ],
+            harness: false,
+            planning: None,
             tool_provenance: Default::default(),
         }];
         let evidence = tool_evidence(&messages).unwrap();
@@ -1764,6 +1766,8 @@ mod grounding_tests {
                 content: "x".repeat(128 * 1024),
                 is_error: false,
             }],
+            harness: false,
+            planning: None,
             tool_provenance: Default::default(),
         }];
         assert!(

@@ -22,6 +22,28 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-09 — appraisal implementation is in the working tree, not installed.**
+See HISTORY under this date for implemented goal persistence, event attribution,
+plan checks, structured mismatch learning and goal-specific context. Guidance is
+observational unless `[agent] goal_guidance = true`; check execution defaults on
+and can be disabled with `step_checks = false` or `--no-step-checks`. The next
+measurement is a paired task run with guidance off/on, checking goal attainment,
+failed checks, cost, restarts and owner interventions. Do not treat scripted tests
+as efficacy evidence. Unsolicited mid-run rule delivery stays off; mismatch-specific
+counterfactual grading and semantic interpretation of owner goal corrections are
+still open. The earlier environment rows describe dated installations, not this
+working tree; no runtime environment claims were re-verified during this code pass.
+
+Validation on this working tree: `cargo fmt --all`, warning-free
+`cargo clippy --all-targets --all-features`, and
+`MECHA_TEST_REQUIRE_BACKENDS=1 cargo test --workspace`: **2,588 passed, zero
+failed, three intentionally ignored**. The suite breakdown is 800 CLI, 22
+first-run, 3 run-lifecycle, 5 serve-lifecycle, 1,503 core, 5 fixture-server,
+13 MCP, 9 sandbox-backend, 151 mail, 1 mail binary, 75 Slack and 1 doctest.
+The eval inventory remains **36 cases / 15 tags**, recounted 2026-09-09.
+One trigger-lock test failed in an earlier suite, then passed both isolated and
+in the final full run; no trigger implementation changed.
+
 **2026-09-08 update:** PR [#216](https://github.com/ljchang/mecha/pull/216)
 is merged into `main` at `c3f33f4c`, including PR #217's graceful shutdown and
 cross-device chat input. The shared checkout was cleanly fast-forwarded to that
@@ -2992,8 +3014,9 @@ what it is (`Reply::{Answered, Parked}`, no default — the web asker parks
 per question, not per asker, so a per-asker flag was wrong on the one
 production path it was written for); a changed pointer and a plan that
 named nothing are two counts, never one number; the drift rate is over
-runs that *named* a goal at least once under an anchor; and the anchor
-lives for one run. What to expect on this machine now: `sessions health` prints a `goal
+runs that *named* a goal at least once under an anchor; and the counters
+live for one run. The confirmed anchor now persists per conversation (2026-09-09;
+see HISTORY). What to expect on this machine now: `sessions health` prints a `goal
 drift` line reading *no run in this corpus recorded the sensor* until the
 first run under the new binary, then *N run(s) recorded the sensor; none
 had a confirmed goal* until a delegated run's question is answered or a
@@ -3002,9 +3025,9 @@ chat run answers a goal-carrying `ask_user`; `mecha sessions health
 `runs_with_a_goal_anchor`, `runs_planned_under_an_anchor`,
 `runs_named_under_an_anchor` (the rate's denominator), `goal_plan_writes`,
 `goal_drift_writes`, `goal_unnamed_writes` — the last two are opposite
-findings and the rate is over the first alone. The anchor lives for one run:
-the first readings are delegated resumes plus confirmations planned
-against within one run, not interactive work across turns.
+findings and the rate is over the first alone. Those initial readings covered one run at a time. The 2026-09-09 implementation
+adds cross-turn anchor persistence; measurements across that boundary need the new
+binary and must not be pooled as if earlier recordings had the same coverage.
 Deploy = binary only (no web change). **Open from §17.7 after this:**
 item 2 (still waiting on the step counters being read), item 4's re-ask
 (waiting on this line), item 8; the anchor is the confirmed pointer, not

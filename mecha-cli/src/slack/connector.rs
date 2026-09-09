@@ -883,6 +883,8 @@ impl State {
         let mut content = vec![Block::text(&prompt)];
         content.extend(attached_images);
         conversation.messages.push(Message {
+            harness: false,
+            planning: None,
             tool_provenance: Default::default(),
             role: mecha_core::message::Role::User,
             content,

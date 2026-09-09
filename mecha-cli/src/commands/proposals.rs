@@ -391,6 +391,7 @@ mod tests {
 
     fn reflexion(id: &str) -> Reflexion {
         Reflexion {
+            goals: Vec::new(),
             id: id.into(),
             domain: "behavior".into(),
             session_id: "s-1".into(),

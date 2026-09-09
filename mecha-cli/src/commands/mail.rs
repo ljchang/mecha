@@ -1868,6 +1868,7 @@ async fn reflect(global: &GlobalOpts, account: Option<&str>, dry_run: bool) -> R
                 }
                 Ok(Some(lesson)) => {
                     let refl = mecha_core::learning::Reflexion {
+                        goals: Vec::new(),
                         id: format!("triage-{key}"),
                         domain: mecha_core::learning::TRIAGE_DOMAIN.to_string(),
                         // The thread is the session here: there is no

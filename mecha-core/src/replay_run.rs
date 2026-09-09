@@ -1576,6 +1576,8 @@ mod tests {
                 b"pixels",
                 Some("shot.png".into()),
             )],
+            harness: false,
+            planning: None,
             tool_provenance: Default::default(),
         }];
         let cx = RunContext::new(ToolCtx::default(), approver).with_cancel(cancel);
