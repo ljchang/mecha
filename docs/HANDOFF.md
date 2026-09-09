@@ -27,7 +27,8 @@ Current main includes confirmed-goal planning and verified-step feedback from
 PR #220 (`08ebaaa5`), then anticipatory appraisal from PR #221 (`fa77852c`).
 Review fixes preserve unsupported evidence without hiding drafts, keep display
 available on appraisal errors, and reject evidence-bearing whole-session probes
-until reproduction is implemented. Confirmed-goal planning and inline message drafts accept owner evidence; `outbox anticipate`
+until reproduction is implemented. Confirmed-goal planning and inline message
+drafts accept owner evidence; `outbox anticipate`
 can enable exact-draft guidance, and `outbox outcome` links delivered outcomes.
 Source and implementation evidence are recorded in HISTORY under this date.
 The older aggregate `Homeostat::anticipated_guilt` is still a separate sensor;
@@ -55,7 +56,8 @@ rendered without browser errors or page overflow at 1440px and 390px.
 
 **2026-09-09 — review status.** The user docs refresh merged as PR #219;
 appraisal PRs #220 and #221 are also merged. Historical measurements below
-retain their original conditions. Review of the Anthropic transcript finding found that `body` uses
+retain their original conditions. Review of the Anthropic transcript finding
+found that `body` uses
 adaptive thinking, whose documented rules permit an assistant turn without a
 thinking block. A live synthetic compatibility check could not run because the
 API account had insufficient credits; no provider success is claimed.
@@ -66,7 +68,7 @@ reconstruct their check observations before enabling whole-session or steer/deni
 comparisons. `Trajectory::ensure_replayable` enforces this; independent artifact
 probes remain available.
 
-**Appraisal measurement boundary.**
+**2026-09-09 — appraisal measurement boundary.**
 Goal persistence, event attribution, declared plan checks and goal-specific context
 are implemented; the implementation history and earlier pilot comparisons are in
 HISTORY under this date. Guidance remains opt-in through
@@ -87,7 +89,8 @@ learning stages completed; all 36 paired outcomes tied and the native gate
 rejected promotion. Training yielded 2, 1 and 0 clean criterion reflections per
 learning lifetime, below the unchanged minimum of three. A later ordinary
 check-change reflection left final counts at 2, 1 and 1. No rules were created,
-loaded, validated or retired. No transfer artifact answers entered learning.
+loaded, validated or retired. No transfer artifact answers entered learning. No declared step check executed;
+the five-tool registry omitted `shell`, so check-execution benefits are unmeasured.
 See `results/appraisal-attribution-v2-qwen36-35b-20260909/README.md` for the
 configuration/exposure audit, exact native-versus-artifact distinction and limits.
 
@@ -106,10 +109,10 @@ Semantic interpretation of owner goal corrections and unsolicited mid-run rule
 delivery remain open. The current fixture produced no large forecast overruns;
 it cannot establish improved calibration. Keep guidance opt-in.
 
-Historical validation at pilot runtime `c7071ad3`: all-target build,
-`cargo fmt --all`, warning-free
-`cargo clippy --all-targets --all-features`, and
-`MECHA_TEST_REQUIRE_BACKENDS=1 cargo test --workspace`: **2,616 passed, zero
+Historical validation at pilot runtime `c7071ad3`: the archived build and Clippy
+logs record successful completion but omit command flags, so they cannot
+independently establish target/feature coverage. The required-backend workspace
+test log records **2,616 passed, zero
 failed, three intentionally ignored**. Breakdown: 805 CLI, 22 first-run,
 3 run-lifecycle, 5 serve-lifecycle, 1,519 core, 7 appraisal-fixture,
 5 fixture-server, 13 MCP, 9 sandbox-backend, 151 mail, 1 mail binary,

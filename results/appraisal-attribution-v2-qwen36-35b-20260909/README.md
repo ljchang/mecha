@@ -82,6 +82,13 @@ exposure cannot establish whether learned guidance helps or hurts.
 
 ## Attribution and validation limits
 
+Step checks were enabled, but the five-tool registry omitted `shell`, making
+their execution unavailable by construction. Across all 72 trials, the trace
+audit records two input check declarations and **zero executed checks in either
+arm**; every run has zero `checks_declared`/`checks_passed` execution counters.
+The pilot cannot establish whether executing checks improves task outcomes.
+This limitation is separate from the absence of learned-rule exposure.
+
 The call-estimate audit found 54 paired estimates in control and 53 in learning;
 98 and 100 other step observations lacked an estimate or a measurable span.
 Neither arm crossed the implemented forecast-miss threshold. The conservative
@@ -98,8 +105,9 @@ failed before the fix. The mismatch prompt also distinguishes a false context
 predicate from a failed artifact verdict. The replacement reused no trial or
 learning state from the invalid run.
 
-At runtime `c7071ad3`, build, formatting and warning-free Clippy passed. Required-backend workspace
-tests passed **2,616**, with zero failures and three intentionally ignored tests.
+The archived build and Clippy logs record successful completion, but omit command
+arguments and cannot independently establish target or feature coverage.
+Required-backend workspace tests at `c7071ad3` passed **2,616**, with zero failures and three intentionally ignored tests.
 The separate [retirement drills](retirement-drills/README.md) must be read with
 their outcomes: an earlier run passed, but the rerun on the corrected runtime
 **failed its strict assertion** because the bad rule elicited no measured
