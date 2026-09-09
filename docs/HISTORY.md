@@ -15,6 +15,23 @@ still worth knowing about, because the next person will otherwise re-derive it.
 ## What shipped, and when
 
 
+**2026-09-09 — independent artifact validation for planning mismatches.**
+`mismatch::ArtifactCase` holds a strict, bounded owner fixture and checks real JSON
+artifacts and preserved inputs in fresh workspaces. `run --mismatch-case` binds
+it before execution; `RunConfig` keeps gold out of provider messages, with
+malformed legacy metadata degrading to no fixture. `probe::prepare_mismatch`
+requires unique matching harness feedback, clean recorded provenance, the same
+confirmed goal and unchanged supported builtin specs. `drive_arm` repeats a
+file-only task for validation, candidate gating and attribution, preserving
+current approval/policy checks. Each executed arm records usage and fingerprints;
+refused writes remain inconclusive and task-level verdicts do not claim regional
+step coverage. Steer/denial branching and probation/retirement thresholds are
+unchanged. `Tasks::mismatch_cases` freezes fixtures in the condition hash; the
+new twelve-task lifetime design separates training from transfer. A live drill
+caught `--no-goal-guidance` lacking Clap's global flag; its regression failed
+before the fix and accepts either argument position after it. Live measurements
+are recorded separately after completion, without changing earlier pilot grades.
+
 **2026-09-09 — harder anchored appraisal and sequential learning measurements.**
 With runtime behavior frozen at `935d98f5`, Qwen 3.6 35B passed 20/24 control
 and 18/24 guided trials on eight harder tasks × three seeds. The native gate

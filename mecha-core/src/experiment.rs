@@ -1149,6 +1149,10 @@ pub struct Tasks {
         deserialize_with = "confirmed_goals"
     )]
     pub confirmed_goals: BTreeMap<String, crate::goal::GoalRef>,
+    /// Owner-authored, immutable artifact validation fixtures. Gold is copied
+    /// into run metadata, never the model's workspace.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mismatch_cases: BTreeMap<String, crate::mismatch::ArtifactCase>,
     /// Only cases carrying one of these tags, when set.
     #[serde(default)]
     pub tags: Vec<String>,
@@ -1186,6 +1190,7 @@ impl Tasks {
             ids,
             tags: Vec::new(),
             confirmed_goals: BTreeMap::new(),
+            mismatch_cases: BTreeMap::new(),
         }
     }
 
@@ -1199,6 +1204,18 @@ impl Tasks {
     }
 
     fn validate(&self) -> Result<()> {
+        for (id, case) in &self.mismatch_cases {
+            case.validate()?;
+            anyhow::ensure!(
+                self.confirmed_goals
+                    .get(id)
+                    .map(ToString::to_string)
+                    .as_deref()
+                    == Some(case.goal.as_str()),
+                "mismatch fixture requires matching confirmed goal for `{id}`"
+            );
+        }
+
         match (&self.cases, self.source.is_empty()) {
             (Some(_), false) => anyhow::bail!(
                 "`[tasks]` names both `cases` and `source`; the tasks come from one or the other"
@@ -1657,9 +1674,15 @@ impl Manifest {
         if self.fixtures.clock.is_empty()
             && self.judge.is_none()
             && self.tasks.confirmed_goals.is_empty()
+            && self.tasks.mismatch_cases.is_empty()
         {
             return original;
         }
+        let original = if self.tasks.mismatch_cases.is_empty() {
+            original
+        } else {
+            fnv64(format!("{original}|mismatch_cases={:?}", self.tasks.mismatch_cases).as_bytes())
+        };
         let original = if self.tasks.confirmed_goals.is_empty() {
             original
         } else {
@@ -3232,6 +3255,35 @@ rationale = "no notice, fewer turns"
             &|t| t.replace("name = \"levers\"", "name = \"a/b\""),
             "name",
         );
+    }
+
+    #[test]
+    fn artifact_fixture_is_registered_and_changes_the_condition() {
+        let mut m = Manifest::parse(MANIFEST).unwrap();
+        m.tasks
+            .confirmed_goals
+            .insert("t1".into(), "task:t1".parse().unwrap());
+        let before = m.trials(&["t1".into()], "p", "m")[0].condition_hash.clone();
+        let case=serde_json::from_value(serde_json::json!({"prompt":"task","goal":"task:t1","files":{},"artifacts":{"answer.json":{"ok":true}}})).unwrap();
+        m.tasks.mismatch_cases.insert("t1".into(), case);
+        let text = toml::to_string(&m).unwrap();
+        let restored = Manifest::parse(&text).unwrap();
+        assert_ne!(
+            before,
+            restored.trials(&["t1".into()], "p", "m")[0].condition_hash
+        );
+        let first = restored.trials(&["t1".into()], "p", "m")[0]
+            .condition_hash
+            .clone();
+        m.tasks
+            .mismatch_cases
+            .get_mut("t1")
+            .unwrap()
+            .artifacts
+            .insert("answer.json".into(), serde_json::json!({"ok":false}));
+        assert_ne!(first, m.trials(&["t1".into()], "p", "m")[0].condition_hash);
+        m.tasks.confirmed_goals.clear();
+        assert!(Manifest::parse(&toml::to_string(&m).unwrap()).is_err());
     }
 
     #[test]

@@ -249,6 +249,13 @@ pub enum Record {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RunConfig {
+    /// Owner-supplied artifact fixture, bound before execution. Never provider content.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::mismatch::de_lenient"
+    )]
+    pub mismatch_case: Option<crate::mismatch::ArtifactCase>,
     /// Which harness produced this. The axis every replay diff is measured on.
     pub mecha_version: String,
     pub provider: String,
@@ -446,6 +453,7 @@ impl RunConfig {
 impl Default for RunConfig {
     fn default() -> Self {
         RunConfig {
+            mismatch_case: None,
             mecha_version: String::new(),
             provider: String::new(),
             model: String::new(),
@@ -511,6 +519,7 @@ impl RunConfig {
             .collect();
         let cfg = agent.config();
         RunConfig {
+            mismatch_case: None,
             mecha_version: crate::VERSION.to_string(),
             provider: provider.to_string(),
             model: agent.model().to_string(),

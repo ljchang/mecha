@@ -854,3 +854,52 @@ Experiment manifests can provide the same confirmation with a
 When a completion update omits a check declared while the step was open, the
 harness restores and freezes that check and executes it through the usual guards.
 A check explicitly withdrawn while the step is still open stays withdrawn.
+
+## Independent validation of planning lessons
+
+`mecha run --mismatch-case PATH` binds an owner-authored JSON fixture before
+execution. It contains the exact `prompt`, a confirmed `goal`, a map of starting
+`files` to their UTF-8 contents, an `artifacts` map of output paths to expected
+JSON values, and a `preserve` list of input paths that must remain unchanged.
+Keep this file outside the task workspace. Every starting file must be listed;
+the run refuses a different prompt, goal or starting state. Expected output is
+recorded as local metadata and is never sent to the model.
+
+For example, a fixture can declare:
+
+```json
+{
+  "prompt": "Add the numbers in input.json and write the sum to answer.json.",
+  "goal": "task:sum",
+  "files": {"input.json": "[2,3]\n"},
+  "artifacts": {"answer.json": {"sum": 5}},
+  "preserve": ["input.json"]
+}
+```
+
+The first supported surface is `fs_read`, `fs_write`, `fs_edit`, `fs_list` and
+`todo`. Narrow the recording with `--tool`; disable MCP, hooks, skills, messages,
+fallback, outbox routing, step escalation and goal guidance. These conditions
+are checked before recording the fixture. Shell and external services are not
+supported by this artifact validator.
+
+`mecha validate --trigger mismatch` and the `learn --auto` proposal gate can
+then compare rule sets on a clean recorded mismatch. Each arm repeats the whole
+registered task in a fresh workspace and checks its actual JSON output against
+the independent expectation. This is a task-outcome comparison, not a replay of
+the filesystem at an intermediate step or a validation of the original work
+estimate. Steer and denial probes keep their existing branching behavior.
+
+Use the same disabled hooks, outbox and messages settings during validation.
+File writes still use the current approval policy; use `--yes` only when those
+fixture writes are authorized. A refusal, missing fixture, changed tool surface
+or uncertain provenance remains ungraded. Malformed or incorrect artifacts
+fail. Per-arm receipts, including fixture/prompt fingerprints and usage, are
+stored under `learning/artifact-probes/`; whole-task results do not certify the
+original step's tool scope. Existing probation and retirement rules still apply.
+
+Experiments register these fixtures under `[tasks.mismatch_cases.<task-id>]`,
+with matching `[tasks.confirmed_goals]` entries. Fixtures are part of the
+condition hash and force the supported file-tool surface in both arms. The
+registered example is `eval/appraisal-mismatch.toml`: six training tasks followed
+by six transfer tasks, with rule exposure measured separately from task success.

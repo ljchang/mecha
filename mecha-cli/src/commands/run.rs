@@ -32,6 +32,10 @@ pub struct Args {
     #[arg(long, value_name = "KIND:ID")]
     pub goal: Option<mecha_core::goal::GoalRef>,
 
+    /// Owner-authored JSON fixture for isolated artifact validation of later mismatches.
+    #[arg(long, conflicts_with_all = ["resume", "no_session", "images"])]
+    pub mismatch_case: Option<std::path::PathBuf>,
+
     /// Don't write a transcript.
     #[arg(long)]
     pub no_session: bool,
@@ -80,6 +84,21 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     };
     let mut prepared = setup::prepare(&opts, interactive).await?;
 
+    let mismatch_case = args
+        .mismatch_case
+        .as_ref()
+        .map(|p| mecha_core::mismatch::ArtifactCase::load(p))
+        .transpose()?;
+    if let Some(case) = &mismatch_case {
+        case.bind(&prompt, args.goal.as_ref(), &prepared.workspace)?;
+        mecha_core::mismatch::validate_recording(&RunConfig::of(
+            &prepared.agent,
+            &prepared.config,
+            &prepared.provider_name,
+            &prepared.levers_off,
+            Some(&prepared.rules),
+        ))?;
+    }
     let session_dir = Session::default_dir()?;
     let mut convo = mecha_core::agent::Conversation::new();
     let mut session = None;
@@ -120,13 +139,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         if args.resume.is_some() {
             setup::register_recall(&mut prepared.agent, s);
         }
-        s.append(&Record::Config(RunConfig::of(
+        let mut recorded = RunConfig::of(
             &prepared.agent,
             &prepared.config,
             &prepared.provider_name,
             &prepared.levers_off,
             Some(&prepared.rules),
-        )))?;
+        );
+        recorded.mismatch_case = mismatch_case;
+        s.append(&Record::Config(recorded))?;
         // Staged outbox items point back at the session that drafted them.
         if let Some(route) = &prepared.agent.context().outbox {
             route.set_session_id(&s.meta.id);
@@ -378,6 +399,22 @@ mod tests {
     use mecha_core::agent::{RunOutcome, StopCause};
     use mecha_core::message::{Refusal, Usage};
     use mecha_core::StopReason;
+
+    #[test]
+    fn guidance_opt_out_is_global_like_other_execution_switches() {
+        use clap::Parser;
+        for args in [
+            ["mecha", "--no-goal-guidance", "run", "go"],
+            ["mecha", "run", "--no-goal-guidance", "go"],
+        ] {
+            assert!(
+                crate::Cli::try_parse_from(args)
+                    .unwrap()
+                    .global
+                    .no_goal_guidance
+            );
+        }
+    }
 
     #[test]
     fn explicit_goal_parses_and_preserves_or_overrides_a_resumed_anchor() {

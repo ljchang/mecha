@@ -54,10 +54,7 @@ pub enum ProbeResult {
 /// A reflection's recorded prefix, loaded and sliced once, ready to drive
 /// under any number of system prompts.
 pub struct ProbePrep {
-    trajectory: Trajectory,
-    point: ProbePoint,
-    /// The forced prefix and the position it hands the model the controls at.
-    branch: Branch,
+    method: ProbeMethod,
     recorded: RunConfig,
     /// The exact specs the recording was sent, when the surface store still
     /// holds the blob its `tools_hash` cites. Empty for recordings from
@@ -66,6 +63,19 @@ pub struct ProbePrep {
     recorded_specs: Vec<mecha_core::message::ToolSpec>,
     base_system: String,
     recorded_system: String,
+}
+
+enum ProbeMethod {
+    Trace {
+        trajectory: Trajectory,
+        point: ProbePoint,
+        branch: Branch,
+    },
+    Artifact {
+        case: mecha_core::mismatch::ArtifactCase,
+        session_id: String,
+        reflection_id: String,
+    },
 }
 
 impl ProbePrep {
@@ -132,6 +142,9 @@ impl ProbePrep {
 /// Load the recording behind a steer/denial reflection. `Err(reason)` in the
 /// inner result is a skip — never evidence for either arm.
 pub fn prepare_probe(sessions_dir: &Path, r: &Reflexion) -> Result<Result<ProbePrep, String>> {
+    if r.trigger == Trigger::Mismatch.as_str() {
+        return prepare_mismatch(sessions_dir, r);
+    }
     prepare_probe_at(sessions_dir, &r.session_id, &r.trigger, &r.intervention)
 }
 
@@ -224,14 +237,93 @@ pub fn prepare_probe_in(
         .and_then(|h| mecha_core::surface::SurfaceStore::open_default()?.load(h))
         .unwrap_or_default();
     Ok(Ok(ProbePrep {
-        trajectory,
-        point,
-        branch,
+        method: ProbeMethod::Trace {
+            trajectory,
+            point,
+            branch,
+        },
         recorded,
         recorded_specs,
         base_system,
         recorded_system,
     }))
+}
+
+fn prepare_mismatch(sessions_dir: &Path, r: &Reflexion) -> Result<Result<ProbePrep, String>> {
+    let attempt = || -> Result<ProbePrep> {
+        use mecha_core::{
+            learning::{classify_origin, Origin},
+            planning::StepFeedback,
+        };
+        anyhow::ensure!(
+            r.provenance() == Origin::Clean && r.learnable(),
+            "mismatch reflection is not clean eligible evidence"
+        );
+        let path = Session::find(sessions_dir, &r.session_id)?;
+        let transcript = Session::read(&path)?;
+        let expected: StepFeedback = serde_json::from_str(&r.context)?;
+        anyhow::ensure!(expected.mismatch(), "reflection names no mismatch");
+        let found: Vec<_> = transcript
+            .convo
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| {
+                m.planning
+                    .as_ref()
+                    .is_some_and(|f| f.steps.contains(&expected))
+            })
+            .collect();
+        anyhow::ensure!(
+            found.len() == 1,
+            "mismatch evidence is absent or ambiguous in transcript"
+        );
+        let at = found[0].0;
+        anyhow::ensure!(
+            classify_origin(transcript.taint_timeline.covering(at)) == Origin::Clean,
+            "recorded mismatch provenance is not clean"
+        );
+        let recorded = transcript
+            .config_covering(at)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("mismatch has no recorded config"))?;
+        let case = recorded.mismatch_case.clone().ok_or_else(|| {
+            anyhow::anyhow!("no owner-supplied artifact fixture was bound before this run")
+        })?;
+        case.validate()?;
+        anyhow::ensure!(
+            expected.goal.as_ref().map(ToString::to_string).as_deref() == Some(case.goal.as_str()),
+            "mismatch goal differs from artifact case"
+        );
+        anyhow::ensure!(
+            transcript.configs.len() == 1 && transcript.config_positions == [0],
+            "artifact validation supports fresh single-run recordings only"
+        );
+        let first = transcript
+            .convo
+            .messages
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("missing task prompt"))?;
+        anyhow::ensure!(
+            first == &mecha_core::message::Message::user(&case.prompt),
+            "recorded task differs from fixture"
+        );
+        mecha_core::mismatch::validate_recording(&recorded)?;
+        let registry = mecha_core::mismatch::registry(&recorded.tools)?;
+        let recorded_system = recorded.system_prompt.clone().unwrap_or_default();
+        Ok(ProbePrep {
+            base_system: strip_rules_block(&recorded_system),
+            recorded_system,
+            recorded_specs: registry.specs(),
+            recorded,
+            method: ProbeMethod::Artifact {
+                case,
+                session_id: r.session_id.clone(),
+                reflection_id: r.id.clone(),
+            },
+        })
+    };
+    Ok(attempt().map_err(|e| format!("artifact mismatch probe unavailable: {e:#}")))
 }
 
 /// Drive the prepared prefix once under `system` and grade the trace.
@@ -249,15 +341,86 @@ pub async fn drive_arm(
     system: String,
 ) -> Result<Result<ProbeVerdict, String>> {
     let recorded = &prep.recorded;
+    if let ProbeMethod::Artifact {
+        case,
+        session_id,
+        reflection_id,
+    } = &prep.method
+    {
+        for lever in [
+            mecha_core::harness::Lever::Hooks,
+            mecha_core::harness::Lever::Outbox,
+            mecha_core::harness::Lever::Messages,
+        ] {
+            if !prepared.levers_off.contains(&lever) {
+                return Ok(Err(format!(
+                    "artifact probes require {lever:?} disabled, as in the recording"
+                )));
+            }
+        }
+        let mut cfg = prepared.config.agent.clone();
+        let system_hash = mecha_core::learning::rules_hash(&system);
+        cfg.system_prompt = Some(system);
+        cfg.system_prompt_file = None;
+        cfg.effort = recorded.effort;
+        cfg.thinking = recorded.thinking;
+        cfg.cache_prompt = recorded.cache_prompt;
+        cfg.max_tokens = recorded.max_tokens;
+        cfg.max_turns = recorded.max_turns;
+        cfg.max_output_tokens = recorded.max_output_tokens;
+        cfg.max_cost_usd = recorded.max_cost_usd;
+        cfg.compact_at_tokens = recorded.compact_at_tokens;
+        cfg.compact_keep_recent = recorded.compact_keep_recent;
+        cfg.goal_guidance = false;
+        cfg.step_escalation = false;
+        cfg.step_checks = !recorded
+            .levers_off
+            .as_ref()
+            .is_some_and(|off| off.contains(&mecha_core::harness::Lever::StepChecks));
+        let mut provider_cfg = provider_cfg.clone();
+        provider_cfg.seed = recorded.seed;
+        provider_cfg.temperature = recorded.temperature;
+        let (verdict, stats) = match mecha_core::mismatch::drive(
+            case,
+            recorded,
+            mecha_core::provider::build(&provider_cfg)?,
+            cfg,
+            model,
+            prepared.agent.context(),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(format!("artifact task repeat failed: {e:#}"))),
+        };
+        let store = mecha_core::learning::LearningStore::open(
+            mecha_core::learning::LearningStore::default_root()?,
+        )?;
+        let dir = store.root().join("artifact-probes");
+        std::fs::create_dir_all(&dir)?;
+        let receipt = serde_json::json!({"method":"artifact_task_repeat","session_id":session_id,"reflection_id":reflection_id,"model":model,"case_hash":mecha_core::learning::rules_hash(&serde_json::to_string(case)?),"system_hash":system_hash,"verdict":format!("{verdict:?}"),"stats":stats,"created_at":chrono::Utc::now().to_rfc3339()});
+        std::fs::write(
+            dir.join(format!("{}.json", Session::new_id())),
+            serde_json::to_vec_pretty(&receipt)?,
+        )?;
+        return Ok(Ok(verdict));
+    }
+    let ProbeMethod::Trace {
+        trajectory,
+        point,
+        branch,
+    } = &prep.method
+    else {
+        unreachable!()
+    };
     let cancel = CancellationToken::new();
     // The recording the registry answers from starts at the branch base: the
     // calls before it were already resolved inside the forced prefix, and
     // handing them to the cursor again would answer the first regenerated
     // call with a result the model has already read.
-    let tail_calls = prep
-        .trajectory
+    let tail_calls = trajectory
         .calls
-        .get(prep.branch.call_base..)
+        .get(branch.call_base..)
         .unwrap_or_default()
         .to_vec();
     let registry = match replay_registry(
@@ -316,16 +479,16 @@ pub async fn drive_arm(
     match drive_branch(
         &agent,
         &cx,
-        prep.branch.seed.clone(),
-        &prep.trajectory,
-        prep.branch.call_base,
+        branch.seed.clone(),
+        trajectory,
+        branch.call_base,
     )
     .await
     {
         // Which rule grades this is carried by the point itself, so a kind
         // the caller has not heard of cannot be graded as a denial by default.
         Ok(report) => {
-            let v = verdict(&report, &prep.point);
+            let v = verdict(&report, point);
             // What the arm actually did, for `MECHA_LOG=debug` — a verdict
             // that surprises is unreadable from Pass/Fail alone, and the
             // retirement drill's first run was diagnosed blind for want of
@@ -434,6 +597,101 @@ pub fn compare(
         (ProbeVerdict::Fail, _) => {
             *unchanged += 1;
             Some("unchanged (both fail)")
+        }
+    }
+}
+
+#[cfg(test)]
+mod mismatch_tests {
+    use super::*;
+    use mecha_core::{
+        agent::Taint,
+        harness::Lever,
+        message::Message,
+        planning::{Feedback, StepFeedback, Verification},
+        session::{Record, SessionMeta},
+    };
+    fn fixture(
+        clean: Option<bool>,
+        artifact: bool,
+    ) -> (mecha_core::mismatch::Workspace, Reflexion) {
+        let root = mecha_core::mismatch::Workspace::new().unwrap();
+        let case:mecha_core::mismatch::ArtifactCase=serde_json::from_value(serde_json::json!({"prompt":"write answer.json","goal":"task:x","files":{},"artifacts":{"answer.json":{"ok":true}}})).unwrap();
+        let tools = vec!["fs_write".into(), "todo".into()];
+        let specs = mecha_core::mismatch::registry(&tools).unwrap().specs();
+        let mut cfg = RunConfig {
+            tools,
+            tools_hash: Some(mecha_core::surface::fingerprint(&specs)),
+            levers_off: Some(Lever::ALL.into_iter().collect()),
+            ..Default::default()
+        };
+        if artifact {
+            cfg.mismatch_case = Some(case);
+        }
+        let session = Session::create(
+            root.path(),
+            SessionMeta {
+                id: Session::new_id(),
+                created_at: chrono::Utc::now(),
+                provider: "scripted".into(),
+                model: "scripted".into(),
+                workspace: root.path().into(),
+                title: None,
+                kind: None,
+            },
+        )
+        .unwrap();
+        session.append(&Record::Config(cfg)).unwrap();
+        session
+            .append(&Record::Message(Message::user("write answer.json")))
+            .unwrap();
+        let step = StepFeedback {
+            call_id: Some("todo-1".into()),
+            step: "produce the artifact".into(),
+            goal: Some("task:x".parse().unwrap()),
+            expected: None,
+            expected_calls: Some(1),
+            actual_calls: Some(8),
+            verification: Verification::NotDeclared,
+            check_tampered: false,
+        };
+        let mut feedback = Message::user("plan feedback");
+        feedback.planning = Some(Feedback {
+            steps: vec![step.clone()],
+            ..Default::default()
+        });
+        session.append(&Record::Message(feedback)).unwrap();
+        if let Some(clean) = clean {
+            session
+                .append(&Record::Taint(Taint {
+                    untrusted: !clean,
+                    private: true,
+                }))
+                .unwrap();
+        }
+        let r=serde_json::from_value(serde_json::json!({"id":"reflection","session_id":session.meta.id,"domain":"behavior","trigger":"mismatch","context":serde_json::to_string(&step).unwrap(),"intervention":"observed mismatch","reflexion_text":"verify output","created_at":"now","origin":"clean","evidence":"full"})).unwrap();
+        (root, r)
+    }
+    #[test]
+    fn trusted_mismatch_prepares_but_missing_or_untrusted_evidence_does_not() {
+        let (root, mut r) = fixture(Some(true), true);
+        assert!(
+            prepare_probe_at(root.path(), &r.session_id, &r.trigger, &r.intervention)
+                .unwrap()
+                .is_err(),
+            "old trace-only dispatch cannot grade this mismatch"
+        );
+        assert!(
+            prepare_probe(root.path(), &r).unwrap().is_ok(),
+            "new artifact dispatch accepts the same evidence"
+        );
+        let mut step: StepFeedback = serde_json::from_str(&r.context).unwrap();
+        step.goal = Some("task:other".parse().unwrap());
+        r.context = serde_json::to_string(&step).unwrap();
+        assert!(prepare_probe(root.path(), &r).unwrap().is_err());
+        for (clean, artifact) in [(None, true), (Some(false), true), (Some(true), false)] {
+            let (root, r) = fixture(clean, artifact);
+            assert!(prepare_probe(root.path(), &r).unwrap().is_err());
         }
     }
 }

@@ -3358,8 +3358,24 @@ check tampering; `learning::extract_mismatches` emits at most one per goal/step
 and three per recorded run. Unknown run boundaries share a conservative bound.
 Generated observations must never take the user-turn-only provenance promotion:
 unknown or tainted mismatch evidence is excluded from reflection. Existing rule
-validation and probation still apply; mismatch-specific counterfactual grading
-is not implemented.
+validation and probation still apply. `mismatch::ArtifactCase` adds a bounded,
+owner-supplied task-outcome validator: `run --mismatch-case` binds exact initial
+files, prompt and confirmed goal before the run, and records the independent
+JSON gold outside the model's workspace. `probe::prepare_mismatch` joins the
+reflection to unique harness feedback and rechecks recorded clean provenance;
+missing fixtures, resumed sessions, unsupported levers and changed tool specs
+remain ungraded. The first live surface is the five builtin file/planning tools;
+there is no shell, external service or model-authored grading command. Each arm
+repeats the whole task in a fresh directory under current approval/policy gates.
+A policy refusal is inconclusive, not a model regression. This deliberately does
+not branch a filesystem snapshot that was never captured: steer/denial branching
+is unchanged. Whole-task results leave the intervention-region field unknown;
+artifact success cannot certify that the original step's tool scope was exercised.
+Receipts under `learning/artifact-probes` identify the case, prompt, reflection,
+model, verdict and task usage. Experiments register the entire fixture in
+`Tasks::mismatch_cases`, including it in the condition hash; the original oracle
+and fixtures remain unchanged during a measurement. Forecast-specific validation
+and live-service snapshots remain unsupported.
 
 **Planning observations are local metadata, not prompt content.** `Message::planning`
 is preserved by session loading and omitted by both provider encoders. This is
