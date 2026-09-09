@@ -1141,9 +1141,30 @@ pub struct Tasks {
     /// Only these case ids, when set.
     #[serde(default)]
     pub ids: Vec<String>,
+    /// Explicit owner-confirmed goals by case id, passed as `run --goal`.
+    /// Kept in the immutable manifest rather than inferred from model prose.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "confirmed_goals"
+    )]
+    pub confirmed_goals: BTreeMap<String, crate::goal::GoalRef>,
     /// Only cases carrying one of these tags, when set.
     #[serde(default)]
     pub tags: Vec<String>,
+}
+
+fn confirmed_goals<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<BTreeMap<String, crate::goal::GoalRef>, D::Error> {
+    BTreeMap::<String, String>::deserialize(d)?
+        .into_iter()
+        .map(|(id, goal)| {
+            goal.parse()
+                .map(|goal| (id, goal))
+                .map_err(serde::de::Error::custom)
+        })
+        .collect()
 }
 
 fn source_timeout() -> u64 {
@@ -1164,6 +1185,7 @@ impl Tasks {
             fixture: fixture.into(),
             ids,
             tags: Vec::new(),
+            confirmed_goals: BTreeMap::new(),
         }
     }
 
@@ -1632,6 +1654,23 @@ impl Manifest {
     }
 
     fn with_grading_clock_hash(&self, original: String) -> String {
+        if self.fixtures.clock.is_empty()
+            && self.judge.is_none()
+            && self.tasks.confirmed_goals.is_empty()
+        {
+            return original;
+        }
+        let original = if self.tasks.confirmed_goals.is_empty() {
+            original
+        } else {
+            fnv64(
+                format!(
+                    "{original}|confirmed_goals={:?}",
+                    self.tasks.confirmed_goals
+                )
+                .as_bytes(),
+            )
+        };
         if self.fixtures.clock.is_empty() && self.judge.is_none() {
             return original;
         }
@@ -3193,6 +3232,23 @@ rationale = "no notice, fewer turns"
             &|t| t.replace("name = \"levers\"", "name = \"a/b\""),
             "name",
         );
+    }
+
+    #[test]
+    fn confirmed_goal_is_strict_recorded_and_changes_the_condition() {
+        let mut m = Manifest::parse(MANIFEST).unwrap();
+        let before = m.trials(&["t1".into()], "p", "m")[0].condition_hash.clone();
+        m.tasks
+            .confirmed_goals
+            .insert("t1".into(), "task:t1".parse().unwrap());
+        let text = toml::to_string(&m).unwrap();
+        let restored = Manifest::parse(&text).unwrap();
+        assert_eq!(restored.tasks.confirmed_goals, m.tasks.confirmed_goals);
+        assert_ne!(
+            before,
+            restored.trials(&["t1".into()], "p", "m")[0].condition_hash
+        );
+        assert!(Manifest::parse(&text.replace("task:t1", "unknown:t1")).is_err());
     }
 
     #[test]

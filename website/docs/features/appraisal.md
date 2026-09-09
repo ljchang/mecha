@@ -840,3 +840,17 @@ default. The 2026-09-09 Qwen pilot tied on every task outcome, so the gate rejec
 promotion. It exposed completion-time check omissions and no confirmed-goal-anchor
 coverage; guidance remains opt-in. Results and limits are recorded in
 `results/appraisal-guidance-qwen36-35b-20260909/README.md` in the checkout.
+
+
+### Explicit goal confirmation for one-shot runs
+
+Use `mecha run --goal task:ID "your task"` to confirm the run's goal. The
+reference is recorded before execution and survives resume and compaction.
+On `--resume`, omitting `--goal` preserves the saved goal; specifying it replaces
+the saved reference. A task reference in prompt text alone is not confirmation.
+Experiment manifests can provide the same confirmation with a
+`[tasks.confirmed_goals]` table mapping selected case IDs to goal references.
+
+When a completion update omits a check declared while the step was open, the
+harness restores and freezes that check and executes it through the usual guards.
+A check explicitly withdrawn while the step is still open stays withdrawn.

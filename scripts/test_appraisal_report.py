@@ -58,6 +58,17 @@ class ReportControls(unittest.TestCase):
             with self.assertRaises(ValueError):
                 module.report(data)
 
+    def test_explicit_case_set_preserves_registered_pairing(self):
+        data = fixture()
+        data["manifest"]["tasks"]["ids"] = ["new-task"]
+        for row in data["trials"]:
+            row["task"] = "new-task"
+        with self.assertRaises(ValueError):
+            module.report(data)
+        self.assertTrue(module.report(data, ["new-task"])["complete"])
+        with self.assertRaises(ValueError):
+            module.report(data, ["different-task"])
+
     def test_unreadable_rows_prevent_complete_claim(self):
         data=fixture()
         data["unreadable_trials"]=1

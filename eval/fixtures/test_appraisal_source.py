@@ -51,6 +51,11 @@ class OracleControls(unittest.TestCase):
                 (self.workspace / name).write_text("rewritten evidence")
                 self.assertFalse(source.grade(case)["passed"], "changing evidence must not change gold")
 
+    def test_harder_cases_have_positive_and_negative_controls(self):
+        cases = json.loads((Path(__file__).parent / "appraisal-v2/cases.json").read_text())
+        with patch.object(source, "CASES", cases):
+            self.test_every_case_has_positive_and_wrong_artifact_controls()
+
     def test_green_check_and_success_prose_do_not_override_wrong_artifact(self):
         case = source.case_for("misleading-check")
         source.setup(case)

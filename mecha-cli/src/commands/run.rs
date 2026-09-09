@@ -27,6 +27,11 @@ pub struct Args {
     #[arg(long)]
     pub resume: Option<String>,
 
+    /// Confirm what this run serves (task:id, project:id, charter:id or setpoint:id).
+    /// Overrides the saved anchor when resuming; omission preserves it.
+    #[arg(long, value_name = "KIND:ID")]
+    pub goal: Option<mecha_core::goal::GoalRef>,
+
     /// Don't write a transcript.
     #[arg(long)]
     pub no_session: bool,
@@ -44,6 +49,22 @@ pub struct Args {
     /// one direction over.
     #[arg(long = "image", value_name = "PATH")]
     pub images: Vec<std::path::PathBuf>,
+}
+
+fn confirm_goal(
+    convo: &mut mecha_core::agent::Conversation,
+    goal: Option<mecha_core::goal::GoalRef>,
+    session: Option<&Session>,
+) -> Result<()> {
+    if let Some(goal) = goal {
+        if let Some(session) = session {
+            session.append(&Record::GoalAnchor {
+                goal: Some(goal.clone()),
+            })?;
+        }
+        convo.goal_anchor = Some(goal);
+    }
+    Ok(())
 }
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
@@ -87,6 +108,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             },
         )?);
     }
+
+    confirm_goal(&mut convo, args.goal, session.as_ref())?;
 
     // Written on create *and* on resume: a session picked up under different
     // flags is exactly the case this record exists to catch.
@@ -355,6 +378,23 @@ mod tests {
     use mecha_core::agent::{RunOutcome, StopCause};
     use mecha_core::message::{Refusal, Usage};
     use mecha_core::StopReason;
+
+    #[test]
+    fn explicit_goal_parses_and_preserves_or_overrides_a_resumed_anchor() {
+        use clap::Parser;
+        let cli =
+            crate::Cli::try_parse_from(["mecha", "run", "--goal", "task:next", "go"]).unwrap();
+        let crate::Command::Run(args) = cli.command else {
+            panic!("run command")
+        };
+        let mut convo = mecha_core::agent::Conversation::new();
+        convo.goal_anchor = Some("task:old".parse().unwrap());
+        confirm_goal(&mut convo, None, None).unwrap();
+        assert_eq!(convo.goal_anchor.as_ref().unwrap().to_string(), "task:old");
+        confirm_goal(&mut convo, args.goal, None).unwrap();
+        assert_eq!(convo.goal_anchor.as_ref().unwrap().to_string(), "task:next");
+        assert!(crate::Cli::try_parse_from(["mecha", "run", "--goal", "invalid", "go"]).is_err());
+    }
 
     /// The superset claim, measured: a refused, cut-off run whose last call
     /// failed reads back through `BatchResult` with every field it can
