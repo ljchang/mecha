@@ -2619,6 +2619,11 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
     // (message index, intervention) — the index is what lets the aftermath be
     // filled in afterwards.
     let mut found: Vec<(usize, Intervention)> = Vec::new();
+    let harness_calls: std::collections::HashSet<&str> = messages
+        .iter()
+        .filter(|m| m.harness)
+        .flat_map(|m| m.tool_uses().into_iter().map(|(id, _, _)| id))
+        .collect();
     // Rolling description of what the assistant last did.
     let mut doing = String::new();
     // Tool names from the same window — kept apart from `doing` because the
@@ -2634,12 +2639,11 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
     for (msg_idx, message) in messages.iter().enumerate() {
         match message.role {
             Role::Assistant => {
+                if message.harness {
+                    continue;
+                }
                 let mut parts: Vec<String> = Vec::new();
-                let text = if message.harness {
-                    String::new()
-                } else {
-                    message.text()
-                };
+                let text = message.text();
                 if !text.trim().is_empty() {
                     last_assistant_text = text.trim().to_string();
                     parts.push(truncate(&last_assistant_text, CONTEXT_BUDGET / 2));
@@ -2672,7 +2676,7 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
                             is_error,
                         } => {
                             has_results = true;
-                            if *is_error {
+                            if *is_error && !harness_calls.contains(tool_use_id.as_str()) {
                                 if let Some(reason) = content.strip_prefix("Denied by the user:") {
                                     // The refused call is the focus
                                     // (`Situation::focus` reads the last
@@ -2770,7 +2774,7 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
     for (idx, intervention) in &mut found {
         let after = messages[*idx + 1..]
             .iter()
-            .filter(|m| m.role == Role::Assistant)
+            .filter(|m| m.role == Role::Assistant && !m.harness)
             .map(Message::text)
             .find(|t| !t.trim().is_empty());
         if let Some(text) = after {
@@ -2779,7 +2783,7 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
         // Names only, bounded: enough to see the shape of what it did next.
         for m in messages[*idx + 1..]
             .iter()
-            .filter(|m| m.role == Role::Assistant)
+            .filter(|m| m.role == Role::Assistant && !m.harness)
         {
             for (_, name, _) in m.tool_uses() {
                 if !intervention.tools_after.contains(&name.to_string()) {
@@ -3705,6 +3709,57 @@ mod tests {
                 .focus(),
             Some("shell")
         );
+    }
+
+    #[test]
+    fn harness_calls_do_not_become_owner_correction_scope_or_aftermath() {
+        let mut check = Message::assistant(vec![
+            Block::text("harness verification"),
+            Block::ToolUse {
+                id: "check".into(),
+                name: "shell".into(),
+                input: json!({"command":"check"}),
+            },
+        ]);
+        check.harness = true;
+        let mut after = check.clone();
+        after.content = vec![
+            Block::text("another harness observation"),
+            Block::ToolUse {
+                id: "later-check".into(),
+                name: "shell".into(),
+                input: json!({}),
+            },
+        ];
+        let mut results = Message::tool_results(vec![result(
+            "check",
+            "Denied by the user: not this check",
+            true,
+        )]);
+        results
+            .content
+            .push(Block::text("Read the other file instead."));
+        let messages = vec![
+            Message::user("read a file"),
+            Message::assistant(vec![tool_use("model")]),
+            Message::tool_results(vec![result("model", "ok", false)]),
+            check,
+            results,
+            after,
+            Message::tool_results(vec![result("later-check", "ok", false)]),
+            Message::assistant(vec![Block::text("I read the other file.")]),
+        ];
+        let found = extract_interventions(&messages);
+        assert_eq!(
+            found.len(),
+            1,
+            "denial of harness work is not a model correction"
+        );
+        assert_eq!(found[0].trigger, Trigger::Steer);
+        assert_eq!(found[0].tools_before, vec!["fs_read"]);
+        assert!(!found[0].context.contains("shell"));
+        assert_eq!(found[0].aftermath, "I read the other file.");
+        assert!(found[0].tools_after.is_empty());
     }
 
     #[test]

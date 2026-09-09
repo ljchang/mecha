@@ -2518,6 +2518,9 @@ impl Agent {
                         request.harness = true;
                         messages.push(request.clone());
                         let start = trace.len();
+                        // Preserve refused checks in their trace, without reporting
+                        // harness dispatch as a model-initiated send attempt.
+                        let mut check_blocks = 0;
                         let (results, provenance) = self
                             .run_tools(
                                 cx,
@@ -2525,7 +2528,7 @@ impl Agent {
                                 &events,
                                 &mut trace,
                                 &mut taint,
-                                &mut blocked_sends,
+                                &mut check_blocks,
                                 self.output_budget(
                                     cx,
                                     pressure,
@@ -7756,14 +7759,24 @@ mod tests {
             fn input_schema(&self) -> Value {
                 json!({"type":"object"})
             }
+            fn capabilities(&self) -> crate::tool::Capabilities {
+                crate::tool::Capabilities {
+                    external_send: true,
+                    ..Default::default()
+                }
+            }
             async fn call(&self, input: Value, _: &ToolCtx) -> Result<ToolOutput> {
                 assert_eq!(input["command"], "original check");
                 Ok(ToolOutput::err("check failed"))
             }
         }
-        for (mode, replacement) in [PermissionMode::Allow, PermissionMode::Ask]
-            .into_iter()
-            .flat_map(|mode| [Some("replacement"), None].map(|check| (mode, check)))
+        for (mode, armed, replacement) in [
+            (PermissionMode::Allow, false),
+            (PermissionMode::Ask, false),
+            (PermissionMode::Allow, true),
+        ]
+        .into_iter()
+        .flat_map(|(mode, armed)| [Some("replacement"), None].map(|check| (mode, armed, check)))
         {
             let plan = |id: &str, status: &str, check: Option<&str>| {
                 assistant(
@@ -7788,13 +7801,21 @@ mod tests {
                 mode,
             );
             let mut convo = Conversation::user("go");
+            convo.taint = Taint {
+                private: armed,
+                untrusted: armed,
+            };
             let outcome = agent.run(&mut convo, None).await.unwrap();
+            assert_eq!(
+                outcome.blocked_sends, 0,
+                "harness checks are not model send attempts"
+            );
             let check = outcome
                 .tool_calls
                 .iter()
                 .find(|c| c.name == crate::step::CHECK_TRACE)
                 .expect("check dispatched");
-            assert_eq!(check.denied, mode == PermissionMode::Ask);
+            assert_eq!(check.denied, armed || mode == PermissionMode::Ask);
             assert!(
                 !outcome.ended_on_failed_call,
                 "harness check is not the model's last call"
@@ -7803,7 +7824,7 @@ mod tests {
                 serde_json::to_string(&convo.messages)
                     .unwrap()
                     .contains("Fix what the check found"),
-                mode == PermissionMode::Allow,
+                mode == PermissionMode::Allow && !armed,
                 "the executor emits CheckFailed only for an executed failure, not a refused check"
             );
             let mut with_steer = convo.messages.clone();
@@ -7826,6 +7847,12 @@ mod tests {
                 vec!["Use the owner's revised acceptance criterion."],
                 "check advice is harness voice; a real steer sharing its message remains learnable"
             );
+            let steer = interventions
+                .iter()
+                .find(|i| i.trigger == crate::learning::Trigger::Steer)
+                .unwrap();
+            assert_eq!(steer.tools_before, vec!["todo"]);
+            assert!(steer.context.contains("todo"));
             let steps: Vec<_> = convo
                 .messages
                 .iter()
@@ -7835,7 +7862,7 @@ mod tests {
             assert_eq!(steps.len(), 1);
             assert_eq!(
                 steps[0].verification,
-                if mode == PermissionMode::Ask {
+                if mode == PermissionMode::Ask || armed {
                     crate::planning::Verification::Refused
                 } else {
                     crate::planning::Verification::Failed
