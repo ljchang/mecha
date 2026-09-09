@@ -480,6 +480,10 @@ fn show(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
     }
     if item.predictions.last().is_some_and(|p| p.known().is_none()) {
         println!("Appraisal uses unsupported evidence. Review remains available; release requires explicit reassessment.\n");
+    } else if item.predictions.iter().any(|p| p.known().is_none())
+        || item.outcomes.iter().any(|o| o.known().is_none())
+    {
+        println!("Some appraisal history cannot be interpreted; the session readout is partial.\n");
     }
     if let Some(p) = item
         .predictions

@@ -1960,7 +1960,9 @@ new fields, so mixed-version releases cannot enforce guidance.
 unrecognized enum cannot hide the draft from review, editing or rejection.
 Unsupported latest predictions or outcome history block release, and unknown
 predictions or outcomes make session appraisal partial instead of falling back to a positive
-draft verdict. Owner input remains strict. Display may fall back to the stored
+draft verdict. Their readable draft IDs still participate in request joins;
+unsupported evidence is partial appraisal, not an unreadable store.
+Owner input remains strict. Display may fall back to the stored
 assessment with a warning when recomputation fails; delivery never does.
 
 A delivered message is exposure, not proof of error or harm. Only
@@ -3265,7 +3267,8 @@ appraisal pays once.
 `anticipation::Evidence` accepts an explicit owner commitment and check/cost
 facts, never an incoming claim or model-selected label. `BoundEvidence` binds
 it to one confirmed goal for one invocation and counts elapsed time once.
-`Decision::with_owner_evidence` preserves goal alignment and charter precedence;
+`Decision::with_owner_evidence` preserves goal alignment, charter precedence,
+pending plan verification and expectations absent from the owner input;
 `BoundEvidence::for_draft` clears earlier verification, because a context check
 cannot certify newly authored prose. With `goal_guidance` enabled, fixed
 response templates reach tool results. Private evidence stays in local

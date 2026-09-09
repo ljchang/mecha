@@ -1212,8 +1212,7 @@ pub fn of_session(
     end_taint: Option<crate::agent::Taint>,
     created_at: String,
 ) -> Appraisal {
-    let mut records = records;
-    records.outbox_unreadable |= records.drafts.iter().any(|item| {
+    let unsupported_evidence = records.drafts.iter().any(|item| {
         item.outcomes.iter().any(|o| o.known().is_none())
             || item.predictions.iter().any(|p| p.known().is_none())
     });
@@ -1740,7 +1739,7 @@ pub fn of_session(
         origin: crate::learning::classify_origin(end_taint),
         taint: stats.taint,
         created_at,
-        partial: records.short(),
+        partial: records.short() || unsupported_evidence,
     };
     a.label = affect_of(&a);
     a

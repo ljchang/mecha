@@ -148,10 +148,23 @@ impl Decision {
             return;
         }
         if let Some(mut evidence) = bound.for_goal(self.anchor.as_ref()) {
-            evidence.budget_shortfall |= self
-                .anticipation_evidence
-                .as_ref()
-                .is_some_and(|e| e.budget_shortfall);
+            if let Some(harness) = &self.anticipation_evidence {
+                evidence.budget_shortfall |= harness.budget_shortfall;
+                if evidence.expected_outcome.is_none() {
+                    evidence.expected_outcome = harness.expected_outcome.clone();
+                }
+                // The owner's external check cannot certify unfinished plan verification.
+                if harness.verification == crate::anticipation::Verification::Pending
+                    && matches!(
+                        evidence.verification,
+                        crate::anticipation::Verification::Unknown
+                            | crate::anticipation::Verification::Passed
+                    )
+                {
+                    evidence.verification = crate::anticipation::Verification::Pending;
+                    evidence.verification_evidence = None;
+                }
+            }
             let assessment = crate::anticipation::assess(&evidence, false);
             if !matches!(
                 self.action,
@@ -160,6 +173,7 @@ impl Decision {
                 use crate::anticipation::Response;
                 self.action = match assessment.response {
                     Response::Verify => Action::Verify,
+                    Response::Clarify if self.action == Action::Verify => Action::Verify,
                     Response::Clarify => Action::GatherContext,
                     Response::Replan => Action::Replan,
                     Response::Proceed => self.action,
