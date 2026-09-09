@@ -52,7 +52,7 @@ Validation on this worktree: `cargo fmt --all`, warning-free
 `MECHA_TEST_REQUIRE_BACKENDS=1 cargo test --workspace` passed. Unit suites:
 CLI 806 passed/1 ignored, core 1524/1, mail library 151/0 plus mail binary 1/0,
 Slack 75/0. Integration suites: CLI anticipation 1, first-run 22, run lifecycle 3,
-serve lifecycle 5; core anticipation 9, appraisal fixtures 7, fixture servers 5,
+serve lifecycle 5; core anticipation 10, appraisal fixtures 7, fixture servers 5,
 MCP server 13, sandbox backends 9; grounding judge remains explicitly ignored.
 One core doctest passed. Docusaurus production build passed; the appraisal page
 rendered without browser errors or page overflow at 1440px and 390px.

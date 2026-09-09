@@ -499,7 +499,7 @@ fn show(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
             p.assessment.clone()
         };
         println!(
-            "Appraisal ({:?}, {:?}): {}\n",
+            "Appraisal ({}, {:?}): {}\n",
             if p.guide { "guidance" } else { "observation" },
             item.prediction_resolution(p),
             current.response.guidance()

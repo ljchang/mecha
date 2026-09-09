@@ -22,6 +22,10 @@ editing and rejection available; release and outcome grading fail closed.
 `outbox show` now keeps the draft visible when the current assessment fails
 (for example, a future timestamp), without weakening `begin_delivery`.
 Regressions cover these paths through the store, CLI and harness probe.
+A second review found the crossed case: a known harm outcome with an unknown
+prediction fell back to positive drafting credit. Both unknown record kinds now
+make appraisal partial and suppress that fallback; the regression failed before
+the correction.
 
 
 **2026-09-09 — anticipatory appraisal and linked outcomes, implemented locally.**

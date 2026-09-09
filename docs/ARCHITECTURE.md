@@ -1959,7 +1959,7 @@ new fields, so mixed-version releases cannot enforce guidance.
 `anticipation::History` retains unsupported nested records as raw JSON so an
 unrecognized enum cannot hide the draft from review, editing or rejection.
 Unsupported latest predictions or outcome history block release, and unknown
-outcomes make session appraisal partial instead of falling back to a positive
+predictions or outcomes make session appraisal partial instead of falling back to a positive
 draft verdict. Owner input remains strict. Display may fall back to the stored
 assessment with a warning when recomputation fails; delivery never does.
 
