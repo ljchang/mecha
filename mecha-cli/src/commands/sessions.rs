@@ -1030,8 +1030,7 @@ async fn appraise(
         .filter(|a| !a.reachable_today())
         .count();
     println!(
-        "\n  {:.0}% carry no label — {unreachable} of the {} `Affect` variants need a \
-         notion of harm, a cross-run view, a prediction, or an exposure producer",
+        "\n  {:.0}% carry no label — {unreachable} of the {} `Affect` variants have no current evidence producer",
         neutral as f64 / appraisals.len() as f64 * 100.0,
         appraisal::Affect::ALL.len(),
     );

@@ -3167,15 +3167,13 @@ saying *"you have failed your owner"* is aimed squarely at an appraisal layer.
 in `label_of`: a provider outage that reached somebody is still an outage, and
 labelling it this machine's failure would send a change at code that works.
 
-**Five of the ten `Affect` variants have no producer, and
-`Affect::reachable_today` is where that fact is testable rather than only
-documented.** The exhaustive `match` in its test is what makes a new variant a
-compile error; `Affect::ALL` is what the `sessions appraise` readout derives its
-"N of the ten variants" line from, because that count shipped stale as a
-hand-typed literal twice. `Embarrassment` lost its only producer as a *side
-effect* of correctly making the `SentEdited` arm `visible: false` — that
-correction was right, and nothing now computes "mecha's own mistake reached a
-third party".
+**`Affect::reachable_today` names the labels the current evidence producers can
+reach.** Its exhaustive test makes a new variant a compile error; the
+`sessions appraise` readout derives its count from that function and `Affect::ALL`
+rather than duplicating a count that has repeatedly drifted. Linked post-delivery
+owner outcomes supply embarrassment and guilt. Ordinary owner edits remain
+`visible: false`: catching a mistake before release does not establish exposure.
+Shame and excitement still have no evidence producer.
 
 **`GoalError::cite` is a pointer, never prose** — `frontdoor::Record::for_privileged_run`
 in a fourth setting, after `diagnose::Evidence`. Every variant is a name or an
