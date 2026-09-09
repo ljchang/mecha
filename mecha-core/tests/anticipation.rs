@@ -330,6 +330,35 @@ fn an_unknown_outcome_is_preserved_and_never_falls_back_to_a_positive_verdict() 
 }
 
 #[test]
+fn an_unknown_prediction_cannot_turn_a_known_harm_outcome_into_success() {
+    let f = Fixture::new();
+    let draft = f.draft();
+    let item = f.store.anticipate(&draft.id, evidence(), false).unwrap();
+    let prediction = item.predictions.last().unwrap().known().unwrap().id.clone();
+    f.store.begin_delivery(&draft.id).unwrap();
+    f.store.resolve(&draft.id, "sent", None).unwrap();
+    let observed = f
+        .store
+        .record_outcome(&draft.id, feedback(&prediction, Verdict::Harm))
+        .unwrap();
+    let mut value = serde_json::to_value(&observed).unwrap();
+    let i = value["predictions"].as_array().unwrap().len() - 1;
+    value["predictions"][i]["assessment"]["response"] = json!("future_response");
+    std::fs::write(f.root.join(format!("{}.json", draft.id)), value.to_string()).unwrap();
+    let read = f.store.item(&draft.id).unwrap();
+    assert!(read.outcomes.iter().all(|o| o.known().is_some()));
+    let a = appraise(&read);
+    assert!(
+        a.partial,
+        "unsupported prediction leaves outcome attribution unknown"
+    );
+    assert!(
+        a.errors.is_empty(),
+        "unknown evidence cannot become a positive drafting verdict"
+    );
+}
+
+#[test]
 fn an_expired_guided_commitment_cannot_use_an_old_pass_to_release() {
     let f = Fixture::new();
     let draft = f.draft();

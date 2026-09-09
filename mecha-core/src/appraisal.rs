@@ -1213,10 +1213,10 @@ pub fn of_session(
     created_at: String,
 ) -> Appraisal {
     let mut records = records;
-    records.outbox_unreadable |= records
-        .drafts
-        .iter()
-        .any(|item| item.outcomes.iter().any(|o| o.known().is_none()));
+    records.outbox_unreadable |= records.drafts.iter().any(|item| {
+        item.outcomes.iter().any(|o| o.known().is_none())
+            || item.predictions.iter().any(|p| p.known().is_none())
+    });
 
     // **A charter reference is kept only if the loaded charter contains
     // the line.** `goals` may carry the model's own `serves:` string
@@ -1463,7 +1463,9 @@ pub fn of_session(
         // or a third `OutboxKind` from teaching only one of the two places
         // that reason about it.
         // Uninterpretable owner evidence cannot fall back to a positive drafting verdict.
-        if item.outcomes.iter().any(|o| o.known().is_none()) {
+        if item.outcomes.iter().any(|o| o.known().is_none())
+            || item.predictions.iter().any(|p| p.known().is_none())
+        {
             continue;
         }
         // A later owner's verdict replaces the drafting verdict for this incident.
@@ -3099,20 +3101,15 @@ mod tests {
         }
     }
 
-    /// Exposure lost its only producer when the `SentEdited` arm was made
-    /// `visible: false` — correct on its own terms (the owner's rewrite
-    /// sends their words, and the catch is the mechanism working), and it
-    /// silently removed the one path that ever set a visible negative. The
-    /// derivation still knows the label (the test above this block reaches
-    /// it from a hand-built error); no assembler can. This is the assertion
-    /// that fails the day a channel starts computing real exposure, so the
-    /// module note and `reachable_today` get updated instead of drifting.
+    /// Ordinary edits and run counters establish no escaped error. Linked
+    /// owner outcomes supply embarrassment separately; adding that producer
+    /// must not turn an owner's caught-and-corrected draft into exposure.
     #[test]
     fn ordinary_edits_and_counters_never_claim_an_escaped_error() {
         assert!(Affect::Embarrassment.reachable_today());
 
-        // Every negative `of_session` can assemble is invisible: the
-        // owner's rewrite, a rejected draft, every counter, a steer.
+        // These ordinary negatives are invisible: the owner's rewrite,
+        // a rejected draft, every counter, a steer.
         let rewrote = draft("o1", "sent", true);
         let rejected = draft("o2", "rejected", false);
         let mut s = stats();
@@ -3132,9 +3129,7 @@ mod tests {
         assert!(a.errors.iter().any(|e| e.sign < 0.0), "fixture is vacuous");
         assert!(
             a.errors.iter().all(|e| !(e.visible && e.sign < 0.0)),
-            "an assembler has started emitting a visible negative — \
-             Embarrassment has a producer again, so update reachable_today \
-             and the module note: {:?}",
+            "ordinary edits and counters cannot establish an escaped error: {:?}",
             a.errors
         );
         assert_ne!(a.label, Affect::Embarrassment);
