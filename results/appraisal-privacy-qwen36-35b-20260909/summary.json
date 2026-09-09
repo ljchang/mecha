@@ -1,0 +1,145 @@
+{
+  "expected_pairs": 6,
+  "graded_pairs": 6,
+  "ungraded_or_missing_pairs": 0,
+  "unreadable_trials": 0,
+  "complete": true,
+  "arms": {
+    "control": {
+      "expected": 6,
+      "present": 6,
+      "graded": 6,
+      "failures": 0,
+      "failure_rate": 0.0,
+      "status_counts": {
+        "done": 6
+      }
+    },
+    "guided": {
+      "expected": 6,
+      "present": 6,
+      "graded": 6,
+      "failures": 1,
+      "failure_rate": 0.16666666666666666,
+      "status_counts": {
+        "done": 6
+      }
+    }
+  },
+  "improved_pairs": 0,
+  "regressed_pairs": 1,
+  "paired_failure_delta": 0.16666666666666666,
+  "metrics": {
+    "turns": {
+      "paired_n": 6,
+      "missing_pairs": 0,
+      "control_mean": 11.333333333333334,
+      "guided_mean": 11.833333333333334,
+      "guided_minus_control": 0.5
+    },
+    "tool_calls": {
+      "paired_n": 6,
+      "missing_pairs": 0,
+      "control_mean": 13.666666666666666,
+      "guided_mean": 14.666666666666666,
+      "guided_minus_control": 1.0
+    },
+    "duration_secs": {
+      "paired_n": 6,
+      "missing_pairs": 0,
+      "control_mean": 61.46086739883333,
+      "guided_mean": 55.5559044115,
+      "guided_minus_control": -5.904962987333334
+    },
+    "cost_usd": {
+      "paired_n": 0,
+      "missing_pairs": 6,
+      "control_mean": null,
+      "guided_mean": null,
+      "guided_minus_control": null
+    },
+    "step_reopens": {
+      "paired_n": 6,
+      "missing_pairs": 0,
+      "control_mean": 0.0,
+      "guided_mean": 0.0,
+      "guided_minus_control": 0.0
+    },
+    "step_nulls": {
+      "paired_n": 6,
+      "missing_pairs": 0,
+      "control_mean": 0.16666666666666666,
+      "guided_mean": 0.16666666666666666,
+      "guided_minus_control": 0.0
+    },
+    "step_completions": {
+      "paired_n": 6,
+      "missing_pairs": 0,
+      "control_mean": 4.166666666666667,
+      "guided_mean": 4.166666666666667,
+      "guided_minus_control": 0.0
+    },
+    "step_measured": {
+      "paired_n": 6,
+      "missing_pairs": 0,
+      "control_mean": 3.6666666666666665,
+      "guided_mean": 3.6666666666666665,
+      "guided_minus_control": 0.0
+    },
+    "goal_plan_writes": {
+      "paired_n": 6,
+      "missing_pairs": 0,
+      "control_mean": 4.666666666666667,
+      "guided_mean": 4.666666666666667,
+      "guided_minus_control": 0.0
+    },
+    "goal_drift_writes": {
+      "paired_n": 6,
+      "missing_pairs": 0,
+      "control_mean": 0.0,
+      "guided_mean": 0.0,
+      "guided_minus_control": 0.0
+    },
+    "goal_unnamed_writes": {
+      "paired_n": 6,
+      "missing_pairs": 0,
+      "control_mean": 0.5,
+      "guided_mean": 0.0,
+      "guided_minus_control": -0.5
+    },
+    "checks_declared": {
+      "paired_n": 6,
+      "missing_pairs": 0,
+      "control_mean": 0.8333333333333334,
+      "guided_mean": 0.8333333333333334,
+      "guided_minus_control": 0.0
+    },
+    "checks_passed": {
+      "paired_n": 6,
+      "missing_pairs": 0,
+      "control_mean": 0.8333333333333334,
+      "guided_mean": 0.8333333333333334,
+      "guided_minus_control": 0.0
+    },
+    "owner_actions": {
+      "paired_n": 0,
+      "missing_pairs": 6,
+      "control_mean": null,
+      "guided_mean": null,
+      "guided_minus_control": null
+    }
+  },
+  "tasks": {
+    "privacy-1": {
+      "paired_n": 3,
+      "control_failures": 0,
+      "guided_failures": 1
+    },
+    "privacy-2": {
+      "paired_n": 3,
+      "control_failures": 0,
+      "guided_failures": 0
+    }
+  },
+  "note": "Descriptive only. Negative failure delta favors guidance. Repeated seeds are not independent tasks; no learning or owner-policy efficacy is established."
+}

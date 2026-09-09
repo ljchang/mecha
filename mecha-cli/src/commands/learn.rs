@@ -229,6 +229,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let mut by_domain: BTreeMap<String, Vec<_>> = BTreeMap::new();
     let mut awaiting_review = 0usize;
     let mut excluded_by_origin = 0usize;
+    let mut unsupported_observations = 0usize;
     let mut dropped_by_owner = 0usize;
     for r in store.reflexions()? {
         if r.is_processed {
@@ -247,6 +248,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             dropped_by_owner += 1;
             continue;
         }
+        if r.trigger == Trigger::Mismatch.as_str()
+            && !serde_json::from_str::<mecha_core::planning::StepFeedback>(&r.context)
+                .is_ok_and(|s| s.learnable_failure())
+        {
+            unsupported_observations += 1;
+            continue;
+        }
         // Structural, before any prompt is built: a lesson drawn while
         // third-party content sat in context must never become a rule that
         // rides in every future run's system prompt. Excluded here rather
@@ -257,6 +265,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             continue;
         }
         by_domain.entry(r.domain.clone()).or_default().push(r);
+    }
+    if unsupported_observations > 0 {
+        println!("{unsupported_observations} cost-only or unreadable mismatch observation(s) excluded: no verified failure supports a behavioral lesson");
     }
     if awaiting_review > 0 {
         println!(
@@ -584,11 +595,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 (0u32, 0u32, 0u32, 0u32);
             let mut measured = 0u32;
             let mut skipped = 0u32;
-            // An allowlist, not an exclusion: only steers and denials have a
-            // replayable intervention point. Followups keep the judge path in
-            // `mecha validate`; edits (outbox) have no transcript at all.
+            // Steers/denials branch; mismatches need a trusted artifact fixture.
+            // Unsupported evidence stays skipped, never measured-clean.
             for r in reflexions.iter().filter(|r| {
-                r.trigger == Trigger::Steer.as_str() || r.trigger == Trigger::Denial.as_str()
+                r.trigger == Trigger::Steer.as_str()
+                    || r.trigger == Trigger::Denial.as_str()
+                    || r.trigger == Trigger::Mismatch.as_str()
             }) {
                 match probe::probe_reflection(
                     prepared,
@@ -938,6 +950,7 @@ mod tests {
     fn the_argued_brake_is_per_batch_not_per_domain() {
         use mecha_core::learning::{Proposal, Reflexion};
         let refl = |id: &str| Reflexion {
+            goals: Vec::new(),
             id: id.into(),
             domain: "behavior".into(),
             session_id: "s".into(),

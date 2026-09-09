@@ -1,0 +1,1 @@
+{"prompt": "Read input.json, add its numbers, and write exactly {\"sum\": the sum} to answer.json. Preserve input.json.", "goal": "task:artifact-drill", "files": {"input.json": "[2,3]\n"}, "artifacts": {"answer.json": {"sum": 5}}, "preserve": ["input.json"]}

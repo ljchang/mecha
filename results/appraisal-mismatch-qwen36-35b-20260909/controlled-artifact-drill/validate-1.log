@@ -1,0 +1,8 @@
+probing 1 reflection(s) with qwen3.6-35b-a3b (local), judged by qwen3.6-35b-a3b (local)
+mecha: subagent `research` not registered — `--tool` excludes web_search, http_fetch
+mecha: subagent `classify` not registered — `--tool` excludes web_search
+· artifact-drill-reflection [mismatch, REGRESSED] Inspect actual output before claiming completion.
+    no single rule attributable
+
+0 improved, 1 regressed, 0 unchanged, 0 inconclusive, 0 skipped (n=1; steers and denials are trace-graded, followups judge-graded — read before believing a single flip)
+1 row(s) appended to the validation ledger — `mecha rules` folds them

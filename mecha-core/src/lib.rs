@@ -178,3 +178,7 @@ mod process_alive_tests {
 
 #[cfg(unix)]
 pub mod workspace_files;
+
+pub mod planning;
+
+pub mod mismatch;

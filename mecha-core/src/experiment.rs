@@ -1141,9 +1141,34 @@ pub struct Tasks {
     /// Only these case ids, when set.
     #[serde(default)]
     pub ids: Vec<String>,
+    /// Explicit owner-confirmed goals by case id, passed as `run --goal`.
+    /// Kept in the immutable manifest rather than inferred from model prose.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "confirmed_goals"
+    )]
+    pub confirmed_goals: BTreeMap<String, crate::goal::GoalRef>,
+    /// Owner-authored, immutable artifact validation fixtures. Gold is copied
+    /// into run metadata, never the model's workspace.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mismatch_cases: BTreeMap<String, crate::mismatch::ArtifactCase>,
     /// Only cases carrying one of these tags, when set.
     #[serde(default)]
     pub tags: Vec<String>,
+}
+
+fn confirmed_goals<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<BTreeMap<String, crate::goal::GoalRef>, D::Error> {
+    BTreeMap::<String, String>::deserialize(d)?
+        .into_iter()
+        .map(|(id, goal)| {
+            goal.parse()
+                .map(|goal| (id, goal))
+                .map_err(serde::de::Error::custom)
+        })
+        .collect()
 }
 
 fn source_timeout() -> u64 {
@@ -1164,6 +1189,8 @@ impl Tasks {
             fixture: fixture.into(),
             ids,
             tags: Vec::new(),
+            confirmed_goals: BTreeMap::new(),
+            mismatch_cases: BTreeMap::new(),
         }
     }
 
@@ -1177,6 +1204,18 @@ impl Tasks {
     }
 
     fn validate(&self) -> Result<()> {
+        for (id, case) in &self.mismatch_cases {
+            case.validate()?;
+            anyhow::ensure!(
+                self.confirmed_goals
+                    .get(id)
+                    .map(ToString::to_string)
+                    .as_deref()
+                    == Some(case.goal.as_str()),
+                "mismatch fixture requires matching confirmed goal for `{id}`"
+            );
+        }
+
         match (&self.cases, self.source.is_empty()) {
             (Some(_), false) => anyhow::bail!(
                 "`[tasks]` names both `cases` and `source`; the tasks come from one or the other"
@@ -1632,6 +1671,29 @@ impl Manifest {
     }
 
     fn with_grading_clock_hash(&self, original: String) -> String {
+        if self.fixtures.clock.is_empty()
+            && self.judge.is_none()
+            && self.tasks.confirmed_goals.is_empty()
+            && self.tasks.mismatch_cases.is_empty()
+        {
+            return original;
+        }
+        let original = if self.tasks.mismatch_cases.is_empty() {
+            original
+        } else {
+            fnv64(format!("{original}|mismatch_cases={:?}", self.tasks.mismatch_cases).as_bytes())
+        };
+        let original = if self.tasks.confirmed_goals.is_empty() {
+            original
+        } else {
+            fnv64(
+                format!(
+                    "{original}|confirmed_goals={:?}",
+                    self.tasks.confirmed_goals
+                )
+                .as_bytes(),
+            )
+        };
         if self.fixtures.clock.is_empty() && self.judge.is_none() {
             return original;
         }
@@ -2729,9 +2791,20 @@ pub fn child_invocation(
     config.outbox.dir = None;
     config.skills.dir = None;
     config.messages.dir = None;
+    // Removing these levers from the off-list is insufficient when the
+    // operator disabled them (guidance defaults off). Explicit on must
+    // materialize a different condition; unspecified switches still inherit.
+    if arm.levers_on.iter().any(|name| name == "step_checks") {
+        config.agent.step_checks = true;
+    }
+    if arm.levers_on.iter().any(|name| name == "goal_guidance") {
+        config.agent.goal_guidance = true;
+    }
     let mut flags = Vec::new();
     for lever in levers_off {
         match lever {
+            Lever::StepChecks => config.agent.step_checks = false,
+            Lever::GoalGuidance => config.agent.goal_guidance = false,
             Lever::StepEscalation => config.agent.step_escalation = false,
             Lever::Boredom => config.agent.boredom = false,
             Lever::CompactValidate => config.agent.compact_validate = false,
@@ -3182,6 +3255,52 @@ rationale = "no notice, fewer turns"
             &|t| t.replace("name = \"levers\"", "name = \"a/b\""),
             "name",
         );
+    }
+
+    #[test]
+    fn artifact_fixture_is_registered_and_changes_the_condition() {
+        let mut m = Manifest::parse(MANIFEST).unwrap();
+        m.tasks
+            .confirmed_goals
+            .insert("t1".into(), "task:t1".parse().unwrap());
+        let before = m.trials(&["t1".into()], "p", "m")[0].condition_hash.clone();
+        let case=serde_json::from_value(serde_json::json!({"prompt":"task","goal":"task:t1","files":{},"artifacts":{"answer.json":{"ok":true}}})).unwrap();
+        m.tasks.mismatch_cases.insert("t1".into(), case);
+        let text = toml::to_string(&m).unwrap();
+        let restored = Manifest::parse(&text).unwrap();
+        assert_ne!(
+            before,
+            restored.trials(&["t1".into()], "p", "m")[0].condition_hash
+        );
+        let first = restored.trials(&["t1".into()], "p", "m")[0]
+            .condition_hash
+            .clone();
+        m.tasks
+            .mismatch_cases
+            .get_mut("t1")
+            .unwrap()
+            .artifacts
+            .insert("answer.json".into(), serde_json::json!({"ok":false}));
+        assert_ne!(first, m.trials(&["t1".into()], "p", "m")[0].condition_hash);
+        m.tasks.confirmed_goals.clear();
+        assert!(Manifest::parse(&toml::to_string(&m).unwrap()).is_err());
+    }
+
+    #[test]
+    fn confirmed_goal_is_strict_recorded_and_changes_the_condition() {
+        let mut m = Manifest::parse(MANIFEST).unwrap();
+        let before = m.trials(&["t1".into()], "p", "m")[0].condition_hash.clone();
+        m.tasks
+            .confirmed_goals
+            .insert("t1".into(), "task:t1".parse().unwrap());
+        let text = toml::to_string(&m).unwrap();
+        let restored = Manifest::parse(&text).unwrap();
+        assert_eq!(restored.tasks.confirmed_goals, m.tasks.confirmed_goals);
+        assert_ne!(
+            before,
+            restored.trials(&["t1".into()], "p", "m")[0].condition_hash
+        );
+        assert!(Manifest::parse(&text.replace("task:t1", "unknown:t1")).is_err());
     }
 
     #[test]

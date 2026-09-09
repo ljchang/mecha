@@ -89,14 +89,9 @@ pub struct TodoItem {
     /// different check on that write or on any later one, including after
     /// the step is reopened or dropped and re-added, is reported back as a
     /// tamper rather than accepted, the `expect.verify` discipline one tier
-    /// down. **Not
-    /// executed yet.** The loop is to run it, dispatched exactly as a model
-    /// `shell` call would be (approver, sandbox, interlock, hooks), and
-    /// record the result as a trace named `step::CHECK_TRACE`, which
-    /// `step::Work::of` already folds into `checks_declared` /
-    /// `checks_passed`; that execution is the audit lane's
-    /// (`AUDIT-RESEARCH.md` §3.11) and until it lands no `check` trace is
-    /// ever written.
+    /// down. The loop runs newly completed checks through ordinary shell
+    /// dispatch, including approvals, hooks, sandbox and taint. Disabling
+    /// `agent.step_checks` or refusing dispatch leaves completion unverified.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -105,9 +100,9 @@ pub struct TodoItem {
     pub check: Option<String>,
     /// How many tool calls the model expects the step to take. The
     /// residual against the actual span is the cheapest expectation error
-    /// there is. **Nothing reads it yet**: `step::escalation_candidate` is
-    /// where the residual belongs, before the sibling mean, and that change
-    /// is the audit lane's (`AUDIT-RESEARCH.md` §3.11).
+    /// there is. The last open declaration is compared with unambiguous
+    /// completed work in `planning::StepFeedback`; substantial overruns are
+    /// recorded for calibration, not sufficient alone for a behavioral lesson.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -275,6 +270,7 @@ struct Tracked {
     /// as nothing, which is the safe direction: silence, never a finding about
     /// a span that is not the one measured.
     started: HashMap<String, Mark>,
+    observations: Vec<crate::planning::StepFeedback>,
     /// Steps already reported on, so a second identical reading escalates
     /// instead of asking for the same revision again (§5.5's bound).
     flagged: std::collections::HashSet<String>,
@@ -488,6 +484,7 @@ impl Tracked {
         };
 
         let mut lines = Vec::new();
+        let mut tampered_steps = std::collections::HashSet::new();
         // The check freezes on the write that claims completion, and stays
         // frozen for the life of the plan. While the step is open the latest
         // declaration is the check; on the completing write the last open
@@ -504,22 +501,28 @@ impl Tracked {
         // status loop because that loop reads `next` immutably.
         for item in next.items.iter_mut() {
             let Some(check) = item.check.clone() else {
-                // The third door: a frozen step written again with the
-                // field simply absent. Reopen and re-add-with-a-different-
-                // check were closed and this was not (found on review), and
-                // once something runs checks it is the cheapest evasion —
-                // no trace written, no counter raised, nothing signed. The
-                // same claim unmade after the fact is the same tamper:
-                // restored, counted, echoed.
-                if let Some(f) = self.checks.get(&item.content).filter(|f| f.frozen) {
+                // Omitting the field on the completing write is the same
+                // post-hoc change as replacing its command. Preserve and
+                // freeze the last open declaration before queueing checks.
+                if let Some(f) = self
+                    .checks
+                    .get_mut(&item.content)
+                    .filter(|f| f.frozen || item.status == Status::Completed)
+                {
                     self.tampered += 1;
+                    tampered_steps.insert(item.content.clone());
                     lines.push(format!(
-                        "the check for step \"{}\" was dropped after the step was marked \
+                        "the check for step \"{}\" was dropped on or after the write that marked it \
                          done; the check it was completed against stands, and the change is \
                          recorded",
                         crate::step::ellipsize(&item.content, 60)
                     ));
                     item.check = Some(f.check.clone());
+                    f.frozen = true;
+                } else {
+                    // An explicit withdrawal while still open is allowed.
+                    // Do not resurrect that declaration on a later write.
+                    self.checks.remove(&item.content);
                 }
                 continue;
             };
@@ -529,6 +532,7 @@ impl Tracked {
             match prior {
                 Some(f) if (f.frozen || completing) && f.hash != hash => {
                     self.tampered += 1;
+                    tampered_steps.insert(item.content.clone());
                     lines.push(format!(
                         "the check for step \"{}\" was changed on or after the write that \
                          marked it done; the check it was completed against stands, and \
@@ -663,10 +667,58 @@ impl Tracked {
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
+                    let prediction = self
+                        .plan
+                        .items
+                        .iter()
+                        .find(|p| p.content == item.content && p.status != Status::Completed);
+                    let actual_calls = self
+                        .started
+                        .get(&item.content)
+                        .and_then(|mark| {
+                            work.and_then(|w| {
+                                w.since(
+                                    mark.work,
+                                    own_calls_before.saturating_sub(mark.own_calls),
+                                    last_real,
+                                )
+                            })
+                        })
+                        .filter(|span| span.in_flight == 0 && span.denied == 0)
+                        .map(|span| span.calls);
+                    let observation = crate::planning::StepFeedback {
+                        criterion: None,
+                        completion_batch: Some(
+                            next.items
+                                .iter()
+                                .filter(|i| {
+                                    i.status == Status::Completed
+                                        && before.get(i.content.as_str()).copied()
+                                            != Some(Status::Completed)
+                                })
+                                .count() as u32,
+                        ),
+                        call_id: None,
+                        check_tampered: tampered_steps.contains(&item.content),
+                        step: item.content.clone(),
+                        goal: next.goal.clone(),
+                        expected: prediction.and_then(|p| p.expect.clone()),
+                        expected_calls: prediction.and_then(|p| p.expect_calls),
+                        actual_calls,
+                        verification: if item.check.is_some() {
+                            crate::planning::Verification::Pending
+                        } else {
+                            crate::planning::Verification::NotDeclared
+                        },
+                    };
+                    if observation.forecast_miss() {
+                        lines.push(format!("Step \"{}\" exceeded its prior call estimate; check step boundaries and remaining work before revising the estimate. This alone does not establish unnecessary work.", crate::step::ellipsize(&item.content, 60)));
+                    }
+                    self.observations.push(observation);
                     let Some(mark) = self.started.remove(&item.content) else {
                         continue;
                     };
-                    let Some(span) = work.and_then(|w| {
+                    let Some(mut span) = work.and_then(|w| {
                         w.since(
                             mark.work,
                             own_calls_before.saturating_sub(mark.own_calls),
@@ -675,6 +727,12 @@ impl Tracked {
                     }) else {
                         continue;
                     };
+                    // Checks dispatch after completion. A previous step's check
+                    // can fall inside this span when one write completes that
+                    // step and opens this one. Only the executor's goal/step/
+                    // call-id feedback can attribute checks, never global deltas.
+                    span.checks_declared = 0;
+                    span.checks_passed = 0;
                     // A span exists: this completion could have been a null,
                     // and is the null rate's denominator.
                     if let Some(counts) = step_counts {
@@ -794,6 +852,26 @@ impl Tracked {
         self.completed.retain(|(k, _)| live.contains(k.as_str()));
         drop(live);
 
+        for item in next
+            .items
+            .iter()
+            .filter(|i| tampered_steps.contains(&i.content))
+        {
+            if !self.observations.iter().any(|s| s.step == item.content) {
+                self.observations.push(crate::planning::StepFeedback {
+                    criterion: None,
+                    completion_batch: None,
+                    call_id: None,
+                    step: item.content.clone(),
+                    goal: next.goal.clone(),
+                    expected: item.expect.clone(),
+                    expected_calls: item.expect_calls,
+                    actual_calls: None,
+                    verification: crate::planning::Verification::NotDeclared,
+                    check_tampered: true,
+                });
+            }
+        }
         self.plan = next;
         lines
     }
@@ -1297,7 +1375,9 @@ impl Tool for TodoTool {
          it is done rather than in a batch at the end. If the work serves a task on \
          the board or a line of the owner's charter, pass `serves` — and pass it on \
          every write, like `items`, because both replace what was there. Skip this \
-         tool only for work of one or two steps."
+         tool only for work of one or two steps. Declare a checkable `expect`, a relevant \
+         `check`, and an `expect_calls` estimate when useful; use the observed result to \
+         revise remaining work. A completed status alone is not proof of success."
     }
 
     fn input_schema(&self) -> Value {
@@ -1326,8 +1406,8 @@ impl Tool for TodoTool {
                             "check": {
                                 "type": "string",
                                 "description": "Optional. A shell command whose exit code shows \
-                                                whether the step landed. Fixed once the step is \
-                                                completed."
+                                                whether the step landed. Runs through normal shell guards \
+                                                when completed; fixed from that point onward."
                             },
                             "expect_calls": {
                                 "type": "integer",
@@ -1578,6 +1658,13 @@ impl Tool for TodoTool {
         let (findings, rendered) = {
             let mut lists = self.lists.lock().unwrap_or_else(|e| e.into_inner());
             let tracked = lists.entry(ctx.workspace.clone()).or_default();
+            let previous: std::collections::HashSet<String> = tracked
+                .plan
+                .items
+                .iter()
+                .filter(|i| i.status == Status::Completed)
+                .map(|i| i.content.clone())
+                .collect();
             let findings = tracked.advance(
                 plan,
                 ctx.work,
@@ -1586,6 +1673,73 @@ impl Tool for TodoTool {
                 ctx.step_escalation.as_ref(),
                 ctx.step_counts.as_ref(),
             );
+            if let Some(queue) = &ctx.step_checks {
+                let mut queue = queue.lock().unwrap_or_else(|e| e.into_inner());
+                for item in tracked
+                    .plan
+                    .items
+                    .iter()
+                    .filter(|i| i.status == Status::Completed && !previous.contains(&i.content))
+                {
+                    if let Some(command) = &item.check {
+                        {
+                            queue.push(crate::step::CheckRequest {
+                                call_id: ctx.call_id.clone(),
+                                step: item.content.clone(),
+                                goal: tracked.plan.goal.clone(),
+                                tool: "shell".into(),
+                                input: json!({"command": command}),
+                            });
+                        }
+                    }
+                }
+            }
+            let mut findings = findings;
+            if let Some(feedback) = &ctx.plan_feedback {
+                let mut feedback = feedback.lock().unwrap_or_else(|e| e.into_inner());
+                let mut observations = std::mem::take(&mut tracked.observations);
+                let mut verified = ctx.verified_steps.lock().unwrap_or_else(|e| e.into_inner());
+                for step in &mut observations {
+                    step.call_id = ctx.call_id.clone();
+                    verified.remove(&crate::planning::verification_key(
+                        step.goal.as_ref(),
+                        &step.step,
+                    ));
+                }
+                for step in tracked
+                    .plan
+                    .items
+                    .iter()
+                    .filter(|i| i.status != Status::Completed)
+                {
+                    verified.remove(&crate::planning::verification_key(
+                        tracked.plan.goal.as_ref(),
+                        &step.content,
+                    ));
+                }
+                if ctx.step_checks.is_none() {
+                    for step in &mut observations {
+                        if step.verification == crate::planning::Verification::Pending {
+                            step.verification = crate::planning::Verification::Skipped;
+                        }
+                    }
+                }
+                feedback.steps.extend(observations);
+                let decision = crate::planning::Decision::assess(
+                    &tracked.plan,
+                    ctx.goal_track.as_ref().and_then(|g| g.anchor()),
+                    ctx.goal_readings.as_deref(),
+                    ctx.context.as_ref().and_then(|f| f.turns_left),
+                    &verified,
+                    ctx.goal_guidance,
+                );
+                if decision.applied {
+                    findings.push(decision.action.guidance().to_string());
+                }
+                feedback.decisions.push(decision);
+            } else {
+                tracked.observations.clear();
+            }
             (findings, Self::render(&tracked.plan))
         };
         let findings = match findings.is_empty() {
@@ -1871,6 +2025,8 @@ mod tests {
             .map(|(c, s)| json!({"content": c, "status": s}))
             .collect();
         Message {
+            harness: false,
+            planning: None,
             tool_provenance: Default::default(),
             role: Role::Assistant,
             content: vec![Block::ToolUse {
@@ -1883,6 +2039,8 @@ mod tests {
 
     fn result(id: &str, is_error: bool) -> Message {
         Message {
+            harness: false,
+            planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
             content: vec![Block::ToolResult {
@@ -1948,6 +2106,8 @@ mod tests {
         // not one block, which is what this test asserted until it failed and
         // sent me back to read `rebuild`.
         let head = Message {
+            harness: false,
+            planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
             content: vec![
@@ -1975,6 +2135,8 @@ mod tests {
         let ws = PathBuf::from("/w/a");
         let msgs = vec![
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::text(format!(
@@ -2159,6 +2321,28 @@ mod tests {
             ),
             ..ToolCtx::default()
         }
+    }
+
+    #[tokio::test]
+    async fn a_previous_steps_check_cannot_fail_the_next_steps_span() {
+        let todo = TodoTool::new();
+        todo.call(
+            json!({"items":[{"content":"first","status":"in_progress"}]}),
+            &work_ctx(1, 0, None),
+        )
+        .await
+        .unwrap();
+        todo.call(json!({"items":[{"content":"first","status":"completed"},{"content":"second","status":"in_progress"}]}),&work_ctx(1,1,Some(Outcome::Ok))).await.unwrap();
+        let mut ctx = work_ctx(1, 3, Some(Outcome::Ok));
+        ctx.work.as_mut().unwrap().checks_declared = 1;
+        let result = todo.call(json!({"items":[{"content":"first","status":"completed"},{"content":"second","status":"completed"}]}),&ctx).await.unwrap();
+        assert!(
+            !result
+                .content
+                .contains("the check it declared did not pass"),
+            "{}",
+            result.content
+        );
     }
 
     /// Same, with `in_flight` siblings — the batched shape, where this same
@@ -3559,7 +3743,7 @@ mod tests {
             .unwrap();
         assert!(
             out.content
-                .contains("was dropped after the step was marked done"),
+                .contains("was dropped on or after the write that marked it done"),
             "{}",
             out.content
         );
@@ -3589,6 +3773,52 @@ mod tests {
             "{}",
             out.content
         );
+    }
+
+    #[tokio::test]
+    async fn completing_without_a_check_freezes_the_last_open_declaration() {
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        for (status, check) in [("in_progress", Some("make test")), ("completed", None)] {
+            tool.call(
+                json!({"items": [{"content": "wire it", "status": status, "check": check}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(tool.items_in(&ws)[0].check.as_deref(), Some("make test"));
+        assert_eq!(tool.tampered_in(&ws), 1);
+        tool.call(
+            json!({"items": [{"content": "wire it", "status": "in_progress", "check": "true"}]}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(tool.items_in(&ws)[0].check.as_deref(), Some("make test"));
+        assert_eq!(tool.tampered_in(&ws), 2);
+    }
+
+    #[tokio::test]
+    async fn withdrawing_an_open_check_does_not_resurrect_it_on_completion() {
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-withdraw-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        for (status, check) in [
+            ("in_progress", Some("old check")),
+            ("in_progress", None),
+            ("completed", Some("new check")),
+        ] {
+            tool.call(
+                json!({"items": [{"content": "wire it", "status": status, "check": check}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(tool.items_in(&ws)[0].check.as_deref(), Some("new check"));
+        assert_eq!(tool.tampered_in(&ws), 0);
     }
 
     /// The fourth door: a resume rebuilds the tracker, and the first cut
@@ -3681,6 +3911,8 @@ mod tests {
         }) + "\n\nthe check for step \"wire it\" was changed on or after the write that marked it done; the check it was completed against stands, and the change is recorded";
         let messages = vec![
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
@@ -3690,6 +3922,8 @@ mod tests {
                 }],
             },
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
@@ -3753,6 +3987,8 @@ mod tests {
         });
         let messages = vec![
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
@@ -3762,6 +3998,8 @@ mod tests {
                 }],
             },
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
@@ -3771,6 +4009,8 @@ mod tests {
                 }],
             },
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
@@ -3780,6 +4020,8 @@ mod tests {
                 }],
             },
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
@@ -3864,6 +4106,8 @@ mod tests {
             .collect();
         let mut messages = vec![
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
@@ -3873,6 +4117,8 @@ mod tests {
                 }],
             },
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
@@ -3991,6 +4237,8 @@ mod tests {
             .collect();
         let mut messages = vec![
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
@@ -4000,6 +4248,8 @@ mod tests {
                 }],
             },
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
@@ -4009,6 +4259,8 @@ mod tests {
                 }],
             },
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
@@ -4018,6 +4270,8 @@ mod tests {
                 }],
             },
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
@@ -4103,6 +4357,8 @@ mod tests {
             .collect();
         let messages = vec![
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
@@ -4112,6 +4368,8 @@ mod tests {
                 }],
             },
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
@@ -4167,11 +4425,15 @@ mod tests {
         });
         let messages = vec![
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::Text { text: carried }],
             },
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
@@ -4181,6 +4443,8 @@ mod tests {
                 }],
             },
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {

@@ -1932,8 +1932,8 @@ mod tests {
         let untouched = GlobalOpts::default();
         assert_eq!(
             crate::setup::levers_off(&untouched, &folded(&untouched)),
-            vec![Lever::Messages, Lever::StepEscalation],
-            "messaging and step escalation are the two switches that ship off"
+            vec![Lever::Messages, Lever::StepEscalation, Lever::GoalGuidance],
+            "messaging, step escalation, and goal guidance ship off"
         );
     }
 

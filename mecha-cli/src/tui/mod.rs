@@ -3756,6 +3756,8 @@ fn submit(
         }
     } else {
         let user = Message {
+            harness: false,
+            planning: None,
             tool_provenance: Default::default(),
             role: mecha_core::message::Role::User,
             content: blocks,

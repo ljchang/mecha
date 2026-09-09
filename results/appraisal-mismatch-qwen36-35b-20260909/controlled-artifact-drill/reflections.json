@@ -1,0 +1,21 @@
+[
+  {
+    "goals": [
+      "task:artifact-drill"
+    ],
+    "id": "artifact-drill-reflection",
+    "domain": "behavior",
+    "session_id": "20260909T134558-5002ea57",
+    "trigger": "mismatch",
+    "context": "{\"call_id\":\"controlled-mismatch\",\"step\":\"controlled forecast mismatch\",\"goal\":\"task:artifact-drill\",\"expected\":null,\"expected_calls\":1,\"actual_calls\":8,\"verification\":\"not_declared\",\"check_tampered\":false}",
+    "intervention": "controlled mismatch",
+    "reflexion_text": "Inspect actual output before claiming completion.",
+    "error_type": null,
+    "confidence": null,
+    "is_processed": false,
+    "leap_run_id": null,
+    "created_at": "2026-09-09T13:46:03.262080005+00:00",
+    "origin": "clean",
+    "evidence": "full"
+  }
+]

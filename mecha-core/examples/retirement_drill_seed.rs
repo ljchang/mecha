@@ -180,6 +180,7 @@ fn seed_learning_store(learning_dir: &str, session_id: &str, steer: &str) -> Res
     )?;
 
     store.append_reflexion(&Reflexion {
+        goals: Vec::new(),
         id: format!("refl-drill-{session_id}"),
         domain: "behavior".into(),
         session_id: session_id.into(),

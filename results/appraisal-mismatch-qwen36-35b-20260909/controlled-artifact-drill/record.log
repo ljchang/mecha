@@ -1,0 +1,57 @@
+mecha: subagent `research` not registered — `--tool` excludes web_search, http_fetch
+mecha: subagent `classify` not registered — `--tool` excludes web_search
+{
+  "blocked_sends": 0,
+  "compactions": 0,
+  "cost_usd": null,
+  "elapsed_ms": 5121,
+  "ended_on_failed_call": false,
+  "error": null,
+  "exhausted": false,
+  "id": "run",
+  "malformed_tool_args": 0,
+  "meta": null,
+  "model": "qwen3.6-35b-a3b",
+  "ok": true,
+  "provider": "local",
+  "refusal": null,
+  "session": "20260909T134558-5002ea57",
+  "stop_cause": "completed",
+  "stop_reason": "end_turn",
+  "taint": {
+    "private": true,
+    "untrusted": false
+  },
+  "text": "Done. The numbers in `input.json` are `[2, 3]`, which sum to **5**. The result `{\"sum\": 5}` has been written to `answer.json`, and `input.json` is unchanged.",
+  "tool_calls": [
+    {
+      "denied": false,
+      "input": {
+        "path": "input.json"
+      },
+      "is_error": false,
+      "name": "fs_read",
+      "staged": false,
+      "unknown": false
+    },
+    {
+      "denied": false,
+      "input": {
+        "content": "{\"sum\": 5}",
+        "path": "answer.json"
+      },
+      "is_error": false,
+      "name": "fs_write",
+      "staged": false,
+      "unknown": false
+    }
+  ],
+  "turns": 3,
+  "usage": {
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 7479,
+    "input_tokens": 3783,
+    "output_tokens": 254
+  },
+  "usage_complete": true
+}

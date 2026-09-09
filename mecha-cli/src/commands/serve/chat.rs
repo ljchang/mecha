@@ -2825,6 +2825,8 @@ mod rollback_tests {
                 input: serde_json::json!({}),
             }]));
         conversation.messages.push(Message {
+            harness: false,
+            planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
             content: vec![Block::ToolResult {
@@ -2871,6 +2873,8 @@ mod rollback_tests {
                 input: serde_json::json!({}),
             }]));
         conversation.messages.push(Message {
+            harness: false,
+            planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
             content: vec![Block::ToolResult {
@@ -3001,11 +3005,15 @@ mod wire_tests {
     fn transcript_names_a_tool_result_from_its_call() {
         let messages = vec![
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::Text { text: "hi".into() }],
             },
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![
@@ -3020,6 +3028,8 @@ mod wire_tests {
                 ],
             },
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
@@ -3069,6 +3079,8 @@ mod wire_tests {
     #[test]
     fn a_spoken_turn_reads_back_as_the_owners_words() {
         let messages = vec![Message {
+            harness: false,
+            planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
             content: vec![Block::Text {
@@ -3242,6 +3254,8 @@ mod wire_tests {
         let input = serde_json::json!({"command": "ls -la"});
         let messages = vec![
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
@@ -3251,6 +3265,8 @@ mod wire_tests {
                 }],
             },
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
@@ -3286,6 +3302,8 @@ mod wire_tests {
     #[test]
     fn a_tool_result_only_message_adds_no_empty_user_entry() {
         let messages = vec![Message {
+            harness: false,
+            planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
             content: vec![Block::ToolResult {

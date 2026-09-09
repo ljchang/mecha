@@ -169,6 +169,13 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_step_escalation: bool,
 
+    /// Do not execute declared plan checks.
+    #[arg(long, global = true)]
+    pub no_step_checks: bool,
+    /// Disable goal and charter planning guidance.
+    #[arg(long, global = true)]
+    pub no_goal_guidance: bool,
+
     /// Load no `[[rule]]` approval rules. **Not a flag**: a `forbid` is the
     /// operator's standing word, and a switch that lifts it for one run is
     /// the silently-degrading-guard shape. Set only by `mecha eval`'s

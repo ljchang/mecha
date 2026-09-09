@@ -61,8 +61,8 @@ pub struct Args {
     #[arg(long)]
     pub unprocessed_only: bool,
 
-    /// Probe only these triggers (comma-separated: steer, denial, followup).
-    /// Default is all three.
+    /// Probe only these triggers (comma-separated: steer, denial, followup, mismatch).
+    /// Mismatches require an owner-supplied artifact fixture. Default is all four.
     #[arg(long, value_delimiter = ',')]
     pub trigger: Vec<String>,
 
@@ -351,6 +351,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         vec![
             Trigger::Steer.as_str(),
             Trigger::Denial.as_str(),
+            Trigger::Mismatch.as_str(),
             Trigger::Followup.as_str(),
         ]
     } else {
@@ -486,9 +487,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             // before it (`Situation::focus`), and a row placed on one would
             // release probation and satisfy `--cover` for a region the
             // probe never touched (found on review). Unknown instead.
-            region: r
-                .situation
-                .as_ref()
+            // A whole-task artifact repeat does not certify the original
+            // intervention's tool window as exercised.
+            region: (r.trigger != Trigger::Mismatch.as_str())
+                .then_some(r)
+                .and_then(|r| r.situation.as_ref())
                 .filter(|s| s.focus().is_some())
                 .map(|s| s.scope()),
         })?;
@@ -963,6 +966,7 @@ mod tests {
 
     fn reflexion(intervention: &str, origin: Origin) -> Reflexion {
         Reflexion {
+            goals: Vec::new(),
             id: "r1".into(),
             domain: "behavior".into(),
             session_id: "s".into(),
@@ -1103,6 +1107,7 @@ mod tests {
             )
         };
         let refl = |id: &str, tools: &[&str], processed: bool| Reflexion {
+            goals: Vec::new(),
             id: id.into(),
             is_processed: processed,
             situation: Some(Situation::recorded(

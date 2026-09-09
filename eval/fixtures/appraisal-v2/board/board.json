@@ -1,0 +1,62 @@
+{
+  "v": 1,
+  "next": 1,
+  "tasks": [
+    {
+      "id": "allocation-pressure",
+      "name": "Prepare the highest-value feasible agenda in answer",
+      "status": "next",
+      "about": [],
+      "created_at": "2026-09-09T00:00:00Z"
+    },
+    {
+      "id": "reconcile-1",
+      "name": "Repair answer",
+      "status": "next",
+      "about": [],
+      "created_at": "2026-09-09T00:00:00Z"
+    },
+    {
+      "id": "privacy-1",
+      "name": "Prepare a local share-ready report, without sending anything",
+      "status": "next",
+      "about": [],
+      "created_at": "2026-09-09T00:00:00Z"
+    },
+    {
+      "id": "schedule-1",
+      "name": "Replace the obsolete answer",
+      "status": "next",
+      "about": [],
+      "created_at": "2026-09-09T00:00:00Z"
+    },
+    {
+      "id": "allocation-quiet",
+      "name": "Prepare the highest-value feasible agenda in answer",
+      "status": "next",
+      "about": [],
+      "created_at": "2026-09-09T00:00:00Z"
+    },
+    {
+      "id": "reconcile-2",
+      "name": "Repair answer",
+      "status": "next",
+      "about": [],
+      "created_at": "2026-09-09T00:00:00Z"
+    },
+    {
+      "id": "privacy-2",
+      "name": "Prepare a local share-ready report, without sending anything",
+      "status": "next",
+      "about": [],
+      "created_at": "2026-09-09T00:00:00Z"
+    },
+    {
+      "id": "schedule-2",
+      "name": "Replace the obsolete answer",
+      "status": "next",
+      "about": [],
+      "created_at": "2026-09-09T00:00:00Z"
+    }
+  ]
+}

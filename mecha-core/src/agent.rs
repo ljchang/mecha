@@ -596,6 +596,8 @@ pub struct Conversation {
     ///
     /// [`ContextTracker::carry_into`]: crate::pressure::ContextTracker::carry_into
     pub pressure: crate::pressure::ContextTracker,
+    /// Last human-confirmed goal, owned by this conversation, never a shared agent.
+    pub goal_anchor: Option<crate::goal::GoalRef>,
 }
 
 impl Conversation {
@@ -610,6 +612,7 @@ impl Conversation {
             taint: Taint::default(),
             rewritten: Vec::new(),
             pressure: crate::pressure::ContextTracker::default(),
+            goal_anchor: None,
         }
     }
 
@@ -624,6 +627,7 @@ impl Conversation {
             // last request weighed, so a resumed conversation has no anchor
             // and predicts from its second turn on.
             pressure: crate::pressure::ContextTracker::default(),
+            goal_anchor: None,
         }
     }
 
@@ -717,6 +721,7 @@ impl From<Vec<Message>> for Conversation {
             taint: Taint::default(),
             rewritten: Vec::new(),
             pressure: crate::pressure::ContextTracker::default(),
+            goal_anchor: None,
         }
     }
 }
@@ -981,6 +986,9 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
     let text = text.trim();
     text == FINAL_ANSWER_NUDGE
         || text == EMPTY_TURN_NUDGE
+        || text == crate::planning::CRITERION_OBSERVATION
+        || text == "A declared plan check was not run; completion remains unverified."
+        || text == "The declared plan check did not establish completion. Review its result before claiming the step is verified."
         || text.starts_with(crate::boredom::NOTICE_STEM)
         || text.contains(crate::mailbox::DELIVERY_STEM)
         || text.starts_with(crate::step::STEP_ESCALATION_STEM)
@@ -1492,12 +1500,40 @@ impl Agent {
             if tools.step_escalation.is_some() {
                 tools.step_escalation = Some(Arc::new(std::sync::Mutex::new(None)));
             }
+            let mut verified = std::collections::HashSet::new();
+            for step in convo
+                .messages
+                .iter()
+                .filter_map(|m| m.planning.as_ref())
+                .flat_map(|f| &f.steps)
+            {
+                let key = crate::planning::verification_key(step.goal.as_ref(), &step.step);
+                if step.verification == crate::planning::Verification::Passed {
+                    verified.insert(key);
+                } else {
+                    verified.remove(&key);
+                }
+            }
+            tools.verified_steps = Arc::new(std::sync::Mutex::new(verified));
+            tools.plan_feedback = Some(Arc::new(std::sync::Mutex::new(
+                crate::planning::Feedback::default(),
+            )));
+            tools.goal_readings = cx.homeostat.as_ref().and_then(|h| h.charter.clone());
+            tools.goal_guidance = self.cfg.goal_guidance;
+            tools.step_checks = self
+                .cfg
+                .step_checks
+                .then(|| Arc::new(std::sync::Mutex::new(Vec::new())));
             tools.step_counts = Some(Arc::new(crate::tool::StepCounts::default()));
             // Fresh counters, the caller's anchor: a question resume seeds
             // the goal the owner just answered, and it must reach this run
             // and no other on the same agent.
             tools.goal_track = Some(Arc::new(crate::tool::GoalTrack::carrying(
-                tools.goal_track.as_ref().and_then(|t| t.anchor()),
+                tools
+                    .goal_track
+                    .as_ref()
+                    .and_then(|t| t.anchor())
+                    .or_else(|| convo.goal_anchor.clone()),
             )));
             run_scoped = RunContext {
                 tools: Arc::new(tools),
@@ -1528,6 +1564,8 @@ impl Agent {
         // that errored still leaves behind what it measured — and the next run
         // on this conversation is the one that needs it most.
         convo.pressure = pressure.clone();
+        // A human answer remains a fact even if the provider fails afterwards.
+        convo.goal_anchor = cx.tools.goal_track.as_ref().and_then(|t| t.anchor());
         let mut outcome = ran?;
         outcome.duration_secs = Some(started.elapsed().as_secs_f64());
         outcome.context_overflows = context_overflows;
@@ -1661,6 +1699,7 @@ impl Agent {
         // whose thresholds are argued rather than measured needs a count in
         // the store or the measurement that would justify its defaults can
         // never be taken.
+        let mut checks_used = 0usize;
         let mut step_escalations_used = 0u32;
         let mut step_escalations_revised = 0u32;
         let mut loop_detected = false;
@@ -2427,6 +2466,131 @@ impl Agent {
                     let mut result_message = Message::tool_results(results);
                     result_message.tool_provenance = provenance;
                     messages.push(result_message);
+                    // Finish the original tool batch before dispatching checks. This
+                    // preserves tool-use/result pairing and serializes verification
+                    // after every sibling's work, through the same guards as any call.
+                    let checks = cx
+                        .tools
+                        .step_checks
+                        .as_ref()
+                        .map(|queue| {
+                            std::mem::take(&mut *queue.lock().unwrap_or_else(|e| e.into_inner()))
+                        })
+                        .unwrap_or_default();
+                    for check in checks {
+                        if cx.cancelled() || checks_used >= crate::step::MAX_CHECKS_PER_RUN {
+                            if let Some(feedback) = &cx.tools.plan_feedback {
+                                if let Some(step) = feedback
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .steps
+                                    .iter_mut()
+                                    .rev()
+                                    .find(|s| {
+                                        s.call_id == check.call_id
+                                            && s.step == check.step
+                                            && s.goal == check.goal
+                                    })
+                                {
+                                    step.verification = crate::planning::Verification::Skipped;
+                                }
+                            }
+                            append_user_text(
+                                messages,
+                                "A declared plan check was not run; completion remains unverified."
+                                    .into(),
+                            );
+                            continue;
+                        }
+                        checks_used += 1;
+                        let id = format!(
+                            "mecha-check-{}-{checks_used}",
+                            cx.tools.work.map(|w| w.run).unwrap_or_default()
+                        );
+                        let mut request = Message::assistant(vec![
+                            Block::text("Harness verification of a declared plan check."),
+                            Block::ToolUse {
+                                id,
+                                name: check.tool,
+                                input: check.input,
+                            },
+                        ]);
+                        request.harness = true;
+                        messages.push(request.clone());
+                        let start = trace.len();
+                        let (results, provenance) = self
+                            .run_tools(
+                                cx,
+                                &request,
+                                &events,
+                                &mut trace,
+                                &mut taint,
+                                &mut blocked_sends,
+                                self.output_budget(
+                                    cx,
+                                    pressure,
+                                    crate::pressure::message_bytes(messages),
+                                ),
+                                None,
+                            )
+                            .await;
+                        convo.taint = taint;
+                        for result in &mut trace[start..] {
+                            result.name = crate::step::CHECK_TRACE.into();
+                            // Unknown or staged is unverified, never a failed/passed check.
+                            result.denied |= result.unknown || result.staged;
+                            result.input["step"] = Value::String(check.step.clone());
+                            result.input["goal"] =
+                                serde_json::to_value(&check.goal).unwrap_or(Value::Null);
+                        }
+                        if let Some(feedback) = &cx.tools.plan_feedback {
+                            if let Some(step) = feedback
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .steps
+                                .iter_mut()
+                                .rev()
+                                .find(|s| {
+                                    s.call_id == check.call_id
+                                        && s.step == check.step
+                                        && s.goal == check.goal
+                                })
+                            {
+                                step.verification = match trace.get(start) {
+                                    Some(t) if t.denied => crate::planning::Verification::Refused,
+                                    Some(t) if t.is_error => crate::planning::Verification::Failed,
+                                    Some(_) => crate::planning::Verification::Passed,
+                                    None => crate::planning::Verification::Skipped,
+                                };
+                                if step.verification == crate::planning::Verification::Passed {
+                                    cx.tools
+                                        .verified_steps
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .insert(crate::planning::verification_key(
+                                            step.goal.as_ref(),
+                                            &step.step,
+                                        ));
+                                }
+                            }
+                        }
+                        let mut answer = Message::tool_results(results);
+                        answer.tool_provenance = provenance;
+                        messages.push(answer);
+                        if trace[start..].iter().any(|c| c.is_error || c.denied) {
+                            append_user_text(messages, "The declared plan check did not establish completion. Review its result before claiming the step is verified.".into());
+                        }
+                    }
+                    if let Some(feedback) = &cx.tools.plan_feedback {
+                        let observed = std::mem::take(
+                            &mut *feedback.lock().unwrap_or_else(|e| e.into_inner()),
+                        );
+                        if !observed.steps.is_empty() || !observed.decisions.is_empty() {
+                            if let Some(last) = messages.last_mut() {
+                                last.planning = Some(observed);
+                            }
+                        }
+                    }
                     // Folded into the message carrying the results, which is
                     // the same slot steering uses and for the same reason:
                     // two user messages in a row are invalid, and there is no
@@ -3003,7 +3167,7 @@ impl Agent {
         let ended_on_failed_call = tool_calls
             .iter()
             .rev()
-            .find(|c| !c.denied && !c.staged)
+            .find(|c| c.name != crate::step::CHECK_TRACE && !c.denied && !c.staged)
             .is_some_and(|c| c.is_error || c.unknown);
         if ended_on_failed_call {
             tracing::warn!(
@@ -5088,6 +5252,8 @@ mod tests {
     fn an_attached_image_arms_the_private_leg() {
         let mut taint = Taint::default();
         taint.arm_for_content(&[Message {
+            harness: false,
+            planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
             content: vec![
@@ -7561,6 +7727,206 @@ mod tests {
         assert_eq!(stats.goal_plan_writes, Some(2));
         assert_eq!(stats.goal_drift_writes, Some(1));
         assert_eq!(stats.goal_unnamed_writes, Some(0));
+    }
+
+    /// The check is a real guarded tool call, and only its observed outcome
+    /// can produce mismatch evidence. The model's completion claim cannot.
+    #[tokio::test]
+    async fn declared_checks_execute_frozen_commands_and_respect_denials() {
+        struct CheckShell;
+        #[async_trait]
+        impl Tool for CheckShell {
+            fn name(&self) -> &str {
+                "shell"
+            }
+            fn description(&self) -> &str {
+                "test shell"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type":"object"})
+            }
+            async fn call(&self, input: Value, _: &ToolCtx) -> Result<ToolOutput> {
+                assert_eq!(input["command"], "original check");
+                Ok(ToolOutput::err("check failed"))
+            }
+        }
+        for (mode, replacement) in [PermissionMode::Allow, PermissionMode::Ask]
+            .into_iter()
+            .flat_map(|mode| [Some("replacement"), None].map(|check| (mode, check)))
+        {
+            let plan = |id: &str, status: &str, check: Option<&str>| {
+                assistant(
+                    vec![Block::ToolUse {
+                        id: id.into(),
+                        name: "todo".into(),
+                        input: json!({"serves":"task:t1", "items":[{"content":"work", "status":status,"check":check,"expect_calls":2}]}),
+                    }],
+                    StopReason::ToolUse,
+                )
+            };
+            let (agent, _) = agent_with_tools(
+                vec![
+                    plan("p1", "in_progress", Some("original check")),
+                    plan("p2", "completed", replacement),
+                    assistant(vec![Block::text("done")], StopReason::EndTurn),
+                ],
+                vec![
+                    Arc::new(crate::tool::todo::TodoTool::new()),
+                    Arc::new(CheckShell),
+                ],
+                mode,
+            );
+            let mut convo = Conversation::user("go");
+            let outcome = agent.run(&mut convo, None).await.unwrap();
+            let check = outcome
+                .tool_calls
+                .iter()
+                .find(|c| c.name == crate::step::CHECK_TRACE)
+                .expect("check dispatched");
+            assert_eq!(check.denied, mode == PermissionMode::Ask);
+            assert!(
+                !outcome.ended_on_failed_call,
+                "harness check is not the model's last call"
+            );
+            let steps: Vec<_> = convo
+                .messages
+                .iter()
+                .filter_map(|m| m.planning.as_ref())
+                .flat_map(|f| &f.steps)
+                .collect();
+            assert_eq!(steps.len(), 1);
+            assert_eq!(
+                steps[0].verification,
+                if mode == PermissionMode::Ask {
+                    crate::planning::Verification::Refused
+                } else {
+                    crate::planning::Verification::Failed
+                }
+            );
+            let mismatches =
+                crate::learning::extract_mismatches(&convo.messages, &[Some(convo.messages.len())]);
+            assert_eq!(
+                mismatches.len(),
+                1,
+                "the frozen-check rewrite is a mismatch even when execution was refused"
+            );
+            if let Some(i) = mismatches.first() {
+                assert_eq!(
+                    crate::learning::evidence_for(None, i).1,
+                    crate::learning::Origin::Untrusted
+                );
+                assert_eq!(
+                    crate::learning::evidence_for(Some(Taint::default()), i).1,
+                    crate::learning::Origin::Clean
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_checks_do_not_repeat_and_disabled_checks_stay_unverified() {
+        struct PassingShell;
+        #[async_trait]
+        impl Tool for PassingShell {
+            fn name(&self) -> &str {
+                "shell"
+            }
+            fn description(&self) -> &str {
+                "test check"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type":"object"})
+            }
+            async fn call(&self, _: Value, _: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("passed"))
+            }
+        }
+        for enabled in [true, false] {
+            let plan = |id: &str, status: &str| {
+                assistant(
+                    vec![Block::ToolUse {
+                        id: id.into(),
+                        name: "todo".into(),
+                        input: json!({"serves":"task:t1","items":[{"content":"work","status":status,"check":"test result"}]}),
+                    }],
+                    StopReason::ToolUse,
+                )
+            };
+            let (mut agent, _) = agent_with_tools(
+                vec![
+                    plan("p1", "in_progress"),
+                    plan("p2", "completed"),
+                    plan("p3", "completed"),
+                    assistant(vec![Block::text("done")], StopReason::EndTurn),
+                ],
+                vec![
+                    Arc::new(crate::tool::todo::TodoTool::new()),
+                    Arc::new(PassingShell),
+                ],
+                PermissionMode::Allow,
+            );
+            agent.cfg.step_checks = enabled;
+            let mut convo = Conversation::user("go");
+            let outcome = agent.run(&mut convo, None).await.unwrap();
+            assert_eq!(
+                outcome
+                    .tool_calls
+                    .iter()
+                    .filter(|c| c.name == crate::step::CHECK_TRACE)
+                    .count(),
+                usize::from(enabled)
+            );
+            let feedback: Vec<_> = convo
+                .messages
+                .iter()
+                .filter_map(|m| m.planning.as_ref())
+                .collect();
+            let step = feedback.iter().flat_map(|f| &f.steps).next().unwrap();
+            assert_eq!(
+                step.verification,
+                if enabled {
+                    crate::planning::Verification::Passed
+                } else {
+                    crate::planning::Verification::Skipped
+                }
+            );
+            let last = feedback.last().unwrap().decisions.last().unwrap();
+            assert_eq!(last.unverified_steps, usize::from(!enabled));
+            assert!(crate::learning::extract_mismatches(&convo.messages, &[]).is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_confirmed_goal_survives_turns_without_leaking_between_conversations() {
+        let (agent, _) = agent_with_tools(
+            vec![
+                assistant(vec![Block::text("first")], StopReason::EndTurn),
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "plan".into(),
+                        name: "todo".into(),
+                        input: json!({"serves":"task:other", "items":[{"content":"work", "status":"in_progress"}]}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("second")], StopReason::EndTurn),
+                assistant(vec![Block::text("unrelated")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(crate::tool::todo::TodoTool::new())],
+            PermissionMode::Allow,
+        );
+        let mut conversation = Conversation::user("first");
+        conversation.goal_anchor = Some(crate::goal::GoalRef::Task("confirmed".into()));
+        agent.run(&mut conversation, None).await.unwrap();
+        conversation.push(Message::user("continue"));
+        let next = agent.run(&mut conversation, None).await.unwrap();
+        assert_eq!(next.goal_anchor, conversation.goal_anchor);
+        assert_eq!(next.goal_drift_writes, 1);
+        let unrelated = agent
+            .run(&mut Conversation::user("unrelated"), None)
+            .await
+            .unwrap();
+        assert_eq!(unrelated.goal_anchor, None);
     }
 
     /// The delegated-run path: a caller seeds the anchor on the run's own

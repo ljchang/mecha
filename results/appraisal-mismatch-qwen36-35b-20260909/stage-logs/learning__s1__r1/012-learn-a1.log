@@ -1,0 +1,10 @@
+behavior: holding out 1 of 4 reflection(s)
+learning with qwen3.6-35b-a3b (local)
+behavior [todo · run]: 3 reflection(s)
+behavior: proposal 20260909T142651-3aec1de4 [auto_applied_probation] — 1 rule(s) from 3 reflection(s)
+20260909T141635-1e07dadb [mismatch]: skipped — the candidate changes nothing in the recorded run's situation
+20260909T141738-6981c025 [mismatch]: skipped — the candidate changes nothing in the recorded run's situation
+20260909T141928-043698d2 [mismatch]: skipped — the candidate changes nothing in the recorded run's situation
+3 probe(s) skipped and none ran; review by reading
+  - When observed tool calls significantly exceed the expected count, immediately halt execution, verify intermediate results, and stop unnecessary steps rather than blindly continuing the plan.
+  applied on probation: no reflection in this batch had a replayable intervention point, so the gate could not grade it. Retires at 2 attributed regression(s) rather than 3.
