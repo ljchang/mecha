@@ -114,7 +114,6 @@ mecha chat [OPTIONS]
 |---|---|
 | `--resume <ID>` | Continue a saved session by id or unique prefix. |
 | `--no-session` | Do not write a transcript. |
-| `--image <PATH>` | Attach image pixels to the user turn. Repeatable; requires a vision-enabled provider. |
 
 Slash commands: `/tools`, `/model`, `/usage`, `/clear`, `/session`, `/help`,
 `/exit` (also `/quit`, `/q`). `/clear` starts a new conversation, dropping its taint
@@ -137,7 +136,9 @@ mecha tui [OPTIONS]
 |---|---|
 | `--resume <ID>` | Continue a saved session by id or unique prefix. |
 | `--no-session` | Do not write a transcript. |
-| `--image <PATH>` | Attach image pixels to the user turn. Repeatable; requires a vision-enabled provider. |
+
+Drop image files onto the TUI input line to attach them when the provider
+supports vision; there is no launch-time image flag.
 
 Slash commands:
 
@@ -602,9 +603,9 @@ mecha msg <send|list|show|dismiss|agents> [ARGS]
 
 | Subcommand | Flag | Description |
 |---|---|---|
-| `approve` | `<TO> <BODY>` | Leave a message for a producer: `chat`, a trigger's name, `run`. |
-| `approve` | `--from <NAME>` | Sender recorded on the message. Default `user`. |
-| `approve` | `--reply-to <ID>` | Id of the message this answers. |
+| `send` | `<TO> <BODY>` | Leave a message for a producer: `chat`, a trigger's name, `run`. |
+| `send` | `--from <NAME>` | Sender recorded on the message. Default `user`. |
+| `send` | `--reply-to <ID>` | Id of the message this answers. |
 | `list` | | Messages, pending first, across every mailbox. |
 | `list` | `--to <NAME>` | Only this recipient's mailbox. |
 | `list` | `--all` | Include delivered messages, not just pending. |
@@ -1256,7 +1257,6 @@ mecha proposals [list|show|accept|reject] [ARGS]
 | `show` | `<ID>` | The rules diff and the gate's evidence. |
 | `accept` | `<ID>` | Apply a pending proposal to the live rules. |
 | `accept` | `--force` | Apply even though the live rules changed since the proposal was measured. |
-| `reconcile` | `<ID> --outcome delivered\|not-delivered --evidence <TEXT>` | Record an uncertain delivery's observed outcome; never sends. |
 | `reject` | `<ID>` | Refuse a pending proposal, consuming its reflections. |
 | `reject` | `--reason <REASON>` | Why — recorded on the proposal for the next reader. |
 
