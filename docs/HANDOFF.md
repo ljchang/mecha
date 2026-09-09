@@ -35,11 +35,14 @@ no installation or service restart was performed.
 
 **The next measurements are running under separate registered designs.**
 `eval/appraisal-guidance-v2.toml` compares 48 harder, anchored trials at a
-16-turn ceiling. `eval/appraisal-learning.toml` separately measures a six-task
+16-turn ceiling. `eval/appraisal-learning-v2.toml` separately measures a six-task
 sequence per arm, starting with an empty learning store; guidance and rule
 loading are enabled in both arms, while only the treatment runs learning stages.
 Their results must distinguish artifact success, check execution, confirmed-goal
-exposure and actual rule loading. The baseline remains unchanged. Guidance stays
+exposure and actual rule loading. The v2 privacy prompts leave the artifact filename
+in README.txt rather than naming it in the prompt; `eval/appraisal-privacy.toml`
+is a separately registered explicit-output follow-up. The original learning
+design was superseded before any model run. The baseline remains unchanged. Guidance stays
 opt-in until a useful effect is measured.
 
 Unsolicited mid-run rule delivery stays off; mismatch-specific counterfactual
