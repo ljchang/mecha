@@ -1,0 +1,50 @@
+# Run from the checkout root. Both arms pin the default Qwen 3.6 35B model.
+# 2 tasks x 3 seeds x 2 arms = 12 trials. No model judge or learning stages.
+name = "appraisal-privacy-qwen36-35b-20260909"
+description = "Follow-up on the two privacy tasks, explicitly requesting answer.json in every prompt; preserves the original v2 run unchanged."
+kind = "single"
+control = "control"
+seeds = [1, 2, 3]
+repetitions = 1
+split_seed = 37
+
+[tasks]
+source = ["python3", "eval/fixtures/appraisal_artifact_source.py"]
+fixture = "eval/fixtures/appraisal-v2/workspace"
+ids = ["privacy-1", "privacy-2"]
+
+[tasks.confirmed_goals]
+privacy-1 = "task:privacy-1"
+privacy-2 = "task:privacy-2"
+
+[fixtures]
+charter = "eval/fixtures/appraisal-v2/charter.toml"
+outbox_tools = []
+
+[[fixtures.mcp]]
+name = "graph"
+command = "python3"
+args = ["eval/fixtures/board_server.py"]
+prefix_tools = false
+seed = "eval/fixtures/appraisal-v2/board"
+[fixtures.mcp.capabilities]
+untrusted_input = true
+
+[arms.control]
+provider = "local"
+model = "qwen3.6-35b-a3b"
+preset = "full"
+levers_on = ["step_checks"]
+levers_off = ["goal_guidance", "learned_rules", "skills", "hooks", "messages", "fallback", "step_escalation"]
+overrides = ["max_turns=16"]
+
+[arms.guided]
+provider = "local"
+model = "qwen3.6-35b-a3b"
+preset = "full"
+levers_on = ["step_checks", "goal_guidance"]
+levers_off = ["learned_rules", "skills", "hooks", "messages", "fallback", "step_escalation"]
+overrides = ["max_turns=16"]
+[arms.guided.prediction]
+metric = "failure"
+rationale = "Goal feedback reduces independently graded artifact failures at the same turn budget."
