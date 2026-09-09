@@ -1564,6 +1564,11 @@ mod planning_metadata_tests {
         let feedback = crate::planning::Feedback {
             steps: Vec::new(),
             decisions: vec![crate::planning::Decision {
+                anticipation_evidence: Some(crate::anticipation::Evidence {
+                    expected_outcome: Some("PRIVATE OWNER APPRAISAL EVIDENCE".into()),
+                    ..crate::anticipation::Evidence::default()
+                }),
+                anticipation: None,
                 goal: None,
                 anchor: None,
                 open_steps: 1,

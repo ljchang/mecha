@@ -814,6 +814,7 @@ mod tests {
                     json!({"to": "ada@example.com"}),
                     Default::default(),
                     crate::outbox::Provenance {
+                        anticipation: None,
                         filled_defaults: Vec::new(),
                         session_id: Some("sess-1".into()),
                         workspace: None,

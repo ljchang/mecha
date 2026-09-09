@@ -1725,7 +1725,7 @@ impl Tool for TodoTool {
                     }
                 }
                 feedback.steps.extend(observations);
-                let decision = crate::planning::Decision::assess(
+                let mut decision = crate::planning::Decision::assess(
                     &tracked.plan,
                     ctx.goal_track.as_ref().and_then(|g| g.anchor()),
                     ctx.goal_readings.as_deref(),
@@ -1733,6 +1733,9 @@ impl Tool for TodoTool {
                     &verified,
                     ctx.goal_guidance,
                 );
+                if let Some(bound) = &ctx.appraisal_evidence {
+                    decision.with_owner_evidence(bound);
+                }
                 if decision.applied {
                     findings.push(decision.action.guidance().to_string());
                 }

@@ -297,6 +297,10 @@ pub fn de_lenient<'de, D: serde::Deserializer<'de>>(
 }
 
 pub fn validate_recording(recorded: &crate::session::RunConfig) -> Result<()> {
+    ensure!(
+        recorded.appraisal_evidence.is_none(),
+        "artifact task repeat does not reproduce owner-bound anticipatory evidence"
+    );
     use crate::harness::Lever;
     let off = recorded
         .levers_off

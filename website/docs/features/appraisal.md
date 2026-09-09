@@ -304,7 +304,9 @@ nothing throughout is reported separately; old recordings without the sensor
 remain unknown. The JSON includes counts and denominators beside the rate.
 
 Drift changes no permission, does not stop the run, and does not force another
-owner question. The counters make a changed goal visible for review.
+owner question. With `goal_guidance = true`, a plan that differs from the
+confirmed goal receives fixed advice to reconcile the mismatch. See
+[planning feedback](#planning-feedback-and-goal-context) for this opt-in policy.
 
 ## The conditions a run happened under
 
@@ -387,7 +389,7 @@ The six channels keep the source of each signal explicit:
 | `edit` | A message draft sent unchanged, sent with edits, or rejected. Pending drafts carry no verdict. |
 | `counter` | A counter on [the run's own record](/docs/features/run-quality). |
 | `setpoint` | A homeostatic variable outside the range it is kept in. |
-| `commitment` | Answered or abandoned questions, closed unanswered requests, and recorded queue movement. |
+| `commitment` | Answered or abandoned questions, closed unanswered requests, recorded queue movement, and linked post-delivery owner outcomes. |
 | `appraisal` | An additional signed error proposed by the quarantined appraiser, distinguishable from deterministic evidence. |
 
 `cite` being a pointer is the same rule the [front door](/docs/features/frontdoor)
@@ -416,6 +418,10 @@ from.
 | Recorded owner backlog decreases | `+0.5`; a global queue change is weaker attribution than a linked delivery. |
 | A loop stop, empty output, or final failed call | `−1.0`, self agency. |
 | A turn/token/cost ceiling or boredom notice | `−0.5`; ceilings are attributed to the owner's limit. |
+
+A linked negative owner outcome replaces the draft contribution with one `−1.0` event;
+it does not add another penalty for the same incident. See
+[outcome evidence](#anticipatory-appraisal-and-outcome-evidence).
 
 A still-pending draft or unanswered question has no verdict yet. Process shutdown,
 parking for an answer, and legacy `interrupted` stops do not count as the owner
@@ -449,8 +455,8 @@ send a change at code that is working.
 | `disappointment` | Negative with no alternative established by the probe. | Counterfactual probe. |
 | `frustration` | Repeated self-caused negative errors of the same kind on one goal. | Probe-resolved interventions. |
 | `pride` | Positive delivery against a charter line that exists. | A draft sent unchanged, or an answered question followed by completion, attributed to that line. |
-| `embarrassment` | A negative outcome reached somebody. | No producer currently establishes that exposure. |
-| `guilt` | Self-caused harm to another, tied to one act. | No harm measurement yet. |
+| `embarrassment` | A confirmed error in mecha's unchanged message reached someone. | Linked owner outcome after confirmed delivery. |
+| `guilt` | An adverse impact attributed to mecha's act against a recorded commitment. | Linked owner outcome after confirmed delivery. |
 | `shame` | Such harm as a pattern across runs. | No cross-run harm aggregate yet. |
 | `excitement` | A positive predicted outcome. | No anticipatory appraisal yet. |
 
@@ -1055,3 +1061,155 @@ A forecast overrun still appears in the planning record, including whether
 multiple steps completed together. It does not by itself establish wasted work
 or qualify for a new behavioral rule. Verified criterion/check failures and
 changed checks retain the provenance, minimum-evidence and validation gates.
+
+## Anticipatory appraisal and outcome evidence
+
+Anticipatory appraisal records a concern **before an action**, separately from
+what later happened. The current slice covers confirmed-goal planning and
+outbox messages with inline prose. It makes no additional model calls.
+
+| Assessment | Evidence it uses |
+|---|---|
+| Anticipated guilt | A recorded commitment, its beneficiary and possible adverse consequence, plus missing verification or a threatened budget. A goal reference alone does not establish a commitment. |
+| Anticipated embarrassment | An outgoing message with a relevant expectation or check that has not been verified. It does not mean an error occurred. |
+| Anticipated regret | A relevant check is available and its recorded cost fits the available time: checking first is a feasible alternative to proceeding unchecked. |
+| Anticipated disappointment | A recorded expected outcome is threatened by failed verification or insufficient budget. |
+| Anxiety/concern | Failed verification or work/check cost exceeding the remaining budget. |
+| Curiosity/interest | A decision-relevant unknown has an available, affordable check. |
+
+These are deterministic assessments, not calibrated probabilities or claims of
+experienced emotion. Unknown cost stays unknown. Checking is not always the
+best action: when its cost exceeds the available time, the advice is to review
+the commitment and choose a fallback or smaller scope.
+
+### Supply evidence before a run
+
+Write an owner-authored JSON file, for example `meeting-evidence.json`:
+
+```json
+{
+  "goal": "task:meeting",
+  "commitment": {
+    "beneficiary": "meeting attendees",
+    "expectation": "Send the confirmed meeting time",
+    "consequence": "An incorrect time could cause someone to miss the meeting"
+  },
+  "expected_outcome": "An accurate invitation",
+  "verification": "unknown",
+  "check_available": true,
+  "check_cost_secs": 10,
+  "time_available_secs": 600
+}
+```
+
+Use the actual task reference and facts for your run. These fields record your
+assessment; the harness does not verify an estimate merely because it is in the
+file. Third-party assertions are not imported as commitments.
+
+```bash
+mecha run --goal task:meeting --appraisal-evidence meeting-evidence.json \
+  "Check the meeting time and draft the invitation"
+```
+
+The file's goal must match `--goal`. Evidence applies to this invocation;
+resuming requires explicitly supplying it again. Plan updates record the
+assessment and its supporting evidence locally. Enable `[agent] goal_guidance =
+true` for fixed planning advice; otherwise it is observational. Goal alignment
+and ordered charter findings retain precedence. A changed or unnamed plan does
+not inherit an unrelated commitment. Available time decreases during the run.
+
+Raw commitment text, numeric readings and verification evidence remain local
+metadata. Provider requests carry only the fixed guidance. A check of prior
+context does not certify a newly authored message: the draft inherits the
+commitment and remaining budget, but its verification starts unknown.
+
+### Assess a specific draft before release
+
+New inline message drafts keep an initial prediction automatically. Inspect the
+prediction IDs, sources, evidence, recommended response and resolution:
+
+```bash
+mecha outbox anticipate DRAFT_ID
+```
+
+Attach or revise owner evidence against the draft's exact current arguments:
+
+```bash
+mecha outbox anticipate DRAFT_ID --file meeting-evidence.json --guide
+```
+
+`--guide` opts this item into a release check: its latest assessment must still
+match the arguments and support proceeding before the shared delivery path can
+execute it. It does not run the proposed check for you. Perform the check, then
+record `"verification": "passed"` and a nonempty `"verification_evidence"`
+describing what was checked, and reassess. A pass establishes only what that
+check tested. Failed checks, missing evidence, expired commitment time and
+budget shortfalls can still require clarification or replanning.
+
+```bash
+mecha outbox anticipate DRAFT_ID --file checked-evidence.json
+```
+
+Omitting a mode flag preserves an existing guidance requirement. Use `--observe`
+with `--file` to explicitly select observation mode. Editing and rejecting remain
+available when guidance prevents release; editing invalidates an assessment of
+different arguments. Earlier predictions remain in the history. All release
+surfaces must use this implementation to enforce the new guidance requirement;
+older binaries do not interpret the new fields.
+
+### Record what happened
+
+After confirmed delivery, record an owner verdict against the prediction that
+was used for that action. For example, `outcome.json`:
+
+```json
+{
+  "prediction_id": "PREDICTION_ID_FROM_THE_READOUT",
+  "verdict": "error_exposed",
+  "evidence": "I checked the delivered message: it stated 10:00, while the confirmed meeting was 11:00.",
+  "attributable_to_mecha": true
+}
+```
+
+```bash
+mecha outbox outcome DRAFT_ID --file outcome.json
+mecha sessions appraise --days 30
+```
+
+The supported verdicts are `error_exposed`, `harm`, `expectation_missed`,
+`no_issue` and `withdrawn`. `harm` additionally requires a recorded commitment on
+the prediction. Attributing an outcome to mecha currently requires an unchanged,
+model-authored message; an owner's rewritten message is not attributed to mecha.
+Uncertain delivery must be reconciled before feedback can establish an outcome.
+
+A linked exposed error can produce retrospective `embarrassment`; an attributable
+impact can produce `guilt`. An expectation miss is a negative owner verdict; it
+does not establish that no better alternative existed or replace the existing
+counterfactual distinction between regret and disappointment. These owner outcomes
+do not themselves stage automatic task follow-ups or author learned rules.
+
+Only one outcome per draft is active. To revise it, include `supersedes` with the
+previous outcome ID; withdrawal also requires that ID. Both records remain.
+The active negative verdict replaces the initial drafting verdict for that
+incident, avoiding duplicate rewards or penalties.
+
+A prediction can remain `pending`, become `changed`, `reassessed`, or `abandoned`,
+have `delivery_unknown`, await feedback, or become `observed`. Changing a message
+or checking before proceeding does not establish that the original forecast was
+wrong. Silence after delivery is not evidence of success. Retrospective guilt
+and embarrassment can occur even when the earlier check passed.
+
+### Current measurement limits
+
+The deterministic store, planning and CLI tests cover the complete record flow;
+they do not establish improved real-world outcomes. The current regret assessment
+compares an available check with proceeding unchecked, not arbitrary alternative
+plans. Automatic semantic harm detection, pattern-based shame, excitement,
+mutable file-bundle verification and automatic learning from these outcomes are
+outside this slice.
+
+Run configuration records retain owner-bound evidence. Counterfactual probes,
+artifact-task validation and replay refuse unsupported reproductions of those
+runs rather than grade a run after silently dropping its evidence. Ordinary
+appraisal and prediction readouts remain available. Broader measured guidance
+comparisons require extending that reproduction path first.

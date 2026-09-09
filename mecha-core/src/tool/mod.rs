@@ -356,6 +356,8 @@ pub struct CarriedState {
 /// What a tool is allowed to touch.
 #[derive(Debug, Clone)]
 pub struct ToolCtx {
+    /// Owner-bound evidence for the confirmed goal; never supplied by a model tool.
+    pub appraisal_evidence: Option<crate::anticipation::BoundEvidence>,
     /// Filesystem tools refuse paths outside this root.
     pub workspace: PathBuf,
     pub shell_timeout: std::time::Duration,
@@ -634,6 +636,7 @@ impl StepCounts {
 impl Default for ToolCtx {
     fn default() -> Self {
         ToolCtx {
+            appraisal_evidence: None,
             workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             shell_timeout: std::time::Duration::from_secs(120),
             security: SecurityConfig::default(),

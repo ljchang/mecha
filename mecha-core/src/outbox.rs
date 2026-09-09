@@ -134,6 +134,9 @@ impl OutboxKind {
 /// before `call_id` existed has none of the third.
 #[derive(Debug, Clone, Default)]
 pub struct Provenance {
+    /// Harness observations or explicitly bound owner evidence at staging.
+    /// Source is retained; model-written plans cannot manufacture commitments.
+    pub anticipation: Option<(crate::anticipation::Evidence, crate::anticipation::Source)>,
     /// The session whose transcript holds the staging call.
     pub session_id: Option<String>,
     /// The jail the tool would really have executed under. A release happens
@@ -162,6 +165,8 @@ pub enum DeliveryOutcome {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeliveryAttempt {
+    #[serde(default)]
+    pub prediction_id: Option<String>,
     pub id: String,
     pub started_at: String,
     pub outcome: DeliveryOutcome,
@@ -174,6 +179,11 @@ pub struct DeliveryAttempt {
 /// One staged outbound action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboxItem {
+    /// Strict when present: unreadable guidance must never silently permit release.
+    #[serde(default)]
+    pub predictions: Vec<crate::anticipation::Prediction>,
+    #[serde(default)]
+    pub outcomes: Vec<crate::anticipation::Outcome>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delivery_attempts: Vec<DeliveryAttempt>,
     pub id: String,
@@ -305,6 +315,87 @@ impl OutboxItem {
         anyhow::ensure!(!self.delivery_uncertain(),
             "delivery outcome unknown for {} — inspect the destination and use `mecha outbox reconcile` before retrying; nothing was resent", self.id);
         Ok(())
+    }
+
+    /// Latest assessment must still describe this exact action before opt-in release.
+    pub fn ensure_prediction_ready(&self) -> Result<()> {
+        if let Some(p) = self.predictions.last().filter(|p| p.guide) {
+            anyhow::ensure!(p.args == self.args, "draft changed since assessment; run `mecha outbox anticipate` again before release");
+            anyhow::ensure!(
+                p.assessment == crate::anticipation::assess(&p.evidence, true),
+                "stored assessment does not match its evidence"
+            );
+            let current = p.current_assessment()?;
+            anyhow::ensure!(current.response == crate::anticipation::Response::Proceed,
+                "anticipatory guidance: {} Reassess with evidence, or explicitly select observation mode with `outbox anticipate`.", current.response.guidance());
+        }
+        Ok(())
+    }
+
+    pub fn prediction_resolution(
+        &self,
+        prediction: &crate::anticipation::Prediction,
+    ) -> crate::anticipation::Resolution {
+        use crate::anticipation::Resolution;
+        if prediction.args != self.args {
+            return Resolution::Changed;
+        }
+        if self
+            .predictions
+            .last()
+            .is_some_and(|last| last.id != prediction.id)
+        {
+            return Resolution::Reassessed;
+        }
+        if self.status == "rejected" {
+            return Resolution::Abandoned;
+        }
+        if self.delivery_uncertain() {
+            return Resolution::DeliveryUnknown;
+        }
+        if self.status != "sent" {
+            return Resolution::Pending;
+        }
+        if self
+            .active_outcomes()
+            .iter()
+            .any(|o| o.observation.prediction_id == prediction.id)
+        {
+            Resolution::Observed
+        } else {
+            Resolution::AwaitingFeedback
+        }
+    }
+
+    /// Superseded and withdrawn observations do not contribute; their history remains.
+    pub fn active_outcomes(&self) -> Vec<&crate::anticipation::Outcome> {
+        self.outcomes
+            .iter()
+            .filter(|o| {
+                o.observation.verdict != crate::anticipation::Verdict::Withdrawn
+                    && !self
+                        .outcomes
+                        .iter()
+                        .any(|new| new.observation.supersedes.as_deref() == Some(o.id.as_str()))
+            })
+            .collect()
+    }
+
+    /// Structured owner readout; evidence prose stays local and outside model prompts.
+    pub fn anticipation_readout(&self) -> Value {
+        serde_json::json!({
+            "predictions": self.predictions.iter().map(|p| {
+                let current = (self.status == "pending" && p.args == self.args
+                    && self.predictions.last().is_some_and(|last| last.id == p.id))
+                    .then(|| p.current_assessment());
+                serde_json::json!({
+                    "prediction": p, "resolution": self.prediction_resolution(p),
+                    "current_assessment": current.as_ref().and_then(|r| r.as_ref().ok()),
+                    "assessment_error": current.as_ref().and_then(|r| r.as_ref().err()).map(|e| e.to_string()),
+                })
+            }).collect::<Vec<_>>(),
+            "outcomes": self.outcomes,
+        })
     }
 
     /// Who wrote this draft. See [`Author`].
@@ -579,12 +670,33 @@ impl OutboxStore {
         from: Provenance,
     ) -> Result<OutboxItem> {
         let Provenance {
+            anticipation,
             session_id,
             workspace,
             call_id,
             filled_defaults,
         } = from;
+        let (prediction_evidence, prediction_source) = anticipation.unwrap_or_else(|| {
+            (
+                crate::anticipation::Evidence::default(),
+                crate::anticipation::Source::Harness,
+            )
+        });
         let item = OutboxItem {
+            predictions: if kind == OutboxKind::Message
+                && author == Author::Model
+                && DraftView::of(&args).body.is_some()
+            {
+                vec![crate::anticipation::Prediction::new(
+                    args.clone(),
+                    prediction_evidence,
+                    prediction_source,
+                    false,
+                )]
+            } else {
+                Vec::new()
+            },
+            outcomes: Vec::new(),
             delivery_attempts: Vec::new(),
             id: Session::new_id(),
             status: "pending".into(),
@@ -813,7 +925,9 @@ impl OutboxStore {
     pub fn begin_delivery(&self, id: &str) -> Result<OutboxItem> {
         let mut item = self.item(id)?;
         item.ensure_delivery_ready()?;
+        item.ensure_prediction_ready()?;
         item.delivery_attempts.push(DeliveryAttempt {
+            prediction_id: item.predictions.last().map(|p| p.id.clone()),
             id: uuid::Uuid::new_v4().to_string(),
             started_at: chrono::Utc::now().to_rfc3339(),
             outcome: DeliveryOutcome::Unknown,
@@ -862,6 +976,115 @@ impl OutboxStore {
             item.resolved_at = Some(now);
             item.output = Some(evidence.trim().to_string());
         }
+        self.write_item(&item)?;
+        Ok(item)
+    }
+
+    /// Owner entrypoint, not a model tool. Caller holds the writer lock.
+    /// Every assessment is a new immutable snapshot, including a mode change.
+    pub fn anticipate(
+        &self,
+        id: &str,
+        evidence: crate::anticipation::Evidence,
+        guide: bool,
+    ) -> Result<OutboxItem> {
+        evidence.validate()?;
+        let mut item = self.item(id)?;
+        item.ensure_delivery_ready()?;
+        anyhow::ensure!(
+            item.kind == OutboxKind::Message && DraftView::of(&item.args).body.is_some(),
+            "anticipation currently supports messages with inline prose, not mutable file bundles"
+        );
+        anyhow::ensure!(
+            item.predictions.len() < 128,
+            "prediction history full; stage a new draft"
+        );
+        item.predictions.push(crate::anticipation::Prediction::new(
+            item.args.clone(),
+            evidence,
+            crate::anticipation::Source::Owner,
+            guide,
+        ));
+        self.write_item(&item)?;
+        Ok(item)
+    }
+
+    /// Post-delivery owner evidence. One active verdict per draft; later judgments
+    /// explicitly supersede the previous observation, so repeated reports aren't harm counts.
+    pub fn record_outcome(
+        &self,
+        id: &str,
+        input: crate::anticipation::OutcomeInput,
+    ) -> Result<OutboxItem> {
+        use crate::anticipation::{Outcome, Verdict};
+        input.validate()?;
+        let mut item = self.item(id)?;
+        anyhow::ensure!(
+            item.status == "sent" && !item.delivery_uncertain(),
+            "outcome requires confirmed delivery"
+        );
+        let p = item
+            .predictions
+            .iter()
+            .find(|p| p.id == input.prediction_id)
+            .ok_or_else(|| anyhow::anyhow!("unknown prediction id"))?;
+        anyhow::ensure!(
+            p.args == item.args,
+            "prediction described a different action; its outcome remains changed"
+        );
+        anyhow::ensure!(
+            item.predictions.last().is_some_and(|last| last.id == p.id),
+            "prediction was reassessed before delivery"
+        );
+        if let Some(attempt) = item.delivery_attempts.last() {
+            anyhow::ensure!(
+                attempt.prediction_id.as_deref() == Some(p.id.as_str()),
+                "delivery did not use this prediction"
+            );
+        }
+        if input.verdict == Verdict::Harm {
+            anyhow::ensure!(
+                p.evidence.commitment.is_some(),
+                "harm attribution requires a recorded commitment on the prediction"
+            );
+        }
+        if input.attributable_to_mecha {
+            anyhow::ensure!(
+                item.author() == Author::Model && item.args == item.args_before,
+                "this slice only attributes unchanged model-authored messages to mecha"
+            );
+        }
+        let active = item.active_outcomes();
+        if let Some(old) = &input.supersedes {
+            let previous = item
+                .outcomes
+                .iter()
+                .find(|o| &o.id == old)
+                .ok_or_else(|| anyhow::anyhow!("unknown superseded outcome"))?;
+            anyhow::ensure!(
+                previous.observation.prediction_id == input.prediction_id,
+                "replacement must refer to the same prediction"
+            );
+            anyhow::ensure!(
+                !item
+                    .outcomes
+                    .iter()
+                    .any(|o| o.observation.supersedes.as_ref() == Some(old)),
+                "outcome already superseded"
+            );
+        }
+        anyhow::ensure!(
+            active
+                .iter()
+                .all(|o| input.supersedes.as_deref() == Some(o.id.as_str())),
+            "an outcome is already active; explicitly supersede it"
+        );
+        anyhow::ensure!(item.outcomes.len() < 128, "outcome history full");
+        item.outcomes.push(Outcome {
+            id: uuid::Uuid::new_v4().to_string(),
+            recorded_at: chrono::Utc::now().to_rfc3339(),
+            observation: input,
+        });
         self.write_item(&item)?;
         Ok(item)
     }
@@ -1409,6 +1632,7 @@ mod tests {
                 json!({"url": "https://a"}),
                 Taint::default(),
                 Provenance {
+                    anticipation: None,
                     filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
@@ -1426,6 +1650,7 @@ mod tests {
                     untrusted: true,
                 },
                 Provenance {
+                    anticipation: None,
                     filled_defaults: Vec::new(),
                     session_id: Some("sess-1".into()),
                     workspace: None,
@@ -1460,6 +1685,7 @@ mod tests {
                 json!({}),
                 Taint::default(),
                 Provenance {
+                    anticipation: None,
                     filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
@@ -1494,6 +1720,7 @@ mod tests {
                 json!({}),
                 Taint::default(),
                 Provenance {
+                    anticipation: None,
                     filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
@@ -1508,6 +1735,7 @@ mod tests {
                 json!({}),
                 Taint::default(),
                 Provenance {
+                    anticipation: None,
                     filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
@@ -1534,6 +1762,7 @@ mod tests {
                 json!({"url": "https://a"}),
                 Taint::default(),
                 Provenance {
+                    anticipation: None,
                     filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
@@ -1579,6 +1808,7 @@ mod tests {
                     json!({"path": "/tmp/a"}),
                     Taint::default(),
                     Provenance {
+                        anticipation: None,
                         filled_defaults: Vec::new(),
                         session_id: None,
                         workspace: None,
@@ -1615,6 +1845,7 @@ mod tests {
                     json!({"body": "Dear Dirk,"}),
                     Taint::default(),
                     Provenance {
+                        anticipation: None,
                         filled_defaults: Vec::new(),
                         session_id: None,
                         workspace: None,
@@ -1872,6 +2103,7 @@ mod tests {
                 json!({"bundle": "site", "id": "brief"}),
                 Taint::default(),
                 Provenance {
+                    anticipation: None,
                     filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: Some(jail.clone()),
@@ -1900,6 +2132,7 @@ mod tests {
                 json!({}),
                 Taint::default(),
                 Provenance {
+                    anticipation: None,
                     filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
@@ -1936,6 +2169,7 @@ mod tests {
                 json!({}),
                 Taint::default(),
                 Provenance {
+                    anticipation: None,
                     filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
@@ -1970,6 +2204,7 @@ mod tests {
                 json!({"to": "a@x.org"}),
                 Taint::default(),
                 Provenance {
+                    anticipation: None,
                     filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
