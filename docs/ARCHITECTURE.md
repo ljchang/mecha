@@ -3354,7 +3354,10 @@ cite `checks_passed` — the first structural discrepancy between a
 prediction and its outcome. `learning::Trigger::Mismatch` is the wire word
 for that discrepancy as a reflection trigger. `planning::StepFeedback` records
 failed checks, substantial overruns against the last open estimate, and frozen
-check tampering; `learning::extract_mismatches` emits at most one per goal/step
+check tampering. `completion_batch` records how many steps closed together; an
+overrun with batched completion is distinct from a known failure. Counts alone
+cannot establish unnecessary work. `learning::extract_mismatches` mines verified
+criterion/check failures and changed checks, at most one per goal/step
 and three per recorded run. Unknown run boundaries share a conservative bound.
 Generated observations must never take the user-turn-only provenance promotion:
 unknown or tainted mismatch evidence is excluded from reflection. Existing rule
@@ -3376,6 +3379,38 @@ model, verdict and task usage. Experiments register the entire fixture in
 `Tasks::mismatch_cases`, including it in the condition hash; the original oracle
 and fixtures remain unchanged during a measurement. Forecast-specific validation
 and live-service snapshots remain unsupported.
+
+**Training feedback is opt-in and owner-bound.** `ArtifactCase::criteria` names
+specific output fields; `criterion_feedback` compares them with pinned gold after
+the task ends and records `StepFeedback` without actual output prose or expected
+answer values. Optional `CountConstraint` context names a preserved input, an
+observation pointer, a limit pointer and a closed comparison relation. Its numbers
+come from the owner-bound initial input; missing/non-count values and changed
+context make the diagnostic unknown. A contradictory count constraint and gold
+are refused before execution. Charter references here are owner-supplied
+associations, not resolved readings of the global charter, and no charter is
+written or edited. This first context surface is counts in file fixtures, not
+live services, rates or durations.
+
+`run::append_criterion_feedback` appends matching taint after these post-run
+observations. Refused/staged actions and unsuccessful stop causes suppress this
+feedback; unknown or untrusted provenance still cannot enter mismatch reflection.
+`probe::prepare_mismatch` rejoins every criterion ID and context to its registered
+case. The quarantined mismatch reflector may see this bounded diagnostic context,
+under the owner's 2026-09-09 authorization to connect learning to goal outcomes;
+acting-provider encoders still omit planning metadata, and live charter sensor
+readings still do not enter their prompts. Transfer fixtures omit `criteria` to
+withhold evaluation feedback. Gold and arbitrary tool output never join the
+reflection payload. A passing criterion is not whole-task success.
+
+Cost-only observations remain available for forecast analysis and plan-boundary
+feedback, but `extract_mismatches`, the direct reflector and new consolidation
+exclude them as unsupported behavioral lessons. Existing rules retain their
+normal validation and retirement policy. The dedicated mismatch frame separates
+an observed error from a causal hypothesis and does not infer wasted work from
+counts. The incident: Qwen learned a generic stop-work rule while using task-record
+count in place of the outbox count for a queue decision. Testing the output and
+recording the source of its constraint answer different questions; both are needed.
 
 **Planning observations are local metadata, not prompt content.** `Message::planning`
 is preserved by session loading and omitted by both provider encoders. This is

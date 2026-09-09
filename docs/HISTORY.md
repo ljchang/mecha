@@ -14,6 +14,20 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-09 — grounded criterion feedback and conservative overrun attribution.**
+`StepFeedback::attribution` distinguishes failed task criteria, failed/changed
+checks, and forecast overruns with unknown or batched boundaries. Cost-only
+observations no longer author new behavioral lessons. Owner-bound
+`ArtifactCase::criteria` supplies post-run field verdicts and optional count
+constraints to the quarantined mismatch reflector, with the task and related
+charter association preserved. Gold stays outside provider messages; unknown or
+changed context stays ungraded, and recorded taint still gates learning.
+The old queue failures reproduce as comparisons against the wrong count: the
+recorded trace used twelve task records although `outbox_waiting` was zero.
+A regression test failed under the former overrun-only mining and passes with
+the new filter. The registered three-seed attribution pilot measures unseen
+transfer and calibration separately; results are recorded after execution.
+
 
 **2026-09-09 — independent artifact validation for planning mismatches.**
 `mismatch::ArtifactCase` holds a strict, bounded owner fixture and checks real JSON

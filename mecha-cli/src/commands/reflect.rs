@@ -273,9 +273,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                             &intervention.context,
                         )
                         .ok()
-                        .and_then(|s| s.goal)
-                        .into_iter()
-                        .collect()
+                        .map(|s| s.goals())
+                        .unwrap_or_default()
                     } else {
                         convo
                             .messages

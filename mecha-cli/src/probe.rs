@@ -291,6 +291,7 @@ fn prepare_mismatch(sessions_dir: &Path, r: &Reflexion) -> Result<Result<ProbePr
             anyhow::anyhow!("no owner-supplied artifact fixture was bound before this run")
         })?;
         case.validate()?;
+        case.validate_feedback(&expected)?;
         anyhow::ensure!(
             expected.goal.as_ref().map(ToString::to_string).as_deref() == Some(case.goal.as_str()),
             "mismatch goal differs from artifact case"
@@ -614,9 +615,25 @@ mod mismatch_tests {
     fn fixture(
         clean: Option<bool>,
         artifact: bool,
+        criterion: bool,
     ) -> (mecha_core::mismatch::Workspace, Reflexion) {
         let root = mecha_core::mismatch::Workspace::new().unwrap();
-        let case:mecha_core::mismatch::ArtifactCase=serde_json::from_value(serde_json::json!({"prompt":"write answer.json","goal":"task:x","files":{},"artifacts":{"answer.json":{"ok":true}}})).unwrap();
+        let mut case:mecha_core::mismatch::ArtifactCase=serde_json::from_value(serde_json::json!({"prompt":"write answer.json","goal":"task:x","files":{},"artifacts":{"answer.json":{"ok":true}}})).unwrap();
+        if criterion {
+            case.criteria.insert(
+                "result".into(),
+                mecha_core::mismatch::Criterion {
+                    artifact: "answer.json".into(),
+                    pointer: "/ok".into(),
+                    context: None,
+                },
+            );
+        }
+        let criterion_step = case
+            .criterion_feedback(root.path())
+            .unwrap()
+            .into_iter()
+            .next();
         let tools = vec!["fs_write".into(), "todo".into()];
         let specs = mecha_core::mismatch::registry(&tools).unwrap().specs();
         let mut cfg = RunConfig {
@@ -645,7 +662,9 @@ mod mismatch_tests {
         session
             .append(&Record::Message(Message::user("write answer.json")))
             .unwrap();
-        let step = StepFeedback {
+        let step = criterion_step.unwrap_or(StepFeedback {
+            criterion: None,
+            completion_batch: None,
             call_id: Some("todo-1".into()),
             step: "produce the artifact".into(),
             goal: Some("task:x".parse().unwrap()),
@@ -654,7 +673,7 @@ mod mismatch_tests {
             actual_calls: Some(8),
             verification: Verification::NotDeclared,
             check_tampered: false,
-        };
+        });
         let mut feedback = Message::user("plan feedback");
         feedback.planning = Some(Feedback {
             steps: vec![step.clone()],
@@ -674,7 +693,7 @@ mod mismatch_tests {
     }
     #[test]
     fn trusted_mismatch_prepares_but_missing_or_untrusted_evidence_does_not() {
-        let (root, mut r) = fixture(Some(true), true);
+        let (root, mut r) = fixture(Some(true), true, false);
         assert!(
             prepare_probe_at(root.path(), &r.session_id, &r.trigger, &r.intervention)
                 .unwrap()
@@ -690,8 +709,18 @@ mod mismatch_tests {
         r.context = serde_json::to_string(&step).unwrap();
         assert!(prepare_probe(root.path(), &r).unwrap().is_err());
         for (clean, artifact) in [(None, true), (Some(false), true), (Some(true), false)] {
-            let (root, r) = fixture(clean, artifact);
+            let (root, r) = fixture(clean, artifact, false);
             assert!(prepare_probe(root.path(), &r).unwrap().is_err());
+        }
+    }
+    #[test]
+    fn owner_criterion_failure_requires_its_recorded_clean_contract() {
+        for clean in [Some(true), Some(false), None] {
+            let (root, r) = fixture(clean, true, true);
+            assert_eq!(
+                prepare_probe(root.path(), &r).unwrap().is_ok(),
+                clean == Some(true)
+            );
         }
     }
 }

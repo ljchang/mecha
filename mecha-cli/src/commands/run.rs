@@ -146,7 +146,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             &prepared.levers_off,
             Some(&prepared.rules),
         );
-        recorded.mismatch_case = mismatch_case;
+        recorded.mismatch_case = mismatch_case.clone();
         s.append(&Record::Config(recorded))?;
         // Staged outbox items point back at the session that drafted them.
         if let Some(route) = &prepared.agent.context().outbox {
@@ -259,6 +259,18 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     let outcome = result?;
     if let Some(s) = &session {
+        if let Some(case) = &mismatch_case {
+            if matches!(
+                outcome.stop_cause,
+                mecha_core::agent::StopCause::Completed
+                    | mecha_core::agent::StopCause::MaxTurns
+                    | mecha_core::agent::StopCause::OutputTokenBudget
+            ) && !outcome.tool_calls.iter().any(|c| c.denied || c.staged)
+                && outcome.blocked_sends == 0
+            {
+                append_criterion_feedback(s, case, &prepared.workspace, convo.taint)?;
+            }
+        }
         s.append(&Record::Summary {
             usage: outcome.usage.clone(),
             turns: outcome.turns,
@@ -315,6 +327,26 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         _ if outcome.stop_cause == mecha_core::agent::StopCause::NoOutput => std::process::exit(3),
         _ => Ok(()),
     }
+}
+
+fn append_criterion_feedback(
+    session: &Session,
+    case: &mecha_core::mismatch::ArtifactCase,
+    workspace: &std::path::Path,
+    taint: mecha_core::agent::Taint,
+) -> Result<()> {
+    let steps = case.criterion_feedback(workspace)?;
+    if !steps.is_empty() {
+        let mut message = Message::user("Harness observations of owner-bound task criteria.");
+        message.harness = true;
+        message.planning = Some(mecha_core::planning::Feedback {
+            steps,
+            ..Default::default()
+        });
+        session.append(&Record::Message(message))?;
+        session.append(&Record::Taint(taint))?;
+    }
+    Ok(())
 }
 
 fn read_prompt(arg: Option<&str>) -> Result<String> {
@@ -503,5 +535,64 @@ mod tests {
         assert_eq!(back.stop_cause, Some(StopCause::Completed));
         assert_eq!(back.turns, 3);
         assert_eq!(value["session"], "sess");
+    }
+}
+
+#[cfg(test)]
+mod criterion_recording_tests {
+    use super::*;
+    #[test]
+    fn diagnostic_taint_is_recorded_and_unknown_context_cannot_promote_it() {
+        use mecha_core::{
+            agent::Taint,
+            learning::{classify_origin, Origin},
+        };
+        let root = mecha_core::mismatch::Workspace::new().unwrap();
+        let case:mecha_core::mismatch::ArtifactCase=serde_json::from_value(serde_json::json!({
+            "prompt":"make answer", "goal":"task:test", "files":{}, "artifacts":{"answer.json":{"ok":true}},
+            "criteria":{"result":{"artifact":"answer.json","pointer":"/ok"}}
+        })).unwrap();
+        for untrusted in [false, true] {
+            let session = Session::create(
+                root.path(),
+                SessionMeta {
+                    id: Session::new_id(),
+                    created_at: chrono::Utc::now(),
+                    provider: "scripted".into(),
+                    model: "scripted".into(),
+                    workspace: root.path().into(),
+                    title: None,
+                    kind: None,
+                },
+            )
+            .unwrap();
+            append_criterion_feedback(
+                &session,
+                &case,
+                root.path(),
+                Taint {
+                    private: true,
+                    untrusted,
+                },
+            )
+            .unwrap();
+            let t = Session::read(&session.path).unwrap();
+            let interventions =
+                mecha_core::learning::extract_mismatches(&t.convo.messages, &t.outcome_positions);
+            assert_eq!(interventions.len(), 1);
+            assert_eq!(
+                classify_origin(t.taint_timeline.covering(interventions[0].at)),
+                if untrusted {
+                    Origin::Untrusted
+                } else {
+                    Origin::Clean
+                }
+            );
+            assert_eq!(
+                t.convo.messages[0].text(),
+                "Harness observations of owner-bound task criteria."
+            );
+            assert!(t.convo.messages[0].harness);
+        }
     }
 }

@@ -1,0 +1,443 @@
+[
+  {
+    "id": "queue-01",
+    "prompt": "Task goal: task:queue-01. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json.",
+    "goal": "task:queue-01",
+    "files": {
+      "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+      "records.json": "[{\"id\": \"item-1-2\", \"revision\": 3, \"approved\": false, \"amount\": 32}, {\"id\": \"item-1-1\", \"revision\": 1, \"approved\": false, \"amount\": 21}, {\"id\": \"item-1-3\", \"revision\": 2, \"approved\": true, \"amount\": -18}, {\"id\": \"item-1-1\", \"revision\": 2, \"approved\": true, \"amount\": 27}, {\"id\": \"item-1-1\", \"revision\": 3, \"approved\": false, \"amount\": -20}, {\"id\": \"item-1-3\", \"revision\": 3, \"approved\": false, \"amount\": 33}, {\"id\": \"item-1-0\", \"revision\": 1, \"approved\": false, \"amount\": 28}, {\"id\": \"item-1-2\", \"revision\": 1, \"approved\": false, \"amount\": -13}, {\"id\": \"item-1-3\", \"revision\": 1, \"approved\": true, \"amount\": 27}, {\"id\": \"item-1-2\", \"revision\": 2, \"approved\": true, \"amount\": -1}, {\"id\": \"item-1-0\", \"revision\": 3, \"approved\": false, \"amount\": 28}, {\"id\": \"item-1-0\", \"revision\": 2, \"approved\": false, \"amount\": -14}]\n",
+      "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 0, \"review_threshold\": 1}\n",
+      "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n"
+    },
+    "artifacts": {
+      "answer.json": {
+        "selected": [],
+        "total": 0,
+        "review_first": false
+      }
+    },
+    "preserve": [
+      "README.txt",
+      "records.json",
+      "context.json",
+      "old-summary.json"
+    ],
+    "criteria": {
+      "selected_records": {
+        "artifact": "answer.json",
+        "pointer": "/selected"
+      },
+      "signed_total": {
+        "artifact": "answer.json",
+        "pointer": "/total"
+      },
+      "review_priority": {
+        "artifact": "answer.json",
+        "pointer": "/review_first",
+        "context": {
+          "source": "context.json",
+          "observed_pointer": "/outbox_waiting",
+          "limit_pointer": "/review_threshold",
+          "relation": "greater_than",
+          "charter_goal": "charter:review-pending"
+        }
+      }
+    }
+  },
+  {
+    "id": "queue-02",
+    "prompt": "Task goal: task:queue-02. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json.",
+    "goal": "task:queue-02",
+    "files": {
+      "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+      "records.json": "[{\"id\": \"item-2-2\", \"revision\": 1, \"approved\": false, \"amount\": -20}, {\"id\": \"item-2-2\", \"revision\": 2, \"approved\": false, \"amount\": -14}, {\"id\": \"item-2-3\", \"revision\": 3, \"approved\": true, \"amount\": 22}, {\"id\": \"item-2-3\", \"revision\": 2, \"approved\": true, \"amount\": -17}, {\"id\": \"item-2-3\", \"revision\": 1, \"approved\": true, \"amount\": 24}, {\"id\": \"item-2-0\", \"revision\": 2, \"approved\": false, \"amount\": 0}, {\"id\": \"item-2-1\", \"revision\": 3, \"approved\": true, \"amount\": 22}, {\"id\": \"item-2-1\", \"revision\": 1, \"approved\": true, \"amount\": 20}, {\"id\": \"item-2-0\", \"revision\": 1, \"approved\": false, \"amount\": 40}, {\"id\": \"item-2-2\", \"revision\": 3, \"approved\": false, \"amount\": 26}, {\"id\": \"item-2-1\", \"revision\": 2, \"approved\": true, \"amount\": 23}, {\"id\": \"item-2-0\", \"revision\": 3, \"approved\": true, \"amount\": 12}]\n",
+      "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 1, \"review_threshold\": 1}\n",
+      "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n"
+    },
+    "artifacts": {
+      "answer.json": {
+        "selected": [
+          "item-2-0",
+          "item-2-1",
+          "item-2-3"
+        ],
+        "total": 56,
+        "review_first": false
+      }
+    },
+    "preserve": [
+      "README.txt",
+      "records.json",
+      "context.json",
+      "old-summary.json"
+    ],
+    "criteria": {
+      "selected_records": {
+        "artifact": "answer.json",
+        "pointer": "/selected"
+      },
+      "signed_total": {
+        "artifact": "answer.json",
+        "pointer": "/total"
+      },
+      "review_priority": {
+        "artifact": "answer.json",
+        "pointer": "/review_first",
+        "context": {
+          "source": "context.json",
+          "observed_pointer": "/outbox_waiting",
+          "limit_pointer": "/review_threshold",
+          "relation": "greater_than",
+          "charter_goal": "charter:review-pending"
+        }
+      }
+    }
+  },
+  {
+    "id": "queue-03",
+    "prompt": "Task goal: task:queue-03. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json.",
+    "goal": "task:queue-03",
+    "files": {
+      "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+      "records.json": "[{\"id\": \"item-3-3\", \"revision\": 3, \"approved\": true, \"amount\": 3}, {\"id\": \"item-3-0\", \"revision\": 2, \"approved\": false, \"amount\": -12}, {\"id\": \"item-3-1\", \"revision\": 1, \"approved\": true, \"amount\": -21}, {\"id\": \"item-3-1\", \"revision\": 2, \"approved\": false, \"amount\": 39}, {\"id\": \"item-3-3\", \"revision\": 2, \"approved\": true, \"amount\": 14}, {\"id\": \"item-3-1\", \"revision\": 3, \"approved\": false, \"amount\": 29}, {\"id\": \"item-3-2\", \"revision\": 3, \"approved\": true, \"amount\": 40}, {\"id\": \"item-3-3\", \"revision\": 1, \"approved\": false, \"amount\": -21}, {\"id\": \"item-3-0\", \"revision\": 1, \"approved\": false, \"amount\": 15}, {\"id\": \"item-3-2\", \"revision\": 2, \"approved\": false, \"amount\": -3}, {\"id\": \"item-3-2\", \"revision\": 1, \"approved\": false, \"amount\": -14}, {\"id\": \"item-3-0\", \"revision\": 3, \"approved\": false, \"amount\": -3}]\n",
+      "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 2, \"review_threshold\": 3}\n",
+      "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n"
+    },
+    "artifacts": {
+      "answer.json": {
+        "selected": [
+          "item-3-2",
+          "item-3-3"
+        ],
+        "total": 43,
+        "review_first": false
+      }
+    },
+    "preserve": [
+      "README.txt",
+      "records.json",
+      "context.json",
+      "old-summary.json"
+    ],
+    "criteria": {
+      "selected_records": {
+        "artifact": "answer.json",
+        "pointer": "/selected"
+      },
+      "signed_total": {
+        "artifact": "answer.json",
+        "pointer": "/total"
+      },
+      "review_priority": {
+        "artifact": "answer.json",
+        "pointer": "/review_first",
+        "context": {
+          "source": "context.json",
+          "observed_pointer": "/outbox_waiting",
+          "limit_pointer": "/review_threshold",
+          "relation": "greater_than",
+          "charter_goal": "charter:review-pending"
+        }
+      }
+    }
+  },
+  {
+    "id": "queue-04",
+    "prompt": "Task goal: task:queue-04. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json.",
+    "goal": "task:queue-04",
+    "files": {
+      "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+      "records.json": "[{\"id\": \"item-4-3\", \"revision\": 3, \"approved\": false, \"amount\": 35}, {\"id\": \"item-4-3\", \"revision\": 2, \"approved\": true, \"amount\": 22}, {\"id\": \"item-4-1\", \"revision\": 1, \"approved\": false, \"amount\": 2}, {\"id\": \"item-4-2\", \"revision\": 3, \"approved\": false, \"amount\": -20}, {\"id\": \"item-4-1\", \"revision\": 2, \"approved\": false, \"amount\": 9}, {\"id\": \"item-4-0\", \"revision\": 1, \"approved\": true, \"amount\": -6}, {\"id\": \"item-4-3\", \"revision\": 1, \"approved\": true, \"amount\": -2}, {\"id\": \"item-4-2\", \"revision\": 1, \"approved\": false, \"amount\": 15}, {\"id\": \"item-4-2\", \"revision\": 2, \"approved\": false, \"amount\": -12}, {\"id\": \"item-4-0\", \"revision\": 3, \"approved\": false, \"amount\": -22}, {\"id\": \"item-4-0\", \"revision\": 2, \"approved\": false, \"amount\": -12}, {\"id\": \"item-4-1\", \"revision\": 3, \"approved\": true, \"amount\": 17}]\n",
+      "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 0, \"review_threshold\": 2}\n",
+      "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n"
+    },
+    "artifacts": {
+      "answer.json": {
+        "selected": [
+          "item-4-1"
+        ],
+        "total": 17,
+        "review_first": false
+      }
+    },
+    "preserve": [
+      "README.txt",
+      "records.json",
+      "context.json",
+      "old-summary.json"
+    ],
+    "criteria": {
+      "selected_records": {
+        "artifact": "answer.json",
+        "pointer": "/selected"
+      },
+      "signed_total": {
+        "artifact": "answer.json",
+        "pointer": "/total"
+      },
+      "review_priority": {
+        "artifact": "answer.json",
+        "pointer": "/review_first",
+        "context": {
+          "source": "context.json",
+          "observed_pointer": "/outbox_waiting",
+          "limit_pointer": "/review_threshold",
+          "relation": "greater_than",
+          "charter_goal": "charter:review-pending"
+        }
+      }
+    }
+  },
+  {
+    "id": "queue-05",
+    "prompt": "Task goal: task:queue-05. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json.",
+    "goal": "task:queue-05",
+    "files": {
+      "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+      "records.json": "[{\"id\": \"item-5-0\", \"revision\": 3, \"approved\": false, \"amount\": -5}, {\"id\": \"item-5-3\", \"revision\": 1, \"approved\": true, \"amount\": 15}, {\"id\": \"item-5-2\", \"revision\": 3, \"approved\": false, \"amount\": 10}, {\"id\": \"item-5-2\", \"revision\": 2, \"approved\": false, \"amount\": 36}, {\"id\": \"item-5-3\", \"revision\": 2, \"approved\": true, \"amount\": 30}, {\"id\": \"item-5-0\", \"revision\": 2, \"approved\": false, \"amount\": 22}, {\"id\": \"item-5-3\", \"revision\": 3, \"approved\": false, \"amount\": 17}, {\"id\": \"item-5-1\", \"revision\": 1, \"approved\": false, \"amount\": 22}, {\"id\": \"item-5-1\", \"revision\": 2, \"approved\": false, \"amount\": -7}, {\"id\": \"item-5-1\", \"revision\": 3, \"approved\": false, \"amount\": -22}, {\"id\": \"item-5-0\", \"revision\": 1, \"approved\": false, \"amount\": 0}, {\"id\": \"item-5-2\", \"revision\": 1, \"approved\": false, \"amount\": 34}]\n",
+      "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 4, \"review_threshold\": 2}\n",
+      "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n"
+    },
+    "artifacts": {
+      "answer.json": {
+        "selected": [],
+        "total": 0,
+        "review_first": true
+      }
+    },
+    "preserve": [
+      "README.txt",
+      "records.json",
+      "context.json",
+      "old-summary.json"
+    ],
+    "criteria": {
+      "selected_records": {
+        "artifact": "answer.json",
+        "pointer": "/selected"
+      },
+      "signed_total": {
+        "artifact": "answer.json",
+        "pointer": "/total"
+      },
+      "review_priority": {
+        "artifact": "answer.json",
+        "pointer": "/review_first",
+        "context": {
+          "source": "context.json",
+          "observed_pointer": "/outbox_waiting",
+          "limit_pointer": "/review_threshold",
+          "relation": "greater_than",
+          "charter_goal": "charter:review-pending"
+        }
+      }
+    }
+  },
+  {
+    "id": "queue-06",
+    "prompt": "Task goal: task:queue-06. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json.",
+    "goal": "task:queue-06",
+    "files": {
+      "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+      "records.json": "[{\"id\": \"item-6-2\", \"revision\": 1, \"approved\": false, \"amount\": 19}, {\"id\": \"item-6-3\", \"revision\": 3, \"approved\": true, \"amount\": 34}, {\"id\": \"item-6-0\", \"revision\": 1, \"approved\": false, \"amount\": -17}, {\"id\": \"item-6-1\", \"revision\": 1, \"approved\": false, \"amount\": 36}, {\"id\": \"item-6-1\", \"revision\": 3, \"approved\": true, \"amount\": 6}, {\"id\": \"item-6-3\", \"revision\": 2, \"approved\": false, \"amount\": -15}, {\"id\": \"item-6-0\", \"revision\": 2, \"approved\": false, \"amount\": 30}, {\"id\": \"item-6-2\", \"revision\": 2, \"approved\": true, \"amount\": 29}, {\"id\": \"item-6-3\", \"revision\": 1, \"approved\": false, \"amount\": -19}, {\"id\": \"item-6-2\", \"revision\": 3, \"approved\": true, \"amount\": 24}, {\"id\": \"item-6-1\", \"revision\": 2, \"approved\": true, \"amount\": 12}, {\"id\": \"item-6-0\", \"revision\": 3, \"approved\": false, \"amount\": -13}]\n",
+      "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 2, \"review_threshold\": 2}\n",
+      "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n"
+    },
+    "artifacts": {
+      "answer.json": {
+        "selected": [
+          "item-6-1",
+          "item-6-2",
+          "item-6-3"
+        ],
+        "total": 64,
+        "review_first": false
+      }
+    },
+    "preserve": [
+      "README.txt",
+      "records.json",
+      "context.json",
+      "old-summary.json"
+    ],
+    "criteria": {
+      "selected_records": {
+        "artifact": "answer.json",
+        "pointer": "/selected"
+      },
+      "signed_total": {
+        "artifact": "answer.json",
+        "pointer": "/total"
+      },
+      "review_priority": {
+        "artifact": "answer.json",
+        "pointer": "/review_first",
+        "context": {
+          "source": "context.json",
+          "observed_pointer": "/outbox_waiting",
+          "limit_pointer": "/review_threshold",
+          "relation": "greater_than",
+          "charter_goal": "charter:review-pending"
+        }
+      }
+    }
+  },
+  {
+    "id": "queue-07",
+    "prompt": "Task goal: task:queue-07. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json.",
+    "goal": "task:queue-07",
+    "files": {
+      "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+      "records.json": "[{\"id\": \"item-7-1\", \"revision\": 1, \"approved\": false, \"amount\": 38}, {\"id\": \"item-7-1\", \"revision\": 3, \"approved\": false, \"amount\": -12}, {\"id\": \"item-7-2\", \"revision\": 3, \"approved\": false, \"amount\": -23}, {\"id\": \"item-7-2\", \"revision\": 1, \"approved\": true, \"amount\": -23}, {\"id\": \"item-7-2\", \"revision\": 2, \"approved\": false, \"amount\": 28}, {\"id\": \"item-7-3\", \"revision\": 3, \"approved\": false, \"amount\": 23}, {\"id\": \"item-7-0\", \"revision\": 3, \"approved\": false, \"amount\": 18}, {\"id\": \"item-7-0\", \"revision\": 2, \"approved\": true, \"amount\": -11}, {\"id\": \"item-7-3\", \"revision\": 1, \"approved\": true, \"amount\": 17}, {\"id\": \"item-7-1\", \"revision\": 2, \"approved\": true, \"amount\": -16}, {\"id\": \"item-7-0\", \"revision\": 1, \"approved\": true, \"amount\": 15}, {\"id\": \"item-7-3\", \"revision\": 2, \"approved\": false, \"amount\": -23}]\n",
+      "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 0, \"review_threshold\": 2}\n",
+      "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n"
+    },
+    "artifacts": {
+      "answer.json": {
+        "selected": [],
+        "total": 0,
+        "review_first": false
+      }
+    },
+    "preserve": [
+      "README.txt",
+      "records.json",
+      "context.json",
+      "old-summary.json"
+    ]
+  },
+  {
+    "id": "queue-08",
+    "prompt": "Task goal: task:queue-08. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json.",
+    "goal": "task:queue-08",
+    "files": {
+      "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+      "records.json": "[{\"id\": \"item-8-2\", \"revision\": 1, \"approved\": false, \"amount\": -19}, {\"id\": \"item-8-0\", \"revision\": 3, \"approved\": true, \"amount\": 11}, {\"id\": \"item-8-3\", \"revision\": 2, \"approved\": true, \"amount\": 19}, {\"id\": \"item-8-2\", \"revision\": 2, \"approved\": false, \"amount\": 10}, {\"id\": \"item-8-1\", \"revision\": 2, \"approved\": false, \"amount\": 28}, {\"id\": \"item-8-1\", \"revision\": 3, \"approved\": true, \"amount\": 13}, {\"id\": \"item-8-0\", \"revision\": 1, \"approved\": false, \"amount\": 3}, {\"id\": \"item-8-0\", \"revision\": 2, \"approved\": false, \"amount\": 32}, {\"id\": \"item-8-2\", \"revision\": 3, \"approved\": false, \"amount\": 15}, {\"id\": \"item-8-3\", \"revision\": 1, \"approved\": false, \"amount\": -8}, {\"id\": \"item-8-1\", \"revision\": 1, \"approved\": true, \"amount\": 18}, {\"id\": \"item-8-3\", \"revision\": 3, \"approved\": true, \"amount\": 14}]\n",
+      "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 2, \"review_threshold\": 2}\n",
+      "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n"
+    },
+    "artifacts": {
+      "answer.json": {
+        "selected": [
+          "item-8-0",
+          "item-8-1",
+          "item-8-3"
+        ],
+        "total": 38,
+        "review_first": false
+      }
+    },
+    "preserve": [
+      "README.txt",
+      "records.json",
+      "context.json",
+      "old-summary.json"
+    ]
+  },
+  {
+    "id": "queue-09",
+    "prompt": "Task goal: task:queue-09. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json.",
+    "goal": "task:queue-09",
+    "files": {
+      "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+      "records.json": "[{\"id\": \"item-9-3\", \"revision\": 2, \"approved\": false, \"amount\": -17}, {\"id\": \"item-9-3\", \"revision\": 1, \"approved\": true, \"amount\": -7}, {\"id\": \"item-9-1\", \"revision\": 3, \"approved\": false, \"amount\": 22}, {\"id\": \"item-9-1\", \"revision\": 1, \"approved\": true, \"amount\": -9}, {\"id\": \"item-9-2\", \"revision\": 1, \"approved\": true, \"amount\": 5}, {\"id\": \"item-9-0\", \"revision\": 2, \"approved\": false, \"amount\": 32}, {\"id\": \"item-9-1\", \"revision\": 2, \"approved\": false, \"amount\": -4}, {\"id\": \"item-9-2\", \"revision\": 3, \"approved\": true, \"amount\": 5}, {\"id\": \"item-9-2\", \"revision\": 2, \"approved\": true, \"amount\": 19}, {\"id\": \"item-9-3\", \"revision\": 3, \"approved\": false, \"amount\": -5}, {\"id\": \"item-9-0\", \"revision\": 1, \"approved\": false, \"amount\": -4}, {\"id\": \"item-9-0\", \"revision\": 3, \"approved\": false, \"amount\": 38}]\n",
+      "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 3, \"review_threshold\": 2}\n",
+      "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n"
+    },
+    "artifacts": {
+      "answer.json": {
+        "selected": [
+          "item-9-2"
+        ],
+        "total": 5,
+        "review_first": true
+      }
+    },
+    "preserve": [
+      "README.txt",
+      "records.json",
+      "context.json",
+      "old-summary.json"
+    ]
+  },
+  {
+    "id": "queue-10",
+    "prompt": "Task goal: task:queue-10. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json.",
+    "goal": "task:queue-10",
+    "files": {
+      "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+      "records.json": "[{\"id\": \"item-10-1\", \"revision\": 3, \"approved\": true, \"amount\": -24}, {\"id\": \"item-10-2\", \"revision\": 2, \"approved\": true, \"amount\": 19}, {\"id\": \"item-10-1\", \"revision\": 2, \"approved\": true, \"amount\": 20}, {\"id\": \"item-10-2\", \"revision\": 1, \"approved\": true, \"amount\": -8}, {\"id\": \"item-10-3\", \"revision\": 3, \"approved\": false, \"amount\": -6}, {\"id\": \"item-10-1\", \"revision\": 1, \"approved\": true, \"amount\": 11}, {\"id\": \"item-10-0\", \"revision\": 2, \"approved\": true, \"amount\": -11}, {\"id\": \"item-10-0\", \"revision\": 3, \"approved\": true, \"amount\": -21}, {\"id\": \"item-10-2\", \"revision\": 3, \"approved\": false, \"amount\": 0}, {\"id\": \"item-10-0\", \"revision\": 1, \"approved\": true, \"amount\": -9}, {\"id\": \"item-10-3\", \"revision\": 2, \"approved\": true, \"amount\": -20}, {\"id\": \"item-10-3\", \"revision\": 1, \"approved\": true, \"amount\": 24}]\n",
+      "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 6, \"review_threshold\": 4}\n",
+      "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n"
+    },
+    "artifacts": {
+      "answer.json": {
+        "selected": [
+          "item-10-0",
+          "item-10-1"
+        ],
+        "total": -45,
+        "review_first": true
+      }
+    },
+    "preserve": [
+      "README.txt",
+      "records.json",
+      "context.json",
+      "old-summary.json"
+    ]
+  },
+  {
+    "id": "queue-11",
+    "prompt": "Task goal: task:queue-11. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json.",
+    "goal": "task:queue-11",
+    "files": {
+      "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+      "records.json": "[{\"id\": \"item-11-3\", \"revision\": 1, \"approved\": true, \"amount\": 2}, {\"id\": \"item-11-0\", \"revision\": 1, \"approved\": true, \"amount\": 38}, {\"id\": \"item-11-3\", \"revision\": 3, \"approved\": false, \"amount\": 31}, {\"id\": \"item-11-2\", \"revision\": 1, \"approved\": false, \"amount\": 9}, {\"id\": \"item-11-1\", \"revision\": 3, \"approved\": false, \"amount\": -25}, {\"id\": \"item-11-0\", \"revision\": 2, \"approved\": false, \"amount\": -17}, {\"id\": \"item-11-3\", \"revision\": 2, \"approved\": true, \"amount\": 39}, {\"id\": \"item-11-2\", \"revision\": 2, \"approved\": true, \"amount\": 16}, {\"id\": \"item-11-0\", \"revision\": 3, \"approved\": true, \"amount\": 2}, {\"id\": \"item-11-1\", \"revision\": 1, \"approved\": true, \"amount\": 17}, {\"id\": \"item-11-1\", \"revision\": 2, \"approved\": false, \"amount\": 10}, {\"id\": \"item-11-2\", \"revision\": 3, \"approved\": false, \"amount\": -21}]\n",
+      "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": null, \"review_threshold\": 1}\n",
+      "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n"
+    },
+    "artifacts": {
+      "answer.json": {
+        "selected": [
+          "item-11-0"
+        ],
+        "total": 2,
+        "review_first": "unknown"
+      }
+    },
+    "preserve": [
+      "README.txt",
+      "records.json",
+      "context.json",
+      "old-summary.json"
+    ]
+  },
+  {
+    "id": "queue-12",
+    "prompt": "Task goal: task:queue-12. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json.",
+    "goal": "task:queue-12",
+    "files": {
+      "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+      "records.json": "[{\"id\": \"item-12-1\", \"revision\": 1, \"approved\": false, \"amount\": 28}, {\"id\": \"item-12-3\", \"revision\": 1, \"approved\": false, \"amount\": -11}, {\"id\": \"item-12-2\", \"revision\": 1, \"approved\": false, \"amount\": 25}, {\"id\": \"item-12-2\", \"revision\": 2, \"approved\": true, \"amount\": -13}, {\"id\": \"item-12-3\", \"revision\": 3, \"approved\": false, \"amount\": 37}, {\"id\": \"item-12-0\", \"revision\": 1, \"approved\": false, \"amount\": -4}, {\"id\": \"item-12-0\", \"revision\": 3, \"approved\": false, \"amount\": 23}, {\"id\": \"item-12-3\", \"revision\": 2, \"approved\": false, \"amount\": 15}, {\"id\": \"item-12-0\", \"revision\": 2, \"approved\": false, \"amount\": 10}, {\"id\": \"item-12-1\", \"revision\": 2, \"approved\": true, \"amount\": 32}, {\"id\": \"item-12-2\", \"revision\": 3, \"approved\": true, \"amount\": 39}, {\"id\": \"item-12-1\", \"revision\": 3, \"approved\": true, \"amount\": 5}]\n",
+      "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 1, \"review_threshold\": 3}\n",
+      "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n"
+    },
+    "artifacts": {
+      "answer.json": {
+        "selected": [
+          "item-12-1",
+          "item-12-2"
+        ],
+        "total": 44,
+        "review_first": false
+      }
+    },
+    "preserve": [
+      "README.txt",
+      "records.json",
+      "context.json",
+      "old-summary.json"
+    ]
+  }
+]

@@ -102,7 +102,7 @@ pub struct TodoItem {
     /// residual against the actual span is the cheapest expectation error
     /// there is. The last open declaration is compared with unambiguous
     /// completed work in `planning::StepFeedback`; substantial overruns are
-    /// recorded and eligible for bounded mismatch reflection.
+    /// recorded for calibration, not sufficient alone for a behavioral lesson.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -687,6 +687,17 @@ impl Tracked {
                         .filter(|span| span.in_flight == 0 && span.denied == 0)
                         .map(|span| span.calls);
                     let observation = crate::planning::StepFeedback {
+                        criterion: None,
+                        completion_batch: Some(
+                            next.items
+                                .iter()
+                                .filter(|i| {
+                                    i.status == Status::Completed
+                                        && before.get(i.content.as_str()).copied()
+                                            != Some(Status::Completed)
+                                })
+                                .count() as u32,
+                        ),
                         call_id: None,
                         check_tampered: tampered_steps.contains(&item.content),
                         step: item.content.clone(),
@@ -701,7 +712,7 @@ impl Tracked {
                         },
                     };
                     if observation.forecast_miss() {
-                        lines.push(format!("Step \"{}\" took substantially more work than its prior estimate; revise the remaining estimates before continuing.", crate::step::ellipsize(&item.content, 60)));
+                        lines.push(format!("Step \"{}\" exceeded its prior call estimate; check step boundaries and remaining work before revising the estimate. This alone does not establish unnecessary work.", crate::step::ellipsize(&item.content, 60)));
                     }
                     self.observations.push(observation);
                     let Some(mark) = self.started.remove(&item.content) else {
@@ -848,6 +859,8 @@ impl Tracked {
         {
             if !self.observations.iter().any(|s| s.step == item.content) {
                 self.observations.push(crate::planning::StepFeedback {
+                    criterion: None,
+                    completion_batch: None,
                     call_id: None,
                     step: item.content.clone(),
                     goal: next.goal.clone(),
