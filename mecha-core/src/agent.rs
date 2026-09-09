@@ -992,6 +992,7 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         || text.starts_with(crate::boredom::NOTICE_STEM)
         || text.contains(crate::mailbox::DELIVERY_STEM)
         || text.starts_with(crate::step::STEP_ESCALATION_STEM)
+        || text.starts_with(crate::step::CHECK_FEEDBACK_STEM)
         // The step-escalation stem shipped 2026-08-28 (9c2424d); transcripts
         // recorded before it carry the same fully-templated nudge bodies
         // bare, and one such nudge was already mined as a steer and probed as
@@ -2503,10 +2504,9 @@ impl Agent {
                             continue;
                         }
                         checks_used += 1;
-                        let id = format!(
-                            "mecha-check-{}-{checks_used}",
-                            cx.tools.work.map(|w| w.run).unwrap_or_default()
-                        );
+                        // Persisted calls must stay distinct when a session resumes
+                        // in another process; Work::run is only process-local.
+                        let id = format!("mecha-check-{}", uuid::Uuid::new_v4());
                         let mut request = Message::assistant(vec![
                             Block::text("Harness verification of a declared plan check."),
                             Block::ToolUse {
@@ -2583,7 +2583,10 @@ impl Agent {
                             if let Some(line) =
                                 crate::step::Finding::CheckFailed.line(&check.step, false)
                             {
-                                append_user_text(messages, line);
+                                append_user_text(
+                                    messages,
+                                    format!("{}{line}", crate::step::CHECK_FEEDBACK_STEM),
+                                );
                             }
                         } else if trace[start..].iter().any(|c| c.denied) {
                             append_user_text(messages, "The declared plan check did not establish completion. Review its result before claiming the step is verified.".into());
@@ -7802,6 +7805,26 @@ mod tests {
                     .contains("Fix what the check found"),
                 mode == PermissionMode::Allow,
                 "the executor emits CheckFailed only for an executed failure, not a refused check"
+            );
+            let mut with_steer = convo.messages.clone();
+            let result = with_steer
+                .iter_mut()
+                .find(|m| m.content.iter().any(|b| matches!(b,
+                    Block::ToolResult { tool_use_id, .. } if tool_use_id.starts_with("mecha-check-"))))
+                .unwrap();
+            result
+                .content
+                .push(Block::text("Use the owner's revised acceptance criterion."));
+            let interventions = crate::learning::extract_interventions(&with_steer);
+            let steers: Vec<_> = interventions
+                .iter()
+                .filter(|i| i.trigger == crate::learning::Trigger::Steer)
+                .map(|i| i.text.as_str())
+                .collect();
+            assert_eq!(
+                steers,
+                vec!["Use the owner's revised acceptance criterion."],
+                "check advice is harness voice; a real steer sharing its message remains learnable"
             );
             let steps: Vec<_> = convo
                 .messages

@@ -280,7 +280,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                             .messages
                             .get(intervention.at)
                             .and_then(|m| m.planning.as_ref())
-                            .map(|f| f.steps.iter().filter_map(|s| s.goal.clone()).collect())
+                            .map(|f| {
+                                f.steps
+                                    .iter()
+                                    .filter_map(|s| s.goal.clone())
+                                    .collect::<Vec<_>>()
+                            })
+                            .filter(|goals| !goals.is_empty())
                             .unwrap_or_else(|| {
                                 mecha_core::appraisal::goal_at(&convo.messages[..=intervention.at])
                                     .into_iter()
