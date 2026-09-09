@@ -15,6 +15,31 @@ still worth knowing about, because the next person will otherwise re-derive it.
 ## What shipped, and when
 
 
+**2026-09-09 — harder anchored appraisal and sequential learning measurements.**
+With runtime behavior frozen at `935d98f5`, Qwen 3.6 35B passed 20/24 control
+and 18/24 guided trials on eight harder tasks × three seeds. The native gate
+rejected promotion (two improved pairs, four regressions). Every run had its
+confirmed anchor, and all 20 observed completion-time check omissions were
+restored. Guidance was applied in all treatment runs. Model-written passing
+checks did not guarantee artifact correctness. A filename ambiguity affected one
+privacy failure; grades were preserved. A separately registered follow-up naming
+`answer.json` in every prompt passed 6/6 control versus 5/6 guided, with an
+incorrect exclusion count as its sole failure. These scores are not pooled.
+
+The separate lifetime experiment kept guidance and rule loading on in both arms,
+with learning stages only in the treatment and empty initial learning stores.
+Both six-task sequences passed 6/6, including 3/3 in each predeclared transfer
+slice. All twelve treatment stages completed. Two clean, full-evidence mismatch
+reflections retained the correct privacy task goals, but stayed below the minimum
+of three: no learned rules, validation records or later rule exposure. Thus this
+measured reflection capture, not a learning benefit or rule-transfer effect.
+The binary, fixtures, model alias and operator config matched at finish. Reports,
+exports, traces and learning-stage evidence are in the three corresponding
+`results/appraisal-{guidance-v2,privacy,learning-v2}-qwen36-35b-20260909/` directories.
+Required-backend tests passed 2,597 with three intentional ignores; a known
+trigger-lock test flaked once, then passed isolated and in the full rerun.
+No defaults were enabled, deployment performed, or learning state copied back.
+
 **2026-09-09 — completion checks preserved and explicit goal confirmation.**
 `Tracked::advance` now restores and freezes the last open check when the first
 completing write omits it. The executor sees the restored command and keeps the

@@ -1,0 +1,38 @@
+{
+  "control": {
+    "reflections": 0,
+    "triggers": {},
+    "origins": {},
+    "evidence": {},
+    "processed": 0,
+    "goals": [],
+    "learned_rule_files": [],
+    "validation_records": 0,
+    "store_file_sha256": {}
+  },
+  "learning": {
+    "reflections": 2,
+    "triggers": {
+      "mismatch": 2
+    },
+    "origins": {
+      "clean": 2
+    },
+    "evidence": {
+      "full": 2
+    },
+    "processed": 0,
+    "goals": [
+      "task:privacy-1",
+      "task:privacy-2"
+    ],
+    "learned_rule_files": [],
+    "validation_records": 0,
+    "store_file_sha256": {
+      ".gitignore": "259379cf60004a61e51cc482bcf321343e3bf01021ac44b6398449a0cac4df34",
+      ".lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mined.jsonl": "0fd3ff35d8bb85c14eb0c59f29f11ef0f8e49c826f47e8ff1fef72ea4ae0fcf1",
+      "reflections.jsonl": "3fe0f0fb3bdf58807e2968e8882eb3c46fb9f9eaa21dcd9194d0bcf21440c653"
+    }
+  }
+}

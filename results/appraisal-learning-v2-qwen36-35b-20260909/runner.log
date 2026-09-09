@@ -1,0 +1,39 @@
+mecha exp `appraisal-learning-v2-qwen36-35b-20260909`: 12 trials planned, 0 finished, 12 to run · local (qwen3.6-35b-a3b)
+mecha exp: fixture world graph · outbox route: none — every fixture send executes unrouted into its store, and no draft will pend
+· control__reconcile-1__s1__r1 (1) · control__s1__r1 position 1
+  pass · 12 turns · completed
+· control__privacy-1__s1__r1 (2) · control__s1__r1 position 2
+  pass · 10 turns · completed
+· control__schedule-1__s1__r1 (3) · control__s1__r1 position 3
+  pass · 10 turns · completed
+· control__reconcile-2__s1__r1 (4) · control__s1__r1 position 4
+  pass · 14 turns · completed
+· control__privacy-2__s1__r1 (5) · control__s1__r1 position 5
+  pass · 7 turns · completed
+· control__schedule-2__s1__r1 (6) · control__s1__r1 position 6
+  pass · 10 turns · completed
+· learning__reconcile-1__s1__r1 (7) · learning__s1__r1 position 1
+  pass · 12 turns · completed
+  ↳ reflect · ok · 0s
+· learning__privacy-1__s1__r1 (8) · learning__s1__r1 position 2
+  pass · 10 turns · completed
+  ↳ reflect · ok · 48s
+· learning__schedule-1__s1__r1 (9) · learning__s1__r1 position 3
+  pass · 10 turns · completed
+  ↳ reflect · ok · 0s
+  ↳ validate · ok · 0s
+  ↳ learn · ok · 0s
+  ↳ retire · ok · 0s
+· learning__reconcile-2__s1__r1 (10) · learning__s1__r1 position 4
+  pass · 12 turns · completed
+  ↳ reflect · ok · 0s
+· learning__privacy-2__s1__r1 (11) · learning__s1__r1 position 5
+  pass · 8 turns · completed
+  ↳ reflect · ok · 30s
+· learning__schedule-2__s1__r1 (12) · learning__s1__r1 position 6
+  pass · 8 turns · completed
+  ↳ reflect · ok · 0s
+  ↳ validate · ok · 0s
+  ↳ learn · ok · 0s
+  ↳ retire · ok · 0s
+mecha exp `appraisal-learning-v2-qwen36-35b-20260909`: 12 trial(s) run this invocation
