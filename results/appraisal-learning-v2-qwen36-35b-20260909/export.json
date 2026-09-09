@@ -1,0 +1,2205 @@
+{
+  "judgements": [
+    {
+      "arm": "learning",
+      "control_stages": {
+        "done": 0,
+        "failed": 0,
+        "interrupted": 0,
+        "skipped": 0,
+        "unknown": 0
+      },
+      "holdout": 4,
+      "judgement": {
+        "disposition": {
+          "Propose": "only 2 paired episode(s) in the selection slice, below the floor of 8 — read it rather than trusting it"
+        },
+        "holdout": {
+          "losses": 0,
+          "ties": 4,
+          "wins": 0
+        },
+        "selection": {
+          "losses": 0,
+          "ties": 2,
+          "wins": 0
+        },
+        "work_baseline": 83,
+        "work_candidate": 75
+      },
+      "metric": "failure",
+      "pairs": 6,
+      "selection": 2,
+      "stages": {
+        "done": 12,
+        "failed": 0,
+        "interrupted": 0,
+        "skipped": 0,
+        "unknown": 0
+      },
+      "unreadable_stage_lines": 0
+    }
+  ],
+  "manifest": {
+    "arms": {
+      "control": {
+        "levers_off": [
+          "mcp",
+          "skills",
+          "hooks",
+          "messages",
+          "fallback",
+          "step_escalation"
+        ],
+        "levers_on": [
+          "step_checks",
+          "goal_guidance",
+          "learned_rules"
+        ],
+        "model": "qwen3.6-35b-a3b",
+        "overrides": [
+          "max_turns=16"
+        ],
+        "prediction": null,
+        "preset": "full",
+        "provider": "local",
+        "stages_off": [
+          "reflect",
+          "validate",
+          "learn",
+          "retire",
+          "ruminate"
+        ]
+      },
+      "learning": {
+        "levers_off": [
+          "mcp",
+          "skills",
+          "hooks",
+          "messages",
+          "fallback",
+          "step_escalation"
+        ],
+        "levers_on": [
+          "step_checks",
+          "goal_guidance",
+          "learned_rules"
+        ],
+        "model": "qwen3.6-35b-a3b",
+        "overrides": [
+          "max_turns=16"
+        ],
+        "prediction": {
+          "metric": "failure",
+          "rationale": "Learning from the first three tasks reduces artifact failures on the subsequent three tasks; stage and rule-exposure records are required before attributing a difference to learning."
+        },
+        "preset": "full",
+        "provider": "local",
+        "stages_off": []
+      }
+    },
+    "control": "control",
+    "description": "Sequential learning-stage pilot: guidance and learned-rule loading on in both arms; only the learning stages differ.",
+    "fixtures": {
+      "charter": "eval/fixtures/appraisal-v2/charter.toml",
+      "clock": {},
+      "mcp": [
+        {
+          "args": [
+            "eval/fixtures/board_server.py"
+          ],
+          "capabilities": {
+            "destructive": false,
+            "external_send": false,
+            "private_data": false,
+            "untrusted_input": true
+          },
+          "command": "python3",
+          "name": "graph",
+          "prefix_tools": false,
+          "seed": "eval/fixtures/appraisal-v2/board"
+        }
+      ],
+      "outbox_tools": []
+    },
+    "holdout_in": 3,
+    "kind": "lifetime",
+    "name": "appraisal-learning-v2-qwen36-35b-20260909",
+    "principal": null,
+    "repetitions": 1,
+    "schedule": {
+      "learn": 3,
+      "reflect": 1,
+      "retire": 3,
+      "ruminate": 0,
+      "validate": 3
+    },
+    "seeds": [
+      1
+    ],
+    "split_seed": 37,
+    "tasks": {
+      "confirmed_goals": {
+        "privacy-1": "task:privacy-1",
+        "privacy-2": "task:privacy-2",
+        "reconcile-1": "task:reconcile-1",
+        "reconcile-2": "task:reconcile-2",
+        "schedule-1": "task:schedule-1",
+        "schedule-2": "task:schedule-2"
+      },
+      "fixture": "eval/fixtures/appraisal-v2/workspace",
+      "ids": [
+        "reconcile-1",
+        "privacy-1",
+        "schedule-1",
+        "reconcile-2",
+        "privacy-2",
+        "schedule-2"
+      ],
+      "source": [
+        "python3",
+        "eval/fixtures/appraisal_artifact_source.py"
+      ],
+      "source_timeout_secs": 600,
+      "tags": []
+    }
+  },
+  "stages": [
+    {
+      "after_position": 1,
+      "arm": "learning",
+      "attempt": 1,
+      "finished_at": "",
+      "lifetime": "learning__s1__r1",
+      "stage": "reflect",
+      "started_at": "2026-09-09T06:22:49.301598830+00:00",
+      "status": "running"
+    },
+    {
+      "after_position": 1,
+      "arm": "learning",
+      "attempt": 1,
+      "exit_code": 0,
+      "finished_at": "2026-09-09T06:22:49.326474061+00:00",
+      "lifetime": "learning__s1__r1",
+      "stage": "reflect",
+      "started_at": "2026-09-09T06:22:49.301598830+00:00",
+      "status": "done"
+    },
+    {
+      "after_position": 2,
+      "arm": "learning",
+      "attempt": 1,
+      "finished_at": "",
+      "lifetime": "learning__s1__r1",
+      "stage": "reflect",
+      "started_at": "2026-09-09T06:24:08.473049411+00:00",
+      "status": "running"
+    },
+    {
+      "after_position": 2,
+      "arm": "learning",
+      "attempt": 1,
+      "exit_code": 0,
+      "finished_at": "2026-09-09T06:24:57.337771926+00:00",
+      "lifetime": "learning__s1__r1",
+      "stage": "reflect",
+      "started_at": "2026-09-09T06:24:08.473049411+00:00",
+      "status": "done"
+    },
+    {
+      "after_position": 3,
+      "arm": "learning",
+      "attempt": 1,
+      "finished_at": "",
+      "lifetime": "learning__s1__r1",
+      "stage": "reflect",
+      "started_at": "2026-09-09T06:26:05.155126072+00:00",
+      "status": "running"
+    },
+    {
+      "after_position": 3,
+      "arm": "learning",
+      "attempt": 1,
+      "exit_code": 0,
+      "finished_at": "2026-09-09T06:26:05.182234419+00:00",
+      "lifetime": "learning__s1__r1",
+      "stage": "reflect",
+      "started_at": "2026-09-09T06:26:05.155126072+00:00",
+      "status": "done"
+    },
+    {
+      "after_position": 3,
+      "arm": "learning",
+      "attempt": 1,
+      "finished_at": "",
+      "lifetime": "learning__s1__r1",
+      "stage": "validate",
+      "started_at": "2026-09-09T06:26:05.182280099+00:00",
+      "status": "running"
+    },
+    {
+      "after_position": 3,
+      "arm": "learning",
+      "attempt": 1,
+      "exit_code": 0,
+      "finished_at": "2026-09-09T06:26:05.194469241+00:00",
+      "lifetime": "learning__s1__r1",
+      "stage": "validate",
+      "started_at": "2026-09-09T06:26:05.182280099+00:00",
+      "status": "done"
+    },
+    {
+      "after_position": 3,
+      "arm": "learning",
+      "attempt": 1,
+      "finished_at": "",
+      "lifetime": "learning__s1__r1",
+      "stage": "learn",
+      "started_at": "2026-09-09T06:26:05.194497401+00:00",
+      "status": "running"
+    },
+    {
+      "after_position": 3,
+      "arm": "learning",
+      "attempt": 1,
+      "exit_code": 0,
+      "finished_at": "2026-09-09T06:26:05.206329196+00:00",
+      "lifetime": "learning__s1__r1",
+      "stage": "learn",
+      "started_at": "2026-09-09T06:26:05.194497401+00:00",
+      "status": "done"
+    },
+    {
+      "after_position": 3,
+      "arm": "learning",
+      "attempt": 1,
+      "finished_at": "",
+      "lifetime": "learning__s1__r1",
+      "stage": "retire",
+      "started_at": "2026-09-09T06:26:05.206355708+00:00",
+      "status": "running"
+    },
+    {
+      "after_position": 3,
+      "arm": "learning",
+      "attempt": 1,
+      "exit_code": 0,
+      "finished_at": "2026-09-09T06:26:05.219391527+00:00",
+      "lifetime": "learning__s1__r1",
+      "stage": "retire",
+      "started_at": "2026-09-09T06:26:05.206355708+00:00",
+      "status": "done"
+    },
+    {
+      "after_position": 4,
+      "arm": "learning",
+      "attempt": 1,
+      "finished_at": "",
+      "lifetime": "learning__s1__r1",
+      "stage": "reflect",
+      "started_at": "2026-09-09T06:27:23.184416509+00:00",
+      "status": "running"
+    },
+    {
+      "after_position": 4,
+      "arm": "learning",
+      "attempt": 1,
+      "exit_code": 0,
+      "finished_at": "2026-09-09T06:27:23.204277966+00:00",
+      "lifetime": "learning__s1__r1",
+      "stage": "reflect",
+      "started_at": "2026-09-09T06:27:23.184416509+00:00",
+      "status": "done"
+    },
+    {
+      "after_position": 5,
+      "arm": "learning",
+      "attempt": 1,
+      "finished_at": "",
+      "lifetime": "learning__s1__r1",
+      "stage": "reflect",
+      "started_at": "2026-09-09T06:28:39.692723890+00:00",
+      "status": "running"
+    },
+    {
+      "after_position": 5,
+      "arm": "learning",
+      "attempt": 1,
+      "exit_code": 0,
+      "finished_at": "2026-09-09T06:29:10.191594114+00:00",
+      "lifetime": "learning__s1__r1",
+      "stage": "reflect",
+      "started_at": "2026-09-09T06:28:39.692723890+00:00",
+      "status": "done"
+    },
+    {
+      "after_position": 6,
+      "arm": "learning",
+      "attempt": 1,
+      "finished_at": "",
+      "lifetime": "learning__s1__r1",
+      "stage": "reflect",
+      "started_at": "2026-09-09T06:30:41.045337111+00:00",
+      "status": "running"
+    },
+    {
+      "after_position": 6,
+      "arm": "learning",
+      "attempt": 1,
+      "exit_code": 0,
+      "finished_at": "2026-09-09T06:30:41.073919720+00:00",
+      "lifetime": "learning__s1__r1",
+      "stage": "reflect",
+      "started_at": "2026-09-09T06:30:41.045337111+00:00",
+      "status": "done"
+    },
+    {
+      "after_position": 6,
+      "arm": "learning",
+      "attempt": 1,
+      "finished_at": "",
+      "lifetime": "learning__s1__r1",
+      "stage": "validate",
+      "started_at": "2026-09-09T06:30:41.073958824+00:00",
+      "status": "running"
+    },
+    {
+      "after_position": 6,
+      "arm": "learning",
+      "attempt": 1,
+      "exit_code": 0,
+      "finished_at": "2026-09-09T06:30:41.081732068+00:00",
+      "lifetime": "learning__s1__r1",
+      "stage": "validate",
+      "started_at": "2026-09-09T06:30:41.073958824+00:00",
+      "status": "done"
+    },
+    {
+      "after_position": 6,
+      "arm": "learning",
+      "attempt": 1,
+      "finished_at": "",
+      "lifetime": "learning__s1__r1",
+      "stage": "learn",
+      "started_at": "2026-09-09T06:30:41.081765300+00:00",
+      "status": "running"
+    },
+    {
+      "after_position": 6,
+      "arm": "learning",
+      "attempt": 1,
+      "exit_code": 0,
+      "finished_at": "2026-09-09T06:30:41.094021049+00:00",
+      "lifetime": "learning__s1__r1",
+      "stage": "learn",
+      "started_at": "2026-09-09T06:30:41.081765300+00:00",
+      "status": "done"
+    },
+    {
+      "after_position": 6,
+      "arm": "learning",
+      "attempt": 1,
+      "finished_at": "",
+      "lifetime": "learning__s1__r1",
+      "stage": "retire",
+      "started_at": "2026-09-09T06:30:41.094046585+00:00",
+      "status": "running"
+    },
+    {
+      "after_position": 6,
+      "arm": "learning",
+      "attempt": 1,
+      "exit_code": 0,
+      "finished_at": "2026-09-09T06:30:41.105525130+00:00",
+      "lifetime": "learning__s1__r1",
+      "stage": "retire",
+      "started_at": "2026-09-09T06:30:41.094046585+00:00",
+      "status": "done"
+    }
+  ],
+  "trials": [
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "answer schema",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact recipients",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact excluded_count",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact send_now",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved people.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved consent.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved vendor-memo.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "drafts unchanged",
+          "passed": true
+        }
+      ],
+      "condition_hash": "c380ffd0c1b517a0",
+      "finished_at": "2026-09-09T06:16:46.281593833+00:00",
+      "id": "control__privacy-1__s1__r1",
+      "lifetime": "control__s1__r1",
+      "passed": true,
+      "position": 2,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T061528-a898d91d",
+      "started_at": "2026-09-09T06:15:28.302344450+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 2,
+        "checks_passed": 2,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 77.735448905,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:privacy-1",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 5,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [
+            {
+              "kind": "outbox_waiting",
+              "line": "review-before-polish",
+              "reading": {
+                "excess": 0.0,
+                "over": false,
+                "state": "observed",
+                "value": {
+                  "count": 0
+                }
+              },
+              "setpoint": "1"
+            }
+          ],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.4299999475479126,
+          "mem_available_kb": 21037468,
+          "peak_context_pressure": 0.08090591430664062,
+          "peak_prompt_tokens": 21209
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 4,
+        "step_nulls": 1,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 12,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 10,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 126520,
+          "input_tokens": 13384,
+          "output_tokens": 6757
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "privacy-1"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "answer schema",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact recipients",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact excluded_count",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact send_now",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved people.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved consent.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved vendor-memo.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "drafts unchanged",
+          "passed": true
+        }
+      ],
+      "condition_hash": "c380ffd0c1b517a0",
+      "finished_at": "2026-09-09T06:20:10.927804122+00:00",
+      "id": "control__privacy-2__s1__r1",
+      "lifetime": "control__s1__r1",
+      "passed": true,
+      "position": 5,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T061859-7bf968e6",
+      "started_at": "2026-09-09T06:18:59.330914930+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 2,
+        "checks_passed": 2,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 71.331950076,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:privacy-2",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 5,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [
+            {
+              "kind": "outbox_waiting",
+              "line": "review-before-polish",
+              "reading": {
+                "excess": 0.0,
+                "over": false,
+                "state": "observed",
+                "value": {
+                  "count": 0
+                }
+              },
+              "setpoint": "1"
+            }
+          ],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.6299999952316284,
+          "mem_available_kb": 21273972,
+          "peak_context_pressure": 0.0631561279296875,
+          "peak_prompt_tokens": 16556
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 4,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 12,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 7,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 74747,
+          "input_tokens": 11008,
+          "output_tokens": 6223
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "privacy-2"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "answer schema",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact payable_ids",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact unresolved_ids",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact total_usd_cents",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact complete",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved ledger.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved rates.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved legacy-check.py",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "drafts unchanged",
+          "passed": true
+        }
+      ],
+      "condition_hash": "c380ffd0c1b517a0",
+      "finished_at": "2026-09-09T06:15:28.276264931+00:00",
+      "id": "control__reconcile-1__s1__r1",
+      "lifetime": "control__s1__r1",
+      "passed": true,
+      "position": 1,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T061410-fdd934d1",
+      "started_at": "2026-09-09T06:14:09.847350994+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 78.169636124,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:reconcile-1",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 5,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [
+            {
+              "kind": "outbox_waiting",
+              "line": "review-before-polish",
+              "reading": {
+                "excess": 0.0,
+                "over": false,
+                "state": "observed",
+                "value": {
+                  "count": 0
+                }
+              },
+              "setpoint": "1"
+            }
+          ],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.0700000524520874,
+          "mem_available_kb": 21329028,
+          "peak_context_pressure": 0.07193756103515625,
+          "peak_prompt_tokens": 18858
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 5,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 4,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 19,
+        "tool_denied": 0,
+        "tool_errors": 2,
+        "tool_staged": 0,
+        "turns": 12,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 150334,
+          "input_tokens": 16382,
+          "output_tokens": 6657
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "reconcile-1"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "answer schema",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact payable_ids",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact unresolved_ids",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact total_usd_cents",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact complete",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved ledger.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved rates.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved legacy-check.py",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "drafts unchanged",
+          "passed": true
+        }
+      ],
+      "condition_hash": "c380ffd0c1b517a0",
+      "finished_at": "2026-09-09T06:18:59.304089747+00:00",
+      "id": "control__reconcile-2__s1__r1",
+      "lifetime": "control__s1__r1",
+      "passed": true,
+      "position": 4,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T061758-29dc8ef8",
+      "started_at": "2026-09-09T06:17:58.259217173+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 60.769652393,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:reconcile-2",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 4,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [
+            {
+              "kind": "outbox_waiting",
+              "line": "review-before-polish",
+              "reading": {
+                "excess": 0.0,
+                "over": false,
+                "state": "observed",
+                "value": {
+                  "count": 0
+                }
+              },
+              "setpoint": "1"
+            }
+          ],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.7599999904632568,
+          "mem_available_kb": 21179684,
+          "peak_context_pressure": 0.05806732177734375,
+          "peak_prompt_tokens": 15222
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 3,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 3,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 17,
+        "tool_denied": 0,
+        "tool_errors": 1,
+        "tool_staged": 0,
+        "turns": 14,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 142029,
+          "input_tokens": 7847,
+          "output_tokens": 5182
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "reconcile-2"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "answer schema",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact schedule",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact finish",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved jobs.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved advisory.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "drafts unchanged",
+          "passed": true
+        }
+      ],
+      "condition_hash": "c380ffd0c1b517a0",
+      "finished_at": "2026-09-09T06:17:58.221975399+00:00",
+      "id": "control__schedule-1__s1__r1",
+      "lifetime": "control__s1__r1",
+      "passed": true,
+      "position": 3,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T061646-3a68aea0",
+      "started_at": "2026-09-09T06:16:46.319360076+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 71.633458327,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:schedule-1",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 4,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [
+            {
+              "kind": "outbox_waiting",
+              "line": "review-before-polish",
+              "reading": {
+                "excess": 0.0,
+                "over": false,
+                "state": "observed",
+                "value": {
+                  "count": 0
+                }
+              },
+              "setpoint": "1"
+            }
+          ],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.6100000143051147,
+          "mem_available_kb": 21126944,
+          "peak_context_pressure": 0.05043792724609375,
+          "peak_prompt_tokens": 13222
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 3,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 3,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 12,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 10,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 94949,
+          "input_tokens": 7169,
+          "output_tokens": 6760
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "schedule-1"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "answer schema",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact schedule",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact finish",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved jobs.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved advisory.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "drafts unchanged",
+          "passed": true
+        }
+      ],
+      "condition_hash": "c380ffd0c1b517a0",
+      "finished_at": "2026-09-09T06:21:48.979107674+00:00",
+      "id": "control__schedule-2__s1__r1",
+      "lifetime": "control__s1__r1",
+      "passed": true,
+      "position": 6,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T062011-af66cc6a",
+      "started_at": "2026-09-09T06:20:10.965136181+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 97.737851156,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:schedule-2",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 4,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [
+            {
+              "kind": "outbox_waiting",
+              "line": "review-before-polish",
+              "reading": {
+                "excess": 0.0,
+                "over": false,
+                "state": "observed",
+                "value": {
+                  "count": 0
+                }
+              },
+              "setpoint": "1"
+            }
+          ],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.2599999904632568,
+          "mem_available_kb": 21495144,
+          "peak_context_pressure": 0.06008148193359375,
+          "peak_prompt_tokens": 15750
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 3,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 11,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 10,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 105570,
+          "input_tokens": 7574,
+          "output_tokens": 9353
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "schedule-2"
+    },
+    {
+      "arm": "learning",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "answer schema",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact recipients",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact excluded_count",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact send_now",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved people.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved consent.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved vendor-memo.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "drafts unchanged",
+          "passed": true
+        }
+      ],
+      "condition_hash": "5d49a7c7f3524cd3",
+      "finished_at": "2026-09-09T06:24:08.472680801+00:00",
+      "id": "learning__privacy-1__s1__r1",
+      "lifetime": "learning__s1__r1",
+      "passed": true,
+      "position": 2,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T062249-c35ed3da",
+      "started_at": "2026-09-09T06:22:49.356732812+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 2,
+        "checks_passed": 2,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 78.837630174,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:privacy-1",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 5,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [
+            {
+              "kind": "outbox_waiting",
+              "line": "review-before-polish",
+              "reading": {
+                "excess": 0.0,
+                "over": false,
+                "state": "observed",
+                "value": {
+                  "count": 0
+                }
+              },
+              "setpoint": "1"
+            }
+          ],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.5800000429153442,
+          "mem_available_kb": 21665228,
+          "peak_context_pressure": 0.06635284423828125,
+          "peak_prompt_tokens": 17394
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 4,
+        "step_nulls": 1,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 10,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 10,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 119209,
+          "input_tokens": 9256,
+          "output_tokens": 6893
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "privacy-1"
+    },
+    {
+      "arm": "learning",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "answer schema",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact recipients",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact excluded_count",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact send_now",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved people.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved consent.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved vendor-memo.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "drafts unchanged",
+          "passed": true
+        }
+      ],
+      "condition_hash": "5d49a7c7f3524cd3",
+      "finished_at": "2026-09-09T06:28:39.692367392+00:00",
+      "id": "learning__privacy-2__s1__r1",
+      "lifetime": "learning__s1__r1",
+      "passed": true,
+      "position": 5,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T062723-72699ab1",
+      "started_at": "2026-09-09T06:27:23.235736161+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 2,
+        "checks_passed": 2,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 76.183120734,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:privacy-2",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 5,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [
+            {
+              "kind": "outbox_waiting",
+              "line": "review-before-polish",
+              "reading": {
+                "excess": 0.0,
+                "over": false,
+                "state": "observed",
+                "value": {
+                  "count": 0
+                }
+              },
+              "setpoint": "1"
+            }
+          ],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.2699999809265137,
+          "mem_available_kb": 22324112,
+          "peak_context_pressure": 0.06388092041015625,
+          "peak_prompt_tokens": 16746
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 4,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 13,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 8,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 91138,
+          "input_tokens": 11109,
+          "output_tokens": 6635
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "privacy-2"
+    },
+    {
+      "arm": "learning",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "answer schema",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact payable_ids",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact unresolved_ids",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact total_usd_cents",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact complete",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved ledger.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved rates.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved legacy-check.py",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "drafts unchanged",
+          "passed": true
+        }
+      ],
+      "condition_hash": "5d49a7c7f3524cd3",
+      "finished_at": "2026-09-09T06:22:49.301202331+00:00",
+      "id": "learning__reconcile-1__s1__r1",
+      "lifetime": "learning__s1__r1",
+      "passed": true,
+      "position": 1,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T062149-afbab4b0",
+      "started_at": "2026-09-09T06:21:48.996878017+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 60.030681254,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:reconcile-1",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 5,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [
+            {
+              "kind": "outbox_waiting",
+              "line": "review-before-polish",
+              "reading": {
+                "excess": 0.0,
+                "over": false,
+                "state": "observed",
+                "value": {
+                  "count": 0
+                }
+              },
+              "setpoint": "1"
+            }
+          ],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.2599999904632568,
+          "mem_available_kb": 21923380,
+          "peak_context_pressure": 0.0677490234375,
+          "peak_prompt_tokens": 17760
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 4,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 17,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 12,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 155336,
+          "input_tokens": 9269,
+          "output_tokens": 5239
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "reconcile-1"
+    },
+    {
+      "arm": "learning",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "answer schema",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact payable_ids",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact unresolved_ids",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact total_usd_cents",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact complete",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved ledger.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved rates.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved legacy-check.py",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "drafts unchanged",
+          "passed": true
+        }
+      ],
+      "condition_hash": "5d49a7c7f3524cd3",
+      "finished_at": "2026-09-09T06:27:23.184042267+00:00",
+      "id": "learning__reconcile-2__s1__r1",
+      "lifetime": "learning__s1__r1",
+      "passed": true,
+      "position": 4,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T062605-c9bc92bf",
+      "started_at": "2026-09-09T06:26:05.236518760+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 77.671283036,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:reconcile-2",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 4,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [
+            {
+              "kind": "outbox_waiting",
+              "line": "review-before-polish",
+              "reading": {
+                "excess": 0.0,
+                "over": false,
+                "state": "observed",
+                "value": {
+                  "count": 0
+                }
+              },
+              "setpoint": "1"
+            }
+          ],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.2200000286102295,
+          "mem_available_kb": 22907416,
+          "peak_context_pressure": 0.07377243041992188,
+          "peak_prompt_tokens": 19339
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 5,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 3,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 15,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 12,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 151025,
+          "input_tokens": 13152,
+          "output_tokens": 6960
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "reconcile-2"
+    },
+    {
+      "arm": "learning",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "answer schema",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact schedule",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact finish",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved jobs.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved advisory.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "drafts unchanged",
+          "passed": true
+        }
+      ],
+      "condition_hash": "5d49a7c7f3524cd3",
+      "finished_at": "2026-09-09T06:26:05.154774502+00:00",
+      "id": "learning__schedule-1__s1__r1",
+      "lifetime": "learning__s1__r1",
+      "passed": true,
+      "position": 3,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T062457-fb65b2d3",
+      "started_at": "2026-09-09T06:24:57.367016238+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 67.536840556,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:schedule-1",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 4,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [
+            {
+              "kind": "outbox_waiting",
+              "line": "review-before-polish",
+              "reading": {
+                "excess": 0.0,
+                "over": false,
+                "state": "observed",
+                "value": {
+                  "count": 0
+                }
+              },
+              "setpoint": "1"
+            }
+          ],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.159999966621399,
+          "mem_available_kb": 22092016,
+          "peak_context_pressure": 0.048431396484375,
+          "peak_prompt_tokens": 12696
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 3,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 3,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 11,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 10,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 88954,
+          "input_tokens": 6058,
+          "output_tokens": 6282
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "schedule-1"
+    },
+    {
+      "arm": "learning",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "answer schema",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact schedule",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact finish",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved jobs.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved advisory.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "drafts unchanged",
+          "passed": true
+        }
+      ],
+      "condition_hash": "5d49a7c7f3524cd3",
+      "finished_at": "2026-09-09T06:30:41.045009829+00:00",
+      "id": "learning__schedule-2__s1__r1",
+      "lifetime": "learning__s1__r1",
+      "passed": true,
+      "position": 6,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T062910-abc9f206",
+      "started_at": "2026-09-09T06:29:10.221670924+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 90.555743696,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:schedule-2",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 4,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [
+            {
+              "kind": "outbox_waiting",
+              "line": "review-before-polish",
+              "reading": {
+                "excess": 0.0,
+                "over": false,
+                "state": "observed",
+                "value": {
+                  "count": 0
+                }
+              },
+              "setpoint": "1"
+            }
+          ],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.2799999713897705,
+          "mem_available_kb": 21848500,
+          "peak_context_pressure": 0.06095123291015625,
+          "peak_prompt_tokens": 15978
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 3,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 9,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 8,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 76007,
+          "input_tokens": 8276,
+          "output_tokens": 8882
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "schedule-2"
+    }
+  ],
+  "unreadable_stage_lines": 0,
+  "unreadable_trials": 0
+}

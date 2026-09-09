@@ -1,0 +1,101 @@
+{
+  "slices": {
+    "initial": {
+      "arms": {
+        "control": {
+          "expected": 3,
+          "graded": 3,
+          "passed": 3,
+          "rules_exposure_known": 3,
+          "runs_with_rules": 0,
+          "rule_ids": []
+        },
+        "learning": {
+          "expected": 3,
+          "graded": 3,
+          "passed": 3,
+          "rules_exposure_known": 3,
+          "runs_with_rules": 0,
+          "rule_ids": []
+        }
+      },
+      "graded_pairs": 3,
+      "improved": 0,
+      "regressed": 0
+    },
+    "transfer": {
+      "arms": {
+        "control": {
+          "expected": 3,
+          "graded": 3,
+          "passed": 3,
+          "rules_exposure_known": 3,
+          "runs_with_rules": 0,
+          "rule_ids": []
+        },
+        "learning": {
+          "expected": 3,
+          "graded": 3,
+          "passed": 3,
+          "rules_exposure_known": 3,
+          "runs_with_rules": 0,
+          "rule_ids": []
+        }
+      },
+      "graded_pairs": 3,
+      "improved": 0,
+      "regressed": 0
+    }
+  },
+  "stage_ledger_status_counts": {
+    "running": 12,
+    "done": 12
+  },
+  "latest_stage_status_counts": {
+    "done": 12
+  },
+  "unreadable_trials": 0,
+  "unreadable_stage_lines": 0,
+  "native_judgements": [
+    {
+      "arm": "learning",
+      "control_stages": {
+        "done": 0,
+        "failed": 0,
+        "interrupted": 0,
+        "skipped": 0,
+        "unknown": 0
+      },
+      "holdout": 4,
+      "judgement": {
+        "disposition": {
+          "Propose": "only 2 paired episode(s) in the selection slice, below the floor of 8 \u2014 read it rather than trusting it"
+        },
+        "holdout": {
+          "losses": 0,
+          "ties": 4,
+          "wins": 0
+        },
+        "selection": {
+          "losses": 0,
+          "ties": 2,
+          "wins": 0
+        },
+        "work_baseline": 83,
+        "work_candidate": 75
+      },
+      "metric": "failure",
+      "pairs": 6,
+      "selection": 2,
+      "stages": {
+        "done": 12,
+        "failed": 0,
+        "interrupted": 0,
+        "skipped": 0,
+        "unknown": 0
+      },
+      "unreadable_stage_lines": 0
+    }
+  ],
+  "note": "Descriptive mechanism pilot. Rule creation, rule exposure, validation coverage and task success are distinct. A one-seed sequence does not establish general efficacy."
+}

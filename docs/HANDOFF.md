@@ -22,6 +22,64 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-09 — appraisal implementation is on `feat/appraisal-goal-feedback`, not installed.**
+See HISTORY under this date for implemented goal persistence, event attribution,
+plan checks, structured mismatch learning and goal-specific context. Guidance is
+observational unless `[agent] goal_guidance = true`; check execution defaults on
+and can be disabled with `step_checks = false` or `--no-step-checks`.
+The Qwen 3.6 35B pilot completed 2026-09-09: **36/36 passes in each arm**;
+all paired task outcomes tied, so the gate rejected promotion. Results and
+conditions are in `results/appraisal-guidance-qwen36-35b-20260909/README.md`.
+The model, binary, fixtures and operator config matched at the finish checks;
+no installation or service restart was performed.
+
+**The harder and learning measurements are complete; guidance stays opt-in.**
+The 48 anchored trials passed **20/24 control versus 18/24 guided**; the native
+gate rejected promotion. All 20 observed completion-time check omissions were
+restored. A privacy artifact-location ambiguity is preserved in those grades;
+the separately registered explicit-output follow-up passed **6/6 versus 5/6**.
+See `results/appraisal-guidance-v2-qwen36-35b-20260909/README.md` and
+`results/appraisal-privacy-qwen36-35b-20260909/README.md` for conditions and limits.
+
+The separate six-task learning sequence passed **6/6 in both arms**, including
+3/3 on each transfer slice. All 12 treatment stages completed, but only two clean,
+goal-linked reflections were captured, below the unchanged minimum of three.
+No rules were created or loaded, so learning benefits remain unmeasured. See
+`results/appraisal-learning-v2-qwen36-35b-20260909/README.md`. The earlier learning
+design was superseded without running; the original baseline remains unchanged.
+The twelve-task extension completed with independent artifact validation:
+**10/12 control versus 9/12 learning**, and **6/6 versus 5/6 transfer**. It produced
+seven clean reflections and one scoped rule, actually loaded in all six transfer
+runs. The initial artifact gate measured three unchanged both-pass pairs; later
+validation measured two unchanged pairs and two inconclusive pairs. The final
+same-text consolidation retained the existing rule identity and non-probation
+status; no rules retired. All 18 stages completed and the native gate rejected
+promotion. See `results/appraisal-mismatch-qwen36-35b-20260909/README.md`.
+Actual rule creation and exposure are now demonstrated; improvement is not.
+The separate controlled artifact drill detected an aggregate regression but could
+not attribute it, so its strict retirement assertion failed. Its evidence is
+archived separately from the natural pilot; the existing trace retirement drill passed.
+
+`mismatch::ArtifactCase` and `probe::prepare_mismatch` now support independent
+JSON artifact grading of clean, bound, file-only task repeats. Mid-step state
+reconstruction, forecast-specific grading and live-service fixtures remain open.
+Unsolicited mid-run rule delivery stays off; semantic interpretation of owner goal
+corrections, across-run learning benefits and real owner-policy outcomes remain open. The earlier environment
+rows describe dated installations; only the pilot's local model and conditions
+were re-verified in this measurement pass.
+
+Validation on this working tree: `cargo fmt --all`, warning-free
+`cargo clippy --all-targets --all-features`, and
+`MECHA_TEST_REQUIRE_BACKENDS=1 cargo test --workspace`: **2,616 passed, zero
+failed, three intentionally ignored**. The suite breakdown is 805 CLI, 22
+first-run, 3 run-lifecycle, 5 serve-lifecycle, 1,519 core, 7 appraisal-fixture,
+5 fixture-server, 13 MCP, 9 sandbox-backend, 151 mail, 1 mail binary, 75 Slack
+and 1 doctest.
+The main eval inventory remains **36 cases / 15 tags**, recounted 2026-09-09;
+the baseline appraisal source supplies 12 tasks and the harder source supplies 8.
+One trigger-lock test failed in an earlier suite, then passed both isolated and
+in the final full run; no trigger implementation changed.
+
 **2026-09-08 update:** PR [#216](https://github.com/ljchang/mecha/pull/216)
 is merged into `main` at `c3f33f4c`, including PR #217's graceful shutdown and
 cross-device chat input. The shared checkout was cleanly fast-forwarded to that
@@ -2992,8 +3050,9 @@ what it is (`Reply::{Answered, Parked}`, no default — the web asker parks
 per question, not per asker, so a per-asker flag was wrong on the one
 production path it was written for); a changed pointer and a plan that
 named nothing are two counts, never one number; the drift rate is over
-runs that *named* a goal at least once under an anchor; and the anchor
-lives for one run. What to expect on this machine now: `sessions health` prints a `goal
+runs that *named* a goal at least once under an anchor; and the counters
+live for one run. The confirmed anchor now persists per conversation (2026-09-09;
+see HISTORY). What to expect on this machine now: `sessions health` prints a `goal
 drift` line reading *no run in this corpus recorded the sensor* until the
 first run under the new binary, then *N run(s) recorded the sensor; none
 had a confirmed goal* until a delegated run's question is answered or a
@@ -3002,9 +3061,9 @@ chat run answers a goal-carrying `ask_user`; `mecha sessions health
 `runs_with_a_goal_anchor`, `runs_planned_under_an_anchor`,
 `runs_named_under_an_anchor` (the rate's denominator), `goal_plan_writes`,
 `goal_drift_writes`, `goal_unnamed_writes` — the last two are opposite
-findings and the rate is over the first alone. The anchor lives for one run:
-the first readings are delegated resumes plus confirmations planned
-against within one run, not interactive work across turns.
+findings and the rate is over the first alone. Those initial readings covered one run at a time. The 2026-09-09 implementation
+adds cross-turn anchor persistence; measurements across that boundary need the new
+binary and must not be pooled as if earlier recordings had the same coverage.
 Deploy = binary only (no web change). **Open from §17.7 after this:**
 item 2 (still waiting on the step counters being read), item 4's re-ask
 (waiting on this line), item 8; the anchor is the confirmed pointer, not
@@ -3906,9 +3965,12 @@ is true now:
 - **Automatic in-run convergence remains open.** `Workflow::check_evidence`
   and `WorkflowStore::verify` now check explicit artifact content and confirmed
   delivery; Today rereads evidence and owner closure verifies again. These are
-  workflow checks outside the agent loop. `TodoItem::check` remains a recorded
-  declaration, and the loop does not execute a general postcondition before
-  accepting the model's stop.
+  workflow checks outside the agent loop. Declared `TodoItem::check` commands
+  now execute on step completion through the normal tool policy and sandbox
+  path in `Agent::run`; failed checks reopen the step. What remains open is
+  a general task-level postcondition that gates acceptance of a model stop.
+  `ArtifactCase::criterion_feedback` observes a bound fixture after the run;
+  it does not turn final completion into an enforced convergence loop.
 
 - **Programmatic tool calling** (a `code` tool that calls other tools from inside
   a program). Two hazards to solve first, both named in the research: taint must
@@ -3941,8 +4003,8 @@ What is missing beyond that is refinement:
 - **The sliding window of recent raw reflections never shipped.** Prompt assembly
   chains user rules then consolidated rules; the third leg — a window of recent
   unconsolidated reflections — was designed and not built.
-- **Rules are scoped by domain, by run, and now by tool set — but nothing
-  delivers one mid-run.** `Rule::scope` exists (PR #168, merged
+- **Unsolicited mid-run rule delivery remains off.** Goal-specific rules can
+  now be retrieved on demand through `goal_context` (2026-09-09). `Rule::scope` exists (PR #168, merged
   2026-09-04) and `rules_carried_for` loads a scoped rule only into a
   run whose registry matches it. What is still missing is the §17.4
   *Delivery* half — one line on a tool's result the first time a recorded
@@ -3956,9 +4018,12 @@ What is missing beyond that is refinement:
   (`appraisal.rs` folds `WritingOutcome::SentUnchanged` as positive
   evidence) — but the *learner* still ignores it: consolidation mines only
   edited-then-sent items, so "this voice was right" never reinforces a rule.
-- **LEAP-in-production.** Rumination mines interventions only. Learning from
-  graded eval cases — sampling known-outcome examples rather than waiting for a
-  correction — was ported in design but not in code.
+- **LEAP-in-production.** `learning::extract_mismatches` now mines verified
+  criterion/check failures from clean, bound task sessions. Owner-registered
+  `ArtifactCase::criteria` can supply field verdicts and pinned count context
+  without passing gold answers to the reflector. A general sampler over graded
+  eval cases and deployment on real owner-policy tasks remain open. Forecast
+  overruns alone are observations, not evidence for new behavioral lessons.
 - **The correction-rate query shipped** (`mecha learning-report`, plus
   `/api/settings/learning-report` and the web trend pane) — what remains is
   *reading* it: the pre-cutover baseline is thin, so the trend needs a few

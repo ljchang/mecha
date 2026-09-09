@@ -164,6 +164,9 @@ pub enum Lever {
     CompactTool,
     /// `--no-step-escalation`, or `[agent] step_escalation = false`.
     StepEscalation,
+    /// Declared plan checks, controlled by `step_checks` / `--no-step-checks`.
+    StepChecks,
+    GoalGuidance,
     /// `no_rules`, which only `mecha eval` sets: the approval rules file is
     /// not loaded.
     ApprovalRules,
@@ -194,7 +197,7 @@ impl Lever {
     /// on review). The test `all_names_every_variant_serde_knows` closes
     /// it from the derive: serde's unknown-variant error lists every
     /// variant, and the test asserts this array covers that list.
-    pub const ALL: [Lever; 15] = [
+    pub const ALL: [Lever; 17] = [
         Lever::Mcp,
         Lever::LearnedRules,
         Lever::Hooks,
@@ -205,6 +208,8 @@ impl Lever {
         Lever::Charter,
         Lever::CompactTool,
         Lever::StepEscalation,
+        Lever::StepChecks,
+        Lever::GoalGuidance,
         Lever::ApprovalRules,
         Lever::Boredom,
         Lever::CompactValidate,
@@ -228,6 +233,8 @@ impl Lever {
             Lever::Charter => "charter",
             Lever::CompactTool => "compact_tool",
             Lever::StepEscalation => "step_escalation",
+            Lever::StepChecks => "step_checks",
+            Lever::GoalGuidance => "goal_guidance",
             Lever::ApprovalRules => "approval_rules",
             Lever::Boredom => "boredom",
             Lever::CompactValidate => "compact_validate",
@@ -1043,6 +1050,8 @@ mod tests {
                 | Lever::Skills
                 | Lever::Charter
                 | Lever::CompactTool
+                | Lever::StepChecks
+                | Lever::GoalGuidance
                 | Lever::StepEscalation
                 | Lever::ApprovalRules
                 | Lever::Boredom

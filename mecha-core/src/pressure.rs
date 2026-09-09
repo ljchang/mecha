@@ -579,6 +579,8 @@ mod tests {
 
     fn msg(text: &str) -> Message {
         Message {
+            harness: false,
+            planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
             content: vec![Block::text(text)],
@@ -980,6 +982,8 @@ mod tests {
     fn image_payloads_are_not_counted_as_growth() {
         let text = vec![msg("hello")];
         let with_image = vec![Message {
+            harness: false,
+            planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
             content: vec![
@@ -1002,6 +1006,8 @@ mod tests {
     #[test]
     fn every_other_block_kind_counts_toward_the_size() {
         let m = vec![Message {
+            harness: false,
+            planning: None,
             tool_provenance: Default::default(),
             role: Role::Assistant,
             content: vec![

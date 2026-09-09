@@ -1,0 +1,10 @@
+probing 4 reflection(s) with qwen3.6-35b-a3b (local), judged by qwen3.6-35b-a3b (local)
+· 20260909T141635-1e07dadb [mismatch, unchanged (both pass)] When a single file read operation triggers an unexpectedly high number of tool calls, halt and verify the parsing logic to prevent redundant or looping requests. Always compare actual tool usage against expected counts to catch inefficiencies early.
+[33m WARN[0m [2mmecha_core::agent[0m[2m:[0m prompt cache reuse dropped: 2535 of the previous prompt's 5660 tokens had to be paid for again, with no change in tools, system prompt, or transcript prefix — something is destabilising the cached prefix [3mrepaid[0m[2m=[0m2535 [3mprev_total[0m[2m=[0m5660
+· 20260909T141738-6981c025 [mismatch] inconclusive: artifact probe encountered a policy refusal or staged call
+[33m WARN[0m [2mmecha_core::agent[0m[2m:[0m prompt cache reuse dropped: 4983 of the previous prompt's 8108 tokens had to be paid for again, with no change in tools, system prompt, or transcript prefix — something is destabilising the cached prefix [3mrepaid[0m[2m=[0m4983 [3mprev_total[0m[2m=[0m8108
+· 20260909T141928-043698d2 [mismatch] inconclusive: artifact probe encountered a policy refusal or staged call
+· 20260909T142025-080c84fd [mismatch, unchanged (both pass)] When tasked with locating a specific file or structure, limit tool calls to the essential steps required and halt immediately upon success. Do not continue exploring or execute unverified follow-up actions, as this leads to excessive tool usage and inefficient execution.
+
+0 improved, 0 regressed, 2 unchanged, 2 inconclusive, 0 skipped (n=4; steers and denials are trace-graded, followups judge-graded — read before believing a single flip)
+4 row(s) appended to the validation ledger — `mecha rules` folds them

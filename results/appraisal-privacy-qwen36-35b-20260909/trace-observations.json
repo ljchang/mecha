@@ -1,0 +1,463 @@
+{
+  "experiment": "appraisal-privacy-qwen36-35b-20260909",
+  "summary": {
+    "control": {
+      "trials_observed": 6,
+      "trials_with_applied_guidance": 0,
+      "trials_with_rules": 0,
+      "trials_with_anchor": 6,
+      "trials_with_executed_checks": 3,
+      "trials_with_check_omissions_on_completion": 2,
+      "check_omissions_on_completion": 2,
+      "trials_with_unrestored_check_omissions": 0,
+      "unrestored_check_omissions": 0,
+      "omissions_without_matching_feedback": 0,
+      "actions": {
+        "continue": 6,
+        "verify": 19,
+        "clarify_goal": 3
+      }
+    },
+    "guided": {
+      "trials_observed": 6,
+      "trials_with_applied_guidance": 6,
+      "trials_with_rules": 0,
+      "trials_with_anchor": 6,
+      "trials_with_executed_checks": 2,
+      "trials_with_check_omissions_on_completion": 2,
+      "check_omissions_on_completion": 2,
+      "trials_with_unrestored_check_omissions": 0,
+      "unrestored_check_omissions": 0,
+      "omissions_without_matching_feedback": 0,
+      "actions": {
+        "continue": 6,
+        "verify": 22
+      }
+    }
+  },
+  "trials": [
+    {
+      "trial": "control__privacy-1__s1__r1",
+      "arm": "control",
+      "task": "privacy-1",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 2,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 2,
+        "not_declared": 6
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 2,
+      "recorded_checks_passed": 2,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__privacy-1__s2__r1",
+      "arm": "control",
+      "task": "privacy-1",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__privacy-1__s3__r1",
+      "arm": "control",
+      "task": "privacy-1",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 4,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "passed": 1,
+        "not_declared": 6
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "wccEy0PNs96VWHSeRiKfG8pAUOLejcHf",
+          "step": "Inspect input files: people.json and consent.json",
+          "recorded_verification": [
+            "passed"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 1,
+      "recorded_checks_passed": 1,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__privacy-2__s1__r1",
+      "arm": "control",
+      "task": "privacy-2",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__privacy-2__s2__r1",
+      "arm": "control",
+      "task": "privacy-2",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 4,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "passed": 2,
+        "not_declared": 7
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "2TmMqMj7ZZcHRIvESVuTOig9OqIEI4aI",
+          "step": "Join people to consent by ID, filtering for target-team + latest 'report' consent = granted",
+          "recorded_verification": [
+            "passed"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 2,
+      "recorded_checks_passed": 2,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__privacy-2__s3__r1",
+      "arm": "control",
+      "task": "privacy-2",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "clarify_goal": 3,
+        "verify": 1
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__privacy-1__s1__r1",
+      "arm": "guided",
+      "task": "privacy-1",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 8,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 4,
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "K2z3lVXbe2pMacgoONiLyYKSDTuTDucF",
+          "step": "Verify answer.json and confirm input files are preserved",
+          "recorded_verification": [
+            "passed"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 4,
+      "recorded_checks_passed": 4,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__privacy-1__s2__r1",
+      "arm": "guided",
+      "task": "privacy-1",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 5,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__privacy-1__s3__r1",
+      "arm": "guided",
+      "task": "privacy-1",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 4,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 1,
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "1XCoKllW5cRxz2o8Xerf5Iy82QtugS29",
+          "step": "Inspect input files: people.json and consent.json",
+          "recorded_verification": [
+            "passed"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 1,
+      "recorded_checks_passed": 1,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__privacy-2__s1__r1",
+      "arm": "guided",
+      "task": "privacy-2",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 5,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__privacy-2__s2__r1",
+      "arm": "guided",
+      "task": "privacy-2",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 5,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__privacy-2__s3__r1",
+      "arm": "guided",
+      "task": "privacy-2",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 5,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    }
+  ],
+  "method": "Count accepted todo inputs and persisted planning metadata in unrewritten transcripts. Omission compares adjacent accepted plans by exact trimmed step content; it is an observational diagnostic, not an artifact grade. Rewrites are marked unknown rather than counted twice."
+}

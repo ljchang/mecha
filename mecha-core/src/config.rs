@@ -569,6 +569,10 @@ pub struct AgentConfig {
     /// share that posture; it now derives its threshold from the window,
     /// because its validator gave it a measurement this has not earned yet.)
     pub step_escalation: bool,
+    /// Execute declared plan checks through ordinary guarded tool dispatch.
+    pub step_checks: bool,
+    /// Opt-in fixed guidance from goal, charter, and planning discrepancies.
+    pub goal_guidance: bool,
     /// Fire the compaction *trigger* on the forecast of the next request,
     /// not only on the size the last one reported. On by default. Off is a
     /// lever for an experiment (`predictive_compaction`,
@@ -621,6 +625,8 @@ impl Default for AgentConfig {
             boredom: true,
             compact_validate: true,
             step_escalation: false,
+            step_checks: true,
+            goal_guidance: false,
             predictive_compaction: true,
             carried_state: true,
             sensors_in_brief: true,
@@ -1455,6 +1461,8 @@ struct AgentLayer {
     loop_guard: Option<bool>,
     boredom: Option<bool>,
     step_escalation: Option<bool>,
+    step_checks: Option<bool>,
+    goal_guidance: Option<bool>,
     predictive_compaction: Option<bool>,
     carried_state: Option<bool>,
     sensors_in_brief: Option<bool>,
@@ -1552,6 +1560,12 @@ impl ConfigLayer {
             }
             if let Some(v) = a.loop_guard {
                 t.loop_guard = v;
+            }
+            if let Some(v) = a.step_checks {
+                t.step_checks = v;
+            }
+            if let Some(v) = a.goal_guidance {
+                t.goal_guidance = v;
             }
             if let Some(v) = a.step_escalation {
                 t.step_escalation = v;
@@ -2591,5 +2605,19 @@ match = ["rm -rf build"]
         cfg.validate().unwrap();
         cfg.agent.timezone = None;
         cfg.validate().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod planning_config_tests {
+    use super::*;
+    #[test]
+    fn planning_controls_load_through_the_real_layer() {
+        let layer: ConfigLayer =
+            toml::from_str("[agent]\nstep_checks = false\ngoal_guidance = true\n").unwrap();
+        let mut config = Config::default();
+        layer.apply(&mut config);
+        assert!(!config.agent.step_checks);
+        assert!(config.agent.goal_guidance);
     }
 }

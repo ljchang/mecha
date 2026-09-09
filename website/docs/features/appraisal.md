@@ -28,8 +28,9 @@ priorities for you.
 
 Appraisal feeds interface readouts, task and project closure, distilled
 metadata, and charter-based replay prioritization. Goal drift is recorded but
-does not automatically ask for confirmation again. Declared plan-step checks
-are recorded predictions; they do not yet execute automatically. [Workflow completion
+does not automatically ask for confirmation again; optional planning guidance
+can ask the model to reconcile its plan with the confirmed goal. Declared
+plan-step checks execute by default through the usual guards. [Workflow completion
 checks](/docs/features/workflows#check-the-result) are a separate, working
 feature for inspecting artifacts and confirmed delivery.
 
@@ -797,10 +798,13 @@ so the model meets its own prediction again after either. Once a step is
 `completed` its check is frozen: a different check on that write or any later
 one is reported back as a change, not taken.
 
-**These declarations are recorded, not automatically executed.** A completion
-keeps the check beside the observed tool-call span, so a later reader can compare
-the forecast with the run. To inspect artifacts and confirmed delivery now, use
-[workflow completion checks](/docs/features/workflows#check-the-result).
+**Declared checks execute when a step is completed.** The harness dispatches
+the frozen command after the original tool batch, through the usual approvals,
+hooks, sandbox and interlock. Check execution defaults on, with at most 16
+checks per run; `--no-step-checks` disables it. Refused, unavailable or skipped
+checks remain unverified. A passing check establishes only what that command
+tested at that time. See [planning feedback](#planning-feedback-and-goal-context)
+for how failures and other prediction mismatches feed learning.
 
 ## Boredom: naming an approach that has stopped teaching the run anything
 
@@ -864,7 +868,188 @@ to the harness or repeated assistant tasks, see
 - **No store for appraisals yet.** They are derived on read from records that
   already exist, which means a change to the derivation replays over the whole
   corpus instead of being lost with it.
-- **No forced re-confirmation on goal drift.** Drift is recorded; the harness
-  does not itself ask the owner or rewrite the plan.
+- **No forced re-confirmation on goal drift.** Optional planning guidance
+  advises reconciliation; it does not itself ask the owner or rewrite the plan.
 - **Affect cannot widen permissions.** Readouts, closure follow-ups, replay
   priority, and voice adjustments do not change the interlock or approval rules.
+
+## Planning feedback and goal context
+
+Plans can declare `serves`, a checkable `expect`, a shell `check`, and an
+`expect_calls` estimate. Completing a step runs its frozen check through the
+usual approvals, hooks and sandbox. At most 16 checks run per run. Refused,
+unavailable or skipped checks remain unverified; a passing check establishes
+only what that command tested at that time.
+
+Confirmed goal references persist across turns and session resume. Appraisal
+associates events with their historical goal, can retain a related charter line,
+and keeps the owner's completion verdict alongside execution evidence.
+
+`goal_context` retrieves up to four applicable goal-linked rules and two recent
+examples with passing checks. It preserves scope and provenance and runs only
+when requested by the agent. Failed checks, substantial estimate overruns and
+changes to frozen checks can supply bounded mismatch reflections to `mecha reflect`.
+Unknown or tainted mismatch evidence is excluded.
+
+```toml
+[agent]
+step_checks = true      # default; --no-step-checks disables execution
+goal_guidance = false  # opt in to fixed planning advice
+```
+
+With `goal_guidance = true`, plan updates receive advice based on confirmed-goal
+alignment, remaining work, verification gaps and ordered charter sensor readings.
+The sensor numbers stay outside model prompts. Guidance is experimental: the initial Qwen 3.6 35B pilot passed 36/36 tasks
+in each arm and found no task-success gain.
+Use `--no-goal-guidance` to disable it for a comparison run.
+
+
+## Comparing guidance on real runs
+
+From a checkout, `eval/appraisal-guidance.toml` defines a synthetic pilot with
+12 tasks, three seeds and two arms: 72 runs at the same 24-turn ceiling. Checks
+are enabled in both arms; only goal guidance differs. Both arms disable learned
+rules, skills, hooks, messages, fallback and step escalation. The charter, graph
+and draft queue are synthetic; each task starts with fresh workspace files and
+reset fixture state.
+
+The manifest pins `local` / `qwen3.6-35b-a3b` in both arms. Keep the model,
+configuration and checkout revision fixed through the run. For another model,
+change both arms and choose a new experiment name before registration. From the repository root, using the binary built from that revision:
+
+```bash
+cargo build -p mecha-cli
+./target/debug/mecha exp new eval/appraisal-guidance.toml
+./target/debug/mecha exp run appraisal-guidance-qwen36-35b-20260909 --dry-run
+./target/debug/mecha exp run appraisal-guidance-qwen36-35b-20260909
+./target/debug/mecha exp export appraisal-guidance-qwen36-35b-20260909 > /tmp/appraisal-results.json
+python3 scripts/appraisal-report.py /tmp/appraisal-results.json
+./target/debug/mecha exp judge appraisal-guidance-qwen36-35b-20260909 --json
+```
+
+`exp run --limit N` bounds one invocation; repeat the run command to resume.
+Registration freezes the manifest, so use a new experiment name for a changed
+design. Archive the export with the checkout revision and model configuration;
+source fixture contents are not all covered by the condition hash.
+
+The cases cover budgeted plans, charter conflicts, revised briefs, contradictory
+or missing evidence, artifact repair, misleading checks, adjacent verification,
+review pressure, distractors and scope control. Grading checks the saved JSON
+artifact and preserved inputs and drafts. Passing a model-written check or
+claiming completion cannot replace those checks. Tasks also require use of `todo`.
+
+The report pairs task, seed and repetition, separates execution failures from
+graded failures, and gives each metric its own observed-pair count. Missing cost,
+owner actions or plan counters remain unknown; cost comparisons require complete
+usage records. Negative failure-rate differences favor guidance. The report is
+descriptive; `exp judge` retains the existing selection/holdout gate.
+
+This pilot measures guidance with current-task evidence. It does not test learning
+across runs, semantic owner corrections across turns, or real owner-policy
+outcomes. Owner interventions are unmeasured in this single-run design. Inspect
+traces alongside the report before drawing conclusions or enabling guidance by
+default. The 2026-09-09 Qwen pilot tied on every task outcome, so the gate rejected
+promotion. It exposed completion-time check omissions and no confirmed-goal-anchor
+coverage; guidance remains opt-in. Results and limits are recorded in
+`results/appraisal-guidance-qwen36-35b-20260909/README.md` in the checkout.
+
+
+### Explicit goal confirmation for one-shot runs
+
+Use `mecha run --goal task:ID "your task"` to confirm the run's goal. The
+reference is recorded before execution and survives resume and compaction.
+On `--resume`, omitting `--goal` preserves the saved goal; specifying it replaces
+the saved reference. A task reference in prompt text alone is not confirmation.
+Experiment manifests can provide the same confirmation with a
+`[tasks.confirmed_goals]` table mapping selected case IDs to goal references.
+
+When a completion update omits a check declared while the step was open, the
+harness restores and freezes that check and executes it through the usual guards.
+A check explicitly withdrawn while the step is still open stays withdrawn.
+
+## Independent validation of planning lessons
+
+`mecha run --mismatch-case PATH` binds an owner-authored JSON fixture before
+execution. It contains the exact `prompt`, a confirmed `goal`, a map of starting
+`files` to their UTF-8 contents, an `artifacts` map of output paths to expected
+JSON values, and a `preserve` list of input paths that must remain unchanged.
+Keep this file outside the task workspace. Every starting file must be listed;
+the run refuses a different prompt, goal or starting state. Expected output is
+recorded as local metadata and is never sent to the model.
+
+For example, a fixture can declare:
+
+```json
+{
+  "prompt": "Add the numbers in input.json and write the sum to answer.json.",
+  "goal": "task:sum",
+  "files": {"input.json": "[2,3]\n"},
+  "artifacts": {"answer.json": {"sum": 5}},
+  "preserve": ["input.json"]
+}
+```
+
+The first supported surface is `fs_read`, `fs_write`, `fs_edit`, `fs_list` and
+`todo`. Narrow the recording with `--tool`; disable MCP, hooks, skills, messages,
+fallback, outbox routing, step escalation and goal guidance. These conditions
+are checked before recording the fixture. Shell and external services are not
+supported by this artifact validator.
+
+`mecha validate --trigger mismatch` and the `learn --auto` proposal gate can
+then compare rule sets on a clean recorded mismatch. Each arm repeats the whole
+registered task in a fresh workspace and checks its actual JSON output against
+the independent expectation. This is a task-outcome comparison, not a replay of
+the filesystem at an intermediate step or a validation of the original work
+estimate. Steer and denial probes keep their existing branching behavior.
+
+Use the same disabled hooks, outbox and messages settings during validation.
+File writes still use the current approval policy; use `--yes` only when those
+fixture writes are authorized. A refusal, missing fixture, changed tool surface
+or uncertain provenance remains ungraded. Malformed or incorrect artifacts
+fail. Per-arm receipts, including fixture/prompt fingerprints and usage, are
+stored under `learning/artifact-probes/`; whole-task results do not certify the
+original step's tool scope. Existing probation and retirement rules still apply.
+
+Experiments register these fixtures under `[tasks.mismatch_cases.<task-id>]`,
+with matching `[tasks.confirmed_goals]` entries. Fixtures are part of the
+condition hash and force the supported file-tool surface in both arms. The
+registered example is `eval/appraisal-mismatch.toml`: six training tasks followed
+by six transfer tasks, with rule exposure measured separately from task success.
+
+
+### Learning from a verified task criterion
+
+An owner-bound `--mismatch-case` can opt into training diagnostics with `criteria`.
+Each entry names an `artifact` and JSON `pointer` already present in its expected
+outputs. After the run, mecha records whether that criterion passed, failed or
+could not be evaluated. Expected values and the model's output prose do not enter
+the reflection payload.
+
+A criterion can include a `context` count constraint:
+
+```json
+"criteria": {
+  "review_priority": {
+    "artifact": "answer.json",
+    "pointer": "/review_first",
+    "context": {
+      "source": "context.json",
+      "observed_pointer": "/outbox_waiting",
+      "limit_pointer": "/review_threshold",
+      "relation": "greater_than",
+      "charter_goal": "charter:review-pending"
+    }
+  }
+}
+```
+
+The context source must be a pinned, preserved input. Counts and limits must be
+nonnegative integers; supported relations are `greater_than`, `at_least`,
+`less_than` and `at_most`. Missing or changed context is unknown. A charter goal
+is an optional owner-supplied association, not a live charter reading. Omit
+`criteria` on held-out evaluation tasks to withhold this diagnostic feedback.
+
+A forecast overrun still appears in the planning record, including whether
+multiple steps completed together. It does not by itself establish wasted work
+or qualify for a new behavioral rule. Verified criterion/check failures and
+changed checks retain the provenance, minimum-evidence and validation gates.

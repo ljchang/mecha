@@ -27,6 +27,15 @@ pub struct Args {
     #[arg(long)]
     pub resume: Option<String>,
 
+    /// Confirm what this run serves (task:id, project:id, charter:id or setpoint:id).
+    /// Overrides the saved anchor when resuming; omission preserves it.
+    #[arg(long, value_name = "KIND:ID")]
+    pub goal: Option<mecha_core::goal::GoalRef>,
+
+    /// Owner-authored JSON fixture for isolated artifact validation of later mismatches.
+    #[arg(long, conflicts_with_all = ["resume", "no_session", "images"])]
+    pub mismatch_case: Option<std::path::PathBuf>,
+
     /// Don't write a transcript.
     #[arg(long)]
     pub no_session: bool,
@@ -46,6 +55,22 @@ pub struct Args {
     pub images: Vec<std::path::PathBuf>,
 }
 
+fn confirm_goal(
+    convo: &mut mecha_core::agent::Conversation,
+    goal: Option<mecha_core::goal::GoalRef>,
+    session: Option<&Session>,
+) -> Result<()> {
+    if let Some(goal) = goal {
+        if let Some(session) = session {
+            session.append(&Record::GoalAnchor {
+                goal: Some(goal.clone()),
+            })?;
+        }
+        convo.goal_anchor = Some(goal);
+    }
+    Ok(())
+}
+
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let prompt = read_prompt(args.prompt.as_deref())?;
     anyhow::ensure!(!prompt.trim().is_empty(), "no prompt given");
@@ -59,6 +84,21 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     };
     let mut prepared = setup::prepare(&opts, interactive).await?;
 
+    let mismatch_case = args
+        .mismatch_case
+        .as_ref()
+        .map(|p| mecha_core::mismatch::ArtifactCase::load(p))
+        .transpose()?;
+    if let Some(case) = &mismatch_case {
+        case.bind(&prompt, args.goal.as_ref(), &prepared.workspace)?;
+        mecha_core::mismatch::validate_recording(&RunConfig::of(
+            &prepared.agent,
+            &prepared.config,
+            &prepared.provider_name,
+            &prepared.levers_off,
+            Some(&prepared.rules),
+        ))?;
+    }
     let session_dir = Session::default_dir()?;
     let mut convo = mecha_core::agent::Conversation::new();
     let mut session = None;
@@ -88,6 +128,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         )?);
     }
 
+    confirm_goal(&mut convo, args.goal, session.as_ref())?;
+
     // Written on create *and* on resume: a session picked up under different
     // flags is exactly the case this record exists to catch.
     if let Some(s) = &session {
@@ -97,13 +139,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         if args.resume.is_some() {
             setup::register_recall(&mut prepared.agent, s);
         }
-        s.append(&Record::Config(RunConfig::of(
+        let mut recorded = RunConfig::of(
             &prepared.agent,
             &prepared.config,
             &prepared.provider_name,
             &prepared.levers_off,
             Some(&prepared.rules),
-        )))?;
+        );
+        recorded.mismatch_case = mismatch_case.clone();
+        s.append(&Record::Config(recorded))?;
         // Staged outbox items point back at the session that drafted them.
         if let Some(route) = &prepared.agent.context().outbox {
             route.set_session_id(&s.meta.id);
@@ -151,6 +195,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let mut content = vec![mecha_core::message::Block::text(&prompt)];
         content.extend(images);
         Message {
+            harness: false,
+            planning: None,
             tool_provenance: Default::default(),
             role: mecha_core::message::Role::User,
             content,
@@ -213,6 +259,18 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     let outcome = result?;
     if let Some(s) = &session {
+        if let Some(case) = &mismatch_case {
+            if matches!(
+                outcome.stop_cause,
+                mecha_core::agent::StopCause::Completed
+                    | mecha_core::agent::StopCause::MaxTurns
+                    | mecha_core::agent::StopCause::OutputTokenBudget
+            ) && !outcome.tool_calls.iter().any(|c| c.denied || c.staged)
+                && outcome.blocked_sends == 0
+            {
+                append_criterion_feedback(s, case, &prepared.workspace, convo.taint)?;
+            }
+        }
         s.append(&Record::Summary {
             usage: outcome.usage.clone(),
             turns: outcome.turns,
@@ -269,6 +327,26 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         _ if outcome.stop_cause == mecha_core::agent::StopCause::NoOutput => std::process::exit(3),
         _ => Ok(()),
     }
+}
+
+fn append_criterion_feedback(
+    session: &Session,
+    case: &mecha_core::mismatch::ArtifactCase,
+    workspace: &std::path::Path,
+    taint: mecha_core::agent::Taint,
+) -> Result<()> {
+    let steps = case.criterion_feedback(workspace)?;
+    if !steps.is_empty() {
+        let mut message = Message::user(mecha_core::planning::CRITERION_OBSERVATION);
+        message.harness = true;
+        message.planning = Some(mecha_core::planning::Feedback {
+            steps,
+            ..Default::default()
+        });
+        session.append(&Record::Message(message))?;
+        session.append(&Record::Taint(taint))?;
+    }
+    Ok(())
 }
 
 fn read_prompt(arg: Option<&str>) -> Result<String> {
@@ -354,6 +432,39 @@ mod tests {
     use mecha_core::message::{Refusal, Usage};
     use mecha_core::StopReason;
 
+    #[test]
+    fn guidance_opt_out_is_global_like_other_execution_switches() {
+        use clap::Parser;
+        for args in [
+            ["mecha", "--no-goal-guidance", "run", "go"],
+            ["mecha", "run", "--no-goal-guidance", "go"],
+        ] {
+            assert!(
+                crate::Cli::try_parse_from(args)
+                    .unwrap()
+                    .global
+                    .no_goal_guidance
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_goal_parses_and_preserves_or_overrides_a_resumed_anchor() {
+        use clap::Parser;
+        let cli =
+            crate::Cli::try_parse_from(["mecha", "run", "--goal", "task:next", "go"]).unwrap();
+        let crate::Command::Run(args) = cli.command else {
+            panic!("run command")
+        };
+        let mut convo = mecha_core::agent::Conversation::new();
+        convo.goal_anchor = Some("task:old".parse().unwrap());
+        confirm_goal(&mut convo, None, None).unwrap();
+        assert_eq!(convo.goal_anchor.as_ref().unwrap().to_string(), "task:old");
+        confirm_goal(&mut convo, args.goal, None).unwrap();
+        assert_eq!(convo.goal_anchor.as_ref().unwrap().to_string(), "task:next");
+        assert!(crate::Cli::try_parse_from(["mecha", "run", "--goal", "invalid", "go"]).is_err());
+    }
+
     /// The superset claim, measured: a refused, cut-off run whose last call
     /// failed reads back through `BatchResult` with every field it can
     /// carry non-defaulted. Fails on the first cut twice over — the refusal
@@ -424,5 +535,64 @@ mod tests {
         assert_eq!(back.stop_cause, Some(StopCause::Completed));
         assert_eq!(back.turns, 3);
         assert_eq!(value["session"], "sess");
+    }
+}
+
+#[cfg(test)]
+mod criterion_recording_tests {
+    use super::*;
+    #[test]
+    fn diagnostic_taint_is_recorded_and_unknown_context_cannot_promote_it() {
+        use mecha_core::{
+            agent::Taint,
+            learning::{classify_origin, Origin},
+        };
+        let root = mecha_core::mismatch::Workspace::new().unwrap();
+        let case:mecha_core::mismatch::ArtifactCase=serde_json::from_value(serde_json::json!({
+            "prompt":"make answer", "goal":"task:test", "files":{}, "artifacts":{"answer.json":{"ok":true}},
+            "criteria":{"result":{"artifact":"answer.json","pointer":"/ok"}}
+        })).unwrap();
+        for untrusted in [false, true] {
+            let session = Session::create(
+                root.path(),
+                SessionMeta {
+                    id: Session::new_id(),
+                    created_at: chrono::Utc::now(),
+                    provider: "scripted".into(),
+                    model: "scripted".into(),
+                    workspace: root.path().into(),
+                    title: None,
+                    kind: None,
+                },
+            )
+            .unwrap();
+            append_criterion_feedback(
+                &session,
+                &case,
+                root.path(),
+                Taint {
+                    private: true,
+                    untrusted,
+                },
+            )
+            .unwrap();
+            let t = Session::read(&session.path).unwrap();
+            let interventions =
+                mecha_core::learning::extract_mismatches(&t.convo.messages, &t.outcome_positions);
+            assert_eq!(interventions.len(), 1);
+            assert_eq!(
+                classify_origin(t.taint_timeline.covering(interventions[0].at)),
+                if untrusted {
+                    Origin::Untrusted
+                } else {
+                    Origin::Clean
+                }
+            );
+            assert_eq!(
+                t.convo.messages[0].text(),
+                "Harness observations of owner-bound task criteria."
+            );
+            assert!(t.convo.messages[0].harness);
+        }
     }
 }

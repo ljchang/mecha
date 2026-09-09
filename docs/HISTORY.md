@@ -14,6 +14,180 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-09 — invalid attribution pilot stopped; harness observations are not owner corrections.**
+The first attribution pilot was stopped after 40 completed trials, before any
+consolidation, because `extract_interventions` mined the generic criterion
+observation as an owner follow-up even on passing tasks. The message was marked
+`harness`, but only the assistant-role path honored that marker. The miner now
+excludes marked user-role text and recognizes the frozen
+`planning::CRITERION_OBSERVATION` voice for historical records. Genuine owner
+follow-ups remain eligible. The regression failed before the fix. The mismatch
+reflector now explicitly distinguishes a false context predicate (potentially the
+correct decision) from a failed artifact verdict. The invalid run is preserved
+under `results/appraisal-attribution-qwen36-35b-20260909/`; the replacement uses
+fresh homes, the same tasks and seeds, and unchanged evidence gates.
+
+
+**2026-09-09 — grounded criterion feedback and conservative overrun attribution.**
+`StepFeedback::attribution` distinguishes failed task criteria, failed/changed
+checks, and forecast overruns with unknown or batched boundaries. Cost-only
+observations no longer author new behavioral lessons. Owner-bound
+`ArtifactCase::criteria` supplies post-run field verdicts and optional count
+constraints to the quarantined mismatch reflector, with the task and related
+charter association preserved. Gold stays outside provider messages; unknown or
+changed context stays ungraded, and recorded taint still gates learning.
+The old queue failures reproduce as comparisons against the wrong count: the
+recorded trace used twelve task records although `outbox_waiting` was zero.
+A regression test failed under the former overrun-only mining and passes with
+the new filter. The registered three-seed attribution pilot measures unseen
+transfer and calibration separately; results are recorded after execution.
+
+
+**2026-09-09 — independent artifact validation for planning mismatches.**
+`mismatch::ArtifactCase` holds a strict, bounded owner fixture and checks real JSON
+artifacts and preserved inputs in fresh workspaces. `run --mismatch-case` binds
+it before execution; `RunConfig` keeps gold out of provider messages, with
+malformed legacy metadata degrading to no fixture. `probe::prepare_mismatch`
+requires unique matching harness feedback, clean recorded provenance, the same
+confirmed goal and unchanged supported builtin specs. `drive_arm` repeats a
+file-only task for validation, candidate gating and attribution, preserving
+current approval/policy checks. Each executed arm records usage and fingerprints;
+refused writes remain inconclusive and task-level verdicts do not claim regional
+step coverage. Steer/denial branching and probation/retirement thresholds are
+unchanged. `Tasks::mismatch_cases` freezes fixtures in the condition hash; the
+new twelve-task lifetime design separates training from transfer. A live drill
+caught `--no-goal-guidance` lacking Clap's global flag; its regression failed
+before the fix and accepts either argument position after it. Live measurements
+are recorded separately after completion, without changing earlier pilot grades.
+
+**2026-09-09 — natural mismatch learning reached actual transfer exposure.**
+On frozen runtime `edb554a7`, the twelve-task Qwen 3.6 35B sequence completed
+24 trials and 18 learning stages: control passed 10/12 overall and 6/6 transfer;
+learning passed 9/12 overall and 5/6 transfer. Seven clean mismatch reflections
+produced one scoped rule. Its initial gate measured three unchanged both-pass
+artifact pairs, and all six later task configurations recorded the rule's ID.
+Fresh-evidence validation yielded two unchanged pairs and two inconclusive pairs,
+with no attributed regression. Terminal consolidation selected three of four new
+reflections, but its identical effective prompt caused all probes to skip.
+Although the proposal disposition said `auto_applied_probation`, the final typed
+roster retained the existing measured rule identity and non-probation status;
+proposal labels are not substitutes for reading final state. The native gate
+rejected promotion. The model, binary, fixtures and isolated operator configuration
+matched at finish; nothing was installed or changed in the owner's learning home.
+The separate seeded artifact drill detected an aggregate regression, but both
+singleton subsets passed and attribution abstained: its strict retirement
+assertion failed, while the existing trace retirement drill passed. Evidence and
+limits are in `results/appraisal-mismatch-qwen36-35b-20260909/README.md`.
+
+**2026-09-09 — harder anchored appraisal and sequential learning measurements.**
+With runtime behavior frozen at `935d98f5`, Qwen 3.6 35B passed 20/24 control
+and 18/24 guided trials on eight harder tasks × three seeds. The native gate
+rejected promotion (two improved pairs, four regressions). Every run had its
+confirmed anchor, and all 20 observed completion-time check omissions were
+restored. Guidance was applied in all treatment runs. Model-written passing
+checks did not guarantee artifact correctness. A filename ambiguity affected one
+privacy failure; grades were preserved. A separately registered follow-up naming
+`answer.json` in every prompt passed 6/6 control versus 5/6 guided, with an
+incorrect exclusion count as its sole failure. These scores are not pooled.
+
+The separate lifetime experiment kept guidance and rule loading on in both arms,
+with learning stages only in the treatment and empty initial learning stores.
+Both six-task sequences passed 6/6, including 3/3 in each predeclared transfer
+slice. All twelve treatment stages completed. Two clean, full-evidence mismatch
+reflections retained the correct privacy task goals, but stayed below the minimum
+of three: no learned rules, validation records or later rule exposure. Thus this
+measured reflection capture, not a learning benefit or rule-transfer effect.
+The binary, fixtures, model alias and operator config matched at finish. Reports,
+exports, traces and learning-stage evidence are in the three corresponding
+`results/appraisal-{guidance-v2,privacy,learning-v2}-qwen36-35b-20260909/` directories.
+Required-backend tests passed 2,597 with three intentional ignores; a known
+trigger-lock test flaked once, then passed isolated and in the full rerun.
+No defaults were enabled, deployment performed, or learning state copied back.
+
+**2026-09-09 — completion checks preserved and explicit goal confirmation.**
+`Tracked::advance` now restores and freezes the last open check when the first
+completing write omits it. The executor sees the restored command and keeps the
+ordinary approval, sandbox and denial behavior. An explicit withdrawal while a
+step remains open clears the stale cached declaration. Both regressions failed
+before the fix; the agent regression also failed because no check was dispatched.
+`run::confirm_goal` records an owner-supplied `--goal` before execution, preserves
+the saved anchor when omitted on resume, and overrides it when supplied.
+`Tasks::confirmed_goals` registers strict references by selected case ID and
+changes the condition hash without changing old manifests' hashes. The harder
+pilot has real fixture board tasks and independent artifact controls; the separate
+lifetime pilot starts from no learned rules and reports actual later rule exposure.
+Source commit `935d98f5` contains the behavior changes. Required-backend workspace
+checks passed 2,597 tests with three intentional ignores; Clippy was warning-free.
+
+**2026-09-09 — Qwen 3.6 35B paired appraisal pilot completed.**
+At `f3fe4df8`, the local `qwen3.6-35b-a3b` Q4_K_M model ran twelve synthetic
+tasks × three seeds × guidance off/on, from 03:20 to 04:06 UTC. Both arms
+passed 36/36 independently graded trials; the native gate rejected promotion
+with 24 selection ties and 12 holdout ties. Mean turns were 8.83 versus 8.97,
+model tool calls 12.86 versus 13.03, and output tokens 2,023.92 versus 1,929.39
+(control versus guided). Wall-clock means were 34.90 versus 39.48 seconds, with
+concurrent server activity and fixed arm order limiting causal interpretation.
+Usage records were complete; dollar cost and owner actions were unmeasured.
+Guidance was applied in all 36 treatment runs, with no other rendered config
+change apart from trial paths/seeds. Pressure/quiet fixture choices and draft
+preservation passed in both arms. The live traces exposed 71 checks omitted on
+first completing updates across 51 runs, each recorded as `not_declared`:
+`Tracked::advance`'s missing-field branch restores only already-frozen checks.
+No run had a confirmed goal anchor, so zero drift counters did not measure
+anchored-goal alignment. Code and fixtures stayed fixed during measurement;
+model identity, binary, fixtures and operator config matched at the finish
+checks. The full export, paired summary, conditions, trace diagnostics and
+reproduction notes are under `results/appraisal-guidance-qwen36-35b-20260909/`.
+The pilot establishes no task-success gain and leaves guidance opt-in; harder
+anchored-goal tasks and learning across runs remain separate measurements.
+No deployment, service restart or PR was performed.
+
+**2026-09-09 — paired appraisal pilot and explicit planning levers.**
+`experiment::child_invocation` now enables explicitly requested `step_checks`
+and `goal_guidance` even when the operator's settings are false. The regression
+compares materialized configurations, with every other field and flag equal.
+`eval/appraisal-guidance.toml` defines twelve synthetic tasks, three seeds and
+control/guided arms at equal budgets. `appraisal_source::setup` resets the task's
+workspace inputs and owned draft seeds; `grade` reads independent artifact gold,
+preserves input and draft evidence, and cannot be satisfied by success prose or
+the misleading legacy checker. Positive controls and wrong-artifact, altered-input,
+symlink, FIFO, malformed-JSON, type and queue-clearing controls cover the oracle.
+Production `OutboxItem` deserialization accepts the synthetic pending drafts.
+`appraisal-report.py::report` pairs task/seed/repetition, rejects duplicate or
+identical conditions, separates incomplete/failed runs from graded failures, and
+keeps missing metrics unknown with their own denominators. Model-generated
+checks remain secondary evidence, and the existing holdout gate remains separate.
+Build, formatting, warning-free clippy and the required-backend workspace suite
+passed: 2,592 tests, zero failures, three intentionally ignored; eleven Python
+controls run within the four appraisal integration tests. Registration, dry run,
+export and reporting were exercised in a temporary home without model calls.
+This pilot does not establish guidance efficacy, learning benefits, cross-turn
+semantic corrections or owner-policy success. No deployment or PR was made.
+
+**2026-09-09 — appraisal planning mechanisms implemented in the working tree.**
+`Conversation::goal_anchor` and `Record::GoalAnchor` preserve confirmations;
+`appraisal::attribute_events` binds observations to historical goals and retains
+related charter/project pointers. Queue deltas no longer claim the run cleared
+anything; `note_task_closure` keeps the owner's verdict separate from execution.
+`Agent::run_loop` executes frozen plan checks through normal tool dispatch,
+limited to sixteen per run, with separate model-work accounting. `StepFeedback`
+records checks, prior work estimates, measured spans and check tampering;
+`extract_mismatches` supplies bounded, provenance-gated learning evidence.
+Reflections retain typed goal links, and `goal_context` retrieves applicable rules
+and clean, scoped examples with passing checks. `Decision::assess` records task,
+anchor and ordered charter discrepancies separately; `agent.goal_guidance` enables
+fixed advice while sensor numbers remain outside provider payloads. No runtime
+installation or service changes were made. Live efficacy, mismatch-specific
+counterfactual grading, semantic owner-intent updates and work spans crossing runs
+remain unmeasured or unbuilt; these mechanisms do not claim to solve them.
+
+Validation: formatting and warning-free clippy over all targets/features;
+2,588 workspace tests passed with backend skips disabled, three intentionally
+ignored. The new regressions cover historical attribution, confirmation resume,
+frozen-check execution and refusal, disabled and passing checks, cross-step
+attribution, mismatch provenance, context scope, sensor isolation at both provider
+encoders, and the real configuration layer. No live-model efficacy result is claimed.
+
 **2026-09-08 — merged assistant features installed.** After the owner merged
 PR #216 as `c3f33f4c` and requested an update, the shared main checkout advanced
 from `f22992c5` without changing the model or Parakeet launch files. The installed
@@ -5462,10 +5636,37 @@ fails on the previous cut. Charter sensors were ruled in and designed
 
 ## Traps already hit
 
+**Harness provenance must reach every miner.** A post-run criterion message
+carried `harness=true` yet the user-role intervention miner read its text as an
+owner correction. Passing tasks then manufactured follow-up reflections. Check
+both the typed provenance marker and historical voice recognition whenever a
+new harness message can enter a persisted transcript; test its interaction with
+ordinary intervention mining, not only its dedicated diagnostic extractor.
+
+
+A harness-generated verification call initially became the model's apparent last
+failed action. Separating its work count alone was insufficient: final-call status,
+error counters, provenance and historical context all needed the same distinction.
+When an agent starts executing its own checks, audit every consumer of the trace,
+not just the check runner. Regression coverage now exercises failure, refusal,
+success and disabled execution.
+
 Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+
+**Test the prompt's contract alongside the artifact oracle.** The harder appraisal
+pilot's privacy prompts requested a JSON report but named `answer.json` only in
+the workspace README. One guided run produced gold-matching contents in
+`share-report.json` and failed the filename check. The oracle's positive and
+negative controls all passed: they measured its implementation, not whether the
+prompt clearly asked for the artifact it required. The original grades were
+preserved, and `appraisal_artifact_source::tasks` plus separately registered
+follow-ups made the destination explicit in every prompt. A different privacy
+run wrote the correct filename with `send_now: true`; artifact-location ambiguity
+must not erase independent content errors.
 
 **2026-09-08 — external text cannot certify its own wrapper.** PR #216 review
 caught a replay optimization that skipped the untrusted-content warning when

@@ -1,0 +1,34 @@
+{
+  "control": {
+    "n": 6,
+    "usage_complete_n": 6,
+    "turns_mean": 10.5,
+    "tool_calls_mean": 13.833333333333334,
+    "duration_secs_mean": 76.2296661635,
+    "input_tokens_sum": 63364,
+    "input_tokens_mean": 10560.666666666666,
+    "cache_creation_input_tokens_sum": 0,
+    "cache_creation_input_tokens_mean": 0,
+    "cache_read_input_tokens_sum": 694149,
+    "cache_read_input_tokens_mean": 115691.5,
+    "output_tokens_sum": 40932,
+    "output_tokens_mean": 6822,
+    "note": "Task-run usage only; excludes learning-stage model calls."
+  },
+  "learning": {
+    "n": 6,
+    "usage_complete_n": 6,
+    "turns_mean": 10,
+    "tool_calls_mean": 12.5,
+    "duration_secs_mean": 75.13588324166666,
+    "input_tokens_sum": 57120,
+    "input_tokens_mean": 9520,
+    "cache_creation_input_tokens_sum": 0,
+    "cache_creation_input_tokens_mean": 0,
+    "cache_read_input_tokens_sum": 681669,
+    "cache_read_input_tokens_mean": 113611.5,
+    "output_tokens_sum": 40891,
+    "output_tokens_mean": 6815.166666666667,
+    "note": "Task-run usage only; excludes learning-stage model calls."
+  }
+}

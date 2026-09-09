@@ -1,0 +1,56 @@
+# Run from the checkout root. Both arms pin the default Qwen 3.6 35B model.
+# 8 tasks x 3 seeds x 2 arms = 48 trials. No model judge or learning stages.
+name = "appraisal-guidance-v2-qwen36-35b-20260909"
+description = "Paired artifact-graded planning tasks with guidance off/on and checks on in both arms."
+kind = "single"
+control = "control"
+seeds = [1, 2, 3]
+repetitions = 1
+split_seed = 37
+
+[tasks]
+source = ["python3", "eval/fixtures/appraisal_v2_source.py"]
+fixture = "eval/fixtures/appraisal-v2/workspace"
+ids = ["allocation-pressure", "reconcile-1", "privacy-1", "schedule-1", "allocation-quiet", "reconcile-2", "privacy-2", "schedule-2"]
+
+[tasks.confirmed_goals]
+allocation-pressure = "task:allocation-pressure"
+reconcile-1 = "task:reconcile-1"
+privacy-1 = "task:privacy-1"
+schedule-1 = "task:schedule-1"
+allocation-quiet = "task:allocation-quiet"
+reconcile-2 = "task:reconcile-2"
+privacy-2 = "task:privacy-2"
+schedule-2 = "task:schedule-2"
+
+[fixtures]
+charter = "eval/fixtures/appraisal-v2/charter.toml"
+outbox_tools = []
+
+[[fixtures.mcp]]
+name = "graph"
+command = "python3"
+args = ["eval/fixtures/board_server.py"]
+prefix_tools = false
+seed = "eval/fixtures/appraisal-v2/board"
+[fixtures.mcp.capabilities]
+untrusted_input = true
+
+[arms.control]
+provider = "local"
+model = "qwen3.6-35b-a3b"
+preset = "full"
+levers_on = ["step_checks"]
+levers_off = ["goal_guidance", "learned_rules", "skills", "hooks", "messages", "fallback", "step_escalation"]
+overrides = ["max_turns=16"]
+
+[arms.guided]
+provider = "local"
+model = "qwen3.6-35b-a3b"
+preset = "full"
+levers_on = ["step_checks", "goal_guidance"]
+levers_off = ["learned_rules", "skills", "hooks", "messages", "fallback", "step_escalation"]
+overrides = ["max_turns=16"]
+[arms.guided.prediction]
+metric = "failure"
+rationale = "Goal feedback reduces independently graded artifact failures at the same turn budget."

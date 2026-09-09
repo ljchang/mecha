@@ -21,6 +21,7 @@ pub fn all(sandbox: Arc<Sandbox>) -> Vec<Arc<dyn Tool>> {
         Arc::new(Shell::new(sandbox)),
         Arc::new(HttpFetch),
         Arc::new(super::todo::TodoTool::new()),
+        Arc::new(super::goal_context::GoalContext),
     ]
 }
 

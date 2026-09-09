@@ -1,0 +1,61 @@
+{
+  "id": "20260909T141425-5e2c06ec",
+  "domain": "behavior",
+  "status": "auto_applied",
+  "reflexion_ids": [
+    "20260909T140236-10138f3b",
+    "20260909T140410-c70abee6",
+    "20260909T140524-7d6e6af2"
+  ],
+  "rules_before": [],
+  "rules": [
+    {
+      "text": "When observed tool calls significantly exceed the expected count, immediately halt execution, verify intermediate results, and stop unnecessary steps rather than blindly continuing the plan.",
+      "enabled": true,
+      "confidence": 0.9,
+      "based_on_count": 3,
+      "id": "r-20260909-c3029194",
+      "sources": [
+        "20260909T140236-10138f3b",
+        "20260909T140410-c70abee6",
+        "20260909T140524-7d6e6af2"
+      ],
+      "created_at": "2026-09-09T14:07:54.633556866+00:00",
+      "scope": {
+        "tools": [
+          "todo"
+        ]
+      },
+      "support": [
+        {
+          "tools": [
+            "todo"
+          ]
+        },
+        {
+          "tools": [
+            "todo"
+          ],
+          "surface": "run",
+          "workspace": "/tmp/mecha-mismatch-bootstrap-20260909/experiments/appraisal-mismatch-qwen36-35b-20260909/trials/learning__revision-2__s1__r1/workspace"
+        },
+        {
+          "tools": [
+            "todo"
+          ],
+          "surface": "run",
+          "workspace": "/tmp/mecha-mismatch-bootstrap-20260909/experiments/appraisal-mismatch-qwen36-35b-20260909/trials/learning__revision-3__s1__r1/workspace"
+        }
+      ]
+    }
+  ],
+  "evidence": "20260909T140236-10138f3b [mismatch]: unchanged (both pass)\n20260909T140410-c70abee6 [mismatch]: unchanged (both pass)\n20260909T140524-7d6e6af2 [mismatch]: unchanged (both pass)\ncandidate vs current rules, replayed on the batch's own interventions: 0 improved, 0 regressed, 3 unchanged, 0 inconclusive",
+  "created_at": "2026-09-09T14:14:25.535052015+00:00",
+  "resolved_at": "2026-09-09T14:14:25.535054655+00:00",
+  "reason": null,
+  "scope": {
+    "tools": [
+      "todo"
+    ]
+  }
+}

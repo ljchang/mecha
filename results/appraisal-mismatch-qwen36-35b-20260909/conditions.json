@@ -1,0 +1,17 @@
+{
+  "registered_at": "2026-09-09T13:50:41.235909+00:00",
+  "commit": "edb554a7b0bc302fe37e6257e2dd30344e5cf316",
+  "sha256": {
+    "target/debug/mecha": "eaca62bb5163ebae92c6a18f18695ea5f580a5ec8d4ab5189ccbf2d825f5915d",
+    "eval/appraisal-mismatch.toml": "280b0a348478cfa1aa2c3bc9b554b1ecbe0490ba1a96c26fb5e6afa9f3fde433",
+    "eval/fixtures/appraisal-mismatch/cases.json": "fae25f4b144e0c1e356070b24e8a9e550fc14c57063e67ec411e4dd3f5412b5e",
+    "eval/fixtures/appraisal_mismatch_source.py": "efb60a5a89c711f65aecbac1319fa20bb2eb18513fe423ef4992dcc59617b0b9",
+    "eval/fixtures/appraisal_source.py": "ddff3ee0192cc6f8cf1b2d5924cb2d2a76343bfd61b784d0c46f9e5fc36aec25",
+    "/tmp/mecha-mismatch-bootstrap-20260909/config.toml": "70141a97dd9ef16a6cfa881dbb575ad1b715186ffb38340d5c42cbb3969062ab"
+  },
+  "model_alias": "qwen3.6-35b-a3b",
+  "slots": 4,
+  "n_ctx": 262144,
+  "design": "24 trials; 12 ordered tasks, six initial/six transfer, one seed, control then learning; 18 learning stages; fresh isolated homes; default min3 and holdout unchanged; no seeded evidence; task artifact repeats, not mid-step replay",
+  "controlled_drill": "Separate seeded drill detected aggregate regression, but singleton arms passed; attribution abstained and the strict drill failed. Do not treat as natural learning evidence."
+}

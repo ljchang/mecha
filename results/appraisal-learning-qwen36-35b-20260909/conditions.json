@@ -1,0 +1,39 @@
+{
+  "source": "075108e2997c1a7c9d7bb807e616ba55364b48ab",
+  "bootstrap_home": "/tmp/mecha-appraisal-learning-20260909",
+  "initial_learning_store": "absent; no owner rules or transcripts seeded",
+  "sha256": {
+    "target/debug/mecha": "8426ca6e56e551038f473d5a0fb27ca398b8b197606e1c736b74197936a5181b",
+    "eval/appraisal-learning.toml": "110411e118df25eeb892b1988ac19f6939dd2213c70a1b109357ca910beaaf14",
+    "eval/fixtures/appraisal_v2_source.py": "cee4a51df82869e65ee6d07154d406a00615c6fd16786845f59244081dcdadd3",
+    "eval/fixtures/appraisal_source.py": "ddff3ee0192cc6f8cf1b2d5924cb2d2a76343bfd61b784d0c46f9e5fc36aec25",
+    "eval/fixtures/appraisal-v2/charter.toml": "fa2cf88b55f7401e39dbfaed2f784edec343d72dcadee62437ad705e3970dc34",
+    "eval/fixtures/appraisal-v2/cases.json": "01c3d1865feb2090de1602425abb0d677d213f0f72f08890aa73077f50a8c06f",
+    "eval/fixtures/appraisal-v2/workspace/README.txt": "3c04d0dd0310be6181542c5ecbb0a77c66cdb726b816be846fc9662bd2cb6ed7",
+    "eval/fixtures/appraisal-v2/board/board.json": "ab39c5b4f47e4efae75aa704945d8d51526655587bf787c14fd3dd2bbd2ec48d"
+  },
+  "bootstrap_config_sha256": "18b74d5d2804823ddfbcc3d478061b77718866429d05a4ec5eb1eff6b422e40b",
+  "guidance": true,
+  "learned_rule_loading": true,
+  "task_order": [
+    "reconcile-1",
+    "privacy-1",
+    "schedule-1",
+    "reconcile-2",
+    "privacy-2",
+    "schedule-2"
+  ],
+  "transfer_positions": [
+    4,
+    5,
+    6
+  ],
+  "seed": 1,
+  "limitations": [
+    "One six-task sequence per arm: a mechanism pilot, not a powered efficacy study.",
+    "MCP is disabled in both arms, preserving the production provenance guard rather than relabeling external fixture output.",
+    "No mismatch-specific counterfactual grader is implemented; probation and validation coverage must be reported.",
+    "Learning sees recorded planning mismatches and interventions, not the independent oracle gold or artifact verdicts. This does not test direct learning from external task grades.",
+    "Local files are operator-authored synthetic fixtures under the existing local-file provenance policy. The experiment does not establish safe learning from real third-party content."
+  ]
+}

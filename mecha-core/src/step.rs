@@ -196,6 +196,19 @@ pub struct Work {
 /// called; under that name every one of that tool's calls would have left
 /// `calls`, counted as a declared check, and on failure staged a follow-up
 /// task at closure for a tool that declared nothing (found on review).
+/// A frozen plan check. The loop dispatches the named tool through every
+/// ordinary guard; the plan tool cannot execute it itself.
+#[derive(Debug, Clone)]
+pub struct CheckRequest {
+    pub call_id: Option<String>,
+    pub step: String,
+    pub goal: Option<crate::goal::GoalRef>,
+    pub tool: String,
+    pub input: serde_json::Value,
+}
+
+pub const MAX_CHECKS_PER_RUN: usize = 16;
+
 pub const CHECK_TRACE: &str = "step.check";
 
 /// A fresh run identity. Monotonic within the process, meaningless outside it.

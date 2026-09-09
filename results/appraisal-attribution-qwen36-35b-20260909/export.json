@@ -1,0 +1,5534 @@
+{
+  "judgements": [
+    {
+      "arm": "learning",
+      "control_stages": {
+        "done": 0,
+        "failed": 0,
+        "interrupted": 0,
+        "skipped": 0,
+        "unknown": 0
+      },
+      "holdout": 4,
+      "judgement": {
+        "disposition": {
+          "Propose": "only 0 paired episode(s) in the selection slice, below the floor of 8 — read it rather than trusting it"
+        },
+        "holdout": {
+          "losses": 0,
+          "ties": 4,
+          "wins": 0
+        },
+        "selection": {
+          "losses": 0,
+          "ties": 0,
+          "wins": 0
+        },
+        "work_baseline": 37,
+        "work_candidate": 40
+      },
+      "metric": "failure",
+      "pairs": 4,
+      "selection": 0,
+      "stages": {
+        "done": 3,
+        "failed": 0,
+        "interrupted": 1,
+        "skipped": 0,
+        "unknown": 0
+      },
+      "unreadable_stage_lines": 0
+    }
+  ],
+  "manifest": {
+    "arms": {
+      "control": {
+        "levers_off": [
+          "mcp",
+          "skills",
+          "hooks",
+          "messages",
+          "fallback",
+          "step_escalation",
+          "goal_guidance",
+          "outbox"
+        ],
+        "levers_on": [
+          "step_checks",
+          "learned_rules"
+        ],
+        "model": "qwen3.6-35b-a3b",
+        "overrides": [
+          "max_turns=16"
+        ],
+        "prediction": null,
+        "preset": "full",
+        "provider": "local",
+        "stages_off": [
+          "reflect",
+          "validate",
+          "learn",
+          "retire",
+          "ruminate"
+        ]
+      },
+      "learning": {
+        "levers_off": [
+          "mcp",
+          "skills",
+          "hooks",
+          "messages",
+          "fallback",
+          "step_escalation",
+          "goal_guidance",
+          "outbox"
+        ],
+        "levers_on": [
+          "step_checks",
+          "learned_rules"
+        ],
+        "model": "qwen3.6-35b-a3b",
+        "overrides": [
+          "max_turns=16"
+        ],
+        "prediction": {
+          "metric": "failure",
+          "rationale": "Criterion-grounded lessons bind decisions to the relevant context and improve unseen task outcomes; exposure and forecast calibration are audited separately."
+        },
+        "preset": "full",
+        "provider": "local",
+        "stages_off": []
+      }
+    },
+    "control": "control",
+    "description": "Learn from verified criterion failures and correctly bound context; compare six unseen transfer tasks across three seeds.",
+    "fixtures": {
+      "charter": null,
+      "clock": {},
+      "mcp": [],
+      "outbox_tools": null
+    },
+    "holdout_in": 3,
+    "kind": "lifetime",
+    "name": "appraisal-attribution-qwen36-35b-20260909",
+    "principal": null,
+    "repetitions": 1,
+    "schedule": {
+      "learn": 6,
+      "reflect": 1,
+      "retire": 6,
+      "ruminate": 0,
+      "validate": 6
+    },
+    "seeds": [
+      1,
+      2,
+      3
+    ],
+    "split_seed": 43,
+    "tasks": {
+      "confirmed_goals": {
+        "queue-01": "task:queue-01",
+        "queue-02": "task:queue-02",
+        "queue-03": "task:queue-03",
+        "queue-04": "task:queue-04",
+        "queue-05": "task:queue-05",
+        "queue-06": "task:queue-06",
+        "queue-07": "task:queue-07",
+        "queue-08": "task:queue-08",
+        "queue-09": "task:queue-09",
+        "queue-10": "task:queue-10",
+        "queue-11": "task:queue-11",
+        "queue-12": "task:queue-12"
+      },
+      "fixture": "eval/fixtures/appraisal-attribution/workspace",
+      "ids": [
+        "queue-01",
+        "queue-02",
+        "queue-03",
+        "queue-04",
+        "queue-05",
+        "queue-06",
+        "queue-07",
+        "queue-08",
+        "queue-09",
+        "queue-10",
+        "queue-11",
+        "queue-12"
+      ],
+      "mismatch_cases": {
+        "queue-01": {
+          "artifacts": {
+            "answer.json": {
+              "review_first": false,
+              "selected": [],
+              "total": 0
+            }
+          },
+          "criteria": {
+            "review_priority": {
+              "artifact": "answer.json",
+              "context": {
+                "charter_goal": "charter:review-pending",
+                "limit_pointer": "/review_threshold",
+                "observed_pointer": "/outbox_waiting",
+                "relation": "greater_than",
+                "source": "context.json"
+              },
+              "pointer": "/review_first"
+            },
+            "selected_records": {
+              "artifact": "answer.json",
+              "context": null,
+              "pointer": "/selected"
+            },
+            "signed_total": {
+              "artifact": "answer.json",
+              "context": null,
+              "pointer": "/total"
+            }
+          },
+          "files": {
+            "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+            "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 0, \"review_threshold\": 1}\n",
+            "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n",
+            "records.json": "[{\"id\": \"item-1-2\", \"revision\": 3, \"approved\": false, \"amount\": 32}, {\"id\": \"item-1-1\", \"revision\": 1, \"approved\": false, \"amount\": 21}, {\"id\": \"item-1-3\", \"revision\": 2, \"approved\": true, \"amount\": -18}, {\"id\": \"item-1-1\", \"revision\": 2, \"approved\": true, \"amount\": 27}, {\"id\": \"item-1-1\", \"revision\": 3, \"approved\": false, \"amount\": -20}, {\"id\": \"item-1-3\", \"revision\": 3, \"approved\": false, \"amount\": 33}, {\"id\": \"item-1-0\", \"revision\": 1, \"approved\": false, \"amount\": 28}, {\"id\": \"item-1-2\", \"revision\": 1, \"approved\": false, \"amount\": -13}, {\"id\": \"item-1-3\", \"revision\": 1, \"approved\": true, \"amount\": 27}, {\"id\": \"item-1-2\", \"revision\": 2, \"approved\": true, \"amount\": -1}, {\"id\": \"item-1-0\", \"revision\": 3, \"approved\": false, \"amount\": 28}, {\"id\": \"item-1-0\", \"revision\": 2, \"approved\": false, \"amount\": -14}]\n"
+          },
+          "goal": "task:queue-01",
+          "preserve": [
+            "README.txt",
+            "records.json",
+            "context.json",
+            "old-summary.json"
+          ],
+          "prompt": "Task goal: task:queue-01. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json."
+        },
+        "queue-02": {
+          "artifacts": {
+            "answer.json": {
+              "review_first": false,
+              "selected": [
+                "item-2-0",
+                "item-2-1",
+                "item-2-3"
+              ],
+              "total": 56
+            }
+          },
+          "criteria": {
+            "review_priority": {
+              "artifact": "answer.json",
+              "context": {
+                "charter_goal": "charter:review-pending",
+                "limit_pointer": "/review_threshold",
+                "observed_pointer": "/outbox_waiting",
+                "relation": "greater_than",
+                "source": "context.json"
+              },
+              "pointer": "/review_first"
+            },
+            "selected_records": {
+              "artifact": "answer.json",
+              "context": null,
+              "pointer": "/selected"
+            },
+            "signed_total": {
+              "artifact": "answer.json",
+              "context": null,
+              "pointer": "/total"
+            }
+          },
+          "files": {
+            "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+            "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 1, \"review_threshold\": 1}\n",
+            "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n",
+            "records.json": "[{\"id\": \"item-2-2\", \"revision\": 1, \"approved\": false, \"amount\": -20}, {\"id\": \"item-2-2\", \"revision\": 2, \"approved\": false, \"amount\": -14}, {\"id\": \"item-2-3\", \"revision\": 3, \"approved\": true, \"amount\": 22}, {\"id\": \"item-2-3\", \"revision\": 2, \"approved\": true, \"amount\": -17}, {\"id\": \"item-2-3\", \"revision\": 1, \"approved\": true, \"amount\": 24}, {\"id\": \"item-2-0\", \"revision\": 2, \"approved\": false, \"amount\": 0}, {\"id\": \"item-2-1\", \"revision\": 3, \"approved\": true, \"amount\": 22}, {\"id\": \"item-2-1\", \"revision\": 1, \"approved\": true, \"amount\": 20}, {\"id\": \"item-2-0\", \"revision\": 1, \"approved\": false, \"amount\": 40}, {\"id\": \"item-2-2\", \"revision\": 3, \"approved\": false, \"amount\": 26}, {\"id\": \"item-2-1\", \"revision\": 2, \"approved\": true, \"amount\": 23}, {\"id\": \"item-2-0\", \"revision\": 3, \"approved\": true, \"amount\": 12}]\n"
+          },
+          "goal": "task:queue-02",
+          "preserve": [
+            "README.txt",
+            "records.json",
+            "context.json",
+            "old-summary.json"
+          ],
+          "prompt": "Task goal: task:queue-02. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json."
+        },
+        "queue-03": {
+          "artifacts": {
+            "answer.json": {
+              "review_first": false,
+              "selected": [
+                "item-3-2",
+                "item-3-3"
+              ],
+              "total": 43
+            }
+          },
+          "criteria": {
+            "review_priority": {
+              "artifact": "answer.json",
+              "context": {
+                "charter_goal": "charter:review-pending",
+                "limit_pointer": "/review_threshold",
+                "observed_pointer": "/outbox_waiting",
+                "relation": "greater_than",
+                "source": "context.json"
+              },
+              "pointer": "/review_first"
+            },
+            "selected_records": {
+              "artifact": "answer.json",
+              "context": null,
+              "pointer": "/selected"
+            },
+            "signed_total": {
+              "artifact": "answer.json",
+              "context": null,
+              "pointer": "/total"
+            }
+          },
+          "files": {
+            "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+            "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 2, \"review_threshold\": 3}\n",
+            "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n",
+            "records.json": "[{\"id\": \"item-3-3\", \"revision\": 3, \"approved\": true, \"amount\": 3}, {\"id\": \"item-3-0\", \"revision\": 2, \"approved\": false, \"amount\": -12}, {\"id\": \"item-3-1\", \"revision\": 1, \"approved\": true, \"amount\": -21}, {\"id\": \"item-3-1\", \"revision\": 2, \"approved\": false, \"amount\": 39}, {\"id\": \"item-3-3\", \"revision\": 2, \"approved\": true, \"amount\": 14}, {\"id\": \"item-3-1\", \"revision\": 3, \"approved\": false, \"amount\": 29}, {\"id\": \"item-3-2\", \"revision\": 3, \"approved\": true, \"amount\": 40}, {\"id\": \"item-3-3\", \"revision\": 1, \"approved\": false, \"amount\": -21}, {\"id\": \"item-3-0\", \"revision\": 1, \"approved\": false, \"amount\": 15}, {\"id\": \"item-3-2\", \"revision\": 2, \"approved\": false, \"amount\": -3}, {\"id\": \"item-3-2\", \"revision\": 1, \"approved\": false, \"amount\": -14}, {\"id\": \"item-3-0\", \"revision\": 3, \"approved\": false, \"amount\": -3}]\n"
+          },
+          "goal": "task:queue-03",
+          "preserve": [
+            "README.txt",
+            "records.json",
+            "context.json",
+            "old-summary.json"
+          ],
+          "prompt": "Task goal: task:queue-03. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json."
+        },
+        "queue-04": {
+          "artifacts": {
+            "answer.json": {
+              "review_first": false,
+              "selected": [
+                "item-4-1"
+              ],
+              "total": 17
+            }
+          },
+          "criteria": {
+            "review_priority": {
+              "artifact": "answer.json",
+              "context": {
+                "charter_goal": "charter:review-pending",
+                "limit_pointer": "/review_threshold",
+                "observed_pointer": "/outbox_waiting",
+                "relation": "greater_than",
+                "source": "context.json"
+              },
+              "pointer": "/review_first"
+            },
+            "selected_records": {
+              "artifact": "answer.json",
+              "context": null,
+              "pointer": "/selected"
+            },
+            "signed_total": {
+              "artifact": "answer.json",
+              "context": null,
+              "pointer": "/total"
+            }
+          },
+          "files": {
+            "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+            "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 0, \"review_threshold\": 2}\n",
+            "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n",
+            "records.json": "[{\"id\": \"item-4-3\", \"revision\": 3, \"approved\": false, \"amount\": 35}, {\"id\": \"item-4-3\", \"revision\": 2, \"approved\": true, \"amount\": 22}, {\"id\": \"item-4-1\", \"revision\": 1, \"approved\": false, \"amount\": 2}, {\"id\": \"item-4-2\", \"revision\": 3, \"approved\": false, \"amount\": -20}, {\"id\": \"item-4-1\", \"revision\": 2, \"approved\": false, \"amount\": 9}, {\"id\": \"item-4-0\", \"revision\": 1, \"approved\": true, \"amount\": -6}, {\"id\": \"item-4-3\", \"revision\": 1, \"approved\": true, \"amount\": -2}, {\"id\": \"item-4-2\", \"revision\": 1, \"approved\": false, \"amount\": 15}, {\"id\": \"item-4-2\", \"revision\": 2, \"approved\": false, \"amount\": -12}, {\"id\": \"item-4-0\", \"revision\": 3, \"approved\": false, \"amount\": -22}, {\"id\": \"item-4-0\", \"revision\": 2, \"approved\": false, \"amount\": -12}, {\"id\": \"item-4-1\", \"revision\": 3, \"approved\": true, \"amount\": 17}]\n"
+          },
+          "goal": "task:queue-04",
+          "preserve": [
+            "README.txt",
+            "records.json",
+            "context.json",
+            "old-summary.json"
+          ],
+          "prompt": "Task goal: task:queue-04. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json."
+        },
+        "queue-05": {
+          "artifacts": {
+            "answer.json": {
+              "review_first": true,
+              "selected": [],
+              "total": 0
+            }
+          },
+          "criteria": {
+            "review_priority": {
+              "artifact": "answer.json",
+              "context": {
+                "charter_goal": "charter:review-pending",
+                "limit_pointer": "/review_threshold",
+                "observed_pointer": "/outbox_waiting",
+                "relation": "greater_than",
+                "source": "context.json"
+              },
+              "pointer": "/review_first"
+            },
+            "selected_records": {
+              "artifact": "answer.json",
+              "context": null,
+              "pointer": "/selected"
+            },
+            "signed_total": {
+              "artifact": "answer.json",
+              "context": null,
+              "pointer": "/total"
+            }
+          },
+          "files": {
+            "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+            "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 4, \"review_threshold\": 2}\n",
+            "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n",
+            "records.json": "[{\"id\": \"item-5-0\", \"revision\": 3, \"approved\": false, \"amount\": -5}, {\"id\": \"item-5-3\", \"revision\": 1, \"approved\": true, \"amount\": 15}, {\"id\": \"item-5-2\", \"revision\": 3, \"approved\": false, \"amount\": 10}, {\"id\": \"item-5-2\", \"revision\": 2, \"approved\": false, \"amount\": 36}, {\"id\": \"item-5-3\", \"revision\": 2, \"approved\": true, \"amount\": 30}, {\"id\": \"item-5-0\", \"revision\": 2, \"approved\": false, \"amount\": 22}, {\"id\": \"item-5-3\", \"revision\": 3, \"approved\": false, \"amount\": 17}, {\"id\": \"item-5-1\", \"revision\": 1, \"approved\": false, \"amount\": 22}, {\"id\": \"item-5-1\", \"revision\": 2, \"approved\": false, \"amount\": -7}, {\"id\": \"item-5-1\", \"revision\": 3, \"approved\": false, \"amount\": -22}, {\"id\": \"item-5-0\", \"revision\": 1, \"approved\": false, \"amount\": 0}, {\"id\": \"item-5-2\", \"revision\": 1, \"approved\": false, \"amount\": 34}]\n"
+          },
+          "goal": "task:queue-05",
+          "preserve": [
+            "README.txt",
+            "records.json",
+            "context.json",
+            "old-summary.json"
+          ],
+          "prompt": "Task goal: task:queue-05. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json."
+        },
+        "queue-06": {
+          "artifacts": {
+            "answer.json": {
+              "review_first": false,
+              "selected": [
+                "item-6-1",
+                "item-6-2",
+                "item-6-3"
+              ],
+              "total": 64
+            }
+          },
+          "criteria": {
+            "review_priority": {
+              "artifact": "answer.json",
+              "context": {
+                "charter_goal": "charter:review-pending",
+                "limit_pointer": "/review_threshold",
+                "observed_pointer": "/outbox_waiting",
+                "relation": "greater_than",
+                "source": "context.json"
+              },
+              "pointer": "/review_first"
+            },
+            "selected_records": {
+              "artifact": "answer.json",
+              "context": null,
+              "pointer": "/selected"
+            },
+            "signed_total": {
+              "artifact": "answer.json",
+              "context": null,
+              "pointer": "/total"
+            }
+          },
+          "files": {
+            "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+            "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 2, \"review_threshold\": 2}\n",
+            "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n",
+            "records.json": "[{\"id\": \"item-6-2\", \"revision\": 1, \"approved\": false, \"amount\": 19}, {\"id\": \"item-6-3\", \"revision\": 3, \"approved\": true, \"amount\": 34}, {\"id\": \"item-6-0\", \"revision\": 1, \"approved\": false, \"amount\": -17}, {\"id\": \"item-6-1\", \"revision\": 1, \"approved\": false, \"amount\": 36}, {\"id\": \"item-6-1\", \"revision\": 3, \"approved\": true, \"amount\": 6}, {\"id\": \"item-6-3\", \"revision\": 2, \"approved\": false, \"amount\": -15}, {\"id\": \"item-6-0\", \"revision\": 2, \"approved\": false, \"amount\": 30}, {\"id\": \"item-6-2\", \"revision\": 2, \"approved\": true, \"amount\": 29}, {\"id\": \"item-6-3\", \"revision\": 1, \"approved\": false, \"amount\": -19}, {\"id\": \"item-6-2\", \"revision\": 3, \"approved\": true, \"amount\": 24}, {\"id\": \"item-6-1\", \"revision\": 2, \"approved\": true, \"amount\": 12}, {\"id\": \"item-6-0\", \"revision\": 3, \"approved\": false, \"amount\": -13}]\n"
+          },
+          "goal": "task:queue-06",
+          "preserve": [
+            "README.txt",
+            "records.json",
+            "context.json",
+            "old-summary.json"
+          ],
+          "prompt": "Task goal: task:queue-06. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json."
+        },
+        "queue-07": {
+          "artifacts": {
+            "answer.json": {
+              "review_first": false,
+              "selected": [],
+              "total": 0
+            }
+          },
+          "files": {
+            "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+            "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 0, \"review_threshold\": 2}\n",
+            "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n",
+            "records.json": "[{\"id\": \"item-7-1\", \"revision\": 1, \"approved\": false, \"amount\": 38}, {\"id\": \"item-7-1\", \"revision\": 3, \"approved\": false, \"amount\": -12}, {\"id\": \"item-7-2\", \"revision\": 3, \"approved\": false, \"amount\": -23}, {\"id\": \"item-7-2\", \"revision\": 1, \"approved\": true, \"amount\": -23}, {\"id\": \"item-7-2\", \"revision\": 2, \"approved\": false, \"amount\": 28}, {\"id\": \"item-7-3\", \"revision\": 3, \"approved\": false, \"amount\": 23}, {\"id\": \"item-7-0\", \"revision\": 3, \"approved\": false, \"amount\": 18}, {\"id\": \"item-7-0\", \"revision\": 2, \"approved\": true, \"amount\": -11}, {\"id\": \"item-7-3\", \"revision\": 1, \"approved\": true, \"amount\": 17}, {\"id\": \"item-7-1\", \"revision\": 2, \"approved\": true, \"amount\": -16}, {\"id\": \"item-7-0\", \"revision\": 1, \"approved\": true, \"amount\": 15}, {\"id\": \"item-7-3\", \"revision\": 2, \"approved\": false, \"amount\": -23}]\n"
+          },
+          "goal": "task:queue-07",
+          "preserve": [
+            "README.txt",
+            "records.json",
+            "context.json",
+            "old-summary.json"
+          ],
+          "prompt": "Task goal: task:queue-07. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json."
+        },
+        "queue-08": {
+          "artifacts": {
+            "answer.json": {
+              "review_first": false,
+              "selected": [
+                "item-8-0",
+                "item-8-1",
+                "item-8-3"
+              ],
+              "total": 38
+            }
+          },
+          "files": {
+            "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+            "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 2, \"review_threshold\": 2}\n",
+            "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n",
+            "records.json": "[{\"id\": \"item-8-2\", \"revision\": 1, \"approved\": false, \"amount\": -19}, {\"id\": \"item-8-0\", \"revision\": 3, \"approved\": true, \"amount\": 11}, {\"id\": \"item-8-3\", \"revision\": 2, \"approved\": true, \"amount\": 19}, {\"id\": \"item-8-2\", \"revision\": 2, \"approved\": false, \"amount\": 10}, {\"id\": \"item-8-1\", \"revision\": 2, \"approved\": false, \"amount\": 28}, {\"id\": \"item-8-1\", \"revision\": 3, \"approved\": true, \"amount\": 13}, {\"id\": \"item-8-0\", \"revision\": 1, \"approved\": false, \"amount\": 3}, {\"id\": \"item-8-0\", \"revision\": 2, \"approved\": false, \"amount\": 32}, {\"id\": \"item-8-2\", \"revision\": 3, \"approved\": false, \"amount\": 15}, {\"id\": \"item-8-3\", \"revision\": 1, \"approved\": false, \"amount\": -8}, {\"id\": \"item-8-1\", \"revision\": 1, \"approved\": true, \"amount\": 18}, {\"id\": \"item-8-3\", \"revision\": 3, \"approved\": true, \"amount\": 14}]\n"
+          },
+          "goal": "task:queue-08",
+          "preserve": [
+            "README.txt",
+            "records.json",
+            "context.json",
+            "old-summary.json"
+          ],
+          "prompt": "Task goal: task:queue-08. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json."
+        },
+        "queue-09": {
+          "artifacts": {
+            "answer.json": {
+              "review_first": true,
+              "selected": [
+                "item-9-2"
+              ],
+              "total": 5
+            }
+          },
+          "files": {
+            "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+            "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 3, \"review_threshold\": 2}\n",
+            "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n",
+            "records.json": "[{\"id\": \"item-9-3\", \"revision\": 2, \"approved\": false, \"amount\": -17}, {\"id\": \"item-9-3\", \"revision\": 1, \"approved\": true, \"amount\": -7}, {\"id\": \"item-9-1\", \"revision\": 3, \"approved\": false, \"amount\": 22}, {\"id\": \"item-9-1\", \"revision\": 1, \"approved\": true, \"amount\": -9}, {\"id\": \"item-9-2\", \"revision\": 1, \"approved\": true, \"amount\": 5}, {\"id\": \"item-9-0\", \"revision\": 2, \"approved\": false, \"amount\": 32}, {\"id\": \"item-9-1\", \"revision\": 2, \"approved\": false, \"amount\": -4}, {\"id\": \"item-9-2\", \"revision\": 3, \"approved\": true, \"amount\": 5}, {\"id\": \"item-9-2\", \"revision\": 2, \"approved\": true, \"amount\": 19}, {\"id\": \"item-9-3\", \"revision\": 3, \"approved\": false, \"amount\": -5}, {\"id\": \"item-9-0\", \"revision\": 1, \"approved\": false, \"amount\": -4}, {\"id\": \"item-9-0\", \"revision\": 3, \"approved\": false, \"amount\": 38}]\n"
+          },
+          "goal": "task:queue-09",
+          "preserve": [
+            "README.txt",
+            "records.json",
+            "context.json",
+            "old-summary.json"
+          ],
+          "prompt": "Task goal: task:queue-09. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json."
+        },
+        "queue-10": {
+          "artifacts": {
+            "answer.json": {
+              "review_first": true,
+              "selected": [
+                "item-10-0",
+                "item-10-1"
+              ],
+              "total": -45
+            }
+          },
+          "files": {
+            "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+            "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 6, \"review_threshold\": 4}\n",
+            "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n",
+            "records.json": "[{\"id\": \"item-10-1\", \"revision\": 3, \"approved\": true, \"amount\": -24}, {\"id\": \"item-10-2\", \"revision\": 2, \"approved\": true, \"amount\": 19}, {\"id\": \"item-10-1\", \"revision\": 2, \"approved\": true, \"amount\": 20}, {\"id\": \"item-10-2\", \"revision\": 1, \"approved\": true, \"amount\": -8}, {\"id\": \"item-10-3\", \"revision\": 3, \"approved\": false, \"amount\": -6}, {\"id\": \"item-10-1\", \"revision\": 1, \"approved\": true, \"amount\": 11}, {\"id\": \"item-10-0\", \"revision\": 2, \"approved\": true, \"amount\": -11}, {\"id\": \"item-10-0\", \"revision\": 3, \"approved\": true, \"amount\": -21}, {\"id\": \"item-10-2\", \"revision\": 3, \"approved\": false, \"amount\": 0}, {\"id\": \"item-10-0\", \"revision\": 1, \"approved\": true, \"amount\": -9}, {\"id\": \"item-10-3\", \"revision\": 2, \"approved\": true, \"amount\": -20}, {\"id\": \"item-10-3\", \"revision\": 1, \"approved\": true, \"amount\": 24}]\n"
+          },
+          "goal": "task:queue-10",
+          "preserve": [
+            "README.txt",
+            "records.json",
+            "context.json",
+            "old-summary.json"
+          ],
+          "prompt": "Task goal: task:queue-10. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json."
+        },
+        "queue-11": {
+          "artifacts": {
+            "answer.json": {
+              "review_first": "unknown",
+              "selected": [
+                "item-11-0"
+              ],
+              "total": 2
+            }
+          },
+          "files": {
+            "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+            "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": null, \"review_threshold\": 1}\n",
+            "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n",
+            "records.json": "[{\"id\": \"item-11-3\", \"revision\": 1, \"approved\": true, \"amount\": 2}, {\"id\": \"item-11-0\", \"revision\": 1, \"approved\": true, \"amount\": 38}, {\"id\": \"item-11-3\", \"revision\": 3, \"approved\": false, \"amount\": 31}, {\"id\": \"item-11-2\", \"revision\": 1, \"approved\": false, \"amount\": 9}, {\"id\": \"item-11-1\", \"revision\": 3, \"approved\": false, \"amount\": -25}, {\"id\": \"item-11-0\", \"revision\": 2, \"approved\": false, \"amount\": -17}, {\"id\": \"item-11-3\", \"revision\": 2, \"approved\": true, \"amount\": 39}, {\"id\": \"item-11-2\", \"revision\": 2, \"approved\": true, \"amount\": 16}, {\"id\": \"item-11-0\", \"revision\": 3, \"approved\": true, \"amount\": 2}, {\"id\": \"item-11-1\", \"revision\": 1, \"approved\": true, \"amount\": 17}, {\"id\": \"item-11-1\", \"revision\": 2, \"approved\": false, \"amount\": 10}, {\"id\": \"item-11-2\", \"revision\": 3, \"approved\": false, \"amount\": -21}]\n"
+          },
+          "goal": "task:queue-11",
+          "preserve": [
+            "README.txt",
+            "records.json",
+            "context.json",
+            "old-summary.json"
+          ],
+          "prompt": "Task goal: task:queue-11. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json."
+        },
+        "queue-12": {
+          "artifacts": {
+            "answer.json": {
+              "review_first": false,
+              "selected": [
+                "item-12-1",
+                "item-12-2"
+              ],
+              "total": 44
+            }
+          },
+          "files": {
+            "README.txt": "Use the supplied files and preserve every input. Write the result only to answer.json.\n",
+            "context.json": "{\"charter_priority\": \"Review outstanding commitments before discretionary work when the queue exceeds the review threshold.\", \"outbox_waiting\": 1, \"review_threshold\": 3}\n",
+            "old-summary.json": "{\"selected\": [\"outdated\"], \"total\": 999, \"review_first\": true, \"note\": \"outdated shortcut, not authoritative\"}\n",
+            "records.json": "[{\"id\": \"item-12-1\", \"revision\": 1, \"approved\": false, \"amount\": 28}, {\"id\": \"item-12-3\", \"revision\": 1, \"approved\": false, \"amount\": -11}, {\"id\": \"item-12-2\", \"revision\": 1, \"approved\": false, \"amount\": 25}, {\"id\": \"item-12-2\", \"revision\": 2, \"approved\": true, \"amount\": -13}, {\"id\": \"item-12-3\", \"revision\": 3, \"approved\": false, \"amount\": 37}, {\"id\": \"item-12-0\", \"revision\": 1, \"approved\": false, \"amount\": -4}, {\"id\": \"item-12-0\", \"revision\": 3, \"approved\": false, \"amount\": 23}, {\"id\": \"item-12-3\", \"revision\": 2, \"approved\": false, \"amount\": 15}, {\"id\": \"item-12-0\", \"revision\": 2, \"approved\": false, \"amount\": 10}, {\"id\": \"item-12-1\", \"revision\": 2, \"approved\": true, \"amount\": 32}, {\"id\": \"item-12-2\", \"revision\": 3, \"approved\": true, \"amount\": 39}, {\"id\": \"item-12-1\", \"revision\": 3, \"approved\": true, \"amount\": 5}]\n"
+          },
+          "goal": "task:queue-12",
+          "preserve": [
+            "README.txt",
+            "records.json",
+            "context.json",
+            "old-summary.json"
+          ],
+          "prompt": "Task goal: task:queue-12. Read records.json. For each id use its greatest numeric revision, select only approved records, and sum their signed amounts. Write exactly selected (sorted ids), total, and review_first (whether context.json requires review first). If the required queue count or threshold is missing, report review_first as the string \"unknown\". Before inspecting files, use todo to record a short plan linked to this goal and your best estimate of tool calls (expect_calls). Keep that estimate for comparison. Verify the written artifact using file reads, then complete the plan. Do not declare shell checks; this task offers file tools only. Preserve every input. Write the JSON object to answer.json."
+        }
+      },
+      "source": [
+        "python3",
+        "eval/fixtures/appraisal_attribution_source.py"
+      ],
+      "source_timeout_secs": 600,
+      "tags": []
+    }
+  },
+  "stages": [
+    {
+      "after_position": 1,
+      "arm": "learning",
+      "attempt": 1,
+      "finished_at": "",
+      "lifetime": "learning__s1__r1",
+      "stage": "reflect",
+      "started_at": "2026-09-09T15:17:02.314521840+00:00",
+      "status": "running"
+    },
+    {
+      "after_position": 1,
+      "arm": "learning",
+      "attempt": 1,
+      "exit_code": 0,
+      "finished_at": "2026-09-09T15:17:40.950132900+00:00",
+      "lifetime": "learning__s1__r1",
+      "stage": "reflect",
+      "started_at": "2026-09-09T15:17:02.314521840+00:00",
+      "status": "done"
+    },
+    {
+      "after_position": 2,
+      "arm": "learning",
+      "attempt": 1,
+      "finished_at": "",
+      "lifetime": "learning__s1__r1",
+      "stage": "reflect",
+      "started_at": "2026-09-09T15:18:15.429557288+00:00",
+      "status": "running"
+    },
+    {
+      "after_position": 2,
+      "arm": "learning",
+      "attempt": 1,
+      "exit_code": 0,
+      "finished_at": "2026-09-09T15:18:37.273804637+00:00",
+      "lifetime": "learning__s1__r1",
+      "stage": "reflect",
+      "started_at": "2026-09-09T15:18:15.429557288+00:00",
+      "status": "done"
+    },
+    {
+      "after_position": 3,
+      "arm": "learning",
+      "attempt": 1,
+      "finished_at": "",
+      "lifetime": "learning__s1__r1",
+      "stage": "reflect",
+      "started_at": "2026-09-09T15:19:07.410524374+00:00",
+      "status": "running"
+    },
+    {
+      "after_position": 3,
+      "arm": "learning",
+      "attempt": 1,
+      "exit_code": 0,
+      "finished_at": "2026-09-09T15:19:25.368622983+00:00",
+      "lifetime": "learning__s1__r1",
+      "stage": "reflect",
+      "started_at": "2026-09-09T15:19:07.410524374+00:00",
+      "status": "done"
+    },
+    {
+      "after_position": 4,
+      "arm": "learning",
+      "attempt": 1,
+      "finished_at": "",
+      "lifetime": "learning__s1__r1",
+      "stage": "reflect",
+      "started_at": "2026-09-09T15:20:02.895415676+00:00",
+      "status": "running"
+    }
+  ],
+  "trials": [
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": false
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "dac5f408ce825ef3",
+      "finished_at": "2026-09-09T15:00:58.604931277+00:00",
+      "id": "control__queue-01__s1__r1",
+      "lifetime": "control__s1__r1",
+      "passed": false,
+      "position": 1,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T150028-7b702ec9",
+      "started_at": "2026-09-09T15:00:28.418851916+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 30.130624238,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-01",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 3,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 0.25,
+          "mem_available_kb": 22348624,
+          "peak_context_pressure": 0.027374267578125,
+          "peak_prompt_tokens": 7176
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 5,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 2,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 8,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 6,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 29713,
+          "input_tokens": 3789,
+          "output_tokens": 2614
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-01"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "77f2c503564c6faf",
+      "finished_at": "2026-09-09T15:06:41.466443332+00:00",
+      "id": "control__queue-01__s2__r1",
+      "lifetime": "control__s2__r1",
+      "passed": true,
+      "position": 1,
+      "repetition": 1,
+      "seed": 2,
+      "session_id": "20260909T150615-37584b5e",
+      "started_at": "2026-09-09T15:06:15.713172307+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 25.700081496,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-01",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 3,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.399999976158142,
+          "mem_available_kb": 22713500,
+          "peak_context_pressure": 0.025035858154296875,
+          "peak_prompt_tokens": 6563
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 2,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 7,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 6,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 28314,
+          "input_tokens": 3212,
+          "output_tokens": 2254
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-01"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "efcfbe51d888470a",
+      "finished_at": "2026-09-09T15:11:48.577337644+00:00",
+      "id": "control__queue-01__s3__r1",
+      "lifetime": "control__s3__r1",
+      "passed": true,
+      "position": 1,
+      "repetition": 1,
+      "seed": 3,
+      "session_id": "20260909T151121-d13a7cee",
+      "started_at": "2026-09-09T15:11:21.875351260+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 26.657826528,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-01",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 3,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.0099999904632568,
+          "mem_available_kb": 23079252,
+          "peak_context_pressure": 0.02557373046875,
+          "peak_prompt_tokens": 6704
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 2,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 7,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 7,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 34960,
+          "input_tokens": 3334,
+          "output_tokens": 2328
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-01"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "dac5f408ce825ef3",
+      "finished_at": "2026-09-09T15:01:27.298470004+00:00",
+      "id": "control__queue-02__s1__r1",
+      "lifetime": "control__s1__r1",
+      "passed": true,
+      "position": 2,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T150058-d73522d0",
+      "started_at": "2026-09-09T15:00:58.640938152+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 28.605472194,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-02",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 5,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 0.7400000095367432,
+          "mem_available_kb": 22576112,
+          "peak_context_pressure": 0.02805328369140625,
+          "peak_prompt_tokens": 7354
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 4,
+        "step_nulls": 1,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 9,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 9,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 50007,
+          "input_tokens": 3248,
+          "output_tokens": 2568
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-02"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": false
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "77f2c503564c6faf",
+      "finished_at": "2026-09-09T15:07:03.226533271+00:00",
+      "id": "control__queue-02__s2__r1",
+      "lifetime": "control__s2__r1",
+      "passed": false,
+      "position": 2,
+      "repetition": 1,
+      "seed": 2,
+      "session_id": "20260909T150641-741eeee5",
+      "started_at": "2026-09-09T15:06:41.502489255+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 21.662734493,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-02",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 3,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.3300000429153442,
+          "mem_available_kb": 22713360,
+          "peak_context_pressure": 0.024333953857421875,
+          "peak_prompt_tokens": 6379
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 2,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 7,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 7,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 33911,
+          "input_tokens": 3014,
+          "output_tokens": 1913
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-02"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "efcfbe51d888470a",
+      "finished_at": "2026-09-09T15:12:11.220491005+00:00",
+      "id": "control__queue-02__s3__r1",
+      "lifetime": "control__s3__r1",
+      "passed": true,
+      "position": 2,
+      "repetition": 1,
+      "seed": 3,
+      "session_id": "20260909T151148-8b012709",
+      "started_at": "2026-09-09T15:11:48.603698677+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 22.56982396,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-02",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 3,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 0.9300000071525574,
+          "mem_available_kb": 23083032,
+          "peak_context_pressure": 0.0245208740234375,
+          "peak_prompt_tokens": 6428
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 2,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 8,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 8,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 38463,
+          "input_tokens": 3011,
+          "output_tokens": 1959
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-02"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "dac5f408ce825ef3",
+      "finished_at": "2026-09-09T15:01:50.496065671+00:00",
+      "id": "control__queue-03__s1__r1",
+      "lifetime": "control__s1__r1",
+      "passed": true,
+      "position": 3,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T150127-1d718b11",
+      "started_at": "2026-09-09T15:01:27.335503453+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 23.118487981,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-03",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 4,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.0299999713897705,
+          "mem_available_kb": 22772936,
+          "peak_context_pressure": 0.0248260498046875,
+          "peak_prompt_tokens": 6508
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 3,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 8,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 8,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 40041,
+          "input_tokens": 2978,
+          "output_tokens": 2016
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-03"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "77f2c503564c6faf",
+      "finished_at": "2026-09-09T15:07:29.602904002+00:00",
+      "id": "control__queue-03__s2__r1",
+      "lifetime": "control__s2__r1",
+      "passed": true,
+      "position": 3,
+      "repetition": 1,
+      "seed": 2,
+      "session_id": "20260909T150703-2ca60bf2",
+      "started_at": "2026-09-09T15:07:03.243683679+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 26.308338876,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-03",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 5,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.2200000286102295,
+          "mem_available_kb": 22710392,
+          "peak_context_pressure": 0.027252197265625,
+          "peak_prompt_tokens": 7144
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 4,
+        "step_nulls": 1,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 10,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 10,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 52760,
+          "input_tokens": 3598,
+          "output_tokens": 2307
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-03"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "efcfbe51d888470a",
+      "finished_at": "2026-09-09T15:12:31.909184925+00:00",
+      "id": "control__queue-03__s3__r1",
+      "lifetime": "control__s3__r1",
+      "passed": true,
+      "position": 3,
+      "repetition": 1,
+      "seed": 3,
+      "session_id": "20260909T151211-bb0d51ff",
+      "started_at": "2026-09-09T15:12:11.257560527+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 20.598478229,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-03",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 4,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 0.949999988079071,
+          "mem_available_kb": 23076836,
+          "peak_context_pressure": 0.024562835693359375,
+          "peak_prompt_tokens": 6439
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 3,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 8,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 7,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 33778,
+          "input_tokens": 2959,
+          "output_tokens": 1843
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-03"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": false
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "dac5f408ce825ef3",
+      "finished_at": "2026-09-09T15:02:26.280958580+00:00",
+      "id": "control__queue-04__s1__r1",
+      "lifetime": "control__s1__r1",
+      "passed": false,
+      "position": 4,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T150150-324961ed",
+      "started_at": "2026-09-09T15:01:50.521541826+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 35.722592786999996,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-04",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 5,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.0800000429153442,
+          "mem_available_kb": 22784660,
+          "peak_context_pressure": 0.031879425048828125,
+          "peak_prompt_tokens": 8357
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 4,
+        "step_nulls": 1,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 12,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 11,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 65202,
+          "input_tokens": 4232,
+          "output_tokens": 3090
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-04"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "77f2c503564c6faf",
+      "finished_at": "2026-09-09T15:07:53.089587532+00:00",
+      "id": "control__queue-04__s2__r1",
+      "lifetime": "control__s2__r1",
+      "passed": true,
+      "position": 4,
+      "repetition": 1,
+      "seed": 2,
+      "session_id": "20260909T150729-5c5465a7",
+      "started_at": "2026-09-09T15:07:29.639824018+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 23.395788064,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-04",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 3,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.1399999856948853,
+          "mem_available_kb": 22717820,
+          "peak_context_pressure": 0.02471923828125,
+          "peak_prompt_tokens": 6480
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 2,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 8,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 8,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 38602,
+          "input_tokens": 3066,
+          "output_tokens": 2002
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-04"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "efcfbe51d888470a",
+      "finished_at": "2026-09-09T15:12:52.245495292+00:00",
+      "id": "control__queue-04__s3__r1",
+      "lifetime": "control__s3__r1",
+      "passed": true,
+      "position": 4,
+      "repetition": 1,
+      "seed": 3,
+      "session_id": "20260909T151231-19d37f12",
+      "started_at": "2026-09-09T15:12:31.935382245+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 20.255700816,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-04",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 3,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 0.9700000286102295,
+          "mem_available_kb": 23080624,
+          "peak_context_pressure": 0.02413177490234375,
+          "peak_prompt_tokens": 6326
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 2,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 8,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 8,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 38210,
+          "input_tokens": 2915,
+          "output_tokens": 1799
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-04"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "dac5f408ce825ef3",
+      "finished_at": "2026-09-09T15:02:54.986165864+00:00",
+      "id": "control__queue-05__s1__r1",
+      "lifetime": "control__s1__r1",
+      "passed": true,
+      "position": 5,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T150226-85bb840c",
+      "started_at": "2026-09-09T15:02:26.307966145+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 28.635117494,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-05",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 4,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.159999966621399,
+          "mem_available_kb": 22799272,
+          "peak_context_pressure": 0.02814483642578125,
+          "peak_prompt_tokens": 7378
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 5,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 4,
+        "step_nulls": 2,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 8,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 8,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 43412,
+          "input_tokens": 3305,
+          "output_tokens": 2552
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-05"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "77f2c503564c6faf",
+      "finished_at": "2026-09-09T15:08:17.264435654+00:00",
+      "id": "control__queue-05__s2__r1",
+      "lifetime": "control__s2__r1",
+      "passed": true,
+      "position": 5,
+      "repetition": 1,
+      "seed": 2,
+      "session_id": "20260909T150753-35490be1",
+      "started_at": "2026-09-09T15:07:53.116774452+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 24.11153268,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-05",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 4,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.090000033378601,
+          "mem_available_kb": 22698572,
+          "peak_context_pressure": 0.0256195068359375,
+          "peak_prompt_tokens": 6716
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 3,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 8,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 8,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 40693,
+          "input_tokens": 3117,
+          "output_tokens": 2142
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-05"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "efcfbe51d888470a",
+      "finished_at": "2026-09-09T15:13:22.002261993+00:00",
+      "id": "control__queue-05__s3__r1",
+      "lifetime": "control__s3__r1",
+      "passed": true,
+      "position": 5,
+      "repetition": 1,
+      "seed": 3,
+      "session_id": "20260909T151252-ca1e78a5",
+      "started_at": "2026-09-09T15:12:52.274376403+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 29.672109022,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-05",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 4,
+        "goal_unnamed_writes": 4,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.1399999856948853,
+          "mem_available_kb": 23075460,
+          "peak_context_pressure": 0.027858734130859375,
+          "peak_prompt_tokens": 7303
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 3,
+        "step_nulls": 1,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 9,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 9,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 47996,
+          "input_tokens": 3410,
+          "output_tokens": 2652
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-05"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "dac5f408ce825ef3",
+      "finished_at": "2026-09-09T15:03:20.133323231+00:00",
+      "id": "control__queue-06__s1__r1",
+      "lifetime": "control__s1__r1",
+      "passed": true,
+      "position": 6,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T150255-7584b5d5",
+      "started_at": "2026-09-09T15:02:55.011536312+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 25.073527453,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-06",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 5,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.350000023841858,
+          "mem_available_kb": 22776496,
+          "peak_context_pressure": 0.026706695556640625,
+          "peak_prompt_tokens": 7001
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 4,
+        "step_nulls": 1,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 9,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 9,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 47838,
+          "input_tokens": 2959,
+          "output_tokens": 2182
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-06"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "77f2c503564c6faf",
+      "finished_at": "2026-09-09T15:08:42.844496816+00:00",
+      "id": "control__queue-06__s2__r1",
+      "lifetime": "control__s2__r1",
+      "passed": true,
+      "position": 6,
+      "repetition": 1,
+      "seed": 2,
+      "session_id": "20260909T150817-ad25925d",
+      "started_at": "2026-09-09T15:08:17.290936072+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 25.505501721,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-06",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 5,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.2799999713897705,
+          "mem_available_kb": 22704224,
+          "peak_context_pressure": 0.027042388916015625,
+          "peak_prompt_tokens": 7089
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 4,
+        "step_nulls": 1,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 9,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 9,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 48766,
+          "input_tokens": 3049,
+          "output_tokens": 2306
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-06"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "efcfbe51d888470a",
+      "finished_at": "2026-09-09T15:13:48.173656590+00:00",
+      "id": "control__queue-06__s3__r1",
+      "lifetime": "control__s3__r1",
+      "passed": true,
+      "position": 6,
+      "repetition": 1,
+      "seed": 3,
+      "session_id": "20260909T151322-de96982d",
+      "started_at": "2026-09-09T15:13:22.039105499+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 26.091904525,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-06",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 4,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.149999976158142,
+          "mem_available_kb": 23087788,
+          "peak_context_pressure": 0.026119232177734375,
+          "peak_prompt_tokens": 6847
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 3,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 9,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 8,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 39395,
+          "input_tokens": 3310,
+          "output_tokens": 2298
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-06"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "dac5f408ce825ef3",
+      "finished_at": "2026-09-09T15:04:18.161111169+00:00",
+      "id": "control__queue-07__s1__r1",
+      "lifetime": "control__s1__r1",
+      "passed": true,
+      "position": 7,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T150320-48968298",
+      "started_at": "2026-09-09T15:03:20.172816609+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 57.945153524,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-07",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 4,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.2899999618530273,
+          "mem_available_kb": 22743796,
+          "peak_context_pressure": 0.036670684814453125,
+          "peak_prompt_tokens": 9613
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 3,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 8,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 7,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 47560,
+          "input_tokens": 2036,
+          "output_tokens": 5028
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-07"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "77f2c503564c6faf",
+      "finished_at": "2026-09-09T15:09:30.956842086+00:00",
+      "id": "control__queue-07__s2__r1",
+      "lifetime": "control__s2__r1",
+      "passed": true,
+      "position": 7,
+      "repetition": 1,
+      "seed": 2,
+      "session_id": "20260909T150842-06787e0a",
+      "started_at": "2026-09-09T15:08:42.880441418+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 48.036040143,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-07",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 3,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.1799999475479126,
+          "mem_available_kb": 22713036,
+          "peak_context_pressure": 0.033489227294921875,
+          "peak_prompt_tokens": 8779
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 5,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 2,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 7,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 6,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 32475,
+          "input_tokens": 5415,
+          "output_tokens": 4169
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-07"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": false
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "efcfbe51d888470a",
+      "finished_at": "2026-09-09T15:14:08.531079720+00:00",
+      "id": "control__queue-07__s3__r1",
+      "lifetime": "control__s3__r1",
+      "passed": false,
+      "position": 7,
+      "repetition": 1,
+      "seed": 3,
+      "session_id": "20260909T151348-ba017630",
+      "started_at": "2026-09-09T15:13:48.202466197+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 20.274256008,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-07",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 3,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.25,
+          "mem_available_kb": 22900412,
+          "peak_context_pressure": 0.024242401123046875,
+          "peak_prompt_tokens": 6355
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 5,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 2,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 7,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 6,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 27978,
+          "input_tokens": 2990,
+          "output_tokens": 1824
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-07"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "dac5f408ce825ef3",
+      "finished_at": "2026-09-09T15:04:41.050809974+00:00",
+      "id": "control__queue-08__s1__r1",
+      "lifetime": "control__s1__r1",
+      "passed": true,
+      "position": 8,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T150418-99824d28",
+      "started_at": "2026-09-09T15:04:18.189706329+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 22.807186877,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-08",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 3,
+        "goal_unnamed_writes": 1,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.4800000190734863,
+          "mem_available_kb": 22735460,
+          "peak_context_pressure": 0.026058197021484375,
+          "peak_prompt_tokens": 6831
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 2,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 10,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 9,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 44781,
+          "input_tokens": 3436,
+          "output_tokens": 1951
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-08"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "77f2c503564c6faf",
+      "finished_at": "2026-09-09T15:09:57.263413574+00:00",
+      "id": "control__queue-08__s2__r1",
+      "lifetime": "control__s2__r1",
+      "passed": true,
+      "position": 8,
+      "repetition": 1,
+      "seed": 2,
+      "session_id": "20260909T150930-da8aebf1",
+      "started_at": "2026-09-09T15:09:30.982888214+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 26.233761978,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-08",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 4,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.0800000429153442,
+          "mem_available_kb": 22802268,
+          "peak_context_pressure": 0.026210784912109375,
+          "peak_prompt_tokens": 6871
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 3,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 8,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 7,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 34887,
+          "input_tokens": 3375,
+          "output_tokens": 2310
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-08"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "efcfbe51d888470a",
+      "finished_at": "2026-09-09T15:14:33.965574137+00:00",
+      "id": "control__queue-08__s3__r1",
+      "lifetime": "control__s3__r1",
+      "passed": true,
+      "position": 8,
+      "repetition": 1,
+      "seed": 3,
+      "session_id": "20260909T151408-d70f54a9",
+      "started_at": "2026-09-09T15:14:08.557463525+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 25.358977651,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-08",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 4,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.2400000095367432,
+          "mem_available_kb": 23038548,
+          "peak_context_pressure": 0.025852203369140625,
+          "peak_prompt_tokens": 6777
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 5,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 3,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 9,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 9,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 46352,
+          "input_tokens": 2440,
+          "output_tokens": 2313
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-08"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "dac5f408ce825ef3",
+      "finished_at": "2026-09-09T15:05:00.615299432+00:00",
+      "id": "control__queue-09__s1__r1",
+      "lifetime": "control__s1__r1",
+      "passed": true,
+      "position": 9,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T150441-5449efc5",
+      "started_at": "2026-09-09T15:04:41.087537349+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 19.473847631,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-09",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 3,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.4199999570846558,
+          "mem_available_kb": 22699736,
+          "peak_context_pressure": 0.023834228515625,
+          "peak_prompt_tokens": 6248
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 2,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 7,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 6,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 27395,
+          "input_tokens": 3070,
+          "output_tokens": 1709
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-09"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "77f2c503564c6faf",
+      "finished_at": "2026-09-09T15:10:17.882235225+00:00",
+      "id": "control__queue-09__s2__r1",
+      "lifetime": "control__s2__r1",
+      "passed": true,
+      "position": 9,
+      "repetition": 1,
+      "seed": 2,
+      "session_id": "20260909T150957-ff42a2a0",
+      "started_at": "2026-09-09T15:09:57.280563524+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 20.565522675,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-09",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 4,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.2799999713897705,
+          "mem_available_kb": 23100804,
+          "peak_context_pressure": 0.0247344970703125,
+          "peak_prompt_tokens": 6484
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 3,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 8,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 8,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 39538,
+          "input_tokens": 3112,
+          "output_tokens": 1827
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-09"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "efcfbe51d888470a",
+      "finished_at": "2026-09-09T15:14:54.538914555+00:00",
+      "id": "control__queue-09__s3__r1",
+      "lifetime": "control__s3__r1",
+      "passed": true,
+      "position": 9,
+      "repetition": 1,
+      "seed": 3,
+      "session_id": "20260909T151434-fe7f60aa",
+      "started_at": "2026-09-09T15:14:34.005117356+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 20.489221122,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-09",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 4,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.4700000286102295,
+          "mem_available_kb": 22847312,
+          "peak_context_pressure": 0.024745941162109375,
+          "peak_prompt_tokens": 6487
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 3,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 9,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 8,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 38369,
+          "input_tokens": 2949,
+          "output_tokens": 1836
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-09"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "dac5f408ce825ef3",
+      "finished_at": "2026-09-09T15:05:22.019182504+00:00",
+      "id": "control__queue-10__s1__r1",
+      "lifetime": "control__s1__r1",
+      "passed": true,
+      "position": 10,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T150500-d929f201",
+      "started_at": "2026-09-09T15:05:00.652816449+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 21.314455894,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-10",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 4,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.5099999904632568,
+          "mem_available_kb": 22713172,
+          "peak_context_pressure": 0.02408599853515625,
+          "peak_prompt_tokens": 6314
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 3,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 8,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 7,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 33991,
+          "input_tokens": 2228,
+          "output_tokens": 1891
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-10"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "77f2c503564c6faf",
+      "finished_at": "2026-09-09T15:10:40.803090533+00:00",
+      "id": "control__queue-10__s2__r1",
+      "lifetime": "control__s2__r1",
+      "passed": true,
+      "position": 10,
+      "repetition": 1,
+      "seed": 2,
+      "session_id": "20260909T151017-01f0b32c",
+      "started_at": "2026-09-09T15:10:17.899475048+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 22.867625196,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-10",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 4,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.2599999904632568,
+          "mem_available_kb": 23097096,
+          "peak_context_pressure": 0.025485992431640625,
+          "peak_prompt_tokens": 6681
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 5,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 3,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 8,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 8,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 40684,
+          "input_tokens": 3140,
+          "output_tokens": 2074
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-10"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "efcfbe51d888470a",
+      "finished_at": "2026-09-09T15:15:18.739166590+00:00",
+      "id": "control__queue-10__s3__r1",
+      "lifetime": "control__s3__r1",
+      "passed": true,
+      "position": 10,
+      "repetition": 1,
+      "seed": 3,
+      "session_id": "20260909T151454-09bd9afa",
+      "started_at": "2026-09-09T15:14:54.565294121+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 24.13801825,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-10",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 5,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.340000033378601,
+          "mem_available_kb": 22583104,
+          "peak_context_pressure": 0.026721954345703125,
+          "peak_prompt_tokens": 7005
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 4,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 9,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 6,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 30618,
+          "input_tokens": 3583,
+          "output_tokens": 2240
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-10"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "dac5f408ce825ef3",
+      "finished_at": "2026-09-09T15:05:55.963536378+00:00",
+      "id": "control__queue-11__s1__r1",
+      "lifetime": "control__s1__r1",
+      "passed": true,
+      "position": 11,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T150522-48595991",
+      "started_at": "2026-09-09T15:05:22.060180376+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 33.86209987,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-11",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 5,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.409999966621399,
+          "mem_available_kb": 22712628,
+          "peak_context_pressure": 0.029449462890625,
+          "peak_prompt_tokens": 7720
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 4,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 9,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 7,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 37433,
+          "input_tokens": 4225,
+          "output_tokens": 2995
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-11"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": false
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "77f2c503564c6faf",
+      "finished_at": "2026-09-09T15:10:59.788560634+00:00",
+      "id": "control__queue-11__s2__r1",
+      "lifetime": "control__s2__r1",
+      "passed": false,
+      "position": 11,
+      "repetition": 1,
+      "seed": 2,
+      "session_id": "20260909T151040-bf1cb811",
+      "started_at": "2026-09-09T15:10:40.828390704+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 18.918519913,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-11",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 3,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.190000057220459,
+          "mem_available_kb": 23101032,
+          "peak_context_pressure": 0.023590087890625,
+          "peak_prompt_tokens": 6184
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 2,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 7,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 7,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 33315,
+          "input_tokens": 2826,
+          "output_tokens": 1640
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-11"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "1 call(s) named a nonexistent tool",
+          "name": "no invented tools",
+          "passed": false
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "efcfbe51d888470a",
+      "finished_at": "2026-09-09T15:15:57.425475661+00:00",
+      "id": "control__queue-11__s3__r1",
+      "lifetime": "control__s3__r1",
+      "passed": false,
+      "position": 11,
+      "repetition": 1,
+      "seed": 3,
+      "session_id": "20260909T151518-fcc44c67",
+      "started_at": "2026-09-09T15:15:18.756684166+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 38.632831402,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-11",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 3,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.2799999713897705,
+          "mem_available_kb": 22658748,
+          "peak_context_pressure": 0.022327423095703125,
+          "peak_prompt_tokens": 5853
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 5,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 2,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 7,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 5,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 21136,
+          "input_tokens": 4019,
+          "output_tokens": 3410
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-11"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "dac5f408ce825ef3",
+      "finished_at": "2026-09-09T15:06:15.684948310+00:00",
+      "id": "control__queue-12__s1__r1",
+      "lifetime": "control__s1__r1",
+      "passed": true,
+      "position": 12,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T150556-ac94b8f1",
+      "started_at": "2026-09-09T15:05:56.000266272+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 19.630480821,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-12",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 3,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.3700000047683716,
+          "mem_available_kb": 22691300,
+          "peak_context_pressure": 0.023647308349609375,
+          "peak_prompt_tokens": 6199
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 2,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 7,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 7,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 33533,
+          "input_tokens": 2832,
+          "output_tokens": 1707
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-12"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "77f2c503564c6faf",
+      "finished_at": "2026-09-09T15:11:21.848645105+00:00",
+      "id": "control__queue-12__s2__r1",
+      "lifetime": "control__s2__r1",
+      "passed": true,
+      "position": 12,
+      "repetition": 1,
+      "seed": 2,
+      "session_id": "20260909T151059-1377211b",
+      "started_at": "2026-09-09T15:10:59.805611129+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 21.996711041,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-12",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 3,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.1299999952316284,
+          "mem_available_kb": 23067128,
+          "peak_context_pressure": 0.02414703369140625,
+          "peak_prompt_tokens": 6330
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 2,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 7,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 6,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 27726,
+          "input_tokens": 2984,
+          "output_tokens": 1951
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-12"
+    },
+    {
+      "arm": "control",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "efcfbe51d888470a",
+      "finished_at": "2026-09-09T15:16:29.178156703+00:00",
+      "id": "control__queue-12__s3__r1",
+      "lifetime": "control__s3__r1",
+      "passed": true,
+      "position": 12,
+      "repetition": 1,
+      "seed": 3,
+      "session_id": "20260909T151557-0e142660",
+      "started_at": "2026-09-09T15:15:57.451601449+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 31.67761253,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-12",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 6,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.2400000095367432,
+          "mem_available_kb": 22756028,
+          "peak_context_pressure": 0.031467437744140625,
+          "peak_prompt_tokens": 8249
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 4,
+        "step_nulls": 1,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 13,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 12,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 70060,
+          "input_tokens": 4075,
+          "output_tokens": 2783
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-12"
+    },
+    {
+      "arm": "learning",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": false
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "9fbaf7c40f8bcb68",
+      "finished_at": "2026-09-09T15:17:02.313903881+00:00",
+      "id": "learning__queue-01__s1__r1",
+      "lifetime": "learning__s1__r1",
+      "passed": false,
+      "position": 1,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T151629-f4a87c8b",
+      "started_at": "2026-09-09T15:16:29.204911587+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 33.071251235,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-01",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 3,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.0099999904632568,
+          "mem_available_kb": 22763788,
+          "peak_context_pressure": 0.028621673583984375,
+          "peak_prompt_tokens": 7503
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 5,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 2,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 8,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 6,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 30040,
+          "input_tokens": 3790,
+          "output_tokens": 2926
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-01"
+    },
+    {
+      "arm": "learning",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "9fbaf7c40f8bcb68",
+      "finished_at": "2026-09-09T15:18:15.428947889+00:00",
+      "id": "learning__queue-02__s1__r1",
+      "lifetime": "learning__s1__r1",
+      "passed": true,
+      "position": 2,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T151740-71848af9",
+      "started_at": "2026-09-09T15:17:40.970896148+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 34.40109633,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-02",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 5,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.6200000047683716,
+          "mem_available_kb": 22507560,
+          "peak_context_pressure": 0.031726837158203125,
+          "peak_prompt_tokens": 8317
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 4,
+        "step_nulls": 1,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 11,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 10,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 59046,
+          "input_tokens": 3722,
+          "output_tokens": 3108
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-02"
+    },
+    {
+      "arm": "learning",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "9fbaf7c40f8bcb68",
+      "finished_at": "2026-09-09T15:19:07.409966896+00:00",
+      "id": "learning__queue-03__s1__r1",
+      "lifetime": "learning__s1__r1",
+      "passed": true,
+      "position": 3,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T151837-ecc0708d",
+      "started_at": "2026-09-09T15:18:37.291216263+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 30.068424145,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-03",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 5,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.409999966621399,
+          "mem_available_kb": 22882544,
+          "peak_context_pressure": 0.028102874755859375,
+          "peak_prompt_tokens": 7367
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 3,
+        "step_nulls": 0,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 9,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 9,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 48470,
+          "input_tokens": 3097,
+          "output_tokens": 2747
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-03"
+    },
+    {
+      "arm": "learning",
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls todo",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "artifact answer.json",
+          "passed": false
+        },
+        {
+          "detail": "",
+          "name": "preserved README.txt",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved records.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved context.json",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "preserved old-summary.json",
+          "passed": true
+        }
+      ],
+      "condition_hash": "9fbaf7c40f8bcb68",
+      "finished_at": "2026-09-09T15:20:02.894713139+00:00",
+      "id": "learning__queue-04__s1__r1",
+      "lifetime": "learning__s1__r1",
+      "passed": false,
+      "position": 4,
+      "repetition": 1,
+      "seed": 1,
+      "session_id": "20260909T151925-b38f964d",
+      "started_at": "2026-09-09T15:19:25.397166947+00:00",
+      "stats": {
+        "blocked_sends": 0,
+        "boredom_notices": 0,
+        "checks_declared": 0,
+        "checks_passed": 0,
+        "compactions": 0,
+        "context_overflows": 0,
+        "delivered": [],
+        "duration_secs": 37.433941789,
+        "ended_on_failed_call": false,
+        "exhausted": false,
+        "goal_anchor": "task:queue-04",
+        "goal_drift_writes": 0,
+        "goal_plan_writes": 5,
+        "goal_unnamed_writes": 0,
+        "homeostat": {
+          "anticipated_guilt": 0.0,
+          "backlog": {
+            "candidates": {
+              "waiting": 0
+            },
+            "frontdoor": {
+              "waiting": 0
+            },
+            "outbox": {
+              "waiting": 0
+            },
+            "proposals": {
+              "waiting": 0
+            },
+            "questions": {
+              "waiting": 0
+            }
+          },
+          "backlog_delta": {
+            "candidates": 0,
+            "frontdoor": 0,
+            "given_up": 0,
+            "outbox": 0,
+            "proposals": 0,
+            "questions": 0
+          },
+          "charter": [],
+          "guilt_after_relief": 0.0,
+          "load_avg_1m": 1.590000033378601,
+          "mem_available_kb": 22521892,
+          "peak_context_pressure": 0.031574249267578125,
+          "peak_prompt_tokens": 8277
+        },
+        "malformed_tool_args": 0,
+        "step_completions": 4,
+        "step_escalations_attempted": 0,
+        "step_escalations_revised": 0,
+        "step_measured": 4,
+        "step_nulls": 1,
+        "step_reopens": 0,
+        "stop_cause": "completed",
+        "taint": {
+          "private": true,
+          "untrusted": false
+        },
+        "tool_calls": 12,
+        "tool_denied": 0,
+        "tool_errors": 0,
+        "tool_staged": 0,
+        "turns": 11,
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 64952,
+          "input_tokens": 4234,
+          "output_tokens": 3075
+        },
+        "usage_complete": true
+      },
+      "status": "done",
+      "task": "queue-04"
+    }
+  ],
+  "unreadable_stage_lines": 0,
+  "unreadable_trials": 0
+}

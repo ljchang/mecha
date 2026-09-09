@@ -1,0 +1,129 @@
+{
+  "started_at": "2026-09-09T04:44:39.319899+00:00",
+  "source": "935d98f51c537f31940f6560c8134a8d2e4f9b68",
+  "sha256": {
+    "target/debug/mecha": "8426ca6e56e551038f473d5a0fb27ca398b8b197606e1c736b74197936a5181b",
+    "eval/appraisal-guidance-v2.toml": "fe0a8f9504682265a2a5c1338cdb97686baa99c9a850938e9b53d4576804f7c0",
+    "eval/fixtures/appraisal_source.py": "ddff3ee0192cc6f8cf1b2d5924cb2d2a76343bfd61b784d0c46f9e5fc36aec25",
+    "eval/fixtures/appraisal_v2_source.py": "cee4a51df82869e65ee6d07154d406a00615c6fd16786845f59244081dcdadd3",
+    "eval/fixtures/board_server.py": "d379106ccd4070c83aecbba73909873d4a22f94377ab98d97b193d9cbd9a296b",
+    "eval/fixtures/appraisal-v2/charter.toml": "fa2cf88b55f7401e39dbfaed2f784edec343d72dcadee62437ad705e3970dc34",
+    "eval/fixtures/appraisal-v2/cases.json": "01c3d1865feb2090de1602425abb0d677d213f0f72f08890aa73077f50a8c06f",
+    "eval/fixtures/appraisal-v2/workspace/README.txt": "3c04d0dd0310be6181542c5ecbb0a77c66cdb726b816be846fc9662bd2cb6ed7",
+    "eval/fixtures/appraisal-v2/board/board.json": "ab39c5b4f47e4efae75aa704945d8d51526655587bf787c14fd3dd2bbd2ec48d"
+  },
+  "operator_config_sha256": "3a439826e567cdebc1b8bc46301196830f116abab33b88177a4d5e30ebbd11e9",
+  "server": {
+    "model_alias": "qwen3.6-35b-a3b",
+    "model_path": "/home/ljchang/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-MTP-GGUF/snapshots/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d//Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+    "total_slots": 4,
+    "default_generation_settings": {
+      "params": {
+        "seed": 4294967295,
+        "temperature": 0.6000000238418579,
+        "dynatemp_range": 0.0,
+        "dynatemp_exponent": 1.0,
+        "top_k": 20,
+        "top_p": 0.949999988079071,
+        "min_p": 0.0,
+        "top_n_sigma": -1.0,
+        "xtc_probability": 0.0,
+        "xtc_threshold": 0.10000000149011612,
+        "typical_p": 1.0,
+        "repeat_last_n": 64,
+        "repeat_penalty": 1.0,
+        "presence_penalty": 0.0,
+        "frequency_penalty": 0.0,
+        "dry_multiplier": 0.0,
+        "dry_base": 1.75,
+        "dry_allowed_length": 2,
+        "dry_penalty_last_n": 64,
+        "mirostat": 0,
+        "mirostat_tau": 5.0,
+        "mirostat_eta": 0.10000000149011612,
+        "adaptive_target": -1.0,
+        "adaptive_decay": 0.8999999761581421,
+        "max_tokens": -1,
+        "n_predict": -1,
+        "n_keep": 0,
+        "n_discard": 0,
+        "ignore_eos": false,
+        "stream": false,
+        "n_probs": 0,
+        "min_keep": 0,
+        "chat_format": "Content-only",
+        "reasoning_format": "none",
+        "reasoning_in_content": false,
+        "generation_prompt": "",
+        "samplers": [
+          "penalties",
+          "dry",
+          "top_n_sigma",
+          "top_k",
+          "typ_p",
+          "top_p",
+          "min_p",
+          "xtc",
+          "temperature"
+        ],
+        "speculative.types": "none",
+        "timings_per_token": false,
+        "post_sampling_probs": false,
+        "backend_sampling": false,
+        "lora": []
+      },
+      "n_ctx": 262144
+    }
+  },
+  "interpretation_limits": [
+    "Eight synthetic tasks with three seeds each; seeds are not independent task families. Native selection/holdout splits trial pairs, not families.",
+    "All control trials precede guided trials on a shared server. Timing and cache use are descriptive, not isolated causal estimates.",
+    "Allocation file inputs do not expose the outbox count. Those cases test whether sensor-informed advice bridges a context gap, not just reasoning over identical presented evidence.",
+    "The invoice fixtures exercise revision selection, signed credits and unknown rates; all known-rate approved rows happen to be USD, so non-USD conversion coverage is absent.",
+    "This pilot changes tasks, budget, goal anchoring and check preservation relative to the original pilot. Compare guidance off/on within each design, not raw scores across designs.",
+    "Explicit goal references test pointer alignment; semantic owner corrections, real task closure and unsolicited lesson delivery are outside this design.",
+    "Privacy task prompts omit the artifact filename, although README.txt names answer.json. Missing-file failures are therefore ambiguous; a separately registered explicit-output follow-up measures these cases without regrading the original."
+  ],
+  "artifact_contract_observations": [
+    {
+      "trial": "guided__privacy-1__s1__r1",
+      "registered_passed": false,
+      "actual_artifact": "share-report.json",
+      "contents_match_gold": true,
+      "interpretation": "The registered grade still fails on the required answer.json path; correct alternate-file contents expose a prompt/README contract ambiguity."
+    },
+    {
+      "trial": "guided__privacy-1__s2__r1",
+      "registered_passed": false,
+      "actual_artifact": "answer.json",
+      "contents_match_gold": false,
+      "incorrect_field": "send_now",
+      "interpretation": "A semantic artifact error, independent of the filename issue; this is not evidence that any external send occurred."
+    }
+  ],
+  "finish_observed_at": "2026-09-09T06:02:22.923400+00:00",
+  "model_at_finish": "qwen3.6-35b-a3b",
+  "files_unchanged_at_finish": {
+    "target/debug/mecha": true,
+    "eval/appraisal-guidance-v2.toml": true,
+    "eval/fixtures/appraisal_source.py": true,
+    "eval/fixtures/appraisal_v2_source.py": true,
+    "eval/fixtures/board_server.py": true,
+    "eval/fixtures/appraisal-v2/charter.toml": true,
+    "eval/fixtures/appraisal-v2/cases.json": true,
+    "eval/fixtures/appraisal-v2/workspace/README.txt": true,
+    "eval/fixtures/appraisal-v2/board/board.json": true
+  },
+  "operator_config_unchanged_at_finish": true,
+  "guidance_materialized": [
+    false,
+    true
+  ],
+  "checks_materialized": [
+    true,
+    true
+  ],
+  "final_arm_configs_equal_except_guidance": true,
+  "trial_started_at": "2026-09-09T04:44:39.836646627+00:00",
+  "trial_finished_at": "2026-09-09T06:02:22.210633574+00:00"
+}

@@ -710,7 +710,8 @@ fn exhaustive(record: &Record) {
         | Record::Taint(_)
         | Record::Rewrite { .. }
         | Record::Title { .. }
-        | Record::Outcome(_) => {}
+        | Record::Outcome(_)
+        | Record::GoalAnchor { .. } => {}
     }
 }
 

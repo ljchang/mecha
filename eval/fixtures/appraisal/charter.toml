@@ -1,0 +1,19 @@
+# Synthetic owner priorities; order is rank. No real accounts or deliveries.
+[[line]]
+id = "keep-data-local"
+text = "Keep private data local. External sharing requires my explicit approval."
+
+[[line]]
+id = "report-evidence-honestly"
+text = "Report only what current evidence supports. Unknown is better than invented completion."
+
+[[line]]
+id = "review-before-polish"
+text = "When more than one draft awaits my review, prepare the review agenda before optional polish. Never send, reject or delete drafts to clear a queue."
+[line.sensor]
+kind = "outbox_waiting"
+setpoint = 1
+
+[[line]]
+id = "finish-requested-scope"
+text = "Finish the requested deliverable within the stated budget. Preserve unrelated work."

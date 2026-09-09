@@ -198,7 +198,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         };
 
         let convo = &t.convo;
-        let interventions = extract_interventions(&convo.messages);
+        let mut interventions = extract_interventions(&convo.messages);
+        interventions.extend(mecha_core::learning::extract_mismatches(
+            &convo.messages,
+            &t.outcome_positions,
+        ));
         interventions_found += interventions.len();
 
         // Provenance, read from the transcript's recorded taint — not from
@@ -258,9 +262,33 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     continue;
                 }
             }
+            if intervention.trigger == Trigger::Mismatch && origin != Origin::Clean {
+                continue;
+            }
             match reflector.reflect(&input).await {
                 Ok(Some(mut r)) => {
                     r.session_id = meta.id.clone();
+                    r.goals = if intervention.trigger == Trigger::Mismatch {
+                        serde_json::from_str::<mecha_core::planning::StepFeedback>(
+                            &intervention.context,
+                        )
+                        .ok()
+                        .map(|s| s.goals())
+                        .unwrap_or_default()
+                    } else {
+                        convo
+                            .messages
+                            .get(intervention.at)
+                            .and_then(|m| m.planning.as_ref())
+                            .map(|f| f.steps.iter().filter_map(|s| s.goal.clone()).collect())
+                            .unwrap_or_else(|| {
+                                mecha_core::appraisal::goal_at(&convo.messages[..=intervention.at])
+                                    .into_iter()
+                                    .collect()
+                            })
+                    };
+                    r.goals.sort_by_key(|g| g.to_string());
+                    r.goals.dedup();
                     r.origin = origin;
                     r.evidence = evidence;
                     // Where it happened, from what the miner already held:
@@ -979,6 +1007,7 @@ mod tests {
         );
         let situated = |id: &str, session_id: &str, ws: Option<&str>| {
             let r = Reflexion {
+                goals: Vec::new(),
                 id: id.into(),
                 domain: "behavior".into(),
                 session_id: session_id.into(),
@@ -1028,6 +1057,7 @@ mod tests {
         // decision being handed `surface` (always none for such a row).
         store
             .append_reflexion(&Reflexion {
+                goals: Vec::new(),
                 id: "parked".into(),
                 domain: "behavior".into(),
                 session_id: s.meta.id.clone(),
@@ -1067,6 +1097,7 @@ mod tests {
         // so it is neither a missing session nor a row to touch.
         store
             .append_reflexion(&Reflexion {
+                goals: Vec::new(),
                 id: "triage-x".into(),
                 domain: mecha_core::learning::TRIAGE_DOMAIN.into(),
                 session_id: "acct/thread-1".into(),
@@ -1152,6 +1183,7 @@ mod tests {
         );
         store
             .append_reflexion(&Reflexion {
+                goals: Vec::new(),
                 id: "parked-unnamed".into(),
                 domain: "behavior".into(),
                 session_id: unnamed.meta.id.clone(),
@@ -1207,6 +1239,7 @@ mod tests {
             .unwrap();
         store
             .append_reflexion(&Reflexion {
+                goals: Vec::new(),
                 id: "parked-mixed".into(),
                 domain: "behavior".into(),
                 session_id: mixed.meta.id.clone(),

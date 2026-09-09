@@ -677,7 +677,7 @@ async fn appraise_closure(
         ProjectTier::Identified(p) => Some(p),
         ProjectTier::None | ProjectTier::Unidentified(_) => None,
     };
-    let a = match appraise_session_with(session_id, task_id, project.as_ref(), stores) {
+    let mut a = match appraise_session_with(session_id, task_id, project.as_ref(), stores) {
         Ok(Some(a)) => a,
         // The run never got as far as recording an outcome — a crash, a
         // kill, or a transcript from before the record existed (the live
@@ -696,6 +696,7 @@ async fn appraise_closure(
     // a second line here, on *every* closure regardless of label, broke
     // that read-back for exactly the tasks (delegated, with a session) that
     // button is offered on.
+    mecha_core::appraisal::note_task_closure(&mut a, task_id, new_status);
     eprintln!("mecha's appraisal of {task_id}: {}", describe(&a));
 
     // The appraisal record and the warning above apply to any closure — only
@@ -1442,27 +1443,30 @@ fn appraise_session_with(
         .collect();
     let mut goals = vec![mecha_core::goal::GoalRef::Task(task_id.to_string())];
     goals.extend(project.cloned());
-    Ok(Some(mecha_core::appraisal::of_session(
+    let records = mecha_core::appraisal::SessionRecords {
+        drafts: &mine,
+        outbox_unreadable: stores.outbox_unreadable,
+        questions: &stores.questions,
+        questions_unreadable: stores.questions_unreadable,
+        requests: &stores.requests,
+        frontdoor_unreadable: stores.frontdoor_unreadable,
+        reflexions: &stores.reflexions,
+        learning_unreadable: stores.learning_unreadable,
+        charter: stores.charter.as_ref(),
+        charter_unreadable: stores.charter_unreadable,
+        stops: &stops,
+    };
+    let mut appraisal = mecha_core::appraisal::of_session(
         session_id,
         &stats,
         &goals,
         &interventions,
-        mecha_core::appraisal::SessionRecords {
-            drafts: &mine,
-            outbox_unreadable: stores.outbox_unreadable,
-            questions: &stores.questions,
-            questions_unreadable: stores.questions_unreadable,
-            requests: &stores.requests,
-            frontdoor_unreadable: stores.frontdoor_unreadable,
-            reflexions: &stores.reflexions,
-            learning_unreadable: stores.learning_unreadable,
-            charter: stores.charter.as_ref(),
-            charter_unreadable: stores.charter_unreadable,
-            stops: &stops,
-        },
+        records,
         end_taint,
         chrono::Utc::now().to_rfc3339(),
-    )))
+    );
+    mecha_core::appraisal::attribute_events(&mut appraisal, messages, records, goals.first());
+    Ok(Some(appraisal))
 }
 
 /// A one-line summary built only from typed fields — the label plus a count
@@ -3609,6 +3613,7 @@ mod tests {
     fn a_project_reading_folds_labels_and_valence_and_counts_what_it_did_not_read() {
         use mecha_core::appraisal::{Affect, Agency, Channel, Cite, GoalError};
         let err = |sign: f32| GoalError {
+            related: Vec::new(),
             goal: None,
             channel: Channel::Counter,
             sign,
@@ -3787,6 +3792,7 @@ mod tests {
         // while the live gate staged a follow-up on every rejected draft.
         let mut rejected = appraisal(mecha_core::appraisal::Affect::Distress);
         rejected.errors = vec![mecha_core::appraisal::GoalError {
+            related: Vec::new(),
             goal: None,
             channel: mecha_core::appraisal::Channel::Edit,
             sign: -1.0,
@@ -3812,6 +3818,7 @@ mod tests {
     fn a_ceiling_cut_run_accepted_anyway_stages_the_residue() {
         let mut cut = appraisal(mecha_core::appraisal::Affect::Neutral);
         cut.errors = vec![mecha_core::appraisal::GoalError {
+            related: Vec::new(),
             goal: None,
             channel: mecha_core::appraisal::Channel::Counter,
             sign: -0.5,
@@ -3889,6 +3896,7 @@ mod tests {
         let mut a = appraisal(mecha_core::appraisal::Affect::Frustration);
         a.errors = vec![
             mecha_core::appraisal::GoalError {
+                related: Vec::new(),
                 goal: None,
                 channel: mecha_core::appraisal::Channel::Counter,
                 sign: -1.0,
@@ -3898,6 +3906,7 @@ mod tests {
                 cite: mecha_core::appraisal::Cite::Counter("stop_cause".into()),
             },
             mecha_core::appraisal::GoalError {
+                related: Vec::new(),
                 goal: None,
                 channel: mecha_core::appraisal::Channel::Edit,
                 sign: 1.0,

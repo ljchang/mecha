@@ -1,0 +1,50 @@
+{
+  "case_hash": "ace20999dcf1d7b1",
+  "created_at": "2026-09-09T13:46:11.736018014+00:00",
+  "method": "artifact_task_repeat",
+  "model": "qwen3.6-35b-a3b",
+  "reflection_id": "artifact-drill-reflection",
+  "session_id": "20260909T134558-5002ea57",
+  "stats": {
+    "blocked_sends": 0,
+    "boredom_notices": 0,
+    "checks_declared": 0,
+    "checks_passed": 0,
+    "compactions": 0,
+    "context_overflows": 0,
+    "delivered": [],
+    "duration_secs": 5.161042602,
+    "ended_on_failed_call": false,
+    "exhausted": false,
+    "goal_anchor": "task:artifact-drill",
+    "goal_drift_writes": 0,
+    "goal_plan_writes": 0,
+    "goal_unnamed_writes": 0,
+    "malformed_tool_args": 0,
+    "step_completions": 0,
+    "step_escalations_attempted": 0,
+    "step_escalations_revised": 0,
+    "step_measured": 0,
+    "step_nulls": 0,
+    "step_reopens": 0,
+    "stop_cause": "completed",
+    "taint": {
+      "private": true,
+      "untrusted": false
+    },
+    "tool_calls": 2,
+    "tool_denied": 0,
+    "tool_errors": 0,
+    "tool_staged": 0,
+    "turns": 3,
+    "usage": {
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 10720,
+      "input_tokens": 952,
+      "output_tokens": 412
+    },
+    "usage_complete": true
+  },
+  "system_hash": "e9d9a2dbbf332a43",
+  "verdict": "Fail"
+}

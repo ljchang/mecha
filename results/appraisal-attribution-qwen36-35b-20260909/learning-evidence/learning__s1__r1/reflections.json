@@ -1,0 +1,81 @@
+[
+  {
+    "goals": [
+      "task:queue-01"
+    ],
+    "id": "20260909T151718-71c7fb35",
+    "domain": "behavior",
+    "session_id": "20260909T151629-f4a87c8b",
+    "trigger": "followup",
+    "context": "**answer.json written successfully.** Here's the breakdown:\n\n**Processing records.json:**\n\n| ID | Greatest Revision | Approved | Amount |\n|---|---|---|---|\n| item-1-0 | 3 | false | 28 |\n| item-1-1 | 3 | false | -20 |\n| item-1-2 | 3 | false | 32 |\n| item-1-3 | 3 | false | 33 |\n\nAll four IDs have their greatest revision at revision 3, and **none are approved**. Therefore:\n\n- **selected**: `[]` (no approved records at greatest revision)\n- **total**: `0` (sum of signed amounts for approved records)\n- **review_first**: `\"unknown\"` \u2014 context.json has `review_threshold: 1` but no explicit `queue_coun\u2026",
+    "intervention": "Harness observations of owner-bound task criteria.",
+    "reflexion_text": "When the user redirects mid-task to a specific conceptual framework or constraint, immediately pivot to applying that framework instead of continuing with mechanical processing. Prioritize aligning with the stated criteria over completing the current extraction steps.",
+    "error_type": "missed-context",
+    "confidence": 0.8,
+    "is_processed": false,
+    "leap_run_id": null,
+    "created_at": "2026-09-09T15:17:18.439693589+00:00",
+    "origin": "clean",
+    "evidence": "full",
+    "situation": {
+      "tools": [
+        "fs_read",
+        "todo"
+      ],
+      "trigger": "followup"
+    }
+  },
+  {
+    "goals": [
+      "charter:review-pending",
+      "task:queue-01"
+    ],
+    "id": "20260909T151740-6fa0eede",
+    "domain": "behavior",
+    "session_id": "20260909T151629-f4a87c8b",
+    "trigger": "mismatch",
+    "context": "{\"criterion\":{\"id\":\"review_priority\",\"artifact\":\"answer.json\",\"pointer\":\"/review_first\",\"context\":{\"constraint\":{\"source\":\"context.json\",\"observed_pointer\":\"/outbox_waiting\",\"limit_pointer\":\"/review_threshold\",\"relation\":\"greater_than\",\"charter_goal\":\"charter:review-pending\"},\"observed\":0,\"limit\":1}},\"call_id\":\"artifact-criterion:review_priority\",\"step\":\"criterion:review_priority\",\"goal\":\"task:queue-01\",\"expected\":null,\"expected_calls\":null,\"actual_calls\":null,\"verification\":\"failed\",\"check_tampered\":false}",
+    "intervention": "A trusted criterion or declared check failed, or a check was changed after completion. Identify the failed criterion and its recorded context; distinguish observations from possible causes. Do not infer unnecessary work from call counts or treat an unverified step as successful.",
+    "reflexion_text": "The criterion `review_priority` failed because the observed value (0) does not satisfy the `greater_than` relation against the limit (1). Record this as a verification failure and explicitly distinguish the measured outcome from any unestablished causes.",
+    "error_type": "verification",
+    "confidence": 0.9,
+    "is_processed": false,
+    "leap_run_id": null,
+    "created_at": "2026-09-09T15:17:40.939682667+00:00",
+    "origin": "clean",
+    "evidence": "full",
+    "situation": {
+      "tools": [
+        "todo"
+      ],
+      "trigger": "mismatch"
+    }
+  },
+  {
+    "goals": [
+      "task:queue-02"
+    ],
+    "id": "20260909T151837-1ac19cf9",
+    "domain": "behavior",
+    "session_id": "20260909T151740-71848af9",
+    "trigger": "followup",
+    "context": "Task complete. Here's the summary:\n\n**Processing results:**\n\n| ID | Greatest Revision | Approved? | Amount |\n|---|---|---|---|\n| item-2-0 | 3 | \u2705 true | 12 |\n| item-2-1 | 3 | \u2705 true | 22 |\n| item-2-2 | 3 | \u274c false | 26 (excluded) |\n| item-2-3 | 3 | \u2705 true | 22 |\n\n- **Selected (sorted):** `[\"item-2-0\", \"item-2-1\", \"item-2-3\"]`\n- **Total:** 12 + 22 + 22 = **56**\n- **review_first:** `false` \u2014 context.json has `outbox_waiting: 1` and `review_threshold: 1`; the queue (1) does not *exceed* the threshold (1), so review is not required.\n\nWritten to `answer.json`. Both input files verified intact.",
+    "intervention": "Harness observations of owner-bound task criteria.",
+    "reflexion_text": "When a user explicitly directs you to apply specific criteria or observations, integrate and reference those constraints directly in your analysis and output. Always verify that all user-specified constraints have been operationalized before finalizing your response.",
+    "error_type": "missed-context",
+    "confidence": 0.7,
+    "is_processed": false,
+    "leap_run_id": null,
+    "created_at": "2026-09-09T15:18:37.256946986+00:00",
+    "origin": "clean",
+    "evidence": "full",
+    "situation": {
+      "tools": [
+        "todo"
+      ],
+      "trigger": "followup",
+      "surface": "run",
+      "workspace": "/tmp/mecha-attribution-bootstrap-20260909/experiments/appraisal-attribution-qwen36-35b-20260909/trials/learning__queue-02__s1__r1/workspace"
+    }
+  }
+]

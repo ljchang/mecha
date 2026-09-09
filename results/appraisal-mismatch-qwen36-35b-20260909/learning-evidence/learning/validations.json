@@ -1,0 +1,50 @@
+[
+  {
+    "reflexion_id": "20260909T141635-1e07dadb",
+    "trigger": "mismatch",
+    "domain": "behavior",
+    "rules_hash": "cfe417228b3a00e4",
+    "rule_ids": [
+      "r-20260909-c3029194"
+    ],
+    "outcome": "unchanged_pass",
+    "model": "qwen3.6-35b-a3b",
+    "created_at": "2026-09-09T14:22:02.107411993+00:00"
+  },
+  {
+    "reflexion_id": "20260909T141738-6981c025",
+    "trigger": "mismatch",
+    "domain": "behavior",
+    "rules_hash": "cfe417228b3a00e4",
+    "rule_ids": [
+      "r-20260909-c3029194"
+    ],
+    "outcome": "inconclusive",
+    "model": "qwen3.6-35b-a3b",
+    "created_at": "2026-09-09T14:24:09.160603745+00:00"
+  },
+  {
+    "reflexion_id": "20260909T141928-043698d2",
+    "trigger": "mismatch",
+    "domain": "behavior",
+    "rules_hash": "cfe417228b3a00e4",
+    "rule_ids": [
+      "r-20260909-c3029194"
+    ],
+    "outcome": "inconclusive",
+    "model": "qwen3.6-35b-a3b",
+    "created_at": "2026-09-09T14:25:31.439680932+00:00"
+  },
+  {
+    "reflexion_id": "20260909T142025-080c84fd",
+    "trigger": "mismatch",
+    "domain": "behavior",
+    "rules_hash": "cfe417228b3a00e4",
+    "rule_ids": [
+      "r-20260909-c3029194"
+    ],
+    "outcome": "unchanged_pass",
+    "model": "qwen3.6-35b-a3b",
+    "created_at": "2026-09-09T14:26:35.734808860+00:00"
+  }
+]

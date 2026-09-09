@@ -1157,6 +1157,8 @@ mod tests {
         let mut theirs = Vec::new();
         crate::provider::openai::encode_message_for_test(
             &Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![block],
@@ -1549,5 +1551,57 @@ mod structured_output_tests {
             .unwrap()
             .body(&req, false)
             .is_err());
+    }
+}
+
+#[cfg(test)]
+mod planning_metadata_tests {
+    use super::*;
+    #[test]
+    fn planning_sensor_metadata_never_reaches_either_provider() {
+        let plain = Message::user("plan result");
+        let mut observed = plain.clone();
+        let feedback = crate::planning::Feedback {
+            steps: Vec::new(),
+            decisions: vec![crate::planning::Decision {
+                goal: None,
+                anchor: None,
+                open_steps: 1,
+                unverified_steps: 0,
+                charter_observed: true,
+                charter: vec![crate::planning::Gap {
+                    goal: Some(crate::goal::GoalRef::Charter("secret-sensor".into())),
+                    remaining: Some(0.876543),
+                }],
+                action: crate::planning::Action::Continue,
+                applied: false,
+            }],
+        };
+        observed.planning = Some(feedback);
+        observed.harness = true;
+        assert_eq!(
+            encode_message(&plain, false),
+            encode_message(&observed, false)
+        );
+        let mut a = Vec::new();
+        let mut b = Vec::new();
+        crate::provider::openai::encode_message_for_test(&plain, &mut a, false);
+        crate::provider::openai::encode_message_for_test(&observed, &mut b, false);
+        assert_eq!(a, b);
+        let record = serde_json::to_string(&observed).unwrap();
+        assert!(
+            record.contains("secret-sensor"),
+            "local recording retains the evidence"
+        );
+        let loaded: Message = serde_json::from_str(&record).unwrap();
+        assert_eq!(loaded, observed);
+        let mut future = serde_json::to_value(observed).unwrap();
+        future["planning"]["decisions"][0]["action"] = serde_json::json!("future_action");
+        let loaded: Message = serde_json::from_value(future).unwrap();
+        assert_eq!(loaded.text(), plain.text());
+        assert!(
+            loaded.planning.is_none(),
+            "unknown metadata costs no transcript"
+        );
     }
 }

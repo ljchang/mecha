@@ -1,0 +1,8 @@
+learning with qwen3.6-35b-a3b (local)
+behavior [todo]: 3 reflection(s)
+behavior: proposal 20260909T141425-5e2c06ec [auto_applied] — 1 rule(s) from 3 reflection(s)
+20260909T140236-10138f3b [mismatch]: unchanged (both pass)
+20260909T140410-c70abee6 [mismatch]: unchanged (both pass)
+20260909T140524-7d6e6af2 [mismatch]: unchanged (both pass)
+candidate vs current rules, replayed on the batch's own interventions: 0 improved, 0 regressed, 3 unchanged, 0 inconclusive
+  - When observed tool calls significantly exceed the expected count, immediately halt execution, verify intermediate results, and stop unnecessary steps rather than blindly continuing the plan.

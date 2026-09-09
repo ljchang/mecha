@@ -1,0 +1,15 @@
+[
+  {
+    "reflexion_id": "artifact-drill-reflection",
+    "trigger": "mismatch",
+    "domain": "behavior",
+    "rules_hash": "58a89ad094e6aa2f",
+    "rule_ids": [
+      "artifact-drill-bad",
+      "artifact-drill-bystander"
+    ],
+    "outcome": "regressed",
+    "model": "qwen3.6-35b-a3b",
+    "created_at": "2026-09-09T13:46:21.194693463+00:00"
+  }
+]

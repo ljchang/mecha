@@ -3326,7 +3326,7 @@ the step so the carried block re-reads the prediction with the plan. **A
 completed step's `check` is frozen on the write that completes it**:
 `Tracked` keeps the hash of the latest declaration while the step is open,
 and from the completing write that declaration stands — a different check
-on that write or any later one is a tamper, echoed back as such, counted
+or an omitted check on that write or any later one is a tamper, echoed back as such, counted
 (`TodoTool::tampered_in`), never taken — with one named residual: the
 freeze is keyed on the step's text, like every other per-step mark in
 `Tracked`, so a reworded step is a new step and its check starts unfrozen;
@@ -3334,10 +3334,11 @@ closing that needs a per-item id the plan tool refuses for cost, and the
 docstring on `Tracked::checks` says so. The first cut gated on the
 *previous* status and let the one write that both completes the step and
 swaps its check through, which is exactly the rewrite the freeze exists for.
-**Nothing runs a check yet.** When the loop does — dispatched as a model
-`shell` call would be: approver, sandbox, interlock, hooks — it records the
-result as a trace named `step::CHECK_TRACE`, and the readers are already in
-place: `Work::of` keeps those out of `calls` (the harness's work is not the
+**The loop executes a newly completed step's frozen check** after its tool
+batch, through ordinary shell dispatch: approver, sandbox, interlock and hooks.
+`agent.step_checks` disables execution; denied, unavailable, staged or skipped
+checks remain unverified. At most sixteen checks run per run. The result is a
+trace named `step::CHECK_TRACE`: `Work::of` keeps those out of `calls` (the harness's work is not the
 model's, and `expect_calls` forecasts the model's), counts `checks_declared`
 / `checks_passed` (a refused check in neither), lets a passing check count
 as `verify_like`, and **never lets a check set `last`** — the `continue` in
@@ -3345,15 +3346,113 @@ as `verify_like`, and **never lets a check set `last`** — the `continue` in
 it refreshes its copy of `last` on the model's own call count, so a check
 landing last beside real work would have read as the step's own failure or
 refusal (found on review). `Finding::CheckFailed` is read from the counters
-before the last-attempt readings, because the model's last call can succeed
-while its claim does not. `RunStats` carries both counts as `Option`, folded like
+before the last-attempt readings in the pure reader. `TodoTool::advance`
+excludes global check deltas from a step's work-span appraisal: a write can
+complete one step and open the next before the first check runs. Only the
+executor's call/goal/step association can say whose check failed. `RunStats` carries both counts as `Option`, folded like
 `boredom_notices`, and `of_session` signs a failed check `-1.0`, `Own`,
 cite `checks_passed` — the first structural discrepancy between a
 prediction and its outcome. `learning::Trigger::Mismatch` is the wire word
-for that discrepancy as a reflection trigger; the variant exists so the
-store's readers do not choke on it, and nothing fires it yet. The check's
-execution and the planner's ask are the other lane's (`AUDIT-RESEARCH.md`
-§3.11).
+for that discrepancy as a reflection trigger. `planning::StepFeedback` records
+failed checks, substantial overruns against the last open estimate, and frozen
+check tampering. `completion_batch` records how many steps closed together; an
+overrun with batched completion is distinct from a known failure. Counts alone
+cannot establish unnecessary work. `learning::extract_mismatches` mines verified
+criterion/check failures and changed checks, at most one per goal/step
+and three per recorded run. Unknown run boundaries share a conservative bound.
+Generated observations must never take the user-turn-only provenance promotion:
+unknown or tainted mismatch evidence is excluded from reflection. Existing rule
+validation and probation still apply. `mismatch::ArtifactCase` adds a bounded,
+owner-supplied task-outcome validator: `run --mismatch-case` binds exact initial
+files, prompt and confirmed goal before the run, and records the independent
+JSON gold outside the model's workspace. `probe::prepare_mismatch` joins the
+reflection to unique harness feedback and rechecks recorded clean provenance;
+missing fixtures, resumed sessions, unsupported levers and changed tool specs
+remain ungraded. The first live surface is the five builtin file/planning tools;
+there is no shell, external service or model-authored grading command. Each arm
+repeats the whole task in a fresh directory under current approval/policy gates.
+A policy refusal is inconclusive, not a model regression. This deliberately does
+not branch a filesystem snapshot that was never captured: steer/denial branching
+is unchanged. Whole-task results leave the intervention-region field unknown;
+artifact success cannot certify that the original step's tool scope was exercised.
+Receipts under `learning/artifact-probes` identify the case, prompt, reflection,
+model, verdict and task usage. Experiments register the entire fixture in
+`Tasks::mismatch_cases`, including it in the condition hash; the original oracle
+and fixtures remain unchanged during a measurement. Forecast-specific validation
+and live-service snapshots remain unsupported.
+
+**Training feedback is opt-in and owner-bound.** `ArtifactCase::criteria` names
+specific output fields; `criterion_feedback` compares them with pinned gold after
+the task ends and records `StepFeedback` without actual output prose or expected
+answer values. Optional `CountConstraint` context names a preserved input, an
+observation pointer, a limit pointer and a closed comparison relation. Its numbers
+come from the owner-bound initial input; missing/non-count values and changed
+context make the diagnostic unknown. A contradictory count constraint and gold
+are refused before execution. Charter references here are owner-supplied
+associations, not resolved readings of the global charter, and no charter is
+written or edited. This first context surface is counts in file fixtures, not
+live services, rates or durations.
+
+`run::append_criterion_feedback` appends matching taint after these post-run
+observations. Refused/staged actions and unsuccessful stop causes suppress this
+feedback; unknown or untrusted provenance still cannot enter mismatch reflection.
+`probe::prepare_mismatch` rejoins every criterion ID and context to its registered
+case. The quarantined mismatch reflector may see this bounded diagnostic context,
+under the owner's 2026-09-09 authorization to connect learning to goal outcomes;
+acting-provider encoders still omit planning metadata, and live charter sensor
+readings still do not enter their prompts. Transfer fixtures omit `criteria` to
+withhold evaluation feedback. Gold and arbitrary tool output never join the
+reflection payload. A passing criterion is not whole-task success.
+
+The generic observation message must carry `Message::harness`, and ordinary
+intervention mining must honor that marker in the user role as well as the
+assistant role. `planning::CRITERION_OBSERVATION` is also a frozen recognized
+voice, protecting historical records and stored reflections. Otherwise every
+post-run diagnostic, including a passing task, becomes an invented owner follow-up;
+the first attribution pilot was stopped for exactly that failure. The mismatch
+frame distinguishes the artifact verdict from the context predicate: a false
+threshold condition can be the correct decision, not evidence of task failure.
+
+Cost-only observations remain available for forecast analysis and plan-boundary
+feedback, but `extract_mismatches`, the direct reflector and new consolidation
+exclude them as unsupported behavioral lessons. Existing rules retain their
+normal validation and retirement policy. The dedicated mismatch frame separates
+an observed error from a causal hypothesis and does not infer wasted work from
+counts. The incident: Qwen learned a generic stop-work rule while using task-record
+count in place of the outbox count for a queue decision. Testing the output and
+recording the source of its constraint answer different questions; both are needed.
+
+**Planning observations are local metadata, not prompt content.** `Message::planning`
+is preserved by session loading and omitted by both provider encoders. This is
+where decisions retain separate task progress, anchor discrepancy and ordered
+charter sensor errors; unread and empty snapshots remain distinguishable.
+`planning::Decision` is deterministic and observational by default. The opt-in
+`agent.goal_guidance` exposes only fixed advice, never raw sensor readings, and
+cannot bypass a structural guard. A passed check is evidence for that declaration
+at that time, not proof of the whole goal or of current artifacts.
+
+**Context retrieval preserves scope and provenance.** `goal_context` is private,
+on demand, and bounded to four active applicable rules and two historical examples.
+Rules join goals through clean source reflections; successful examples require
+recorded clean taint and matching tools/workspace/surface. A startup snapshot
+examines at most 32 recent transcripts of at most 2 MB each and keeps 64 examples.
+It does not add unsolicited lesson delivery. Missing context is never a success.
+
+**Attribution follows the event.** `appraisal::attribute_events` uses the plan at
+the intervention or staging point and typed question/reflection links. Ambiguous
+aggregate counters remain unassigned instead of borrowing the final goal. A task
+may retain its charter sensor as a related goal, and its known project as a parent.
+Global backlog deltas remain context; only item-local evidence can earn credit.
+`note_task_closure` preserves the owner's verdict without erasing failed checks.
+
+**Confirmed goals belong to conversations.** `Conversation::goal_anchor` carries
+the pointer across turns and `Record::GoalAnchor` preserves it through resume and
+rewrite. Per-run counters remain fresh. The anchor still represents the confirmed
+pointer, not a semantic interpretation of the owner's answer. `run --goal` is
+an explicit owner confirmation, persisted before execution; omitting it on resume
+preserves the saved pointer. An experiment supplies these through the immutable
+`Tasks::confirmed_goals` map, which participates in condition hashes and must
+name selected tasks. A goal reference appearing only in prose is not confirmation.
 
 **`tasks.rs::appraise_session_with` deliberately does not call `appraisal::for_session`**,
 which does the identical assembly. `for_session` folds "could not read the file"
@@ -3557,6 +3656,13 @@ comparison over a chosen set**, with the design written before the run.
   outright, in `levers_on` as in `levers_off`: a
   `forbid` is the operator's standing word, and only eval's fixture
   workspaces justify lifting it.
+- **Explicit planning levers must change the rendered config.**
+  `child_invocation` sets `step_checks` and `goal_guidance` true when explicitly
+  named in `levers_on`, even if the operator disabled them. Guidance defaults
+  off: removing it from the resolved off-list alone produced two identical
+  execution conditions under different hashes. Unspecified settings still
+  inherit the operator's config. Test materialized configurations, not just
+  lever lists; `appraisal_fixture` compares every other config field and flag.
 - **Isolation is the whole store** (D12). Every trial runs as a child
   `mecha run` with `MECHA_HOME` pointing at its arm's home under the
   experiment directory, whose `config.toml` *is* the arm: the operator's
@@ -4262,6 +4368,13 @@ kinds of check, in descending order of how much they are worth:
   compaction rewrites the transcript in place, so folding three refusals into
   one marker destroys the evidence rather than merely undercounting it.
 - Everything a model says about its own work is hearsay. Grade the artifact.
+  `eval/fixtures/appraisal_source.py` keeps acceptance answers outside the
+  workspace and never executes model-written code while grading. Its misleading
+  check case deliberately returns success for a wrong invoice. The oracle reads
+  bounded regular files without following symlinks, rejects duplicate JSON keys,
+  checks preserved evidence, and refuses changed draft state. Setup requires an
+  experiment marker and resets only its own synthetic drafts before every task;
+  other records make setup fail rather than erase evidence or contaminate a pair.
 
 `--runs k` repeats every case k times and reports **pass^k** (all k runs pass)
 beside pass@k (any run). Reliability decays much faster than mean success, and

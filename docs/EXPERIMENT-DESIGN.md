@@ -1,5 +1,7 @@
 # Running experiments in mecha — design
 
+**Implementation addendum, 2026-09-09:** The single-run driver now has a concrete appraisal pilot in `eval/appraisal-guidance.toml`: paired guidance off/on, twelve artifact-graded tasks and three seeds. Explicit planning `levers_on` override disabled operator defaults. See `HISTORY.md` under this date; the original design and its dated open items below are retained. No live efficacy result is claimed.
+
 > **Status: unbuilt.** Written 2026-08-26, after the *Communication as
 > Inference-Time Scaling* research spec (49 sections) and its initial
 > literature review, and against GitHub issue #60. Verified against `main` at
