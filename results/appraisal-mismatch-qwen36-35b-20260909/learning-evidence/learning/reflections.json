@@ -1,0 +1,189 @@
+[
+  {
+    "goals": [
+      "task:revision-1"
+    ],
+    "id": "20260909T140236-10138f3b",
+    "domain": "behavior",
+    "session_id": "20260909T140123-290de08b",
+    "trigger": "mismatch",
+    "context": "{\"call_id\":\"X7k5KAZa0YbhMPywVYzceMay1fs4uS5G\",\"step\":\"Read head.json and context.json to understand data structure\",\"goal\":\"task:revision-1\",\"expected\":\"Understand the schema of records, next pointers, and approval fields\",\"expected_calls\":2,\"actual_calls\":15,\"verification\":\"not_declared\",\"check_tampered\":false}",
+    "intervention": "A declared plan prediction disagreed with the observed outcome. Learn from the recorded evidence; do not infer that an unverified step succeeded.",
+    "reflexion_text": "When the observed tool calls significantly exceed the planned amount, pause to verify whether the remaining steps are still necessary rather than blindly executing the full plan. Prioritize checking intermediate results and halting unnecessary execution instead of assuming success.",
+    "error_type": "overreach",
+    "confidence": 0.8,
+    "is_processed": true,
+    "leap_run_id": "20260909T141425-5e2c06ec",
+    "created_at": "2026-09-09T14:02:36.144446705+00:00",
+    "origin": "clean",
+    "evidence": "full",
+    "situation": {
+      "tools": [
+        "todo"
+      ],
+      "trigger": "mismatch"
+    }
+  },
+  {
+    "goals": [
+      "task:revision-2"
+    ],
+    "id": "20260909T140410-c70abee6",
+    "domain": "behavior",
+    "session_id": "20260909T140236-4b05f05c",
+    "trigger": "mismatch",
+    "context": "{\"call_id\":\"X3yfWvFa9Cc20xkGKh7ry8Es6cZ4UJRr\",\"step\":\"Read head.json to understand the linked record structure\",\"goal\":\"task:revision-2\",\"expected\":\"Will see a head pointer and understand the chain format\",\"expected_calls\":1,\"actual_calls\":15,\"verification\":\"not_declared\",\"check_tampered\":false}",
+    "intervention": "A declared plan prediction disagreed with the observed outcome. Learn from the recorded evidence; do not infer that an unverified step succeeded.",
+    "reflexion_text": "When observed tool calls drastically exceed the planned count, immediately treat the execution as potentially stuck in a loop or over-extended, and halt once the core objective is met rather than continuing.",
+    "error_type": "overreach",
+    "confidence": 0.8,
+    "is_processed": true,
+    "leap_run_id": "20260909T141425-5e2c06ec",
+    "created_at": "2026-09-09T14:04:10.997596542+00:00",
+    "origin": "clean",
+    "evidence": "full",
+    "situation": {
+      "tools": [
+        "todo"
+      ],
+      "trigger": "mismatch",
+      "surface": "run",
+      "workspace": "/tmp/mecha-mismatch-bootstrap-20260909/experiments/appraisal-mismatch-qwen36-35b-20260909/trials/learning__revision-2__s1__r1/workspace"
+    }
+  },
+  {
+    "goals": [
+      "task:revision-3"
+    ],
+    "id": "20260909T140524-7d6e6af2",
+    "domain": "behavior",
+    "session_id": "20260909T140411-37a9b45d",
+    "trigger": "mismatch",
+    "context": "{\"call_id\":\"cJcV2kt3TZtj76MepR0mXn5mSxyyrhxS\",\"step\":\"Read head.json and understand the linked records structure\",\"goal\":\"task:revision-3\",\"expected\":\"Understand the chain of records starting from head.json\",\"expected_calls\":1,\"actual_calls\":15,\"verification\":\"not_declared\",\"check_tampered\":false}",
+    "intervention": "A declared plan prediction disagreed with the observed outcome. Learn from the recorded evidence; do not infer that an unverified step succeeded.",
+    "reflexion_text": "When observed tool usage significantly exceeds the expected plan, immediately halt execution and verify the necessity of each additional call rather than proceeding with unverified steps.",
+    "error_type": "overreach",
+    "confidence": 0.8,
+    "is_processed": true,
+    "leap_run_id": "20260909T141425-5e2c06ec",
+    "created_at": "2026-09-09T14:05:24.740460388+00:00",
+    "origin": "clean",
+    "evidence": "full",
+    "situation": {
+      "tools": [
+        "todo"
+      ],
+      "trigger": "mismatch",
+      "surface": "run",
+      "workspace": "/tmp/mecha-mismatch-bootstrap-20260909/experiments/appraisal-mismatch-qwen36-35b-20260909/trials/learning__revision-3__s1__r1/workspace"
+    }
+  },
+  {
+    "goals": [
+      "task:revision-5"
+    ],
+    "id": "20260909T141635-1e07dadb",
+    "domain": "behavior",
+    "session_id": "20260909T141520-4dfa7e16",
+    "trigger": "mismatch",
+    "context": "{\"call_id\":\"0M6ibpp2kjJzWR9LDnIw6XzFYiijpeYB\",\"step\":\"Read head.json to understand the linked record structure\",\"goal\":\"task:revision-5\",\"expected\":\"Understand the chain of ids and their next pointers from head.json\",\"expected_calls\":1,\"actual_calls\":13,\"verification\":\"not_declared\",\"check_tampered\":false}",
+    "intervention": "A declared plan prediction disagreed with the observed outcome. Learn from the recorded evidence; do not infer that an unverified step succeeded.",
+    "reflexion_text": "When a single file read operation triggers an unexpectedly high number of tool calls, halt and verify the parsing logic to prevent redundant or looping requests. Always compare actual tool usage against expected counts to catch inefficiencies early.",
+    "error_type": "overreach",
+    "confidence": 0.9,
+    "is_processed": true,
+    "leap_run_id": "20260909T142651-3aec1de4",
+    "created_at": "2026-09-09T14:16:35.760582057+00:00",
+    "origin": "clean",
+    "evidence": "full",
+    "situation": {
+      "tools": [
+        "todo"
+      ],
+      "trigger": "mismatch",
+      "surface": "run",
+      "workspace": "/tmp/mecha-mismatch-bootstrap-20260909/experiments/appraisal-mismatch-qwen36-35b-20260909/trials/learning__revision-5__s1__r1/workspace"
+    }
+  },
+  {
+    "goals": [
+      "task:revision-6"
+    ],
+    "id": "20260909T141738-6981c025",
+    "domain": "behavior",
+    "session_id": "20260909T141635-e0a18a65",
+    "trigger": "mismatch",
+    "context": "{\"call_id\":\"jF7pIljxVQk4sLAXgTq5nSCJeJLU8R9N\",\"step\":\"Read head.json to find the starting id and follow linked records\",\"goal\":\"task:revision-6\",\"expected\":\"Identify all ids in the chain from head to empty next pointer\",\"expected_calls\":3,\"actual_calls\":15,\"verification\":\"not_declared\",\"check_tampered\":false}",
+    "intervention": "A declared plan prediction disagreed with the observed outcome. Learn from the recorded evidence; do not infer that an unverified step succeeded.",
+    "reflexion_text": "When traversing sequential or linked data, strictly bound your tool calls to the expected plan and halt immediately upon reaching the termination condition to avoid redundant fetches. Always verify each step's actual output against your expectations before proceeding, and never assume unverified intermediate steps succeeded.",
+    "error_type": "overreach",
+    "confidence": 0.9,
+    "is_processed": true,
+    "leap_run_id": "20260909T142651-3aec1de4",
+    "created_at": "2026-09-09T14:17:38.911087745+00:00",
+    "origin": "clean",
+    "evidence": "full",
+    "situation": {
+      "tools": [
+        "todo"
+      ],
+      "trigger": "mismatch",
+      "surface": "run",
+      "workspace": "/tmp/mecha-mismatch-bootstrap-20260909/experiments/appraisal-mismatch-qwen36-35b-20260909/trials/learning__revision-6__s1__r1/workspace"
+    }
+  },
+  {
+    "goals": [
+      "task:consent-5"
+    ],
+    "id": "20260909T141928-043698d2",
+    "domain": "behavior",
+    "session_id": "20260909T141816-b515ed3b",
+    "trigger": "mismatch",
+    "context": "{\"call_id\":\"tuBfsHHnb6FMQgmwQ0o25Binx8OEzQg8\",\"step\":\"Explore workspace and find head.json\",\"goal\":\"task:consent-5\",\"expected\":\"Identify all relevant files and understand the linked record structure\",\"expected_calls\":3,\"actual_calls\":18,\"verification\":\"not_declared\",\"check_tampered\":false}",
+    "intervention": "A declared plan prediction disagreed with the observed outcome. Learn from the recorded evidence; do not infer that an unverified step succeeded.",
+    "reflexion_text": "When actual execution significantly exceeds the declared plan, halt and verify each step against the original goal instead of assuming unverified actions succeeded. Strictly adhere to the planned scope and validate progress incrementally to prevent unnecessary exploration.",
+    "error_type": "overreach",
+    "confidence": 0.9,
+    "is_processed": true,
+    "leap_run_id": "20260909T142651-3aec1de4",
+    "created_at": "2026-09-09T14:19:28.040323225+00:00",
+    "origin": "clean",
+    "evidence": "full",
+    "situation": {
+      "tools": [
+        "todo"
+      ],
+      "trigger": "mismatch",
+      "surface": "run",
+      "workspace": "/tmp/mecha-mismatch-bootstrap-20260909/experiments/appraisal-mismatch-qwen36-35b-20260909/trials/learning__consent-5__s1__r1/workspace"
+    }
+  },
+  {
+    "goals": [
+      "task:consent-6"
+    ],
+    "id": "20260909T142025-080c84fd",
+    "domain": "behavior",
+    "session_id": "20260909T141928-6288e6a4",
+    "trigger": "mismatch",
+    "context": "{\"call_id\":\"6lfdSqEmAOu9vsCssEbroLt37uTs36Xz\",\"step\":\"List workspace and locate head.json\",\"goal\":\"task:consent-6\",\"expected\":\"Find head.json and understand file structure\",\"expected_calls\":2,\"actual_calls\":14,\"verification\":\"not_declared\",\"check_tampered\":false}",
+    "intervention": "A declared plan prediction disagreed with the observed outcome. Learn from the recorded evidence; do not infer that an unverified step succeeded.",
+    "reflexion_text": "When tasked with locating a specific file or structure, limit tool calls to the essential steps required and halt immediately upon success. Do not continue exploring or execute unverified follow-up actions, as this leads to excessive tool usage and inefficient execution.",
+    "error_type": "overreach",
+    "confidence": 0.8,
+    "is_processed": false,
+    "leap_run_id": null,
+    "created_at": "2026-09-09T14:20:25.545644617+00:00",
+    "origin": "clean",
+    "evidence": "full",
+    "situation": {
+      "tools": [
+        "todo"
+      ],
+      "trigger": "mismatch",
+      "surface": "run",
+      "workspace": "/tmp/mecha-mismatch-bootstrap-20260909/experiments/appraisal-mismatch-qwen36-35b-20260909/trials/learning__consent-6__s1__r1/workspace"
+    }
+  }
+]

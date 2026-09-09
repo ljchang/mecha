@@ -1,0 +1,7 @@
+{
+  "finished_audit_at": "2026-09-09T14:31:34.662281+00:00",
+  "changed_pinned_files": [],
+  "model_alias": "qwen3.6-35b-a3b",
+  "slots": 4,
+  "n_ctx": 262144
+}

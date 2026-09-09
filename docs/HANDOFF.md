@@ -47,20 +47,32 @@ goal-linked reflections were captured, below the unchanged minimum of three.
 No rules were created or loaded, so learning benefits remain unmeasured. See
 `results/appraisal-learning-v2-qwen36-35b-20260909/README.md`. The earlier learning
 design was superseded without running; the original baseline remains unchanged.
-A further transfer test needs more eligible mismatch evidence before its transfer
-slice, without weakening the evidence, scope or provenance gates.
+The twelve-task extension completed with independent artifact validation:
+**10/12 control versus 9/12 learning**, and **6/6 versus 5/6 transfer**. It produced
+seven clean reflections and one scoped rule, actually loaded in all six transfer
+runs. The initial artifact gate measured three unchanged both-pass pairs; later
+validation measured two unchanged pairs and two inconclusive pairs. The final
+same-text consolidation retained the existing rule identity and non-probation
+status; no rules retired. All 18 stages completed and the native gate rejected
+promotion. See `results/appraisal-mismatch-qwen36-35b-20260909/README.md`.
+Actual rule creation and exposure are now demonstrated; improvement is not.
+The separate controlled artifact drill detected an aggregate regression but could
+not attribute it, so its strict retirement assertion failed. Its evidence is
+archived separately from the natural pilot; the existing trace retirement drill passed.
 
-Unsolicited mid-run rule delivery stays off; mismatch-specific counterfactual
-grading, semantic interpretation of owner goal corrections, across-run learning
-benefits and real owner-policy outcomes remain open. The earlier environment
+`mismatch::ArtifactCase` and `probe::prepare_mismatch` now support independent
+JSON artifact grading of clean, bound, file-only task repeats. Mid-step state
+reconstruction, forecast-specific grading and live-service fixtures remain open.
+Unsolicited mid-run rule delivery stays off; semantic interpretation of owner goal
+corrections, across-run learning benefits and real owner-policy outcomes remain open. The earlier environment
 rows describe dated installations; only the pilot's local model and conditions
 were re-verified in this measurement pass.
 
 Validation on this working tree: `cargo fmt --all`, warning-free
 `cargo clippy --all-targets --all-features`, and
-`MECHA_TEST_REQUIRE_BACKENDS=1 cargo test --workspace`: **2,597 passed, zero
-failed, three intentionally ignored**. The suite breakdown is 801 CLI, 22
-first-run, 3 run-lifecycle, 5 serve-lifecycle, 1,506 core, 5 appraisal-fixture,
+`MECHA_TEST_REQUIRE_BACKENDS=1 cargo test --workspace`: **2,606 passed, zero
+failed, three intentionally ignored**. The suite breakdown is 803 CLI, 22
+first-run, 3 run-lifecycle, 5 serve-lifecycle, 1,512 core, 6 appraisal-fixture,
 5 fixture-server, 13 MCP, 9 sandbox-backend, 151 mail, 1 mail binary, 75 Slack
 and 1 doctest.
 The main eval inventory remains **36 cases / 15 tags**, recounted 2026-09-09;

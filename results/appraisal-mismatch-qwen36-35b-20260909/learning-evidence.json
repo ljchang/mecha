@@ -1,0 +1,63 @@
+{
+  "control": {
+    "reflections": 0,
+    "triggers": {},
+    "origins": {},
+    "evidence": {},
+    "processed": 0,
+    "goals": [],
+    "validation_records": 0,
+    "validation_outcomes": {},
+    "store_file_sha256": {}
+  },
+  "learning": {
+    "reflections": 7,
+    "triggers": {
+      "mismatch": 7
+    },
+    "origins": {
+      "clean": 7
+    },
+    "evidence": {
+      "full": 7
+    },
+    "processed": 6,
+    "goals": [
+      "task:consent-5",
+      "task:consent-6",
+      "task:revision-1",
+      "task:revision-2",
+      "task:revision-3",
+      "task:revision-5",
+      "task:revision-6"
+    ],
+    "validation_records": 4,
+    "validation_outcomes": {
+      "unchanged_pass": 2,
+      "inconclusive": 2
+    },
+    "store_file_sha256": {
+      "validations.jsonl": "9e10b88988ec6ceada1c7bfb4a17c3ebfd0732a0f975a611e6a351f9d644004a",
+      "runs.jsonl": "18ef208af35c15c8190fdd64e986149da9960f02bc886d76b463bc5282a596d2",
+      "mined.jsonl": "2d928957039e9ba95488037eaa5dfd9cb7b22f3811a89adda438e587ba82a9f7",
+      "reflections.jsonl": "161669f88741f92963325c36ad6647bd7c932e2130d07414d874c568beb7ffe3",
+      "rules/behavior.learned.toml": "1bcc9dbe500018681382cc78832ac160aeb090d347a0b1ba7f543e06b4ffc7db",
+      "artifact-probes/20260909T142109-a4f410b7.json": "bd11e6f5583837b2261cdfc7c3c07d7e10fb612c4ace6d447421d3f86bb5a32b",
+      "artifact-probes/20260909T140845-5a4d89f0.json": "d92eb0f647beedeb5f10901fa25b300e2579cec070ab41629b84be7f5e226b37",
+      "artifact-probes/20260909T141116-db50cc7a.json": "e3ad02b2af07503453e5c53c207c32b3193634fc7c4cd031bc95c85c704f3e6a",
+      "artifact-probes/20260909T142259-923bbf98.json": "44043297756fd04f3895fe3c2f4fa982c476efad27311254d9024f6fa854b111",
+      "artifact-probes/20260909T142600-6041f021.json": "67e611436a5db9b08736844b79cd8835a81a79a82ad174c5c1865a13613e3dae",
+      "artifact-probes/20260909T142202-010d5b61.json": "9ab3a196258b8ae46efdf0b5aed5dc1ffd07594642ea11d3d846f0e3e608e9cc",
+      "artifact-probes/20260909T142531-1f8423d8.json": "cf77d08457bc6e2f884aa1fd3b7c1505bbf3461f1d75e5ff921e54241143dfa8",
+      "artifact-probes/20260909T141336-6badc45b.json": "a1a1933495f7d78010bef990715ee9c26ffe4f9ffac5c39e9f92d5853959c4f1",
+      "artifact-probes/20260909T142635-a9484ffa.json": "7dc42f6bf8929459afac6aa00c665be7c1b83e5d4cfdb7235e4a1135ce5ce64b",
+      "artifact-probes/20260909T142409-3d11e008.json": "c487620f7c075069948309808abc662a0d69c247ff12614ae574f1faefa688ba",
+      "artifact-probes/20260909T140924-61a55f0f.json": "5cdd0e0d3b979431c43a93a4f3aa9254ee7dff8877f3ba8590ef3db54013b177",
+      "artifact-probes/20260909T142447-48483dba.json": "d1478cd1e8e5e216fedb4d2b4ff09f3ce9edbd3c8cd0302df75072e9a33ba716",
+      "artifact-probes/20260909T141244-0e97c086.json": "5e05dbe14f5b48955dd07af2424b81e62f13757dabbb0d1f0c7d1ecff67c3acb",
+      "artifact-probes/20260909T141425-f2baab43.json": "d1e01314702e2fbcdc6479a67504544b757410007b81d99b275a8a6f66d1b0c4",
+      "proposals/20260909T141425-5e2c06ec.json": "d5ac8a1b577421c179639550b3887670a9f7f42c1b51a8e1d029274d995c077b",
+      "proposals/20260909T142651-3aec1de4.json": "703fcf2c7a6eaacf68b5116bfb4c46ba9531d14a81eb8258b4788c8b4f2376ff"
+    }
+  }
+}

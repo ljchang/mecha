@@ -1,0 +1,46 @@
+[[rules]]
+text = "When observed tool calls significantly exceed the expected count, immediately halt execution, verify intermediate results, and stop unnecessary steps rather than blindly continuing the plan."
+enabled = true
+confidence = 0.95
+based_on_count = 3
+id = "r-20260909-c3029194"
+sources = [
+    "20260909T140236-10138f3b",
+    "20260909T140410-c70abee6",
+    "20260909T140524-7d6e6af2",
+    "20260909T141635-1e07dadb",
+    "20260909T141738-6981c025",
+    "20260909T141928-043698d2",
+]
+created_at = "2026-09-09T14:07:54.633556866+00:00"
+
+[rules.scope]
+tools = ["todo"]
+
+[[rules.support]]
+tools = ["todo"]
+
+[[rules.support]]
+tools = ["todo"]
+surface = "run"
+workspace = "/tmp/mecha-mismatch-bootstrap-20260909/experiments/appraisal-mismatch-qwen36-35b-20260909/trials/learning__revision-2__s1__r1/workspace"
+
+[[rules.support]]
+tools = ["todo"]
+surface = "run"
+workspace = "/tmp/mecha-mismatch-bootstrap-20260909/experiments/appraisal-mismatch-qwen36-35b-20260909/trials/learning__revision-3__s1__r1/workspace"
+
+[[rules.support]]
+tools = ["todo"]
+surface = "run"
+workspace = "/tmp/mecha-mismatch-bootstrap-20260909/experiments/appraisal-mismatch-qwen36-35b-20260909/trials/learning__revision-5__s1__r1/workspace"
+
+[[rules.support]]
+tools = ["todo"]
+surface = "run"
+workspace = "/tmp/mecha-mismatch-bootstrap-20260909/experiments/appraisal-mismatch-qwen36-35b-20260909/trials/learning__revision-6__s1__r1/workspace"
+
+[[rules.support]]
+tools = ["todo"]
+surface = "run"
+workspace = "/tmp/mecha-mismatch-bootstrap-20260909/experiments/appraisal-mismatch-qwen36-35b-20260909/trials/learning__consent-5__s1__r1/workspace"

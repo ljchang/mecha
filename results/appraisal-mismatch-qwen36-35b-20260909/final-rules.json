@@ -1,0 +1,30 @@
+[
+  {
+    "active": true,
+    "attributed_regressions": 0,
+    "created_at": "2026-09-09T14:07:54.633556866+00:00",
+    "domain": "behavior",
+    "graded": 2,
+    "id": "r-20260909-c3029194",
+    "loads_nowhere": false,
+    "narrowed_at": null,
+    "narrowed_reason": null,
+    "observations": 4,
+    "probation": false,
+    "regions": [],
+    "retired": false,
+    "retired_reason": null,
+    "scope": "todo",
+    "support": [
+      "todo",
+      "todo · run · /tmp/mecha-mismatch-bootstrap-20260909/experiments/appraisal-mismatch-qwen36-35b-20260909/trials/learning__revision-2__s1__r1/workspace",
+      "todo · run · /tmp/mecha-mismatch-bootstrap-20260909/experiments/appraisal-mismatch-qwen36-35b-20260909/trials/learning__revision-3__s1__r1/workspace",
+      "todo · run · /tmp/mecha-mismatch-bootstrap-20260909/experiments/appraisal-mismatch-qwen36-35b-20260909/trials/learning__revision-5__s1__r1/workspace",
+      "todo · run · /tmp/mecha-mismatch-bootstrap-20260909/experiments/appraisal-mismatch-qwen36-35b-20260909/trials/learning__revision-6__s1__r1/workspace",
+      "todo · run · /tmp/mecha-mismatch-bootstrap-20260909/experiments/appraisal-mismatch-qwen36-35b-20260909/trials/learning__consent-5__s1__r1/workspace"
+    ],
+    "title": "When observed tool calls significantly exceed the expected count, immediately halt execution, verify intermediate results, and stop unnecessary steps rather than blindly continuing the plan.",
+    "unknown_region_graded": 2,
+    "user": false
+  }
+]
