@@ -5,10 +5,11 @@ This website is built using [Docusaurus](https://docusaurus.io/), a modern stati
 ## Installation
 
 ```bash
-npm install
+npm ci
 ```
 
-**Note**: feel free to use the package manager of your choice.
+Use Node.js 20 or newer; CI uses Node.js 22. `npm ci` installs the locked
+dependency versions.
 
 ## Local Development
 
@@ -25,6 +26,41 @@ npm run build
 ```
 
 This command generates static content into the `build` directory and can be served using any static contents hosting service.
+
+## Updating the docs
+
+Authored pages live in `docs/`, with `title`, `sidebar_position`, and
+`description` front matter. The sidebar is generated from the directory tree.
+Update the overview and getting-started links when a feature changes the daily
+workflow, as well as the feature page and CLI/configuration references.
+
+Verify commands against a freshly built `mecha <command> --help`, and config
+keys and defaults against `mecha-core/src/config.rs`, including `ConfigLayer`.
+The site tracks main; changes newer than the current release should be
+understandable alongside the root changelog's Unreleased section.
+
+Do not edit generated sources here:
+
+- `docs/changelog.md` is copied from the root `CHANGELOG.md`.
+- Generated graph pages come from the graph repository; `docs/graph/overview.md`
+  is authored here.
+- `static/factory/gallery/` comes from the factory repository.
+- `static/demo/` is built from this repository's `web/` app and demo fixtures.
+
+The prebuild scripts refresh these automatically, using sibling checkouts for
+graph and gallery content when available and public sources otherwise. A missing
+source can leave those pages or embeds unavailable, so read the build output.
+
+```bash
+npm run typecheck
+npm run check-charter-toml
+npm run check-demo
+npm run build
+MECHA_DOCS_REQUIRE_BROWSER=1 npm run render-check
+```
+
+The final check requires Playwright Chromium (`npx playwright install chromium`).
+For a prose change, also open the affected built pages and check their links.
 
 ## Deployment
 

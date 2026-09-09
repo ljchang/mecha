@@ -128,6 +128,9 @@ mecha sessions health --days 30
 
 ### The config record
 
+Selected fields are shown here; the record also includes tool-surface fingerprints,
+active harness levers, and the workspace and surface used to match learned rules.
+
 ```rust
 pub struct RunConfig {
     pub mecha_version: String,
@@ -199,30 +202,36 @@ mecha replay 20260805T091500 --on-divergence=error --json
 mecha replay 20260805T091500 -p anthropic          # same work, another model
 ```
 
-Replay re-drives a recorded session and reports what changed. The **recorded
-tool results are replayed verbatim** and the only live component is the model.
+Replay re-drives a recorded session with model calls and tool results taken
+from the recording. In the default `stop` mode, replayed tool calls do not
+execute their underlying tools. Model requests still cost tokens, and setup
+can connect configured MCP servers.
 
-That is the whole design. Replaying against live tools re-reads a filesystem
-and a web that have both moved, so a difference tells you nothing about the
-harness. Answering from the recording isolates the variable: same turns, same
-tool results, and the only thing left that can differ is what the model chose
-to do with them. It costs one model call per turn and has no side effects,
-which turns every real session into a free regression case — recorded from real
-work rather than hand-written.
+The result is a controlled comparison over recorded evidence, with limits:
+replay reapplies output limits and untrusted-content warnings, so the bytes
+shown to the model can differ from the original transcript. Modern recordings
+preserve per-call provenance. Legacy results with unknown provenance count as
+external, including old harness refusals; this can add a warning or a second
+warning envelope. In `live` mode it can also block a send the original allowed.
+The CLI reports this, and JSON includes `legacy_provenance_calls` and
+`provenance_note`. Compare arms under the same replay policy before attributing
+a difference to the model.
 
 ### How the run is rebuilt
 
 From the session's `RunConfig`, not from today's flags: system prompt, tool
-list, effort, thinking, budgets, compaction settings. A replay under different
-conditions answers a different question. A session with no config record cannot
-be replayed at all, and says so.
+list, effort, thinking, budgets, compaction settings. If a session has several
+config records, replay uses the first and prints a note. A session with no
+config record cannot be replayed.
 
-The tool *surface* comes from today's setup — built-ins, MCP servers, subagents
-— because the recorded registry may name any of them. Each recorded tool is
-wrapped rather than replaced, so the spec the model sees is the live one: a
-changed description **is** part of what a replay measures. If a recorded tool no
-longer exists, the replay refuses rather than offering a smaller surface than
-the model saw.
+In `stop` and `error` modes, saved tool schemas and descriptions take precedence
+when the surface store still holds the recording's `tools_hash`. They can also
+stand in for tools no longer available. If neither setup nor a recorded or
+supported display-only surface can supply a tool, replay refuses.
+
+`live` mode uses today's tool definitions and requires executable tools, because
+it can actually call them after divergence. Recorded descriptions never grant
+capabilities or permissions to a live tool.
 
 Provider and model default to the recorded ones and can be overridden. Replaying
 one model's session on another is how you compare them on real work — and when
@@ -265,13 +274,15 @@ pub enum Divergence {
 }
 ```
 
-The comparison is **positional**, because the order tools are called in *is* the
-trajectory. Argument differences are reported separately and are the only ones
-`is_structural()` calls cosmetic: a model that reads the same file by a
-different path spelling has not regressed, and grading it as though it had makes
-replay useless inside a week. Argument differences also do not stop the run —
-returning the recorded result for materially different arguments is the price of
-not pretending to know which differences matter.
+The comparison preserves order **between assistant turns**. Within one recorded
+parallel batch, calls may arrive in a different order. Matching prefers the same
+tool and arguments, then the same tool name; each result keeps its own provenance.
+Legacy calls without batch markers remain positional.
+
+Argument differences are reported separately and do not stop replay. The same
+file can have different path spellings, but changed arguments can also mean a
+different action. Replay returns the matched recorded result and leaves that
+judgment to the reviewer; an argument mismatch is not proof of equivalence.
 
 `--on-divergence` decides what happens at a structural divergence:
 
@@ -281,7 +292,7 @@ not pretending to know which differences matter.
 | `error` | the same, and exit non-zero on *any* divergence, argument spellings included |
 | `live` | abandon the recording and continue against the real tools |
 
-Nothing executes in `stop` or `error` mode, so nothing needs approving. `live`
+Underlying tool calls do not execute in `stop` or `error` mode. `live`
 falls back to the configured permission mode: real tools run after the
 divergence and deserve exactly the scrutiny they always get.
 

@@ -64,9 +64,9 @@ What gets pushed:
   "meta": {
     "taint": { "private": true, "untrusted": false },
     "distilled_by": "<model id>",
-    "affect": "anger",
+    "affect": "distress",
     "goal_errors": [
-      { "channel": "counter", "sign": -0.5, "agency": "world",
+      { "channel": "counter", "sign": -0.5, "agency": "owner",
         "visible": false, "cite": { "kind": "counter", "id": "stop_cause" } }
     ],
     "corrections": [
@@ -130,12 +130,16 @@ worth a human's attention sooner than one that went cleanly.
 Unlike corrections, they are **not** gated on the timeline's trust, and the
 reason is that they are structured facts the harness computed about its own run
 — a sign, an agency, a channel, a pointer — rather than prose a model or a
-fetched page could have authored. There is nothing in them for an injection to
-have written, with exactly one exception, which is redacted: the goal reference
-is the one field the harness did not mint, since it comes from the model's own
-`serves:` argument and only the *kind* word is constrained. So a goal is sent as
-its kind alone, never its id. Both are omitted when the session had nothing to
-appraise, which is ordinary for a transcript predating the sensor.
+fetched page could have authored. Goal references need an additional check because the model can name them.
+Before a full `kind:id` pointer crosses into metadata, a charter ID must resolve
+to a loaded charter line, and a task or project ID must resolve against the
+board. Unresolved references fall back to the kind word alone.
+
+`meta.goal` and each error's `goal` can carry the resolved pointer;
+`meta.serves_charter` is present only when a charter line resolves. The goal
+hypothesis, the owner's answer, and the charter line's text stay in mecha.
+Appraisal metadata is omitted when there is no outcome to appraise, as with
+some older transcripts.
 
 ## Distillation is not learning
 

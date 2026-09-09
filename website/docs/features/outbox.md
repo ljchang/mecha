@@ -37,10 +37,12 @@ and do not retry the call.
 
 ```bash
 mecha outbox                  # list (pending first), grouped by kind
-mecha outbox show <id>        # the exact arguments a release would execute
-mecha outbox edit <id>        # open those arguments in $EDITOR
+mecha outbox show <id>        # read the draft and its source
+mecha outbox show <id> --json # inspect exact arguments
+mecha outbox edit <id>        # edit the prose in $EDITOR
+mecha outbox edit <id> --json # edit recipients and other arguments
 mecha outbox review --all     # walk the pending items, deciding each
-mecha outbox send <id>        # execute the call, for real, and mark it sent
+mecha outbox approve <id>     # execute the reviewed call (`send` remains an alias)
 mecha outbox reject <id> --reason "wrong recipient"
 ```
 
@@ -57,14 +59,32 @@ sitting. It walks them one at a time rather than presenting a list to
 bulk-approve — batching the queue must not batch away the reading, which is the
 only thing the outbox is for. `--kind` and `--via` narrow what it walks.
 
-`send` builds the real tool surface — MCP servers included — and calls the
-tool. A failed release records the error and leaves the item **pending**: the
-draft is still good, the delivery was not, and the next `send` retries.
+`approve` builds the real tool surface — MCP servers included — and calls the
+tool. Delivery attempts are recorded before execution. A known failure can be
+reviewed again; an uncertain outcome remains pending and blocks retries until
+it has been reconciled.
 Resolution rewrites the item in place rather than archiving it, so the file is
 its own audit record; a rejection stays on disk as the record of the refusal.
 `mecha outbox reject --all` processes every selected pending draft. An uncertain
 delivery remains pending for reconciliation; other eligible drafts are rejected.
 The command reports rejection/failure counts and exits nonzero if any item fails.
+
+## Delivery recovery
+
+If a response is lost or the sending process stops, check the destination before
+retrying. An unknown outcome may already have delivered the message or event.
+Record the outcome you established, with evidence:
+
+```bash
+mecha outbox reconcile DRAFT_ID --outcome delivered --evidence "Sent message m-123"
+# Or, only after establishing non-delivery:
+mecha outbox reconcile DRAFT_ID --outcome not-delivered --evidence "Destination history confirms no delivery"
+```
+
+Reconciliation never sends. Confirmed delivery resolves the draft; confirmed
+non-delivery allows a fresh review and retry. The web outbox exposes the same
+recovery. [Workflow checks](/docs/features/workflows#check-the-result) count only
+confirmed delivery as evidence of completion.
 
 ## A reply is shown with the message it replies to
 
