@@ -1,0 +1,142 @@
+{
+  "control": {
+    "all_seeds": {
+      "initial": {
+        "n": 18,
+        "overall_pass": 15,
+        "artifact_pass": 15
+      },
+      "transfer": {
+        "n": 18,
+        "overall_pass": 15,
+        "artifact_pass": 16
+      },
+      "all": {
+        "n": 36,
+        "overall_pass": 30,
+        "artifact_pass": 31
+      }
+    },
+    "1": {
+      "initial": {
+        "n": 6,
+        "overall_pass": 4,
+        "artifact_pass": 4
+      },
+      "transfer": {
+        "n": 6,
+        "overall_pass": 6,
+        "artifact_pass": 6
+      },
+      "all": {
+        "n": 12,
+        "overall_pass": 10,
+        "artifact_pass": 10
+      }
+    },
+    "2": {
+      "initial": {
+        "n": 6,
+        "overall_pass": 5,
+        "artifact_pass": 5
+      },
+      "transfer": {
+        "n": 6,
+        "overall_pass": 5,
+        "artifact_pass": 5
+      },
+      "all": {
+        "n": 12,
+        "overall_pass": 10,
+        "artifact_pass": 10
+      }
+    },
+    "3": {
+      "initial": {
+        "n": 6,
+        "overall_pass": 6,
+        "artifact_pass": 6
+      },
+      "transfer": {
+        "n": 6,
+        "overall_pass": 4,
+        "artifact_pass": 5
+      },
+      "all": {
+        "n": 12,
+        "overall_pass": 10,
+        "artifact_pass": 11
+      }
+    }
+  },
+  "learning": {
+    "all_seeds": {
+      "initial": {
+        "n": 18,
+        "overall_pass": 15,
+        "artifact_pass": 15
+      },
+      "transfer": {
+        "n": 18,
+        "overall_pass": 15,
+        "artifact_pass": 16
+      },
+      "all": {
+        "n": 36,
+        "overall_pass": 30,
+        "artifact_pass": 31
+      }
+    },
+    "1": {
+      "initial": {
+        "n": 6,
+        "overall_pass": 4,
+        "artifact_pass": 4
+      },
+      "transfer": {
+        "n": 6,
+        "overall_pass": 6,
+        "artifact_pass": 6
+      },
+      "all": {
+        "n": 12,
+        "overall_pass": 10,
+        "artifact_pass": 10
+      }
+    },
+    "2": {
+      "initial": {
+        "n": 6,
+        "overall_pass": 5,
+        "artifact_pass": 5
+      },
+      "transfer": {
+        "n": 6,
+        "overall_pass": 5,
+        "artifact_pass": 5
+      },
+      "all": {
+        "n": 12,
+        "overall_pass": 10,
+        "artifact_pass": 10
+      }
+    },
+    "3": {
+      "initial": {
+        "n": 6,
+        "overall_pass": 6,
+        "artifact_pass": 6
+      },
+      "transfer": {
+        "n": 6,
+        "overall_pass": 4,
+        "artifact_pass": 5
+      },
+      "all": {
+        "n": 12,
+        "overall_pass": 10,
+        "artifact_pass": 11
+      }
+    }
+  }
+}
