@@ -1,0 +1,41 @@
+# Run from the checkout root; pin provider/model in BOTH arms before registration.
+# 12 tasks x 3 seeds x 2 arms = 72 trials. No model judge or learning stages.
+name = "appraisal-guidance"
+description = "Paired artifact-graded planning tasks with guidance off/on and checks on in both arms."
+kind = "single"
+control = "control"
+seeds = [1, 2, 3]
+repetitions = 1
+split_seed = 37
+
+[tasks]
+source = ["python3", "eval/fixtures/appraisal_source.py"]
+fixture = "eval/fixtures/appraisal/workspace"
+
+[fixtures]
+charter = "eval/fixtures/appraisal/charter.toml"
+outbox_tools = []
+
+[[fixtures.mcp]]
+name = "graph"
+command = "python3"
+args = ["eval/fixtures/board_server.py"]
+prefix_tools = false
+seed = "eval/fixtures/appraisal/board"
+[fixtures.mcp.capabilities]
+untrusted_input = true
+
+[arms.control]
+preset = "full"
+levers_on = ["step_checks"]
+levers_off = ["goal_guidance", "learned_rules", "skills", "hooks", "messages", "fallback", "step_escalation"]
+overrides = ["max_turns=24"]
+
+[arms.guided]
+preset = "full"
+levers_on = ["step_checks", "goal_guidance"]
+levers_off = ["learned_rules", "skills", "hooks", "messages", "fallback", "step_escalation"]
+overrides = ["max_turns=24"]
+[arms.guided.prediction]
+metric = "failure"
+rationale = "Goal feedback reduces independently graded artifact failures at the same turn budget."

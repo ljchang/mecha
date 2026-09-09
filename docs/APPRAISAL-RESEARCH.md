@@ -1,6 +1,8 @@
 # The appraisal system — review, corpus measurement, and what the literature says
 
-**Implementation, 2026-09-09:** The mechanisms following §8 are implemented in the working tree; see `HISTORY.md` under this date and `ARCHITECTURE.md` for the current boundaries. Guidance is opt-in and efficacy remains unmeasured. The dated evaluation below is retained.
+**Implementation, 2026-09-09:** The mechanisms following §8 are implemented on `feat/appraisal-goal-feedback`; see `HISTORY.md` under this date and `ARCHITECTURE.md` for the current boundaries. Guidance is opt-in and efficacy remains unmeasured. The dated evaluation below is retained.
+
+**Evaluation fixture, 2026-09-09:** `eval/appraisal-guidance.toml` now defines 12 synthetic tasks × 3 seeds × guidance off/on, with checks enabled in both arms and independent artifact grading. `scripts/appraisal-report.py` reports paired outcomes and metric coverage. Registration and grading controls passed without model calls; live efficacy, learned-context benefits and owner-policy outcomes remain unmeasured. See `HISTORY.md` under this date.
 
 **Follow-up evaluation, 2026-09-09:** §8 checks the current implementation against goal-aligned planning, context retrieval, learning and decisions. Earlier measurements and unbuilt lists retain their original dates.
 

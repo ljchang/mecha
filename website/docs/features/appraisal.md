@@ -790,3 +790,50 @@ alignment, remaining work, verification gaps and ordered charter sensor readings
 The sensor numbers stay outside model prompts. Guidance is experimental: it has
 mechanical regression coverage, but improved task outcomes have not been measured.
 Use `--no-goal-guidance` to disable it for a comparison run.
+
+
+## Comparing guidance on real runs
+
+From a checkout, `eval/appraisal-guidance.toml` defines a synthetic pilot with
+12 tasks, three seeds and two arms: 72 runs at the same 24-turn ceiling. Checks
+are enabled in both arms; only goal guidance differs. Both arms disable learned
+rules, skills, hooks, messages, fallback and step escalation. The charter, graph
+and draft queue are synthetic; each task starts with fresh workspace files and
+reset fixture state.
+
+Set the same explicit `provider` and `model` in both arms before registering the
+manifest. Keep the model, configuration and checkout revision fixed through the
+run. From the repository root, using the binary built from that revision:
+
+```bash
+cargo build -p mecha-cli
+./target/debug/mecha exp new eval/appraisal-guidance.toml
+./target/debug/mecha exp run appraisal-guidance --dry-run
+./target/debug/mecha exp run appraisal-guidance
+./target/debug/mecha exp export appraisal-guidance > /tmp/appraisal-results.json
+python3 scripts/appraisal-report.py /tmp/appraisal-results.json
+./target/debug/mecha exp judge appraisal-guidance --json
+```
+
+`exp run --limit N` bounds one invocation; repeat the run command to resume.
+Registration freezes the manifest, so use a new experiment name for a changed
+design. Archive the export with the checkout revision and model configuration;
+source fixture contents are not all covered by the condition hash.
+
+The cases cover budgeted plans, charter conflicts, revised briefs, contradictory
+or missing evidence, artifact repair, misleading checks, adjacent verification,
+review pressure, distractors and scope control. Grading checks the saved JSON
+artifact and preserved inputs and drafts. Passing a model-written check or
+claiming completion cannot replace those checks. Tasks also require use of `todo`.
+
+The report pairs task, seed and repetition, separates execution failures from
+graded failures, and gives each metric its own observed-pair count. Missing cost,
+owner actions or plan counters remain unknown; cost comparisons require complete
+usage records. Negative failure-rate differences favor guidance. The report is
+descriptive; `exp judge` retains the existing selection/holdout gate.
+
+This pilot measures guidance with current-task evidence. It does not test learning
+across runs, semantic owner corrections across turns, or real owner-policy
+outcomes. Owner interventions are unmeasured in this single-run design. Inspect
+traces alongside the report before drawing conclusions or enabling guidance by
+default; no model efficacy results have been recorded yet.

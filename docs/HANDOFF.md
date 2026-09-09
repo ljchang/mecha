@@ -22,13 +22,17 @@ maps which document holds what.
 
 ## Where the work is
 
-**2026-09-09 — appraisal implementation is in the working tree, not installed.**
+**2026-09-09 — appraisal implementation is on `feat/appraisal-goal-feedback`, not installed.**
 See HISTORY under this date for implemented goal persistence, event attribution,
 plan checks, structured mismatch learning and goal-specific context. Guidance is
 observational unless `[agent] goal_guidance = true`; check execution defaults on
 and can be disabled with `step_checks = false` or `--no-step-checks`. The next
-measurement is a paired task run with guidance off/on, checking goal attainment,
-failed checks, cost, restarts and owner interventions. Do not treat scripted tests
+measurement is running `eval/appraisal-guidance.toml`: 12 synthetic tasks × three
+seeds × guidance off/on, with checks on in both arms. The artifact oracle and
+`scripts/appraisal-report.py` are ready; registration/dry-run/export passed in a
+temporary home without model calls. Pin the same model in both arms before
+registration. Owner interventions and across-run learning are not measured by
+this single-run pilot. Live efficacy remains open; do not treat scripted tests
 as efficacy evidence. Unsolicited mid-run rule delivery stays off; mismatch-specific
 counterfactual grading and semantic interpretation of owner goal corrections are
 still open. The earlier environment rows describe dated installations, not this
@@ -36,11 +40,13 @@ working tree; no runtime environment claims were re-verified during this code pa
 
 Validation on this working tree: `cargo fmt --all`, warning-free
 `cargo clippy --all-targets --all-features`, and
-`MECHA_TEST_REQUIRE_BACKENDS=1 cargo test --workspace`: **2,588 passed, zero
+`MECHA_TEST_REQUIRE_BACKENDS=1 cargo test --workspace`: **2,592 passed, zero
 failed, three intentionally ignored**. The suite breakdown is 800 CLI, 22
-first-run, 3 run-lifecycle, 5 serve-lifecycle, 1,503 core, 5 fixture-server,
-13 MCP, 9 sandbox-backend, 151 mail, 1 mail binary, 75 Slack and 1 doctest.
-The eval inventory remains **36 cases / 15 tags**, recounted 2026-09-09.
+first-run, 3 run-lifecycle, 5 serve-lifecycle, 1,503 core, 4 appraisal-fixture,
+5 fixture-server, 13 MCP, 9 sandbox-backend, 151 mail, 1 mail binary, 75 Slack
+and 1 doctest.
+The main eval inventory remains **36 cases / 15 tags**, recounted 2026-09-09;
+the appraisal source separately supplies 12 tasks.
 One trigger-lock test failed in an earlier suite, then passed both isolated and
 in the final full run; no trigger implementation changed.
 

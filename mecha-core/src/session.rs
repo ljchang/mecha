@@ -701,20 +701,12 @@ pub struct RunStats {
     /// set is *unknown* and must never read as empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivered: Option<Vec<Delivery>>,
-    /// Declared post-condition checks the loop ran, and how many passed —
-    /// counted off the trace by name (`step::CHECK_TRACE`), a refused check
-    /// in neither. **No trace by that name is written yet** (the executor is
-    /// unbuilt; see `step::CHECK_TRACE`), so a live run records `Some(0)`
-    /// for both until it lands — a real zero from a real count, distinct
-    /// from the `None` of a row written before the field existed. Which
-    /// counter means what, once it does: `tool_calls` is the raw trace
-    /// length and includes checks; `step::Work::calls` is the model's own
-    /// work and excludes them; and a failed check is an `is_error` trace,
-    /// so it also raises `tool_error_rate` and can set
-    /// `ended_on_failed_call` — which `of_session` signs separately from
-    /// `checks_passed`, so one failed check can carry two signed errors. `Option` for the same reason as `boredom_notices`: a row
-    /// from before the record says nothing, and reading it as "no checks"
-    /// would dilute the one structural discrepancy rate the corpus has.
+    /// Declared post-condition checks the loop ran, and how many passed,
+    /// counted from `step::CHECK_TRACE`. Refused, staged and unavailable checks
+    /// are not executed checks. Harness checks are excluded from model-work
+    /// counters and `ended_on_failed_call`; their own signed discrepancy is
+    /// recorded separately. `None` means a record predating this measurement,
+    /// never a run with zero checks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checks_declared: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
