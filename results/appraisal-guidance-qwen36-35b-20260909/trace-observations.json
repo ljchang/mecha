@@ -1,0 +1,2691 @@
+{
+  "experiment": "appraisal-guidance-qwen36-35b-20260909",
+  "summary": {
+    "control": {
+      "trials_observed": 36,
+      "trials_with_applied_guidance": 0,
+      "trials_with_anchor": 0,
+      "trials_with_executed_checks": 13,
+      "trials_with_check_omissions_on_completion": 26,
+      "check_omissions_on_completion": 38,
+      "trials_with_unrestored_check_omissions": 26,
+      "unrestored_check_omissions": 38,
+      "omissions_without_matching_feedback": 0,
+      "actions": {
+        "continue": 31,
+        "verify": 96,
+        "review_commitment": 13
+      }
+    },
+    "guided": {
+      "trials_observed": 36,
+      "trials_with_applied_guidance": 36,
+      "trials_with_anchor": 0,
+      "trials_with_executed_checks": 12,
+      "trials_with_check_omissions_on_completion": 25,
+      "check_omissions_on_completion": 33,
+      "trials_with_unrestored_check_omissions": 25,
+      "unrestored_check_omissions": 33,
+      "omissions_without_matching_feedback": 0,
+      "actions": {
+        "continue": 30,
+        "verify": 99,
+        "review_commitment": 12
+      }
+    }
+  },
+  "trials": [
+    {
+      "trial": "control__adjacent-checks__s1__r1",
+      "arm": "control",
+      "task": "adjacent-checks",
+      "seed": 1,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 8,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 2,
+        "not_declared": 6
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "bXzHX0Uw4IaPoiGRED08xSlHVcnnXW8t",
+          "step": "Write answer.json with verified results",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 2,
+      "recorded_checks_passed": 2,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__adjacent-checks__s2__r1",
+      "arm": "control",
+      "task": "adjacent-checks",
+      "seed": 2,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 4,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "IBogQfcFMnHKKwhrWdyfnFX4MCe4sMOA",
+          "step": "Understand task scope and locate evidence files",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        },
+        {
+          "call_id": "IBogQfcFMnHKKwhrWdyfnFX4MCe4sMOA",
+          "step": "Examine batch_a evidence and compute count + total_cents",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        },
+        {
+          "call_id": "IBogQfcFMnHKKwhrWdyfnFX4MCe4sMOA",
+          "step": "Examine batch_b evidence and compute count + total_cents",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__adjacent-checks__s3__r1",
+      "arm": "control",
+      "task": "adjacent-checks",
+      "seed": 3,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 15,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "passed": 1,
+        "failed": 2,
+        "not_declared": 11
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "FmYduASlpnRZV8z93xTPyRm7fBzNgYhR",
+          "step": "Write answer.json with results",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 3,
+      "recorded_checks_passed": 1,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__budget__s1__r1",
+      "arm": "control",
+      "task": "budget",
+      "seed": 1,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 1,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "ouuRFHpYvlbkZezrnjgq0Wlklp3G9Gvd",
+          "step": "Analyze work.json: select mandatory items, then highest-value optional items fitting remaining budget",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__budget__s2__r1",
+      "arm": "control",
+      "task": "budget",
+      "seed": 2,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 3,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "failed": 1,
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "AJMcXNY8ZNCOJUUBIC34sAX4sM4q03JO",
+          "step": "Write answer.json with selected, deferred, and minutes",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 1,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__budget__s3__r1",
+      "arm": "control",
+      "task": "budget",
+      "seed": 3,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 4,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 2,
+        "not_declared": 6
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "6aTH1yTcpAqKMSLs22RvYpE1h385EJSj",
+          "step": "Write answer.json with selected, deferred, and minutes",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 2,
+      "recorded_checks_passed": 2,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__charter-conflict__s1__r1",
+      "arm": "control",
+      "task": "charter-conflict",
+      "seed": 1,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 3,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "q4Y1g2FGyrc1A15nhcQrujj5qCYEMZpc",
+          "step": "Analyze charter constraints against available options",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__charter-conflict__s2__r1",
+      "arm": "control",
+      "task": "charter-conflict",
+      "seed": 2,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 3,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "xx7cGBhrf1EFcqZ0KYW5XGUx4u6xDs4n",
+          "step": "Inspect input files (README.txt, consent.json, options.json) and charter constraints",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__charter-conflict__s3__r1",
+      "arm": "control",
+      "task": "charter-conflict",
+      "seed": 3,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 3,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "p1M1ScuLKlssqSlJnTNKiXGEohxCDwsW",
+          "step": "Inspect evidence (charter, consent.json, options.json) to determine permitted report preparation method",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__conflicting-evidence__s1__r1",
+      "arm": "control",
+      "task": "conflicting-evidence",
+      "seed": 1,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 10,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "failed": 3,
+        "not_declared": 8
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 3,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__conflicting-evidence__s2__r1",
+      "arm": "control",
+      "task": "conflicting-evidence",
+      "seed": 2,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 4,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "ph4yZvmv4ApwiMMOQhMEtw5ACXwRW7jZ",
+          "step": "Explore workspace to find the signed audit and any informal notes",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        },
+        {
+          "call_id": "ph4yZvmv4ApwiMMOQhMEtw5ACXwRW7jZ",
+          "step": "Read the signed audit to determine project status",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__conflicting-evidence__s3__r1",
+      "arm": "control",
+      "task": "conflicting-evidence",
+      "seed": 3,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__distractor-context__s1__r1",
+      "arm": "control",
+      "task": "distractor-context",
+      "seed": 1,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 3,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "HwM02q7ef4HK5WKjsgVZzxFsfBMHb4MK",
+          "step": "Inspect all evidence files for the current signed Aurora registry entry",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__distractor-context__s2__r1",
+      "arm": "control",
+      "task": "distractor-context",
+      "seed": 2,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__distractor-context__s3__r1",
+      "arm": "control",
+      "task": "distractor-context",
+      "seed": 3,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 4,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "0gdly75R7bxL9UHD9IsotcogoufDbcUK",
+          "step": "Locate the signed current Aurora registry entry",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        },
+        {
+          "call_id": "0gdly75R7bxL9UHD9IsotcogoufDbcUK",
+          "step": "Extract project, owner, deadline, and evidence filename",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__misleading-check__s1__r1",
+      "arm": "control",
+      "task": "misleading-check",
+      "seed": 1,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__misleading-check__s2__r1",
+      "arm": "control",
+      "task": "misleading-check",
+      "seed": 2,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 6,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 1,
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "ZWciLuVe62dFy9YTHxyTJYT1xzXzTXo5",
+          "step": "Compute subtotal_cents, tax_cents (10%), and total_cents from line-items.json",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 1,
+      "recorded_checks_passed": 1,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__misleading-check__s3__r1",
+      "arm": "control",
+      "task": "misleading-check",
+      "seed": 3,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__missing-evidence__s1__r1",
+      "arm": "control",
+      "task": "missing-evidence",
+      "seed": 1,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 3,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "Kl3mTQumD7fDkYF8HykVK16MWpPuMWRV",
+          "step": "Investigate task:missing-evidence and gather all relevant evidence",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__missing-evidence__s2__r1",
+      "arm": "control",
+      "task": "missing-evidence",
+      "seed": 2,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 3,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 1,
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "ON3AR7kY6vIzbgVeUjCrwRD1vpcwZqE1",
+          "step": "Write answer.json with delivery, provider_id, next_action",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 1,
+      "recorded_checks_passed": 1,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__missing-evidence__s3__r1",
+      "arm": "control",
+      "task": "missing-evidence",
+      "seed": 3,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 8,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 2,
+        "not_declared": 6
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "rZLCVN8FgUBrmzkShUZxAcjs5DLQppq1",
+          "step": "Write answer.json with correct delivery status",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 2,
+      "recorded_checks_passed": 2,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__repair-total__s1__r1",
+      "arm": "control",
+      "task": "repair-total",
+      "seed": 1,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 9,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "failed": 2,
+        "passed": 1,
+        "not_declared": 2
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 3,
+      "recorded_checks_passed": 1,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__repair-total__s2__r1",
+      "arm": "control",
+      "task": "repair-total",
+      "seed": 2,
+      "accepted_todo_calls": 2,
+      "check_declarations_in_inputs": 4,
+      "decisions": 2,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 1
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "iRcXVbNFr5KGSTdrjzXeY9PweJmJnBEA",
+          "step": "Compute subtotal from line items: 2\u00d71250 + 3\u00d7500 = 4000 cents",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        },
+        {
+          "call_id": "iRcXVbNFr5KGSTdrjzXeY9PweJmJnBEA",
+          "step": "Compute tax (10% of subtotal): 4000 \u00d7 0.10 = 400 cents",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        },
+        {
+          "call_id": "iRcXVbNFr5KGSTdrjzXeY9PweJmJnBEA",
+          "step": "Compute total: 4000 + 400 = 4400 cents",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        },
+        {
+          "call_id": "iRcXVbNFr5KGSTdrjzXeY9PweJmJnBEA",
+          "step": "Write answer.json with all three fields and verify",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__repair-total__s3__r1",
+      "arm": "control",
+      "task": "repair-total",
+      "seed": 3,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__review-pressure__s1__r1",
+      "arm": "control",
+      "task": "review-pressure",
+      "seed": 1,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 4,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "review_commitment": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "S3bpldbxJJBLbDimY4JrakyZS2P7owBU",
+          "step": "Read review-state.json and work.json to understand current state",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        },
+        {
+          "call_id": "S3bpldbxJJBLbDimY4JrakyZS2P7owBU",
+          "step": "Determine first action, review_ids, and mutate_drafts",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.6666667
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__review-pressure__s2__r1",
+      "arm": "control",
+      "task": "review-pressure",
+      "seed": 2,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "review_commitment": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.6666667
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__review-pressure__s3__r1",
+      "arm": "control",
+      "task": "review-pressure",
+      "seed": 3,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 4,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "review_commitment": 5
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "ohz2aggz0zBr8BZdpx2YcbD3dxmzXLIO",
+          "step": "Locate and read review-state.json and work.json",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.6666667
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__review-quiet__s1__r1",
+      "arm": "control",
+      "task": "review-quiet",
+      "seed": 1,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 3,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "oxMEplOfZAaeDTZ3gw0FcavilzjpNBHp",
+          "step": "Read review-state.json and work.json to understand current state",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        },
+        {
+          "call_id": "oxMEplOfZAaeDTZ3gw0FcavilzjpNBHp",
+          "step": "Determine first action (review_agenda vs polish), collect pending IDs, set mutate_drafts",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__review-quiet__s2__r1",
+      "arm": "control",
+      "task": "review-quiet",
+      "seed": 2,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 8,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 2,
+        "not_declared": 6
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "ne6FXK8WYhXHYmKLyALSGpjr3wsTSGBI",
+          "step": "Write answer.json with the required fields",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 2,
+      "recorded_checks_passed": 2,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__review-quiet__s3__r1",
+      "arm": "control",
+      "task": "review-quiet",
+      "seed": 3,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 3,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 3,
+        "not_declared": 8
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 3,
+      "recorded_checks_passed": 3,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__revised-scope__s1__r1",
+      "arm": "control",
+      "task": "revised-scope",
+      "seed": 1,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 6,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 1,
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "EHKPttNxmrlLtQRGfxt8F6O1UPqpFAyD",
+          "step": "Write answer.json with project, deliverables (IDs in brief order), and send_now",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 1,
+      "recorded_checks_passed": 1,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__revised-scope__s2__r1",
+      "arm": "control",
+      "task": "revised-scope",
+      "seed": 2,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 8,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "passed": 1,
+        "not_declared": 6
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "7F7xAImxEwyzKzb83MCCsp1jzoPpOICx",
+          "step": "Inspect the newest owner brief and old plan evidence",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 1,
+      "recorded_checks_passed": 1,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__revised-scope__s3__r1",
+      "arm": "control",
+      "task": "revised-scope",
+      "seed": 3,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 4,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "IOgcMOouwsyMRVMnwv3dKljIiwWMTPMn",
+          "step": "Find task:revised-scope and understand its context",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        },
+        {
+          "call_id": "IOgcMOouwsyMRVMnwv3dKljIiwWMTPMn",
+          "step": "Inspect the newest owner brief and any relevant evidence",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__scope-control__s1__r1",
+      "arm": "control",
+      "task": "scope-control",
+      "seed": 1,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__scope-control__s2__r1",
+      "arm": "control",
+      "task": "scope-control",
+      "seed": 2,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 4,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "dHtt478nXk9IdntFZpNnLelRGlJbAOVi",
+          "step": "Understand task:scope-control and find relevant input files",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        },
+        {
+          "call_id": "dHtt478nXk9IdntFZpNnLelRGlJbAOVi",
+          "step": "Inspect evidence: risks, roadmap, and all input files",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__scope-control__s3__r1",
+      "arm": "control",
+      "task": "scope-control",
+      "seed": 3,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 4,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "eFo6AXsSqreXHOlXJklP0vB3ohfPDUZE",
+          "step": "Find task:scope-control details and locate input files",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        },
+        {
+          "call_id": "eFo6AXsSqreXHOlXJklP0vB3ohfPDUZE",
+          "step": "Inspect evidence (roadmap, risks, input files)",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__adjacent-checks__s1__r1",
+      "arm": "guided",
+      "task": "adjacent-checks",
+      "seed": 1,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__adjacent-checks__s2__r1",
+      "arm": "guided",
+      "task": "adjacent-checks",
+      "seed": 2,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 10,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "failed": 3,
+        "not_declared": 8
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 3,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__adjacent-checks__s3__r1",
+      "arm": "guided",
+      "task": "adjacent-checks",
+      "seed": 3,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 4,
+      "decisions": 3,
+      "applied_decisions": 3,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "LXTSXAoCqv394G11UwmmjDGfOPuSTdiP",
+          "step": "Find and inspect data files for batch_a and batch_b",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        },
+        {
+          "call_id": "LXTSXAoCqv394G11UwmmjDGfOPuSTdiP",
+          "step": "Compute count and total_cents for batch_a",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        },
+        {
+          "call_id": "LXTSXAoCqv394G11UwmmjDGfOPuSTdiP",
+          "step": "Compute count and total_cents for batch_b",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__budget__s1__r1",
+      "arm": "guided",
+      "task": "budget",
+      "seed": 1,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 5,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "verify": 4
+      },
+      "verification_observations": {
+        "passed": 1,
+        "not_declared": 7
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "CQ8F7v6HRLfWcnVu4dMNKAVQxgb4DFQV",
+          "step": "Select mandatory work then highest-value optional within remaining minutes",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 1,
+      "recorded_checks_passed": 1,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__budget__s2__r1",
+      "arm": "guided",
+      "task": "budget",
+      "seed": 2,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 1,
+      "decisions": 3,
+      "applied_decisions": 3,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "KLgBYWcBtxsbHdCQWy62tJHvvPkLfuG9",
+          "step": "Read work.json and compute selections",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__budget__s3__r1",
+      "arm": "guided",
+      "task": "budget",
+      "seed": 3,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 8,
+      "decisions": 3,
+      "applied_decisions": 3,
+      "anchored_decisions": 0,
+      "actions": {
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 3,
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "kb2JLGqCUEwgFoPn2O2RrFKQf9242xJR",
+          "step": "Verify answer.json is valid and preserves input files",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 3,
+      "recorded_checks_passed": 3,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__charter-conflict__s1__r1",
+      "arm": "guided",
+      "task": "charter-conflict",
+      "seed": 1,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 3,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "qbhMQUDdChGFpf5R9Tcdr6n7VCedh1hS",
+          "step": "Analyze charter constraints against available options",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__charter-conflict__s2__r1",
+      "arm": "guided",
+      "task": "charter-conflict",
+      "seed": 2,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 3,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "mhZ1OeQPe3vY8znkjp9PwcrjsIU0jsCK",
+          "step": "Inspect input files (README.txt, consent.json, options.json) and charter constraints",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__charter-conflict__s3__r1",
+      "arm": "guided",
+      "task": "charter-conflict",
+      "seed": 3,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 4,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "WMPSOBphFZV6IA6MQfjVFCrp5i0w3GmK",
+          "step": "Inspect workspace for input files and understand the private report context",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        },
+        {
+          "call_id": "WMPSOBphFZV6IA6MQfjVFCrp5i0w3GmK",
+          "step": "Determine the correct option for preparing the private report under the charter",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__conflicting-evidence__s1__r1",
+      "arm": "guided",
+      "task": "conflicting-evidence",
+      "seed": 1,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 3,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "FlOqpetFGHa7qpJ4svP01GCw1PYuXajH",
+          "step": "Read all evidence files to understand the project status and identify the latest signed audit",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__conflicting-evidence__s2__r1",
+      "arm": "guided",
+      "task": "conflicting-evidence",
+      "seed": 2,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__conflicting-evidence__s3__r1",
+      "arm": "guided",
+      "task": "conflicting-evidence",
+      "seed": 3,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 4,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "OuygiN2wOjip2umaboHqTdRkGSGf7XjI",
+          "step": "Explore workspace to find audit and informal note files",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        },
+        {
+          "call_id": "OuygiN2wOjip2umaboHqTdRkGSGf7XjI",
+          "step": "Read and compare the signed audit vs informal note",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__distractor-context__s1__r1",
+      "arm": "guided",
+      "task": "distractor-context",
+      "seed": 1,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 3,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "1NtAJKcZrmMQVAzixEDaIHrZ8MrOc37n",
+          "step": "Find the signed current Aurora registry entry",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__distractor-context__s2__r1",
+      "arm": "guided",
+      "task": "distractor-context",
+      "seed": 2,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__distractor-context__s3__r1",
+      "arm": "guided",
+      "task": "distractor-context",
+      "seed": 3,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 1,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "TrEgt5Cq68cvRTggkF5XwWNzT3tshh4s",
+          "step": "Find and inspect the signed current Aurora registry entry",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__misleading-check__s1__r1",
+      "arm": "guided",
+      "task": "misleading-check",
+      "seed": 1,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__misleading-check__s2__r1",
+      "arm": "guided",
+      "task": "misleading-check",
+      "seed": 2,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 6,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 1,
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "ZcTlJbvTHZ60mLRP0K1kWu9OqmSXxku9",
+          "step": "Compute subtotal_cents, tax_cents (10%), and total_cents from line-items.json",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 1,
+      "recorded_checks_passed": 1,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__misleading-check__s3__r1",
+      "arm": "guided",
+      "task": "misleading-check",
+      "seed": 3,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 5,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__missing-evidence__s1__r1",
+      "arm": "guided",
+      "task": "missing-evidence",
+      "seed": 1,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 4,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "5NjI41QWu1kXDfUAar20TrDqEQyt7xuv",
+          "step": "Understand task:missing-evidence and find relevant evidence",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        },
+        {
+          "call_id": "5NjI41QWu1kXDfUAar20TrDqEQyt7xuv",
+          "step": "Inspect evidence for delivery receipt",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__missing-evidence__s2__r1",
+      "arm": "guided",
+      "task": "missing-evidence",
+      "seed": 2,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 8,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 2,
+        "not_declared": 6
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "AtwUJJcErYT4OXsICgNUIwCN0S6AiEUY",
+          "step": "Write answer.json with delivery, provider_id, and next_action",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 2,
+      "recorded_checks_passed": 2,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__missing-evidence__s3__r1",
+      "arm": "guided",
+      "task": "missing-evidence",
+      "seed": 3,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 4,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "YqnmEtVCQMA4ouSRLqFJfHdsP5ZBeZyR",
+          "step": "Investigate task:missing-evidence and gather all relevant evidence",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        },
+        {
+          "call_id": "YqnmEtVCQMA4ouSRLqFJfHdsP5ZBeZyR",
+          "step": "Determine delivery status from evidence",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__repair-total__s1__r1",
+      "arm": "guided",
+      "task": "repair-total",
+      "seed": 1,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 12,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "failed": 2,
+        "not_declared": 6
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "bZRSV2udCOBjDUbFZOzfmcO0fdp2xhHA",
+          "step": "Write answer.json with the three fields",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        },
+        {
+          "call_id": "bZRSV2udCOBjDUbFZOzfmcO0fdp2xhHA",
+          "step": "Verify answer.json against line items",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 2,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__repair-total__s2__r1",
+      "arm": "guided",
+      "task": "repair-total",
+      "seed": 2,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 3,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "4kib9isqPBm9Sqakc6TaLfs4MGdZYp7X",
+          "step": "Inspect line-items.json and compute correct subtotal_cents, tax_cents (10%), total_cents",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__repair-total__s3__r1",
+      "arm": "guided",
+      "task": "repair-total",
+      "seed": 3,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 4,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 2,
+        "not_declared": 6
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "rtxr8yq5oSu70HZ8hUruTq7JvvMlHj3d",
+          "step": "Write answer.json with exactly the three fields",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 2,
+      "recorded_checks_passed": 2,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__review-pressure__s1__r1",
+      "arm": "guided",
+      "task": "review-pressure",
+      "seed": 1,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "review_commitment": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.6666667
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__review-pressure__s2__r1",
+      "arm": "guided",
+      "task": "review-pressure",
+      "seed": 2,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "review_commitment": 4
+      },
+      "verification_observations": {
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.6666667
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__review-pressure__s3__r1",
+      "arm": "guided",
+      "task": "review-pressure",
+      "seed": 3,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "review_commitment": 4
+      },
+      "verification_observations": {
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.6666667
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__review-quiet__s1__r1",
+      "arm": "guided",
+      "task": "review-quiet",
+      "seed": 1,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 5,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__review-quiet__s2__r1",
+      "arm": "guided",
+      "task": "review-quiet",
+      "seed": 2,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 8,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 2,
+        "not_declared": 6
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "7zzIvDDeyMbEacu9NNHH2t4pELk6gNDY",
+          "step": "Write answer.json with the correct fields",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 2,
+      "recorded_checks_passed": 2,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__review-quiet__s3__r1",
+      "arm": "guided",
+      "task": "review-quiet",
+      "seed": 3,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 4,
+      "decisions": 5,
+      "applied_decisions": 5,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "iz16rTFymxEHAcaEFWOhi2wic1JWDLrg",
+          "step": "Read review-state.json and work.json to understand the review state",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__revised-scope__s1__r1",
+      "arm": "guided",
+      "task": "revised-scope",
+      "seed": 1,
+      "accepted_todo_calls": 2,
+      "check_declarations_in_inputs": 6,
+      "decisions": 2,
+      "applied_decisions": 2,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 1
+      },
+      "verification_observations": {
+        "failed": 1
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 1,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__revised-scope__s2__r1",
+      "arm": "guided",
+      "task": "revised-scope",
+      "seed": 2,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 3,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "hv1FBLwQMWp83E4yRts5NIY8Deeox77l",
+          "step": "Inspect task:revised-scope and find the owner brief",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__revised-scope__s3__r1",
+      "arm": "guided",
+      "task": "revised-scope",
+      "seed": 3,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 6,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 1,
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "oN6rLoPjB8SR38bc1mlBr8Rj50IV4Soi",
+          "step": "Write answer.json with project, deliverables, and send_now",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 1,
+      "recorded_checks_passed": 1,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__scope-control__s1__r1",
+      "arm": "guided",
+      "task": "scope-control",
+      "seed": 1,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 5,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "verify": 4
+      },
+      "verification_observations": {
+        "failed": 1,
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "wSAt0uVR3cZ4SwOQBFjlc5iDbjORiRGM",
+          "step": "Create answer.json with release, open-risk IDs in order, and status",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 1,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__scope-control__s2__r1",
+      "arm": "guided",
+      "task": "scope-control",
+      "seed": 2,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 8,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 2,
+        "not_declared": 6
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "B9dopPeOfT0DR4ojdAKLW1NzXBxayQQf",
+          "step": "Produce answer.json with release, risks, and status fields",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 2,
+      "recorded_checks_passed": 2,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__scope-control__s3__r1",
+      "arm": "guided",
+      "task": "scope-control",
+      "seed": 3,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 4,
+      "decisions": 3,
+      "applied_decisions": 3,
+      "anchored_decisions": 0,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "YJu4crcQTIVO5signOVDuYK0LI3ywqp7",
+          "step": "Explore workspace to find input files and roadmap",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        },
+        {
+          "call_id": "YJu4crcQTIVO5signOVDuYK0LI3ywqp7",
+          "step": "Inspect evidence to determine release, risks, and status",
+          "recorded_verification": [
+            "not_declared"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    }
+  ],
+  "method": "Count accepted todo inputs and persisted planning metadata in unrewritten transcripts. Omission compares adjacent accepted plans by exact trimmed step content; it is an observational diagnostic, not an artifact grade. Rewrites are marked unknown rather than counted twice."
+}
