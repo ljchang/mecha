@@ -1,0 +1,101 @@
+{
+  "slices": {
+    "initial": {
+      "arms": {
+        "control": {
+          "expected": 18,
+          "graded": 18,
+          "passed": 15,
+          "rules_exposure_known": 18,
+          "runs_with_rules": 0,
+          "rule_ids": []
+        },
+        "learning": {
+          "expected": 18,
+          "graded": 18,
+          "passed": 15,
+          "rules_exposure_known": 18,
+          "runs_with_rules": 0,
+          "rule_ids": []
+        }
+      },
+      "graded_pairs": 18,
+      "improved": 0,
+      "regressed": 0
+    },
+    "transfer": {
+      "arms": {
+        "control": {
+          "expected": 18,
+          "graded": 18,
+          "passed": 15,
+          "rules_exposure_known": 18,
+          "runs_with_rules": 0,
+          "rule_ids": []
+        },
+        "learning": {
+          "expected": 18,
+          "graded": 18,
+          "passed": 15,
+          "rules_exposure_known": 18,
+          "runs_with_rules": 0,
+          "rule_ids": []
+        }
+      },
+      "graded_pairs": 18,
+      "improved": 0,
+      "regressed": 0
+    }
+  },
+  "stage_ledger_status_counts": {
+    "running": 54,
+    "done": 54
+  },
+  "latest_stage_status_counts": {
+    "done": 54
+  },
+  "unreadable_trials": 0,
+  "unreadable_stage_lines": 0,
+  "native_judgements": [
+    {
+      "arm": "learning",
+      "control_stages": {
+        "done": 0,
+        "failed": 0,
+        "interrupted": 0,
+        "skipped": 0,
+        "unknown": 0
+      },
+      "holdout": 12,
+      "judgement": {
+        "disposition": {
+          "Reject": "did not beat the original: 0 better, 0 worse, 24 unchanged"
+        },
+        "holdout": {
+          "losses": 0,
+          "ties": 12,
+          "wins": 0
+        },
+        "selection": {
+          "losses": 0,
+          "ties": 24,
+          "wins": 0
+        },
+        "work_baseline": 312,
+        "work_candidate": 304
+      },
+      "metric": "failure",
+      "pairs": 36,
+      "selection": 24,
+      "stages": {
+        "done": 54,
+        "failed": 0,
+        "interrupted": 0,
+        "skipped": 0,
+        "unknown": 0
+      },
+      "unreadable_stage_lines": 0
+    }
+  ],
+  "note": "Descriptive three-seed mechanism pilot with fixed task and arm order. No learned rule was created or exposed. Equal task outcomes do not measure learned-rule efficacy."
+}
