@@ -108,8 +108,9 @@ not a learning benefit. The native extra failure on one otherwise-correct task
 per arm came from a harness-generated attempt to execute a model-declared
 `check: "file reads"` through unavailable `shell`; it was not a direct invented
 tool call. The result archive preserves that distinction and the frozen grades.
-Required-backend tests passed 2,616 with zero failures and three ignored tests;
-build, formatting and Clippy passed. The final runtime's separate retirement
+Required-backend tests passed 2,616 with zero failures and three ignored tests.
+Archived build/Clippy logs show completion but omit command flags; target and
+feature coverage cannot be independently established from those logs. The final runtime's separate retirement
 drill failed to elicit its expected regression and retired neither rule; the
 earlier drill pass is retained separately. No score-seeking retry or deployment
 was performed. Full evidence: `results/appraisal-attribution-v2-qwen36-35b-20260909/README.md`.

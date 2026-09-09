@@ -15,8 +15,14 @@ The native runner executes all control lifetimes before learning lifetimes; arm
 order and shared server conditions are not randomized, which limits causal
 interpretation of differences between arms.
 Both arms have the same five file/planning tools, a sixteen-turn budget,
-confirmed task goals, step checks and learned-rule loading. Goal guidance, MCP,
+confirmed task goals, with step checks and learned-rule loading enabled. Goal guidance, MCP,
 hooks, skills, messaging, fallback, escalation and outbox routing are off.
+Enabled configuration is not exercised behavior: the registered tools are
+`fs_edit`, `fs_list`, `fs_read`, `fs_write` and `todo`. With no `shell`, declared
+checks cannot execute. The archive records two check declarations across all
+72 trials and zero check executions in either arm. Learned-rule loading also
+had no effect because no rule was created. This design does not measure the
+benefit of executing checks or applying learned rules.
 
 Each task resolves greatest revisions, selects approved records and sums signed
 amounts, then evaluates a queue threshold from supplied context. Fixtures cover
