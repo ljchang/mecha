@@ -150,10 +150,9 @@ it goes stays honest where a plan produced up front goes stale on the first
 surprise, and the current state is echoed back in every tool result so the model
 re-reads its own plan without anyone re-prompting it.
 
-Two more are registered by the front-end rather than from that list. `ask_user`
-exists only where a human is actually present — the TUI adds it, and a batch
-worker or a trigger has nobody to answer, so a tool that would block forever
-simply does not exist there. `message_send` exists only when `[messages]
+Additional tools depend on the front end. `ask_user` can ask a present owner,
+or park a delegated task's question for `mecha questions answer` to resume
+later. A generic batch or trigger does not get a blocking terminal question. `message_send` exists only when `[messages]
 enabled` is on and `--no-messages` was not passed, and it writes to another of
 this machine's agents rather than to the outside world.
 
@@ -284,10 +283,16 @@ and the safe reading of a question nobody hears is no.
 The CLI supplies interactive approvers instead — a terminal prompt for `run`
 and `chat`, a modal for the TUI.
 
-The dispatch order is **interlock → hook → approver**. A hook can narrow policy
-and never loosen security, and a `pre_tool` denial never reaches the human:
-mechanical policy is cheaper than an interruption, and a hook cannot be talked
-into clicking yes. See [Hooks](/docs/features/hooks).
+Configured outbox actions pass the hook gate and then stage for owner review,
+skipping the interlock and execution approval checks. For executing calls the order is **interlock → hook → approval rules →
+approver**. A hook can narrow policy and never loosen security.
+
+[`[[rule]]` entries](/docs/reference/configuration#rule-and-approval) distinguish
+commands inside one tool: allow `git status`, require a fresh decision for
+`git push`, or forbid a command. `prompt` refuses when nobody can answer, even
+under `--yes`; `allow` cannot bypass read-only mode or the interlock.
+Policy refusals use `Decision::Blocked` and are not mined as user corrections.
+See [Hooks](/docs/features/hooks) and [The outbox](/docs/features/outbox).
 
 ## MCP
 

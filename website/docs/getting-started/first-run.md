@@ -23,7 +23,9 @@ mecha run "summarize what changed in this repo today"
 The working directory is the workspace: the agent may read anything inside it,
 and every model-supplied path is canonicalized and proven to sit inside it
 before anything touches disk. `..`, symlinks out, and absolute paths elsewhere
-are refused. `-w /some/dir` points it somewhere else.
+are refused. `-w /some/dir` points it somewhere else. Start in a project
+directory: a workspace containing the mecha home (`~/.mecha` by default) is
+refused because it would expose credentials and internal stores.
 
 By default the agent reads freely and **asks before it writes or runs a
 command**. Two flags change that:
@@ -105,12 +107,12 @@ turn and keeps going. Cancelling (Ctrl-C) is the other thing, and is
 deliberately different — it stops the run at the next safe point and keeps the
 partial answer.
 
-Only the TUI can steer, and that is a property of the front-end rather than of
-the loop: steering needs a single owner of stdin, which a readline REPL cannot
-be while a run is streaming.
+The TUI supports steering because it keeps control of terminal input while
+a run streams. Web chat and task controls also support steering; the readline
+`chat` REPL waits for the run to finish.
 
-The TUI has a longer command list than `chat`, because it is the only interface
-that can change things mid-session:
+The TUI has additional controls. Use `/help` for its full command list; common
+commands include:
 
 ```
 /help  /tools  /triggers  /outbox  /frontdoor  /polls  /review
@@ -151,9 +153,8 @@ rsync -a --delete dist/ ~/.mecha/web/dist/
 tailscale serve --bg 63242                     # what makes it reachable
 ```
 
-Then it is the dashboard, chat, mail, notes, the review queues, the task board
-and settings — the same stores the CLI reads, and every mutation running
-`mecha <verb>` underneath. A session there starts **read-only**: reads run, and
+Then open Today, chat, mail, the graph, review queues, tasks, and settings.
+They share the CLI stores and the same approval rules. A session there starts **read-only**: reads run, and
 anything that would send stages in the outbox instead.
 
 It is also the only door [voice](/docs/features/voice) opens through.
@@ -161,6 +162,22 @@ It is also the only door [voice](/docs/features/voice) opens through.
 There is a **live, clickable copy of the whole app** on
 [the web surface](/docs/features/web) — worth a minute before you build it, to
 see whether it is what you want.
+
+## Keep track of the next step
+
+When you delegate a board task, mecha creates a workflow connecting its
+conversation, questions, and drafts. Start with these views:
+
+```bash
+mecha workflow today
+mecha questions
+mecha outbox
+```
+
+Answer a parked question with `mecha questions answer`, or review a draft with
+`mecha outbox review`. Today also offers those decisions in the browser. See
+[Workflows and Today](/docs/features/workflows) to add commitments, reminders,
+and explicit completion checks.
 
 ## Where things are written
 
@@ -180,6 +197,7 @@ than keeping a second copy that could disagree with it. See
 ## When something goes wrong
 
 ```bash
+mecha doctor                         # inspect local stores and setup problems
 MECHA_LOG=debug mecha run "..."     # internal tracing, on stderr
 mecha config show                   # the merged configuration actually in effect
 mecha config path                   # which files are being read, and whether they exist
