@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.19] - 2026-09-09
+
 ### Added
 
 - Anticipatory appraisal for confirmed-goal planning and inline outbox messages:
@@ -3446,7 +3448,8 @@ under Added; later releases will record only what changed.
   benchmarks, the TUI survey, and a branching design recorded as a deliberate
   non-implementation.
 
-[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.18...HEAD
+[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.19...HEAD
+[0.1.19]: https://github.com/ljchang/mecha/releases/tag/v0.1.19
 [0.1.18]: https://github.com/ljchang/mecha/releases/tag/v0.1.18
 [0.1.17]: https://github.com/ljchang/mecha/releases/tag/v0.1.17
 [0.1.16]: https://github.com/ljchang/mecha/releases/tag/v0.1.16
