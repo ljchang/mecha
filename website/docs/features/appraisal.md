@@ -787,8 +787,8 @@ goal_guidance = false  # opt in to fixed planning advice
 
 With `goal_guidance = true`, plan updates receive advice based on confirmed-goal
 alignment, remaining work, verification gaps and ordered charter sensor readings.
-The sensor numbers stay outside model prompts. Guidance is experimental: it has
-mechanical regression coverage, but improved task outcomes have not been measured.
+The sensor numbers stay outside model prompts. Guidance is experimental: the initial Qwen 3.6 35B pilot passed 36/36 tasks
+in each arm and found no task-success gain.
 Use `--no-goal-guidance` to disable it for a comparison run.
 
 
@@ -836,4 +836,7 @@ This pilot measures guidance with current-task evidence. It does not test learni
 across runs, semantic owner corrections across turns, or real owner-policy
 outcomes. Owner interventions are unmeasured in this single-run design. Inspect
 traces alongside the report before drawing conclusions or enabling guidance by
-default; no model efficacy results have been recorded yet.
+default. The 2026-09-09 Qwen pilot tied on every task outcome, so the gate rejected
+promotion. It exposed completion-time check omissions and no confirmed-goal-anchor
+coverage; guidance remains opt-in. Results and limits are recorded in
+`results/appraisal-guidance-qwen36-35b-20260909/README.md` in the checkout.

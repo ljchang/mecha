@@ -26,17 +26,27 @@ maps which document holds what.
 See HISTORY under this date for implemented goal persistence, event attribution,
 plan checks, structured mismatch learning and goal-specific context. Guidance is
 observational unless `[agent] goal_guidance = true`; check execution defaults on
-and can be disabled with `step_checks = false` or `--no-step-checks`. The next
-measurement is running `eval/appraisal-guidance.toml`: 12 synthetic tasks × three
-seeds × guidance off/on, with checks on in both arms. The artifact oracle and
-`scripts/appraisal-report.py` are ready; registration/dry-run/export passed in a
-temporary home without model calls. Pin the same model in both arms before
-registration. Owner interventions and across-run learning are not measured by
-this single-run pilot. Live efficacy remains open; do not treat scripted tests
-as efficacy evidence. Unsolicited mid-run rule delivery stays off; mismatch-specific
-counterfactual grading and semantic interpretation of owner goal corrections are
-still open. The earlier environment rows describe dated installations, not this
-working tree; no runtime environment claims were re-verified during this code pass.
+and can be disabled with `step_checks = false` or `--no-step-checks`.
+The Qwen 3.6 35B pilot completed 2026-09-09: **36/36 passes in each arm**;
+all paired task outcomes tied, so the gate rejected promotion. Results and
+conditions are in `results/appraisal-guidance-qwen36-35b-20260909/README.md`.
+The model, binary, fixtures and operator config matched at the finish checks;
+no installation or service restart was performed.
+
+**Next: fix completion-time check omission.** `Tracked::advance` restores an
+absent check only when already frozen. A first completing update can drop the
+open step's check: 71 matched `not_declared` observations across 51 pilot runs.
+Require that update to freeze and execute the prior check, with a regression
+that fails on the current behavior. Then measure harder cases with confirmed
+goal anchors and corresponding task records: this pilot had neither anchored
+plan exposure nor headroom over its perfect control score. Guidance was applied
+in every guided run but did not improve task attainment. Keep it opt-in.
+
+Unsolicited mid-run rule delivery stays off; mismatch-specific counterfactual
+grading, semantic interpretation of owner goal corrections, across-run learning
+benefits and real owner-policy outcomes remain open. The earlier environment
+rows describe dated installations; only the pilot's local model and conditions
+were re-verified in this measurement pass.
 
 Validation on this working tree: `cargo fmt --all`, warning-free
 `cargo clippy --all-targets --all-features`, and

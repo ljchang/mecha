@@ -1,5 +1,7 @@
 # The appraisal system — review, corpus measurement, and what the literature says
 
+**Live pilot, 2026-09-09 (03:20–04:06 UTC):** The default Qwen 3.6 35B model passed 36/36 trials with guidance off and 36/36 on; the gate rejected promotion because every pair tied. Guidance was applied in every treatment run, but 71 completion-time check omissions across 51 runs were recorded as `not_declared`, and no run had a confirmed goal anchor. See `results/appraisal-guidance-qwen36-35b-20260909/README.md` and HISTORY under this date. Earlier pre-pilot notes below retain their original status; broader efficacy and learning benefits remain unestablished.
+
 **Implementation, 2026-09-09:** The mechanisms following §8 are implemented on `feat/appraisal-goal-feedback`; see `HISTORY.md` under this date and `ARCHITECTURE.md` for the current boundaries. Guidance is opt-in and efficacy remains unmeasured. The dated evaluation below is retained.
 
 **Evaluation fixture, 2026-09-09:** `eval/appraisal-guidance.toml` now defines 12 synthetic tasks × 3 seeds × guidance off/on, with checks enabled in both arms and independent artifact grading. `scripts/appraisal-report.py` reports paired outcomes and metric coverage. Registration and grading controls passed without model calls; live efficacy, learned-context benefits and owner-policy outcomes remain unmeasured. See `HISTORY.md` under this date.

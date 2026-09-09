@@ -1,0 +1,148 @@
+mecha exp `appraisal-guidance-qwen36-35b-20260909`: 72 trials planned, 0 finished, 72 to run (limit 1) · local (qwen3.6-35b-a3b)
+· control__budget__s1__r1 (1)
+  pass · 7 turns · completed
+mecha exp `appraisal-guidance-qwen36-35b-20260909`: 1 trial(s) run this invocation
+mecha exp `appraisal-guidance-qwen36-35b-20260909`: 72 trials planned, 1 finished, 71 to run · local (qwen3.6-35b-a3b)
+· control__budget__s2__r1 (1)
+  pass · 11 turns · completed
+· control__budget__s3__r1 (2)
+  pass · 8 turns · completed
+· control__charter-conflict__s1__r1 (3)
+  pass · 10 turns · completed
+· control__charter-conflict__s2__r1 (4)
+  pass · 9 turns · completed
+· control__charter-conflict__s3__r1 (5)
+  pass · 8 turns · completed
+· control__revised-scope__s1__r1 (6)
+  pass · 8 turns · completed
+· control__revised-scope__s2__r1 (7)
+  pass · 9 turns · completed
+· control__revised-scope__s3__r1 (8)
+  pass · 9 turns · completed
+· control__conflicting-evidence__s1__r1 (9)
+  pass · 9 turns · completed
+· control__conflicting-evidence__s2__r1 (10)
+  pass · 9 turns · completed
+· control__conflicting-evidence__s3__r1 (11)
+  pass · 9 turns · completed
+· control__missing-evidence__s1__r1 (12)
+  pass · 11 turns · completed
+· control__missing-evidence__s2__r1 (13)
+  pass · 9 turns · completed
+· control__missing-evidence__s3__r1 (14)
+  pass · 11 turns · completed
+· control__repair-total__s1__r1 (15)
+  pass · 7 turns · completed
+· control__repair-total__s2__r1 (16)
+  pass · 7 turns · completed
+· control__repair-total__s3__r1 (17)
+  pass · 8 turns · completed
+· control__misleading-check__s1__r1 (18)
+  pass · 9 turns · completed
+· control__misleading-check__s2__r1 (19)
+  pass · 9 turns · completed
+· control__misleading-check__s3__r1 (20)
+  pass · 8 turns · completed
+· control__adjacent-checks__s1__r1 (21)
+  pass · 11 turns · completed
+· control__adjacent-checks__s2__r1 (22)
+  pass · 9 turns · completed
+· control__adjacent-checks__s3__r1 (23)
+  pass · 11 turns · completed
+· control__review-pressure__s1__r1 (24)
+  pass · 8 turns · completed
+· control__review-pressure__s2__r1 (25)
+  pass · 6 turns · completed
+· control__review-pressure__s3__r1 (26)
+  pass · 10 turns · completed
+· control__review-quiet__s1__r1 (27)
+  pass · 10 turns · completed
+· control__review-quiet__s2__r1 (28)
+  pass · 8 turns · completed
+· control__review-quiet__s3__r1 (29)
+  pass · 8 turns · completed
+· control__distractor-context__s1__r1 (30)
+  pass · 8 turns · completed
+· control__distractor-context__s2__r1 (31)
+  pass · 11 turns · completed
+· control__distractor-context__s3__r1 (32)
+  pass · 7 turns · completed
+· control__scope-control__s1__r1 (33)
+  pass · 8 turns · completed
+· control__scope-control__s2__r1 (34)
+  pass · 9 turns · completed
+· control__scope-control__s3__r1 (35)
+  pass · 9 turns · completed
+· guided__budget__s1__r1 (36)
+  pass · 10 turns · completed
+· guided__budget__s2__r1 (37)
+  pass · 7 turns · completed
+· guided__budget__s3__r1 (38)
+  pass · 8 turns · completed
+· guided__charter-conflict__s1__r1 (39)
+  pass · 11 turns · completed
+· guided__charter-conflict__s2__r1 (40)
+  pass · 8 turns · completed
+· guided__charter-conflict__s3__r1 (41)
+  pass · 9 turns · completed
+· guided__revised-scope__s1__r1 (42)
+  pass · 11 turns · completed
+· guided__revised-scope__s2__r1 (43)
+  pass · 10 turns · completed
+· guided__revised-scope__s3__r1 (44)
+  pass · 10 turns · completed
+· guided__conflicting-evidence__s1__r1 (45)
+  pass · 9 turns · completed
+· guided__conflicting-evidence__s2__r1 (46)
+  pass · 10 turns · completed
+· guided__conflicting-evidence__s3__r1 (47)
+  pass · 9 turns · completed
+· guided__missing-evidence__s1__r1 (48)
+  pass · 9 turns · completed
+· guided__missing-evidence__s2__r1 (49)
+  pass · 12 turns · completed
+· guided__missing-evidence__s3__r1 (50)
+  pass · 8 turns · completed
+· guided__repair-total__s1__r1 (51)
+  pass · 9 turns · completed
+· guided__repair-total__s2__r1 (52)
+  pass · 9 turns · completed
+· guided__repair-total__s3__r1 (53)
+  pass · 10 turns · completed
+· guided__misleading-check__s1__r1 (54)
+  pass · 9 turns · completed
+· guided__misleading-check__s2__r1 (55)
+  pass · 8 turns · completed
+· guided__misleading-check__s3__r1 (56)
+  pass · 9 turns · completed
+· guided__adjacent-checks__s1__r1 (57)
+  pass · 9 turns · completed
+· guided__adjacent-checks__s2__r1 (58)
+  pass · 7 turns · completed
+· guided__adjacent-checks__s3__r1 (59)
+  pass · 8 turns · completed
+· guided__review-pressure__s1__r1 (60)
+  pass · 8 turns · completed
+· guided__review-pressure__s2__r1 (61)
+  pass · 8 turns · completed
+· guided__review-pressure__s3__r1 (62)
+  pass · 8 turns · completed
+· guided__review-quiet__s1__r1 (63)
+  pass · 9 turns · completed
+· guided__review-quiet__s2__r1 (64)
+  pass · 9 turns · completed
+· guided__review-quiet__s3__r1 (65)
+  pass · 9 turns · completed
+· guided__distractor-context__s1__r1 (66)
+  pass · 8 turns · completed
+· guided__distractor-context__s2__r1 (67)
+  pass · 7 turns · completed
+· guided__distractor-context__s3__r1 (68)
+  pass · 10 turns · completed
+· guided__scope-control__s1__r1 (69)
+  pass · 11 turns · completed
+· guided__scope-control__s2__r1 (70)
+  pass · 9 turns · completed
+· guided__scope-control__s3__r1 (71)
+  pass · 8 turns · completed
+mecha exp `appraisal-guidance-qwen36-35b-20260909`: 71 trial(s) run this invocation

@@ -14,6 +14,29 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-09 — Qwen 3.6 35B paired appraisal pilot completed.**
+At `f3fe4df8`, the local `qwen3.6-35b-a3b` Q4_K_M model ran twelve synthetic
+tasks × three seeds × guidance off/on, from 03:20 to 04:06 UTC. Both arms
+passed 36/36 independently graded trials; the native gate rejected promotion
+with 24 selection ties and 12 holdout ties. Mean turns were 8.83 versus 8.97,
+model tool calls 12.86 versus 13.03, and output tokens 2,023.92 versus 1,929.39
+(control versus guided). Wall-clock means were 34.90 versus 39.48 seconds, with
+concurrent server activity and fixed arm order limiting causal interpretation.
+Usage records were complete; dollar cost and owner actions were unmeasured.
+Guidance was applied in all 36 treatment runs, with no other rendered config
+change apart from trial paths/seeds. Pressure/quiet fixture choices and draft
+preservation passed in both arms. The live traces exposed 71 checks omitted on
+first completing updates across 51 runs, each recorded as `not_declared`:
+`Tracked::advance`'s missing-field branch restores only already-frozen checks.
+No run had a confirmed goal anchor, so zero drift counters did not measure
+anchored-goal alignment. Code and fixtures stayed fixed during measurement;
+model identity, binary, fixtures and operator config matched at the finish
+checks. The full export, paired summary, conditions, trace diagnostics and
+reproduction notes are under `results/appraisal-guidance-qwen36-35b-20260909/`.
+The pilot establishes no task-success gain and leaves guidance opt-in; harder
+anchored-goal tasks and learning across runs remain separate measurements.
+No deployment, service restart or PR was performed.
+
 **2026-09-09 — paired appraisal pilot and explicit planning levers.**
 `experiment::child_invocation` now enables explicitly requested `step_checks`
 and `goal_guidance` even when the operator's settings are false. The regression
