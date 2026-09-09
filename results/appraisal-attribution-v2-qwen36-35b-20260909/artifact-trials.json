@@ -1,0 +1,2522 @@
+[
+  {
+    "trial": "control__queue-01__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "position": 1,
+    "overall_pass": false,
+    "artifact_pass": false,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": false,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-01__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "position": 1,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-01__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "position": 1,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-02__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "position": 2,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-02__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "position": 2,
+    "overall_pass": false,
+    "artifact_pass": false,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": false,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-02__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "position": 2,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-03__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "position": 3,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-03__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "position": 3,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-03__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "position": 3,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-04__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "position": 4,
+    "overall_pass": false,
+    "artifact_pass": false,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": false,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-04__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "position": 4,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-04__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "position": 4,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-05__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "position": 5,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-05__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "position": 5,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-05__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "position": 5,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-06__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "position": 6,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-06__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "position": 6,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-06__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "position": 6,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-07__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "position": 7,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-07__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "position": 7,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-07__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "position": 7,
+    "overall_pass": false,
+    "artifact_pass": false,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": false,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-08__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "position": 8,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-08__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "position": 8,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-08__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "position": 8,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-09__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "position": 9,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-09__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "position": 9,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-09__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "position": 9,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-10__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "position": 10,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-10__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "position": 10,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-10__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "position": 10,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-11__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "position": 11,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-11__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "position": 11,
+    "overall_pass": false,
+    "artifact_pass": false,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": false,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-11__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "position": 11,
+    "overall_pass": false,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-12__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "position": 12,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-12__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "position": 12,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "control__queue-12__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "position": 12,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-01__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "position": 1,
+    "overall_pass": false,
+    "artifact_pass": false,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": false,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-01__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "position": 1,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-01__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "position": 1,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-02__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "position": 2,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-02__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "position": 2,
+    "overall_pass": false,
+    "artifact_pass": false,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": false,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-02__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "position": 2,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-03__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "position": 3,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-03__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "position": 3,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-03__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "position": 3,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-04__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "position": 4,
+    "overall_pass": false,
+    "artifact_pass": false,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": false,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-04__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "position": 4,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-04__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "position": 4,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-05__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "position": 5,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-05__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "position": 5,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-05__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "position": 5,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-06__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "position": 6,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-06__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "position": 6,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-06__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "position": 6,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-07__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "position": 7,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-07__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "position": 7,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-07__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "position": 7,
+    "overall_pass": false,
+    "artifact_pass": false,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": false,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-08__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "position": 8,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-08__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "position": 8,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-08__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "position": 8,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-09__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "position": 9,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-09__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "position": 9,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-09__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "position": 9,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-10__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "position": 10,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-10__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "position": 10,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-10__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "position": 10,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-11__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "position": 11,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-11__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "position": 11,
+    "overall_pass": false,
+    "artifact_pass": false,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": false,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-11__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "position": 11,
+    "overall_pass": false,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-12__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "position": 12,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-12__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "position": 12,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "trial": "learning__queue-12__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "position": 12,
+    "overall_pass": true,
+    "artifact_pass": true,
+    "checks": [
+      {
+        "name": "artifact answer.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved README.txt",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved records.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved context.json",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "preserved old-summary.json",
+        "passed": true,
+        "detail": ""
+      }
+    ]
+  }
+]

@@ -14,6 +14,26 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-09 — corrected attribution pilot complete, without rule exposure.**
+Runtime `c7071ad3` completed 72 Qwen 3.6 35B trials and 54 learning stages across
+three seeds. Both arms passed 30/36 overall, 15/18 transfer and 31/36 artifact
+checks; all 36 paired outcomes tied and the native gate rejected promotion.
+Training produced 2, 1 and 0 clean criterion reflections per learning lifetime;
+one later check-change reflection made the final counts 2, 1 and 1. Every
+lifetime stayed below the unchanged evidence minimum: no rules, proposals,
+paired rule validations, exposures or retirements. Transfer produced no
+artifact-derived diagnostics. This demonstrates correctly sourced feedback,
+not a learning benefit. The native extra failure on one otherwise-correct task
+per arm came from a harness-generated attempt to execute a model-declared
+`check: "file reads"` through unavailable `shell`; it was not a direct invented
+tool call. The result archive preserves that distinction and the frozen grades.
+Required-backend tests passed 2,616 with zero failures and three ignored tests;
+build, formatting and Clippy passed. The final runtime's separate retirement
+drill failed to elicit its expected regression and retired neither rule; the
+earlier drill pass is retained separately. No score-seeking retry or deployment
+was performed. Full evidence: `results/appraisal-attribution-v2-qwen36-35b-20260909/README.md`.
+
+
 **2026-09-09 — invalid attribution pilot stopped; harness observations are not owner corrections.**
 The first attribution pilot was stopped after 40 completed trials, before any
 consolidation, because `extract_interventions` mined the generic criterion
@@ -39,8 +59,9 @@ changed context stays ungraded, and recorded taint still gates learning.
 The old queue failures reproduce as comparisons against the wrong count: the
 recorded trace used twelve task records although `outbox_waiting` was zero.
 A regression test failed under the former overrun-only mining and passes with
-the new filter. The registered three-seed attribution pilot measures unseen
-transfer and calibration separately; results are recorded after execution.
+the new filter. The initial attribution measurement was stopped for the
+harness-voice defect described above; the corrected three-seed pilot and its
+limits are recorded in the later entry and result archive.
 
 
 **2026-09-09 — independent artifact validation for planning mismatches.**

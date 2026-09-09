@@ -23,62 +23,53 @@ maps which document holds what.
 ## Where the work is
 
 **2026-09-09 — appraisal implementation is on `feat/appraisal-goal-feedback`, not installed.**
-See HISTORY under this date for implemented goal persistence, event attribution,
-plan checks, structured mismatch learning and goal-specific context. Guidance is
-observational unless `[agent] goal_guidance = true`; check execution defaults on
-and can be disabled with `step_checks = false` or `--no-step-checks`.
-The Qwen 3.6 35B pilot completed 2026-09-09: **36/36 passes in each arm**;
-all paired task outcomes tied, so the gate rejected promotion. Results and
-conditions are in `results/appraisal-guidance-qwen36-35b-20260909/README.md`.
-The model, binary, fixtures and operator config matched at the finish checks;
-no installation or service restart was performed.
+Goal persistence, event attribution, declared plan checks and goal-specific context
+are implemented; the implementation history and earlier pilot comparisons are in
+HISTORY under this date. Guidance remains opt-in through
+`[agent] goal_guidance = true`; declared check execution defaults on.
 
-**The harder and learning measurements are complete; guidance stays opt-in.**
-The 48 anchored trials passed **20/24 control versus 18/24 guided**; the native
-gate rejected promotion. All 20 observed completion-time check omissions were
-restored. A privacy artifact-location ambiguity is preserved in those grades;
-the separately registered explicit-output follow-up passed **6/6 versus 5/6**.
-See `results/appraisal-guidance-v2-qwen36-35b-20260909/README.md` and
-`results/appraisal-privacy-qwen36-35b-20260909/README.md` for conditions and limits.
+`mismatch::ArtifactCase::criteria` now supplies owner-bound, post-run field
+verdicts and optional pinned count context without sending expected answers to
+the acting provider or reflector. `StepFeedback::learnable_failure` excludes
+cost-only observations from new behavioral lessons. `extract_interventions`
+honors harness provenance in the user role; generic diagnostics do not become
+invented owner corrections. These paths are verified in source and regression tests.
 
-The separate six-task learning sequence passed **6/6 in both arms**, including
-3/3 on each transfer slice. All 12 treatment stages completed, but only two clean,
-goal-linked reflections were captured, below the unchanged minimum of three.
-No rules were created or loaded, so learning benefits remain unmeasured. See
-`results/appraisal-learning-v2-qwen36-35b-20260909/README.md`. The earlier learning
-design was superseded without running; the original baseline remains unchanged.
-The twelve-task extension completed with independent artifact validation:
-**10/12 control versus 9/12 learning**, and **6/6 versus 5/6 transfer**. It produced
-seven clean reflections and one scoped rule, actually loaded in all six transfer
-runs. The initial artifact gate measured three unchanged both-pass pairs; later
-validation measured two unchanged pairs and two inconclusive pairs. The final
-same-text consolidation retained the existing rule identity and non-probation
-status; no rules retired. All 18 stages completed and the native gate rejected
-promotion. See `results/appraisal-mismatch-qwen36-35b-20260909/README.md`.
-Actual rule creation and exposure are now demonstrated; improvement is not.
-The separate controlled artifact drill detected an aggregate regression but could
-not attribute it, so its strict retirement assertion failed. Its evidence is
-archived separately from the natural pilot; the existing trace retirement drill passed.
+**The corrected three-seed Qwen 3.6 35B pilot is complete.** Both arms passed
+**30/36 overall, 15/18 transfer and 31/36 artifact checks**. All 72 trials and 54
+learning stages completed; all 36 paired outcomes tied and the native gate
+rejected promotion. Training yielded 2, 1 and 0 clean criterion reflections per
+learning lifetime, below the unchanged minimum of three. A later ordinary
+check-change reflection left final counts at 2, 1 and 1. No rules were created,
+loaded, validated or retired. No transfer artifact answers entered learning.
+See `results/appraisal-attribution-v2-qwen36-35b-20260909/README.md` for the
+configuration/exposure audit, exact native-versus-artifact distinction and limits.
 
-`mismatch::ArtifactCase` and `probe::prepare_mismatch` now support independent
-JSON artifact grading of clean, bound, file-only task repeats. Mid-step state
-reconstruction, forecast-specific grading and live-service fixtures remain open.
-Unsolicited mid-run rule delivery stays off; semantic interpretation of owner goal
-corrections, across-run learning benefits and real owner-policy outcomes remain open. The earlier environment
-rows describe dated installations; only the pilot's local model and conditions
-were re-verified in this measurement pass.
+The earlier attribution attempt was stopped after a harness-voice mining defect
+was found; its 40 completed trials are archived separately and excluded from the
+replacement. The corrected runtime's separate trace retirement drill failed its
+strict assertion because it elicited no regression; neither rule retired. An
+earlier drill passed. Neither outcome is part of the natural pilot score.
 
-Validation on this working tree: `cargo fmt --all`, warning-free
+**Still open:** measured learning benefit requires enough trusted, predeclared
+training failures per independent learner to cross the existing gate, then actual
+exposure on unseen tasks. Mid-step reconstruction, forecast-specific grading,
+live-service/sensor fixtures and real owner-policy outcomes remain unsupported.
+Count-context charter references are associations, not live charter readings.
+Semantic interpretation of owner goal corrections and unsolicited mid-run rule
+delivery remain open. The current fixture produced no large forecast overruns;
+it cannot establish improved calibration. Keep guidance opt-in.
+
+Validation: all-target build, `cargo fmt --all`, warning-free
 `cargo clippy --all-targets --all-features`, and
 `MECHA_TEST_REQUIRE_BACKENDS=1 cargo test --workspace`: **2,616 passed, zero
-failed, three intentionally ignored**. The suite breakdown is 805 CLI, 22
-first-run, 3 run-lifecycle, 5 serve-lifecycle, 1,519 core, 7 appraisal-fixture,
-5 fixture-server, 13 MCP, 9 sandbox-backend, 151 mail, 1 mail binary, 75 Slack
-and 1 doctest.
-The main eval inventory remains **36 cases / 15 tags**, recounted 2026-09-09;
-the baseline appraisal source supplies 12 tasks and the harder source supplies 8.
-One trigger-lock test failed in an earlier suite, then passed both isolated and
-in the final full run; no trigger implementation changed.
+failed, three intentionally ignored**. Breakdown: 805 CLI, 22 first-run,
+3 run-lifecycle, 5 serve-lifecycle, 1,519 core, 7 appraisal-fixture,
+5 fixture-server, 13 MCP, 9 sandbox-backend, 151 mail, 1 mail binary,
+75 Slack and 1 doctest. Main eval inventory: **36 cases / 15 tags**, recounted
+2026-09-09. The server alias and frozen pilot inputs matched at finish; no install,
+service restart, default-model change or operator-learning-state update occurred.
+Earlier environment rows retain their dated verification scope.
 
 **2026-09-08 update:** PR [#216](https://github.com/ljchang/mecha/pull/216)
 is merged into `main` at `c3f33f4c`, including PR #217's graceful shutdown and
