@@ -109,6 +109,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Refreshed the documentation for current CLI commands and configuration, Today
+  and workflows, automatic learning, outbox delivery recovery, and replay limits.
+  Goals and appraisal now covers confirmation and drift, project closure, step
+  metrics, current labels, and the features consuming appraisal evidence.
+
 - **The knowledge graph is named as the graph everywhere in the tree.**
   Comments, tests and one `mecha distill` warning still called it by the
   retired server's name; nothing calls that server, and the words now say

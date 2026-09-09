@@ -224,8 +224,8 @@ leaking.
 steering`). Cancel stops at the next safe point and keeps the partial turn;
 steer folds queued text into the message carrying the tool results, because
 two user messages in a row are invalid and there is no legal slot between a
-`tool_use` and its result. Only the TUI can steer — steering needs one owner
-of stdin — and testing the TUI means driving a pty *with a size*.
+`tool_use` and its result. The TUI and web chat can steer an active run. Terminal steering needs one
+owner of stdin, and testing the TUI means driving a pty *with a size*.
 
 ## Provider notes (Claude 5 family)
 

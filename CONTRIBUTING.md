@@ -36,7 +36,7 @@ The site lives in `website/` and is a Docusaurus project.
 ```bash
 cd website
 npm ci
-npm start        # local preview at http://localhost:3000/mecha/
+npm start        # local preview at http://localhost:3000/
 npm run build    # what CI builds; fails on broken links
 ```
 

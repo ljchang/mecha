@@ -44,10 +44,11 @@ Mail and calendar tools come from a second crate, and are optional — nothing
 else needs it:
 
 ```bash
-cargo install mecha-mail --locked     # mecha-mail, mecha-google, mecha-outlook
+cargo install mecha-mail --locked     # mecha-mail, mecha-google, mecha-outlook, mecha-docs
 ```
 
-See [Mail and calendar](/docs/features/mail) for what to do with them.
+See [Mail and calendar](/docs/features/mail) and
+[Documents](/docs/features/documents) for setup.
 
 Check what landed:
 
@@ -56,12 +57,16 @@ mecha --version
 mecha tools            # runs without any provider configured
 ```
 
-:::warning[A fresh publish can install as a stale version]
-`cargo install` resolves against a cached registry index, so for a few minutes
-after a release it can quietly pick up the *previous* version — no warning, no
-error, just an older binary than the one you asked for. `cargo install mecha-cli
---locked --version 0.1.2` pins it, and `mecha --version` is what confirms it.
-:::
+## Updating an existing install
+
+Repeat `cargo install mecha-cli --locked` (and `mecha-mail` if installed), then
+check `mecha --version` and `mecha <command> --help`. To install a specific
+release, add `--version <VERSION>` using the version you intend to run.
+
+These docs track the repository's main branch and can describe work listed as
+[Unreleased](/docs/changelog). If an option is absent from your binary's help,
+check the release history or build from source. The browser assets are a separate
+build; refresh them when upgrading a [web installation](/docs/features/web#installing-the-app-itself).
 
 ## Building from source
 
