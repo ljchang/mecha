@@ -249,6 +249,9 @@ pub enum Record {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RunConfig {
+    /// Preserve future schemas too: replay must not silently drop owner evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appraisal_evidence: Option<serde_json::Value>,
     /// Owner-supplied artifact fixture, bound before execution. Never provider content.
     #[serde(
         default,
@@ -453,6 +456,7 @@ impl RunConfig {
 impl Default for RunConfig {
     fn default() -> Self {
         RunConfig {
+            appraisal_evidence: None,
             mismatch_case: None,
             mecha_version: String::new(),
             provider: String::new(),
@@ -519,6 +523,9 @@ impl RunConfig {
             .collect();
         let cfg = agent.config();
         RunConfig {
+            appraisal_evidence: agent.ctx().appraisal_evidence.as_ref().map(|b| {
+                serde_json::to_value(b.snapshot()).expect("appraisal evidence serializes")
+            }),
             mismatch_case: None,
             mecha_version: crate::VERSION.to_string(),
             provider: provider.to_string(),

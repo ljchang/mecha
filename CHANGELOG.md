@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Anticipatory appraisal for confirmed-goal planning and inline outbox messages:
+  owner-bound commitments, verification and cost evidence derive guilt,
+  embarrassment, regret, disappointment, anxiety and curiosity assessments.
+  `run --appraisal-evidence` supplies invocation evidence; `outbox anticipate`
+  records exact-argument predictions with optional release guidance, and
+  `outbox outcome` links owner feedback to confirmed delivery. Supported
+  exposed-error and impact records produce retrospective embarrassment and guilt.
+  Revised predictions and superseded outcomes retain their history; affected
+  replay/probe paths explicitly report unsupported evidence reproduction.
+
 - Ground mismatch learning in verified criterion/check failures; owner-bound task diagnostics can carry relevant count constraints without exposing expected answers. Forecast overruns remain observations and no longer justify behavioral rules by themselves.
 
 - `run --mismatch-case` and registered experiment fixtures enable independent JSON-artifact validation of clean planning mismatches in isolated file-only tasks. Validation and rule proposals retain ungraded outcomes for missing evidence or policy refusals; each executed arm records an audit receipt. `--no-goal-guidance` now works before or after a subcommand.

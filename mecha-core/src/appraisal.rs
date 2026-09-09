@@ -42,40 +42,13 @@
 //! §6's table separates regret from disappointment on controllability
 //! alone, and `Distress` is honest about not yet knowing which.
 //!
-//! ## Four labels are unreachable today, and that is the finding
+//! ## Outcome evidence and remaining labels
 //!
-//! §14 puts this rung at *observation only* — build the corpus and check the
-//! labels are not degenerate before anything consumes them. Working the
-//! derivation table produces that answer before any corpus does, so it is
-//! written here rather than discovered twice:
-//!
-//! | label | what it needs | where that comes from |
-//! |---|---|---|
-//! | `Guilt` | *harmed another* | nothing computes harm; `visible` is exposure |
-//! | `Shame` | a pattern across runs | an aggregate — a per-event function cannot see it |
-//! | `Excitement` | a *predicted* error | anticipatory appraisal (§7.4), unbuilt |
-//! | `Embarrassment` | a **visible negative** error | no assembler emits one — see below |
-//!
-//! `Pride` left this table on 2026-09-04: a positive, self-caused error
-//! against a charter line, which the sensored-line attribution in
-//! [`of_session`] (§11.1) can now produce — a draft sent unchanged, on a
-//! machine whose charter has a line watching the outbox. Reachable in the
-//! sense `Regret` is: the path is shipped and needs a configuration (a
-//! sensored line; a probe run) to fire.
-//!
-//! `Embarrassment` is the one whose unreachability arrived silently rather
-//! than by design, so it gets its own sentence: exposure used to have a
-//! producer — a sent-with-edits draft — until the `SentEdited` arm was
-//! (correctly) made `visible: false`, because the owner's rewrite sends
-//! *their* words and the catch is the mechanism working. That correction was
-//! right and it removed the label's only producer as a side effect: nothing
-//! now records "mecha's own mistake reached a third party". A `SentUnchanged`
-//! draft is visible but positive; counters, interventions and the appraiser
-//! all start `visible: false`; a probe never touches the field. The label
-//! becomes reachable again only when some channel can truthfully compute
-//! that exposure — a released front-door reply later corrected, say — and
-//! until then [`Affect::reachable_today`] says so rather than letting the
-//! claim drift.
+//! `Embarrassment` and `Guilt` now have an owner-evidence producer: an unchanged
+//! model-authored message, confirmed delivered, with a linked correction or
+//! attributable impact. `SentEdited` remains non-exposure: review caught it.
+//! Forecasts never become signed outcomes by themselves. `Shame` still needs
+//! a cross-session incident aggregate; `Excitement` is outside this slice.
 //!
 //! They are variants anyway, on [`learning::Origin::Derived`]'s precedent —
 //! that one is documented as classifying nothing yet and existing so the
@@ -83,8 +56,9 @@
 //! variant later is the change that costs.
 //!
 //! What the **free** readout — [`of_session`] over on-disk records, no
-//! model — can say is now: `Distress` on every negative it assembles
-//! (`Own`/`Owner`, `controllable` unfilled), `Pride` on a positive against a
+//! model — can say is now: `Embarrassment` or `Guilt` on linked, attributable
+//! owner outcomes, `Distress` on other negatives (`Own`/`Owner`,
+//! `controllable` unfilled), `Pride` on a positive against a
 //! sensored charter line, and `Neutral` on a record with no negative and no
 //! such positive. It still cannot say `Regret` or `Disappointment` — those
 //! are the **probe**'s (§5.3, a paid replay per intervention), which refines
@@ -264,6 +238,12 @@ pub enum Cite {
     TaskClosure { task: String, status: String },
     /// An outbox item, by id.
     Draft(String),
+    /// An owner's post-delivery observation; evidence prose stays in the outbox.
+    Outcome {
+        draft: String,
+        event: String,
+        verdict: crate::anticipation::Verdict,
+    },
     /// A field of `RunStats`, by its name.
     Counter(String),
     /// A homeostatic variable, by name.
@@ -374,15 +354,15 @@ pub enum Affect {
     Regret,
     /// Negative, and no alternative existed. Needs a probe.
     Disappointment,
-    /// Negative, self-caused, harmed another, attaches to one act. Needs a
-    /// notion of harm that nothing computes.
+    /// Negative, self-caused, harmed another, attaches to one act. Requires
+    /// an owner-attributed outcome linked to a recorded commitment.
     Guilt,
     /// The same, attaching to a *pattern* across runs. An aggregate.
     Shame,
     /// Positive, self-caused, against a charter line rather than a task.
     /// Needs the charter.
     Pride,
-    /// A positive *predicted* error. Needs anticipatory appraisal.
+    /// A positive *predicted* error. Reserved; excluded from current anticipation.
     Excitement,
 }
 
@@ -418,9 +398,9 @@ impl Affect {
     /// neither was recorded at the time, which is why the split below is
     /// spelled out:
     ///
-    /// - `Neutral`, `Distress` and `Pride` are the **free** readout's label
-    ///   range — see the module note: every negative [`of_session`] assembles
-    ///   is `Distress` until a probe refines it, and `Pride` needs a charter
+    /// - `Neutral`, `Distress` and `Pride` cover the **free** readout before
+    ///   linked owner outcomes refine it (see below). Other negatives from
+    ///   [`of_session`] are `Distress` until a probe refines them; `Pride` needs a charter
     ///   line with a sensor watching the store the positive came from.
     ///   `Anger` is reachable through the quarantined appraiser's
     ///   `other`/`world` agency verdict alone, since a ceiling stopped
@@ -429,10 +409,10 @@ impl Affect {
     ///   the counterfactual pass (§5.3, shipped in the appraisal probe) is
     ///   the only thing that fills `controllable` or turns an intervention
     ///   into the `Own`-agency repetition frustration is defined over.
-    /// - `Embarrassment` has **no producer at all** since the `SentEdited`
+    /// - `Embarrassment` and `Guilt` are reachable through linked owner outcomes.
+    ///   Historically `Embarrassment` lost its producer when the `SentEdited`
     ///   arm stopped counting as exposure — the module note carries the
-    ///   story. It stays `false` here until something can truthfully compute
-    ///   that mecha's own mistake reached a third party.
+    ///   story. Post-delivery outcome evidence now establishes that link.
     pub fn reachable_today(self) -> bool {
         matches!(
             self,
@@ -443,6 +423,8 @@ impl Affect {
                 | Affect::Disappointment
                 | Affect::Frustration
                 | Affect::Pride
+                | Affect::Embarrassment
+                | Affect::Guilt
         )
     }
 
@@ -524,6 +506,18 @@ fn label_of(e: &GoalError) -> Affect {
             }
             _ => Affect::Neutral,
         };
+    }
+    if e.sign < 0.0
+        && e.agency == Agency::Own
+        && matches!(
+            e.cite,
+            Cite::Outcome {
+                verdict: crate::anticipation::Verdict::Harm,
+                ..
+            }
+        )
+    {
+        return Affect::Guilt;
     }
     match e.agency {
         // Nothing here caused it, so nothing here fixes it.
@@ -1144,7 +1138,9 @@ pub fn load_charter() -> (Option<crate::charter::Charter>, bool) {
 fn sensor_kinds_for(cite: &Cite) -> &'static [crate::charter::SensorKind] {
     use crate::charter::SensorKind;
     match cite {
-        Cite::Draft(_) => &[SensorKind::OutboxAge, SensorKind::OutboxWaiting],
+        Cite::Draft(_) | Cite::Outcome { .. } => {
+            &[SensorKind::OutboxAge, SensorKind::OutboxWaiting]
+        }
         Cite::Question(_) => &[SensorKind::QuestionLatency],
         Cite::Request(_) => &[SensorKind::RequestClosure],
         Cite::Turn(_) | Cite::Reflexion(_) => &[SensorKind::InterventionRate],
@@ -1460,6 +1456,51 @@ pub fn of_session(
         // same split from `status`/`edited()` is what keeps a third status
         // or a third `OutboxKind` from teaching only one of the two places
         // that reason about it.
+        // A later owner's verdict replaces the drafting verdict for this incident.
+        // Never turn several reports of one message into several errors or rewards.
+        let observed = item.active_outcomes().into_iter().find_map(|o| {
+            use crate::anticipation::{Resolution, Verdict};
+            let p = item
+                .predictions
+                .iter()
+                .find(|p| p.id == o.observation.prediction_id)?;
+            if item.prediction_resolution(p) != Resolution::Observed
+                || matches!(o.observation.verdict, Verdict::NoIssue | Verdict::Withdrawn)
+            {
+                return None;
+            }
+            Some((o, p))
+        });
+        if let Some((o, p)) = observed {
+            let own = o.observation.attributable_to_mecha
+                && item.author() == crate::outbox::Author::Model
+                && item.args == item.args_before;
+            errors.push(GoalError {
+                related: Vec::new(),
+                goal: p
+                    .evidence
+                    .goal
+                    .clone()
+                    .filter(|g| match g {
+                        GoalRef::Charter(id) => {
+                            records.charter.is_some_and(|c| c.rank_of(id).is_some())
+                        }
+                        _ => true,
+                    })
+                    .or_else(|| goal.clone()),
+                channel: Channel::Commitment,
+                sign: -1.0,
+                agency: if own { Agency::Own } else { Agency::Owner },
+                visible: own && o.observation.verdict == crate::anticipation::Verdict::ErrorExposed,
+                controllable: None,
+                cite: Cite::Outcome {
+                    draft: item.id.clone(),
+                    event: o.id.clone(),
+                    verdict: o.observation.verdict,
+                },
+            });
+            continue;
+        }
         let (sign, agency) = match (item.writing_outcome(), item.status.as_str()) {
             // **The one signal in this system that says something went well.**
             // Recorded since the outbox existed; positive, and it is the reason
@@ -3005,7 +3046,7 @@ mod tests {
     }
 
     #[test]
-    fn only_seven_labels_are_reachable_and_the_rest_say_why() {
+    fn nine_labels_have_producers_and_two_remain_reserved() {
         // Honest about what can and cannot be checked here: without a
         // variant-enumerating macro there is no assertion over `ALL` that
         // notices a variant the list forgot — a length check is a tautology
@@ -3024,7 +3065,7 @@ mod tests {
         }
         assert_eq!(
             Affect::ALL.iter().filter(|a| a.reachable_today()).count(),
-            7
+            9
         );
         // The residue split every variant has to answer: the two words that
         // are a verdict with nothing to put on a board, the two positive
@@ -3056,8 +3097,8 @@ mod tests {
     /// that fails the day a channel starts computing real exposure, so the
     /// module note and `reachable_today` get updated instead of drifting.
     #[test]
-    fn embarrassment_has_no_producer_and_reachable_today_says_so() {
-        assert!(!Affect::Embarrassment.reachable_today());
+    fn ordinary_edits_and_counters_never_claim_an_escaped_error() {
+        assert!(Affect::Embarrassment.reachable_today());
 
         // Every negative `of_session` can assemble is invisible: the
         // owner's rewrite, a rejected draft, every counter, a steer.
@@ -3458,6 +3499,8 @@ mod tests {
     fn draft(id: &str, status: &str, edited: bool) -> crate::outbox::OutboxItem {
         let before = serde_json::json!({"body_markdown": "Dear Dirk,"});
         crate::outbox::OutboxItem {
+            predictions: Vec::new(),
+            outcomes: Vec::new(),
             delivery_attempts: Vec::new(),
             output: None,
             author: Default::default(),

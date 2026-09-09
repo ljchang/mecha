@@ -1389,6 +1389,17 @@ impl Agent {
         self.provider.vision()
     }
 
+    /// Bind owner-authored appraisal evidence to one goal for this invocation.
+    /// The remaining-time budget starts here and does not reset on plan writes.
+    pub fn set_appraisal_evidence(
+        &mut self,
+        evidence: crate::anticipation::Evidence,
+    ) -> Result<()> {
+        let bound = crate::anticipation::BoundEvidence::new(evidence)?;
+        Arc::make_mut(&mut Arc::make_mut(&mut self.cx).tools).appraisal_evidence = Some(bound);
+        Ok(())
+    }
+
     /// Install lifecycle hooks on the agent's own context. Copy-on-write like
     /// [`Agent::set_approver`], and for the same reason.
     pub fn set_hooks(&mut self, hooks: Arc<crate::hooks::HookSet>) {
@@ -3844,6 +3855,25 @@ impl Agent {
                     staged_args,
                     *taint,
                     crate::outbox::Provenance {
+                        anticipation: {
+                            let goal = cx.tools.goal_track.as_ref().and_then(|g| g.anchor());
+                            Some(
+                                cx.tools
+                                    .appraisal_evidence
+                                    .as_ref()
+                                    .and_then(|b| b.for_draft(goal.as_ref()))
+                                    .map(|e| (e, crate::anticipation::Source::Owner))
+                                    .unwrap_or_else(|| {
+                                        (
+                                            crate::anticipation::Evidence {
+                                                goal,
+                                                ..crate::anticipation::Evidence::default()
+                                            },
+                                            crate::anticipation::Source::Harness,
+                                        )
+                                    }),
+                            )
+                        },
                         session_id: route.session_id(),
                         // The jail this call was drafted under. A release
                         // happens in another process from another directory,
@@ -3873,7 +3903,7 @@ impl Agent {
                     },
                 ) {
                     Ok(item) => {
-                        let content = format!(
+                        let mut content = format!(
                             "Drafted, not sent: this call is staged in the outbox as \
                              `{}`. The user will review it with `mecha outbox` and \
                              release or reject it. Report it to the user as a draft \
@@ -3881,6 +3911,16 @@ impl Agent {
                              retry the call.",
                             item.id
                         );
+                        if cx.tools.goal_guidance {
+                            if let Some(p) = item
+                                .predictions
+                                .last()
+                                .filter(|p| !p.assessment.kinds.is_empty())
+                            {
+                                content.push_str("\nAnticipatory guidance: ");
+                                content.push_str(p.assessment.response.guidance());
+                            }
+                        }
                         emit(
                             events,
                             AgentEvent::ToolResult {
@@ -10625,6 +10665,7 @@ mod tests {
         agent.set_outbox(Arc::clone(&route));
 
         let mut convo = Conversation::from(vec![Message::user("send it")]);
+        convo.goal_anchor = Some(crate::goal::GoalRef::Task("confirmed".into()));
         let outcome = agent.run(&mut convo, None).await.unwrap();
 
         // The panicking tool never ran, the model was told it is a draft, and
@@ -10647,10 +10688,78 @@ mod tests {
         let items = route.store.items().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].tool, "send_data");
+        let prediction = &items[0].predictions[0];
+        assert_eq!(prediction.args, items[0].args);
+        assert_eq!(prediction.evidence.goal, convo.goal_anchor);
+        assert_eq!(prediction.source, crate::anticipation::Source::Harness);
+        assert!(!prediction.guide);
+        assert!(
+            !prediction
+                .assessment
+                .kinds
+                .contains(&crate::anticipation::Kind::Guilt),
+            "a confirmed goal alone is not a harmful commitment"
+        );
         assert_eq!(items[0].session_id.as_deref(), Some("sess-42"));
         assert!(!outcome.taint.private && !outcome.taint.untrusted);
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn bound_commitment_reaches_the_draft_but_prior_verification_does_not() {
+        use crate::anticipation::{Commitment, Evidence, Kind, Source, Verification};
+        let (mut agent, _) = agent_with(send_turns(), PermissionMode::ReadOnly);
+        agent.registry.insert(Arc::new(MustNotRun));
+        agent.cfg.goal_guidance = true;
+        let (route, root) = outbox_route("anticipatory-owner");
+        agent.set_outbox(Arc::clone(&route));
+        let goal = crate::goal::GoalRef::Task("meeting".into());
+        agent
+            .set_appraisal_evidence(Evidence {
+                goal: Some(goal.clone()),
+                commitment: Some(Commitment {
+                    beneficiary: "PRIVATE PERSON".into(),
+                    expectation: "PRIVATE COMMITMENT".into(),
+                    consequence: "PRIVATE IMPACT".into(),
+                }),
+                verification: Verification::Passed,
+                verification_evidence: Some("PRIVATE CALENDAR RECEIPT".into()),
+                check_available: true,
+                check_cost_secs: Some(5),
+                time_available_secs: Some(600),
+                ..Evidence::default()
+            })
+            .unwrap();
+        let recorded = crate::session::RunConfig::of(
+            &agent,
+            &crate::config::Config::default(),
+            "scripted",
+            &[],
+            None,
+        );
+        let encoded = serde_json::to_value(&recorded).unwrap();
+        let loaded: crate::session::RunConfig = serde_json::from_value(encoded).unwrap();
+        assert_eq!(
+            loaded.appraisal_evidence.as_ref().unwrap()["commitment"]["expectation"],
+            "PRIVATE COMMITMENT"
+        );
+        assert!(crate::mismatch::validate_recording(&loaded)
+            .unwrap_err()
+            .to_string()
+            .contains("anticipatory evidence"));
+        let mut convo = Conversation::user("draft the invitation");
+        convo.goal_anchor = Some(goal);
+        agent.run(&mut convo, None).await.unwrap();
+        let items = route.store.items().unwrap();
+        let p = &items[0].predictions[0];
+        assert_eq!(p.source, Source::Owner);
+        assert_eq!(p.evidence.verification, Verification::Unknown);
+        assert!(p.assessment.kinds.contains(&Kind::Guilt));
+        let tool_text = serde_json::to_string(&convo.messages[2]).unwrap();
+        assert!(tool_text.contains("Anticipatory guidance"));
+        assert!(!tool_text.contains("PRIVATE"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// The approval card is the other surface that shows a call before it

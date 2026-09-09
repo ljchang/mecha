@@ -79,6 +79,8 @@ mecha run [OPTIONS] [PROMPT]
 | `--quiet` | Print only the answer — no tool narration. |
 | `--no-stream` | Wait for the whole answer instead of streaming it. |
 | `--resume <ID>` | Continue a saved session by id or unique prefix. |
+| `--goal <KIND:ID>` | Explicitly confirm this run's goal. |
+| `--appraisal-evidence <FILE>` | Owner-authored commitment/check evidence for the matching `--goal`; see [anticipatory appraisal](/docs/features/appraisal#anticipatory-appraisal-and-outcome-evidence). |
 | `--no-session` | Do not write a transcript. |
 | `--image <PATH>` | Attach image pixels to the user turn. Repeatable; requires a vision-enabled provider. |
 
@@ -517,7 +519,7 @@ Review, edit, release, or reject staged outbound actions. `list` is the default
 subcommand.
 
 ```
-mecha outbox [list|show|edit|review|approve|reconcile|reject] [ARGS]
+mecha outbox [list|show|edit|review|approve|reconcile|reject|anticipate|outcome] [ARGS]
 ```
 
 | Subcommand | Flag | Description |
@@ -537,6 +539,8 @@ mecha outbox [list|show|edit|review|approve|reconcile|reject] [ARGS]
 | `reconcile` | `<ID> --outcome delivered\|not-delivered --evidence <TEXT>` | Record an uncertain delivery's observed outcome; never sends. |
 | `reject` | `<ID>` | Refuse an item. It stays on file as the record of the refusal. |
 | `reject` | `--reason <REASON>` | Why — recorded on the item for the next reader. |
+| `anticipate` | `<ID> [--file <FILE>] [--guide\|--observe]` | Read predictions or attach owner evidence to a pending message. `--guide` requires a current, resolved assessment before release; omitting the mode preserves it. |
+| `outcome` | `<ID> --file <FILE>` | Record post-delivery owner feedback linked to the prediction; revisions explicitly supersede prior feedback. |
 
 `approve` is the current verb; `send` remains an alias. The original draft is
 kept after editing, and `mecha reflect` mines the edit into writing lessons.

@@ -224,6 +224,12 @@ pub fn prepare_probe_in(
     let Some(recorded) = transcript.config_covering(point.message_index).cloned() else {
         return Ok(Err("no RunConfig recorded".into()));
     };
+    if recorded.appraisal_evidence.is_some() {
+        return Ok(Err(
+            "owner-bound anticipatory evidence is not yet reproduced by counterfactual probes"
+                .into(),
+        ));
+    }
 
     // The recorded system prompt with any rules block of its era removed: an
     // arm must carry exactly the block it was given, not a mixture of

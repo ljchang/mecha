@@ -22,6 +22,36 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-09 — anticipatory appraisal is implemented locally, not installed.**
+`feat/anticipatory-appraisal` lives in `/home/ljchang/Github/mecha-anticipation`,
+based on `f4c40cbeda1aad61f190b98a66645df2eb3f5c0d`; the original worktree's
+pending docs refresh and measurement artifacts are preserved. Confirmed-goal
+planning and inline message drafts accept owner evidence; `outbox anticipate`
+can enable exact-draft guidance, and `outbox outcome` links delivered outcomes.
+Source and implementation evidence are recorded in HISTORY under this date.
+The older aggregate `Homeostat::anticipated_guilt` is still a separate sensor;
+its lack of a behavioral consumer does not mean the new mechanism is absent.
+
+Remaining work for this slice: reconstruct evidence in replay/probes before
+forecast grading; measure whether guidance improves task outcomes; add general
+alternative comparison and calibrated predictions; connect automatic commitment
+capture only after its source/confirmation policy is defined. Current input is
+owner-authored JSON, invocation-bound for runs. Mutable attachments, UI feedback
+forms, cross-session shame and excitement are outside this implementation.
+Old binaries ignore new guidance fields; all releasing processes need this build
+before the optional delivery gate can be relied on. No deployment was done.
+
+Validation on this worktree: `cargo fmt --all`, warning-free
+`cargo clippy --all-targets --all-features`, and
+`MECHA_TEST_REQUIRE_BACKENDS=1 cargo test --workspace` passed. Unit suites:
+CLI 806 passed/1 ignored, core 1522/1, mail library 151/0 plus mail binary 1/0,
+Slack 75/0. Integration suites: CLI anticipation 1, first-run 22, run lifecycle 3,
+serve lifecycle 5; core anticipation 8, appraisal fixtures 7, fixture servers 5,
+MCP server 13, sandbox backends 9; grounding judge remains explicitly ignored.
+One core doctest passed. Docusaurus production build passed; the appraisal page
+rendered without browser errors or page overflow at 1440px and 390px.
+
+
 **2026-09-09 — review branches.** The user docs refresh merged as PR #219.
 PR #220 (`review/appraisal-goal-feedback`) contains the prerequisite goal and
 verified-step work and its review fixes; it is not merged or installed.
@@ -610,6 +640,18 @@ binary is absent |
 `cargo clippy --all-targets` is clean and should stay that way.
 
 ## Environment as left
+
+**Verified 2026-09-09 15:56 UTC for the anticipation worktree:** baseline build
+and workspace tests passed; final strict workspace tests and Clippy passed
+(see the validation summary in Where the work is). `eval/cases.jsonl` contains 36 cases
+and 15 tags; no model eval was run for this feature. The local `:8080/props`
+reported four slots, 262144 context per slot, and vision enabled. User-unit files
+list drain, parakeet, serve, Slack, triggers and voice-worker enabled, along with
+frontdoor, mail-classify, ruminate and slots timers. This checks configuration,
+not service health or installed feature capability. No services were changed.
+Other dated environment/deployment claims below are historical and were not
+revalidated by this feature session; they are not a claim about today's artifacts.
+
 
 **Verified update, 2026-09-08, services restarted at 19:58:54 UTC:** the
 shared checkout is `main` at `c3f33f4c`. `cargo install --locked --force`

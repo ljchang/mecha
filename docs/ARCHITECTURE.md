@@ -1946,6 +1946,28 @@ refactor from making it two values.
 
 ## The outbox
 
+**Anticipatory evidence belongs to an exact draft version.**
+`OutboxItem::predictions` stores immutable argument snapshots; editing and
+reassessment leave the old forecast changed or reassessed, never failed or
+vindicated. `OutboxStore::begin_delivery` checks the latest guided prediction
+before recording an attempt or dispatching. It recomputes elapsed time through
+`Prediction::current_assessment`: a passed check cannot waive a commitment
+whose deadline has since expired. Every release surface must use that seam.
+The gate is opt-in and may be disabled explicitly with `outbox anticipate
+--observe`; it does not acquire sending authority. Older binaries ignore these
+new fields, so mixed-version releases cannot enforce guidance.
+
+A delivered message is exposure, not proof of error or harm. Only
+`OutboxStore::record_outcome` admits bounded owner feedback linked to the
+prediction actually delivered. Explicit attribution plus unchanged
+model-authored arguments is required for self-agency; harm additionally needs
+a recorded commitment. Replacements name the prior outcome. `appraisal::of_session`
+uses one active negative outcome instead of the draft verdict, keeping one
+incident from becoming several penalties. `tasks::worth_a_follow_up` removes
+these outcome events before deciding whether to stage autonomous follow-up
+work: a new label must not silently grant a new behavioral consumer.
+
+
 `[outbox] tools = [...]` names tools whose calls are **staged, not executed**:
 the loop intercepts the call (`agent.rs`, after the hook gate), writes it to
 `~/.mecha/outbox/` (`outbox.rs`), and tells the model it is a draft awaiting
@@ -3233,7 +3255,26 @@ empty — the readouts carry `questions_read` / `frontdoor_read` /
 drafts only: a store read on every turn end is the cost the closure
 appraisal pays once.
 
-**Anticipated guilt reads only stores mecha itself writes.** An expectation is a
+**Owner-bound anticipatory appraisal is separate from the backlog sensor.**
+`anticipation::Evidence` accepts an explicit owner commitment and check/cost
+facts, never an incoming claim or model-selected label. `BoundEvidence` binds
+it to one confirmed goal for one invocation and counts elapsed time once.
+`Decision::with_owner_evidence` preserves goal alignment and charter precedence;
+`BoundEvidence::for_draft` clears earlier verification, because a context check
+cannot certify newly authored prose. With `goal_guidance` enabled, fixed
+response templates reach tool results. Private evidence stays in local
+metadata, excluded by provider encoders. Uncertainty alone is not a reason to
+spend indefinitely: checks need recorded availability and affordable cost;
+delay can instead require a fallback. The six anticipatory kinds are distinct
+from retrospective `Affect`; shame and excitement are outside this slice.
+
+`RunConfig::appraisal_evidence` preserves these conditions, including unknown
+future schemas. `prepare_probe_in`, `mismatch::validate_recording`, and replay
+refuse unsupported evidence-bearing runs until reconstruction is implemented.
+Silently dropping evidence would turn a different decision context into a false
+counterfactual result. Forecast calibration and efficacy remain unmeasured.
+
+**The backlog anticipated-guilt sensor reads only stores mecha itself writes.** An expectation is a
 *recorded* commitment (`outbox`, `questions`, `frontdoor` — exactly `backlog`'s
 own three), never a claimed one. That is the whole safety argument for §7.2's
 attack: a charter line like "don't let a colleague down" is a lever an injection
@@ -3260,8 +3301,8 @@ controllability** (`GOAL-SYSTEM-DESIGN.md` §17.1, ruled 2026-09-03, built
 2026-09-04): relevance is decided by the channel arms in `of_session` — a
 pending draft, a follow-up, a Ctrl-C produce no error at all — and every
 error that exists is then named from its sign and agency alone, with a probe
-verdict *refining* the word rather than licensing it. So the free readout's
-label range is `Neutral`, `Distress` (the coarse word: a signed, attributed
+verdict *refining* the word rather than licensing it. Linked owner outcomes additionally produce `Embarrassment` and `Guilt`; without
+them the free readout's label range is `Neutral`, `Distress` (the coarse word: a signed, attributed
 negative not yet split into regret or disappointment) and `Pride` (a draft sent unchanged or a question answered, *delivered* against a charter line the loaded charter contains — never the queue delta or the appraiser's own positive, both of which copy the named goal onto a positive without delivering anything); `Anger` is the appraiser's, and the probe
 words stay the probe's. The incident: twenty-two owner-rejected drafts all
 read `Neutral` because `label_of` gated on the one dimension only a paid

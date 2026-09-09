@@ -14,6 +14,32 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-09 — anticipatory appraisal and linked outcomes, implemented locally.**
+On `feat/anticipatory-appraisal` (isolated `mecha-anticipation` worktree, based
+on `f4c40cbeda1aad61f190b98a66645df2eb3f5c0d`), `anticipation::assess`
+derives anticipated guilt, embarrassment, regret, disappointment, anxiety and
+curiosity from typed evidence. Guilt requires an explicit recorded commitment;
+check-first regret and curiosity require a feasible, affordable check. Delay
+and budget shortfalls can require replanning, even after a check passed.
+`run --goal ... --appraisal-evidence FILE` binds owner evidence to that invocation;
+`Decision::with_owner_evidence` and the agent's outbox staging path consume it
+without prompting private prose. Existing `goal_guidance` enables fixed advice.
+New draft prose clears prior verification. `outbox anticipate` records immutable
+argument snapshots, with a separate explicit `--guide` release gate;
+`OutboxStore::begin_delivery` enforces it before dispatch and binds the attempt
+to its prediction. Revision, reassessment, rejection, uncertain delivery and
+silence have distinct unresolved statuses, never fabricated forecast grades.
+`outbox outcome` admits post-delivery owner evidence with explicit attribution
+and supersession. `appraisal::of_session` replaces one draft verdict with one
+active outcome: embarrassment and guilt now have producers, so nine of eleven
+retrospective labels are reachable. `tasks::worth_a_follow_up` excludes the new
+outcome channel from autonomous follow-up creation. `RunConfig` records bound
+evidence; replay and counterfactual grading explicitly refuse it until they can
+reconstruct it. Tests cover the actual agent, Todo, outbox store, attribution,
+supersession, expiration, legacy records and CLI; the Docusaurus appraisal guide
+and command reference document the workflow. This is implementation evidence,
+not a measured planning benefit. No installation or service restart was performed.
+
 **2026-09-09 — appraisal PR review corrections, not installed.**
 The frozen check executor now emits `Finding::CheckFailed` for an executed,
 failed check; refused or staged checks stay unverified. Attribution remains

@@ -123,6 +123,11 @@ impl Action {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Decision {
+    /// Local evidence behind the assessment; provider adapters omit planning metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anticipation_evidence: Option<crate::anticipation::Evidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anticipation: Option<crate::anticipation::Assessment>,
     #[serde(default, deserialize_with = "crate::goal::de_lenient")]
     pub goal: Option<GoalRef>,
     #[serde(default, deserialize_with = "crate::goal::de_lenient")]
@@ -137,6 +142,34 @@ pub struct Decision {
     pub applied: bool,
 }
 impl Decision {
+    pub fn with_owner_evidence(&mut self, bound: &crate::anticipation::BoundEvidence) {
+        // An unnamed or drifted plan is handled by goal-alignment guidance first.
+        if self.goal != self.anchor {
+            return;
+        }
+        if let Some(mut evidence) = bound.for_goal(self.anchor.as_ref()) {
+            evidence.budget_shortfall |= self
+                .anticipation_evidence
+                .as_ref()
+                .is_some_and(|e| e.budget_shortfall);
+            let assessment = crate::anticipation::assess(&evidence, false);
+            if !matches!(
+                self.action,
+                Action::ClarifyGoal | Action::ReviewCommitment | Action::GatherContext
+            ) {
+                use crate::anticipation::Response;
+                self.action = match assessment.response {
+                    Response::Verify => Action::Verify,
+                    Response::Clarify => Action::GatherContext,
+                    Response::Replan => Action::Replan,
+                    Response::Proceed => self.action,
+                };
+            }
+            self.anticipation = Some(assessment);
+            self.anticipation_evidence = Some(evidence);
+        }
+    }
+
     pub fn assess(
         plan: &crate::tool::todo::Plan,
         anchor: Option<GoalRef>,
@@ -187,7 +220,21 @@ impl Decision {
         } else {
             Action::Complete
         };
+        let prediction_evidence = crate::anticipation::Evidence {
+            goal: anchor.clone(),
+            verification: if unverified_steps > 0 {
+                crate::anticipation::Verification::Pending
+            } else {
+                crate::anticipation::Verification::Unknown
+            },
+            expected_outcome: plan.items.iter().find_map(|i| i.expect.clone()),
+            // A declaration alone does not establish availability or cost of a check.
+            budget_shortfall: turns_left.is_some_and(|n| open_steps as u64 > n),
+            ..crate::anticipation::Evidence::default()
+        };
         Self {
+            anticipation: Some(crate::anticipation::assess(&prediction_evidence, false)),
+            anticipation_evidence: Some(prediction_evidence),
             goal: plan.goal.clone(),
             anchor,
             open_steps,
