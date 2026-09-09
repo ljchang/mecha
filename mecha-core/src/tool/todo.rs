@@ -501,23 +501,28 @@ impl Tracked {
         // status loop because that loop reads `next` immutably.
         for item in next.items.iter_mut() {
             let Some(check) = item.check.clone() else {
-                // The third door: a frozen step written again with the
-                // field simply absent. Reopen and re-add-with-a-different-
-                // check were closed and this was not (found on review), and
-                // once something runs checks it is the cheapest evasion —
-                // no trace written, no counter raised, nothing signed. The
-                // same claim unmade after the fact is the same tamper:
-                // restored, counted, echoed.
-                if let Some(f) = self.checks.get(&item.content).filter(|f| f.frozen) {
+                // Omitting the field on the completing write is the same
+                // post-hoc change as replacing its command. Preserve and
+                // freeze the last open declaration before queueing checks.
+                if let Some(f) = self
+                    .checks
+                    .get_mut(&item.content)
+                    .filter(|f| f.frozen || item.status == Status::Completed)
+                {
                     self.tampered += 1;
                     tampered_steps.insert(item.content.clone());
                     lines.push(format!(
-                        "the check for step \"{}\" was dropped after the step was marked \
+                        "the check for step \"{}\" was dropped on or after the write that marked it \
                          done; the check it was completed against stands, and the change is \
                          recorded",
                         crate::step::ellipsize(&item.content, 60)
                     ));
                     item.check = Some(f.check.clone());
+                    f.frozen = true;
+                } else {
+                    // An explicit withdrawal while still open is allowed.
+                    // Do not resurrect that declaration on a later write.
+                    self.checks.remove(&item.content);
                 }
                 continue;
             };
@@ -3725,7 +3730,7 @@ mod tests {
             .unwrap();
         assert!(
             out.content
-                .contains("was dropped after the step was marked done"),
+                .contains("was dropped on or after the write that marked it done"),
             "{}",
             out.content
         );
@@ -3755,6 +3760,52 @@ mod tests {
             "{}",
             out.content
         );
+    }
+
+    #[tokio::test]
+    async fn completing_without_a_check_freezes_the_last_open_declaration() {
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        for (status, check) in [("in_progress", Some("make test")), ("completed", None)] {
+            tool.call(
+                json!({"items": [{"content": "wire it", "status": status, "check": check}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(tool.items_in(&ws)[0].check.as_deref(), Some("make test"));
+        assert_eq!(tool.tampered_in(&ws), 1);
+        tool.call(
+            json!({"items": [{"content": "wire it", "status": "in_progress", "check": "true"}]}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(tool.items_in(&ws)[0].check.as_deref(), Some("make test"));
+        assert_eq!(tool.tampered_in(&ws), 2);
+    }
+
+    #[tokio::test]
+    async fn withdrawing_an_open_check_does_not_resurrect_it_on_completion() {
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-withdraw-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        for (status, check) in [
+            ("in_progress", Some("old check")),
+            ("in_progress", None),
+            ("completed", Some("new check")),
+        ] {
+            tool.call(
+                json!({"items": [{"content": "wire it", "status": status, "check": check}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(tool.items_in(&ws)[0].check.as_deref(), Some("new check"));
+        assert_eq!(tool.tampered_in(&ws), 0);
     }
 
     /// The fourth door: a resume rebuilds the tracker, and the first cut

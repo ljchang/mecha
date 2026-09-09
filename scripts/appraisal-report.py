@@ -21,12 +21,13 @@ def measured(value):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0
 
 
-def report(data):
+def report(data, task_ids=None):
     manifest = data["manifest"]
     if manifest.get("kind") != "single" or manifest.get("control") != "control" or set(manifest["arms"]) != {"control", "guided"}:
         raise ValueError("expected the control/guided single-run appraisal design")
-    selected = manifest["tasks"].get("ids") or sorted(TASKS)
-    if not set(selected) <= TASKS or len(set(selected)) != len(selected):
+    known_tasks = TASKS if task_ids is None else set(task_ids)
+    selected = manifest["tasks"].get("ids") or sorted(known_tasks)
+    if not set(selected) <= known_tasks or len(set(selected)) != len(selected):
         raise ValueError("unknown or duplicate task IDs")
     seeds = manifest.get("seeds") or [None]
     expected = {(task, seed, rep) for task in selected for seed in seeds
@@ -89,11 +90,12 @@ def report(data):
 
 
 def main():
-    if len(sys.argv) != 2:
-        raise ValueError("usage: appraisal-report.py EXPORT.json (or - for stdin)")
+    if len(sys.argv) not in (2, 3):
+        raise ValueError("usage: appraisal-report.py EXPORT.json [CASES.json] (or - for stdin)")
     with (sys.stdin if sys.argv[1] == "-" else open(sys.argv[1])) as stream:
         data = json.load(stream)
-    json.dump(report(data), sys.stdout, indent=2, allow_nan=False)
+    task_ids = None if len(sys.argv) == 2 else [c["id"] for c in json.loads(Path(sys.argv[2]).read_text())]
+    json.dump(report(data, task_ids), sys.stdout, indent=2, allow_nan=False)
     print()
 
 

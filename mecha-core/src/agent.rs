@@ -7749,8 +7749,11 @@ mod tests {
                 Ok(ToolOutput::err("check failed"))
             }
         }
-        for mode in [PermissionMode::Allow, PermissionMode::Ask] {
-            let plan = |id: &str, status: &str, check: &str| {
+        for (mode, replacement) in [PermissionMode::Allow, PermissionMode::Ask]
+            .into_iter()
+            .flat_map(|mode| [Some("replacement"), None].map(|check| (mode, check)))
+        {
+            let plan = |id: &str, status: &str, check: Option<&str>| {
                 assistant(
                     vec![Block::ToolUse {
                         id: id.into(),
@@ -7762,8 +7765,8 @@ mod tests {
             };
             let (agent, _) = agent_with_tools(
                 vec![
-                    plan("p1", "in_progress", "original check"),
-                    plan("p2", "completed", "replacement"),
+                    plan("p1", "in_progress", Some("original check")),
+                    plan("p2", "completed", replacement),
                     assistant(vec![Block::text("done")], StopReason::EndTurn),
                 ],
                 vec![

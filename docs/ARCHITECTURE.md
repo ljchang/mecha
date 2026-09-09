@@ -3325,7 +3325,7 @@ the step so the carried block re-reads the prediction with the plan. **A
 completed step's `check` is frozen on the write that completes it**:
 `Tracked` keeps the hash of the latest declaration while the step is open,
 and from the completing write that declaration stands — a different check
-on that write or any later one is a tamper, echoed back as such, counted
+or an omitted check on that write or any later one is a tamper, echoed back as such, counted
 (`TodoTool::tampered_in`), never taken — with one named residual: the
 freeze is keyed on the step's text, like every other per-step mark in
 `Tracked`, so a reworded step is a new step and its check starts unfrozen;
@@ -3387,7 +3387,11 @@ Global backlog deltas remain context; only item-local evidence can earn credit.
 **Confirmed goals belong to conversations.** `Conversation::goal_anchor` carries
 the pointer across turns and `Record::GoalAnchor` preserves it through resume and
 rewrite. Per-run counters remain fresh. The anchor still represents the confirmed
-pointer, not a semantic interpretation of the owner's answer.
+pointer, not a semantic interpretation of the owner's answer. `run --goal` is
+an explicit owner confirmation, persisted before execution; omitting it on resume
+preserves the saved pointer. An experiment supplies these through the immutable
+`Tasks::confirmed_goals` map, which participates in condition hashes and must
+name selected tasks. A goal reference appearing only in prose is not confirmation.
 
 **`tasks.rs::appraise_session_with` deliberately does not call `appraisal::for_session`**,
 which does the identical assembly. `for_session` folds "could not read the file"

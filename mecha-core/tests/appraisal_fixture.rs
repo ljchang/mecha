@@ -133,3 +133,33 @@ fn synthetic_drafts_are_readable_by_the_production_outbox_schema() {
     }
     std::fs::remove_dir_all(temp).unwrap();
 }
+
+#[test]
+fn harder_pilot_goals_resolve_to_real_fixture_tasks() {
+    let m = Manifest::parse(include_str!("../../eval/appraisal-guidance-v2.toml")).unwrap();
+    let cases: serde_json::Value =
+        serde_json::from_str(include_str!("../../eval/fixtures/appraisal-v2/cases.json")).unwrap();
+    let board: serde_json::Value = serde_json::from_str(include_str!(
+        "../../eval/fixtures/appraisal-v2/board/board.json"
+    ))
+    .unwrap();
+    assert_eq!(m.tasks.ids.len(), 8);
+    assert_eq!(m.tasks.confirmed_goals.len(), 8);
+    assert_eq!(m.trials(&m.tasks.ids, "local", "ignored").len(), 48);
+    for id in &m.tasks.ids {
+        assert_eq!(
+            m.tasks.confirmed_goals[id].to_string(),
+            format!("task:{id}")
+        );
+        assert!(cases.as_array().unwrap().iter().any(|c| c["id"] == *id));
+        assert!(board["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"] == *id));
+    }
+    for arm in m.arms.values() {
+        assert_eq!(arm.model.as_deref(), Some("qwen3.6-35b-a3b"));
+        assert!(arm.overrides.contains(&"max_turns=16".to_string()));
+    }
+}

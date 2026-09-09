@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `mecha run --goal KIND:ID` explicitly confirms a goal, including on resume; experiments can register per-task confirmed goals. Completed todo steps now retain and execute a previously declared check when the completing update omits it.
+
 - A paired appraisal pilot with twelve independently graded artifact tasks,
   synthetic charter and sensor fixtures, and reporting that preserves missing
   measurements. Explicit experiment planning levers now enable disabled settings.
