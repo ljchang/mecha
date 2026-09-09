@@ -25,7 +25,11 @@ Regressions cover these paths through the store, CLI and harness probe.
 A second review found the crossed case: a known harm outcome with an unknown
 prediction fell back to positive drafting credit. Both unknown record kinds now
 make appraisal partial and suppress that fallback; the regression failed before
-the correction.
+the correction. Unsupported evidence marks appraisal partial without claiming
+the outbox itself is unreadable, so request-to-draft joins retain their known
+IDs. Owner evidence preserves pending plan verification and fills a missing
+expectation from the plan; an external passed check cannot certify those steps.
+The request-join and plan-merge regressions failed before these corrections.
 
 
 **2026-09-09 — anticipatory appraisal and linked outcomes, implemented locally.**

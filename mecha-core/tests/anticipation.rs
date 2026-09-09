@@ -451,3 +451,103 @@ fn an_owner_check_of_context_never_certifies_new_message_content() {
         .for_goal(Some(&GoalRef::Task("different".into())))
         .is_none());
 }
+
+#[test]
+fn unsupported_prediction_preserves_known_request_evidence() {
+    let f = Fixture::new();
+    let draft = f.draft();
+    let mut value = serde_json::to_value(&draft).unwrap();
+    value["predictions"][0]["source"] = json!("future_source");
+    let unknown: OutboxItem = serde_json::from_value(value).unwrap();
+    let requests: Vec<mecha_core::frontdoor::Record> = [vec![], vec![draft.id.clone()]]
+        .into_iter()
+        .enumerate()
+        .map(|(seq, outbox)| {
+            serde_json::from_value(json!({
+                "seq":seq+1,"type_id":"book","state":"closed","created_at":"2026-09-09T00:00:00Z",
+                "drained_at":"2026-09-09T00:00:00Z","valid":true,"values":{},"free_text":[],
+                "triage_session":"test-session","outbox":outbox
+            }))
+            .unwrap()
+        })
+        .collect();
+    let a = appraisal::of_session(
+        "test-session",
+        &RunStats::default(),
+        &[],
+        &[],
+        SessionRecords {
+            drafts: &[&unknown],
+            requests: &requests,
+            ..Default::default()
+        },
+        Some(Taint::default()),
+        "2026-09-09T00:00:00Z".into(),
+    );
+    assert!(a.partial);
+    assert_eq!(
+        a.errors.len(),
+        1,
+        "known draft IDs still answer the request join"
+    );
+    assert_eq!(a.errors[0].sign, -0.5);
+}
+
+#[test]
+fn owner_evidence_preserves_plan_verification_and_expectations() {
+    use mecha_core::{
+        planning::{Action, Decision},
+        tool::todo::{Plan, Status, TodoItem},
+    };
+    let goal = GoalRef::Task("meeting".into());
+    let plan = Plan {
+        goal: Some(goal.clone()),
+        items: vec![TodoItem {
+            content: "confirm the time".into(),
+            status: Status::Completed,
+            expect: Some("a confirmed meeting time".into()),
+            ..Default::default()
+        }],
+    };
+    for verification in [Verification::Unknown, Verification::Passed] {
+        let mut e = evidence();
+        e.check_available = false;
+        e.expected_outcome = None;
+        e.verification = verification;
+        e.verification_evidence =
+            (verification == Verification::Passed).then(|| "checked the source".into());
+        for shortfall in [false, true] {
+            e.budget_shortfall = shortfall;
+            let mut decision = Decision::assess(
+                &plan,
+                Some(goal.clone()),
+                None,
+                None,
+                &Default::default(),
+                true,
+            );
+            decision.with_owner_evidence(
+                &mecha_core::anticipation::BoundEvidence::new(e.clone()).unwrap(),
+            );
+            assert_eq!(
+                decision.action,
+                if shortfall {
+                    Action::Replan
+                } else {
+                    Action::Verify
+                }
+            );
+            let merged = decision.anticipation_evidence.as_ref().unwrap();
+            assert_eq!(merged.verification, Verification::Pending);
+            assert_eq!(merged.expected_outcome, plan.items[0].expect);
+            if shortfall {
+                assert!(decision
+                    .anticipation
+                    .as_ref()
+                    .unwrap()
+                    .kinds
+                    .contains(&Kind::Disappointment));
+            }
+        }
+    }
+}
