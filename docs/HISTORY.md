@@ -5559,6 +5559,18 @@ matters is the general shape.
 
 ### Measuring
 
+
+**Test the prompt's contract alongside the artifact oracle.** The harder appraisal
+pilot's privacy prompts requested a JSON report but named `answer.json` only in
+the workspace README. One guided run produced gold-matching contents in
+`share-report.json` and failed the filename check. The oracle's positive and
+negative controls all passed: they measured its implementation, not whether the
+prompt clearly asked for the artifact it required. The original grades were
+preserved, and `appraisal_artifact_source::tasks` plus separately registered
+follow-ups made the destination explicit in every prompt. A different privacy
+run wrote the correct filename with `send_now: true`; artifact-location ambiguity
+must not erase independent content errors.
+
 **2026-09-08 — external text cannot certify its own wrapper.** PR #216 review
 caught a replay optimization that skipped the untrusted-content warning when
 tool bytes looked wrapped. An attacker could imitate the tags and suppress the
