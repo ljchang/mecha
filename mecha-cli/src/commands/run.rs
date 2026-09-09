@@ -337,7 +337,7 @@ fn append_criterion_feedback(
 ) -> Result<()> {
     let steps = case.criterion_feedback(workspace)?;
     if !steps.is_empty() {
-        let mut message = Message::user("Harness observations of owner-bound task criteria.");
+        let mut message = Message::user(mecha_core::planning::CRITERION_OBSERVATION);
         message.harness = true;
         message.planning = Some(mecha_core::planning::Feedback {
             steps,

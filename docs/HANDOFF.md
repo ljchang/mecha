@@ -70,9 +70,9 @@ were re-verified in this measurement pass.
 
 Validation on this working tree: `cargo fmt --all`, warning-free
 `cargo clippy --all-targets --all-features`, and
-`MECHA_TEST_REQUIRE_BACKENDS=1 cargo test --workspace`: **2,606 passed, zero
-failed, three intentionally ignored**. The suite breakdown is 803 CLI, 22
-first-run, 3 run-lifecycle, 5 serve-lifecycle, 1,512 core, 6 appraisal-fixture,
+`MECHA_TEST_REQUIRE_BACKENDS=1 cargo test --workspace`: **2,616 passed, zero
+failed, three intentionally ignored**. The suite breakdown is 805 CLI, 22
+first-run, 3 run-lifecycle, 5 serve-lifecycle, 1,519 core, 7 appraisal-fixture,
 5 fixture-server, 13 MCP, 9 sandbox-backend, 151 mail, 1 mail binary, 75 Slack
 and 1 doctest.
 The main eval inventory remains **36 cases / 15 tags**, recounted 2026-09-09;
@@ -3965,9 +3965,12 @@ is true now:
 - **Automatic in-run convergence remains open.** `Workflow::check_evidence`
   and `WorkflowStore::verify` now check explicit artifact content and confirmed
   delivery; Today rereads evidence and owner closure verifies again. These are
-  workflow checks outside the agent loop. `TodoItem::check` remains a recorded
-  declaration, and the loop does not execute a general postcondition before
-  accepting the model's stop.
+  workflow checks outside the agent loop. Declared `TodoItem::check` commands
+  now execute on step completion through the normal tool policy and sandbox
+  path in `Agent::run`; failed checks reopen the step. What remains open is
+  a general task-level postcondition that gates acceptance of a model stop.
+  `ArtifactCase::criterion_feedback` observes a bound fixture after the run;
+  it does not turn final completion into an enforced convergence loop.
 
 - **Programmatic tool calling** (a `code` tool that calls other tools from inside
   a program). Two hazards to solve first, both named in the research: taint must
@@ -4015,10 +4018,12 @@ What is missing beyond that is refinement:
   (`appraisal.rs` folds `WritingOutcome::SentUnchanged` as positive
   evidence) — but the *learner* still ignores it: consolidation mines only
   edited-then-sent items, so "this voice was right" never reinforces a rule.
-- **LEAP-in-production.** Reflection now also mines bounded, clean planning
-  mismatches through `learning::extract_mismatches`. Learning from
-  graded eval cases — sampling known-outcome examples rather than waiting for a
-  correction — was ported in design but not in code.
+- **LEAP-in-production.** `learning::extract_mismatches` now mines verified
+  criterion/check failures from clean, bound task sessions. Owner-registered
+  `ArtifactCase::criteria` can supply field verdicts and pinned count context
+  without passing gold answers to the reflector. A general sampler over graded
+  eval cases and deployment on real owner-policy tasks remain open. Forecast
+  overruns alone are observations, not evidence for new behavioral lessons.
 - **The correction-rate query shipped** (`mecha learning-report`, plus
   `/api/settings/learning-report` and the web trend pane) — what remains is
   *reading* it: the pre-cutover baseline is thin, so the trend needs a few

@@ -3403,6 +3403,15 @@ readings still do not enter their prompts. Transfer fixtures omit `criteria` to
 withhold evaluation feedback. Gold and arbitrary tool output never join the
 reflection payload. A passing criterion is not whole-task success.
 
+The generic observation message must carry `Message::harness`, and ordinary
+intervention mining must honor that marker in the user role as well as the
+assistant role. `planning::CRITERION_OBSERVATION` is also a frozen recognized
+voice, protecting historical records and stored reflections. Otherwise every
+post-run diagnostic, including a passing task, becomes an invented owner follow-up;
+the first attribution pilot was stopped for exactly that failure. The mismatch
+frame distinguishes the artifact verdict from the context predicate: a false
+threshold condition can be the correct decision, not evidence of task failure.
+
 Cost-only observations remain available for forecast analysis and plan-boundary
 feedback, but `extract_mismatches`, the direct reflector and new consolidation
 exclude them as unsupported behavioral lessons. Existing rules retain their
