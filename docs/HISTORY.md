@@ -14,6 +14,16 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-09 — anticipatory appraisal review fixes, not installed.**
+`harness_probe::prepare_episode` refuses evidence-bearing configurations across
+an entire session until replay reconstructs them. `anticipation::History`
+preserves unsupported prediction/outcome JSON while keeping draft review,
+editing and rejection available; release and outcome grading fail closed.
+`outbox show` now keeps the draft visible when the current assessment fails
+(for example, a future timestamp), without weakening `begin_delivery`.
+Regressions cover these paths through the store, CLI and harness probe.
+
+
 **2026-09-09 — anticipatory appraisal and linked outcomes, implemented locally.**
 On `feat/anticipatory-appraisal` (isolated `mecha-anticipation` worktree, based
 on `f4c40cbeda1aad61f190b98a66645df2eb3f5c0d`), `anticipation::assess`

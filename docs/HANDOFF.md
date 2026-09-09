@@ -22,7 +22,13 @@ maps which document holds what.
 
 ## Where the work is
 
-**2026-09-09 — anticipatory appraisal is implemented locally, not installed.**
+**2026-09-09 — anticipatory appraisal is in PR #221, not installed.**
+The review branch is `review/anticipatory-appraisal`, stacked on prerequisite
+PR #220. Review fixes preserve unsupported evidence without hiding drafts,
+keep display available on appraisal errors, and reject evidence-bearing
+whole-session probes until reproduction is implemented.
+
+Original implementation location:
 `feat/anticipatory-appraisal` lives in `/home/ljchang/Github/mecha-anticipation`,
 based on `f4c40cbeda1aad61f190b98a66645df2eb3f5c0d`; the original worktree's
 pending docs refresh and measurement artifacts are preserved. Confirmed-goal
@@ -44,9 +50,9 @@ before the optional delivery gate can be relied on. No deployment was done.
 Validation on this worktree: `cargo fmt --all`, warning-free
 `cargo clippy --all-targets --all-features`, and
 `MECHA_TEST_REQUIRE_BACKENDS=1 cargo test --workspace` passed. Unit suites:
-CLI 806 passed/1 ignored, core 1522/1, mail library 151/0 plus mail binary 1/0,
+CLI 806 passed/1 ignored, core 1524/1, mail library 151/0 plus mail binary 1/0,
 Slack 75/0. Integration suites: CLI anticipation 1, first-run 22, run lifecycle 3,
-serve lifecycle 5; core anticipation 8, appraisal fixtures 7, fixture servers 5,
+serve lifecycle 5; core anticipation 9, appraisal fixtures 7, fixture servers 5,
 MCP server 13, sandbox backends 9; grounding judge remains explicitly ignored.
 One core doctest passed. Docusaurus production build passed; the appraisal page
 rendered without browser errors or page overflow at 1440px and 390px.

@@ -88,7 +88,7 @@ fn guided_check_blocks_release_but_not_editing_or_rejection() {
     let draft = f.draft();
     assert_eq!(draft.predictions.len(), 1);
     let item = f.store.anticipate(&draft.id, evidence(), true).unwrap();
-    let original = item.predictions.last().unwrap().clone();
+    let original = item.predictions.last().unwrap().known().unwrap().clone();
     assert!(original.assessment.kinds.contains(&Kind::Guilt));
     assert!(f.store.begin_delivery(&item.id).is_err());
     assert!(f.store.item(&item.id).unwrap().delivery_attempts.is_empty());
@@ -115,12 +115,12 @@ fn a_reassessment_is_not_a_success_or_failure_of_the_original_forecast() {
     let _lock = f.store.lock().unwrap();
     let draft = f.draft();
     let before = f.store.anticipate(&draft.id, evidence(), true).unwrap();
-    let original = before.predictions.last().unwrap().clone();
+    let original = before.predictions.last().unwrap().known().unwrap().clone();
     let mut checked = evidence();
     checked.verification = Verification::Passed;
     checked.verification_evidence = Some("calendar entry checked".into());
     let after = f.store.anticipate(&draft.id, checked, true).unwrap();
-    let current = after.predictions.last().unwrap().clone();
+    let current = after.predictions.last().unwrap().known().unwrap().clone();
     assert_eq!(
         after.prediction_resolution(&original),
         Resolution::Reassessed
@@ -156,7 +156,8 @@ fn a_reassessment_is_not_a_success_or_failure_of_the_original_forecast() {
         .unwrap();
     assert_eq!(judged.prediction_resolution(&current), Resolution::Observed);
     assert_eq!(
-        judged.predictions[1], original,
+        judged.predictions[1].known().unwrap(),
+        &original,
         "prediction history is immutable"
     );
 }
@@ -167,7 +168,14 @@ fn delivered_error_and_attributable_impact_have_real_appraisal_producers() {
     let _lock = f.store.lock().unwrap();
     let draft = f.draft();
     let pending = f.store.anticipate(&draft.id, evidence(), false).unwrap();
-    let pid = pending.predictions.last().unwrap().id.clone();
+    let pid = pending
+        .predictions
+        .last()
+        .unwrap()
+        .known()
+        .unwrap()
+        .id
+        .clone();
     assert!(f
         .store
         .record_outcome(&draft.id, feedback(&pid, Verdict::ErrorExposed))
@@ -192,19 +200,19 @@ fn delivered_error_and_attributable_impact_have_real_appraisal_producers() {
         "duplicate reports cannot accumulate"
     );
     let mut impact = feedback(&pid, Verdict::Harm);
-    impact.supersedes = Some(error.outcomes[0].id.clone());
+    impact.supersedes = Some(error.outcomes[0].known().unwrap().id.clone());
     let harmed = f.store.record_outcome(&draft.id, impact).unwrap();
     let a = appraise(&harmed);
     assert_eq!(a.label, Affect::Guilt);
     assert_eq!(a.errors.len(), 1);
     assert_eq!(a.errors[0].goal, Some(GoalRef::Task("meeting".into())));
     let mut withdraw = feedback(&pid, Verdict::Withdrawn);
-    withdraw.supersedes = Some(harmed.outcomes[1].id.clone());
+    withdraw.supersedes = Some(harmed.outcomes[1].known().unwrap().id.clone());
     let withdrawn = f.store.record_outcome(&draft.id, withdraw).unwrap();
     assert_eq!(appraise(&withdrawn).label, Affect::Neutral);
     assert_eq!(withdrawn.outcomes.len(), 3);
     assert_eq!(
-        withdrawn.prediction_resolution(withdrawn.predictions.last().unwrap()),
+        withdrawn.prediction_resolution(withdrawn.predictions.last().unwrap().known().unwrap()),
         Resolution::AwaitingFeedback
     );
     let reopened = OutboxStore::open(&f.root).unwrap().item(&draft.id).unwrap();
@@ -223,7 +231,14 @@ fn harm_needs_a_commitment_and_an_owner_rewrite_cannot_be_attributed_to_mecha() 
         .store
         .anticipate(&draft.id, Evidence::default(), false)
         .unwrap();
-    let pid = pending.predictions.last().unwrap().id.clone();
+    let pid = pending
+        .predictions
+        .last()
+        .unwrap()
+        .known()
+        .unwrap()
+        .id
+        .clone();
     f.store.begin_delivery(&draft.id).unwrap();
     let sent = f.store.resolve(&draft.id, "sent", None).unwrap();
     assert_eq!(appraise(&sent).label, Affect::Distress);
@@ -238,17 +253,80 @@ fn harm_needs_a_commitment_and_an_owner_rewrite_cannot_be_attributed_to_mecha() 
 }
 
 #[test]
-fn future_or_corrupt_guidance_does_not_silently_disappear_and_old_drafts_still_load() {
+fn future_guidance_stays_reviewable_and_raw_but_cannot_release() {
     let f = Fixture::new();
+    let _lock = f.store.lock().unwrap();
+    for (pointer, unknown) in [
+        (
+            "/predictions/0/assessment/response",
+            json!("future_response"),
+        ),
+        ("/predictions/0/assessment/kinds", json!(["future_kind"])),
+        (
+            "/predictions/0/evidence/verification",
+            json!("future_verification"),
+        ),
+        ("/predictions/0/source", json!("future_source")),
+        ("/predictions/0/evidence", json!({"future_field":true})),
+    ] {
+        let draft = f.draft();
+        let mut value = serde_json::to_value(&draft).unwrap();
+        *value.pointer_mut(pointer).unwrap() = unknown;
+        let raw = value["predictions"][0].clone();
+        std::fs::write(f.root.join(format!("{}.json", draft.id)), value.to_string()).unwrap();
+        let item = f.store.item(&draft.id).unwrap();
+        assert!(item.predictions[0].known().is_none());
+        assert!(f.store.items().unwrap().iter().any(|i| i.id == draft.id));
+        assert_eq!(
+            item.anticipation_readout()["predictions"][0]["resolution"],
+            "unsupported"
+        );
+        assert!(f.store.begin_delivery(&draft.id).is_err());
+        let edited = f
+            .store
+            .update_args(&draft.id, json!({"body":"revised"}))
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&edited).unwrap()["predictions"][0],
+            raw
+        );
+        let rejected = f.store.resolve(&draft.id, "rejected", None).unwrap();
+        assert_eq!(
+            serde_json::to_value(&rejected).unwrap()["predictions"][0],
+            raw
+        );
+    }
     let draft = f.draft();
     let mut value = serde_json::to_value(&draft).unwrap();
-    value["predictions"][0]["assessment"]["response"] = json!("future_response");
-    assert!(serde_json::from_value::<OutboxItem>(value.clone()).is_err());
     value.as_object_mut().unwrap().remove("predictions");
     value.as_object_mut().unwrap().remove("outcomes");
     let old: OutboxItem = serde_json::from_value(value).unwrap();
     old.ensure_prediction_ready().unwrap();
     assert!(old.predictions.is_empty());
+}
+
+#[test]
+fn an_unknown_outcome_is_preserved_and_never_falls_back_to_a_positive_verdict() {
+    let f = Fixture::new();
+    let draft = f.draft();
+    f.store.begin_delivery(&draft.id).unwrap();
+    let sent = f.store.resolve(&draft.id, "sent", None).unwrap();
+    let mut value = serde_json::to_value(&sent).unwrap();
+    value["outcomes"] = json!([{"id":"future", "observation":{"verdict":"future_verdict"}}]);
+    let raw = value["outcomes"].clone();
+    std::fs::write(f.root.join(format!("{}.json", draft.id)), value.to_string()).unwrap();
+    let read = f.store.item(&draft.id).unwrap();
+    assert_eq!(serde_json::to_value(&read).unwrap()["outcomes"], raw);
+    let a = appraise(&read);
+    assert!(a.partial);
+    assert!(a.errors.is_empty());
+    assert_eq!(read.anticipation_readout()["outcomes_supported"], false);
+    assert!(read.ensure_prediction_ready().is_err());
+    let pid = read.predictions[0].known().unwrap().id.clone();
+    assert!(f
+        .store
+        .record_outcome(&draft.id, feedback(&pid, Verdict::NoIssue))
+        .is_err());
 }
 
 #[test]
@@ -259,7 +337,12 @@ fn an_expired_guided_commitment_cannot_use_an_old_pass_to_release() {
     checked.verification = Verification::Passed;
     checked.verification_evidence = Some("receipt".into());
     let mut item = f.store.anticipate(&draft.id, checked, true).unwrap();
-    item.predictions.last_mut().unwrap().created_at = "2020-01-01T00:00:00Z".into();
+    item.predictions
+        .last_mut()
+        .unwrap()
+        .known_mut()
+        .unwrap()
+        .created_at = "2020-01-01T00:00:00Z".into();
     assert!(item.ensure_prediction_ready().is_err());
 }
 

@@ -1956,6 +1956,12 @@ whose deadline has since expired. Every release surface must use that seam.
 The gate is opt-in and may be disabled explicitly with `outbox anticipate
 --observe`; it does not acquire sending authority. Older binaries ignore these
 new fields, so mixed-version releases cannot enforce guidance.
+`anticipation::History` retains unsupported nested records as raw JSON so an
+unrecognized enum cannot hide the draft from review, editing or rejection.
+Unsupported latest predictions or outcome history block release, and unknown
+outcomes make session appraisal partial instead of falling back to a positive
+draft verdict. Owner input remains strict. Display may fall back to the stored
+assessment with a warning when recomputation fails; delivery never does.
 
 A delivered message is exposure, not proof of error or harm. Only
 `OutboxStore::record_outcome` admits bounded owner feedback linked to the
@@ -3269,7 +3275,8 @@ delay can instead require a fallback. The six anticipatory kinds are distinct
 from retrospective `Affect`; shame and excitement are outside this slice.
 
 `RunConfig::appraisal_evidence` preserves these conditions, including unknown
-future schemas. `prepare_probe_in`, `mismatch::validate_recording`, and replay
+future schemas. `prepare_probe_in`, `mismatch::validate_recording`,
+`harness_probe::prepare_episode` (every recorded configuration), and replay
 refuse unsupported evidence-bearing runs until reconstruction is implemented.
 Silently dropping evidence would turn a different decision context into a false
 counterfactual result. Forecast calibration and efficacy remain unmeasured.

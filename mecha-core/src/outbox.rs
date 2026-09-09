@@ -179,11 +179,12 @@ pub struct DeliveryAttempt {
 /// One staged outbound action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboxItem {
-    /// Strict when present: unreadable guidance must never silently permit release.
+    /// Unknown records retain their original JSON and remain visible to review.
+    /// An uninterpretable latest prediction blocks release until reassessed.
     #[serde(default)]
-    pub predictions: Vec<crate::anticipation::Prediction>,
+    pub predictions: Vec<crate::anticipation::History<crate::anticipation::Prediction>>,
     #[serde(default)]
-    pub outcomes: Vec<crate::anticipation::Outcome>,
+    pub outcomes: Vec<crate::anticipation::History<crate::anticipation::Outcome>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delivery_attempts: Vec<DeliveryAttempt>,
     pub id: String,
@@ -319,7 +320,17 @@ impl OutboxItem {
 
     /// Latest assessment must still describe this exact action before opt-in release.
     pub fn ensure_prediction_ready(&self) -> Result<()> {
-        if let Some(p) = self.predictions.last().filter(|p| p.guide) {
+        anyhow::ensure!(
+            self.outcomes.iter().all(|o| o.known().is_some()),
+            "unsupported outcome evidence; use a compatible binary before release"
+        );
+        let Some(latest) = self.predictions.last() else {
+            return Ok(());
+        };
+        let p = latest
+            .known()
+            .context("unsupported prediction evidence; reassess explicitly before release")?;
+        if p.guide {
             anyhow::ensure!(p.args == self.args, "draft changed since assessment; run `mecha outbox anticipate` again before release");
             anyhow::ensure!(
                 p.assessment == crate::anticipation::assess(&p.evidence, true),
@@ -337,13 +348,18 @@ impl OutboxItem {
         prediction: &crate::anticipation::Prediction,
     ) -> crate::anticipation::Resolution {
         use crate::anticipation::Resolution;
+        if self.predictions.last().is_some_and(|p| p.known().is_none())
+            || self.outcomes.iter().any(|o| o.known().is_none())
+        {
+            return Resolution::Unsupported;
+        }
         if prediction.args != self.args {
             return Resolution::Changed;
         }
         if self
             .predictions
             .last()
-            .is_some_and(|last| last.id != prediction.id)
+            .is_some_and(|last| last.known().is_some_and(|p| p.id != prediction.id))
         {
             return Resolution::Reassessed;
         }
@@ -369,13 +385,18 @@ impl OutboxItem {
 
     /// Superseded and withdrawn observations do not contribute; their history remains.
     pub fn active_outcomes(&self) -> Vec<&crate::anticipation::Outcome> {
+        if self.outcomes.iter().any(|o| o.known().is_none()) {
+            return Vec::new();
+        }
         self.outcomes
             .iter()
+            .filter_map(|o| o.known())
             .filter(|o| {
                 o.observation.verdict != crate::anticipation::Verdict::Withdrawn
                     && !self
                         .outcomes
                         .iter()
+                        .filter_map(|new| new.known())
                         .any(|new| new.observation.supersedes.as_deref() == Some(o.id.as_str()))
             })
             .collect()
@@ -384,9 +405,13 @@ impl OutboxItem {
     /// Structured owner readout; evidence prose stays local and outside model prompts.
     pub fn anticipation_readout(&self) -> Value {
         serde_json::json!({
-            "predictions": self.predictions.iter().map(|p| {
+            "predictions": self.predictions.iter().map(|record| {
+                let Some(p) = record.known() else {
+                    return serde_json::json!({"prediction":record,"resolution":"unsupported",
+                        "assessment_error":"unsupported prediction evidence; preserved without interpretation"});
+                };
                 let current = (self.status == "pending" && p.args == self.args
-                    && self.predictions.last().is_some_and(|last| last.id == p.id))
+                    && self.predictions.last().and_then(|last| last.known()).is_some_and(|last| last.id == p.id))
                     .then(|| p.current_assessment());
                 serde_json::json!({
                     "prediction": p, "resolution": self.prediction_resolution(p),
@@ -395,6 +420,7 @@ impl OutboxItem {
                 })
             }).collect::<Vec<_>>(),
             "outcomes": self.outcomes,
+            "outcomes_supported": self.outcomes.iter().all(|o| o.known().is_some()),
         })
     }
 
@@ -692,7 +718,8 @@ impl OutboxStore {
                     prediction_evidence,
                     prediction_source,
                     false,
-                )]
+                )
+                .into()]
             } else {
                 Vec::new()
             },
@@ -927,7 +954,11 @@ impl OutboxStore {
         item.ensure_delivery_ready()?;
         item.ensure_prediction_ready()?;
         item.delivery_attempts.push(DeliveryAttempt {
-            prediction_id: item.predictions.last().map(|p| p.id.clone()),
+            prediction_id: item
+                .predictions
+                .last()
+                .and_then(|p| p.known())
+                .map(|p| p.id.clone()),
             id: uuid::Uuid::new_v4().to_string(),
             started_at: chrono::Utc::now().to_rfc3339(),
             outcome: DeliveryOutcome::Unknown,
@@ -999,12 +1030,15 @@ impl OutboxStore {
             item.predictions.len() < 128,
             "prediction history full; stage a new draft"
         );
-        item.predictions.push(crate::anticipation::Prediction::new(
-            item.args.clone(),
-            evidence,
-            crate::anticipation::Source::Owner,
-            guide,
-        ));
+        item.predictions.push(
+            crate::anticipation::Prediction::new(
+                item.args.clone(),
+                evidence,
+                crate::anticipation::Source::Owner,
+                guide,
+            )
+            .into(),
+        );
         self.write_item(&item)?;
         Ok(item)
     }
@@ -1026,6 +1060,7 @@ impl OutboxStore {
         let p = item
             .predictions
             .iter()
+            .filter_map(|p| p.known())
             .find(|p| p.id == input.prediction_id)
             .ok_or_else(|| anyhow::anyhow!("unknown prediction id"))?;
         anyhow::ensure!(
@@ -1033,7 +1068,10 @@ impl OutboxStore {
             "prediction described a different action; its outcome remains changed"
         );
         anyhow::ensure!(
-            item.predictions.last().is_some_and(|last| last.id == p.id),
+            item.predictions
+                .last()
+                .and_then(|last| last.known())
+                .is_some_and(|last| last.id == p.id),
             "prediction was reassessed before delivery"
         );
         if let Some(attempt) = item.delivery_attempts.last() {
@@ -1054,11 +1092,16 @@ impl OutboxStore {
                 "this slice only attributes unchanged model-authored messages to mecha"
             );
         }
+        anyhow::ensure!(
+            item.outcomes.iter().all(|o| o.known().is_some()),
+            "unsupported outcome evidence; use a compatible build to amend it"
+        );
         let active = item.active_outcomes();
         if let Some(old) = &input.supersedes {
             let previous = item
                 .outcomes
                 .iter()
+                .filter_map(|o| o.known())
                 .find(|o| &o.id == old)
                 .ok_or_else(|| anyhow::anyhow!("unknown superseded outcome"))?;
             anyhow::ensure!(
@@ -1066,10 +1109,11 @@ impl OutboxStore {
                 "replacement must refer to the same prediction"
             );
             anyhow::ensure!(
-                !item
-                    .outcomes
-                    .iter()
-                    .any(|o| o.observation.supersedes.as_ref() == Some(old)),
+                !item.outcomes.iter().filter_map(|o| o.known()).any(|o| o
+                    .observation
+                    .supersedes
+                    .as_ref()
+                    == Some(old)),
                 "outcome already superseded"
             );
         }
@@ -1080,11 +1124,14 @@ impl OutboxStore {
             "an outcome is already active; explicitly supersede it"
         );
         anyhow::ensure!(item.outcomes.len() < 128, "outcome history full");
-        item.outcomes.push(Outcome {
-            id: uuid::Uuid::new_v4().to_string(),
-            recorded_at: chrono::Utc::now().to_rfc3339(),
-            observation: input,
-        });
+        item.outcomes.push(
+            Outcome {
+                id: uuid::Uuid::new_v4().to_string(),
+                recorded_at: chrono::Utc::now().to_rfc3339(),
+                observation: input,
+            }
+            .into(),
+        );
         self.write_item(&item)?;
         Ok(item)
     }

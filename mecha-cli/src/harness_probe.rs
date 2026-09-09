@@ -113,6 +113,11 @@ pub fn prepare_episode(
     // or `/mode` switch mid-session also appends a `Config`, and that case
     // (the *worse* compromise: the session's later half ran under another
     // model) would have read as a resume it never was.
+    if read.configs.iter().any(|c| c.appraisal_evidence.is_some()) {
+        return Ok(Err(
+            "owner-bound anticipatory evidence is not yet reproduced by harness probes".into(),
+        ));
+    }
     let config_caveat = (read.configs.len() > 1).then(|| {
         format!(
             "attached {} times; replayed under the first config",
@@ -862,6 +867,19 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(prep.config_caveat, None);
+
+        // The whole episode replays: evidence on a later attach also invalidates it.
+        resumed
+            .append(&Record::Config(RunConfig {
+                appraisal_evidence: Some(serde_json::json!({"future_evidence":true})),
+                ..Default::default()
+            }))
+            .unwrap();
+        let skipped = prepare_episode(&resumed.path, "multi", None)
+            .unwrap()
+            .err()
+            .expect("unsupported evidence must not grade either arm");
+        assert!(skipped.contains("anticipatory evidence"));
 
         std::fs::remove_dir_all(&dir).ok();
     }

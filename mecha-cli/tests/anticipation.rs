@@ -95,6 +95,23 @@ fn owner_commands_preserve_guidance_and_link_post_delivery_feedback() {
     let pid = checked["predictions"][2]["prediction"]["id"]
         .as_str()
         .unwrap();
+    let item_path = f
+        .root
+        .join("home/outbox")
+        .join(format!("{}.json", draft.id));
+    let original = std::fs::read(&item_path).unwrap();
+    let mut skewed: Value = serde_json::from_slice(&original).unwrap();
+    skewed["predictions"][2]["created_at"] = json!("2099-01-01T00:00:00Z");
+    std::fs::write(&item_path, skewed.to_string()).unwrap();
+    let shown = f.command(&["outbox", "show", &draft.id]);
+    assert!(
+        shown.status.success(),
+        "a skewed assessment cannot hide the draft"
+    );
+    let text = String::from_utf8_lossy(&shown.stdout);
+    assert!(text.contains("Appraisal unavailable") && text.contains("Meeting at 10"));
+    assert!(store.begin_delivery(&draft.id).is_err());
+    std::fs::write(&item_path, original).unwrap();
     // Simulated acknowledgement, never an actual send.
     store.begin_delivery(&draft.id).unwrap();
     store
