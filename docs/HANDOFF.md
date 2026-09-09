@@ -33,17 +33,22 @@ conditions are in `results/appraisal-guidance-qwen36-35b-20260909/README.md`.
 The model, binary, fixtures and operator config matched at the finish checks;
 no installation or service restart was performed.
 
-**The next measurements are running under separate registered designs.**
-`eval/appraisal-guidance-v2.toml` compares 48 harder, anchored trials at a
-16-turn ceiling. `eval/appraisal-learning-v2.toml` separately measures a six-task
-sequence per arm, starting with an empty learning store; guidance and rule
-loading are enabled in both arms, while only the treatment runs learning stages.
-Their results must distinguish artifact success, check execution, confirmed-goal
-exposure and actual rule loading. The v2 privacy prompts leave the artifact filename
-in README.txt rather than naming it in the prompt; `eval/appraisal-privacy.toml`
-is a separately registered explicit-output follow-up. The original learning
-design was superseded before any model run. The baseline remains unchanged. Guidance stays
-opt-in until a useful effect is measured.
+**The harder and learning measurements are complete; guidance stays opt-in.**
+The 48 anchored trials passed **20/24 control versus 18/24 guided**; the native
+gate rejected promotion. All 20 observed completion-time check omissions were
+restored. A privacy artifact-location ambiguity is preserved in those grades;
+the separately registered explicit-output follow-up passed **6/6 versus 5/6**.
+See `results/appraisal-guidance-v2-qwen36-35b-20260909/README.md` and
+`results/appraisal-privacy-qwen36-35b-20260909/README.md` for conditions and limits.
+
+The separate six-task learning sequence passed **6/6 in both arms**, including
+3/3 on each transfer slice. All 12 treatment stages completed, but only two clean,
+goal-linked reflections were captured, below the unchanged minimum of three.
+No rules were created or loaded, so learning benefits remain unmeasured. See
+`results/appraisal-learning-v2-qwen36-35b-20260909/README.md`. The earlier learning
+design was superseded without running; the original baseline remains unchanged.
+A further transfer test needs more eligible mismatch evidence before its transfer
+slice, without weakening the evidence, scope or provenance gates.
 
 Unsolicited mid-run rule delivery stays off; mismatch-specific counterfactual
 grading, semantic interpretation of owner goal corrections, across-run learning
