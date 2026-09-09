@@ -340,6 +340,7 @@ mod tests {
 
     fn r(origin: Origin) -> Reflexion {
         Reflexion {
+            goals: Vec::new(),
             id: "r1".into(),
             domain: "behavior".into(),
             session_id: "s1".into(),

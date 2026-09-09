@@ -397,6 +397,8 @@ mod tests {
                 tool_use("t2", "fs_read", json!({"path": "a.md"})),
             ]),
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![
@@ -433,6 +435,8 @@ mod tests {
                 tool_use("t2", "fs_write", json!({"path": "notes.md"})),
             ]),
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![
@@ -492,6 +496,8 @@ mod tests {
                 tool_use("t2", "fs_write", json!({"path": "notes.md"})),
             ]),
             Message {
+                harness: false,
+                planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
                 content: vec![

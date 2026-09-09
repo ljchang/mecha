@@ -557,6 +557,8 @@ mod tests {
                     input: serde_json::json!({}),
                 }]),
                 Message {
+                    harness: false,
+                    planning: None,
                     tool_provenance: Default::default(),
                     role: mecha_core::message::Role::User,
                     content: vec![Block::ToolResult {
@@ -696,6 +698,8 @@ mod tests {
                 Message::user("do the thing"),
                 Message::assistant(calls),
                 Message {
+                    harness: false,
+                    planning: None,
                     tool_provenance: Default::default(),
                     role: mecha_core::message::Role::User,
                     content: results,
@@ -818,6 +822,8 @@ mod tests {
                     input: serde_json::json!({}),
                 }]),
                 Message {
+                    harness: false,
+                    planning: None,
                     tool_provenance: Default::default(),
                     role: mecha_core::message::Role::User,
                     content: vec![Block::ToolResult {

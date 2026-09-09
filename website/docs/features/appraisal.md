@@ -760,3 +760,33 @@ often it fired.
   nothing reads it as far as the model at all. The sensors ship first and earn a
   behavioural consumer later, deliberately, rather than backing into one under
   time pressure.
+
+## Planning feedback and goal context
+
+Plans can declare `serves`, a checkable `expect`, a shell `check`, and an
+`expect_calls` estimate. Completing a step runs its frozen check through the
+usual approvals, hooks and sandbox. At most 16 checks run per run. Refused,
+unavailable or skipped checks remain unverified; a passing check establishes
+only what that command tested at that time.
+
+Confirmed goal references persist across turns and session resume. Appraisal
+associates events with their historical goal, can retain a related charter line,
+and keeps the owner's completion verdict alongside execution evidence.
+
+`goal_context` retrieves up to four applicable goal-linked rules and two recent
+examples with passing checks. It preserves scope and provenance and runs only
+when requested by the agent. Failed checks, substantial estimate overruns and
+changes to frozen checks can supply bounded mismatch reflections to `mecha reflect`.
+Unknown or tainted mismatch evidence is excluded.
+
+```toml
+[agent]
+step_checks = true      # default; --no-step-checks disables execution
+goal_guidance = false  # opt in to fixed planning advice
+```
+
+With `goal_guidance = true`, plan updates receive advice based on confirmed-goal
+alignment, remaining work, verification gaps and ordered charter sensor readings.
+The sensor numbers stay outside model prompts. Guidance is experimental: it has
+mechanical regression coverage, but improved task outcomes have not been measured.
+Use `--no-goal-guidance` to disable it for a comparison run.

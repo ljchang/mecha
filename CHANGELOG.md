@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Goal-aware planning feedback: confirmed goals persist across turns and resume;
+  declared checks execute through the normal guards, and forecast misses, failed
+  checks and frozen-check changes can produce bounded mismatch reflections.
+- `goal_context` retrieves applicable goal-linked rules and recent, clean examples
+  with passing checks. Optional `agent.goal_guidance` gives fixed planning advice
+  from task progress, confirmed goals and charter sensor discrepancies.
+- Event-time goal attribution preserves task and charter relationships. Owner task
+  closure remains a separate verdict; global queue movement earns no causal credit.
+
 - Explicit per-task fixture clocks and recorded rubric judges for assistant
   experiments; answer checks receive actual tool evidence and fail on grading errors.
 

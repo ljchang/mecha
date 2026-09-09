@@ -938,6 +938,7 @@ mod tests {
     fn the_argued_brake_is_per_batch_not_per_domain() {
         use mecha_core::learning::{Proposal, Reflexion};
         let refl = |id: &str| Reflexion {
+            goals: Vec::new(),
             id: id.into(),
             domain: "behavior".into(),
             session_id: "s".into(),

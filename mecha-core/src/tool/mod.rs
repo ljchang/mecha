@@ -6,6 +6,7 @@
 
 pub mod ask;
 pub mod builtin;
+pub mod goal_context;
 pub mod profile;
 pub mod recall;
 pub mod skill;
@@ -481,6 +482,14 @@ pub struct ToolCtx {
     /// `ask_user` sets it in-run on a present human's answer, `todo` counts
     /// each plan write against it. A sensor: nothing re-asks on it yet.
     pub goal_track: Option<std::sync::Arc<GoalTrack>>,
+    /// Frozen checks requested by a plan tool, drained after the tool batch.
+    pub verified_steps: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    pub plan_feedback: Option<std::sync::Arc<std::sync::Mutex<crate::planning::Feedback>>>,
+    pub goal_readings: Option<Vec<crate::reading::LineReading>>,
+    pub goal_guidance: bool,
+    pub goal_lessons: Vec<crate::planning::Lesson>,
+    pub goal_examples: Vec<crate::planning::Example>,
+    pub step_checks: Option<std::sync::Arc<std::sync::Mutex<Vec<crate::step::CheckRequest>>>>,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -497,15 +506,9 @@ pub struct ToolCtx {
 /// id change is deliberately not built — like mid-run delivery (item 2), it
 /// is off until the count has been read across a few nights.
 ///
-/// **The anchor lives for one run.** The loop mints a fresh track per run
-/// into a run-local context and never writes back, so a goal confirmed in
-/// one chat turn is not the anchor of the next: today's denominator is
-/// delegated resumes (the resume seeds the answered question's pointer)
-/// and confirmations made and planned against inside one run. The first
-/// readings say nothing about interactive work across turns; carrying the
-/// anchor between a front-end's turns is the next half, and it must be
-/// per conversation, never on the agent's shared context (found on
-/// review, named rather than built).
+/// The counters live for one run; the confirmed anchor lives on the
+/// conversation and is recorded separately for resume. The agent's shared
+/// context must never become the carrier between unrelated conversations.
 ///
 /// **The anchor is the pointer the owner confirmed, not the owner's words.**
 /// The answer is prose the harness never interprets, so a correction in it
@@ -649,6 +652,13 @@ impl Default for ToolCtx {
             step_escalation: None,
             step_counts: None,
             goal_track: None,
+            verified_steps: Default::default(),
+            plan_feedback: None,
+            goal_readings: None,
+            goal_guidance: false,
+            goal_lessons: Vec::new(),
+            goal_examples: Vec::new(),
+            step_checks: None,
         }
     }
 }

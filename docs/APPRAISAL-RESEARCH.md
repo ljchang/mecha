@@ -1,5 +1,9 @@
 # The appraisal system — review, corpus measurement, and what the literature says
 
+**Implementation, 2026-09-09:** The mechanisms following §8 are implemented in the working tree; see `HISTORY.md` under this date and `ARCHITECTURE.md` for the current boundaries. Guidance is opt-in and efficacy remains unmeasured. The dated evaluation below is retained.
+
+**Follow-up evaluation, 2026-09-09:** §8 checks the current implementation against goal-aligned planning, context retrieval, learning and decisions. Earlier measurements and unbuilt lists retain their original dates.
+
 Researched 2026-09-02, against `main` at `102bacc`. One question: **why is the
 appraisal system still inert a week after rungs 0–10 shipped, and what would
 make it an effective feature rather than a recorded one?** The design is
@@ -700,3 +704,194 @@ and several 2026 papers read as abstracts.
   attribution that closes the queue-delta arm's accepted residual — a
   global before/after diff credits a run for what the owner cleared by
   hand mid-run, as `live_readout` discloses.
+
+
+## 8. Follow-up evaluation: from appraisal to better decisions
+
+Evaluated 2026-09-09 against source at `d1f3fb4f`, with unrelated documentation
+edits already present. Method: trace producers and consumers in core and CLI,
+read the goal-system rulings, build all workspace targets, run workspace
+checks, and inspect the built binary's read-only local reports. No paid
+appraisal, replay, model trial or production change was run. Source findings
+below are implementation facts; proposed benefits remain hypotheses to test.
+
+**Assessment:** there is useful evidence recording, provenance control,
+scoped learning and feedback. The system does not yet close the loop from a
+goal's desired outcome through a plan, relevant evidence, predicted
+consequences, verified results and revised policy. Completing those
+connections is the largest opportunity.
+
+### 8.1 Current evidence and its limits
+
+`target/debug/mecha sessions appraise --days 7 --limit 200 --json` read 26
+sessions and appraised 15, excluding three test sessions. None named a goal
+or put a goal to the owner through the recorded question channel. Four
+received sensor-based charter attribution. Five had signed errors; ten were
+neutral. These are sessions **started** in the window, not every run active
+in it. Zero recorded goal questions does not prove no goal was discussed in
+prose. This sample is too small for an efficacy claim.
+
+The separate, unwindowed `target/debug/mecha sessions health --json` report
+contained 310 runs across 522 readable sessions. Eight runs recorded the new
+goal and step sensors; none recorded a goal anchor or a measured plan-step
+completion. Goal-drift and step-null rates were consequently `null`, not
+zero. The local corpus cannot yet measure these features' effect on planning.
+These measurements describe this store, not other installations.
+
+The original review's missing charter sensors and project tier now have
+implementations: `reading::read_line`, `Homeostat::at_start`,
+`appraisal::of_session`, and `commands::tasks::{project_of, appraise_project}`.
+Retain the distinctions between unknown, deferred, sparse and observed data;
+the owner-authored charter and its ordering; pointer-based evidence;
+scoped rule validation; and separate positive and negative valence.
+
+### 8.2 Priorities verified against source
+
+| Priority | Current implementation and consequence | Recommended improvement |
+|---|---|---|
+| 1 — attribution | `appraisal::for_transcript` selects one goal from the closure override, final plan or last named question. `of_session` copies `goals.first()` onto its events; sensor attribution fills only absent goals. Earlier work can inherit a later goal, and a named task prevents the sensor fallback from exposing its charter relationship. | Resolve the goal at the event's time; keep task/project/charter relationships separately. Aggregate evidence through those relationships without counting it as several independent successes. |
+| 1 — verified planning | `TodoItem` carries `expect`, `check` and `expect_calls`, but no runtime producer executes `step::CHECK_TRACE`. `step::escalation_candidate` reads sibling call counts and verification-shaped activity, not the declared forecast or semantic outcome. | Execute frozen checks through ordinary tool dispatch; compare declared and actual work; distinguish claimed completion, attempted verification and verified outcome. |
+| 1 — durable intent | `goal::drift_of` compares pointers, while `Agent::run_in` creates a run-local `GoalTrack`. Confirmation does not automatically anchor the next interactive run. Changed intent retaining the same pointer is invisible. | Carry confirmed intent per conversation with its evidence pointer and revision. Preserve it through resume and compaction; distinguish owner-approved transitions from unapproved plan changes. |
+| 2 — context | Task seeds point to graph and source tools; `recall` searches the current transcript. Rule matching uses tools, workspace and surface. `Situation` has no goal, charter, plan-stage or sensor-band fields. | Retrieve against the active goal and decision, including source records, prior outcomes and scoped lessons. Record evidence availability, retrieval and use separately. |
+| 2 — learning | `Trigger::Mismatch` has no firing path. `Reflexion` and `Rule` have situation/provenance fields but no structured goal or charter link. Distilled episode metadata alone does not make rule tenure goal-aware. | Produce bounded mismatch reflections, retain successful episodes as comparison evidence, and join lessons and validation to the goals and charter lines they serve. |
+| 3 — decisions | Charter readings are recorded on the homeostat; the diagnostic brief consumes aggregate sensor information. The main loop does not compare candidate plans against per-goal error forecasts. | Add a cheap, typed decision assessment at meaningful boundaries, first observationally, then behind measured and reversible changes. |
+
+Two attribution details should be addressed before expanding behavioral use.
+`of_session` still assigns an own-agency positive to a global `backlog_delta`;
+its comment recognizes that another session or the owner may have cleared
+the queue. Keep that as environmental context until a resolution event
+identifies actor and item. Also, `outbox_source::serves_at_staging` already
+resolves a draft's goal at staging time, while session appraisal uses the
+session's selected goal. Reuse that temporal resolution pattern so review
+notes and learning evidence agree.
+
+The closure path needs an explicit outcome distinction. `appraise_closure`
+receives `new_status`, but `appraise_session_with` assembles existing run
+errors without that status. An owner's task closure therefore triggers an
+appraisal without becoming its own success/abandonment evidence. Record the
+closure act with actor and reason before treating it as a verdict. A model
+marking work done and an owner accepting it cannot be one positive channel.
+
+### 8.3 What a goal-aware decision should contain
+
+Keep three quantities distinct:
+
+- **Remaining goal discrepancy:** required outcomes still unmet. Task goals
+  may need a vector of acceptance criteria rather than a fabricated
+  percentage. Sensors have typed observations and setpoints, with explicit
+  availability states.
+- **Predicted effect:** which discrepancies an action should reduce or
+  worsen, supported by current state and comparable recorded situations.
+  Unknown effects stay unknown.
+- **Prediction residual:** how the result differed from the expectation
+  recorded beforehand. This guides plan repair and learning; accurately
+  predicting failure still leaves the goal unmet.
+
+`GoalError::sign` mostly records fixed event magnitudes (`1.0` or `0.5`).
+These are useful outcome signals, but not calibrated distance-to-goal or
+expected utility. `Valence` preserves signs correctly; adding more events to
+its sums will not produce a sound action selector.
+
+For substantial work, retain a compact record of the active task, its
+project and resolved charter links, acceptance criteria, required evidence,
+next milestone, expected result, check and resource estimate. Compare a small
+number of alternatives where a real tradeoff exists. One-step work should
+not pay for mandatory multi-plan generation. Goal links cite owner-authored
+priorities; the model does not propose charter text.
+
+Decision order should preserve the rulings: structural permissions and
+safety checks first, charter conflicts in owner-defined rank order, then
+task progress, uncertainty and resource cost within admissible choices.
+Lower-ranked gains cannot compensate for violating a higher-ranked line.
+Sensors may support a smaller next step, verification, retrieval, a supported
+clarification or deferral. They cannot remove an approval, authorize an
+external action or change a setpoint.
+
+Example: drafting a reply could advance a task while an outbox-age sensor
+shows old unreviewed drafts. Assess both task progress and review burden,
+using recorded commitments. Where authorized and consistent with the
+charter, a reminder or smaller next step may be preferable. Sending or
+deleting drafts merely to improve the sensor is not an admissible shortcut.
+
+Keep anticipatory assessment inference-free in the hot path, as §7.4
+requires: compute resource feasibility and sensor bands with code, and do
+richer plan reasoning in the model's normal planning turn. Evaluate at plan
+creation, meaningful completion, contradictory evidence, goal change and
+pre-staging boundaries. Raw sensor numbers remain harness-side under the
+current invariant; a critic call on every tool invocation is unnecessary.
+
+### 8.4 Context and learning that serve the decision
+
+Preserve the seed's pointer-only design. Resolve evidence through normal
+tools and provenance boundaries; do not paste mail or retrieved instructions
+into a privileged prompt. A compact decision context can carry confirmed
+goal, unresolved criteria, current step, evidence pointers with freshness,
+and a small set of applicable lessons. Retrieve to answer an explicit gap,
+such as an unknown requirement or missing verification. Retain conflicting
+evidence and make stale context detectable through goal/source revisions.
+
+Start with structural keys and existing graph access. Keep the prepared
+agent's rule prefix stable; goal-specific evidence and any later lesson
+delivery belong in append-only run context. Mid-run lesson delivery stays
+off until the null/reopen experiment required by §17.7 item 2 is satisfied.
+A new `Situation` key must join recording, matching, replay and validation
+together; unavailable goal data must not silently widen a rule's scope.
+
+Learning should connect prediction, action, outcome, attributed goal,
+evidence and candidate lesson. Implement the bounded `Mismatch` path for
+failed frozen checks and forecast overruns. Retain successful episodes,
+especially owner-accepted outcomes: reusable procedures need comparison
+evidence beyond corrections. A passing model-authored check establishes its
+predicate, not automatic task success or authority to promote a learned rule.
+
+Preserve §17.2: sensors and counters prioritize examination; owner-verdict
+channels determine charter-policy tenure. Keep provenance gates, probation,
+retirement and independent holdouts. Record both delivery and graded
+application so loading a rule cannot count as evidence it helped. Preserve
+uncertainty in sparse regions and measure fragmentation before adding more
+scope keys.
+
+**External evidence, peer-reviewed:** [Reflexion, NeurIPS
+2023](https://papers.nips.cc/paper_files/paper/2023/file/1b44b878bb782e6954cd888628510e90-Paper-Conference.pdf)
+demonstrates feedback-conditioned episodic reflection on its evaluated tasks.
+[Lost in the Middle, TACL 2024](https://arxiv.org/abs/2307.03172) demonstrates
+that relevant-information position affects performance in the models studied.
+The project-specific inference is to test selective evidence delivery and
+outcome-grounded reflection on mecha's served model at fixed budgets.
+Neither result establishes that more context or more reflection calls will
+improve this deployment.
+
+### 8.5 Build order and acceptance evidence
+
+1. **Dependable evidence:** event-time attribution, hierarchical links,
+   durable intent and actor-attributed closure events. Regression cases:
+   goal changes after drafting, another session clearing a queue, and owner
+   correction followed by resume and compaction.
+2. **Falsifiable plans:** frozen checks through existing dispatch guards,
+   with unavailable/refused checks separate from failures; forecast
+   residuals and bounded mismatch reflections. Cases: a successful tool call
+   producing the wrong artifact, a tampered check, and blocked verification.
+3. **Context and learning:** compare current behavior with retrieval keyed
+   to goal and situation. Include stale/contradictory sources, a useful
+   prior success, a misleading lesson and changing goals. Grade artifacts
+   and owner-verdict outcomes at equal budgets; measure evidence coverage,
+   lesson application and regressions.
+4. **Sensor-informed choices:** record proposed choices without changing
+   execution first. Cases: charter conflicts, overdue recorded commitments,
+   sparse/unreadable readings and pressure spikes. Then run a bounded opt-in
+   experiment preserving guards and unattended-run behavior.
+
+Use existing experiment/replay infrastructure with isolated state and
+held-out tasks. Compare baseline, verified planning, added context/learning,
+and added sensor decisions so effects can be attributed. Primary outcomes:
+independently verified task success and per-charter owner verdicts. Also
+report rework, false completion, null/reopened steps, unnecessary questions,
+latency and resource use. Freeze charter and evidence revisions for replay.
+Affect distribution, raw valence, lower sensor values and rule count are not
+success objectives.
+
+Validation: `cargo build --workspace --all-targets`, `cargo test --workspace`,
+`cargo fmt --all`, and `cargo clippy --all-targets --all-features` passed.
+Integration tests may self-skip unavailable sandbox backends;
+`MECHA_TEST_REQUIRE_BACKENDS=1` was not set. This change documents an
+evaluation; it does not implement the recommendations.

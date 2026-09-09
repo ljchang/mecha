@@ -3333,10 +3333,11 @@ closing that needs a per-item id the plan tool refuses for cost, and the
 docstring on `Tracked::checks` says so. The first cut gated on the
 *previous* status and let the one write that both completes the step and
 swaps its check through, which is exactly the rewrite the freeze exists for.
-**Nothing runs a check yet.** When the loop does — dispatched as a model
-`shell` call would be: approver, sandbox, interlock, hooks — it records the
-result as a trace named `step::CHECK_TRACE`, and the readers are already in
-place: `Work::of` keeps those out of `calls` (the harness's work is not the
+**The loop executes a newly completed step's frozen check** after its tool
+batch, through ordinary shell dispatch: approver, sandbox, interlock and hooks.
+`agent.step_checks` disables execution; denied, unavailable, staged or skipped
+checks remain unverified. At most sixteen checks run per run. The result is a
+trace named `step::CHECK_TRACE`: `Work::of` keeps those out of `calls` (the harness's work is not the
 model's, and `expect_calls` forecasts the model's), counts `checks_declared`
 / `checks_passed` (a refused check in neither), lets a passing check count
 as `verify_like`, and **never lets a check set `last`** — the `continue` in
@@ -3344,15 +3345,49 @@ as `verify_like`, and **never lets a check set `last`** — the `continue` in
 it refreshes its copy of `last` on the model's own call count, so a check
 landing last beside real work would have read as the step's own failure or
 refusal (found on review). `Finding::CheckFailed` is read from the counters
-before the last-attempt readings, because the model's last call can succeed
-while its claim does not. `RunStats` carries both counts as `Option`, folded like
+before the last-attempt readings in the pure reader. `TodoTool::advance`
+excludes global check deltas from a step's work-span appraisal: a write can
+complete one step and open the next before the first check runs. Only the
+executor's call/goal/step association can say whose check failed. `RunStats` carries both counts as `Option`, folded like
 `boredom_notices`, and `of_session` signs a failed check `-1.0`, `Own`,
 cite `checks_passed` — the first structural discrepancy between a
 prediction and its outcome. `learning::Trigger::Mismatch` is the wire word
-for that discrepancy as a reflection trigger; the variant exists so the
-store's readers do not choke on it, and nothing fires it yet. The check's
-execution and the planner's ask are the other lane's (`AUDIT-RESEARCH.md`
-§3.11).
+for that discrepancy as a reflection trigger. `planning::StepFeedback` records
+failed checks, substantial overruns against the last open estimate, and frozen
+check tampering; `learning::extract_mismatches` emits at most one per goal/step
+and three per recorded run. Unknown run boundaries share a conservative bound.
+Generated observations must never take the user-turn-only provenance promotion:
+unknown or tainted mismatch evidence is excluded from reflection. Existing rule
+validation and probation still apply; mismatch-specific counterfactual grading
+is not implemented.
+
+**Planning observations are local metadata, not prompt content.** `Message::planning`
+is preserved by session loading and omitted by both provider encoders. This is
+where decisions retain separate task progress, anchor discrepancy and ordered
+charter sensor errors; unread and empty snapshots remain distinguishable.
+`planning::Decision` is deterministic and observational by default. The opt-in
+`agent.goal_guidance` exposes only fixed advice, never raw sensor readings, and
+cannot bypass a structural guard. A passed check is evidence for that declaration
+at that time, not proof of the whole goal or of current artifacts.
+
+**Context retrieval preserves scope and provenance.** `goal_context` is private,
+on demand, and bounded to four active applicable rules and two historical examples.
+Rules join goals through clean source reflections; successful examples require
+recorded clean taint and matching tools/workspace/surface. A startup snapshot
+examines at most 32 recent transcripts of at most 2 MB each and keeps 64 examples.
+It does not add unsolicited lesson delivery. Missing context is never a success.
+
+**Attribution follows the event.** `appraisal::attribute_events` uses the plan at
+the intervention or staging point and typed question/reflection links. Ambiguous
+aggregate counters remain unassigned instead of borrowing the final goal. A task
+may retain its charter sensor as a related goal, and its known project as a parent.
+Global backlog deltas remain context; only item-local evidence can earn credit.
+`note_task_closure` preserves the owner's verdict without erasing failed checks.
+
+**Confirmed goals belong to conversations.** `Conversation::goal_anchor` carries
+the pointer across turns and `Record::GoalAnchor` preserves it through resume and
+rewrite. Per-run counters remain fresh. The anchor still represents the confirmed
+pointer, not a semantic interpretation of the owner's answer.
 
 **`tasks.rs::appraise_session_with` deliberately does not call `appraisal::for_session`**,
 which does the identical assembly. `for_session` folds "could not read the file"

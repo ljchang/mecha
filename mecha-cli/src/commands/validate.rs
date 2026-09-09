@@ -963,6 +963,7 @@ mod tests {
 
     fn reflexion(intervention: &str, origin: Origin) -> Reflexion {
         Reflexion {
+            goals: Vec::new(),
             id: "r1".into(),
             domain: "behavior".into(),
             session_id: "s".into(),
@@ -1103,6 +1104,7 @@ mod tests {
             )
         };
         let refl = |id: &str, tools: &[&str], processed: bool| Reflexion {
+            goals: Vec::new(),
             id: id.into(),
             is_processed: processed,
             situation: Some(Situation::recorded(

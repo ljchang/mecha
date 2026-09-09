@@ -75,6 +75,10 @@ fn lenient_message(v: &serde_json::Value) -> Option<Message> {
         );
     }
     Some(Message {
+        harness: v.get("harness").and_then(|v| v.as_bool()).unwrap_or(false),
+        planning: v
+            .get("planning")
+            .and_then(|v| serde_json::from_value(v.clone()).ok()),
         tool_provenance: v
             .get("tool_provenance")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -163,6 +167,11 @@ pub enum Record {
     /// resuming a session that had read a hostile page would hand the model
     /// that page again with the interlock disarmed.
     Taint(Taint),
+    /// Durable human-confirmed intent. Kept outside rewritten message history.
+    GoalAnchor {
+        #[serde(default, deserialize_with = "crate::goal::de_lenient")]
+        goal: Option<crate::goal::GoalRef>,
+    },
     /// The conversation's messages were rewritten in place — compaction
     /// summarised the head, eviction replaced a stale result, thinning
     /// shortened an old one. An append-only file cannot express an in-place
@@ -927,7 +936,11 @@ impl RunStats {
             exhausted: o.exhausted,
             ended_on_failed_call: o.ended_on_failed_call,
             duration_secs: o.duration_secs,
-            tool_calls: o.tool_calls.len() as u32,
+            tool_calls: o
+                .tool_calls
+                .iter()
+                .filter(|c| c.name != crate::step::CHECK_TRACE)
+                .count() as u32,
             // `denied` is excluded, and the exclusion has to be written out: a
             // denied trace carries `is_error: true` too, so filtering on
             // `is_error` alone counts every refusal as an environment failure
@@ -936,10 +949,20 @@ impl RunStats {
             tool_errors: o
                 .tool_calls
                 .iter()
-                .filter(|c| c.unknown || (c.is_error && !c.denied))
+                .filter(|c| {
+                    c.name != crate::step::CHECK_TRACE && (c.unknown || (c.is_error && !c.denied))
+                })
                 .count() as u32,
-            tool_denied: o.tool_calls.iter().filter(|c| c.denied).count() as u32,
-            tool_staged: o.tool_calls.iter().filter(|c| c.staged).count() as u32,
+            tool_denied: o
+                .tool_calls
+                .iter()
+                .filter(|c| c.name != crate::step::CHECK_TRACE && c.denied)
+                .count() as u32,
+            tool_staged: o
+                .tool_calls
+                .iter()
+                .filter(|c| c.name != crate::step::CHECK_TRACE && c.staged)
+                .count() as u32,
             malformed_tool_args: o.malformed_tool_args,
             blocked_sends: o.blocked_sends,
             compactions: o.compactions,
@@ -1315,7 +1338,10 @@ impl Session {
             self.record_transition(prev, state)?;
             prev = state;
         }
-        self.record_transition(prev, &convo.messages)
+        self.record_transition(prev, &convo.messages)?;
+        self.append(&Record::GoalAnchor {
+            goal: convo.goal_anchor.clone(),
+        })
     }
 
     /// Record how the run went, beside what it said.
@@ -1479,6 +1505,7 @@ impl Session {
         let mut outcome_positions: Vec<Option<usize>> = Vec::new();
         let mut meta = None;
         let mut title = None;
+        let mut goal_anchor = None;
         let mut messages = Vec::new();
         let mut taint = Taint::default();
         // Built here with `TaintTimeline::from_records`'s exact state
@@ -1599,6 +1626,7 @@ impl Session {
                     outcome_positions.push(Some(messages.len()));
                     outcomes.push(o);
                 }
+                Ok(Record::GoalAnchor { goal }) => goal_anchor = goal,
                 Ok(Record::Summary { .. }) => {}
                 Err(e) => tracing::warn!(error = %e, "skipping malformed transcript line"),
             }
@@ -1620,7 +1648,10 @@ impl Session {
         }
         Ok(Transcript {
             meta,
-            convo: Conversation::resumed(messages, taint),
+            convo: Conversation {
+                goal_anchor,
+                ..Conversation::resumed(messages, taint)
+            },
             configs,
             config_positions,
             episode: RunStats::fold(outcomes.iter().cloned()),
@@ -2218,6 +2249,81 @@ mod tests {
         // hostile page must come back with the interlock still armed.
         assert!(convo.taint.trifecta_armed());
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn historical_plan_examples_require_clean_evidence_and_matching_scope() {
+        use crate::planning::{Feedback, StepFeedback, Verification};
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("goal-examples")).unwrap();
+        let cfg = RunConfig {
+            tools: vec!["todo".into()],
+            rules_workspace: Some(PathBuf::from("/project")),
+            rules_surface: Some(SessionKind::Task),
+            ..Default::default()
+        };
+        session.append(&Record::Config(cfg)).unwrap();
+        let mut message = Message::user("result");
+        message.planning = Some(Feedback {
+            steps: vec![StepFeedback {
+                call_id: Some("c1".into()),
+                step: "work".into(),
+                goal: Some(crate::goal::GoalRef::Task("t1".into())),
+                expected: Some("artifact exists".into()),
+                expected_calls: Some(1),
+                actual_calls: Some(1),
+                verification: Verification::Passed,
+                check_tampered: false,
+            }],
+            decisions: Vec::new(),
+        });
+        session.append_messages(&[message]).unwrap();
+        let situation = crate::situation::Situation::of_run(
+            &["todo".into()],
+            Some(std::path::Path::new("/project")),
+        )
+        .on(Some(SessionKind::Task));
+        assert!(
+            crate::planning::examples(&dir, &situation)
+                .unwrap()
+                .is_empty(),
+            "no taint coverage is unknown"
+        );
+        session
+            .append(&Record::Taint(crate::agent::Taint::default()))
+            .unwrap();
+        assert_eq!(
+            crate::planning::examples(&dir, &situation).unwrap().len(),
+            1
+        );
+        let elsewhere = crate::situation::Situation::of_run(
+            &["todo".into()],
+            Some(std::path::Path::new("/other")),
+        )
+        .on(Some(SessionKind::Task));
+        assert!(crate::planning::examples(&dir, &elsewhere)
+            .unwrap()
+            .is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn goal_confirmation_survives_rewrite_and_resume_and_unknown_clears_it() {
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("goal-resume")).unwrap();
+        let mut convo = Conversation::user("original");
+        convo.goal_anchor = Some(crate::goal::GoalRef::Task("confirmed".into()));
+        session.record_run(&[], &convo).unwrap();
+        let before = convo.messages.clone();
+        convo.messages = vec![Message::user("compacted")];
+        session.record_run(&before, &convo).unwrap();
+        let (_, resumed) = Session::load(&session.path).unwrap();
+        assert_eq!(resumed.goal_anchor, convo.goal_anchor);
+        let unknown: Record =
+            serde_json::from_str(r#"{"record":"goal_anchor","goal":"future:unread"}"#).unwrap();
+        session.append(&unknown).unwrap();
+        assert_eq!(Session::load(&session.path).unwrap().1.goal_anchor, None);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3653,8 +3759,8 @@ mod tests {
             (Some(2), Some(1))
         );
         assert_eq!(
-            stats.tool_calls, 4,
-            "the raw count still holds every trace entry"
+            stats.tool_calls, 1,
+            "harness checks have their own counters, separate from model work"
         );
 
         let mut folded = stats.clone();

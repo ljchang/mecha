@@ -14,6 +14,30 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-09 — appraisal planning mechanisms implemented in the working tree.**
+`Conversation::goal_anchor` and `Record::GoalAnchor` preserve confirmations;
+`appraisal::attribute_events` binds observations to historical goals and retains
+related charter/project pointers. Queue deltas no longer claim the run cleared
+anything; `note_task_closure` keeps the owner's verdict separate from execution.
+`Agent::run_loop` executes frozen plan checks through normal tool dispatch,
+limited to sixteen per run, with separate model-work accounting. `StepFeedback`
+records checks, prior work estimates, measured spans and check tampering;
+`extract_mismatches` supplies bounded, provenance-gated learning evidence.
+Reflections retain typed goal links, and `goal_context` retrieves applicable rules
+and clean, scoped examples with passing checks. `Decision::assess` records task,
+anchor and ordered charter discrepancies separately; `agent.goal_guidance` enables
+fixed advice while sensor numbers remain outside provider payloads. No runtime
+installation or service changes were made. Live efficacy, mismatch-specific
+counterfactual grading, semantic owner-intent updates and work spans crossing runs
+remain unmeasured or unbuilt; these mechanisms do not claim to solve them.
+
+Validation: formatting and warning-free clippy over all targets/features;
+2,588 workspace tests passed with backend skips disabled, three intentionally
+ignored. The new regressions cover historical attribution, confirmation resume,
+frozen-check execution and refusal, disabled and passing checks, cross-step
+attribution, mismatch provenance, context scope, sensor isolation at both provider
+encoders, and the real configuration layer. No live-model efficacy result is claimed.
+
 **2026-09-08 — merged assistant features installed.** After the owner merged
 PR #216 as `c3f33f4c` and requested an update, the shared main checkout advanced
 from `f22992c5` without changing the model or Parakeet launch files. The installed
@@ -5461,6 +5485,13 @@ fails on the previous cut. Charter sensors were ruled in and designed
 (`GOAL-SYSTEM-DESIGN.md` §11.1, seven containments), not built.
 
 ## Traps already hit
+
+A harness-generated verification call initially became the model's apparent last
+failed action. Separating its work count alone was insufficient: final-call status,
+error counters, provenance and historical context all needed the same distinction.
+When an agent starts executing its own checks, audit every consumer of the trace,
+not just the check runner. Regression coverage now exercises failure, refusal,
+success and disabled execution.
 
 Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.

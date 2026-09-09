@@ -2732,6 +2732,8 @@ pub fn child_invocation(
     let mut flags = Vec::new();
     for lever in levers_off {
         match lever {
+            Lever::StepChecks => config.agent.step_checks = false,
+            Lever::GoalGuidance => config.agent.goal_guidance = false,
             Lever::StepEscalation => config.agent.step_escalation = false,
             Lever::Boredom => config.agent.boredom = false,
             Lever::CompactValidate => config.agent.compact_validate = false,
