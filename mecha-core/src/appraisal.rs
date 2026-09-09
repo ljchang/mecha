@@ -1212,6 +1212,12 @@ pub fn of_session(
     end_taint: Option<crate::agent::Taint>,
     created_at: String,
 ) -> Appraisal {
+    let mut records = records;
+    records.outbox_unreadable |= records
+        .drafts
+        .iter()
+        .any(|item| item.outcomes.iter().any(|o| o.known().is_none()));
+
     // **A charter reference is kept only if the loaded charter contains
     // the line.** `goals` may carry the model's own `serves:` string
     // (`for_transcript`, via the plan), and `GoalRef::from_str` constrains
@@ -1456,6 +1462,10 @@ pub fn of_session(
         // same split from `status`/`edited()` is what keeps a third status
         // or a third `OutboxKind` from teaching only one of the two places
         // that reason about it.
+        // Uninterpretable owner evidence cannot fall back to a positive drafting verdict.
+        if item.outcomes.iter().any(|o| o.known().is_none()) {
+            continue;
+        }
         // A later owner's verdict replaces the drafting verdict for this incident.
         // Never turn several reports of one message into several errors or rewards.
         let observed = item.active_outcomes().into_iter().find_map(|o| {
@@ -1463,6 +1473,7 @@ pub fn of_session(
             let p = item
                 .predictions
                 .iter()
+                .filter_map(|p| p.known())
                 .find(|p| p.id == o.observation.prediction_id)?;
             if item.prediction_resolution(p) != Resolution::Observed
                 || matches!(o.observation.verdict, Verdict::NoIssue | Verdict::Withdrawn)

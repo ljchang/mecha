@@ -3915,6 +3915,7 @@ impl Agent {
                             if let Some(p) = item
                                 .predictions
                                 .last()
+                                .and_then(|p| p.known())
                                 .filter(|p| !p.assessment.kinds.is_empty())
                             {
                                 content.push_str("\nAnticipatory guidance: ");
@@ -10688,7 +10689,7 @@ mod tests {
         let items = route.store.items().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].tool, "send_data");
-        let prediction = &items[0].predictions[0];
+        let prediction = items[0].predictions[0].known().unwrap();
         assert_eq!(prediction.args, items[0].args);
         assert_eq!(prediction.evidence.goal, convo.goal_anchor);
         assert_eq!(prediction.source, crate::anticipation::Source::Harness);
@@ -10752,7 +10753,7 @@ mod tests {
         convo.goal_anchor = Some(goal);
         agent.run(&mut convo, None).await.unwrap();
         let items = route.store.items().unwrap();
-        let p = &items[0].predictions[0];
+        let p = items[0].predictions[0].known().unwrap();
         assert_eq!(p.source, Source::Owner);
         assert_eq!(p.evidence.verification, Verification::Unknown);
         assert!(p.assessment.kinds.contains(&Kind::Guilt));

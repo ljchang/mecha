@@ -1157,6 +1157,14 @@ different arguments. Earlier predictions remain in the history. All release
 surfaces must use this implementation to enforce the new guidance requirement;
 older binaries do not interpret the new fields.
 
+This version preserves unsupported prediction and outcome records as raw JSON.
+Drafts remain visible, editable and rejectable. Unsupported evidence blocks
+release and is reported as ungraded; it never becomes a positive outcome.
+A newer prediction can be replaced by an explicit reassessment with `--guide`
+or `--observe`; unknown outcome history requires a compatible binary.
+If the current appraisal cannot be recomputed, `outbox show` displays a warning
+alongside the draft; the delivery check still refuses the action.
+
 ### Record what happened
 
 After confirmed delivery, record an owner verdict against the prediction that
@@ -1209,7 +1217,7 @@ mutable file-bundle verification and automatic learning from these outcomes are
 outside this slice.
 
 Run configuration records retain owner-bound evidence. Counterfactual probes,
-artifact-task validation and replay refuse unsupported reproductions of those
+artifact-task validation, whole-session harness probes and replay refuse unsupported reproductions of those
 runs rather than grade a run after silently dropping its evidence. Ordinary
 appraisal and prediction readouts remain available. Broader measured guidance
 comparisons require extending that reproduction path first.

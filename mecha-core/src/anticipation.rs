@@ -108,6 +108,7 @@ impl Response {
     }
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Assessment {
     pub kinds: Vec<Kind>,
     pub response: Response,
@@ -182,8 +183,37 @@ pub enum Source {
     Owner,
 }
 
+/// Preserve future or malformed history records without interpreting them.
+/// Strict owner input stays strict; unknown stored evidence stays reviewable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum History<T> {
+    Known(T),
+    Unknown(Value),
+}
+impl<T> History<T> {
+    pub fn known(&self) -> Option<&T> {
+        match self {
+            Self::Known(v) => Some(v),
+            Self::Unknown(_) => None,
+        }
+    }
+    pub fn known_mut(&mut self) -> Option<&mut T> {
+        match self {
+            Self::Known(v) => Some(v),
+            Self::Unknown(_) => None,
+        }
+    }
+}
+impl<T> From<T> for History<T> {
+    fn from(value: T) -> Self {
+        Self::Known(value)
+    }
+}
+
 /// Immutable forecast of one exact action version. History lives beside the draft.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Prediction {
     pub id: String,
     pub created_at: String,
@@ -246,6 +276,7 @@ pub struct OutcomeInput {
     pub supersedes: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Outcome {
     pub id: String,
     pub recorded_at: String,
@@ -266,6 +297,7 @@ impl OutcomeInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Resolution {
+    Unsupported,
     Pending,
     Reassessed,
     Changed,

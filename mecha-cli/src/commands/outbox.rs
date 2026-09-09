@@ -202,8 +202,20 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 let evidence = read_evidence_file(&file)?;
                 // Omitting a flag must not silently disable an existing guidance gate.
                 let current = store.item(&id)?;
-                let guide =
-                    guide || (!observe && current.predictions.last().is_some_and(|p| p.guide));
+                let guide = if guide || observe {
+                    guide
+                } else {
+                    current
+                        .predictions
+                        .last()
+                        .map(|p| {
+                            p.known()
+                        .context("unsupported prediction; choose --guide or --observe explicitly")
+                        .map(|p| p.guide)
+                        })
+                        .transpose()?
+                        .unwrap_or(false)
+                };
                 store.anticipate(&id, evidence, guide)?
             } else {
                 store.item(&id)?
@@ -466,13 +478,23 @@ fn show(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
     if let Some(error) = &item.error {
         println!("last send attempt failed: {error}\n");
     }
+    if item.predictions.last().is_some_and(|p| p.known().is_none()) {
+        println!("Appraisal uses unsupported evidence. Review remains available; release requires explicit reassessment.\n");
+    }
     if let Some(p) = item
         .predictions
         .last()
+        .and_then(|p| p.known())
         .filter(|p| p.guide || !p.assessment.kinds.is_empty())
     {
         let current = if item.status == "pending" {
-            p.current_assessment()?
+            match p.current_assessment() {
+                Ok(current) => current,
+                Err(error) => {
+                    println!("Appraisal unavailable: {error}. Review remains available; release requires reassessment.\n");
+                    p.assessment.clone()
+                }
+            }
         } else {
             p.assessment.clone()
         };
