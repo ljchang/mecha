@@ -801,18 +801,18 @@ rules, skills, hooks, messages, fallback and step escalation. The charter, graph
 and draft queue are synthetic; each task starts with fresh workspace files and
 reset fixture state.
 
-Set the same explicit `provider` and `model` in both arms before registering the
-manifest. Keep the model, configuration and checkout revision fixed through the
-run. From the repository root, using the binary built from that revision:
+The manifest pins `local` / `qwen3.6-35b-a3b` in both arms. Keep the model,
+configuration and checkout revision fixed through the run. For another model,
+change both arms and choose a new experiment name before registration. From the repository root, using the binary built from that revision:
 
 ```bash
 cargo build -p mecha-cli
 ./target/debug/mecha exp new eval/appraisal-guidance.toml
-./target/debug/mecha exp run appraisal-guidance --dry-run
-./target/debug/mecha exp run appraisal-guidance
-./target/debug/mecha exp export appraisal-guidance > /tmp/appraisal-results.json
+./target/debug/mecha exp run appraisal-guidance-qwen36-35b-20260909 --dry-run
+./target/debug/mecha exp run appraisal-guidance-qwen36-35b-20260909
+./target/debug/mecha exp export appraisal-guidance-qwen36-35b-20260909 > /tmp/appraisal-results.json
 python3 scripts/appraisal-report.py /tmp/appraisal-results.json
-./target/debug/mecha exp judge appraisal-guidance --json
+./target/debug/mecha exp judge appraisal-guidance-qwen36-35b-20260909 --json
 ```
 
 `exp run --limit N` bounds one invocation; repeat the run command to resume.
