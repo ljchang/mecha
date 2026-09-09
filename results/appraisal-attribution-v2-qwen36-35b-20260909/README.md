@@ -124,11 +124,18 @@ seeds after seeing these outcomes would answer a different question.
 [task resources](resources.json), and [verification logs](verification).
 JSONL records are archived as JSON arrays; mined-session IDs remain plain text.
 The archive helper records this run's extraction and expects its original
-temporary logs and fingerprint paths. To repeat the registered design, build and
-use `mecha` from source commit `c7071ad3`, use that checkout's fixtures/scripts,
-and match the provider settings in [Conditions](conditions.json). The commands
-below then run a fresh experiment; model outcomes are not guaranteed to repeat.
-Running them on current main measures a different implementation.
+temporary logs and fingerprint paths. The recorded runtime commit `c7071ad3`
+exists in the original local history. For a retrievable source snapshot, use
+[published commit `fba6de53`](https://github.com/ljchang/mecha/commit/fba6de5318727c53db8c5d3c65f091684623494e):
+its four crate trees, Cargo manifests/lockfile, experiment fixtures and scripts
+are byte-identical to `c7071ad3`; only documentation differs. This is source
+equivalence, not a claim that a fresh build reproduces the archived binary hash.
+
+To repeat the registered design, build and use `mecha` from that published
+snapshot, use its fixtures/scripts, and match the provider settings in
+[Conditions](conditions.json). The commands below then run a fresh experiment;
+model outcomes are not guaranteed to repeat. Running them on current main
+measures a different implementation.
 
 ```bash
 MECHA_HOME=/path/to/fresh-bootstrap mecha exp new eval/appraisal-attribution-v2.toml
