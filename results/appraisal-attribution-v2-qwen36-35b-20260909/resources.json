@@ -1,0 +1,5690 @@
+[
+  {
+    "trial": "control__queue-01__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 4273,
+        "output_tokens": 2904,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 44043
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 10,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 5,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-01",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.73,
+        "mem_available_kb": 23039108,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 7688,
+        "peak_context_pressure": 0.029327393,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 34.070941528
+    }
+  },
+  {
+    "trial": "control__queue-01__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "stats": {
+      "turns": 7,
+      "usage": {
+        "input_tokens": 3228,
+        "output_tokens": 2120,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 34665
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-01",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 4.26,
+        "mem_available_kb": 29197708,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6594,
+        "peak_context_pressure": 0.025154114,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 23.675507835
+    }
+  },
+  {
+    "trial": "control__queue-01__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "stats": {
+      "turns": 6,
+      "usage": {
+        "input_tokens": 3254,
+        "output_tokens": 2195,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 28385
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-01",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.95,
+        "mem_available_kb": 28592408,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6606,
+        "peak_context_pressure": 0.02519989,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 24.647325944
+    }
+  },
+  {
+    "trial": "control__queue-02__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "stats": {
+      "turns": 10,
+      "usage": {
+        "input_tokens": 3641,
+        "output_tokens": 2715,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 57731
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 11,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 1,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 4,
+      "goal_anchor": "task:queue-02",
+      "goal_plan_writes": 5,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.81,
+        "mem_available_kb": 24937032,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 7852,
+        "peak_context_pressure": 0.029953003,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 30.498803751
+    }
+  },
+  {
+    "trial": "control__queue-02__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "stats": {
+      "turns": 7,
+      "usage": {
+        "input_tokens": 3018,
+        "output_tokens": 1875,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 33923
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-02",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 3.34,
+        "mem_available_kb": 29311840,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6385,
+        "peak_context_pressure": 0.024356842,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 21.110647499
+    }
+  },
+  {
+    "trial": "control__queue-02__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 3015,
+        "output_tokens": 1980,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 38471
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-02",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.75,
+        "mem_available_kb": 29038088,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6432,
+        "peak_context_pressure": 0.024536133,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 22.242812699
+    }
+  },
+  {
+    "trial": "control__queue-03__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 2981,
+        "output_tokens": 2377,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 40544
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-03",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.73,
+        "mem_available_kb": 25319636,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6991,
+        "peak_context_pressure": 0.026668549,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 26.358745117
+    }
+  },
+  {
+    "trial": "control__queue-03__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "stats": {
+      "turns": 10,
+      "usage": {
+        "input_tokens": 3602,
+        "output_tokens": 2298,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 52772
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 10,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 1,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 4,
+      "goal_anchor": "task:queue-03",
+      "goal_plan_writes": 5,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 3.57,
+        "mem_available_kb": 27200852,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 7148,
+        "peak_context_pressure": 0.027267456,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 25.387038925
+    }
+  },
+  {
+    "trial": "control__queue-03__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "stats": {
+      "turns": 7,
+      "usage": {
+        "input_tokens": 2963,
+        "output_tokens": 1843,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 33786
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-03",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.56,
+        "mem_available_kb": 29161144,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6443,
+        "peak_context_pressure": 0.024578094,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 20.413078005
+    }
+  },
+  {
+    "trial": "control__queue-04__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "stats": {
+      "turns": 10,
+      "usage": {
+        "input_tokens": 3846,
+        "output_tokens": 3034,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 56876
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 10,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 1,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 4,
+      "goal_anchor": "task:queue-04",
+      "goal_plan_writes": 5,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.62,
+        "mem_available_kb": 25710668,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 7819,
+        "peak_context_pressure": 0.029827118,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 34.75246065
+    }
+  },
+  {
+    "trial": "control__queue-04__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 3071,
+        "output_tokens": 2021,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 38609
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-04",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 2.93,
+        "mem_available_kb": 28594356,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6484,
+        "peak_context_pressure": 0.024734497,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 22.507441496
+    }
+  },
+  {
+    "trial": "control__queue-04__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 2919,
+        "output_tokens": 1775,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 38219
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-04",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.64,
+        "mem_available_kb": 29160688,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6331,
+        "peak_context_pressure": 0.024150848,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 19.815832605
+    }
+  },
+  {
+    "trial": "control__queue-05__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "stats": {
+      "turns": 11,
+      "usage": {
+        "input_tokens": 3953,
+        "output_tokens": 2826,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 66091
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 12,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 2,
+      "step_reopens": 0,
+      "step_completions": 5,
+      "step_measured": 5,
+      "goal_anchor": "task:queue-05",
+      "goal_plan_writes": 5,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.77,
+        "mem_available_kb": 24034696,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 8145,
+        "peak_context_pressure": 0.03107071,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 31.968948395
+    }
+  },
+  {
+    "trial": "control__queue-05__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 3121,
+        "output_tokens": 2272,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 40799
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-05",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 2.4,
+        "mem_available_kb": 29065304,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6814,
+        "peak_context_pressure": 0.025993347,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 25.029251119
+    }
+  },
+  {
+    "trial": "control__queue-05__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "stats": {
+      "turns": 9,
+      "usage": {
+        "input_tokens": 3415,
+        "output_tokens": 2575,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 48002
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 9,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 1,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-05",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 4,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.46,
+        "mem_available_kb": 29162832,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 7306,
+        "peak_context_pressure": 0.027870178,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 28.483199883
+    }
+  },
+  {
+    "trial": "control__queue-06__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "stats": {
+      "turns": 11,
+      "usage": {
+        "input_tokens": 3433,
+        "output_tokens": 2458,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 62964
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 12,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 1,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 4,
+      "goal_anchor": "task:queue-06",
+      "goal_plan_writes": 5,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.53,
+        "mem_available_kb": 24966516,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 7650,
+        "peak_context_pressure": 0.029182434,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 27.256720336
+    }
+  },
+  {
+    "trial": "control__queue-06__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "stats": {
+      "turns": 9,
+      "usage": {
+        "input_tokens": 3053,
+        "output_tokens": 2326,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 48771
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 9,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 1,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 4,
+      "goal_anchor": "task:queue-06",
+      "goal_plan_writes": 5,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 2.06,
+        "mem_available_kb": 29269716,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 7089,
+        "peak_context_pressure": 0.027042389,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 24.864738408
+    }
+  },
+  {
+    "trial": "control__queue-06__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 3314,
+        "output_tokens": 2197,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 39403
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 9,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-06",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 2.12,
+        "mem_available_kb": 26752908,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6851,
+        "peak_context_pressure": 0.026134491,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 24.885575879
+    }
+  },
+  {
+    "trial": "control__queue-07__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "stats": {
+      "turns": 7,
+      "usage": {
+        "input_tokens": 2040,
+        "output_tokens": 4983,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 47568
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-07",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.41,
+        "mem_available_kb": 24952056,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 9617,
+        "peak_context_pressure": 0.036685944,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 58.025437374
+    }
+  },
+  {
+    "trial": "control__queue-07__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "stats": {
+      "turns": 7,
+      "usage": {
+        "input_tokens": 5428,
+        "output_tokens": 4205,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 41021
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 5,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-07",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.69,
+        "mem_available_kb": 29276264,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 8810,
+        "peak_context_pressure": 0.033607483,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 47.809108797
+    }
+  },
+  {
+    "trial": "control__queue-07__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "stats": {
+      "turns": 6,
+      "usage": {
+        "input_tokens": 2994,
+        "output_tokens": 1818,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 27982
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 5,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-07",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 2.22,
+        "mem_available_kb": 28045076,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6359,
+        "peak_context_pressure": 0.02425766,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 19.892735166
+    }
+  },
+  {
+    "trial": "control__queue-08__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 2976,
+        "output_tokens": 1867,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 38215
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-08",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 1,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 2.27,
+        "mem_available_kb": 24277320,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6379,
+        "peak_context_pressure": 0.024333954,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 21.36781147
+    }
+  },
+  {
+    "trial": "control__queue-08__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 3387,
+        "output_tokens": 2342,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 41473
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-08",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.39,
+        "mem_available_kb": 29163240,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6897,
+        "peak_context_pressure": 0.026309967,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 26.762012903
+    }
+  },
+  {
+    "trial": "control__queue-08__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 2436,
+        "output_tokens": 2297,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 39949
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 9,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 5,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-08",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 2.01,
+        "mem_available_kb": 28711624,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6762,
+        "peak_context_pressure": 0.025794983,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 24.862147205
+    }
+  },
+  {
+    "trial": "control__queue-09__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 3306,
+        "output_tokens": 1940,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 40636
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 10,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-09",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 2.04,
+        "mem_available_kb": 24202272,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6909,
+        "peak_context_pressure": 0.026355743,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 21.626783889
+    }
+  },
+  {
+    "trial": "control__queue-09__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 3116,
+        "output_tokens": 1860,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 39597
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-09",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.32,
+        "mem_available_kb": 29084848,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6535,
+        "peak_context_pressure": 0.024929047,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 21.068851326
+    }
+  },
+  {
+    "trial": "control__queue-09__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 2953,
+        "output_tokens": 1837,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 38377
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 9,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-09",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.73,
+        "mem_available_kb": 29126116,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6491,
+        "peak_context_pressure": 0.0247612,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 20.35341424
+    }
+  },
+  {
+    "trial": "control__queue-10__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "stats": {
+      "turns": 9,
+      "usage": {
+        "input_tokens": 2722,
+        "output_tokens": 2024,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 46764
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 10,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-10",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.86,
+        "mem_available_kb": 24617060,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 7015,
+        "peak_context_pressure": 0.026760101,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 22.866718149
+    }
+  },
+  {
+    "trial": "control__queue-10__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "stats": {
+      "turns": 6,
+      "usage": {
+        "input_tokens": 3004,
+        "output_tokens": 2025,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 27817
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 5,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-10",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.39,
+        "mem_available_kb": 27842364,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6372,
+        "peak_context_pressure": 0.024307251,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 22.224643666
+    }
+  },
+  {
+    "trial": "control__queue-10__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "stats": {
+      "turns": 6,
+      "usage": {
+        "input_tokens": 3586,
+        "output_tokens": 2249,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 30627
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 9,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 4,
+      "goal_anchor": "task:queue-10",
+      "goal_plan_writes": 5,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.67,
+        "mem_available_kb": 28300120,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 7009,
+        "peak_context_pressure": 0.026737213,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 24.178878447
+    }
+  },
+  {
+    "trial": "control__queue-11__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "stats": {
+      "turns": 7,
+      "usage": {
+        "input_tokens": 4230,
+        "output_tokens": 2933,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 37458
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 9,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 4,
+      "goal_anchor": "task:queue-11",
+      "goal_plan_writes": 5,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 2.64,
+        "mem_available_kb": 22998192,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 7732,
+        "peak_context_pressure": 0.02949524,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 42.18352326
+    }
+  },
+  {
+    "trial": "control__queue-11__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "stats": {
+      "turns": 7,
+      "usage": {
+        "input_tokens": 2830,
+        "output_tokens": 1687,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 33323
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-11",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 2.18,
+        "mem_available_kb": 27464328,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6188,
+        "peak_context_pressure": 0.023605347,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 19.12073369
+    }
+  },
+  {
+    "trial": "control__queue-11__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "stats": {
+      "turns": 5,
+      "usage": {
+        "input_tokens": 4023,
+        "output_tokens": 3261,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 21218
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 5,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-11",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.86,
+        "mem_available_kb": 28130948,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 5899,
+        "peak_context_pressure": 0.0225029,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 36.183927283
+    }
+  },
+  {
+    "trial": "control__queue-12__s1__r1",
+    "arm": "control",
+    "seed": 1,
+    "stats": {
+      "turns": 7,
+      "usage": {
+        "input_tokens": 2946,
+        "output_tokens": 1839,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 33920
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-12",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 5.07,
+        "mem_available_kb": 26230560,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6449,
+        "peak_context_pressure": 0.024600983,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 23.095685317
+    }
+  },
+  {
+    "trial": "control__queue-12__s2__r1",
+    "arm": "control",
+    "seed": 2,
+    "stats": {
+      "turns": 7,
+      "usage": {
+        "input_tokens": 2997,
+        "output_tokens": 1851,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 33849
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-12",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.99,
+        "mem_available_kb": 28014416,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6361,
+        "peak_context_pressure": 0.02426529,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 20.921363606
+    }
+  },
+  {
+    "trial": "control__queue-12__s3__r1",
+    "arm": "control",
+    "seed": 3,
+    "stats": {
+      "turns": 12,
+      "usage": {
+        "input_tokens": 4080,
+        "output_tokens": 2831,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 70072
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 13,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 1,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 4,
+      "goal_anchor": "task:queue-12",
+      "goal_plan_writes": 6,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.79,
+        "mem_available_kb": 28700380,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 8250,
+        "peak_context_pressure": 0.031471252,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 31.081458286
+    }
+  },
+  {
+    "trial": "learning__queue-01__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "stats": {
+      "turns": 7,
+      "usage": {
+        "input_tokens": 3803,
+        "output_tokens": 3310,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 37846
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 5,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-01",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.48,
+        "mem_available_kb": 28742472,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 7814,
+        "peak_context_pressure": 0.029808044,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 37.510188368
+    }
+  },
+  {
+    "trial": "learning__queue-01__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "stats": {
+      "turns": 7,
+      "usage": {
+        "input_tokens": 3229,
+        "output_tokens": 2132,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 34667
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-01",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 2.25,
+        "mem_available_kb": 29967316,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6595,
+        "peak_context_pressure": 0.025157928,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 24.315432487
+    }
+  },
+  {
+    "trial": "learning__queue-01__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "stats": {
+      "turns": 6,
+      "usage": {
+        "input_tokens": 3255,
+        "output_tokens": 2123,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 28386
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-01",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 2.63,
+        "mem_available_kb": 28787728,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6607,
+        "peak_context_pressure": 0.025203705,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 23.883857661
+    }
+  },
+  {
+    "trial": "learning__queue-02__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "stats": {
+      "turns": 9,
+      "usage": {
+        "input_tokens": 3253,
+        "output_tokens": 2607,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 50024
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 9,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 1,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 4,
+      "goal_anchor": "task:queue-02",
+      "goal_plan_writes": 5,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 4.28,
+        "mem_available_kb": 24275940,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 7360,
+        "peak_context_pressure": 0.028076172,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 29.866309524
+    }
+  },
+  {
+    "trial": "learning__queue-02__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 3143,
+        "output_tokens": 2005,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 40622
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-02",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.82,
+        "mem_available_kb": 30051380,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6650,
+        "peak_context_pressure": 0.025367737,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 22.616235283
+    }
+  },
+  {
+    "trial": "learning__queue-02__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 3016,
+        "output_tokens": 1943,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 38473
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-02",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 2.29,
+        "mem_available_kb": 28936760,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6433,
+        "peak_context_pressure": 0.024539948,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 22.304472423
+    }
+  },
+  {
+    "trial": "learning__queue-03__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "stats": {
+      "turns": 9,
+      "usage": {
+        "input_tokens": 3385,
+        "output_tokens": 1980,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 46603
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 9,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-03",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 4.0,
+        "mem_available_kb": 27388764,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6924,
+        "peak_context_pressure": 0.026412964,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 23.003733875
+    }
+  },
+  {
+    "trial": "learning__queue-03__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "stats": {
+      "turns": 10,
+      "usage": {
+        "input_tokens": 3603,
+        "output_tokens": 2298,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 52775
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 10,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 1,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 4,
+      "goal_anchor": "task:queue-03",
+      "goal_plan_writes": 5,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.43,
+        "mem_available_kb": 29652348,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 7149,
+        "peak_context_pressure": 0.02727127,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 26.080476258
+    }
+  },
+  {
+    "trial": "learning__queue-03__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "stats": {
+      "turns": 7,
+      "usage": {
+        "input_tokens": 2964,
+        "output_tokens": 1873,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 33788
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-03",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 2.09,
+        "mem_available_kb": 28962520,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6444,
+        "peak_context_pressure": 0.02458191,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 21.090008429
+    }
+  },
+  {
+    "trial": "learning__queue-04__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "stats": {
+      "turns": 10,
+      "usage": {
+        "input_tokens": 3849,
+        "output_tokens": 3008,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 56968
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 10,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 1,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 4,
+      "goal_anchor": "task:queue-04",
+      "goal_plan_writes": 5,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 3.12,
+        "mem_available_kb": 28124096,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 7846,
+        "peak_context_pressure": 0.029930115,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 34.364164674
+    }
+  },
+  {
+    "trial": "learning__queue-04__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 3072,
+        "output_tokens": 1990,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 38611
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-04",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.36,
+        "mem_available_kb": 29301300,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6485,
+        "peak_context_pressure": 0.024738312,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 23.831270438
+    }
+  },
+  {
+    "trial": "learning__queue-04__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 2843,
+        "output_tokens": 1741,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 38019
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-04",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.78,
+        "mem_available_kb": 28982608,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6256,
+        "peak_context_pressure": 0.023864746,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 20.185806749
+    }
+  },
+  {
+    "trial": "learning__queue-05__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "stats": {
+      "turns": 9,
+      "usage": {
+        "input_tokens": 3449,
+        "output_tokens": 2580,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 50775
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 9,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 2,
+      "step_reopens": 0,
+      "step_completions": 5,
+      "step_measured": 5,
+      "goal_anchor": "task:queue-05",
+      "goal_plan_writes": 5,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 2.69,
+        "mem_available_kb": 26600960,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 7547,
+        "peak_context_pressure": 0.02878952,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 29.338564294
+    }
+  },
+  {
+    "trial": "learning__queue-05__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 3123,
+        "output_tokens": 2306,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 40606
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-05",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.3,
+        "mem_available_kb": 29225688,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6620,
+        "peak_context_pressure": 0.025253296,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 25.78360181
+    }
+  },
+  {
+    "trial": "learning__queue-05__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 2898,
+        "output_tokens": 1800,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 38214
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 9,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-05",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 4,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.56,
+        "mem_available_kb": 28555292,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6402,
+        "peak_context_pressure": 0.024421692,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 20.891716996
+    }
+  },
+  {
+    "trial": "learning__queue-06__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "stats": {
+      "turns": 9,
+      "usage": {
+        "input_tokens": 3009,
+        "output_tokens": 2294,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 48460
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 9,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 1,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 4,
+      "goal_anchor": "task:queue-06",
+      "goal_plan_writes": 5,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 2.5,
+        "mem_available_kb": 27959896,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 7065,
+        "peak_context_pressure": 0.026950836,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 25.702272157
+    }
+  },
+  {
+    "trial": "learning__queue-06__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "stats": {
+      "turns": 9,
+      "usage": {
+        "input_tokens": 3054,
+        "output_tokens": 2304,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 48774
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 9,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 1,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 4,
+      "goal_anchor": "task:queue-06",
+      "goal_plan_writes": 5,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.47,
+        "mem_available_kb": 29236792,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 7090,
+        "peak_context_pressure": 0.027046204,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 25.131125103
+    }
+  },
+  {
+    "trial": "learning__queue-06__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 3315,
+        "output_tokens": 2244,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 39405
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 9,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-06",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.65,
+        "mem_available_kb": 28961364,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6852,
+        "peak_context_pressure": 0.026138306,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 25.380357945
+    }
+  },
+  {
+    "trial": "learning__queue-07__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "stats": {
+      "turns": 9,
+      "usage": {
+        "input_tokens": 2539,
+        "output_tokens": 5672,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 68895
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 10,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-07",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.98,
+        "mem_available_kb": 28441432,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 10657,
+        "peak_context_pressure": 0.04065323,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 64.574656629
+    }
+  },
+  {
+    "trial": "learning__queue-07__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "stats": {
+      "turns": 7,
+      "usage": {
+        "input_tokens": 5429,
+        "output_tokens": 4194,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 41023
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 5,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-07",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.5,
+        "mem_available_kb": 29222820,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 8811,
+        "peak_context_pressure": 0.033611298,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 48.726808566
+    }
+  },
+  {
+    "trial": "learning__queue-07__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "stats": {
+      "turns": 6,
+      "usage": {
+        "input_tokens": 2995,
+        "output_tokens": 1808,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 27983
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 5,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-07",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.43,
+        "mem_available_kb": 29058512,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6360,
+        "peak_context_pressure": 0.024261475,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 20.360203962
+    }
+  },
+  {
+    "trial": "learning__queue-08__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 2976,
+        "output_tokens": 1922,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 38212
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-08",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 1,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 2.25,
+        "mem_available_kb": 26962748,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6374,
+        "peak_context_pressure": 0.02431488,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 23.054921161
+    }
+  },
+  {
+    "trial": "learning__queue-08__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "stats": {
+      "turns": 7,
+      "usage": {
+        "input_tokens": 3380,
+        "output_tokens": 2305,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 34897
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-08",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.3,
+        "mem_available_kb": 29079292,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6876,
+        "peak_context_pressure": 0.026229858,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 27.024292682
+    }
+  },
+  {
+    "trial": "learning__queue-08__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 2306,
+        "output_tokens": 2020,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 39514
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 5,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-08",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.47,
+        "mem_available_kb": 29066080,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6479,
+        "peak_context_pressure": 0.024715424,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 22.826943304
+    }
+  },
+  {
+    "trial": "learning__queue-09__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 3287,
+        "output_tokens": 1950,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 39926
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 9,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-09",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 2.59,
+        "mem_available_kb": 18174452,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6668,
+        "peak_context_pressure": 0.025436401,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 23.353234302
+    }
+  },
+  {
+    "trial": "learning__queue-09__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 3117,
+        "output_tokens": 1969,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 39703
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-09",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 3.59,
+        "mem_available_kb": 17579064,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6639,
+        "peak_context_pressure": 0.025325775,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 23.091304986
+    }
+  },
+  {
+    "trial": "learning__queue-09__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 2954,
+        "output_tokens": 1847,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 38379
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 9,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-09",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.73,
+        "mem_available_kb": 29062120,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6492,
+        "peak_context_pressure": 0.024765015,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 21.206410564
+    }
+  },
+  {
+    "trial": "learning__queue-10__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 2242,
+        "output_tokens": 2136,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 40285
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-10",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 4.33,
+        "mem_available_kb": 24632300,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6566,
+        "peak_context_pressure": 0.025047302,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 23.637588012
+    }
+  },
+  {
+    "trial": "learning__queue-10__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "stats": {
+      "turns": 8,
+      "usage": {
+        "input_tokens": 3143,
+        "output_tokens": 2179,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 40701
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 5,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-10",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 4.28,
+        "mem_available_kb": 26234852,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6686,
+        "peak_context_pressure": 0.025505066,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 24.188871836
+    }
+  },
+  {
+    "trial": "learning__queue-10__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "stats": {
+      "turns": 6,
+      "usage": {
+        "input_tokens": 3589,
+        "output_tokens": 2237,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 30627
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 9,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 4,
+      "goal_anchor": "task:queue-10",
+      "goal_plan_writes": 5,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.48,
+        "mem_available_kb": 29071212,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 7010,
+        "peak_context_pressure": 0.026741028,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 24.26029558
+    }
+  },
+  {
+    "trial": "learning__queue-11__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "stats": {
+      "turns": 7,
+      "usage": {
+        "input_tokens": 4231,
+        "output_tokens": 2972,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 37440
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 9,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 4,
+      "goal_anchor": "task:queue-11",
+      "goal_plan_writes": 5,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 3.41,
+        "mem_available_kb": 28393108,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 7723,
+        "peak_context_pressure": 0.029460907,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 33.636546497
+    }
+  },
+  {
+    "trial": "learning__queue-11__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "stats": {
+      "turns": 7,
+      "usage": {
+        "input_tokens": 2831,
+        "output_tokens": 1699,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 33325
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-11",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 3.39,
+        "mem_available_kb": 27739220,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6189,
+        "peak_context_pressure": 0.023609161,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 19.432976389
+    }
+  },
+  {
+    "trial": "learning__queue-11__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "stats": {
+      "turns": 5,
+      "usage": {
+        "input_tokens": 4199,
+        "output_tokens": 3529,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 21879
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 5,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-11",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.31,
+        "mem_available_kb": 29031076,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6342,
+        "peak_context_pressure": 0.02419281,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 39.335528621
+    }
+  },
+  {
+    "trial": "learning__queue-12__s1__r1",
+    "arm": "learning",
+    "seed": 1,
+    "stats": {
+      "turns": 7,
+      "usage": {
+        "input_tokens": 2947,
+        "output_tokens": 1823,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 33922
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 3,
+      "goal_anchor": "task:queue-12",
+      "goal_plan_writes": 4,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 2.64,
+        "mem_available_kb": 29291548,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6450,
+        "peak_context_pressure": 0.024604797,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 20.550975548
+    }
+  },
+  {
+    "trial": "learning__queue-12__s2__r1",
+    "arm": "learning",
+    "seed": 2,
+    "stats": {
+      "turns": 7,
+      "usage": {
+        "input_tokens": 2996,
+        "output_tokens": 1842,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 33853
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 0,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 2,
+      "goal_anchor": "task:queue-12",
+      "goal_plan_writes": 3,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 3.08,
+        "mem_available_kb": 28276652,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 6362,
+        "peak_context_pressure": 0.024269104,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 21.108176106
+    }
+  },
+  {
+    "trial": "learning__queue-12__s3__r1",
+    "arm": "learning",
+    "seed": 3,
+    "stats": {
+      "turns": 12,
+      "usage": {
+        "input_tokens": 3998,
+        "output_tokens": 2802,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 70162
+      },
+      "usage_complete": true,
+      "stop_cause": "completed",
+      "exhausted": false,
+      "ended_on_failed_call": false,
+      "tool_calls": 13,
+      "tool_errors": 0,
+      "tool_denied": 0,
+      "tool_staged": 0,
+      "malformed_tool_args": 0,
+      "blocked_sends": 0,
+      "compactions": 0,
+      "context_overflows": 0,
+      "boredom_notices": 0,
+      "step_escalations_attempted": 0,
+      "step_escalations_revised": 0,
+      "step_nulls": 1,
+      "step_reopens": 0,
+      "step_completions": 4,
+      "step_measured": 4,
+      "goal_anchor": "task:queue-12",
+      "goal_plan_writes": 6,
+      "goal_drift_writes": 0,
+      "goal_unnamed_writes": 0,
+      "delivered": [],
+      "checks_declared": 0,
+      "checks_passed": 0,
+      "homeostat": {
+        "load_avg_1m": 1.4,
+        "mem_available_kb": 28840832,
+        "backlog": {
+          "outbox": {
+            "waiting": 0
+          },
+          "questions": {
+            "waiting": 0
+          },
+          "frontdoor": {
+            "waiting": 0
+          },
+          "proposals": {
+            "waiting": 0
+          },
+          "candidates": {
+            "waiting": 0
+          }
+        },
+        "backlog_delta": {
+          "outbox": 0,
+          "questions": 0,
+          "frontdoor": 0,
+          "proposals": 0,
+          "candidates": 0,
+          "given_up": 0
+        },
+        "peak_prompt_tokens": 8254,
+        "peak_context_pressure": 0.03148651,
+        "anticipated_guilt": 0.0,
+        "guilt_after_relief": 0.0,
+        "charter": []
+      },
+      "taint": {
+        "private": true,
+        "untrusted": false
+      },
+      "duration_secs": 31.597105045
+    }
+  }
+]

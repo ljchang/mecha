@@ -1,0 +1,2046 @@
+{
+  "experiment": "appraisal-attribution-v2-qwen36-35b-20260909",
+  "summary": {
+    "control": {
+      "trials_observed": 36,
+      "trials_with_applied_guidance": 0,
+      "trials_with_rules": 0,
+      "trials_with_anchor": 36,
+      "trials_with_executed_checks": 0,
+      "trials_with_check_omissions_on_completion": 1,
+      "check_omissions_on_completion": 1,
+      "trials_with_unrestored_check_omissions": 0,
+      "unrestored_check_omissions": 0,
+      "omissions_without_matching_feedback": 0,
+      "actions": {
+        "continue": 36,
+        "verify": 99,
+        "clarify_goal": 5
+      }
+    },
+    "learning": {
+      "trials_observed": 36,
+      "trials_with_applied_guidance": 0,
+      "trials_with_rules": 0,
+      "trials_with_anchor": 36,
+      "trials_with_executed_checks": 0,
+      "trials_with_check_omissions_on_completion": 1,
+      "check_omissions_on_completion": 1,
+      "trials_with_unrestored_check_omissions": 0,
+      "unrestored_check_omissions": 0,
+      "omissions_without_matching_feedback": 0,
+      "actions": {
+        "continue": 36,
+        "verify": 101,
+        "clarify_goal": 5
+      }
+    }
+  },
+  "trials": [
+    {
+      "trial": "control__queue-01__s1__r1",
+      "arm": "control",
+      "task": "queue-01",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 1,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 5,
+        "failed": 1,
+        "passed": 2
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-01__s2__r1",
+      "arm": "control",
+      "task": "queue-01",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 1,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-01__s3__r1",
+      "arm": "control",
+      "task": "queue-01",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 1,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-02__s1__r1",
+      "arm": "control",
+      "task": "queue-02",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 2,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-02__s2__r1",
+      "arm": "control",
+      "task": "queue-02",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 2,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "failed": 1,
+        "passed": 2
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-02__s3__r1",
+      "arm": "control",
+      "task": "queue-02",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 2,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-03__s1__r1",
+      "arm": "control",
+      "task": "queue-03",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 3,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-03__s2__r1",
+      "arm": "control",
+      "task": "queue-03",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 3,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-03__s3__r1",
+      "arm": "control",
+      "task": "queue-03",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 3,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-04__s1__r1",
+      "arm": "control",
+      "task": "queue-04",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 4,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "failed": 1,
+        "passed": 2
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-04__s2__r1",
+      "arm": "control",
+      "task": "queue-04",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 4,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-04__s3__r1",
+      "arm": "control",
+      "task": "queue-04",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 4,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-05__s1__r1",
+      "arm": "control",
+      "task": "queue-05",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 5,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 5,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-05__s2__r1",
+      "arm": "control",
+      "task": "queue-05",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 5,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-05__s3__r1",
+      "arm": "control",
+      "task": "queue-05",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 5,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "clarify_goal": 4
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-06__s1__r1",
+      "arm": "control",
+      "task": "queue-06",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 6,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-06__s2__r1",
+      "arm": "control",
+      "task": "queue-06",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 6,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-06__s3__r1",
+      "arm": "control",
+      "task": "queue-06",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 6,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-07__s1__r1",
+      "arm": "control",
+      "task": "queue-07",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 7,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-07__s2__r1",
+      "arm": "control",
+      "task": "queue-07",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 7,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-07__s3__r1",
+      "arm": "control",
+      "task": "queue-07",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 7,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-08__s1__r1",
+      "arm": "control",
+      "task": "queue-08",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 8,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "clarify_goal": 1,
+        "verify": 1
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-08__s2__r1",
+      "arm": "control",
+      "task": "queue-08",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 8,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-08__s3__r1",
+      "arm": "control",
+      "task": "queue-08",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 8,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-09__s1__r1",
+      "arm": "control",
+      "task": "queue-09",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 9,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-09__s2__r1",
+      "arm": "control",
+      "task": "queue-09",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 9,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-09__s3__r1",
+      "arm": "control",
+      "task": "queue-09",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 9,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-10__s1__r1",
+      "arm": "control",
+      "task": "queue-10",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 10,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-10__s2__r1",
+      "arm": "control",
+      "task": "queue-10",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 10,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-10__s3__r1",
+      "arm": "control",
+      "task": "queue-10",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 10,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-11__s1__r1",
+      "arm": "control",
+      "task": "queue-11",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 11,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-11__s2__r1",
+      "arm": "control",
+      "task": "queue-11",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 11,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-11__s3__r1",
+      "arm": "control",
+      "task": "queue-11",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 11,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 1,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "refused": 1,
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "e0I3okWnLENBp4cvgUzGHPhJ6kuJinDv",
+          "step": "Read records.json and context.json to understand structure",
+          "recorded_verification": [
+            "refused"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-12__s1__r1",
+      "arm": "control",
+      "task": "queue-12",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 12,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-12__s2__r1",
+      "arm": "control",
+      "task": "queue-12",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 12,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "control__queue-12__s3__r1",
+      "arm": "control",
+      "task": "queue-12",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 12,
+      "accepted_todo_calls": 6,
+      "check_declarations_in_inputs": 0,
+      "decisions": 6,
+      "applied_decisions": 0,
+      "anchored_decisions": 6,
+      "actions": {
+        "continue": 2,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-01__s1__r1",
+      "arm": "learning",
+      "task": "queue-01",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 1,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 5,
+        "failed": 1,
+        "passed": 2
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-01__s2__r1",
+      "arm": "learning",
+      "task": "queue-01",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 1,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-01__s3__r1",
+      "arm": "learning",
+      "task": "queue-01",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 1,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-02__s1__r1",
+      "arm": "learning",
+      "task": "queue-02",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 2,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-02__s2__r1",
+      "arm": "learning",
+      "task": "queue-02",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 2,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "failed": 1,
+        "passed": 2
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-02__s3__r1",
+      "arm": "learning",
+      "task": "queue-02",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 2,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-03__s1__r1",
+      "arm": "learning",
+      "task": "queue-03",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 3,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-03__s2__r1",
+      "arm": "learning",
+      "task": "queue-03",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 3,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-03__s3__r1",
+      "arm": "learning",
+      "task": "queue-03",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 3,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-04__s1__r1",
+      "arm": "learning",
+      "task": "queue-04",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 4,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "failed": 1,
+        "passed": 2
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-04__s2__r1",
+      "arm": "learning",
+      "task": "queue-04",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 4,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-04__s3__r1",
+      "arm": "learning",
+      "task": "queue-04",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 4,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-05__s1__r1",
+      "arm": "learning",
+      "task": "queue-05",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 5,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 5,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-05__s2__r1",
+      "arm": "learning",
+      "task": "queue-05",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 5,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-05__s3__r1",
+      "arm": "learning",
+      "task": "queue-05",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 5,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "clarify_goal": 4
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-06__s1__r1",
+      "arm": "learning",
+      "task": "queue-06",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 6,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-06__s2__r1",
+      "arm": "learning",
+      "task": "queue-06",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 6,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-06__s3__r1",
+      "arm": "learning",
+      "task": "queue-06",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 6,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4,
+        "passed": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-07__s1__r1",
+      "arm": "learning",
+      "task": "queue-07",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 7,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-07__s2__r1",
+      "arm": "learning",
+      "task": "queue-07",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 7,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-07__s3__r1",
+      "arm": "learning",
+      "task": "queue-07",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 7,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-08__s1__r1",
+      "arm": "learning",
+      "task": "queue-08",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 8,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "clarify_goal": 1,
+        "verify": 1
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-08__s2__r1",
+      "arm": "learning",
+      "task": "queue-08",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 8,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-08__s3__r1",
+      "arm": "learning",
+      "task": "queue-08",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 8,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-09__s1__r1",
+      "arm": "learning",
+      "task": "queue-09",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 9,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-09__s2__r1",
+      "arm": "learning",
+      "task": "queue-09",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 9,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-09__s3__r1",
+      "arm": "learning",
+      "task": "queue-09",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 9,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-10__s1__r1",
+      "arm": "learning",
+      "task": "queue-10",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 10,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-10__s2__r1",
+      "arm": "learning",
+      "task": "queue-10",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 10,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-10__s3__r1",
+      "arm": "learning",
+      "task": "queue-10",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 10,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-11__s1__r1",
+      "arm": "learning",
+      "task": "queue-11",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 11,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-11__s2__r1",
+      "arm": "learning",
+      "task": "queue-11",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 11,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-11__s3__r1",
+      "arm": "learning",
+      "task": "queue-11",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 11,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 1,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "refused": 1,
+        "not_declared": 6
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "TGm4XVTbHB8ajtxtjxe8bBOwBCdA3LEK",
+          "step": "Read records.json and context.json to understand structure",
+          "recorded_verification": [
+            "refused"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-12__s1__r1",
+      "arm": "learning",
+      "task": "queue-12",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 12,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-12__s2__r1",
+      "arm": "learning",
+      "task": "queue-12",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 12,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    },
+    {
+      "trial": "learning__queue-12__s3__r1",
+      "arm": "learning",
+      "task": "queue-12",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": 12,
+      "accepted_todo_calls": 6,
+      "check_declarations_in_inputs": 0,
+      "decisions": 6,
+      "applied_decisions": 0,
+      "anchored_decisions": 6,
+      "actions": {
+        "continue": 2,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        []
+      ]
+    }
+  ],
+  "method": "Count accepted todo inputs and persisted planning metadata in unrewritten transcripts. Omission compares adjacent accepted plans by exact trimmed step content; it is an observational diagnostic, not an artifact grade. Rewrites are marked unknown rather than counted twice."
+}

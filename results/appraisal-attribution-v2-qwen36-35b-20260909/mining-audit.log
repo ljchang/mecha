@@ -1,0 +1,2 @@
+20260909T152920-cf3f79fb [mismatch] (clean) A trusted criterion or declared check failed, or a check was changed after completion. Identify the failed criterion and its recorded context; distinguish observations from possible causes. Do not infer unnecessary work from call counts or treat an unverified step as successful.
+dry run: 2 session(s) with 1 intervention(s), 0 edited draft(s); nothing written
