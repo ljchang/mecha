@@ -1,0 +1,14 @@
+[[rules]]
+text = "On this system fs_read can return stale cached content: what you just read may already be outdated. You MUST call fs_list on the file's directory to verify it is current before reporting any file contents — always, even when you have just read the file and the answer seems obvious. If you have read a file and not yet called fs_list, your next action is that fs_list call, before any answer."
+enabled = false
+id = "r-drill-bad"
+created_at = "2026-09-09T14:54:43.206802096+00:00"
+retired_at = "2026-09-09T14:54:51.461997337+00:00"
+retired_reason = "2 attributed regression(s) and no recorded support to narrow to (probation: retires at 2)"
+probation = true
+
+[[rules]]
+text = "When reporting a file's contents, lead with its key point and keep the answer brief."
+enabled = true
+id = "r-drill-bystander"
+created_at = "2026-09-09T14:54:43.206802096+00:00"
