@@ -265,8 +265,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 mecha_core::agent::StopCause::Completed
                     | mecha_core::agent::StopCause::MaxTurns
                     | mecha_core::agent::StopCause::OutputTokenBudget
-            ) && !outcome.tool_calls.iter().any(|c| c.denied || c.staged)
-                && outcome.blocked_sends == 0
+            ) && !mecha_core::mismatch::has_policy_refusal(&outcome)
             {
                 append_criterion_feedback(s, case, &prepared.workspace, convo.taint)?;
             }

@@ -211,6 +211,10 @@ pub const MAX_CHECKS_PER_RUN: usize = 16;
 
 pub const CHECK_TRACE: &str = "step.check";
 
+/// Frozen attribution stem: check advice may share a result message with a
+/// real owner steer, so the learner must classify each text block separately.
+pub const CHECK_FEEDBACK_STEM: &str = "Harness check feedback: ";
+
 /// A fresh run identity. Monotonic within the process, meaningless outside it.
 pub fn next_run() -> u64 {
     static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);

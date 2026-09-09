@@ -24,6 +24,13 @@ supplied synthetic successes. The regression failed against that behavior.
 `learning::evidence_for` labels redacted mismatch evidence as `UserTurns`, and
 `Reflector::reflect` skips malformed mismatch context without aborting the run.
 Workspace tests with required sandbox backends and warning-free Clippy passed.
+The next review caught a provenance omission in the restored advice: a frozen
+`CHECK_FEEDBACK_STEM` now keeps that block out of owner-correction mining while
+preserving real owner text sharing the same result message. Persisted synthetic
+check calls use UUIDs rather than process-local run counters. Artifact grading
+uses `mismatch::has_policy_refusal` in both the run and probe paths, excluding
+harness check diagnostics while retaining refused model calls and blocked sends.
+The mining and artifact-probe regressions both failed before these corrections.
 
 
 **2026-09-09 — invalid attribution pilot stopped; harness observations are not owner corrections.**

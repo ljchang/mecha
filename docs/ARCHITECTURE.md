@@ -3373,7 +3373,11 @@ there is no shell, external service or model-authored grading command. Each arm
 repeats the whole task in a fresh directory under current approval/policy gates.
 A policy refusal is inconclusive, not a model regression. This deliberately does
 not branch a filesystem snapshot that was never captured: steer/denial branching
-is unchanged. Whole-task results leave the intervention-region field unknown;
+is unchanged. `mismatch::has_policy_refusal` excludes harness check diagnostics from the
+artifact refusal gate in both run recording and probes: the fixture surface has
+no shell, so an unavailable declared check cannot suppress its independent
+grade. Refused model calls and blocked sends still make the run ungraded.
+Whole-task results leave the intervention-region field unknown;
 artifact success cannot certify that the original step's tool scope was exercised.
 Receipts under `learning/artifact-probes` identify the case, prompt, reflection,
 model, verdict and task usage. Experiments register the entire fixture in
