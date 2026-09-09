@@ -2268,6 +2268,8 @@ mod tests {
         let mut message = Message::user("result");
         message.planning = Some(Feedback {
             steps: vec![StepFeedback {
+                criterion: None,
+                completion_batch: None,
                 call_id: Some("c1".into()),
                 step: "work".into(),
                 goal: Some(crate::goal::GoalRef::Task("t1".into())),

@@ -197,3 +197,37 @@ fn artifact_learning_fixture_contract_is_exact_and_independent() {
         String::from_utf8_lossy(&result.stderr)
     );
 }
+
+#[test]
+fn attribution_fixture_keeps_transfer_answers_out_of_learning() {
+    if support::unavailable("python3", support::python3_available()) {
+        return;
+    }
+    let manifest = Manifest::parse(include_str!("../../eval/appraisal-attribution.toml")).unwrap();
+    assert_eq!(
+        manifest
+            .trials(&manifest.tasks.ids, "local", "qwen3.6-35b-a3b")
+            .len(),
+        72
+    );
+    for (i, id) in manifest.tasks.ids.iter().enumerate() {
+        let case = &manifest.tasks.mismatch_cases[id];
+        let ws = case.stage().unwrap();
+        case.bind(&case.prompt, Some(&case.goal.parse().unwrap()), ws.path())
+            .unwrap();
+        assert_eq!(case.criteria.is_empty(), i >= 6);
+        if i >= 6 {
+            assert!(case.criterion_feedback(ws.path()).unwrap().is_empty());
+        }
+    }
+    let result = Command::new("python3")
+        .current_dir(root())
+        .args(["-B", "eval/fixtures/test_appraisal_attribution_source.py"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}

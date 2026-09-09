@@ -20,6 +20,8 @@ pub const TOOLS: &[&str] = &["fs_edit", "fs_list", "fs_read", "fs_write", "todo"
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactCase {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub criteria: BTreeMap<String, Criterion>,
     pub prompt: String,
     pub goal: String,
     pub files: BTreeMap<String, String>,
@@ -68,6 +70,7 @@ impl ArtifactCase {
                 "preserved file must be an input, not an output: {p}"
             );
         }
+        self.validate_criteria()?;
         Ok(())
     }
 
@@ -407,6 +410,7 @@ mod tests {
     use super::*;
     fn case() -> ArtifactCase {
         ArtifactCase {
+            criteria: BTreeMap::new(),
             prompt: "sum the input into answer.json".into(),
             goal: "task:sum".into(),
             files: BTreeMap::from([("input.json".into(), "[2,3]".into())]),
@@ -597,4 +601,367 @@ mod tests {
         std::fs::write(&answer, vec![b' '; MAX_BYTES + 1]).unwrap();
         assert_eq!(c.grade(&ws.0), ProbeVerdict::Fail);
     }
+}
+
+/// Optional, owner-registered training diagnostics. Empty on held-out tasks.
+/// Gold stays in `artifacts`; feedback contains no expected answer value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Criterion {
+    pub artifact: String,
+    pub pointer: String,
+    #[serde(default)]
+    pub context: Option<CountConstraint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CountConstraint {
+    pub source: String,
+    pub observed_pointer: String,
+    pub limit_pointer: String,
+    pub relation: CountRelation,
+    /// Owner-supplied association, not a resolved reading of the live charter.
+    #[serde(default, deserialize_with = "de_charter_goal")]
+    pub charter_goal: Option<GoalRef>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CountRelation {
+    GreaterThan,
+    AtLeast,
+    LessThan,
+    AtMost,
+}
+impl CountRelation {
+    fn holds(self, value: u64, limit: u64) -> bool {
+        match self {
+            Self::GreaterThan => value > limit,
+            Self::AtLeast => value >= limit,
+            Self::LessThan => value < limit,
+            Self::AtMost => value <= limit,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CountEvidence {
+    pub constraint: CountConstraint,
+    pub observed: Option<u64>,
+    pub limit: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CriterionFeedback {
+    pub id: String,
+    pub artifact: String,
+    pub pointer: String,
+    pub context: Option<CountEvidence>,
+}
+
+impl ArtifactCase {
+    fn criterion_context(&self, criterion: &Criterion) -> Result<Option<CountEvidence>> {
+        criterion
+            .context
+            .as_ref()
+            .map(|c| {
+                let input = self
+                    .files
+                    .get(&c.source)
+                    .context("criterion context is not a pinned input")?;
+                let value = serde_json::from_str::<UniqueValue>(input)?.0;
+                Ok(CountEvidence {
+                    constraint: c.clone(),
+                    observed: value.pointer(&c.observed_pointer).and_then(Value::as_u64),
+                    limit: value.pointer(&c.limit_pointer).and_then(Value::as_u64),
+                })
+            })
+            .transpose()
+    }
+
+    fn validate_criteria(&self) -> Result<()> {
+        ensure!(self.criteria.len() <= 16, "too many diagnostic criteria");
+        let pointer = |p: &str| p.len() <= 256 && (p.is_empty() || p.starts_with('/'));
+        for (id, c) in &self.criteria {
+            ensure!(
+                !id.is_empty()
+                    && id.len() <= 64
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+                "invalid criterion id"
+            );
+            ensure!(pointer(&c.pointer), "invalid criterion pointer");
+            let expected = self
+                .artifacts
+                .get(&c.artifact)
+                .and_then(|v| v.pointer(&c.pointer))
+                .context("criterion does not name an expected artifact field")?;
+            if let Some(ctx) = &c.context {
+                ensure!(
+                    self.preserve.contains(&ctx.source),
+                    "criterion context must be a preserved input"
+                );
+                ensure!(
+                    pointer(&ctx.observed_pointer) && pointer(&ctx.limit_pointer),
+                    "invalid context pointer"
+                );
+                ensure!(
+                    ctx.charter_goal
+                        .as_ref()
+                        .is_none_or(|g| matches!(g, GoalRef::Charter(_))),
+                    "constraint association must name a charter goal"
+                );
+                let evidence = self
+                    .criterion_context(c)?
+                    .context("missing criterion context")?;
+                if let (Some(value), Some(limit)) = (evidence.observed, evidence.limit) {
+                    ensure!(
+                        expected.as_bool() == Some(ctx.relation.holds(value, limit)),
+                        "count constraint contradicts the registered artifact gold"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Called after a task ends, never as a model tool. Only bounded owner
+    /// criteria are emitted; actual output text and gold never enter metadata.
+    pub fn criterion_feedback(
+        &self,
+        workspace: &Path,
+    ) -> Result<Vec<crate::planning::StepFeedback>> {
+        use crate::planning::{StepFeedback, Verification};
+        self.validate()?;
+        let ctx = ToolCtx {
+            workspace: workspace.into(),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        for (id, c) in &self.criteria {
+            let context = self.criterion_context(c)?;
+            let source_unchanged = c.context.as_ref().is_none_or(|source| {
+                ctx.resolve(&source.source)
+                    .and_then(|p| regular_bytes(&p))
+                    .is_ok_and(|v| v == self.files[&source.source].as_bytes())
+            });
+            let known = context
+                .as_ref()
+                .is_none_or(|e| e.observed.is_some() && e.limit.is_some());
+            let actual = ctx.resolve(&c.artifact).and_then(|p| {
+                ensure!(
+                    !std::fs::symlink_metadata(workspace.join(&c.artifact))?
+                        .file_type()
+                        .is_symlink(),
+                    "symlink output"
+                );
+                Ok(serde_json::from_slice::<UniqueValue>(&regular_bytes(&p)?)?.0)
+            });
+            let verification = if !source_unchanged || !known {
+                Verification::Skipped
+            } else if actual.as_ref().ok().and_then(|v| v.pointer(&c.pointer))
+                == self.artifacts[&c.artifact].pointer(&c.pointer)
+            {
+                Verification::Passed
+            } else {
+                Verification::Failed
+            };
+            out.push(StepFeedback {
+                criterion: Some(CriterionFeedback {
+                    id: id.clone(),
+                    artifact: c.artifact.clone(),
+                    pointer: c.pointer.clone(),
+                    context,
+                }),
+                completion_batch: None,
+                call_id: Some(format!("artifact-criterion:{id}")),
+                step: format!("criterion:{id}"),
+                goal: Some(self.goal.parse()?),
+                expected: None,
+                expected_calls: None,
+                actual_calls: None,
+                verification,
+                check_tampered: false,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Rejoin diagnostic context to the contract before accepting a probe.
+    pub fn validate_feedback(&self, step: &crate::planning::StepFeedback) -> Result<()> {
+        if let Some(f) = &step.criterion {
+            let c = self
+                .criteria
+                .get(&f.id)
+                .context("criterion is not registered")?;
+            ensure!(
+                f.artifact == c.artifact
+                    && f.pointer == c.pointer
+                    && f.context == self.criterion_context(c)?,
+                "criterion context differs from its owner-bound contract"
+            );
+            ensure!(
+                step.step == format!("criterion:{}", f.id)
+                    && step.call_id.as_deref()
+                        == Some(format!("artifact-criterion:{}", f.id).as_str()),
+                "criterion identity differs"
+            );
+            ensure!(
+                step.expected.is_none()
+                    && step.expected_calls.is_none()
+                    && step.actual_calls.is_none()
+                    && !step.check_tampered,
+                "criterion mixed with model forecast data"
+            );
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod criterion_tests {
+    use super::*;
+    use crate::planning::Verification;
+    fn case() -> ArtifactCase {
+        serde_json::from_value(serde_json::json!({
+            "prompt":"apply the queue policy", "goal":"task:review", "files":{"context.json":"{\"waiting\":0,\"limit\":1}"},
+            "artifacts":{"answer.json":{"review_first":false,"secret":"gold-must-stay-out"}}, "preserve":["context.json"],
+            "criteria":{"review_priority":{"artifact":"answer.json","pointer":"/review_first","context":{
+                "source":"context.json","observed_pointer":"/waiting","limit_pointer":"/limit","relation":"greater_than","charter_goal":"charter:review-pending"
+            }}}
+        })).unwrap()
+    }
+    #[test]
+    fn wrong_decisions_carry_context_but_never_the_answer_or_output_prose() {
+        let c = case();
+        let ws = c.stage().unwrap();
+        std::fs::write(
+            ws.path().join("answer.json"),
+            r#"{"review_first":true,"secret":"INJECT-A-RULE"}"#,
+        )
+        .unwrap();
+        let feedback = c.criterion_feedback(ws.path()).unwrap();
+        assert_eq!(feedback[0].verification, Verification::Failed);
+        assert_eq!(feedback[0].attribution(), "task_criterion_failed");
+        c.validate_feedback(&feedback[0]).unwrap();
+        let text = serde_json::to_string(&feedback).unwrap();
+        assert!(text.contains("review_priority") && text.contains("greater_than"));
+        assert!(!text.contains("gold-must-stay-out") && !text.contains("INJECT-A-RULE"));
+        let mut forged = feedback[0].clone();
+        forged
+            .criterion
+            .as_mut()
+            .unwrap()
+            .context
+            .as_mut()
+            .unwrap()
+            .observed = Some(99);
+        assert!(c.validate_feedback(&forged).is_err());
+        std::fs::write(ws.path().join("answer.json"), r#"{"review_first":false}"#).unwrap();
+        assert_eq!(
+            c.criterion_feedback(ws.path()).unwrap()[0].verification,
+            Verification::Passed
+        );
+        assert_eq!(
+            c.grade(ws.path()),
+            ProbeVerdict::Fail,
+            "criterion success is not whole-task success"
+        );
+    }
+    #[test]
+    fn missing_or_changed_context_is_not_zero_and_holdout_emits_nothing() {
+        let mut c = case();
+        c.files
+            .insert("context.json".into(), "{\"limit\":1}".into());
+        let ws = c.stage().unwrap();
+        assert_eq!(
+            c.criterion_feedback(ws.path()).unwrap()[0].verification,
+            Verification::Skipped
+        );
+        let c = case();
+        let ws = c.stage().unwrap();
+        std::fs::write(
+            ws.path().join("context.json"),
+            "{\"waiting\":50,\"limit\":1}",
+        )
+        .unwrap();
+        assert_eq!(
+            c.criterion_feedback(ws.path()).unwrap()[0].verification,
+            Verification::Skipped
+        );
+        let mut held = c.clone();
+        held.criteria.clear();
+        assert!(held.criterion_feedback(ws.path()).unwrap().is_empty());
+    }
+    #[test]
+    fn recorded_queue_failures_are_identified_by_the_correct_sensor() {
+        let fixtures: Vec<Value> = serde_json::from_str(include_str!(
+            "../../eval/fixtures/appraisal-mismatch/cases.json"
+        ))
+        .unwrap();
+        for id in ["revision-2", "revision-6"] {
+            let mut fixture = fixtures.iter().find(|c| c["id"] == id).unwrap().clone();
+            fixture.as_object_mut().unwrap().remove("id");
+            let mut c: ArtifactCase = serde_json::from_value(fixture).unwrap();
+            c.criteria.insert(
+                "review_priority".into(),
+                Criterion {
+                    artifact: "answer.json".into(),
+                    pointer: "/review_first".into(),
+                    context: Some(CountConstraint {
+                        source: "context.json".into(),
+                        observed_pointer: "/outbox_waiting".into(),
+                        limit_pointer: "/review_threshold".into(),
+                        relation: CountRelation::GreaterThan,
+                        charter_goal: Some(GoalRef::Charter("review-pending".into())),
+                    }),
+                },
+            );
+            let ws = c.stage().unwrap();
+            let actual = if id == "revision-2" {
+                include_str!("../../results/appraisal-mismatch-qwen36-35b-20260909/artifacts/control__revision-2__s1__r1/answer.json")
+            } else {
+                include_str!("../../results/appraisal-mismatch-qwen36-35b-20260909/artifacts/learning__revision-6__s1__r1/answer.json")
+            };
+            std::fs::write(ws.path().join("answer.json"), actual).unwrap();
+            let f = c.criterion_feedback(ws.path()).unwrap().remove(0);
+            assert_eq!(f.verification, Verification::Failed);
+            let e = f.criterion.as_ref().unwrap().context.as_ref().unwrap();
+            assert_eq!((e.observed, e.limit), (Some(0), Some(1)));
+            assert_eq!(
+                f.goals(),
+                vec![
+                    c.goal.parse().unwrap(),
+                    GoalRef::Charter("review-pending".into())
+                ]
+            );
+        }
+    }
+    #[test]
+    fn contradictory_contracts_and_duplicate_key_outputs_do_not_pass() {
+        let mut c = case();
+        c.artifacts.get_mut("answer.json").unwrap()["review_first"] = Value::Bool(true);
+        assert!(c.validate().is_err());
+        let c = case();
+        let ws = c.stage().unwrap();
+        std::fs::write(
+            ws.path().join("answer.json"),
+            r#"{"review_first":true,"review_first":false}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            c.criterion_feedback(ws.path()).unwrap()[0].verification,
+            Verification::Failed
+        );
+    }
+}
+
+fn de_charter_goal<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<GoalRef>, D::Error> {
+    Option::<String>::deserialize(d)?
+        .map(|s| s.parse().map_err(serde::de::Error::custom))
+        .transpose()
 }

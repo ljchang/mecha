@@ -24,6 +24,12 @@ pub enum Verification {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StepFeedback {
+    /// Owner-bound task criterion; never a model-authored grading command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub criterion: Option<crate::mismatch::CriterionFeedback>,
+    /// More than one newly completed step makes the work boundary ambiguous.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_batch: Option<u32>,
     #[serde(default)]
     pub call_id: Option<String>,
     pub step: String,
@@ -41,6 +47,38 @@ impl StepFeedback {
     /// work span is unambiguous. The threshold avoids learning from small noise.
     pub fn forecast_miss(&self) -> bool {
         matches!((self.expected_calls, self.actual_calls), (Some(e), Some(a)) if a >= e.saturating_mul(3).max(6))
+    }
+    pub fn goals(&self) -> Vec<GoalRef> {
+        self.goal
+            .iter()
+            .cloned()
+            .chain(
+                self.criterion
+                    .as_ref()
+                    .and_then(|c| c.context.as_ref())
+                    .and_then(|c| c.constraint.charter_goal.as_ref())
+                    .cloned(),
+            )
+            .collect()
+    }
+    pub fn learnable_failure(&self) -> bool {
+        self.verification == Verification::Failed || self.check_tampered
+    }
+    /// Observations identify an error class, not its causal explanation.
+    pub fn attribution(&self) -> &'static str {
+        if self.criterion.is_some() && self.verification == Verification::Failed {
+            "task_criterion_failed"
+        } else if self.check_tampered {
+            "check_tampered"
+        } else if self.verification == Verification::Failed {
+            "declared_check_failed"
+        } else if self.forecast_miss() && self.completion_batch.is_some_and(|n| n > 1) {
+            "forecast_overrun_with_batched_completion"
+        } else if self.forecast_miss() {
+            "forecast_overrun_cause_unknown"
+        } else {
+            "no_attributed_failure"
+        }
     }
     pub fn mismatch(&self) -> bool {
         self.verification == Verification::Failed || self.forecast_miss() || self.check_tampered
@@ -177,6 +215,8 @@ mod tests {
     #[test]
     fn forecasts_and_failed_checks_are_distinct_from_missing_evidence() {
         let mut s = StepFeedback {
+            criterion: None,
+            completion_batch: None,
             call_id: None,
             step: "work".into(),
             goal: None,
@@ -339,4 +379,20 @@ pub fn examples(
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod attribution_tests {
+    use super::*;
+    #[test]
+    fn batch_boundaries_are_distinct_from_a_known_failure() {
+        let mut s:StepFeedback=serde_json::from_value(serde_json::json!({"step":"read head","expected_calls":1,"actual_calls":13,"verification":"not_declared"})).unwrap();
+        assert_eq!(s.attribution(), "forecast_overrun_cause_unknown");
+        assert!(!s.learnable_failure());
+        s.completion_batch = Some(3);
+        assert_eq!(s.attribution(), "forecast_overrun_with_batched_completion");
+        s.verification = Verification::Failed;
+        assert_eq!(s.attribution(), "declared_check_failed");
+        assert!(s.learnable_failure());
+    }
 }

@@ -903,3 +903,41 @@ with matching `[tasks.confirmed_goals]` entries. Fixtures are part of the
 condition hash and force the supported file-tool surface in both arms. The
 registered example is `eval/appraisal-mismatch.toml`: six training tasks followed
 by six transfer tasks, with rule exposure measured separately from task success.
+
+
+### Learning from a verified task criterion
+
+An owner-bound `--mismatch-case` can opt into training diagnostics with `criteria`.
+Each entry names an `artifact` and JSON `pointer` already present in its expected
+outputs. After the run, mecha records whether that criterion passed, failed or
+could not be evaluated. Expected values and the model's output prose do not enter
+the reflection payload.
+
+A criterion can include a `context` count constraint:
+
+```json
+"criteria": {
+  "review_priority": {
+    "artifact": "answer.json",
+    "pointer": "/review_first",
+    "context": {
+      "source": "context.json",
+      "observed_pointer": "/outbox_waiting",
+      "limit_pointer": "/review_threshold",
+      "relation": "greater_than",
+      "charter_goal": "charter:review-pending"
+    }
+  }
+}
+```
+
+The context source must be a pinned, preserved input. Counts and limits must be
+nonnegative integers; supported relations are `greater_than`, `at_least`,
+`less_than` and `at_most`. Missing or changed context is unknown. A charter goal
+is an optional owner-supplied association, not a live charter reading. Omit
+`criteria` on held-out evaluation tasks to withhold this diagnostic feedback.
+
+A forecast overrun still appears in the planning record, including whether
+multiple steps completed together. It does not by itself establish wasted work
+or qualify for a new behavioral rule. Verified criterion/check failures and
+changed checks retain the provenance, minimum-evidence and validation gates.

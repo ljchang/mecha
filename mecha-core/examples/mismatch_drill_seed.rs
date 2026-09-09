@@ -27,6 +27,8 @@ fn main() -> Result<()> {
         .and_then(|c| c.mismatch_case.as_ref())
         .context("recording has no bound artifact fixture")?;
     let step = StepFeedback {
+        criterion: None,
+        completion_batch: None,
         call_id: Some("controlled-mismatch".into()),
         step: "controlled forecast mismatch".into(),
         goal: Some(case.goal.parse()?),
