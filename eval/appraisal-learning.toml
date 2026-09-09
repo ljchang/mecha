@@ -1,0 +1,63 @@
+# Run from the checkout root. Both arms pin the default Qwen 3.6 35B model.
+# 6 ordered tasks x 1 seed x 2 arms = 12 trials. Empty initial learning stores.
+# Run with a separate bootstrap MECHA_HOME; see the results README for setup.
+name = "appraisal-learning-qwen36-35b-20260909"
+description = "Sequential learning-stage pilot: guidance and learned-rule loading on in both arms; only the learning stages differ."
+kind = "lifetime"
+control = "control"
+seeds = [1]
+repetitions = 1
+split_seed = 37
+
+[tasks]
+source = ["python3", "eval/fixtures/appraisal_v2_source.py"]
+fixture = "eval/fixtures/appraisal-v2/workspace"
+ids = ["reconcile-1", "privacy-1", "schedule-1", "reconcile-2", "privacy-2", "schedule-2"]
+
+[tasks.confirmed_goals]
+reconcile-1 = "task:reconcile-1"
+privacy-1 = "task:privacy-1"
+schedule-1 = "task:schedule-1"
+reconcile-2 = "task:reconcile-2"
+privacy-2 = "task:privacy-2"
+schedule-2 = "task:schedule-2"
+
+[fixtures]
+charter = "eval/fixtures/appraisal-v2/charter.toml"
+outbox_tools = []
+
+[[fixtures.mcp]]
+name = "graph"
+command = "python3"
+args = ["eval/fixtures/board_server.py"]
+prefix_tools = false
+seed = "eval/fixtures/appraisal-v2/board"
+[fixtures.mcp.capabilities]
+untrusted_input = true
+
+[arms.control]
+provider = "local"
+model = "qwen3.6-35b-a3b"
+preset = "full"
+levers_on = ["step_checks", "goal_guidance", "learned_rules"]
+levers_off = ["mcp", "skills", "hooks", "messages", "fallback", "step_escalation"]
+overrides = ["max_turns=16"]
+stages_off = ["reflect", "validate", "learn", "retire", "ruminate"]
+
+[arms.learning]
+provider = "local"
+model = "qwen3.6-35b-a3b"
+preset = "full"
+levers_on = ["step_checks", "goal_guidance", "learned_rules"]
+levers_off = ["mcp", "skills", "hooks", "messages", "fallback", "step_escalation"]
+overrides = ["max_turns=16"]
+[arms.learning.prediction]
+metric = "failure"
+rationale = "Learning from the first three tasks reduces artifact failures on the subsequent three tasks; stage and rule-exposure records are required before attributing a difference to learning."
+
+[schedule]
+reflect = 1
+validate = 3
+learn = 3
+retire = 3
+ruminate = 0
