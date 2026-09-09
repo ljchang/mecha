@@ -1,0 +1,18 @@
+[
+  {
+    "id": "20260909T141425-5e2c06ec",
+    "domain": "behavior",
+    "reflexions_processed": 3,
+    "rules_before": 0,
+    "rules_after": 1,
+    "created_at": "2026-09-09T14:14:25.535346607+00:00"
+  },
+  {
+    "id": "20260909T142651-3aec1de4",
+    "domain": "behavior",
+    "reflexions_processed": 3,
+    "rules_before": 1,
+    "rules_after": 1,
+    "created_at": "2026-09-09T14:26:51.751527642+00:00"
+  }
+]

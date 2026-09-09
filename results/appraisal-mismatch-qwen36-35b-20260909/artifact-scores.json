@@ -1,0 +1,36 @@
+{
+  "control": {
+    "initial": {
+      "n": 6,
+      "overall_pass": 4,
+      "artifact_pass": 5
+    },
+    "transfer": {
+      "n": 6,
+      "overall_pass": 6,
+      "artifact_pass": 6
+    },
+    "all": {
+      "n": 12,
+      "overall_pass": 10,
+      "artifact_pass": 11
+    }
+  },
+  "learning": {
+    "initial": {
+      "n": 6,
+      "overall_pass": 4,
+      "artifact_pass": 5
+    },
+    "transfer": {
+      "n": 6,
+      "overall_pass": 5,
+      "artifact_pass": 5
+    },
+    "all": {
+      "n": 12,
+      "overall_pass": 9,
+      "artifact_pass": 10
+    }
+  }
+}

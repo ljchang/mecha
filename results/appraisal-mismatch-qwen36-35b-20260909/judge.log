@@ -1,0 +1,7 @@
+appraisal-mismatch-qwen36-35b-20260909 — each arm against `control`
+
+learning  [failure]  12 pairs (8 selection, 4 holdout)
+  selection: 0 wins · 1 losses · 7 ties    holdout: 0 wins · 0 losses · 4 ties
+  stages: treatment 18 ok · 0 failed · 0 interrupted · 0 skipped · 0 unknown    control 0 ok · 0 failed · 0 interrupted · 0 skipped · 0 unknown
+  work: control 275 calls, treatment 267 calls
+  REJECT — did not beat the original: 0 better, 1 worse, 7 unchanged

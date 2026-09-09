@@ -32,6 +32,25 @@ caught `--no-goal-guidance` lacking Clap's global flag; its regression failed
 before the fix and accepts either argument position after it. Live measurements
 are recorded separately after completion, without changing earlier pilot grades.
 
+**2026-09-09 — natural mismatch learning reached actual transfer exposure.**
+On frozen runtime `edb554a7`, the twelve-task Qwen 3.6 35B sequence completed
+24 trials and 18 learning stages: control passed 10/12 overall and 6/6 transfer;
+learning passed 9/12 overall and 5/6 transfer. Seven clean mismatch reflections
+produced one scoped rule. Its initial gate measured three unchanged both-pass
+artifact pairs, and all six later task configurations recorded the rule's ID.
+Fresh-evidence validation yielded two unchanged pairs and two inconclusive pairs,
+with no attributed regression. Terminal consolidation selected three of four new
+reflections, but its identical effective prompt caused all probes to skip.
+Although the proposal disposition said `auto_applied_probation`, the final typed
+roster retained the existing measured rule identity and non-probation status;
+proposal labels are not substitutes for reading final state. The native gate
+rejected promotion. The model, binary, fixtures and isolated operator configuration
+matched at finish; nothing was installed or changed in the owner's learning home.
+The separate seeded artifact drill detected an aggregate regression, but both
+singleton subsets passed and attribution abstained: its strict retirement
+assertion failed, while the existing trace retirement drill passed. Evidence and
+limits are in `results/appraisal-mismatch-qwen36-35b-20260909/README.md`.
+
 **2026-09-09 — harder anchored appraisal and sequential learning measurements.**
 With runtime behavior frozen at `935d98f5`, Qwen 3.6 35B passed 20/24 control
 and 18/24 guided trials on eight harder tasks × three seeds. The native gate

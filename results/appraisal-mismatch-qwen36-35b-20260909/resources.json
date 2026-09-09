@@ -1,0 +1,18 @@
+{
+  "control": {
+    "duration_secs": 641.103226578,
+    "turns": 240,
+    "tool_calls": 275,
+    "stop_causes": {
+      "completed": 12
+    }
+  },
+  "learning": {
+    "duration_secs": 576.445818468,
+    "turns": 244,
+    "tool_calls": 267,
+    "stop_causes": {
+      "completed": 12
+    }
+  }
+}

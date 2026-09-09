@@ -1,0 +1,50 @@
+{
+  "case_hash": "12086075751b78a5",
+  "created_at": "2026-09-09T14:12:44.828332955+00:00",
+  "method": "artifact_task_repeat",
+  "model": "qwen3.6-35b-a3b",
+  "reflection_id": "20260909T140410-c70abee6",
+  "session_id": "20260909T140236-4b05f05c",
+  "stats": {
+    "blocked_sends": 0,
+    "boredom_notices": 0,
+    "checks_declared": 0,
+    "checks_passed": 0,
+    "compactions": 0,
+    "context_overflows": 0,
+    "delivered": [],
+    "duration_secs": 88.467391172,
+    "ended_on_failed_call": false,
+    "exhausted": false,
+    "goal_anchor": "task:revision-2",
+    "goal_drift_writes": 0,
+    "goal_plan_writes": 3,
+    "goal_unnamed_writes": 0,
+    "malformed_tool_args": 0,
+    "step_completions": 4,
+    "step_escalations_attempted": 0,
+    "step_escalations_revised": 0,
+    "step_measured": 2,
+    "step_nulls": 0,
+    "step_reopens": 0,
+    "stop_cause": "completed",
+    "taint": {
+      "private": true,
+      "untrusted": false
+    },
+    "tool_calls": 23,
+    "tool_denied": 0,
+    "tool_errors": 0,
+    "tool_staged": 0,
+    "turns": 10,
+    "usage": {
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 79421,
+      "input_tokens": 6741,
+      "output_tokens": 7822
+    },
+    "usage_complete": true
+  },
+  "system_hash": "772d4c166708fc60",
+  "verdict": "Pass"
+}
