@@ -1,0 +1,10 @@
+{
+  "archived_at": "2026-09-09T15:26:04.142003+00:00",
+  "status": "stopped_invalid",
+  "trial_status_counts": {
+    "done": 40
+  },
+  "reason": "Harness criterion observation text was mined as owner followup, including after passing tasks. This confounds the intended verified-failure learning treatment.",
+  "additional_finding": "One mismatch reflection treated a false context predicate as the failure itself instead of distinguishing an incorrect artifact field.",
+  "included_in_replacement_scores": false
+}

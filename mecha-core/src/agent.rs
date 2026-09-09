@@ -986,6 +986,7 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
     let text = text.trim();
     text == FINAL_ANSWER_NUDGE
         || text == EMPTY_TURN_NUDGE
+        || text == crate::planning::CRITERION_OBSERVATION
         || text == "A declared plan check was not run; completion remains unverified."
         || text == "The declared plan check did not establish completion. Review its result before claiming the step is verified."
         || text.starts_with(crate::boredom::NOTICE_STEM)

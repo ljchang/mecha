@@ -14,6 +14,20 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-09 — invalid attribution pilot stopped; harness observations are not owner corrections.**
+The first attribution pilot was stopped after 40 completed trials, before any
+consolidation, because `extract_interventions` mined the generic criterion
+observation as an owner follow-up even on passing tasks. The message was marked
+`harness`, but only the assistant-role path honored that marker. The miner now
+excludes marked user-role text and recognizes the frozen
+`planning::CRITERION_OBSERVATION` voice for historical records. Genuine owner
+follow-ups remain eligible. The regression failed before the fix. The mismatch
+reflector now explicitly distinguishes a false context predicate (potentially the
+correct decision) from a failed artifact verdict. The invalid run is preserved
+under `results/appraisal-attribution-qwen36-35b-20260909/`; the replacement uses
+fresh homes, the same tasks and seeds, and unchanged evidence gates.
+
+
 **2026-09-09 — grounded criterion feedback and conservative overrun attribution.**
 `StepFeedback::attribution` distinguishes failed task criteria, failed/changed
 checks, and forecast overruns with unknown or batched boundaries. Cost-only
@@ -5621,6 +5635,14 @@ fails on the previous cut. Charter sensors were ruled in and designed
 (`GOAL-SYSTEM-DESIGN.md` §11.1, seven containments), not built.
 
 ## Traps already hit
+
+**Harness provenance must reach every miner.** A post-run criterion message
+carried `harness=true` yet the user-role intervention miner read its text as an
+owner correction. Passing tasks then manufactured follow-up reflections. Check
+both the typed provenance marker and historical voice recognition whenever a
+new harness message can enter a persisted transcript; test its interaction with
+ordinary intervention mining, not only its dedicated diagnostic extractor.
+
 
 A harness-generated verification call initially became the model's apparent last
 failed action. Separating its work count alone was insufficient: final-call status,

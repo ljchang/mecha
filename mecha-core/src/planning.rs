@@ -1,4 +1,8 @@
-//! Structured planning evidence. Sensor values stay in local metadata, never prompts.
+//! Structured planning evidence. Live sensor values stay in local metadata.
+//! Owner-bound criterion snapshots may reach the quarantined post-run reflector.
+
+/// Frozen harness voice, also recognized in historical learning records.
+pub const CRITERION_OBSERVATION: &str = "Harness observations of owner-bound task criteria.";
 use crate::{goal::GoalRef, reading::LineReading};
 use serde::{Deserialize, Serialize};
 
