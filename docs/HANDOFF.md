@@ -60,7 +60,7 @@ rendered without browser errors or page overflow at 1440px and 390px.
 
 **2026-09-09 — review branches.** The user docs refresh merged as PR #219.
 PR #220 (`review/appraisal-goal-feedback`) contains the prerequisite goal and
-verified-step work and its review fixes; it is not merged or installed.
+verified-step work and its review fixes; no installation was performed.
 Current local verification: warning-free Clippy and workspace tests with
 `MECHA_TEST_REQUIRE_BACKENDS=1` passed (CLI 805/1 ignored, core 1523/1 ignored;
 other suites unchanged). Historical measurements below retain their original

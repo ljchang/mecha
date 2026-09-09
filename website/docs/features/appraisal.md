@@ -895,9 +895,10 @@ and keeps the owner's completion verdict alongside execution evidence.
 
 `goal_context` retrieves up to four applicable goal-linked rules and two recent
 examples with passing checks. It preserves scope and provenance and runs only
-when requested by the agent. Failed checks, substantial estimate overruns and
-changes to frozen checks can supply bounded mismatch reflections to `mecha reflect`.
-Unknown or tainted mismatch evidence is excluded.
+when requested by the agent. Failed checks, changes to frozen checks and
+verified task-criterion failures can supply bounded mismatch reflections to
+`mecha reflect`. Estimate overruns remain observations; they do not establish a
+behavioral lesson. Unknown or tainted mismatch evidence is excluded.
 
 ```toml
 [agent]
