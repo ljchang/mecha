@@ -56,6 +56,15 @@ class OracleControls(unittest.TestCase):
         with patch.object(source, "CASES", cases):
             self.test_every_case_has_positive_and_wrong_artifact_controls()
 
+    def test_explicit_artifact_source_names_the_output_in_every_prompt(self):
+        result = subprocess.run([sys.executable, "-B", str(Path(__file__).with_name("appraisal_artifact_source.py")), "list"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tasks = json.loads(result.stdout)
+        self.assertEqual(len(tasks), 8)
+        for task in tasks:
+            self.assertIn("Write the requested JSON object to answer.json in the workspace.", task["prompt"])
+            self.assertIn("task:" + task["id"], task["prompt"])
+
     def test_green_check_and_success_prose_do_not_override_wrong_artifact(self):
         case = source.case_for("misleading-check")
         source.setup(case)
