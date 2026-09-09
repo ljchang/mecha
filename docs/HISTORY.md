@@ -14,6 +14,18 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-09 — appraisal PR review corrections, not installed.**
+The frozen check executor now emits `Finding::CheckFailed` for an executed,
+failed check; refused or staged checks stay unverified. Attribution remains
+owned by the executor, so unrelated tool-span counters cannot certify a step.
+`planning::examples` applies `runlog::Scan::admits` before its history limit:
+33 newer development sessions previously displaced an older eligible run and
+supplied synthetic successes. The regression failed against that behavior.
+`learning::evidence_for` labels redacted mismatch evidence as `UserTurns`, and
+`Reflector::reflect` skips malformed mismatch context without aborting the run.
+Workspace tests with required sandbox backends and warning-free Clippy passed.
+
+
 **2026-09-09 — invalid attribution pilot stopped; harness observations are not owner corrections.**
 The first attribution pilot was stopped after 40 completed trials, before any
 consolidation, because `extract_interventions` mined the generic criterion

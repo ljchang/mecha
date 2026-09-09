@@ -128,8 +128,8 @@ pub struct Work {
     /// `Tracked::observe` refreshes its own copy of it whenever the model's
     /// call count moves, so a check landing last in a turn beside real work
     /// would have been attributed to the step as the model's own failure or
-    /// refusal (found on review). `Finding::CheckFailed` is read from the
-    /// counters, ahead of `last`, so nothing needs the check there.
+    /// refusal (found on review). The check executor emits `Finding::CheckFailed`
+    /// for its exact step; global deltas cannot establish step ownership.
     pub checks_declared: u32,
     /// Of those, the ones whose exit code was zero. `checks_declared -
     /// checks_passed` is the count of steps the harness *knows* did not
@@ -343,7 +343,9 @@ pub struct Span {
     pub shell_calls: u32,
     /// See [`Work::checks_declared`] and [`Work::checks_passed`]. Read by
     /// [`appraise`], unlike `verify_like`: a declared check that failed is
-    /// a fact about the step, not evidence for a model to weigh.
+    /// a fact about the step, not evidence for a model to weigh. The Todo
+    /// completion path clears global check deltas: its checks execute later,
+    /// and the executor emits the failure for that exact step.
     pub checks_declared: u32,
     pub checks_passed: u32,
     /// The run's most recent finished attempt — which is the *span's* most

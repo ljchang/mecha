@@ -171,7 +171,11 @@ pub fn evidence_for(
         // evidence stays untrusted, even after redaction.
         return match classify_origin(covering) {
             Origin::Clean => (i.clone(), Origin::Clean, Evidence::Full),
-            _ => (i.user_evidence_only(), Origin::Untrusted, Evidence::Full),
+            _ => (
+                i.user_evidence_only(),
+                Origin::Untrusted,
+                Evidence::UserTurns,
+            ),
         };
     }
     if crate::agent::is_harness_voice(&i.text) {
@@ -2907,7 +2911,9 @@ impl Reflector {
     /// unusably — logged, not fatal: one bad reflection is not worth a run).
     pub async fn reflect(&self, i: &Intervention) -> Result<Option<Reflexion>> {
         if i.trigger == Trigger::Mismatch {
-            let step: crate::planning::StepFeedback = serde_json::from_str(&i.context)?;
+            let Ok(step) = serde_json::from_str::<crate::planning::StepFeedback>(&i.context) else {
+                return Ok(None);
+            };
             if !step.learnable_failure() {
                 return Ok(None);
             }
