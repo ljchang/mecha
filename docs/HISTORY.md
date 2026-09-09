@@ -14,6 +14,22 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+
+**2026-09-09 — completion checks preserved and explicit goal confirmation.**
+`Tracked::advance` now restores and freezes the last open check when the first
+completing write omits it. The executor sees the restored command and keeps the
+ordinary approval, sandbox and denial behavior. An explicit withdrawal while a
+step remains open clears the stale cached declaration. Both regressions failed
+before the fix; the agent regression also failed because no check was dispatched.
+`run::confirm_goal` records an owner-supplied `--goal` before execution, preserves
+the saved anchor when omitted on resume, and overrides it when supplied.
+`Tasks::confirmed_goals` registers strict references by selected case ID and
+changes the condition hash without changing old manifests' hashes. The harder
+pilot has real fixture board tasks and independent artifact controls; the separate
+lifetime pilot starts from no learned rules and reports actual later rule exposure.
+Source commit `935d98f5` contains the behavior changes. Required-backend workspace
+checks passed 2,597 tests with three intentional ignores; Clippy was warning-free.
+
 **2026-09-09 — Qwen 3.6 35B paired appraisal pilot completed.**
 At `f3fe4df8`, the local `qwen3.6-35b-a3b` Q4_K_M model ran twelve synthetic
 tasks × three seeds × guidance off/on, from 03:20 to 04:06 UTC. Both arms

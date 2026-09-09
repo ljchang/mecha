@@ -33,14 +33,14 @@ conditions are in `results/appraisal-guidance-qwen36-35b-20260909/README.md`.
 The model, binary, fixtures and operator config matched at the finish checks;
 no installation or service restart was performed.
 
-**Next: fix completion-time check omission.** `Tracked::advance` restores an
-absent check only when already frozen. A first completing update can drop the
-open step's check: 71 matched `not_declared` observations across 51 pilot runs.
-Require that update to freeze and execute the prior check, with a regression
-that fails on the current behavior. Then measure harder cases with confirmed
-goal anchors and corresponding task records: this pilot had neither anchored
-plan exposure nor headroom over its perfect control score. Guidance was applied
-in every guided run but did not improve task attainment. Keep it opt-in.
+**The next measurements are running under separate registered designs.**
+`eval/appraisal-guidance-v2.toml` compares 48 harder, anchored trials at a
+16-turn ceiling. `eval/appraisal-learning.toml` separately measures a six-task
+sequence per arm, starting with an empty learning store; guidance and rule
+loading are enabled in both arms, while only the treatment runs learning stages.
+Their results must distinguish artifact success, check execution, confirmed-goal
+exposure and actual rule loading. The baseline remains unchanged. Guidance stays
+opt-in until a useful effect is measured.
 
 Unsolicited mid-run rule delivery stays off; mismatch-specific counterfactual
 grading, semantic interpretation of owner goal corrections, across-run learning
@@ -50,13 +50,13 @@ were re-verified in this measurement pass.
 
 Validation on this working tree: `cargo fmt --all`, warning-free
 `cargo clippy --all-targets --all-features`, and
-`MECHA_TEST_REQUIRE_BACKENDS=1 cargo test --workspace`: **2,592 passed, zero
-failed, three intentionally ignored**. The suite breakdown is 800 CLI, 22
-first-run, 3 run-lifecycle, 5 serve-lifecycle, 1,503 core, 4 appraisal-fixture,
+`MECHA_TEST_REQUIRE_BACKENDS=1 cargo test --workspace`: **2,597 passed, zero
+failed, three intentionally ignored**. The suite breakdown is 801 CLI, 22
+first-run, 3 run-lifecycle, 5 serve-lifecycle, 1,506 core, 5 appraisal-fixture,
 5 fixture-server, 13 MCP, 9 sandbox-backend, 151 mail, 1 mail binary, 75 Slack
 and 1 doctest.
 The main eval inventory remains **36 cases / 15 tags**, recounted 2026-09-09;
-the appraisal source separately supplies 12 tasks.
+the baseline appraisal source supplies 12 tasks and the harder source supplies 8.
 One trigger-lock test failed in an earlier suite, then passed both isolated and
 in the final full run; no trigger implementation changed.
 
