@@ -1,0 +1,15 @@
+[
+  {
+    "reflexion_id": "refl-drill-20260909T152732-3ef868cd",
+    "trigger": "steer",
+    "domain": "behavior",
+    "rules_hash": "ec11502045639d21",
+    "rule_ids": [
+      "r-drill-bad",
+      "r-drill-bystander"
+    ],
+    "outcome": "unchanged_pass",
+    "model": "qwen3.6-35b-a3b",
+    "created_at": "2026-09-09T15:27:35.751071191+00:00"
+  }
+]

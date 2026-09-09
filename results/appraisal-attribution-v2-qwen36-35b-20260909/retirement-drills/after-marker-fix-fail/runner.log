@@ -1,0 +1,48 @@
+── retirement drill: building ──
+── 1. recording a session (real run, real model) ──
+mecha: subagent `research` not registered — `--tool` excludes web_search, http_fetch, todo
+mecha: subagent `classify` not registered — `--tool` excludes web_search
+
+session 20260909T152732-3ef868cd
+recorded session 20260909T152732-3ef868cd
+── 2. seeding: steer + reflection + bad rule (probation) + bystander ──
+{"bad_rule_id":"r-drill-bad","bystander_rule_id":"r-drill-bystander","session":"20260909T152732-3ef868cd","steer_inserted_at_line":4}
+── 3.1. validate (probe pass 1) ──
+probing 1 reflection(s) with qwen3.6-35b-a3b (local), judged by qwen3.6-35b-a3b (local)
+mecha: [outbox] routes `docs__docs_append`, which is not a registered tool — check the spelling, or this routing protects nothing
+mecha: [outbox] routes `docs__docs_create`, which is not a registered tool — check the spelling, or this routing protects nothing
+mecha: [outbox] routes `docs__docs_replace`, which is not a registered tool — check the spelling, or this routing protects nothing
+mecha: [outbox] routes `docs__sheets_create`, which is not a registered tool — check the spelling, or this routing protects nothing
+mecha: [outbox] routes `docs__sheets_write`, which is not a registered tool — check the spelling, or this routing protects nothing
+mecha: [outbox] routes `docs__slides_create`, which is not a registered tool — check the spelling, or this routing protects nothing
+mecha: [outbox] routes `factory__bundle_alias`, which is not a registered tool — check the spelling, or this routing protects nothing
+mecha: [outbox] routes `factory__bundle_publish`, which is not a registered tool — check the spelling, or this routing protects nothing
+mecha: [outbox] routes `factory__bundle_unpublish`, which is not a registered tool — check the spelling, or this routing protects nothing
+mecha: [outbox] routes `factory__poll_close`, which is not a registered tool — check the spelling, or this routing protects nothing
+mecha: [outbox] routes `factory__poll_create`, which is not a registered tool — check the spelling, or this routing protects nothing
+mecha: [outbox] routes `factory__poll_meeting_create`, which is not a registered tool — check the spelling, or this routing protects nothing
+mecha: [outbox] routes `factory__surface_pull`, which is not a registered tool — check the spelling, or this routing protects nothing
+mecha: [outbox] routes `factory__surface_push`, which is not a registered tool — check the spelling, or this routing protects nothing
+mecha: [outbox] routes `factory__type_push`, which is not a registered tool — check the spelling, or this routing protects nothing
+mecha: [outbox] routes `mail__calendar_create_event`, which is not a registered tool — check the spelling, or this routing protects nothing
+mecha: [outbox] routes `mail__calendar_delete_event`, which is not a registered tool — check the spelling, or this routing protects nothing
+mecha: [outbox] routes `mail__calendar_update_event`, which is not a registered tool — check the spelling, or this routing protects nothing
+mecha: [outbox] routes `mail__mail_reply`, which is not a registered tool — check the spelling, or this routing protects nothing
+mecha: [outbox] routes `mail__mail_send`, which is not a registered tool — check the spelling, or this routing protects nothing
+· refl-drill-20260909T152732-3ef868cd [steer, unchanged (both pass)] Answer from evidence already gathered instead of piling on more reads.
+
+0 improved, 0 regressed, 1 unchanged, 0 inconclusive, 0 skipped (n=1; steers and denials are trace-graded, followups judge-graded — read before believing a single flip)
+1 row(s) appended to the validation ledger — `mecha rules` folds them
+ledger: 0 attributed regression(s) against r-drill-bad
+DRILL FAILED: pass 1 should leave 1 attributed regression(s), found 0 — the probe did not regress on the bad rule (model behaviour drifted? read the ledger above)
+── diagnostics ──
+· ledger (/tmp/mecha-retirement-drill.1gOdMo/learning/validations.jsonl):
+· rules:
+  ## behavior
+    [active (probation — applied ungraded, retires at 2)] On this system fs_read can return stale cached content: what you just read may already be outdated. You MUST call fs_list on the file's directory to verify it is current before reporting any file contents — always, even when you have just read the file and the answer seems obvious. If you have read a file and not yet called fs_list, your next action is that fs_list call, before any answer.
+        id r-drill-bad · created 2026-09-09T15:27:33.803021584+00:00 · unscoped (predates scoping; loads everywhere) · 1 probe(s), 1 graded: 0 improved, 0 regressed, 0 attributed to this rule; last 2026-09-09T15:27:35.751071191+00:00
+        by region: no region recorded 1 graded
+    [active] When reporting a file's contents, lead with its key point and keep the answer brief.
+        id r-drill-bystander · created 2026-09-09T15:27:33.803021584+00:00 · unscoped (predates scoping; loads everywhere) · 1 probe(s), 1 graded: 0 improved, 0 regressed, 0 attributed to this rule; last 2026-09-09T15:27:35.751071191+00:00
+        by region: no region recorded 1 graded
+drill world kept at /tmp/mecha-retirement-drill.1gOdMo

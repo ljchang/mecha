@@ -1,0 +1,7 @@
+appraisal-attribution-v2-qwen36-35b-20260909 — each arm against `control`
+
+learning  [failure]  36 pairs (24 selection, 12 holdout)
+  selection: 0 wins · 0 losses · 24 ties    holdout: 0 wins · 0 losses · 12 ties
+  stages: treatment 54 ok · 0 failed · 0 interrupted · 0 skipped · 0 unknown    control 0 ok · 0 failed · 0 interrupted · 0 skipped · 0 unknown
+  work: control 312 calls, treatment 304 calls
+  REJECT — did not beat the original: 0 better, 0 worse, 24 unchanged

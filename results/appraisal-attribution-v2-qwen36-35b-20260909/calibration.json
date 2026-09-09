@@ -1,0 +1,36 @@
+{
+  "control": {
+    "step_observations": 152,
+    "paired_call_estimates": 54,
+    "missing_call_estimate_or_span": 98,
+    "forecast_misses": 0,
+    "misses_with_batched_completion": 0,
+    "mean_signed_call_error": 0.2777777777777778,
+    "mean_absolute_call_error": 0.42592592592592593,
+    "criterion_verdicts": {
+      "failed": 3,
+      "passed": 51
+    },
+    "criterion_failures_by_id": {
+      "review_priority": 3
+    },
+    "note": "Step estimates and spans use varying step boundaries. These are descriptive observations, not comparable measures of wasted work or evidence of causal improvement."
+  },
+  "learning": {
+    "step_observations": 153,
+    "paired_call_estimates": 53,
+    "missing_call_estimate_or_span": 100,
+    "forecast_misses": 0,
+    "misses_with_batched_completion": 0,
+    "mean_signed_call_error": 0.24528301886792453,
+    "mean_absolute_call_error": 0.3584905660377358,
+    "criterion_verdicts": {
+      "failed": 3,
+      "passed": 51
+    },
+    "criterion_failures_by_id": {
+      "review_priority": 3
+    },
+    "note": "Step estimates and spans use varying step boundaries. These are descriptive observations, not comparable measures of wasted work or evidence of causal improvement."
+  }
+}

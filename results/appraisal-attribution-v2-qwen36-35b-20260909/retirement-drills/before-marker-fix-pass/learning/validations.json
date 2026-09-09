@@ -1,0 +1,30 @@
+[
+  {
+    "reflexion_id": "refl-drill-20260909T145441-7baf0760",
+    "trigger": "steer",
+    "domain": "behavior",
+    "rules_hash": "ec11502045639d21",
+    "rule_ids": [
+      "r-drill-bad",
+      "r-drill-bystander"
+    ],
+    "outcome": "regressed",
+    "attributed_rule_id": "r-drill-bad",
+    "model": "qwen3.6-35b-a3b",
+    "created_at": "2026-09-09T14:54:47.265297507+00:00"
+  },
+  {
+    "reflexion_id": "refl-drill-20260909T145441-7baf0760",
+    "trigger": "steer",
+    "domain": "behavior",
+    "rules_hash": "ec11502045639d21",
+    "rule_ids": [
+      "r-drill-bad",
+      "r-drill-bystander"
+    ],
+    "outcome": "regressed",
+    "attributed_rule_id": "r-drill-bad",
+    "model": "qwen3.6-35b-a3b",
+    "created_at": "2026-09-09T14:54:51.418347547+00:00"
+  }
+]

@@ -1,0 +1,104 @@
+{
+  "control__s1__r1": {
+    "reflections": 0,
+    "triggers": {},
+    "origins": {},
+    "evidence": {},
+    "processed": 0,
+    "goals": [],
+    "validation_records": 0,
+    "validation_outcomes": {},
+    "store_file_sha256": {}
+  },
+  "control__s2__r1": {
+    "reflections": 0,
+    "triggers": {},
+    "origins": {},
+    "evidence": {},
+    "processed": 0,
+    "goals": [],
+    "validation_records": 0,
+    "validation_outcomes": {},
+    "store_file_sha256": {}
+  },
+  "control__s3__r1": {
+    "reflections": 0,
+    "triggers": {},
+    "origins": {},
+    "evidence": {},
+    "processed": 0,
+    "goals": [],
+    "validation_records": 0,
+    "validation_outcomes": {},
+    "store_file_sha256": {}
+  },
+  "learning__s1__r1": {
+    "reflections": 2,
+    "triggers": {
+      "mismatch": 2
+    },
+    "origins": {
+      "clean": 2
+    },
+    "evidence": {
+      "full": 2
+    },
+    "processed": 0,
+    "goals": [
+      "charter:review-pending",
+      "task:queue-01",
+      "task:queue-04"
+    ],
+    "validation_records": 0,
+    "validation_outcomes": {},
+    "store_file_sha256": {
+      "mined.jsonl": "713ad50f64f5366096deeacaa641a37bb54f1abd9515c9a39f993ded5d09bed0",
+      "reflections.jsonl": "4d6c1dc33ba44856e7299c19f6c3802c4e3f11afdd51fd4e2e7cc8cb52a2d0ce"
+    }
+  },
+  "learning__s2__r1": {
+    "reflections": 1,
+    "triggers": {
+      "mismatch": 1
+    },
+    "origins": {
+      "clean": 1
+    },
+    "evidence": {
+      "full": 1
+    },
+    "processed": 0,
+    "goals": [
+      "charter:review-pending",
+      "task:queue-02"
+    ],
+    "validation_records": 0,
+    "validation_outcomes": {},
+    "store_file_sha256": {
+      "mined.jsonl": "57a41d0183eaef89fbaa380f51a4018176a9c9e9d8f06f28d346fbbefee235c2",
+      "reflections.jsonl": "2c5bb6a40fc416c7d705bf8c46022818763388b251ff1bba29baf79a1e52d0b1"
+    }
+  },
+  "learning__s3__r1": {
+    "reflections": 1,
+    "triggers": {
+      "mismatch": 1
+    },
+    "origins": {
+      "clean": 1
+    },
+    "evidence": {
+      "full": 1
+    },
+    "processed": 0,
+    "goals": [
+      "task:queue-11"
+    ],
+    "validation_records": 0,
+    "validation_outcomes": {},
+    "store_file_sha256": {
+      "mined.jsonl": "df059bf79f6e829e16dbcbf236ac4d5c36b0e36aed2b65600c2fcfe9094303b3",
+      "reflections.jsonl": "c677f88984078c6c5fae27a1115b30ac5bbfb2fbb1c686dfb2c5de23fc194c51"
+    }
+  }
+}

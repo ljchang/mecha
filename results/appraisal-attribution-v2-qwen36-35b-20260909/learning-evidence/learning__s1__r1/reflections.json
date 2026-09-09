@@ -1,0 +1,56 @@
+[
+  {
+    "goals": [
+      "charter:review-pending",
+      "task:queue-01"
+    ],
+    "id": "20260909T154644-9abe4a98",
+    "domain": "behavior",
+    "session_id": "20260909T154535-d7bae05c",
+    "trigger": "mismatch",
+    "context": "{\"criterion\":{\"id\":\"review_priority\",\"artifact\":\"answer.json\",\"pointer\":\"/review_first\",\"context\":{\"constraint\":{\"source\":\"context.json\",\"observed_pointer\":\"/outbox_waiting\",\"limit_pointer\":\"/review_threshold\",\"relation\":\"greater_than\",\"charter_goal\":\"charter:review-pending\"},\"observed\":0,\"limit\":1}},\"call_id\":\"artifact-criterion:review_priority\",\"step\":\"criterion:review_priority\",\"goal\":\"task:queue-01\",\"expected\":null,\"expected_calls\":null,\"actual_calls\":null,\"verification\":\"failed\",\"check_tampered\":false}",
+    "intervention": "A trusted criterion or declared check failed, or a check was changed after completion. Identify the failed criterion and its recorded context; distinguish observations from possible causes. Do not infer unnecessary work from call counts or treat an unverified step as successful.",
+    "reflexion_text": "When a conditional priority criterion fails because the observed value does not exceed the limit, treat the false predicate as the correct decision boundary and recognize the artifact's priority flag was incorrectly set. Strictly bind pointers to their named source fields and treat verification failures as mismatches between context constraints and artifact state, not as system errors.",
+    "error_type": "verification",
+    "confidence": 0.9,
+    "is_processed": false,
+    "leap_run_id": null,
+    "created_at": "2026-09-09T15:46:44.378060431+00:00",
+    "origin": "clean",
+    "evidence": "full",
+    "situation": {
+      "tools": [
+        "todo"
+      ],
+      "trigger": "mismatch"
+    }
+  },
+  {
+    "goals": [
+      "charter:review-pending",
+      "task:queue-04"
+    ],
+    "id": "20260909T154828-dce0df82",
+    "domain": "behavior",
+    "session_id": "20260909T154737-c4e1aa5c",
+    "trigger": "mismatch",
+    "context": "{\"criterion\":{\"id\":\"review_priority\",\"artifact\":\"answer.json\",\"pointer\":\"/review_first\",\"context\":{\"constraint\":{\"source\":\"context.json\",\"observed_pointer\":\"/outbox_waiting\",\"limit_pointer\":\"/review_threshold\",\"relation\":\"greater_than\",\"charter_goal\":\"charter:review-pending\"},\"observed\":0,\"limit\":2}},\"call_id\":\"artifact-criterion:review_priority\",\"step\":\"criterion:review_priority\",\"goal\":\"task:queue-04\",\"expected\":null,\"expected_calls\":null,\"actual_calls\":null,\"verification\":\"failed\",\"check_tampered\":false}",
+    "intervention": "A trusted criterion or declared check failed, or a check was changed after completion. Identify the failed criterion and its recorded context; distinguish observations from possible causes. Do not infer unnecessary work from call counts or treat an unverified step as successful.",
+    "reflexion_text": "When an artifact criterion reports verification=failed, the submitted field was incorrect relative to the criterion's explicit expectation, independent of whether the context predicate evaluated to true or false. Consult the declared relation and observed/limit values to determine the correct artifact value, and avoid conflating a false context predicate with an incorrect artifact submission.",
+    "error_type": "verification",
+    "confidence": 0.9,
+    "is_processed": false,
+    "leap_run_id": null,
+    "created_at": "2026-09-09T15:48:28.514327455+00:00",
+    "origin": "clean",
+    "evidence": "full",
+    "situation": {
+      "tools": [
+        "todo"
+      ],
+      "trigger": "mismatch",
+      "surface": "run",
+      "workspace": "/tmp/mecha-attribution-v2-bootstrap-20260909/experiments/appraisal-attribution-v2-qwen36-35b-20260909/trials/learning__queue-04__s1__r1/workspace"
+    }
+  }
+]
