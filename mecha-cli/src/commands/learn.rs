@@ -584,11 +584,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 (0u32, 0u32, 0u32, 0u32);
             let mut measured = 0u32;
             let mut skipped = 0u32;
-            // An allowlist, not an exclusion: only steers and denials have a
-            // replayable intervention point. Followups keep the judge path in
-            // `mecha validate`; edits (outbox) have no transcript at all.
+            // Steers/denials branch; mismatches need a trusted artifact fixture.
+            // Unsupported evidence stays skipped, never measured-clean.
             for r in reflexions.iter().filter(|r| {
-                r.trigger == Trigger::Steer.as_str() || r.trigger == Trigger::Denial.as_str()
+                r.trigger == Trigger::Steer.as_str()
+                    || r.trigger == Trigger::Denial.as_str()
+                    || r.trigger == Trigger::Mismatch.as_str()
             }) {
                 match probe::probe_reflection(
                     prepared,

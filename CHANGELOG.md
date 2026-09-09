@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `run --mismatch-case` and registered experiment fixtures enable independent JSON-artifact validation of clean planning mismatches in isolated file-only tasks. Validation and rule proposals retain ungraded outcomes for missing evidence or policy refusals; each executed arm records an audit receipt. `--no-goal-guidance` now works before or after a subcommand.
+
 - `mecha run --goal KIND:ID` explicitly confirms a goal, including on resume; experiments can register per-task confirmed goals. Completed todo steps now retain and execute a previously declared check when the completing update omits it.
 
 - A paired appraisal pilot with twelve independently graded artifact tasks,

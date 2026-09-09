@@ -173,7 +173,7 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_step_checks: bool,
     /// Disable goal and charter planning guidance.
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub no_goal_guidance: bool,
 
     /// Load no `[[rule]]` approval rules. **Not a flag**: a `forbid` is the

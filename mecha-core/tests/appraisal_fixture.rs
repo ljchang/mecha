@@ -163,3 +163,37 @@ fn harder_pilot_goals_resolve_to_real_fixture_tasks() {
         assert!(arm.overrides.contains(&"max_turns=16".to_string()));
     }
 }
+
+#[test]
+fn artifact_learning_fixture_contract_is_exact_and_independent() {
+    if support::unavailable("python3", support::python3_available()) {
+        return;
+    }
+    let manifest = Manifest::parse(include_str!("../../eval/appraisal-mismatch.toml")).unwrap();
+    assert_eq!(manifest.tasks.mismatch_cases.len(), 12);
+    assert_eq!(
+        manifest
+            .trials(&manifest.tasks.ids, "local", "qwen3.6-35b-a3b")
+            .len(),
+        24
+    );
+    for case in manifest.tasks.mismatch_cases.values() {
+        let workspace = case.stage().unwrap();
+        case.bind(
+            &case.prompt,
+            Some(&case.goal.parse().unwrap()),
+            workspace.path(),
+        )
+        .unwrap();
+    }
+    let result = Command::new("python3")
+        .current_dir(root())
+        .args(["-B", "eval/fixtures/test_appraisal_mismatch_source.py"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}

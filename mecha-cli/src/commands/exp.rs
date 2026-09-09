@@ -161,6 +161,16 @@ async fn cases_for(manifest: &Manifest) -> Result<Vec<mecha_core::eval::EvalCase
         ordered
     };
     anyhow::ensure!(!cases.is_empty(), "the manifest names no tasks");
+    for (id, fixture) in &manifest.tasks.mismatch_cases {
+        let case = cases
+            .iter()
+            .find(|case| &case.id == id)
+            .with_context(|| format!("mismatch fixture names unselected task `{id}`"))?;
+        anyhow::ensure!(
+            case.prompt.turns() == [fixture.prompt.as_str()],
+            "mismatch fixture prompt differs for `{id}`"
+        );
+    }
     for id in manifest.tasks.confirmed_goals.keys() {
         anyhow::ensure!(
             cases.iter().any(|case| &case.id == id),
@@ -1660,6 +1670,17 @@ async fn run_one(
     for f in &flags {
         cmd.arg(f);
     }
+    if let Some(fixture) = manifest.tasks.mismatch_cases.get(&case.id) {
+        let path = workspace
+            .parent()
+            .context("trial workspace has no parent")?
+            .join("mismatch-case.json");
+        std::fs::write(&path, serde_json::to_vec(fixture)?)?;
+        cmd.arg("--mismatch-case").arg(path);
+        for tool in mecha_core::mismatch::TOOLS {
+            cmd.arg("--tool").arg(tool);
+        }
+    }
     if let Some(goal) = manifest.tasks.confirmed_goals.get(&case.id) {
         cmd.arg("--goal").arg(goal.to_string());
     }
@@ -2282,6 +2303,7 @@ mod tests {
             fixture: "eval/workspace".into(),
             ids: Vec::new(),
             confirmed_goals: Default::default(),
+            mismatch_cases: Default::default(),
             tags: Vec::new(),
         };
         let cases = source_list(&tasks).await.unwrap();
