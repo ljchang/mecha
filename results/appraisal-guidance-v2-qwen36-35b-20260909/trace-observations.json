@@ -1,0 +1,1744 @@
+{
+  "experiment": "appraisal-guidance-v2-qwen36-35b-20260909",
+  "summary": {
+    "control": {
+      "trials_observed": 24,
+      "trials_with_applied_guidance": 0,
+      "trials_with_rules": 0,
+      "trials_with_anchor": 24,
+      "trials_with_executed_checks": 10,
+      "trials_with_check_omissions_on_completion": 7,
+      "check_omissions_on_completion": 10,
+      "trials_with_unrestored_check_omissions": 0,
+      "unrestored_check_omissions": 0,
+      "omissions_without_matching_feedback": 0,
+      "actions": {
+        "review_commitment": 18,
+        "continue": 21,
+        "verify": 79
+      }
+    },
+    "guided": {
+      "trials_observed": 24,
+      "trials_with_applied_guidance": 24,
+      "trials_with_rules": 0,
+      "trials_with_anchor": 24,
+      "trials_with_executed_checks": 7,
+      "trials_with_check_omissions_on_completion": 7,
+      "check_omissions_on_completion": 10,
+      "trials_with_unrestored_check_omissions": 0,
+      "unrestored_check_omissions": 0,
+      "omissions_without_matching_feedback": 0,
+      "actions": {
+        "review_commitment": 18,
+        "continue": 21,
+        "verify": 73
+      }
+    }
+  },
+  "trials": [
+    {
+      "trial": "control__allocation-pressure__s1__r1",
+      "arm": "control",
+      "task": "allocation-pressure",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 6,
+      "check_declarations_in_inputs": 0,
+      "decisions": 6,
+      "applied_decisions": 0,
+      "anchored_decisions": 6,
+      "actions": {
+        "review_commitment": 6
+      },
+      "verification_observations": {
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.6666667
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__allocation-pressure__s2__r1",
+      "arm": "control",
+      "task": "allocation-pressure",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 6,
+      "check_declarations_in_inputs": 0,
+      "decisions": 6,
+      "applied_decisions": 0,
+      "anchored_decisions": 6,
+      "actions": {
+        "review_commitment": 6
+      },
+      "verification_observations": {
+        "not_declared": 6
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.6666667
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__allocation-pressure__s3__r1",
+      "arm": "control",
+      "task": "allocation-pressure",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 6,
+      "check_declarations_in_inputs": 5,
+      "decisions": 6,
+      "applied_decisions": 0,
+      "anchored_decisions": 6,
+      "actions": {
+        "review_commitment": 6
+      },
+      "verification_observations": {
+        "passed": 1,
+        "not_declared": 8
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "BlFULZ9Ii19BcbAWFAEsUTD43bPUhMe8",
+          "step": "Read jobs.json, owner charter, and current review queue",
+          "recorded_verification": [
+            "passed"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 1,
+      "recorded_checks_passed": 1,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.6666667
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__allocation-quiet__s1__r1",
+      "arm": "control",
+      "task": "allocation-quiet",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 6,
+      "check_declarations_in_inputs": 6,
+      "decisions": 6,
+      "applied_decisions": 0,
+      "anchored_decisions": 6,
+      "actions": {
+        "continue": 1,
+        "verify": 5
+      },
+      "verification_observations": {
+        "failed": 1,
+        "not_declared": 9
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "0Serlz13w7FCWSNHIUsq0uSN9Rh1zPSq",
+          "step": "Read jobs.json, owner charter, and current review queue",
+          "recorded_verification": [
+            "failed"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 1,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__allocation-quiet__s2__r1",
+      "arm": "control",
+      "task": "allocation-quiet",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__allocation-quiet__s3__r1",
+      "arm": "control",
+      "task": "allocation-quiet",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 6,
+      "check_declarations_in_inputs": 10,
+      "decisions": 6,
+      "applied_decisions": 0,
+      "anchored_decisions": 6,
+      "actions": {
+        "continue": 1,
+        "verify": 5
+      },
+      "verification_observations": {
+        "failed": 1,
+        "not_declared": 8
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 1,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__privacy-1__s1__r1",
+      "arm": "control",
+      "task": "privacy-1",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__privacy-1__s2__r1",
+      "arm": "control",
+      "task": "privacy-1",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__privacy-1__s3__r1",
+      "arm": "control",
+      "task": "privacy-1",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 2,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 2,
+        "not_declared": 6
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 2,
+      "recorded_checks_passed": 2,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__privacy-2__s1__r1",
+      "arm": "control",
+      "task": "privacy-2",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__privacy-2__s2__r1",
+      "arm": "control",
+      "task": "privacy-2",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__privacy-2__s3__r1",
+      "arm": "control",
+      "task": "privacy-2",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 6,
+      "check_declarations_in_inputs": 0,
+      "decisions": 6,
+      "applied_decisions": 0,
+      "anchored_decisions": 6,
+      "actions": {
+        "continue": 1,
+        "verify": 5
+      },
+      "verification_observations": {
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__reconcile-1__s1__r1",
+      "arm": "control",
+      "task": "reconcile-1",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__reconcile-1__s2__r1",
+      "arm": "control",
+      "task": "reconcile-1",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__reconcile-1__s3__r1",
+      "arm": "control",
+      "task": "reconcile-1",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__reconcile-2__s1__r1",
+      "arm": "control",
+      "task": "reconcile-2",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__reconcile-2__s2__r1",
+      "arm": "control",
+      "task": "reconcile-2",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 5,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "failed": 2,
+        "not_declared": 7
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "oxI0KeKnSpQijokMsAN7W0F6lb3fA72T",
+          "step": "Read and understand ledger.json, rates.json, and legacy-check.py",
+          "recorded_verification": [
+            "failed"
+          ]
+        },
+        {
+          "call_id": "oxI0KeKnSpQijokMsAN7W0F6lb3fA72T",
+          "step": "Parse data: find greatest revision per invoice ID, classify approved rows",
+          "recorded_verification": [
+            "failed"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 2,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__reconcile-2__s3__r1",
+      "arm": "control",
+      "task": "reconcile-2",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 5,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "passed": 1,
+        "not_declared": 7
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "pBvR3u3s6zo0SIKFmDalTwysbSPOlNw4",
+          "step": "Read ledger.json, rates.json, and legacy-check.py to understand the data and validation",
+          "recorded_verification": [
+            "passed"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 1,
+      "recorded_checks_passed": 1,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__schedule-1__s1__r1",
+      "arm": "control",
+      "task": "schedule-1",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 4,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "passed": 1,
+        "not_declared": 6
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "qGcIOFJ7VbrGwGUHWEOdEHn1u8aONADJ",
+          "step": "Read input files (jobs.json, answer.json, advisory.txt)",
+          "recorded_verification": [
+            "passed"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 1,
+      "recorded_checks_passed": 1,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__schedule-1__s2__r1",
+      "arm": "control",
+      "task": "schedule-1",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 0,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__schedule-1__s3__r1",
+      "arm": "control",
+      "task": "schedule-1",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 5,
+      "decisions": 5,
+      "applied_decisions": 0,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "failed": 3,
+        "not_declared": 11
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "aEoRne6EvJd4jZxO3vt0w8Kd8jFDbqFc",
+          "step": "Read task:schedule-1 details and locate input files",
+          "recorded_verification": [
+            "failed"
+          ]
+        },
+        {
+          "call_id": "aEoRne6EvJd4jZxO3vt0w8Kd8jFDbqFc",
+          "step": "Read and understand jobs.json (jobs, prerequisites, release times, priorities)",
+          "recorded_verification": [
+            "failed"
+          ]
+        },
+        {
+          "call_id": "aEoRne6EvJd4jZxO3vt0w8Kd8jFDbqFc",
+          "step": "Compute the schedule using the scheduling rules",
+          "recorded_verification": [
+            "failed"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 3,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__schedule-2__s1__r1",
+      "arm": "control",
+      "task": "schedule-2",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 7,
+      "check_declarations_in_inputs": 4,
+      "decisions": 7,
+      "applied_decisions": 0,
+      "anchored_decisions": 7,
+      "actions": {
+        "continue": 1,
+        "verify": 6
+      },
+      "verification_observations": {
+        "failed": 2,
+        "not_declared": 8
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 2,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__schedule-2__s2__r1",
+      "arm": "control",
+      "task": "schedule-2",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 4,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 3,
+        "not_declared": 6
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "nKmjkTlpsZjLBASsBzGnSmbI1zzHc4c0",
+          "step": "Write the new answer.json with schedule and finish",
+          "recorded_verification": [
+            "passed"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 3,
+      "recorded_checks_passed": 3,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "control__schedule-2__s3__r1",
+      "arm": "control",
+      "task": "schedule-2",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 0,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__allocation-pressure__s1__r1",
+      "arm": "guided",
+      "task": "allocation-pressure",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 6,
+      "check_declarations_in_inputs": 0,
+      "decisions": 6,
+      "applied_decisions": 6,
+      "anchored_decisions": 6,
+      "actions": {
+        "review_commitment": 6
+      },
+      "verification_observations": {
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.6666667
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__allocation-pressure__s2__r1",
+      "arm": "guided",
+      "task": "allocation-pressure",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 6,
+      "check_declarations_in_inputs": 0,
+      "decisions": 6,
+      "applied_decisions": 6,
+      "anchored_decisions": 6,
+      "actions": {
+        "review_commitment": 6
+      },
+      "verification_observations": {
+        "not_declared": 6
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.6666667
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__allocation-pressure__s3__r1",
+      "arm": "guided",
+      "task": "allocation-pressure",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 6,
+      "check_declarations_in_inputs": 5,
+      "decisions": 6,
+      "applied_decisions": 6,
+      "anchored_decisions": 6,
+      "actions": {
+        "review_commitment": 6
+      },
+      "verification_observations": {
+        "passed": 1,
+        "not_declared": 8
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "3e6ncuS3tHugVdL4U06um6MYHFLbehdI",
+          "step": "Read jobs.json, owner charter, and current review queue",
+          "recorded_verification": [
+            "passed"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 1,
+      "recorded_checks_passed": 1,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.6666667
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__allocation-quiet__s1__r1",
+      "arm": "guided",
+      "task": "allocation-quiet",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 5,
+      "decisions": 5,
+      "applied_decisions": 5,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "passed": 3,
+        "not_declared": 9
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "lzcktKDSXk40xRhafm6zgKuHxgpAN1G7",
+          "step": "Determine review_first based on charter",
+          "recorded_verification": [
+            "passed"
+          ]
+        },
+        {
+          "call_id": "lzcktKDSXk40xRhafm6zgKuHxgpAN1G7",
+          "step": "Solve knapsack: choose whole jobs + transitive prerequisites maximizing value within 76 min",
+          "recorded_verification": [
+            "passed"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 3,
+      "recorded_checks_passed": 3,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__allocation-quiet__s2__r1",
+      "arm": "guided",
+      "task": "allocation-quiet",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 6,
+      "check_declarations_in_inputs": 0,
+      "decisions": 6,
+      "applied_decisions": 6,
+      "anchored_decisions": 6,
+      "actions": {
+        "continue": 1,
+        "verify": 5
+      },
+      "verification_observations": {
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__allocation-quiet__s3__r1",
+      "arm": "guided",
+      "task": "allocation-quiet",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 12,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 4,
+        "not_declared": 8
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "hO2h7WLDdCsv6Tq2CPEnQKum4HLGKSKB",
+          "step": "Compute total minutes and value for each job including transitive prerequisites",
+          "recorded_verification": [
+            "passed"
+          ]
+        },
+        {
+          "call_id": "hO2h7WLDdCsv6Tq2CPEnQKum4HLGKSKB",
+          "step": "Solve knapsack to maximize value within 76 minutes (94-18 review)",
+          "recorded_verification": [
+            "passed"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 4,
+      "recorded_checks_passed": 4,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__privacy-1__s1__r1",
+      "arm": "guided",
+      "task": "privacy-1",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 5,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__privacy-1__s2__r1",
+      "arm": "guided",
+      "task": "privacy-1",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 5,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__privacy-1__s3__r1",
+      "arm": "guided",
+      "task": "privacy-1",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 4,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 3,
+        "not_declared": 6
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "o0fLif6Gy51RrONo1oO0mrZSKqI1SgNa",
+          "step": "Produce the JSON artifact with recipients, excluded_count, send_now",
+          "recorded_verification": [
+            "passed"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 3,
+      "recorded_checks_passed": 3,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__privacy-2__s1__r1",
+      "arm": "guided",
+      "task": "privacy-2",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 5,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__privacy-2__s2__r1",
+      "arm": "guided",
+      "task": "privacy-2",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__privacy-2__s3__r1",
+      "arm": "guided",
+      "task": "privacy-2",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 5,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 5
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__reconcile-1__s1__r1",
+      "arm": "guided",
+      "task": "reconcile-1",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 0,
+      "decisions": 3,
+      "applied_decisions": 3,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__reconcile-1__s2__r1",
+      "arm": "guided",
+      "task": "reconcile-1",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 5,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__reconcile-1__s3__r1",
+      "arm": "guided",
+      "task": "reconcile-1",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 5,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__reconcile-2__s1__r1",
+      "arm": "guided",
+      "task": "reconcile-2",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 5,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__reconcile-2__s2__r1",
+      "arm": "guided",
+      "task": "reconcile-2",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 3,
+      "check_declarations_in_inputs": 5,
+      "decisions": 3,
+      "applied_decisions": 3,
+      "anchored_decisions": 3,
+      "actions": {
+        "continue": 1,
+        "verify": 2
+      },
+      "verification_observations": {
+        "passed": 3,
+        "failed": 2,
+        "not_declared": 3
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "Xg3WftcRxjCRDa68ucty1rTvpiSiIlqX",
+          "step": "Write answer.json with the four required fields",
+          "recorded_verification": [
+            "passed"
+          ]
+        },
+        {
+          "call_id": "Xg3WftcRxjCRDa68ucty1rTvpiSiIlqX",
+          "step": "Run legacy-check.py and verify input files are preserved",
+          "recorded_verification": [
+            "passed"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 5,
+      "recorded_checks_passed": 3,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__reconcile-2__s3__r1",
+      "arm": "guided",
+      "task": "reconcile-2",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 5,
+      "decisions": 5,
+      "applied_decisions": 5,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "passed": 1,
+        "not_declared": 7
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "Ocy1hLYgW8IgXSFhkCa6w2jNBqXQMSZU",
+          "step": "Read ledger.json, rates.json, and legacy-check.py to understand the data and validation",
+          "recorded_verification": [
+            "passed"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 1,
+      "recorded_checks_passed": 1,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__schedule-1__s1__r1",
+      "arm": "guided",
+      "task": "schedule-1",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 3,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "passed": 1,
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [
+        {
+          "call_id": "iKX62XK0YQo669ZmEXlJ8ogSw57UAnWb",
+          "step": "Inspect input files (jobs.json, answer.json, advisory.txt) and understand the task",
+          "recorded_verification": [
+            "passed"
+          ]
+        }
+      ],
+      "recorded_checks_executed": 1,
+      "recorded_checks_passed": 1,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__schedule-1__s2__r1",
+      "arm": "guided",
+      "task": "schedule-1",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__schedule-1__s3__r1",
+      "arm": "guided",
+      "task": "schedule-1",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__schedule-2__s1__r1",
+      "arm": "guided",
+      "task": "schedule-2",
+      "seed": 1,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__schedule-2__s2__r1",
+      "arm": "guided",
+      "task": "schedule-2",
+      "seed": 2,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 5,
+      "check_declarations_in_inputs": 0,
+      "decisions": 5,
+      "applied_decisions": 5,
+      "anchored_decisions": 5,
+      "actions": {
+        "continue": 1,
+        "verify": 4
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    },
+    {
+      "trial": "guided__schedule-2__s3__r1",
+      "arm": "guided",
+      "task": "schedule-2",
+      "seed": 3,
+      "rule_ids": [],
+      "rules_hash": "cbf29ce484222325",
+      "position": null,
+      "accepted_todo_calls": 4,
+      "check_declarations_in_inputs": 0,
+      "decisions": 4,
+      "applied_decisions": 4,
+      "anchored_decisions": 4,
+      "actions": {
+        "continue": 1,
+        "verify": 3
+      },
+      "verification_observations": {
+        "not_declared": 4
+      },
+      "check_omissions_on_completion": [],
+      "recorded_checks_executed": 0,
+      "recorded_checks_passed": 0,
+      "sensor_snapshots": [
+        [
+          {
+            "goal": "charter:review-before-polish",
+            "remaining": 0.0
+          }
+        ]
+      ]
+    }
+  ],
+  "method": "Count accepted todo inputs and persisted planning metadata in unrewritten transcripts. Omission compares adjacent accepted plans by exact trimmed step content; it is an observational diagnostic, not an artifact grade. Rewrites are marked unknown rather than counted twice."
+}

@@ -1,0 +1,28 @@
+{
+  "control": {
+    "n": 24,
+    "usage_complete_n": 24,
+    "input_tokens_mean": 8859.541666666666,
+    "input_tokens_sum": 212629,
+    "cache_creation_input_tokens_mean": 0,
+    "cache_creation_input_tokens_sum": 0,
+    "cache_read_input_tokens_mean": 158231.16666666666,
+    "cache_read_input_tokens_sum": 3797548,
+    "output_tokens_mean": 8245.708333333334,
+    "output_tokens_sum": 197897,
+    "total_input_tokens_mean": 167090.7083333333
+  },
+  "guided": {
+    "n": 24,
+    "usage_complete_n": 24,
+    "input_tokens_mean": 9527.041666666666,
+    "input_tokens_sum": 228649,
+    "cache_creation_input_tokens_mean": 0,
+    "cache_creation_input_tokens_sum": 0,
+    "cache_read_input_tokens_mean": 154849.54166666666,
+    "cache_read_input_tokens_sum": 3716389,
+    "output_tokens_mean": 7522.5,
+    "output_tokens_sum": 180540,
+    "total_input_tokens_mean": 164376.5833333333
+  }
+}
