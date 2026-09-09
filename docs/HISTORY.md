@@ -36,7 +36,12 @@ A later review extended that boundary to correction scope and aftermath:
 while preserving real steering beside them. Check-originated interlock blocks
 stay in the check trace but do not increment the model's `blocked_sends` counter.
 Both regressions failed before the fix; the armed-taint case verifies refusal
-still occurs.
+still occurs. Replay extraction now excludes harness calls from model choices
+and filters machine advice from steering. Because replayed tools cannot recreate
+those check observations, `Trajectory::ensure_replayable` refuses such recordings
+in both drivers and all three trace entry points rather than grading changed
+context or serving a check result to a model call. Artifact-task grading remains
+independent of trace replay.
 
 
 **2026-09-09 — invalid attribution pilot stopped; harness observations are not owner corrections.**

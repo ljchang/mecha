@@ -587,6 +587,7 @@ pub async fn drive(
     cx: &RunContext,
     trajectory: &Trajectory,
 ) -> Result<ReplayReport> {
+    trajectory.ensure_replayable()?;
     let mut convo = Conversation::new();
     let mut replayed: Vec<ToolCallTrace> = Vec::new();
     let mut final_text = String::new();
@@ -656,6 +657,7 @@ pub async fn drive_branch(
     trajectory: &Trajectory,
     call_base: usize,
 ) -> Result<ReplayReport> {
+    trajectory.ensure_replayable()?;
     let base = call_base.min(trajectory.calls.len());
     // The prefix is history, not a new security boundary. Private capability
     // metadata was not recorded, so treat prior tool results conservatively
@@ -1467,6 +1469,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn harness_observations_are_refused_before_either_replay_driver_calls_a_provider() {
+        let approver = Arc::new(ModeApprover {
+            mode: PermissionMode::Allow,
+        });
+        let agent = Agent::new(
+            Box::new(Scripted(Mutex::new(Vec::new()))),
+            Registry::new(),
+            approver.clone(),
+            ToolCtx::default(),
+            AgentConfig::default(),
+            None,
+        )
+        .unwrap();
+        let cx = RunContext::new(ToolCtx::default(), approver);
+        let trajectory = Trajectory {
+            turns: vec!["task".into()],
+            harness_calls: 1,
+            ..Default::default()
+        };
+        let error = drive(&agent, &cx, &trajectory).await.unwrap_err();
+        assert!(error.to_string().contains("replay of check observations"));
+        let error = drive_branch(&agent, &cx, vec![Message::user("task")], &trajectory, 0)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("replay of check observations"));
+    }
+
+    #[tokio::test]
     async fn a_faithful_replay_reports_no_divergence() {
         let calls = vec![recorded("echo", json!({"value": "a"}), "first")];
         let trajectory = Trajectory {
@@ -1474,6 +1504,7 @@ mod tests {
             calls: calls.clone(),
             final_text: "done".into(),
             steered: false,
+            harness_calls: 0,
         };
         let report = drive_scripted(
             vec![
@@ -1598,6 +1629,7 @@ mod tests {
             calls: calls.clone(),
             final_text: "done".into(),
             steered: true,
+            harness_calls: 0,
         };
         // The forced prefix: the first call already made and answered.
         let seed = vec![
@@ -1690,6 +1722,7 @@ mod tests {
             calls: calls.clone(),
             final_text: "done".into(),
             steered: false,
+            harness_calls: 0,
         };
 
         let report = drive_scripted(
@@ -1882,6 +1915,7 @@ mod tests {
             calls: calls.clone(),
             final_text: "done".into(),
             steered: false,
+            harness_calls: 0,
         };
         // The model calls `other` where the recording says `echo`; the refusal
         // comes back as a tool result, and the cancelled run ends the turn.

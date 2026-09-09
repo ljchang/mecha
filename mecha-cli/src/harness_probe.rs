@@ -89,6 +89,9 @@ pub fn prepare_episode(
         Err(e) => return Ok(Err(format!("session unreadable: {e:#}"))),
     };
     let trajectory = extract(&read.convo.messages);
+    if let Err(error) = trajectory.ensure_replayable() {
+        return Ok(Err(error.to_string()));
+    }
     if trajectory.turns.is_empty() {
         return Ok(Err("no user turns".into()));
     }

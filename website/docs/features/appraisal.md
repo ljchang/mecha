@@ -879,7 +879,9 @@ Plans can declare `serves`, a checkable `expect`, a shell `check`, and an
 `expect_calls` estimate. Completing a step runs its frozen check through the
 usual approvals, hooks and sandbox. At most 16 checks run per run. Refused,
 unavailable or skipped checks remain unverified; a passing check establishes
-only what that command tested at that time.
+only what that command tested at that time. Recordings that dispatched a harness
+check are excluded from trace replay and its probes until replay can reconstruct
+the check observations. Independent artifact-task grading remains available.
 
 Confirmed goal references persist across turns and session resume. Appraisal
 associates events with their historical goal, can retain a related charter line,

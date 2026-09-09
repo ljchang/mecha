@@ -217,6 +217,12 @@ The CLI reports this, and JSON includes `legacy_provenance_calls` and
 `provenance_note`. Compare arms under the same replay policy before attributing
 a difference to the model.
 
+Recordings that dispatched harness plan checks cannot yet be replayed or used
+for trace-based counterfactual probes. Their check observations are part of the
+decision context, and replay cannot reconstruct them yet. These comparisons
+return an explicit unsupported result; independent artifact-task grading remains
+available.
+
 ### How the run is rebuilt
 
 From the session's `RunConfig`, not from today's flags: system prompt, tool

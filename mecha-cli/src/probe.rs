@@ -207,6 +207,9 @@ pub fn prepare_probe_in(
     };
     let slice = truncate_after_run(messages, point.message_index);
     let trajectory = extract(slice);
+    if let Err(error) = trajectory.ensure_replayable() {
+        return Ok(Err(error.to_string()));
+    }
     if trajectory.turns.is_empty() {
         return Ok(Err("no user turns before the intervention".into()));
     }

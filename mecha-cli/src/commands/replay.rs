@@ -77,6 +77,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     eprintln!("note: {}", recorded.rules_arm_note(delivered.as_deref()));
 
     let trajectory = extract(&convo.messages);
+    trajectory.ensure_replayable()?;
     if trajectory.turns.is_empty() {
         bail!("the transcript contains no user turns; nothing to replay");
     }
