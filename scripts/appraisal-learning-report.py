@@ -53,7 +53,13 @@ def report(data, traces):
                     pairs.append((a['passed'], b['passed']))
         slices[label] = dict(arms=arms, graded_pairs=len(pairs), improved=sum(not a and b for a,b in pairs),
                             regressed=sum(a and not b for a,b in pairs))
-    return dict(slices=slices, stage_status_counts=dict(collections.Counter((s.get('status', 'unknown')) for s in data.get('stages', []))),
+    latest = {}
+    for stage in data.get('stages', []):
+        key = (stage.get('lifetime'), stage.get('after_position'), stage.get('stage'))
+        latest[key] = stage
+    return dict(slices=slices,
+                stage_ledger_status_counts=dict(collections.Counter(s.get('status', 'unknown') for s in data.get('stages', []))),
+                latest_stage_status_counts=dict(collections.Counter(s.get('status', 'unknown') for s in latest.values())),
                 unreadable_trials=data.get('unreadable_trials', 0), unreadable_stage_lines=data.get('unreadable_stage_lines', 0),
                 native_judgements=data.get('judgements'),
                 note='Descriptive mechanism pilot. Rule creation, rule exposure, validation coverage and task success are distinct. A one-seed sequence does not establish general efficacy.')
