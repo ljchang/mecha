@@ -22,6 +22,18 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-09 — review branches.** The user docs refresh merged as PR #219.
+PR #220 (`review/appraisal-goal-feedback`) contains the prerequisite goal and
+verified-step work and its review fixes; it is not merged or installed.
+Current local verification: warning-free Clippy and workspace tests with
+`MECHA_TEST_REQUIRE_BACKENDS=1` passed (CLI 805/1 ignored, core 1520/1 ignored;
+other suites unchanged). Historical measurements below retain their original
+conditions. Review of the Anthropic transcript finding found that `body` uses
+adaptive thinking, whose documented rules permit an assistant turn without a
+thinking block. A live synthetic compatibility check could not run because the
+API account had insufficient credits; no provider success is claimed.
+
+
 **2026-09-09 — appraisal implementation is on `feat/appraisal-goal-feedback`, not installed.**
 See HISTORY under this date for implemented goal persistence, event attribution,
 plan checks, structured mismatch learning and goal-specific context. Guidance is

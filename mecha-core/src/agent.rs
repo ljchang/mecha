@@ -2577,7 +2577,15 @@ impl Agent {
                         let mut answer = Message::tool_results(results);
                         answer.tool_provenance = provenance;
                         messages.push(answer);
-                        if trace[start..].iter().any(|c| c.is_error || c.denied) {
+                        if trace[start..].iter().any(|c| c.is_error && !c.denied) {
+                            // The executor knows which step this check belongs to.
+                            // A global span delta can include a previous step's check.
+                            if let Some(line) =
+                                crate::step::Finding::CheckFailed.line(&check.step, false)
+                            {
+                                append_user_text(messages, line);
+                            }
+                        } else if trace[start..].iter().any(|c| c.denied) {
                             append_user_text(messages, "The declared plan check did not establish completion. Review its result before claiming the step is verified.".into());
                         }
                     }
@@ -7787,6 +7795,13 @@ mod tests {
             assert!(
                 !outcome.ended_on_failed_call,
                 "harness check is not the model's last call"
+            );
+            assert_eq!(
+                serde_json::to_string(&convo.messages)
+                    .unwrap()
+                    .contains("Fix what the check found"),
+                mode == PermissionMode::Allow,
+                "the executor emits CheckFailed only for an executed failure, not a refused check"
             );
             let steps: Vec<_> = convo
                 .messages
