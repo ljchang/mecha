@@ -28,9 +28,10 @@ Two different things, and the difference is the point:
   going. Never append a bare user message instead: two user messages in a row
   are invalid, and there is no legal slot between a `tool_use` and its result.
 
-Only `mecha tui` can steer, and that is a property of the front-end, not the
-loop: steering needs one owner of stdin, which a readline REPL cannot be while
-a run is streaming. Testing the TUI means driving a pty — and giving it a size
+The TUI and web chat can steer active runs; the web task board can also steer
+a delegated task. Admission belongs to the front-end, not the loop. Terminal
+steering needs one owner of stdin, which a readline REPL cannot be while a run
+is streaming. Testing the TUI means driving a pty — and giving it a size
 (`script -qec "stty rows 45 cols 130; mecha tui" /dev/null`), because a pty
 with no window size renders every frame into a 0x0 area.
 
