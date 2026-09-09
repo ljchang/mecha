@@ -3980,8 +3980,8 @@ What is missing beyond that is refinement:
 - **The sliding window of recent raw reflections never shipped.** Prompt assembly
   chains user rules then consolidated rules; the third leg — a window of recent
   unconsolidated reflections — was designed and not built.
-- **Rules are scoped by domain, by run, and now by tool set — but nothing
-  delivers one mid-run.** `Rule::scope` exists (PR #168, merged
+- **Unsolicited mid-run rule delivery remains off.** Goal-specific rules can
+  now be retrieved on demand through `goal_context` (2026-09-09). `Rule::scope` exists (PR #168, merged
   2026-09-04) and `rules_carried_for` loads a scoped rule only into a
   run whose registry matches it. What is still missing is the §17.4
   *Delivery* half — one line on a tool's result the first time a recorded
@@ -3995,7 +3995,8 @@ What is missing beyond that is refinement:
   (`appraisal.rs` folds `WritingOutcome::SentUnchanged` as positive
   evidence) — but the *learner* still ignores it: consolidation mines only
   edited-then-sent items, so "this voice was right" never reinforces a rule.
-- **LEAP-in-production.** Rumination mines interventions only. Learning from
+- **LEAP-in-production.** Reflection now also mines bounded, clean planning
+  mismatches through `learning::extract_mismatches`. Learning from
   graded eval cases — sampling known-outcome examples rather than waiting for a
   correction — was ported in design but not in code.
 - **The correction-rate query shipped** (`mecha learning-report`, plus
