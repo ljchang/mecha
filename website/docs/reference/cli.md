@@ -1,7 +1,7 @@
 ---
 title: CLI
 sidebar_position: 2
-description: Every mecha subcommand, its flags, and a worked example of each.
+description: The mecha command surface, common flags, and examples for interactive work, review, automation, and evaluation.
 ---
 
 # CLI
@@ -31,6 +31,7 @@ never build an agent (where they are simply ignored).
 | `--max-output-tokens <N>` | Stop once the run has generated this many output tokens. |
 | `--max-cost <USD>` | Stop once the run has cost this much. Needs prices configured on the provider. |
 | `--tool <NAME>` | Only expose these tools. Repeatable; names are matched exactly. |
+| `--tool-profile <PROFILE>` | Narrow to `research`, `assistant`, or `coding`; composes with `--tool`. |
 | `--no-mcp` | Skip MCP servers entirely. |
 | `--no-mcp-server <NAME>` | Skip these MCP servers by name. Repeatable; for turning one off while the rest stay. |
 | `--no-thinking` | Turn off reasoning. Cheaper and faster, but noticeably worse on multi-step work. |
@@ -42,6 +43,12 @@ never build an agent (where they are simply ignored).
 | `--no-outbox` | Do not route any tools through the outbox; configured `[outbox]` tools execute directly. |
 | `--no-messages` | No inter-agent messaging: no `message_send` tool, and nothing from the mailbox is delivered into this run. |
 | `--no-fallback` | Never fall back to another provider. A transient failure that survives its retries fails the run. |
+| `--no-compact-tool` | Withhold the model's `compact` tool; automatic compaction remains available. |
+| `--no-step-escalation` | Disable quarantined checks of ambiguous completed plan steps. |
+| `--no-boredom` | Disable notices about approaches that stop yielding new evidence. |
+| `--no-compact-validate` | Skip omission checks on compaction summaries. |
+| `--no-predictive-compaction` | Trigger on reported context size only; output budgeting and headroom forecasts remain active. |
+| `--no-carried-state` | Do not carry tool-owned plan state across compaction. |
 | `--compact-at <N>` | Summarise older turns once the prompt passes this many tokens. |
 | `-v`, `--verbose` | Print tool calls, results, and token usage as they happen. |
 | `-h`, `--help` | Print help. |
@@ -73,6 +80,7 @@ mecha run [OPTIONS] [PROMPT]
 | `--no-stream` | Wait for the whole answer instead of streaming it. |
 | `--resume <ID>` | Continue a saved session by id or unique prefix. |
 | `--no-session` | Do not write a transcript. |
+| `--image <PATH>` | Attach image pixels to the user turn. Repeatable; requires a vision-enabled provider. |
 
 Exit codes: `0` success, `1` error, `2` the model refused, `3` it produced no
 answer at all. Exhaustion is deliberately not a failure code — a run stopped by
@@ -106,6 +114,7 @@ mecha chat [OPTIONS]
 |---|---|
 | `--resume <ID>` | Continue a saved session by id or unique prefix. |
 | `--no-session` | Do not write a transcript. |
+| `--image <PATH>` | Attach image pixels to the user turn. Repeatable; requires a vision-enabled provider. |
 
 Slash commands: `/tools`, `/model`, `/usage`, `/clear`, `/session`, `/help`,
 `/exit` (also `/quit`, `/q`). `/clear` starts a new conversation, dropping its taint
@@ -128,6 +137,7 @@ mecha tui [OPTIONS]
 |---|---|
 | `--resume <ID>` | Continue a saved session by id or unique prefix. |
 | `--no-session` | Do not write a transcript. |
+| `--image <PATH>` | Attach image pixels to the user turn. Repeatable; requires a vision-enabled provider. |
 
 Slash commands:
 
@@ -160,6 +170,42 @@ is streaming.
 ```bash
 mecha tui -w ~/code/my-project
 ```
+
+## `serve`
+
+Serve the [web app](/docs/features/web) on loopback behind Tailscale. Configure
+`[web] owner_login` in the global config; `assets` points to a separately built
+copy of `web/dist`.
+
+| Flag | Description |
+|---|---|
+| `--port <PORT>` | Override `[web] port` (default `63242`). |
+| `--assets <PATH>` | Override the directory containing the built app. |
+| `--owner-login <LOGIN>` | Override the permitted Tailscale identity. |
+| `--voice-port <PORT>` | Mounted voice facade; default `8990`, `0` disables. |
+| `--voice-yes` | Allow voice calls without per-call approval; configured outbound actions still stage. |
+| `--offer-target <URL>` | Voice worker offer endpoint; default `http://127.0.0.1:7860/api/offer`. Empty disables proxying. |
+
+```bash
+mecha serve --assets ./web/dist
+```
+
+The browser app sends `X-Mecha-Request: 1` on mutations. Scripted API clients
+must send it too and explicitly open a chat with `POST /api/chat/{key}` before
+reading its transcript or events. See [The web surface](/docs/features/web).
+
+## `voice-serve`
+
+Standalone loopback facade for the local voice worker. The normal browser setup
+mounts this inside `mecha serve`; use a separate process when that separation is
+needed. The transcription and speech stack is installed separately.
+
+```bash
+mecha voice-serve --port 8990
+```
+
+`--port` defaults to `8990`; `--token` optionally requires a bearer token.
+See [Voice](/docs/features/voice) for the worker and service setup.
 
 ## `batch`
 
@@ -244,6 +290,24 @@ mecha eval -k 5 -o results/qwen-k5.json         # pass^5 beside pass@5
 mecha eval eval/graph-cases.jsonl --mcp-file eval/mcp.toml
 mecha eval --ab-config max_turns=40             # measure a proposed change
 ```
+
+## `exp`
+
+Run a designed comparison with named arms and isolated homes. The manifest fixes
+the tasks and treatments before trials run; this is separate from `mecha eval`.
+
+```bash
+mecha exp new eval/assistant-lifetime.toml
+mecha exp run assistant-follow-through --dry-run
+mecha exp run assistant-follow-through --limit 3
+mecha exp status assistant-follow-through
+mecha exp judge assistant-follow-through --json
+mecha exp export assistant-follow-through
+```
+
+`new` refuses an existing name. `run` resumes unfinished trials and skips finished
+ones. See [Experiments](/docs/features/experiments) for manifests, fixtures, and
+how to interpret the gate.
 
 ## `tools`
 
@@ -373,6 +437,8 @@ mecha sessions <list|show|path|stats|health|appraise> [OPTIONS]
 | `appraise` | `--days <N>` | Only sessions started in the last N days. |
 | `appraise` | `-n`, `--limit <N>` | Stop after this many sessions, newest first. |
 | `appraise` | `--json` | Emit JSON instead of a table. |
+| `appraise`, `health` | `--kind <KIND>` | Filter to a recorded surface, such as `web`, `task`, or `tui`. |
+| `appraise`, `health` | `--include-tests` | Include smoke-test sessions; `--kind test` implies this. |
 | `appraise` | `--probe` | Resolve each intervention's agency by counterfactual replay. **Paid** — a model run per intervention. |
 | `appraise` | `--max-probes <N>` | Ceiling on replays across the whole walk. Default `25`. Requires `--probe`. |
 | `appraise` | `--appraise` | Run the quarantined appraiser over each session's numeric evidence. **Paid**, and independent of `--probe`. |
@@ -387,13 +453,17 @@ causes, tool calls against errors and denials, runs that finished over a failed
 call, compactions taken. Rates split by model, because a blend across two
 describes neither, and a rate with no denominator prints `—` rather than `0%`.
 Transcripts written before the outcome record carry none, so the corpus fills as
-you use it. See [Run quality](/docs/features/run-quality).
+you use it. `health` also reports [goal drift](/docs/features/appraisal#measuring-goal-drift)
+and [null/reopened steps](/docs/features/appraisal#null-steps-and-reopened-steps),
+with per-run rates and explicit denominators. See [Run quality](/docs/features/run-quality).
 
 `appraise` is the third question: not what runs cost, nor how they went, but how
 they went **against what they were for** — the signed error per channel and the
 label derived from it. Nothing is stored; each appraisal is derived on the spot
-from the transcript, the outbox and the run's own outcome record. The number
-worth reading is the share that come back with no label at all. Both paid passes
+from transcripts, outcomes, drafts, questions, front-door records, clean
+correction reflections, and the charter. Read the separate positive/negative
+valence alongside the label counts, goal-confirmation coverage, and source
+readability flags. Both paid passes
 are off by default and are counted apart from each other in `--json`, where
 absent means *did not run* rather than *found nothing*.
 
@@ -446,7 +516,7 @@ Review, edit, release, or reject staged outbound actions. `list` is the default
 subcommand.
 
 ```
-mecha outbox [list|show|edit|review|send|reject] [ARGS]
+mecha outbox [list|show|edit|review|approve|reconcile|reject] [ARGS]
 ```
 
 | Subcommand | Flag | Description |
@@ -454,19 +524,24 @@ mecha outbox [list|show|edit|review|send|reject] [ARGS]
 | `list` | | List staged items, grouped by kind. |
 | `list` | `--kind <KIND>` | Only `message` or only `publish`. |
 | `list` | `--via <VIA>` | Only items staged by a tool whose name contains this. |
-| `show` | `<ID>` | The exact arguments a release would execute, its provenance, and the edit diff if there is one. |
-| `edit` | `<ID>` | Open the item's arguments in `$EDITOR`. What you save is what `send` executes. |
+| `show` | `<ID> [--json]` | Readable draft, provenance, and edits; `--json` shows exact arguments. |
+| `edit` | `<ID>` | Open the draft's prose in `$EDITOR`. |
+| `edit` | `--json` | Edit all arguments, including recipients, as JSON. |
+| `edit` | `--body-file <FILE>` | Replace prose from a file; conflicts with `--json`. |
 | `review` | `[IDS]...` | Walk items one at a time, deciding each. Ids, or unique prefixes; several is fine. |
 | `review` | `--all` | Every pending item, subject to the filters. |
 | `review` | `--kind <KIND>` | Only `message` or only `publish`. |
-| `send` | `<ID>` | Execute the item's tool call, for real, and mark it sent. |
-| `send` | `-y`, `--yes` | Skip the confirmation shown for items drafted in a tainted conversation. |
+| `approve` | `<ID>` | Execute the item's tool call, for real, and mark it sent. |
+| `approve` | `-y`, `--yes` | Skip the confirmation shown for items drafted in a tainted conversation. |
+| `reconcile` | `<ID> --outcome delivered\|not-delivered --evidence <TEXT>` | Record an uncertain delivery's observed outcome; never sends. |
 | `reject` | `<ID>` | Refuse an item. It stays on file as the record of the refusal. |
 | `reject` | `--reason <REASON>` | Why — recorded on the item for the next reader. |
 
-`edit` rewrites the arguments only; the original draft is kept, and the pair is what
-`mecha reflect` mines into `writing`-domain reflections. `send` holds the store's
-lock across execution so two sends cannot double-fire.
+`approve` is the current verb; `send` remains an alias. The original draft is
+kept after editing, and `mecha reflect` mines the edit into writing lessons.
+Delivery attempts are recorded durably. An uncertain outcome blocks retries
+until the owner checks the destination and reconciles it; see
+[delivery recovery](/docs/features/outbox#delivery-recovery).
 
 An item's **kind** decides how it is reviewed, not how it was staged. A
 `publish` shows the rendered page rather than the arguments, and refuses
@@ -527,9 +602,9 @@ mecha msg <send|list|show|dismiss|agents> [ARGS]
 
 | Subcommand | Flag | Description |
 |---|---|---|
-| `send` | `<TO> <BODY>` | Leave a message for a producer: `chat`, a trigger's name, `run`. |
-| `send` | `--from <NAME>` | Sender recorded on the message. Default `user`. |
-| `send` | `--reply-to <ID>` | Id of the message this answers. |
+| `approve` | `<TO> <BODY>` | Leave a message for a producer: `chat`, a trigger's name, `run`. |
+| `approve` | `--from <NAME>` | Sender recorded on the message. Default `user`. |
+| `approve` | `--reply-to <ID>` | Id of the message this answers. |
 | `list` | | Messages, pending first, across every mailbox. |
 | `list` | `--to <NAME>` | Only this recipient's mailbox. |
 | `list` | `--all` | Include delivered messages, not just pending. |
@@ -658,7 +733,7 @@ See [Mail and calendar](/docs/features/mail#triage-the-queue-over-the-mailbox).
 The GTD board in the knowledge graph. `list` is the default subcommand.
 
 ```
-mecha tasks [list|add|set] [ARGS]
+mecha tasks [list|add|set|source|work|stop|steer] [ARGS]
 ```
 
 Reached through the MCP tool surface (`kg_task_list` / `kg_task_create` /
@@ -676,7 +751,14 @@ server says so instead of showing an empty board.
 | `add` | `--context <TAG>` | GTD context, e.g. `@email`, `@lab` |
 | `set` | `<ID>` | the task's node id, from `tasks list` |
 | `set` | `--status <S>` | `next`, `inbox`, `scheduled`, `waiting`, `done`, `dropped` |
-| `set` | `--due` / `--defer` / `--context` | omit to leave untouched; pass `""` to clear |
+| `set` | `--due` / `--defer` / `--context` / `--waiting-on` / `--project` | Omit to leave untouched; pass `""` to clear. Projects resolve by name or node ID. |
+| `source` | `<ID>` | Read the source the task was captured from. |
+| `work` | `<ID> [--note <TEXT>...]` | Delegate the task in its own conversation and workflow. |
+| `work` | `--unattended` | Run without terminal approval prompts; reads run and configured sends stage. |
+| `work` | `--resume <SESSION>` | Continue the recorded conversation with its taint; the previous writer must release it first. |
+| `work` | `--again` | Start another run on an already delegated task. |
+| `stop` | `<ID>` | Request cancellation of the active task run. |
+| `steer` | `<ID> <TEXT>...` | Redirect the active task run without stopping it. |
 
 A capture lands in `inbox` — captured, not yet committed to. `done` and
 `dropped` stamp a completion time and are **reversible**: any other status
@@ -707,8 +789,88 @@ mecha tasks set task-1a2b3c4d --due ""          # clear it
 mecha tasks list --closed
 ```
 
-The `/tasks` modal in `mecha tui` drives exactly these verbs, and
+Delegation leaves the task yours to close. Its [workflow](/docs/features/workflows)
+tracks questions, drafts, and completion evidence across continuations.
+
+The `/tasks` modal in `mecha tui` drives these operations, and
 `mecha-graph tui` screen 6 is the same board with the same status letters.
+
+## `workflow`
+
+Track an outcome across tasks, conversations, drafts, and owner decisions.
+Delegating a board task creates its workflow automatically. Workflows supplement
+the graph task board; closing one does not close the graph task.
+
+```bash
+mecha workflow today
+mecha workflow add "Prepare the grant reply" --workspace ./grant
+mecha workflow show FLOW_ID
+mecha workflow check FLOW_ID --artifact reply.md --contains "revised budget"
+mecha workflow verify FLOW_ID
+mecha workflow close FLOW_ID
+```
+
+| Commands | Purpose |
+|---|---|
+| `today`, `list`, `show <ID>` | Read priorities and workflow records. |
+| `add <TITLE>` | Create a record; optionally link `--task` and `--session`. |
+| `commit <ID>` | Record `--party`, `--source`, `--due`, and `--follow-up`; timestamps require an offset. |
+| `check`, `uncheck`, `verify`, `close` | Define and inspect artifact or delivery evidence before completion. `uncheck <ID> <N>` uses a one-based check number. |
+| `depend <ID> <PREDECESSOR>`, `resume <ID>` | Require a completed predecessor and continue the recorded conversation. |
+| `cancel <ID> --reason <TEXT>`, `reopen <ID>` | Stop tracking or explicitly reopen; cancellation does not stop an active runner. |
+| `recover <ID> --reason <TEXT>` | Clear stale ownership after confirming the old runner stopped. |
+| `attention`, `tick`, `snooze`, `ack` | Configure quiet hours, refresh reminders, defer or acknowledge notices. `tick --dry-run` previews without writing. |
+
+See [Workflows and Today](/docs/features/workflows) for the complete walkthrough,
+including dependencies, commitments, and delivery recovery.
+
+## `questions`
+
+Read and answer a question parked by a delegated run. Answering resumes its
+recorded conversation with its existing taint and approval restrictions.
+
+```bash
+mecha questions
+mecha questions show QUESTION_ID
+mecha questions answer QUESTION_ID "Use the revised budget"
+mecha questions abandon QUESTION_ID
+```
+
+`list` is the default; `list --all` includes answered and abandoned questions.
+`answer --unattended` resumes without terminal prompts; actions needing approval
+are refused in the machine's voice. `abandon` resolves the question without
+resuming. A blocked resume leaves the question open for a later attempt.
+
+## `polls`
+
+Inspect meeting-poll state and prepare the owner's pick card.
+
+```bash
+mecha polls list
+mecha polls sweep
+mecha polls pick POLL_ID 1
+```
+
+`pick` uses a one-based rank. `sweep` stages needed cards and folds reviewed
+outcomes into poll records; repeating it is safe. Review the chosen action in
+the outbox. See [Polls](/docs/factory/polls).
+
+## `kg`
+
+Read and maintain the graph through the configured `kg_*` MCP tools.
+
+```bash
+mecha kg notes
+mecha kg search "grant planning" --k 5
+mecha kg entity "Priya" --json
+mecha kg note "Discussed the grant timeline with Priya."
+```
+
+`note --edit <SOURCE_ID>` rewrites an existing note; it does not retract claims
+already extracted from the old text. `assert` and `retract` maintain facts;
+`alias` and `unalias` maintain names using node IDs. `related` reads a bounded
+neighborhood; `timeline` includes superseded facts. See
+[The graph](/docs/graph/overview) and each subcommand's `--help`.
 
 ## `frontdoor`
 
@@ -988,7 +1150,8 @@ mecha learn [OPTIONS]
 |---|---|
 | `--min <N>` | Only run when a domain has at least this many unprocessed reflections. Default `3`. |
 | `--holdout <F>` | Hold out this fraction of unprocessed reflections from the pass. Default `0`. |
-| `--propose` | Stage the result as a proposal instead of writing the live rules. |
+| `--propose` | Measure the candidate and stage a surviving proposal for review. |
+| `--auto` | Measure and apply unless a probe regresses; ungradeable candidates apply on probation. Conflicts with `--propose`. |
 | `--dry-run` | Show what would run without calling a model or writing anything. |
 
 `learn` rewrites `rules/<domain>.learned.toml` within a fixed character budget;
@@ -1003,8 +1166,24 @@ counterfactual replay first and stages what survives for `mecha proposals`.
 ```bash
 mecha learn --dry-run
 mecha learn --holdout 0.25        # leave a measurement set for validate
-mecha learn --propose -p local    # the nightly, unattended form
+mecha learn --auto --holdout 0.25 -p local  # the supplied automation
+mecha learn --propose -p local              # require owner review
 ```
+
+## `learning-report`
+
+Read correction trends, rule health, and consolidation history without a model
+call or network access.
+
+```bash
+mecha learning-report
+mecha learning-report --json
+```
+
+`--bucket-days <N>` controls the trend bucket width (default `7`).
+
+Use it alongside `mecha rules` to distinguish rules that improved measured work
+from rules that have not yet been measured. See [Learning](/docs/features/learning).
 
 ## `validate`
 
@@ -1048,7 +1227,8 @@ mecha rules [list|retire|restore|propose-retirements] [ARGS]
 | `retire` | `<ID>` | Retire a rule by id or unique prefix. |
 | `retire` | `--reason <REASON>` | Recorded on the rule and shown to the learner so the lesson does not come back reworded. |
 | `restore` | `<ID>` | Un-retire a rule by id or unique prefix. |
-| `propose-retirements` | `--min-attributed <N>` | Attributed regressions required before a rule is proposed for retirement. Default `3`. |
+| `propose-retirements` | `--min-attributed <N>` | Attributed regressions required. Default `3`; probationary rules use the shorter threshold of `2`. |
+| `propose-retirements` | `--apply` | Apply measured retirements or scope narrowing directly instead of staging a proposal. |
 
 Retirement is a flag, never a deletion: the rule stays in the file as evidence and
 `rules restore` undoes it. `propose-retirements` is a deterministic ledger scan with
@@ -1076,6 +1256,7 @@ mecha proposals [list|show|accept|reject] [ARGS]
 | `show` | `<ID>` | The rules diff and the gate's evidence. |
 | `accept` | `<ID>` | Apply a pending proposal to the live rules. |
 | `accept` | `--force` | Apply even though the live rules changed since the proposal was measured. |
+| `reconcile` | `<ID> --outcome delivered\|not-delivered --evidence <TEXT>` | Record an uncertain delivery's observed outcome; never sends. |
 | `reject` | `<ID>` | Refuse a pending proposal, consuming its reflections. |
 | `reject` | `--reason <REASON>` | Why — recorded on the proposal for the next reader. |
 

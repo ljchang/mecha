@@ -121,14 +121,14 @@ Two consequences:
 
 ## Four numbers that have to agree
 
-Nothing enforces these, and a mismatch in any of them is silent:
+Keep the server launch flags and mecha configuration in sync:
 
 | Number | Where | Rule |
 |---|---|---|
 | `-c` | the server's launch flags | The real window, divided by `-np`. |
-| `context_window` | `[providers.X]` | Must equal `-c`. Nothing can discover it — a provider reports what a prompt *cost*, never what is left. |
+| `context_window` | `[providers.X]` | Must equal `-c / -np`; confirm `n_ctx_slot` at startup or use `mecha setup` to probe it. |
 | `--reasoning-budget` | the server's launch flags | Caps thinking so the model actually closes the block and answers. |
-| `max_tokens` | `[agent]` | Must exceed the reasoning budget, comfortably — otherwise thinking consumes the whole allowance and the turn comes back empty, which ends a run silently. |
+| `max_tokens` | `[agent]` | Must exceed the reasoning budget, comfortably — otherwise thinking consumes the whole allowance and the turn comes back empty, which mecha reports as an empty-output failure. |
 
 `context_window` is the load-bearing one, because four separate behaviours
 derive from it: the compaction threshold, the per-turn tool-output budget, the

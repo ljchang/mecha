@@ -14,10 +14,14 @@ keys are a hard parse error at startup rather than a silent no-op.
 Layers apply in order, each overriding only the fields it names:
 
 1. Built-in defaults.
-2. `~/.mecha/config.toml` — the global file.
-3. `./mecha.toml` — the project file, read from the working directory.
-4. `MECHA_PROVIDER` / `MECHA_MODEL` / `MECHA_EFFORT`.
-5. CLI flags.
+2. Accepted harness overrides — measured changes from `mecha harness ruminate`.
+3. `~/.mecha/config.toml` — the global file.
+4. `./mecha.toml` — the project file, read from the working directory.
+5. `MECHA_PROVIDER` / `MECHA_MODEL` / `MECHA_EFFORT`.
+6. CLI flags.
+
+Your explicit config always overrides the harness layer. `mecha harness revert`
+undoes an accepted change; see [Run quality](/docs/features/run-quality).
 
 Later layers win. `mecha config path` prints which files are being read and whether
 they exist; `mecha config show` prints the merged result.
@@ -26,8 +30,9 @@ they exist; `mecha config show` prints the merged result.
 
 | Table | Merge behaviour |
 |---|---|
-| `[providers.X]` | Merged by key. A project file can add `[providers.local]` without restating `[providers.anthropic]`. |
+| `[providers.X]` | Merged by provider name; a same-name entry replaces that provider configuration. A project file can add `[providers.local]` without restating `[providers.anthropic]`. |
 | `[agent]`, `[tools]`, `[security]`, `[sandbox]` | Merged field by field. Naming one key leaves the rest alone. |
+| `[[rule]]` | Appended. Project rules may add `prompt` and `forbid`; project `allow` rules are ignored. |
 | `[outbox]` | Project routes add to inherited routes; inherited publish classification stays. `dir` is global-only. |
 | `[[mcp]]`, `[[hook]]`, `[[subagent]]`, `[[search]]` | Replaced wholesale. Merging lists by name would make it impossible for a project to turn a global entry off. |
 
@@ -40,8 +45,9 @@ hooks to execute and tools to enable. That is a reasonable bargain for someone
 who just decided to work in that repository, and no bargain at all for a
 scheduled run firing at 03:00 with nobody watching.
 
-Four tables are stripped out of a project layer for the same reason, wherever the
-run happens: `[messages]`, `[slack]`, `[web]` and `[harness]`. `[messages]` is
+Five tables are stripped out of a project layer for the same reason, wherever the
+run happens: `[messages]`, `[slack]`, `[web]`, `[harness]` and `[approval]`.
+`[approval]` controls whether inline code needs an explicit decision; `[messages]` is
 receiver-side admission policy, so a cloned repository must not be able to set
 `inbound = "accept"` on your sessions; `[slack]` is the remote control, and a
 repository that could name a Slack owner would have been handed it; `[web]` names
@@ -84,7 +90,8 @@ enforced by the merge, not asked for in a comment. See
 | `output_price_per_mtok` | float | unset | Output price per million tokens. |
 | `temperature` | float | unset | Sampling temperature, sent verbatim by backends that accept one. Rejected on `anthropic`. |
 | `seed` | integer | unset | Sampling seed for repeatable draws. Rejected on `anthropic`. |
-| `context_window` | integer | unset | How many tokens this model's context holds. |
+| `context_window` | integer | unset | Context available to one request; for llama-server, the per-slot window. |
+| `vision` | bool | inferred from provider kind | Defaults to enabled for `anthropic`, disabled for `openai`, `local`, and `openai-compatible`. Enable only when the endpoint and model accept images. |
 | `max_retries` | integer | `3` | Retries per request on transient failures (429, 5xx, transport). `0` disables. |
 | `retry_after_cap_secs` | integer | `60` | A `Retry-After` above this is surfaced as a failure instead of slept through. |
 | `structured_output` | string | `"disabled"` | Explicit endpoint schema dialect: `json_schema` or `llama_json`. Enable after verifying server/model support. |
@@ -107,22 +114,24 @@ regardless.
 
 ### `context_window` degrades silently when absent
 
-Nothing can discover this value. A provider reports what a prompt *cost*, never what
-is left. For a local server it is the `-c` the server was started with. Three things
-depend on it, and without it all three degrade with no error:
+Normal model responses report token usage, not the available context window.
+Configure the capacity explicitly. For llama-server it is **`-c / -np`**,
+confirmed by the startup `n_ctx_slot` value. `mecha setup` can probe a local
+server and save that value. It supplies the compaction threshold, context gauge,
+and tool-output budget:
 
-- **The compaction threshold.** When `[agent] compact_at_tokens` is unset, it is
-  derived as two thirds of the window. Without a window there is no threshold at all,
-  and a long session dies on a raw context-overflow error from the server with the
-  whole run lost.
+- **The compaction threshold.** When `[agent] compact_at_tokens` is unset, it
+  derives from the window. Without either setting, automatic compaction has no
+  threshold to work from.
 - **The TUI status line.** With a window it becomes a fuel gauge
   (`context 29.3k/32.8k (89%)`, yellow at 75%, red at 90%). Without one it is a
   number with nothing to compare against.
-- **Overflow recovery.** The reactive threshold cannot always prevent an oversized
-  prompt; recovery compacts and retries the turn once.
+- **Tool-output budgeting.** The default byte allowance derives from the
+  window; without one, the harness uses its fallback allowance.
 
 A stale value is worse than none, because the derived threshold trusts it. If you
-change the server's `-c`, change `context_window` to match.
+change the server's `-c` or `-np`, change `context_window` to match. See
+[Serving local models](/docs/features/serving).
 
 ## `[agent]`
 
@@ -143,14 +152,19 @@ change the server's `-c`, change `context_window` to match.
 | `compact_keep_recent` | integer | `6` | Turns kept verbatim after a compaction. |
 | `loop_guard` | bool | `true` | Stop a run that repeats an identical tool call with an identical result right after a compaction. |
 | `compact_validate` | bool | `true` | Check each summary against the transcript it replaces before installing it, and regenerate once with the omissions named. |
+| `boredom` | bool | `true` | Notify a run when an approach stops producing useful new evidence. |
+| `step_escalation` | bool | `false` | Spend a quarantined model call on an ambiguous completed plan step. |
+| `predictive_compaction` | bool | `true` | Trigger compaction from the forecast of the next request as well as the last reported size. Disabling this leaves output budgeting and headroom forecasts active. |
+| `carried_state` | bool | `true` | Preserve tool-owned plan state verbatim across compaction. |
+| `sensors_in_brief` | bool | `true` | Include homeostat and commitment sensors in the diagnostician's brief; does not change tool permissions. |
 
 `max_turns` bounds how many round trips a run makes, not how large they are.
 `max_output_tokens` and `max_cost_usd` are the two ceilings that bound size. All
 three end a run the same way when `force_final_answer` is on, and `stop_cause`
 distinguishes `completed` / `max_turns` / `output_token_budget` / `cost_budget`.
 
-`compact_at_tokens` is measured against what the provider *reported* for the last
-turn rather than an estimate, so it counts cached tokens too. It is unset by default
+`compact_at_tokens` counts cached tokens too. With `predictive_compaction`
+enabled, the trigger also considers the forecast size of the next request. It is unset by default
 because compaction is lossy. Set it to roughly two thirds of the model's context
 window, or set `context_window` on the provider and let it be derived.
 
@@ -167,7 +181,7 @@ system prompt with today's date, and mail MCP servers can be handed it as `MECHA
 in their `[[mcp]]` `env` so they render event times in it before the model sees them.
 
 Use an IANA name (`America/New_York`), never a fixed offset: an offset is wrong twice
-a year. An unparseable name logs a warning and falls back to the machine's zone.
+a year. An unparseable name is a startup error; fix the IANA name before retrying.
 
 ## `[tools]`
 
@@ -182,11 +196,12 @@ a year. An unparseable name logs a warning and falls back to the machine's zone.
 
 The built-in tools are `fs_read`, `fs_write`, `fs_edit`, `fs_list`, `shell`,
 `http_fetch` and `todo` — those are the names `enabled` and `disabled` filter.
-Three more are registered from outside that list and are not filtered by it:
-`web_search`, when `[[search]]` names at least one backend; `ask_user`, added by
-a front-end that owns a human, so an unattended run never has it; and
-`message_send`, added when `[messages] enabled` is on and `--no-messages` was
-not passed.
+Additional tools are registered by setup or by the front end: search, skills,
+messaging, compaction, recall, and interactive or delegated questions. Their
+availability depends on the run. Inspect the result with `mecha tools --schema`.
+The global `--tool` flag narrows the registry; `--tool-profile research`,
+`assistant`, or `coding` selects a stable subset. See
+[Workflows](/docs/features/workflows#choose-a-smaller-tool-set).
 
 `permission_mode` values:
 
@@ -196,6 +211,53 @@ not passed.
 
 Results over `output_budget_bytes` are spilled to a file in full and cut in the
 transcript, with the marker naming the path and the line to resume from.
+
+## `[[rule]]` and `[approval]`
+
+Approval rules distinguish commands within a tool. Put standing approvals in
+`~/.mecha/config.toml`; a project's `mecha.toml` may only add restrictions.
+
+```toml
+[[rule]]
+tool = "shell"
+pattern = ["git", ["status", "diff"]]
+decision = "allow"
+match = ["git status --short", "git diff --stat"]
+not_match = ["git push"]
+justification = "Inspect repository changes without an approval prompt."
+
+[[rule]]
+tool = "shell"
+pattern = ["git", "push"]
+decision = "prompt"
+match = ["git push origin main"]
+justification = "Review the destination before pushing."
+
+[approval]
+strict_inline_eval = true
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `tool` | string | required | Exact registered tool name. |
+| `pattern` | array | `[]` | Command prefix: words or arrays of alternatives. Empty matches every call of the tool. |
+| `decision` | string | `"prompt"` | `allow`, `prompt`, or `forbid`. The most restrictive matching rule wins. |
+| `match` | array of strings | `[]` | Required for every patterned rule and every `allow`; examples must match at startup. |
+| `not_match` | array of strings | `[]` | Examples that must not match. |
+| `justification` | string | unset | Explanation included in a refusal. |
+
+`allow` supplies approval; it cannot bypass read-only mode, hooks, or the
+trifecta interlock. `prompt` requires a fresh human decision even under `--yes`
+and refuses when nobody can answer. `forbid` refuses without asking.
+
+`[approval] strict_inline_eval` is a global-only boolean, default `true`.
+Inline code and command wrappers such as `python -c` and `sh -c` require at
+least a prompt under this setting. Prefix rules are not a shell sandbox.
+
+Project rules append to global rules; a project cannot replace your restrictions.
+Outbox staging happens before approval rules. A global `allow` or `prompt` rule
+on an actively routed tool is a startup error: review that action in the outbox.
+A `forbid` may remain as protection when routing is explicitly disabled.
 
 ## `[security]`
 
@@ -376,6 +438,17 @@ cheapest context this system has to give.
 
 See [Slack](/docs/features/slack).
 
+## `[web]`
+
+Global file only. See [The web surface](/docs/features/web) for installation.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `port` | integer | `63242` | Listen on `127.0.0.1`; front with `tailscale serve`. |
+| `owner_login` | string | unset | Required Tailscale login. Without it, `mecha serve` refuses to start. |
+| `assets` | path | unset | Built web app directory. Unset serves API routes only. |
+| `voices_dir` | path | unset | Host directory of TTS voice references. Unset disables voice cloning in settings. |
+
 ## `[[hook]]`
 
 Repeatable. Each entry is one command run at a lifecycle point, with the event payload
@@ -405,7 +478,8 @@ Repeatable. Each entry is a stdio MCP server connected at startup. Its tools app
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `name` | string | — | Prefixed onto every tool the server exposes. |
+| `name` | string | — | Server name; prefixed onto tools by default. |
+| `prefix_tools` | bool | `true` | Set `false` to register raw tool names; collisions are startup errors. |
 | `command` | string | — | Executable to spawn. |
 | `args` | array of strings | `[]` | Arguments passed to the command. |
 | `env` | table of strings | `{}` | Values handed to the server explicitly. |
@@ -562,7 +636,7 @@ fallbacks = []                     # empty = strict; never answer as another mod
 kind = "local"
 base_url = "http://127.0.0.1:8080"
 model = "qwen3-14b"
-context_window = 32768             # match the server's -c, and keep it in sync
+context_window = 32768             # llama-server: -c / -np; check n_ctx_slot
 seed = 7                           # repeatable draws at the server's own temperature
 
 # -------------------------------------------------------------------- agent --
@@ -690,8 +764,8 @@ kind = "tavily"
 api_key_env = "TAVILY_API_KEY"
 ```
 
-`[messages]`, `[slack]`, `[web]` and `[harness]` are deliberately absent from
-that file: all four are stripped out of a project layer, so a `mecha.toml` is the
+`[messages]`, `[slack]`, `[web]`, `[harness]` and `[approval]` are deliberately absent from
+that file: all five are stripped out of a project layer, so a `mecha.toml` is the
 one place they cannot go. Put them in `~/.mecha/config.toml` — see the sections
 above.
 

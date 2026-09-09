@@ -182,6 +182,18 @@ rather than executed, so overnight inbox triage leaves you a review queue
 instead of sent mail. This is a property of the harness, not of the email tool,
 which means a third-party MCP server is covered by it without knowing it exists.
 
+## Keeping track of unfinished work
+
+[Today and workflows](/docs/features/workflows) connect a delegated task to its
+conversation, questions, drafts, and completion checks. Today groups urgent
+items, decisions, verified results, and waiting work on the web home screen;
+`mecha workflow today` reads the same priorities from the terminal.
+
+A draft is not a delivery, and a final answer is not proof that a task finished.
+You can require an artifact check or confirmed outbox delivery before closing a
+workflow. Commitments, dependencies, and reminders keep follow-up visible, with
+quiet hours and snoozing under your control. A finished workflow can be reopened.
+
 ## What makes mecha different
 
 Plenty of agent harnesses exist. These are the choices that are actually
@@ -228,8 +240,8 @@ prompt. Two guards make that safe rather than merely clever. Rules are gated on
 content is excluded structurally, because a learned rule is a longer-lived
 injection path than anything the interlock guards. And rules are gated on
 **measurement**: a validation ledger records whether each rule actually changed
-an answer, and one that accumulates attributed regressions is proposed for
-retirement. Measured harm, not a model's confidence in itself.
+an answer, and one that accumulates attributed regressions can be narrowed or retired
+automatically. Changes with no gradeable evidence are marked as probationary. Measured harm, not a model's confidence in itself.
 
 **Everything a model says about its own work is treated as hearsay.** Runs are
 recorded as append-only transcripts and can be [replayed against today's
@@ -251,17 +263,13 @@ gate applies itself to a **revertible override layer**. Nothing outside that
 closed set of run options does, no model sits in the gate, and a change that
 would widen mecha's own confinement is never even measured.
 
-**It has a written statement of what it is for.** Every other evaluative signal
-in the system is a cost or a correction — four ways of saying a person stepped
-in, six metrics that are all phrased as costs — so a run could be recorded as
-having gone badly and never as having gone well. A
-[charter](/docs/features/appraisal) is a short ranked list of standing
-priorities, in your own words, that rides in every run's prompt; a plan can name
-what it serves; and how a run went **against that** is a signed error with a
-label derived from the record. Derived, never reported: a model that could
-announce its own mood is an unfalsifiable self-report and an injection target, so
-the label is a pure function and there is no field a model can write one into.
-There is no path by which a model edits its own charter, either.
+**It records what work serves and how it went.** Your
+[charter](/docs/features/appraisal) ranks standing priorities. A run can put
+its goal to you, record the answer, and measure whether later plan writes
+change that goal. Appraisal keeps positive and negative evidence separate,
+with a label derived from the record. Closing a task or a project's last open
+task produces a reading of the work behind it. No model writes its own label
+or edits your charter.
 
 ## Where to go next
 
