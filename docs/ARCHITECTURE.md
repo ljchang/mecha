@@ -3591,6 +3591,13 @@ comparison over a chosen set**, with the design written before the run.
   outright, in `levers_on` as in `levers_off`: a
   `forbid` is the operator's standing word, and only eval's fixture
   workspaces justify lifting it.
+- **Explicit planning levers must change the rendered config.**
+  `child_invocation` sets `step_checks` and `goal_guidance` true when explicitly
+  named in `levers_on`, even if the operator disabled them. Guidance defaults
+  off: removing it from the resolved off-list alone produced two identical
+  execution conditions under different hashes. Unspecified settings still
+  inherit the operator's config. Test materialized configurations, not just
+  lever lists; `appraisal_fixture` compares every other config field and flag.
 - **Isolation is the whole store** (D12). Every trial runs as a child
   `mecha run` with `MECHA_HOME` pointing at its arm's home under the
   experiment directory, whose `config.toml` *is* the arm: the operator's
@@ -4296,6 +4303,13 @@ kinds of check, in descending order of how much they are worth:
   compaction rewrites the transcript in place, so folding three refusals into
   one marker destroys the evidence rather than merely undercounting it.
 - Everything a model says about its own work is hearsay. Grade the artifact.
+  `eval/fixtures/appraisal_source.py` keeps acceptance answers outside the
+  workspace and never executes model-written code while grading. Its misleading
+  check case deliberately returns success for a wrong invoice. The oracle reads
+  bounded regular files without following symlinks, rejects duplicate JSON keys,
+  checks preserved evidence, and refuses changed draft state. Setup requires an
+  experiment marker and resets only its own synthetic drafts before every task;
+  other records make setup fail rather than erase evidence or contaminate a pair.
 
 `--runs k` repeats every case k times and reports **pass^k** (all k runs pass)
 beside pass@k (any run). Reliability decays much faster than mean success, and

@@ -14,6 +14,28 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-09 — paired appraisal pilot and explicit planning levers.**
+`experiment::child_invocation` now enables explicitly requested `step_checks`
+and `goal_guidance` even when the operator's settings are false. The regression
+compares materialized configurations, with every other field and flag equal.
+`eval/appraisal-guidance.toml` defines twelve synthetic tasks, three seeds and
+control/guided arms at equal budgets. `appraisal_source::setup` resets the task's
+workspace inputs and owned draft seeds; `grade` reads independent artifact gold,
+preserves input and draft evidence, and cannot be satisfied by success prose or
+the misleading legacy checker. Positive controls and wrong-artifact, altered-input,
+symlink, FIFO, malformed-JSON, type and queue-clearing controls cover the oracle.
+Production `OutboxItem` deserialization accepts the synthetic pending drafts.
+`appraisal-report.py::report` pairs task/seed/repetition, rejects duplicate or
+identical conditions, separates incomplete/failed runs from graded failures, and
+keeps missing metrics unknown with their own denominators. Model-generated
+checks remain secondary evidence, and the existing holdout gate remains separate.
+Build, formatting, warning-free clippy and the required-backend workspace suite
+passed: 2,592 tests, zero failures, three intentionally ignored; eleven Python
+controls run within the four appraisal integration tests. Registration, dry run,
+export and reporting were exercised in a temporary home without model calls.
+This pilot does not establish guidance efficacy, learning benefits, cross-turn
+semantic corrections or owner-policy success. No deployment or PR was made.
+
 **2026-09-09 — appraisal planning mechanisms implemented in the working tree.**
 `Conversation::goal_anchor` and `Record::GoalAnchor` preserve confirmations;
 `appraisal::attribute_events` binds observations to historical goals and retains

@@ -2729,6 +2729,15 @@ pub fn child_invocation(
     config.outbox.dir = None;
     config.skills.dir = None;
     config.messages.dir = None;
+    // Removing these levers from the off-list is insufficient when the
+    // operator disabled them (guidance defaults off). Explicit on must
+    // materialize a different condition; unspecified switches still inherit.
+    if arm.levers_on.iter().any(|name| name == "step_checks") {
+        config.agent.step_checks = true;
+    }
+    if arm.levers_on.iter().any(|name| name == "goal_guidance") {
+        config.agent.goal_guidance = true;
+    }
     let mut flags = Vec::new();
     for lever in levers_off {
         match lever {

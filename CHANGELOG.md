@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A paired appraisal pilot with twelve independently graded artifact tasks,
+  synthetic charter and sensor fixtures, and reporting that preserves missing
+  measurements. Explicit experiment planning levers now enable disabled settings.
+
 - Goal-aware planning feedback: confirmed goals persist across turns and resume;
   declared checks execute through the normal guards, and forecast misses, failed
   checks and frozen-check changes can produce bounded mismatch reflections.
