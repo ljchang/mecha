@@ -22,7 +22,44 @@ maps which document holds what.
 
 ## Where the work is
 
-**2026-09-09 — appraisal PRs #220 and #221 are merged, not installed.**
+**2026-09-09 — v0.1.19 is installed from release commit `ef283174`.**
+The owner requested a patch release and the update. All four workspace versions
+and the release changelog are tagged `v0.1.19`. Local build, formatting,
+warning-free all-feature Clippy and required-backend workspace tests passed:
+**2,638 passed, zero failed, three ignored**. Web tests and production build
+passed. The release workflow published all four crates and the GitHub release;
+main CI and documentation deployment passed. The portable benchmark executable
+was rebuilt, verified statically linked, installed at the shared checkout
+`target-musl/release/mecha` path, and reports 0.1.19.
+
+The installed CLI reports `mecha 0.1.19`; Cargo's installation records identify
+all four mail/document executables as 0.1.19. `run --help` exposes
+`--appraisal-evidence` and `--mismatch-case`; `outbox --help` exposes `anticipate`
+and `outcome`. Slack, triggers, drain, serve and the voice worker restarted;
+startup logs and running mecha executable hashes were verified. The served web
+page matches the release build, and `/api/ping` returns `ok`.
+
+Both graph executables were reinstalled from clean graph main `940c806`
+(version 0.1.5), and the nightly release build was refreshed. The installed MCP
+answers with 13 tools; all observed running graph processes match its bytes.
+A separate Claude session holds a deleted executable inode with identical bytes;
+it was left running. Factory client and remote server both report 0.2.9 and the
+remote service is active. The sandbox and host both report Cargo 1.97.1.
+
+The shared checkout remains on `feat/appraisal-goal-feedback` with its existing
+uncommitted documentation; installation used the isolated release checkout.
+The live worker, parakeet and model-start scripts were proven byte-identical to
+the release before restarting the worker. No operator config, model default,
+charter, learning store or remote factory deployment changed. The local model
+still serves `qwen3.6-35b-a3b`, four slots, 262,144 context tokens per slot.
+Eval inventories remain 36 cases/15 tags and 5 assistant cases/6 tags.
+
+This deployment supersedes earlier installation/version claims below. The
+historical pilots retain their measured runtimes and are not evaluations of
+this release; learning benefit, replay reconstruction and sensor/outcome
+measurements remain open. See HISTORY for the release/update record.
+
+**Earlier on 2026-09-09 — appraisal PRs #220 and #221 merged.**
 Current main includes confirmed-goal planning and verified-step feedback from
 PR #220 (`08ebaaa5`), then anticipatory appraisal from PR #221 (`fa77852c`).
 Review fixes preserve unsupported evidence without hiding drafts, keep display
@@ -41,7 +78,8 @@ capture only after its source/confirmation policy is defined. Current input is
 owner-authored JSON, invocation-bound for runs. Mutable attachments, UI feedback
 forms, cross-session shame and excitement are outside this implementation.
 Old binaries ignore new guidance fields; all releasing processes need this build
-before the optional delivery gate can be relied on. No deployment was done.
+before the optional delivery gate can be relied on. The later v0.1.19 update
+above installed this implementation.
 
 Historical validation at `fa77852c`: `cargo fmt --all`, warning-free
 `cargo clippy --all-targets --all-features`, and
@@ -163,10 +201,9 @@ audit confirms graceful serve shutdown, awaited MCP teardown and typed/steered
 input broadcasts are implemented on main, with evidence in `HISTORY.md`.
 
 Public at **github.com/ljchang/mecha**, MIT licensed. The latest published
-release is **v0.1.18**, published 2026-09-06 (GitHub release reverified
-2026-09-08). The local installation is newer source, `c3f33f4c`, retaining
-that workspace version; this update did not publish another release. Earlier
-release observations have moved to `HISTORY.md`.
+release is **v0.1.19**, published and installed 2026-09-09 from `ef283174`.
+The dated v0.1.18 installation record above describes the previous update;
+the current deployment is the v0.1.19 entry at the top of this document.
 
 **Reading the earlier orientation below:** these entries describe their dated
 work sessions. Their release, installation, service and test-count statements

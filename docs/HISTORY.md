@@ -14,6 +14,39 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-09 — v0.1.19 patch release and local update.**
+The owner requested the patch release after PR #222 merged. Release commit
+`ef283174` updates the workspace and lockfile to 0.1.19 and moves the accumulated
+Unreleased changelog into its dated release section, with both link definitions.
+The tag workflow passed, all four crates were independently verified at 0.1.19
+on crates.io, and the GitHub release was published. Main CI and documentation
+deployment passed. Local all-target build, formatting, warning-free all-feature
+Clippy and required-backend tests passed (2,638 passed, zero failed, three
+ignored); web tests and production build passed. The static musl benchmark
+build completed in 9m 52s and was installed at the shared checkout
+`target-musl/release/mecha` path; its hash matches the release build and it
+reports `mecha 0.1.19`.
+
+The CLI and all four mail/document executables were installed from the clean
+release checkout. The installed CLI exposed the new appraisal evidence and
+outbox outcome commands. Both graph executables were reinstalled from graph
+main `940c806` (0.1.5), with the nightly release artifact rebuilt and the installed
+MCP's 13-tool surface checked. Slack, triggers, drain, serve and voice-worker
+units restarted after installation. Startup logs and active mecha executable
+hashes were verified; the web page matched the rebuilt assets and `/api/ping`
+returned `ok`. All five units remained active with zero automatic restarts.
+Factory client/server were already at 0.2.9 and the server was active; no remote
+deployment was performed. Sandbox and host Cargo versions both read 1.97.1.
+
+The shared checkout's existing uncommitted documentation was preserved. Its
+worker, parakeet and model-start scripts were byte-identical to the release;
+only the worker required a restart. The local model remained
+`qwen3.6-35b-a3b`, four slots, 262,144 context tokens per slot. A separate Claude
+session retained a deleted graph executable inode whose bytes matched the
+installed server; it was left running. No operator configuration or learning
+state changed. Earlier pilot reports retain their historical runtimes and do
+not claim live-model validation of this release.
+
 **2026-09-09 — appraisal implementation and review fixes merged.**
 PR #220 merged at `08ebaaa5`, followed by anticipatory appraisal PR #221 at
 `fa77852c`. The implementation and review entries below retain their historical
