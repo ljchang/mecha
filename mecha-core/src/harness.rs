@@ -350,6 +350,16 @@ pub fn parse_change(spec: &str) -> Result<ConfigChange> {
 }
 
 impl ConfigChange {
+    /// A syntactically valid knob can still be ineffective on an adapter.
+    /// This check must precede measurement, not merely prompt the proposer.
+    pub fn ensure_supported(&self, provider: &dyn crate::provider::Provider) -> Result<()> {
+        anyhow::ensure!(
+            self.key != OverrideKey::Effort || provider.supports_effort(),
+            "effort is not supported by this provider adapter; changing it would measure identical requests"
+        );
+        Ok(())
+    }
+
     /// Apply onto an [`crate::config::AgentConfig`]. The value was validated
     /// at parse time; a value that no longer parses (a hand-edited file) is
     /// an error the caller reports, never a silent skip-and-apply-half.
@@ -438,6 +448,9 @@ impl std::fmt::Display for TallyRecord {
 /// What the counterfactual replay measured, kept whole on the candidate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Measurement {
+    /// Per-arm statistics and replay traces, including arms dropped from scoring.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arm_receipts: Vec<serde_json::Value>,
     pub measured_at: String,
     pub model: String,
     /// `accept` | `propose` | `reject` — the gate's own verdict, which is not
@@ -662,6 +675,7 @@ impl Measurement {
             ties: t.ties,
         };
         Measurement {
+            arm_receipts: Vec::new(),
             measured_at,
             model: model.to_string(),
             disposition: disposition.to_string(),
@@ -939,6 +953,22 @@ pub fn apply_overrides_file(cfg: &mut Config, path: &Path) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ignored_effort_is_not_a_measurable_intervention() {
+        let provider = crate::provider::openai::OpenAiCompatible::from_config(
+            &crate::config::ProviderConfig::default(),
+        )
+        .unwrap();
+        assert!(parse_change("effort=low")
+            .unwrap()
+            .ensure_supported(&provider)
+            .is_err());
+        assert!(parse_change("max_turns=10")
+            .unwrap()
+            .ensure_supported(&provider)
+            .is_ok());
+    }
+
     /// `ranked` is on the wire beside `seed` and `holdout_episodes`, and a
     /// record from before it reads unknown, never zero.
     #[test]

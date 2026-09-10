@@ -517,7 +517,16 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
     );
 
     let brief = evidence.brief();
-    let mut convo = Conversation::user(format!("{brief}\n---\n{DIAGNOSE_INSTRUCTION}"));
+    let (_, provider_cfg) = prepared.config.provider(global.provider.as_deref())?;
+    let provider = mecha_core::provider::build(provider_cfg)?;
+    let applicability = if provider.supports_effort() {
+        "The provider adapter supports effort."
+    } else {
+        "The provider adapter ignores effort. Do not propose effort changes: they cannot affect a run."
+    };
+    let mut convo = Conversation::user(format!(
+        "{brief}\n---\n{DIAGNOSE_INSTRUCTION}\n{applicability}"
+    ));
     let outcome = prepared.agent.run(&mut convo, None).await?;
 
     let Some(proposal) = parse_proposal(&outcome.text) else {

@@ -22,6 +22,44 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-10 — nightly measurement fixes on `fix/nightly-measurement-grounding`,
+not installed.** Validation now restores recorded tools for followups and records
+attempt identities/reasons; unchanged inputs are deferred before coverage selection.
+Harness measurements reject ignored effort controls and structurally incomplete
+replays, retain arm receipts and classify MCP capability changes as security work.
+Gossip anchors targets and carried claims to retrieved citations, records per-round
+citation yield, marks automated search traffic and reports filing failures.
+
+Verification (2026-09-10): all-target build, formatting and warning-free Clippy
+passed; `MECHA_TEST_REQUIRE_BACKENDS=1 cargo test --workspace` passed **2,625**
+tests, with zero failures and three intentionally ignored. The missing-tail
+regression test failed under the old admission logic and passed with the fix.
+Eval inventory remains **36 cases / 15 tags**. The model server reported four
+slots, 262,144 tokens per slot and vision enabled; user service unit states were
+read without restarting anything. Installed artifact capabilities and older
+sibling-repository claims were not reverified in this pass.
+
+A bounded two-reader/two-round gossip smoke run on one existing target completed
+with four explicit no-evidence answers, zero accepted citations and zero verdict
+filings. Each round retrieved 16 episode hits; this is neither verified target
+coverage nor a dialogue benefit. It exposed an accounting correction: explicit
+abstentions now count separately from malformed or uncited answers.
+
+One copied, unprocessed nightly followup also ran in an isolated learning/session
+store. Its rules-free continuation requested an extra tool call and was correctly
+inconclusive before judging; replay executed no tool. A second unchanged invocation
+deferred that input, leaving one attempt/ledger row. This verifies reconstruction,
+structural refusal and retry scheduling, not increased gradeability.
+
+The local retirement drill was run once with the unchanged scenario/thresholds
+using debug binaries in an isolated test store: its first pair passed both arms,
+so the expected regression was not elicited and retirement was not demonstrated.
+Do not read this as a successful end-to-end retirement test. Source/test fixes do
+not yet establish improved nightly accuracy, a winning tool budget, or a benefit
+from additional gossip rounds. Legacy unmarked smoke recordings and controlled
+round comparisons remain measurement work. Earlier dated environment claims
+retain their original verification scope; no deployment was performed.
+
 **2026-09-09 — appraisal implementation is on `feat/appraisal-goal-feedback`, not installed.**
 Goal persistence, event attribution, declared plan checks and goal-specific context
 are implemented; the implementation history and earlier pilot comparisons are in
@@ -3442,7 +3480,8 @@ repeated here.
   `step::CHECK_TRACE`, `Work::{checks_declared, checks_passed}`,
   `Finding::CheckFailed`, `RunStats::{checks_declared, checks_passed}`, a
   failed check signed `-1.0`/`Own` in `of_session`, and
-  `learning::Trigger::Mismatch` as a wire word nothing fires yet. Re-read
+  `learning::Trigger::Mismatch` as an initially unused wire word (the producer
+  and grounded reflection are now implemented; see HISTORY, 2026-09-10). Re-read
   the same day with the branch binary: **18 of 143 sessions signed,
   `+12.0 −19.5` across them, label `neutral` on all 143.** Four owner
   rulings recorded in the research doc and this session: valence per
@@ -3452,9 +3491,8 @@ repeated here.
   name — never a `Metric`, never in the prompt, id-join attribution, doctor
   reports saturation, the editor shows the reading; designed since at
   `GOAL-SYSTEM-DESIGN.md` §11.1). **Open, in order:** phase B's leftovers — the
-  three trajectory counters and the trigger read receipt; phase C — firing
-  `Mismatch` (one per step, three per run), the reflection that cites turn
-  ids, the next-turn prior and the per-kind retrieval prior; the remaining
+  three trajectory counters and the trigger read receipt; phase C — the
+  general eval sampler and per-kind retrieval prior; the remaining
   `board_overdue` and `cost` charter sensors; the tamper count folded into
   `RunStats`; and the experiments and ablations the owner asked for now
   that this round has landed (`EXPERIMENT-DESIGN.md`, structural switches
@@ -3600,72 +3638,13 @@ repeated here.
     run that would have got there anyway. That is why `validate` reaches
     followups with a judge instead. A structural ceiling, not a budget, and it
     shrinks the probe's share of the readout accordingly.
-  - **And today the reachable ones cannot run either** — see the next item,
-    which is the larger finding.
 
-- **`mecha validate`'s steer and denial probes have never been able to run on
-  an interactive session**, and that is why `validations.jsonl` does not exist.
-  `replay_run::replay_registry` bails on any recorded tool name the live
-  registry lacks, and `ask_user` is registered *only* by a front-end that owns
-  a human — `setup::prepare`'s `interactive` flag picks the approver and does
-  not register it (`setup.rs`, the `TerminalApprover` branch). The coupling
-  closes: a probe needs an intervention, interventions happen in interactive
-  sessions, interactive sessions carry `ask_user`, and the replay refuses to
-  build. **Verified against the store: 246 of 408 sessions with a recorded
-  tool list carry `ask_user`.** The nightly has been running `validate` and
-  every steer/denial probe has skipped, which its `skipped` counter reports and
-  nothing reads as *this whole class is unreachable*.
-
-  The contained fix is a **spec-only stub under `OnDivergence::Stop`**: nothing
-  executes in that mode, so the registry exists to reproduce the surface the
-  model *saw*, and a stub that errors if actually called restores that without
-  changing any executed behaviour. It must stay conditional on the mode —
-  under the others tools really do run, and there the bail is correct.
-
-  **This paragraph is stale — the stub is built and both callers already use
-  it, verified 2026-08-27 by reading `probe.rs` on `main` rather than trusting
-  this note.** `probe::drive_arm` — the one function both `mecha validate`
-  (via `prepare_probe`) and `mecha sessions appraise --probe` (via
-  `prepare_probe_at`) call to actually run an arm — builds its registry with
-  `Some(&crate::setup::surface_only_registry())` as the `ask_user`-shaped
-  fallback, under `OnDivergence::Stop`, exactly as described above. Landed as
-  part of #90/#91. What is still unmeasured is not whether the fix exists but
-  whether it *changes the numbers* — nobody has re-run `mecha validate` since
-  it landed to confirm `validations.jsonl` now gets written for a steer/denial
-  probe that used to silently skip.
-
-  **This caution held for rung 10, which shipped anyway — on purpose, and
-  without contradicting it — and rung 8 then shipped against it too, this
-  time by explicit ruling rather than by needing nothing from the label.**
-  §8's prioritised replay still keys off affect being non-degenerate and is
-  still unbuilt for that reason. Rung 10 (PR #100, 2026-08-28) shipped ahead
-  of rung 8 in build order specifically because its two pieces — the
-  charter and the anticipated-guilt sensor — depend on neither the probe nor
-  the label: the charter is a static, user-authored prompt block, and the
-  sensor is deliberately unconsumed (see the summary paragraph above). What
-  still waits on the label from rung 10 is charter-driven `Pride`/
-  `Frustration` — that half is genuinely unbuilt. **Rung 8 (PRs #99, #103,
-  2026-08-28) is different**: it does read the label directly (§6.2's three
-  readout surfaces show whatever `affect_of` currently derives, degenerate
-  or not, and §5.4's follow-up gate predicates on it), so this caution
-  applied to it exactly as written — and it was built anyway, on the ruling
-  that the mechanism earns its place independent of today's label, not that
-  the corpus argument was wrong. Concretely: on a corpus that is 119/120
-  `Neutral`, the TUI badge, the web tint and the voice nudge will show
-  nothing on nearly every run today, and the follow-up gate will stage a
-  follow-up almost never — both are the honest readout of a label the probe
-  (§14 item 7) is what would actually move, not evidence rung 8 was built
-  wrong. Whether rung 9's own affect-adjacent pieces (§10's review-queue
-  salience) hit the same wall is not verified in this entry — see whoever
-  shipped #97/#98 for that.
-
-  **Narrowed 2026-08-28, by rung 9's own first piece — see that bullet
-  below.** This caution is about *consuming* the label: reordering a queue
-  or a replay pass on a value that mostly resolves `Neutral` would optimise
-  for nothing. It does not cover *recording* it, which carries no such
-  risk — `mecha distill` now stamps `meta.affect` on every pushed pkg
-  episode regardless. The consumer this caution guards against (pkg
-  actually reordering its review queue on that field) is still unbuilt.
+- **Affect-driven consumption still needs a useful signal.** Interactive
+  validation's surface-only stub and recorded-surface reconstruction are built;
+  see Validation below and HISTORY. Their existence does not establish that
+  affect-ranked replay or review queues improve decisions. Keep those consumption
+  questions separate from recording affect metadata; sibling graph queue ordering
+  was not reverified in this source sweep.
 
 - **The quarantined appraiser (§5.1) shipped 2026-08-27** — no tools, no
   conversation, typed output, offline via `mecha sessions appraise --appraise`
@@ -3855,13 +3834,21 @@ is true now:
 
 **Open:**
 
-- **The followup probe answers with tool calls it cannot make.** It re-asks
-  the corrective turn with no tool surface, so on the 2026-08-30 nightly 5
-  of 7 followups were `inconclusive` — the `is_gradeable` span check
-  correctly refusing to judge a `<tool_call>` body as an answer, but that
-  is half the judged corpus producing nothing. Giving that probe its
-  recorded tool surface (specs only, nothing executes) is the candidate
-  fix.
+- **Measure the restored followup path on fresh inputs.** Recorded tools now
+  replay without execution, and incomplete/argument-divergent continuations remain
+  inconclusive. Structural replay still cannot grade substantively improved work
+  that takes a different valid path; artifact criteria are the next stronger label.
+- **Separate repeated confirmation from independent evidence.** Attempt receipts
+  prevent accidental identical reruns, but retirement still uses its existing
+  regression-count rule. Repeated judgments, alternative windows and deliberately
+  independent probes need a predeclared comparison before changing that policy.
+- **Measure gossip's added value by round.** Citation yield now exists, but the
+  free-text audit only attaches an origin on an exact grounded-statement match.
+  Per-round supported/contradicted yield and a budget-matched comparison remain open.
+- **Clean the harness corpus before judging tool budgets.** Explicit test sessions
+  are excluded; historical unmarked smoke recordings still need defensible corpus
+  classification. Unsupported effort and incomplete tails are now rejected, but
+  neither fix supplies representative pairs or holdout power.
 - **A steer pass is call-for-call.** Tracking the whole steered continuation
   under sampling biases toward `Fail`/`Fail`; both arms share the bias so
   the ledger's comparisons stand, but if improved/regressed stay rare

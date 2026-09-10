@@ -101,6 +101,12 @@ pub trait Provider: Send + Sync {
         false
     }
 
+    /// Whether changing `CompletionRequest::effort` changes the wire request.
+    /// Unknown adapters opt out so a measurement cannot compare identical arms.
+    fn supports_effort(&self) -> bool {
+        false
+    }
+
     /// Run one turn. With `sink`, stream and emit deltas as they arrive; the
     /// accumulated response is still returned.
     async fn complete(
@@ -445,6 +451,10 @@ fn failover_worthy(e: &anyhow::Error) -> bool {
 
 #[async_trait]
 impl Provider for Failover {
+    fn supports_effort(&self) -> bool {
+        self.primary.supports_effort() && self.fallbacks.iter().all(|(_, p)| p.supports_effort())
+    }
+
     fn structured_output(&self) -> bool {
         self.primary.structured_output()
     }

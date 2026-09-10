@@ -74,6 +74,7 @@ pub struct LensedSearch {
     since: String,
     until: String,
     description: String,
+    target: Option<EntityIdentity>,
 }
 
 impl LensedSearch {
@@ -97,7 +98,13 @@ impl LensedSearch {
             since: since.to_string(),
             until: until.to_string(),
             description,
+            target: None,
         }
+    }
+
+    pub fn with_target(mut self, target: EntityIdentity) -> Self {
+        self.target = Some(target);
+        self
     }
 
     /// The schema handed to the model. An associated fn so the boundary
@@ -151,9 +158,13 @@ impl Tool for LensedSearch {
         let Some(query) = input.get("query").and_then(Value::as_str) else {
             return Ok(ToolOutput::err("missing required string argument `query`"));
         };
+        let query = self
+            .target
+            .as_ref()
+            .map_or_else(|| query.to_string(), |t| format!("{}: {query}", t.name));
         let args = json!({
             "query": query,
-            "k": input.get("k").and_then(Value::as_u64).unwrap_or(10),
+            "k": input.get("k").and_then(Value::as_u64).unwrap_or(10).clamp(1, 25),
             "include_private": true,
             "sources": self.sources,
             "since": self.since,
@@ -300,6 +311,7 @@ impl Tool for GraphTool {
         if self.name == "kg_search" {
             if let Some(o) = input.as_object_mut() {
                 o.insert("include_private".into(), json!(true));
+                o.insert("probe".into(), json!(true));
             }
         }
         self.client.call_tool(&self.name, input).await
@@ -380,14 +392,55 @@ pub fn choose_vantages(coverage: &[SourceCoverage], min: i64) -> Option<(Vantage
         .or_else(|| viable.get(1).copied())?;
     Some((
         Vantage {
-            label: family(&first.source).into(),
+            label: first.source.clone(),
             sources: vec![first.source.clone()],
         },
         Vantage {
-            label: family(&second.source).into(),
+            label: second.source.clone(),
             sources: vec![second.source.clone()],
         },
     ))
+}
+
+/// A resolved target, distinct from either reader and from the owner.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityIdentity {
+    pub id: String,
+    pub name: String,
+    pub aliases: Vec<String>,
+}
+
+pub async fn identity(client: &McpClient, entity: &str) -> Result<EntityIdentity> {
+    let out = client
+        .call_tool("kg_entity", json!({"name_or_id": entity}))
+        .await?;
+    let body: Value = serde_json::from_str(&out.content)?;
+    anyhow::ensure!(
+        !out.is_error
+            && body.get("error").is_none()
+            && body
+                .get("ambiguous")
+                .and_then(Value::as_array)
+                .is_none_or(|a| a.is_empty()),
+        "target identity unavailable or ambiguous"
+    );
+    Ok(EntityIdentity {
+        id: body["node"]["id"]
+            .as_str()
+            .context("target has no id")?
+            .into(),
+        name: body["node"]["name"]
+            .as_str()
+            .context("target has no name")?
+            .into(),
+        aliases: body["node"]["aliases"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+    })
 }
 
 /// Ask the graph which sources cover an entity. Keeps `call_tool` crate-
@@ -507,14 +560,25 @@ pub async fn windowed_coverage(
             .call_tool(
                 "kg_search",
                 json!({
-                    "query": entity, "k": 25, "include_private": true,
+                    "query": entity, "k": 25, "include_private": true, "probe": true,
                     "scope": "evidence_only", "sources": [c.source.clone()],
                     "since": since, "until": until,
                 }),
             )
             .await?;
-        let body: Value = serde_json::from_str(&res.content).unwrap_or_else(|_| json!({}));
-        let n = body["items"].as_array().map(|a| a.len()).unwrap_or(0) as i64;
+        let body: Value =
+            serde_json::from_str(&res.content).context("coverage search returned non-JSON")?;
+        anyhow::ensure!(
+            !res.is_error && body.get("error").is_none(),
+            "coverage search failed: {}",
+            res.content
+        );
+        let n = body["items"]
+            .as_array()
+            .context("coverage search omitted items")?
+            .iter()
+            .filter(|item| item["kind"] == "episode" && item["source"] == c.source)
+            .count() as i64;
         if n > 0 {
             out.push(SourceCoverage {
                 source: c.source.clone(),
@@ -650,6 +714,14 @@ pub struct ReaderSetup {
 }
 
 pub fn reader(provider: Box<dyn crate::provider::Provider>, setup: ReaderSetup) -> Result<Agent> {
+    reader_with_identity(provider, setup, None)
+}
+
+pub fn reader_with_identity(
+    provider: Box<dyn crate::provider::Provider>,
+    setup: ReaderSetup,
+    target: Option<EntityIdentity>,
+) -> Result<Agent> {
     let ReaderSetup {
         client,
         vantage,
@@ -661,13 +733,21 @@ pub fn reader(provider: Box<dyn crate::provider::Provider>, setup: ReaderSetup) 
         system_prompt,
     } = setup;
     let mut registry = crate::tool::Registry::new();
-    registry.insert(Arc::new(LensedSearch::new(
+    let mut search = LensedSearch::new(
         client,
         &vantage.label,
         vantage.sources.clone(),
         &since,
         &until,
-    )) as Arc<dyn Tool>);
+    );
+    let system_prompt = if let Some(target) = target {
+        let note = serde_json::to_string(&target)?;
+        search = search.with_target(target);
+        format!("{system_prompt}\n\nResolved target identity: {note}. This record identifies the subject, not either assistant. A matching name in another person's source is not proof of authorship.")
+    } else {
+        system_prompt
+    };
+    registry.insert(Arc::new(search) as Arc<dyn Tool>);
 
     // Reads are allowed and nothing else is; a non-read-only tool would be
     // BLOCKED with a reason rather than raised as a question to a terminal
@@ -686,6 +766,14 @@ pub fn reader(provider: Box<dyn crate::provider::Provider>, setup: ReaderSetup) 
 /// What one round produced.
 #[derive(Debug, Clone, Serialize)]
 pub struct Round {
+    /// Claims whose episode and exact quote were found in this reader's results.
+    pub grounded: Vec<GroundedClaim>,
+    /// Unparseable/uncited answers remain evidence of a protocol failure.
+    pub ungrounded: Vec<(String, String)>,
+    /// Explicit no-evidence answers are valid abstentions, not protocol failures.
+    pub abstained: Vec<String>,
+    /// Source packets read in this round, separate from generated assertions.
+    pub evidence: Vec<(String, Vec<GossipEvidence>)>,
     pub n: u32,
     /// The question each reader was asked, keyed by vantage label.
     pub asked: Vec<(String, String)>,
@@ -711,6 +799,131 @@ pub struct Exchange {
     pub entity: String,
     pub vantages: Vec<Vantage>,
     pub rounds: Vec<Round>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GossipEvidence {
+    pub id: String,
+    pub source: String,
+    pub occurred_at: Option<String>,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroundedClaim {
+    pub statement: String,
+    pub episode_id: String,
+    pub source: String,
+    pub occurred_at: Option<String>,
+    pub quote: String,
+    pub round: u32,
+    pub reader: String,
+}
+
+/// Parse the actual result packets, not citations invented in an answer.
+/// Envelopes may precede JSON. Only episode items inside the reader's source
+/// lens are eligible, and all carried evidence remains untrusted/private.
+fn evidence_from(messages: &[crate::message::Message], vantage: &Vantage) -> Vec<GossipEvidence> {
+    let mut out = Vec::new();
+    for call in crate::replay::extract(messages).calls {
+        if call.name != "kg_search" || call.is_error {
+            continue;
+        }
+        let Some(start) = call.output.find('{') else {
+            continue;
+        };
+        let Some(Ok(body)) = serde_json::Deserializer::from_str(&call.output[start..])
+            .into_iter::<Value>()
+            .next()
+        else {
+            continue;
+        };
+        for item in body["items"].as_array().into_iter().flatten() {
+            let (Some(id), Some(source), Some(text)) = (
+                item["id"].as_str(),
+                item["source"].as_str(),
+                item["text"].as_str(),
+            ) else {
+                continue;
+            };
+            if item["kind"] != "episode"
+                || !vantage.sources.iter().any(|s| s == source)
+                || out.iter().any(|e: &GossipEvidence| e.id == id)
+            {
+                continue;
+            }
+            out.push(GossipEvidence {
+                id: id.into(),
+                source: source.into(),
+                occurred_at: item["occurred_at"].as_str().map(str::to_string),
+                text: text.chars().take(4000).collect(),
+            });
+            if out.len() >= 25 {
+                return out;
+            }
+        }
+    }
+    out
+}
+
+/// Citation existence is structural; whether the quote entails the claim is
+/// still the auditor's job. A citation is never itself a supported verdict.
+fn grounded_claims(
+    answer: &str,
+    packet: &[GossipEvidence],
+    round: u32,
+    reader: &str,
+) -> Vec<GroundedClaim> {
+    answer
+        .lines()
+        .filter_map(|line| {
+            let line = line
+                .trim()
+                .trim_start_matches(['-', '*', ' '])
+                .strip_prefix("CLAIM: ")?;
+            let (statement, rest) = line.split_once(" | EPISODE: ")?;
+            let (id, quote) = rest.split_once(" | QUOTE: ")?;
+            let quote = quote.trim().trim_matches('"');
+            let ev = packet.iter().find(|e| e.id == id.trim())?;
+            if statement.trim().is_empty() || quote.chars().count() < 12 || !ev.text.contains(quote)
+            {
+                return None;
+            }
+            Some(GroundedClaim {
+                statement: statement.trim().into(),
+                episode_id: ev.id.clone(),
+                source: ev.source.clone(),
+                occurred_at: ev.occurred_at.clone(),
+                quote: quote.into(),
+                round,
+                reader: reader.into(),
+            })
+        })
+        .take(3)
+        .collect()
+}
+
+fn is_abstention(answer: &str) -> bool {
+    answer
+        .trim()
+        .trim_end_matches('.')
+        .eq_ignore_ascii_case("UNKNOWN: no evidence in my retrieved sources")
+}
+
+fn grounded_question(text: &str, entity: &str) -> Option<String> {
+    let q = usable_question(text)?;
+    let lower = q.to_lowercase();
+    (lower.contains(&entity.to_lowercase())
+        && ![
+            "how do you know",
+            "who are you",
+            "introduce yourself",
+            "how you know me",
+            "the user",
+        ]
+        .iter()
+        .any(|s| lower.contains(s)))
+    .then_some(q)
 }
 
 /// System prompt for a reader answering from its own sources.
@@ -771,7 +984,7 @@ pub async fn exchange(
         rounds: vec![],
     };
 
-    // What each reader has already said, so a round can build on the last
+    // What each reader has already grounded, so a round can build on the last
     // one. Its OWN answers only. The leak commit-then-reveal exists to
     // prevent is seeing the other's answer before committing; a reader kept
     // blind to itself does not hold a conversation, it draws three
@@ -784,6 +997,10 @@ pub async fn exchange(
     for n in 1..=rounds {
         // COMMIT. Both answer before either sees the other.
         let mut answers = Vec::new();
+        let mut grounded = Vec::new();
+        let mut ungrounded = Vec::new();
+        let mut abstained = Vec::new();
+        let mut evidence = Vec::new();
         for (i, (vantage, agent)) in agents.iter().enumerate() {
             let mut prior = String::new();
             for (q, a) in &said[i] {
@@ -794,19 +1011,48 @@ pub async fn exchange(
             // answered it as one — bulleted, exhaustive, closing with an
             // offer of further help.
             let mut convo = Conversation::user(format!(
-                "The person is {entity}.{prior}\nThe other assistant asks you: {}",
+                "The target is {entity}, not you or the other assistant. Resolve every pronoun against that target; do not infer that the target is the owner.{prior}\nThe other assistant asks: {}\n\nReturn at most three lines, each exactly: CLAIM: a statement naming {entity} | EPISODE: the retrieved id | QUOTE: an exact supporting span. If nothing supports an answer, return UNKNOWN: no evidence in my retrieved sources.",
                 questions[i]
             ));
+            convo.taint.private = true;
+            convo.taint.untrusted = true;
             let outcome = agent
                 .run_in(cx, &mut convo, None)
                 .await
                 .with_context(|| format!("{} reader, round {n}", vantage.label))?;
             let answer = strip_user_directed(outcome.text.trim());
-            said[i].push((questions[i].clone(), answer.clone()));
+            let packet = evidence_from(&convo.messages, vantage);
+            let claims = grounded_claims(&answer, &packet, n, &vantage.label);
+            let carried = if claims.is_empty() {
+                if is_abstention(&answer) {
+                    abstained.push(vantage.label.clone());
+                } else {
+                    ungrounded.push((vantage.label.clone(), answer.clone()));
+                }
+                "UNKNOWN: no cited claim was verified in this reader's retrieved evidence".into()
+            } else {
+                claims
+                    .iter()
+                    .map(|c| {
+                        format!(
+                            "{} [episode {}; {}; quote: {}]",
+                            c.statement, c.episode_id, c.source, c.quote
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            said[i].push((questions[i].clone(), carried));
+            grounded.extend(claims);
+            evidence.push((vantage.label.clone(), packet));
             answers.push(answer);
         }
 
         out.rounds.push(Round {
+            grounded,
+            ungrounded,
+            abstained,
+            evidence,
             stalled: std::mem::take(&mut stalled),
             n,
             asked: agents
@@ -842,36 +1088,39 @@ pub async fn exchange(
                  They read: {}\nThey answered: {}\n\n\
                  Now ask them ONE question. Do not summarise either answer. \
                  Your entire output is a single sentence ending in a question \
-                 mark.",
+                 mark. Name {entity} explicitly; ask what their sources show about that target, never ask who the other assistant is or how it knows the user.",
                 vantage.sources.join(", "),
-                brief(&answers[i]),
+                brief(&said[i].last().unwrap().1),
                 agents[other].0.sources.join(", "),
-                brief(&answers[other]),
+                brief(&said[other].last().unwrap().1),
             );
             // A DIFFERENT agent does the asking: same lens, different
             // system prompt. One agent cannot hold two roles, and giving
             // the answerer the asking prompt would mean whichever ran last
             // decided what it was.
             let mut convo = Conversation::user(reveal);
+            convo.taint.private = true;
+            convo.taint.untrusted = true;
             let mut outcome = askers[i].1.run_in(cx, &mut convo, None).await?;
             // One retry, stripped to the bone. Every asker failed in every
             // round of the run before this, so a single cheap retry is
             // worth more than a round silently repeating its question —
             // and if the bare form fails too, that is a finding rather
             // than a flake.
-            if usable_question(&outcome.text).is_none() {
+            if grounded_question(&outcome.text, entity).is_none() {
                 let mut bare = Conversation::user(format!(
                     "They said this about {entity}: {}\n\n\
-                     Ask them one question about it. Output only the question.",
-                    brief(&answers[other]),
+                     Ask one evidence question explicitly naming {entity}. Do not ask who the assistant or user is. Output only the question.",
+                    brief(&said[other].last().unwrap().1),
                 ));
+                bare.taint = convo.taint;
                 outcome = askers[i].1.run_in(cx, &mut bare, None).await?;
             }
             // A non-question must not propagate. Keeping the previous
             // question repeats a round; feeding garbage forward corrupts
             // every round after it, and the reader answers the garbage
             // earnestly because it cannot tell it was never asked anything.
-            match usable_question(&outcome.text) {
+            match grounded_question(&outcome.text, entity) {
                 Some(q) => next[other] = q,
                 None => stalled.push((
                     agents[other].0.label.clone(),
@@ -1014,6 +1263,8 @@ Absence of evidence is 'unsupported', never 'contradicted'.";
 /// One claim, checked.
 #[derive(Debug, Clone, Serialize)]
 pub struct ClaimVerdict {
+    /// Only populated when extraction matches a source-verified claim exactly.
+    pub origin: Option<GroundedClaim>,
     pub claim: String,
     pub verdict: String,
     pub basis: String,
@@ -1175,13 +1426,33 @@ pub async fn audit(
             .await
             .with_context(|| format!("checking claim: {claim}"))?;
         let (verdict, basis) = parse_verdict(&res.text);
+        let origin = exchange
+            .rounds
+            .iter()
+            .flat_map(|r| &r.grounded)
+            .find(|c| c.statement == claim)
+            .cloned();
         out.push(ClaimVerdict {
+            origin,
             claim,
             verdict,
             basis,
         });
     }
     Ok(out)
+}
+
+/// Marginal citation yield, separate from the auditor's semantic verdicts and
+/// from queue vetting. Repeated assertions do not count as new findings.
+pub fn round_yield(exchange: &Exchange) -> Value {
+    let mut seen = std::collections::BTreeSet::new();
+    Value::Array(exchange.rounds.iter().map(|r| {
+        let new = r.grounded.iter().filter(|c| seen.insert(c.statement.to_lowercase())).count();
+        json!({"round": r.n, "grounded_claims": r.grounded.len(), "new_grounded_claims": new,
+            "repeated_claims": r.grounded.len() - new, "ungrounded_answers": r.ungrounded.len(),
+            "abstentions": r.abstained.len(),
+            "stalled_questions": r.stalled.len(), "retrieved_episodes": r.evidence.iter().map(|(_, e)| e.len()).sum::<usize>()})
+    }).collect())
 }
 
 /// Render an audit, findings first — an audit read top-down should hit
@@ -1252,6 +1523,88 @@ mod tests {
                 episodes: *n,
             })
             .collect()
+    }
+
+    #[test]
+    fn a_question_must_name_the_target_and_not_recast_the_reader_as_the_user() {
+        assert!(grounded_question("How do you know the user?", "Dana Rowe").is_none());
+        assert!(grounded_question("Who are you, Dana Rowe?", "Dana Rowe").is_none());
+        assert!(grounded_question(
+            "What do the calendar entries say about Dana Rowe's role?",
+            "Dana Rowe"
+        )
+        .is_some());
+        assert!(grounded_question("Where does she work?", "Dana Rowe").is_none());
+    }
+
+    #[test]
+    fn a_citation_must_name_a_retrieved_episode_and_quote_its_actual_text() {
+        let packet = vec![GossipEvidence {
+            id: "episode:7".into(),
+            source: "slack.thread".into(),
+            occurred_at: Some("2026-09-01".into()),
+            text: "Dana Rowe chairs the seminar this term.".into(),
+        }];
+        let valid = "CLAIM: Dana Rowe chairs the seminar. | EPISODE: episode:7 | QUOTE: Dana Rowe chairs the seminar";
+        let claims = grounded_claims(valid, &packet, 2, "written");
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].round, 2);
+        assert_eq!(claims[0].source, "slack.thread");
+        assert!(grounded_claims(
+            &valid.replace("episode:7", "episode:8"),
+            &packet,
+            2,
+            "written"
+        )
+        .is_empty());
+        assert!(grounded_claims(
+            &valid.replace("QUOTE: Dana Rowe chairs", "QUOTE: Someone else chairs"),
+            &packet,
+            2,
+            "written"
+        )
+        .is_empty());
+        assert!(grounded_claims("Dana Rowe is the user", &packet, 2, "written").is_empty());
+    }
+
+    #[test]
+    fn repeated_grounded_claims_are_not_new_round_yield() {
+        let claim = GroundedClaim {
+            statement: "Dana leads the lab".into(),
+            episode_id: "7".into(),
+            source: "slack.thread".into(),
+            occurred_at: None,
+            quote: "Dana leads the lab".into(),
+            round: 1,
+            reader: "written".into(),
+        };
+        let round = |n| Round {
+            n,
+            asked: vec![],
+            answered: vec![],
+            stalled: vec![],
+            grounded: vec![claim.clone()],
+            ungrounded: vec![],
+            abstained: vec!["spoken".into()],
+            evidence: vec![],
+        };
+        let exchange = Exchange {
+            entity: "Dana".into(),
+            vantages: vec![],
+            rounds: vec![round(1), round(2)],
+        };
+        let yield_ = round_yield(&exchange);
+        assert_eq!(yield_[0]["new_grounded_claims"], 1);
+        assert_eq!(yield_[1]["new_grounded_claims"], 0);
+        assert_eq!(yield_[1]["repeated_claims"], 1);
+        assert_eq!(yield_[0]["abstentions"], 1);
+        assert_eq!(yield_[0]["ungrounded_answers"], 0);
+        assert!(is_abstention(
+            "UNKNOWN: no evidence in my retrieved sources."
+        ));
+        assert!(!is_abstention(
+            "UNKNOWN: no evidence in my retrieved sources. Dana owns the lab."
+        ));
     }
 
     #[test]
@@ -1703,7 +2056,7 @@ pub async fn pending_about(
     if let Some(e) = body.get("error").and_then(Value::as_str) {
         anyhow::bail!("kg_pending: {e}");
     }
-    Ok(serde_json::from_value(body["items"].clone()).unwrap_or_default())
+    serde_json::from_value(body["items"].clone()).context("kg_pending returned invalid items")
 }
 
 /// One class of the review queue, oldest first.
@@ -1737,7 +2090,7 @@ pub async fn pending(
     if let Some(e) = body.get("error").and_then(Value::as_str) {
         anyhow::bail!("kg_pending: {e}");
     }
-    Ok(serde_json::from_value(body["items"].clone()).unwrap_or_default())
+    serde_json::from_value(body["items"].clone()).context("kg_pending returned invalid items")
 }
 
 /// File an opinion beside a candidate. Decides nothing.

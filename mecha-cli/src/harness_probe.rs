@@ -370,6 +370,7 @@ pub fn draw_episodes(
 }
 /// What one arm of one episode produced.
 pub struct ArmOutcome {
+    pub receipt: serde_json::Value,
     pub stats: RunStats,
     /// Why the replay left the recording, if it did. The stats above then
     /// cover only the prefix it tracked, and the caller drops the episode.
@@ -385,6 +386,21 @@ pub struct ArmOutcome {
 }
 
 impl ArmOutcome {
+    fn from_report(
+        report: mecha_core::replay_run::ReplayReport,
+        cursor_reason: Option<String>,
+    ) -> Self {
+        Self {
+            receipt: serde_json::json!({"stats": report.stats, "calls": report.replayed_calls,
+                "divergences": report.divergences, "recorded_calls": report.recorded_calls,
+                "stopped_early": report.stopped_early, "final_text": report.final_text}),
+            divergence: report
+                .unmeasurable_reason()
+                .map(|why| cursor_reason.unwrap_or(why)),
+            stats: report.stats,
+        }
+    }
+
     pub fn diverged(&self) -> bool {
         self.divergence.is_some()
     }
@@ -489,19 +505,7 @@ pub async fn drive_episode(
         .with_cancel(cancel)
         .with_compact_at(agent_cfg.compact_at_tokens);
     match drive(&agent, &cx, &prep.trajectory).await {
-        Ok(report) => Ok(Ok(ArmOutcome {
-            // `stopped_early` is the authority on *whether* — it is what the
-            // cancel token did — and the probe supplies the *why*. A run
-            // stopped early with no recorded reason still counts as
-            // diverged, with the reason named as unrecorded rather than
-            // silently dropped: unknown is not clean.
-            divergence: report.stopped_early.then(|| {
-                divergence
-                    .reason()
-                    .unwrap_or_else(|| "left the recording; no reason recorded".into())
-            }),
-            stats: report.stats,
-        })),
+        Ok(report) => Ok(Ok(ArmOutcome::from_report(report, divergence.reason()))),
         Err(e) => Ok(Err(format!("replay failed: {e:#}"))),
     }
 }
@@ -509,6 +513,27 @@ pub async fn drive_episode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_calls_never_enter_a_harness_pair_even_without_cancellation() {
+        let report = mecha_core::replay_run::ReplayReport {
+            divergences: vec![mecha_core::replay::Divergence::Missing {
+                index: 0,
+                expected: "fs_write".into(),
+            }],
+            replayed_calls: vec![],
+            recorded_calls: 1,
+            turns: 1,
+            stopped_early: false,
+            final_text: "done".into(),
+            stats: RunStats::default(),
+            call_base: 0,
+        };
+        let arm = ArmOutcome::from_report(report, None);
+        assert!(arm.diverged());
+        assert_eq!(arm.receipt["recorded_calls"], 1);
+        assert_eq!(arm.receipt["divergences"][0]["kind"], "missing");
+    }
 
     #[test]
     fn neither_slice_is_sized_from_a_pool_that_does_not_exist() {

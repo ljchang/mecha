@@ -566,6 +566,19 @@ pub struct ReplayReport {
 }
 
 impl ReplayReport {
+    /// Why whole-trajectory statistics cannot be scored as a faithful replay.
+    /// Missing trailing calls do not trip the cursor's cancellation token:
+    /// inspect the completed diff as well as a policy stop.
+    pub fn unmeasurable_reason(&self) -> Option<String> {
+        self.structural()
+            .next()
+            .map(|d| format!("structural divergence at call #{}: {d:?}", d.index()))
+            .or_else(|| {
+                self.stopped_early
+                    .then(|| "replay stopped before completion".into())
+            })
+    }
+
     /// Divergences that change what the model did, not how it spelled it.
     pub fn structural(&self) -> impl Iterator<Item = &Divergence> {
         self.divergences.iter().filter(|d| d.is_structural())
@@ -1464,6 +1477,36 @@ mod tests {
             .with_cancel(cancel)
             .with_budget(Budget::turns(8));
         drive(&agent, &cx, trajectory).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_missing_tail_is_unmeasurable_without_cursor_cancellation() {
+        let calls = vec![
+            batched(0, "echo", json!({"value":"a"}), "a"),
+            batched(1, "echo", json!({"value":"b"}), "b"),
+        ];
+        let trajectory = Trajectory {
+            turns: vec!["both calls".into()],
+            calls: calls.clone(),
+            ..Default::default()
+        };
+        let report = drive_scripted(
+            vec![
+                assistant(
+                    vec![tool_use("a", "echo", json!({"value":"a"}))],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            calls,
+            &trajectory,
+        )
+        .await;
+        assert!(
+            !report.stopped_early,
+            "the cursor never saw an unmatched call"
+        );
+        assert!(report.unmeasurable_reason().unwrap().contains("Missing"));
     }
 
     #[tokio::test]
