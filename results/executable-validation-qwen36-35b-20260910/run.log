@@ -1,0 +1,194 @@
+mecha exp `executable-validation-v1`: 96 trials planned, 0 finished, 96 to run · local (qwen3.6-35b-a3b)
+· rules-off-10__schedule-coverage__s1__r1 (1)
+  pass · 6 turns · completed
+· rules-off-10__schedule-coverage__s2__r1 (2)
+  pass · 4 turns · completed
+· rules-off-10__schedule-coverage__s3__r1 (3)
+  pass · 4 turns · completed
+· rules-off-10__latest-evidence__s1__r1 (4)
+  FAIL · 6 turns · completed
+· rules-off-10__latest-evidence__s2__r1 (5)
+  pass · 5 turns · completed
+· rules-off-10__latest-evidence__s3__r1 (6)
+  FAIL · 5 turns · completed
+· rules-off-10__identity-binding__s1__r1 (7)
+  pass · 6 turns · completed
+· rules-off-10__identity-binding__s2__r1 (8)
+  pass · 5 turns · completed
+· rules-off-10__identity-binding__s3__r1 (9)
+  pass · 6 turns · completed
+· rules-off-10__poll-constraints__s1__r1 (10)
+  pass · 3 turns · completed
+· rules-off-10__poll-constraints__s2__r1 (11)
+  pass · 4 turns · completed
+· rules-off-10__poll-constraints__s3__r1 (12)
+  pass · 4 turns · completed
+· rules-off-10__preserve-settings__s1__r1 (13)
+  pass · 4 turns · completed
+· rules-off-10__preserve-settings__s2__r1 (14)
+  pass · 4 turns · completed
+· rules-off-10__preserve-settings__s3__r1 (15)
+  pass · 4 turns · completed
+· rules-off-10__missing-context__s1__r1 (16)
+  pass · 4 turns · completed
+· rules-off-10__missing-context__s2__r1 (17)
+  pass · 4 turns · completed
+· rules-off-10__missing-context__s3__r1 (18)
+  pass · 3 turns · completed
+· rules-off-10__linked-packet-8__s1__r1 (19)
+  FAIL · 10 turns · hit the turn limit
+· rules-off-10__linked-packet-8__s2__r1 (20)
+  FAIL · 10 turns · hit the turn limit
+· rules-off-10__linked-packet-8__s3__r1 (21)
+  pass · 6 turns · completed
+· rules-off-10__linked-packet-11__s1__r1 (22)
+  FAIL · 10 turns · hit the turn limit
+· rules-off-10__linked-packet-11__s2__r1 (23)
+  FAIL · 10 turns · hit the turn limit
+· rules-off-10__linked-packet-11__s3__r1 (24)
+  pass · 7 turns · completed
+· rules-off-12__schedule-coverage__s1__r1 (25)
+  pass · 5 turns · completed
+· rules-off-12__schedule-coverage__s2__r1 (26)
+  pass · 4 turns · completed
+· rules-off-12__schedule-coverage__s3__r1 (27)
+  pass · 4 turns · completed
+· rules-off-12__latest-evidence__s1__r1 (28)
+  FAIL · 5 turns · completed
+· rules-off-12__latest-evidence__s2__r1 (29)
+  pass · 5 turns · completed
+· rules-off-12__latest-evidence__s3__r1 (30)
+  FAIL · 5 turns · completed
+· rules-off-12__identity-binding__s1__r1 (31)
+  pass · 5 turns · completed
+· rules-off-12__identity-binding__s2__r1 (32)
+  pass · 5 turns · completed
+· rules-off-12__identity-binding__s3__r1 (33)
+  pass · 5 turns · completed
+· rules-off-12__poll-constraints__s1__r1 (34)
+  pass · 3 turns · completed
+· rules-off-12__poll-constraints__s2__r1 (35)
+  pass · 4 turns · completed
+· rules-off-12__poll-constraints__s3__r1 (36)
+  pass · 4 turns · completed
+· rules-off-12__preserve-settings__s1__r1 (37)
+  pass · 4 turns · completed
+· rules-off-12__preserve-settings__s2__r1 (38)
+  pass · 4 turns · completed
+· rules-off-12__preserve-settings__s3__r1 (39)
+  pass · 4 turns · completed
+· rules-off-12__missing-context__s1__r1 (40)
+  pass · 4 turns · completed
+· rules-off-12__missing-context__s2__r1 (41)
+  pass · 4 turns · completed
+· rules-off-12__missing-context__s3__r1 (42)
+  pass · 4 turns · completed
+· rules-off-12__linked-packet-8__s1__r1 (43)
+  pass · 12 turns · hit the turn limit
+· rules-off-12__linked-packet-8__s2__r1 (44)
+  pass · 12 turns · completed
+· rules-off-12__linked-packet-8__s3__r1 (45)
+  pass · 6 turns · completed
+· rules-off-12__linked-packet-11__s1__r1 (46)
+  FAIL · 12 turns · hit the turn limit
+· rules-off-12__linked-packet-11__s2__r1 (47)
+  FAIL · 12 turns · hit the turn limit
+· rules-off-12__linked-packet-11__s3__r1 (48)
+  pass · 6 turns · completed
+· rules-on-10__schedule-coverage__s1__r1 (49)
+  pass · 4 turns · completed
+· rules-on-10__schedule-coverage__s2__r1 (50)
+  pass · 4 turns · completed
+· rules-on-10__schedule-coverage__s3__r1 (51)
+  pass · 4 turns · completed
+· rules-on-10__latest-evidence__s1__r1 (52)
+  FAIL · 5 turns · completed
+· rules-on-10__latest-evidence__s2__r1 (53)
+  FAIL · 6 turns · completed
+· rules-on-10__latest-evidence__s3__r1 (54)
+  FAIL · 6 turns · completed
+· rules-on-10__identity-binding__s1__r1 (55)
+  pass · 7 turns · completed
+· rules-on-10__identity-binding__s2__r1 (56)
+  pass · 5 turns · completed
+· rules-on-10__identity-binding__s3__r1 (57)
+  pass · 4 turns · completed
+· rules-on-10__poll-constraints__s1__r1 (58)
+  pass · 4 turns · completed
+· rules-on-10__poll-constraints__s2__r1 (59)
+  pass · 4 turns · completed
+· rules-on-10__poll-constraints__s3__r1 (60)
+  pass · 4 turns · completed
+· rules-on-10__preserve-settings__s1__r1 (61)
+  pass · 4 turns · completed
+· rules-on-10__preserve-settings__s2__r1 (62)
+  pass · 4 turns · completed
+· rules-on-10__preserve-settings__s3__r1 (63)
+  pass · 4 turns · completed
+· rules-on-10__missing-context__s1__r1 (64)
+  pass · 3 turns · completed
+· rules-on-10__missing-context__s2__r1 (65)
+  pass · 4 turns · completed
+· rules-on-10__missing-context__s3__r1 (66)
+  pass · 4 turns · completed
+· rules-on-10__linked-packet-8__s1__r1 (67)
+  FAIL · 10 turns · hit the turn limit
+· rules-on-10__linked-packet-8__s2__r1 (68)
+  FAIL · 10 turns · hit the turn limit
+· rules-on-10__linked-packet-8__s3__r1 (69)
+  pass · 5 turns · completed
+· rules-on-10__linked-packet-11__s1__r1 (70)
+  pass · 6 turns · completed
+· rules-on-10__linked-packet-11__s2__r1 (71)
+  FAIL · 10 turns · hit the turn limit
+· rules-on-10__linked-packet-11__s3__r1 (72)
+  FAIL · 10 turns · hit the turn limit
+· rules-on-12__schedule-coverage__s1__r1 (73)
+  pass · 4 turns · completed
+· rules-on-12__schedule-coverage__s2__r1 (74)
+  pass · 4 turns · completed
+· rules-on-12__schedule-coverage__s3__r1 (75)
+  pass · 4 turns · completed
+· rules-on-12__latest-evidence__s1__r1 (76)
+  FAIL · 5 turns · completed
+· rules-on-12__latest-evidence__s2__r1 (77)
+  FAIL · 6 turns · completed
+· rules-on-12__latest-evidence__s3__r1 (78)
+  FAIL · 6 turns · completed
+· rules-on-12__identity-binding__s1__r1 (79)
+  pass · 5 turns · completed
+· rules-on-12__identity-binding__s2__r1 (80)
+  pass · 5 turns · completed
+· rules-on-12__identity-binding__s3__r1 (81)
+  pass · 4 turns · completed
+· rules-on-12__poll-constraints__s1__r1 (82)
+  pass · 4 turns · completed
+· rules-on-12__poll-constraints__s2__r1 (83)
+  pass · 4 turns · completed
+· rules-on-12__poll-constraints__s3__r1 (84)
+  pass · 4 turns · completed
+· rules-on-12__preserve-settings__s1__r1 (85)
+  pass · 4 turns · completed
+· rules-on-12__preserve-settings__s2__r1 (86)
+  pass · 4 turns · completed
+· rules-on-12__preserve-settings__s3__r1 (87)
+  pass · 4 turns · completed
+· rules-on-12__missing-context__s1__r1 (88)
+  pass · 3 turns · completed
+· rules-on-12__missing-context__s2__r1 (89)
+  pass · 4 turns · completed
+· rules-on-12__missing-context__s3__r1 (90)
+  pass · 4 turns · completed
+· rules-on-12__linked-packet-8__s1__r1 (91)
+  pass · 12 turns · hit the turn limit
+· rules-on-12__linked-packet-8__s2__r1 (92)
+  pass · 12 turns · hit the turn limit
+· rules-on-12__linked-packet-8__s3__r1 (93)
+  pass · 5 turns · completed
+· rules-on-12__linked-packet-11__s1__r1 (94)
+  pass · 6 turns · completed
+· rules-on-12__linked-packet-11__s2__r1 (95)
+  FAIL · 12 turns · hit the turn limit
+· rules-on-12__linked-packet-11__s3__r1 (96)
+  FAIL · 12 turns · hit the turn limit
+mecha exp `executable-validation-v1`: 96 trial(s) run this invocation

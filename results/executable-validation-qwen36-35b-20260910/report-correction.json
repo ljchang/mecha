@@ -1,0 +1,10 @@
+{
+  "reason": "The initial reporting code treated any nonempty rules_hash as exposure. RulesCarried::none() records the hash of an empty block, cbf29ce484222325. The corrected reader distinguishes empty, exposed and unknown.",
+  "original_failed_checks": {
+    "rule_exposure": 48
+  },
+  "model_trials_rerun": 0,
+  "execution_hashes_unchanged": true,
+  "corrected_report_valid": true,
+  "corrected_report_sha256": "bae0b73bea0500d444c5f0d68a60dc8b106fd5ccb38184d5f400081e9a0b12bc"
+}

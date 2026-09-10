@@ -231,3 +231,66 @@ fn attribution_fixture_keeps_transfer_answers_out_of_learning() {
         String::from_utf8_lossy(&result.stderr)
     );
 }
+
+#[test]
+fn executable_validation_freezes_real_tool_tasks_and_changes_only_the_cap() {
+    let manifest = Manifest::parse(include_str!("../../eval/executable-validation.toml")).unwrap();
+    let mut real = Config {
+        default_provider: "local".into(),
+        ..Default::default()
+    };
+    real.providers.insert(
+        "local".into(),
+        ProviderConfig {
+            kind: "local".into(),
+            ..Default::default()
+        },
+    );
+    for rules in ["on", "off"] {
+        let a =
+            child_invocation(&real, &manifest.arms[&format!("rules-{rules}-12")], Some(2)).unwrap();
+        let mut b =
+            child_invocation(&real, &manifest.arms[&format!("rules-{rules}-10")], Some(2)).unwrap();
+        assert_eq!(a.config.agent.max_turns, 12);
+        assert_eq!(b.config.agent.max_turns, 10);
+        assert_eq!(a.flags, b.flags);
+        b.config.agent.max_turns = 12;
+        assert_eq!(
+            serde_json::to_value(a.config).unwrap(),
+            serde_json::to_value(b.config).unwrap()
+        );
+    }
+    if support::unavailable("python3", support::python3_available()) {
+        return;
+    }
+    let listed = Command::new("python3")
+        .current_dir(root())
+        .args([
+            "-B",
+            "eval/fixtures/executable_validation_source.py",
+            "list",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        listed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    let tasks: Vec<SourceTask> = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(tasks.len(), 8);
+    for task in tasks {
+        assert_eq!(task.prompt, manifest.tasks.mismatch_cases[&task.id].prompt);
+        task.into_case().unwrap();
+    }
+    let tested = Command::new("python3")
+        .current_dir(root())
+        .args(["-B", "eval/fixtures/test_executable_validation.py"])
+        .output()
+        .unwrap();
+    assert!(
+        tested.status.success(),
+        "{}",
+        String::from_utf8_lossy(&tested.stderr)
+    );
+}

@@ -1,0 +1,2421 @@
+{
+  "report_sha256": "bae0b73bea0500d444c5f0d68a60dc8b106fd5ccb38184d5f400081e9a0b12bc",
+  "per_task": {
+    "schedule-coverage": {
+      "rules-off-10": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 0
+      },
+      "rules-off-12": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 0
+      },
+      "rules-on-10": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 0
+      },
+      "rules-on-12": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 0
+      }
+    },
+    "latest-evidence": {
+      "rules-off-10": {
+        "n": 3,
+        "passed": 1,
+        "artifact_passed": 1,
+        "cap_hits": 0
+      },
+      "rules-off-12": {
+        "n": 3,
+        "passed": 1,
+        "artifact_passed": 1,
+        "cap_hits": 0
+      },
+      "rules-on-10": {
+        "n": 3,
+        "passed": 0,
+        "artifact_passed": 0,
+        "cap_hits": 0
+      },
+      "rules-on-12": {
+        "n": 3,
+        "passed": 0,
+        "artifact_passed": 0,
+        "cap_hits": 0
+      }
+    },
+    "identity-binding": {
+      "rules-off-10": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 0
+      },
+      "rules-off-12": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 0
+      },
+      "rules-on-10": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 0
+      },
+      "rules-on-12": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 0
+      }
+    },
+    "poll-constraints": {
+      "rules-off-10": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 0
+      },
+      "rules-off-12": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 0
+      },
+      "rules-on-10": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 0
+      },
+      "rules-on-12": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 0
+      }
+    },
+    "preserve-settings": {
+      "rules-off-10": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 0
+      },
+      "rules-off-12": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 0
+      },
+      "rules-on-10": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 0
+      },
+      "rules-on-12": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 0
+      }
+    },
+    "missing-context": {
+      "rules-off-10": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 0
+      },
+      "rules-off-12": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 0
+      },
+      "rules-on-10": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 0
+      },
+      "rules-on-12": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 0
+      }
+    },
+    "linked-packet-8": {
+      "rules-off-10": {
+        "n": 3,
+        "passed": 1,
+        "artifact_passed": 1,
+        "cap_hits": 2
+      },
+      "rules-off-12": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 1
+      },
+      "rules-on-10": {
+        "n": 3,
+        "passed": 1,
+        "artifact_passed": 1,
+        "cap_hits": 2
+      },
+      "rules-on-12": {
+        "n": 3,
+        "passed": 3,
+        "artifact_passed": 3,
+        "cap_hits": 2
+      }
+    },
+    "linked-packet-11": {
+      "rules-off-10": {
+        "n": 3,
+        "passed": 1,
+        "artifact_passed": 1,
+        "cap_hits": 2
+      },
+      "rules-off-12": {
+        "n": 3,
+        "passed": 1,
+        "artifact_passed": 1,
+        "cap_hits": 2
+      },
+      "rules-on-10": {
+        "n": 3,
+        "passed": 1,
+        "artifact_passed": 1,
+        "cap_hits": 2
+      },
+      "rules-on-12": {
+        "n": 3,
+        "passed": 1,
+        "artifact_passed": 1,
+        "cap_hits": 2
+      }
+    }
+  },
+  "valid": true,
+  "complete": true,
+  "expected_trials": 96,
+  "arms": {
+    "rules-off-10": {
+      "n": 24,
+      "passed": 18,
+      "artifact_passed": 18,
+      "ungraded": 0,
+      "stops": {
+        "completed": 20,
+        "max_turns": 4
+      },
+      "turns": 134,
+      "calls": 178,
+      "output_tokens": 18702,
+      "input_tokens": 25753,
+      "cached_input_tokens": 547140,
+      "duration_secs": 261.785150234
+    },
+    "rules-off-12": {
+      "n": 24,
+      "passed": 20,
+      "artifact_passed": 20,
+      "ungraded": 0,
+      "stops": {
+        "completed": 21,
+        "max_turns": 3
+      },
+      "turns": 138,
+      "calls": 175,
+      "output_tokens": 19178,
+      "input_tokens": 22124,
+      "cached_input_tokens": 567347,
+      "duration_secs": 257.89980066
+    },
+    "rules-on-10": {
+      "n": 24,
+      "passed": 17,
+      "artifact_passed": 17,
+      "ungraded": 0,
+      "stops": {
+        "completed": 20,
+        "max_turns": 4
+      },
+      "turns": 131,
+      "calls": 172,
+      "output_tokens": 18119,
+      "input_tokens": 32001,
+      "cached_input_tokens": 575231,
+      "duration_secs": 261.979773926
+    },
+    "rules-on-12": {
+      "n": 24,
+      "passed": 19,
+      "artifact_passed": 19,
+      "ungraded": 0,
+      "stops": {
+        "completed": 20,
+        "max_turns": 4
+      },
+      "turns": 137,
+      "calls": 176,
+      "output_tokens": 19244,
+      "input_tokens": 32097,
+      "cached_input_tokens": 606226,
+      "duration_secs": 259.997303068
+    }
+  },
+  "comparisons": [
+    {
+      "control": "rules-on-12",
+      "treatment": "rules-on-10",
+      "paired": 24,
+      "missing_or_ungraded": 0,
+      "outcomes": {
+        "both_pass": 17,
+        "both_fail": 5,
+        "regressed": 2
+      },
+      "cost_on_both_pass": {
+        "turns": {
+          "n": 17,
+          "treatment_minus_control": 2
+        },
+        "tool_calls": {
+          "n": 17,
+          "treatment_minus_control": 4
+        },
+        "duration_secs": {
+          "n": 17,
+          "treatment_minus_control": 5.589160433000003
+        }
+      },
+      "pairs": [
+        {
+          "task": "identity-binding",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-on-12__identity-binding__s1__r1",
+          "treatment": "rules-on-10__identity-binding__s1__r1"
+        },
+        {
+          "task": "identity-binding",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-on-12__identity-binding__s2__r1",
+          "treatment": "rules-on-10__identity-binding__s2__r1"
+        },
+        {
+          "task": "identity-binding",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-on-12__identity-binding__s3__r1",
+          "treatment": "rules-on-10__identity-binding__s3__r1"
+        },
+        {
+          "task": "latest-evidence",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_fail",
+          "control": "rules-on-12__latest-evidence__s1__r1",
+          "treatment": "rules-on-10__latest-evidence__s1__r1"
+        },
+        {
+          "task": "latest-evidence",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_fail",
+          "control": "rules-on-12__latest-evidence__s2__r1",
+          "treatment": "rules-on-10__latest-evidence__s2__r1"
+        },
+        {
+          "task": "latest-evidence",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_fail",
+          "control": "rules-on-12__latest-evidence__s3__r1",
+          "treatment": "rules-on-10__latest-evidence__s3__r1"
+        },
+        {
+          "task": "linked-packet-11",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-on-12__linked-packet-11__s1__r1",
+          "treatment": "rules-on-10__linked-packet-11__s1__r1"
+        },
+        {
+          "task": "linked-packet-11",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_fail",
+          "control": "rules-on-12__linked-packet-11__s2__r1",
+          "treatment": "rules-on-10__linked-packet-11__s2__r1"
+        },
+        {
+          "task": "linked-packet-11",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_fail",
+          "control": "rules-on-12__linked-packet-11__s3__r1",
+          "treatment": "rules-on-10__linked-packet-11__s3__r1"
+        },
+        {
+          "task": "linked-packet-8",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "regressed",
+          "control": "rules-on-12__linked-packet-8__s1__r1",
+          "treatment": "rules-on-10__linked-packet-8__s1__r1"
+        },
+        {
+          "task": "linked-packet-8",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "regressed",
+          "control": "rules-on-12__linked-packet-8__s2__r1",
+          "treatment": "rules-on-10__linked-packet-8__s2__r1"
+        },
+        {
+          "task": "linked-packet-8",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-on-12__linked-packet-8__s3__r1",
+          "treatment": "rules-on-10__linked-packet-8__s3__r1"
+        },
+        {
+          "task": "missing-context",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-on-12__missing-context__s1__r1",
+          "treatment": "rules-on-10__missing-context__s1__r1"
+        },
+        {
+          "task": "missing-context",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-on-12__missing-context__s2__r1",
+          "treatment": "rules-on-10__missing-context__s2__r1"
+        },
+        {
+          "task": "missing-context",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-on-12__missing-context__s3__r1",
+          "treatment": "rules-on-10__missing-context__s3__r1"
+        },
+        {
+          "task": "poll-constraints",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-on-12__poll-constraints__s1__r1",
+          "treatment": "rules-on-10__poll-constraints__s1__r1"
+        },
+        {
+          "task": "poll-constraints",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-on-12__poll-constraints__s2__r1",
+          "treatment": "rules-on-10__poll-constraints__s2__r1"
+        },
+        {
+          "task": "poll-constraints",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-on-12__poll-constraints__s3__r1",
+          "treatment": "rules-on-10__poll-constraints__s3__r1"
+        },
+        {
+          "task": "preserve-settings",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-on-12__preserve-settings__s1__r1",
+          "treatment": "rules-on-10__preserve-settings__s1__r1"
+        },
+        {
+          "task": "preserve-settings",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-on-12__preserve-settings__s2__r1",
+          "treatment": "rules-on-10__preserve-settings__s2__r1"
+        },
+        {
+          "task": "preserve-settings",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-on-12__preserve-settings__s3__r1",
+          "treatment": "rules-on-10__preserve-settings__s3__r1"
+        },
+        {
+          "task": "schedule-coverage",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-on-12__schedule-coverage__s1__r1",
+          "treatment": "rules-on-10__schedule-coverage__s1__r1"
+        },
+        {
+          "task": "schedule-coverage",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-on-12__schedule-coverage__s2__r1",
+          "treatment": "rules-on-10__schedule-coverage__s2__r1"
+        },
+        {
+          "task": "schedule-coverage",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-on-12__schedule-coverage__s3__r1",
+          "treatment": "rules-on-10__schedule-coverage__s3__r1"
+        }
+      ]
+    },
+    {
+      "control": "rules-off-12",
+      "treatment": "rules-off-10",
+      "paired": 24,
+      "missing_or_ungraded": 0,
+      "outcomes": {
+        "both_pass": 18,
+        "both_fail": 4,
+        "regressed": 2
+      },
+      "cost_on_both_pass": {
+        "turns": {
+          "n": 18,
+          "treatment_minus_control": 3
+        },
+        "tool_calls": {
+          "n": 18,
+          "treatment_minus_control": 9
+        },
+        "duration_secs": {
+          "n": 18,
+          "treatment_minus_control": 10.722022864999996
+        }
+      },
+      "pairs": [
+        {
+          "task": "identity-binding",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__identity-binding__s1__r1",
+          "treatment": "rules-off-10__identity-binding__s1__r1"
+        },
+        {
+          "task": "identity-binding",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__identity-binding__s2__r1",
+          "treatment": "rules-off-10__identity-binding__s2__r1"
+        },
+        {
+          "task": "identity-binding",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__identity-binding__s3__r1",
+          "treatment": "rules-off-10__identity-binding__s3__r1"
+        },
+        {
+          "task": "latest-evidence",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_fail",
+          "control": "rules-off-12__latest-evidence__s1__r1",
+          "treatment": "rules-off-10__latest-evidence__s1__r1"
+        },
+        {
+          "task": "latest-evidence",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__latest-evidence__s2__r1",
+          "treatment": "rules-off-10__latest-evidence__s2__r1"
+        },
+        {
+          "task": "latest-evidence",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_fail",
+          "control": "rules-off-12__latest-evidence__s3__r1",
+          "treatment": "rules-off-10__latest-evidence__s3__r1"
+        },
+        {
+          "task": "linked-packet-11",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_fail",
+          "control": "rules-off-12__linked-packet-11__s1__r1",
+          "treatment": "rules-off-10__linked-packet-11__s1__r1"
+        },
+        {
+          "task": "linked-packet-11",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_fail",
+          "control": "rules-off-12__linked-packet-11__s2__r1",
+          "treatment": "rules-off-10__linked-packet-11__s2__r1"
+        },
+        {
+          "task": "linked-packet-11",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__linked-packet-11__s3__r1",
+          "treatment": "rules-off-10__linked-packet-11__s3__r1"
+        },
+        {
+          "task": "linked-packet-8",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "regressed",
+          "control": "rules-off-12__linked-packet-8__s1__r1",
+          "treatment": "rules-off-10__linked-packet-8__s1__r1"
+        },
+        {
+          "task": "linked-packet-8",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "regressed",
+          "control": "rules-off-12__linked-packet-8__s2__r1",
+          "treatment": "rules-off-10__linked-packet-8__s2__r1"
+        },
+        {
+          "task": "linked-packet-8",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__linked-packet-8__s3__r1",
+          "treatment": "rules-off-10__linked-packet-8__s3__r1"
+        },
+        {
+          "task": "missing-context",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__missing-context__s1__r1",
+          "treatment": "rules-off-10__missing-context__s1__r1"
+        },
+        {
+          "task": "missing-context",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__missing-context__s2__r1",
+          "treatment": "rules-off-10__missing-context__s2__r1"
+        },
+        {
+          "task": "missing-context",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__missing-context__s3__r1",
+          "treatment": "rules-off-10__missing-context__s3__r1"
+        },
+        {
+          "task": "poll-constraints",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__poll-constraints__s1__r1",
+          "treatment": "rules-off-10__poll-constraints__s1__r1"
+        },
+        {
+          "task": "poll-constraints",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__poll-constraints__s2__r1",
+          "treatment": "rules-off-10__poll-constraints__s2__r1"
+        },
+        {
+          "task": "poll-constraints",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__poll-constraints__s3__r1",
+          "treatment": "rules-off-10__poll-constraints__s3__r1"
+        },
+        {
+          "task": "preserve-settings",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__preserve-settings__s1__r1",
+          "treatment": "rules-off-10__preserve-settings__s1__r1"
+        },
+        {
+          "task": "preserve-settings",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__preserve-settings__s2__r1",
+          "treatment": "rules-off-10__preserve-settings__s2__r1"
+        },
+        {
+          "task": "preserve-settings",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__preserve-settings__s3__r1",
+          "treatment": "rules-off-10__preserve-settings__s3__r1"
+        },
+        {
+          "task": "schedule-coverage",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__schedule-coverage__s1__r1",
+          "treatment": "rules-off-10__schedule-coverage__s1__r1"
+        },
+        {
+          "task": "schedule-coverage",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__schedule-coverage__s2__r1",
+          "treatment": "rules-off-10__schedule-coverage__s2__r1"
+        },
+        {
+          "task": "schedule-coverage",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__schedule-coverage__s3__r1",
+          "treatment": "rules-off-10__schedule-coverage__s3__r1"
+        }
+      ]
+    },
+    {
+      "control": "rules-off-12",
+      "treatment": "rules-on-12",
+      "paired": 24,
+      "missing_or_ungraded": 0,
+      "outcomes": {
+        "both_pass": 18,
+        "both_fail": 3,
+        "regressed": 2,
+        "improved": 1
+      },
+      "cost_on_both_pass": {
+        "turns": {
+          "n": 18,
+          "treatment_minus_control": -3
+        },
+        "tool_calls": {
+          "n": 18,
+          "treatment_minus_control": -3
+        },
+        "duration_secs": {
+          "n": 18,
+          "treatment_minus_control": 1.5401246740000003
+        }
+      },
+      "pairs": [
+        {
+          "task": "identity-binding",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__identity-binding__s1__r1",
+          "treatment": "rules-on-12__identity-binding__s1__r1"
+        },
+        {
+          "task": "identity-binding",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__identity-binding__s2__r1",
+          "treatment": "rules-on-12__identity-binding__s2__r1"
+        },
+        {
+          "task": "identity-binding",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__identity-binding__s3__r1",
+          "treatment": "rules-on-12__identity-binding__s3__r1"
+        },
+        {
+          "task": "latest-evidence",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_fail",
+          "control": "rules-off-12__latest-evidence__s1__r1",
+          "treatment": "rules-on-12__latest-evidence__s1__r1"
+        },
+        {
+          "task": "latest-evidence",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "regressed",
+          "control": "rules-off-12__latest-evidence__s2__r1",
+          "treatment": "rules-on-12__latest-evidence__s2__r1"
+        },
+        {
+          "task": "latest-evidence",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_fail",
+          "control": "rules-off-12__latest-evidence__s3__r1",
+          "treatment": "rules-on-12__latest-evidence__s3__r1"
+        },
+        {
+          "task": "linked-packet-11",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "improved",
+          "control": "rules-off-12__linked-packet-11__s1__r1",
+          "treatment": "rules-on-12__linked-packet-11__s1__r1"
+        },
+        {
+          "task": "linked-packet-11",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_fail",
+          "control": "rules-off-12__linked-packet-11__s2__r1",
+          "treatment": "rules-on-12__linked-packet-11__s2__r1"
+        },
+        {
+          "task": "linked-packet-11",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "regressed",
+          "control": "rules-off-12__linked-packet-11__s3__r1",
+          "treatment": "rules-on-12__linked-packet-11__s3__r1"
+        },
+        {
+          "task": "linked-packet-8",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__linked-packet-8__s1__r1",
+          "treatment": "rules-on-12__linked-packet-8__s1__r1"
+        },
+        {
+          "task": "linked-packet-8",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__linked-packet-8__s2__r1",
+          "treatment": "rules-on-12__linked-packet-8__s2__r1"
+        },
+        {
+          "task": "linked-packet-8",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__linked-packet-8__s3__r1",
+          "treatment": "rules-on-12__linked-packet-8__s3__r1"
+        },
+        {
+          "task": "missing-context",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__missing-context__s1__r1",
+          "treatment": "rules-on-12__missing-context__s1__r1"
+        },
+        {
+          "task": "missing-context",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__missing-context__s2__r1",
+          "treatment": "rules-on-12__missing-context__s2__r1"
+        },
+        {
+          "task": "missing-context",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__missing-context__s3__r1",
+          "treatment": "rules-on-12__missing-context__s3__r1"
+        },
+        {
+          "task": "poll-constraints",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__poll-constraints__s1__r1",
+          "treatment": "rules-on-12__poll-constraints__s1__r1"
+        },
+        {
+          "task": "poll-constraints",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__poll-constraints__s2__r1",
+          "treatment": "rules-on-12__poll-constraints__s2__r1"
+        },
+        {
+          "task": "poll-constraints",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__poll-constraints__s3__r1",
+          "treatment": "rules-on-12__poll-constraints__s3__r1"
+        },
+        {
+          "task": "preserve-settings",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__preserve-settings__s1__r1",
+          "treatment": "rules-on-12__preserve-settings__s1__r1"
+        },
+        {
+          "task": "preserve-settings",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__preserve-settings__s2__r1",
+          "treatment": "rules-on-12__preserve-settings__s2__r1"
+        },
+        {
+          "task": "preserve-settings",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__preserve-settings__s3__r1",
+          "treatment": "rules-on-12__preserve-settings__s3__r1"
+        },
+        {
+          "task": "schedule-coverage",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__schedule-coverage__s1__r1",
+          "treatment": "rules-on-12__schedule-coverage__s1__r1"
+        },
+        {
+          "task": "schedule-coverage",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__schedule-coverage__s2__r1",
+          "treatment": "rules-on-12__schedule-coverage__s2__r1"
+        },
+        {
+          "task": "schedule-coverage",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-12__schedule-coverage__s3__r1",
+          "treatment": "rules-on-12__schedule-coverage__s3__r1"
+        }
+      ]
+    },
+    {
+      "control": "rules-off-10",
+      "treatment": "rules-on-10",
+      "paired": 24,
+      "missing_or_ungraded": 0,
+      "outcomes": {
+        "both_pass": 16,
+        "both_fail": 5,
+        "regressed": 2,
+        "improved": 1
+      },
+      "cost_on_both_pass": {
+        "turns": {
+          "n": 16,
+          "treatment_minus_control": -3
+        },
+        "tool_calls": {
+          "n": 16,
+          "treatment_minus_control": -7
+        },
+        "duration_secs": {
+          "n": 16,
+          "treatment_minus_control": -2.248713632999994
+        }
+      },
+      "pairs": [
+        {
+          "task": "identity-binding",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-10__identity-binding__s1__r1",
+          "treatment": "rules-on-10__identity-binding__s1__r1"
+        },
+        {
+          "task": "identity-binding",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-10__identity-binding__s2__r1",
+          "treatment": "rules-on-10__identity-binding__s2__r1"
+        },
+        {
+          "task": "identity-binding",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-10__identity-binding__s3__r1",
+          "treatment": "rules-on-10__identity-binding__s3__r1"
+        },
+        {
+          "task": "latest-evidence",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_fail",
+          "control": "rules-off-10__latest-evidence__s1__r1",
+          "treatment": "rules-on-10__latest-evidence__s1__r1"
+        },
+        {
+          "task": "latest-evidence",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "regressed",
+          "control": "rules-off-10__latest-evidence__s2__r1",
+          "treatment": "rules-on-10__latest-evidence__s2__r1"
+        },
+        {
+          "task": "latest-evidence",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_fail",
+          "control": "rules-off-10__latest-evidence__s3__r1",
+          "treatment": "rules-on-10__latest-evidence__s3__r1"
+        },
+        {
+          "task": "linked-packet-11",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "improved",
+          "control": "rules-off-10__linked-packet-11__s1__r1",
+          "treatment": "rules-on-10__linked-packet-11__s1__r1"
+        },
+        {
+          "task": "linked-packet-11",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_fail",
+          "control": "rules-off-10__linked-packet-11__s2__r1",
+          "treatment": "rules-on-10__linked-packet-11__s2__r1"
+        },
+        {
+          "task": "linked-packet-11",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "regressed",
+          "control": "rules-off-10__linked-packet-11__s3__r1",
+          "treatment": "rules-on-10__linked-packet-11__s3__r1"
+        },
+        {
+          "task": "linked-packet-8",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_fail",
+          "control": "rules-off-10__linked-packet-8__s1__r1",
+          "treatment": "rules-on-10__linked-packet-8__s1__r1"
+        },
+        {
+          "task": "linked-packet-8",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_fail",
+          "control": "rules-off-10__linked-packet-8__s2__r1",
+          "treatment": "rules-on-10__linked-packet-8__s2__r1"
+        },
+        {
+          "task": "linked-packet-8",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-10__linked-packet-8__s3__r1",
+          "treatment": "rules-on-10__linked-packet-8__s3__r1"
+        },
+        {
+          "task": "missing-context",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-10__missing-context__s1__r1",
+          "treatment": "rules-on-10__missing-context__s1__r1"
+        },
+        {
+          "task": "missing-context",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-10__missing-context__s2__r1",
+          "treatment": "rules-on-10__missing-context__s2__r1"
+        },
+        {
+          "task": "missing-context",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-10__missing-context__s3__r1",
+          "treatment": "rules-on-10__missing-context__s3__r1"
+        },
+        {
+          "task": "poll-constraints",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-10__poll-constraints__s1__r1",
+          "treatment": "rules-on-10__poll-constraints__s1__r1"
+        },
+        {
+          "task": "poll-constraints",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-10__poll-constraints__s2__r1",
+          "treatment": "rules-on-10__poll-constraints__s2__r1"
+        },
+        {
+          "task": "poll-constraints",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-10__poll-constraints__s3__r1",
+          "treatment": "rules-on-10__poll-constraints__s3__r1"
+        },
+        {
+          "task": "preserve-settings",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-10__preserve-settings__s1__r1",
+          "treatment": "rules-on-10__preserve-settings__s1__r1"
+        },
+        {
+          "task": "preserve-settings",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-10__preserve-settings__s2__r1",
+          "treatment": "rules-on-10__preserve-settings__s2__r1"
+        },
+        {
+          "task": "preserve-settings",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-10__preserve-settings__s3__r1",
+          "treatment": "rules-on-10__preserve-settings__s3__r1"
+        },
+        {
+          "task": "schedule-coverage",
+          "seed": 1,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-10__schedule-coverage__s1__r1",
+          "treatment": "rules-on-10__schedule-coverage__s1__r1"
+        },
+        {
+          "task": "schedule-coverage",
+          "seed": 2,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-10__schedule-coverage__s2__r1",
+          "treatment": "rules-on-10__schedule-coverage__s2__r1"
+        },
+        {
+          "task": "schedule-coverage",
+          "seed": 3,
+          "repetition": 1,
+          "outcome": "both_pass",
+          "control": "rules-off-10__schedule-coverage__s3__r1",
+          "treatment": "rules-on-10__schedule-coverage__s3__r1"
+        }
+      ]
+    }
+  ],
+  "exposure_audit": [
+    {
+      "trial": "rules-off-10__identity-binding__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__identity-binding__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__identity-binding__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__latest-evidence__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__latest-evidence__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__latest-evidence__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__linked-packet-11__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__linked-packet-11__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__linked-packet-11__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__linked-packet-8__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__linked-packet-8__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__linked-packet-8__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__missing-context__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__missing-context__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__missing-context__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__poll-constraints__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__poll-constraints__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__poll-constraints__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__preserve-settings__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__preserve-settings__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__preserve-settings__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__schedule-coverage__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__schedule-coverage__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-10__schedule-coverage__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__identity-binding__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__identity-binding__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__identity-binding__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__latest-evidence__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__latest-evidence__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__latest-evidence__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__linked-packet-11__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__linked-packet-11__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__linked-packet-11__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__linked-packet-8__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__linked-packet-8__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__linked-packet-8__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__missing-context__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__missing-context__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__missing-context__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__poll-constraints__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__poll-constraints__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__poll-constraints__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__preserve-settings__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__preserve-settings__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__preserve-settings__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__schedule-coverage__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__schedule-coverage__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-off-12__schedule-coverage__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "cbf29ce484222325"
+    },
+    {
+      "trial": "rules-on-10__identity-binding__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__identity-binding__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__identity-binding__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__latest-evidence__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__latest-evidence__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__latest-evidence__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__linked-packet-11__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__linked-packet-11__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__linked-packet-11__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__linked-packet-8__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__linked-packet-8__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__linked-packet-8__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__missing-context__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__missing-context__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__missing-context__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__poll-constraints__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__poll-constraints__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__poll-constraints__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__preserve-settings__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__preserve-settings__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__preserve-settings__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__schedule-coverage__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__schedule-coverage__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-10__schedule-coverage__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__identity-binding__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__identity-binding__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__identity-binding__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__latest-evidence__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__latest-evidence__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__latest-evidence__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__linked-packet-11__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__linked-packet-11__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__linked-packet-11__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__linked-packet-8__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__linked-packet-8__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__linked-packet-8__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__missing-context__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__missing-context__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__missing-context__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__poll-constraints__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__poll-constraints__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__poll-constraints__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__preserve-settings__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__preserve-settings__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__preserve-settings__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__schedule-coverage__s1__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__schedule-coverage__s2__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    },
+    {
+      "trial": "rules-on-12__schedule-coverage__s3__r1",
+      "checks": {
+        "one_config": true,
+        "tools": true,
+        "cap": true,
+        "seed": true,
+        "rule_exposure": true,
+        "rule_lever": true,
+        "model": true
+      },
+      "rules_hash": "39a27bbb5ef07c9e"
+    }
+  ],
+  "proposal": {
+    "id": "hc-20260910T034920-40f9",
+    "change": "max_turns=10",
+    "class": "config",
+    "status": "staged"
+  },
+  "promotion": "disabled: synthetic corrective-task pilot; native judgements are descriptive",
+  "historical_followups": "not reconstructed: tasks start from registered incorrect artifacts",
+  "grouping": "three seeds per task are repeats, not three independent task families; no held-out task-family claim"
+}

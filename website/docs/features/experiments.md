@@ -262,6 +262,40 @@ mecha exp new eval/dojo-workspace.toml
 mecha exp run dojo-workspace
 ```
 
+## Executable correction pilot
+
+Recorded replay returns saved tool results. To measure whether a changed harness
+actually completes work, `eval/executable-validation.toml` instead runs real file
+tools on eight registered corrective tasks. Each trial starts in a fresh workspace
+with an incorrect output artifact. Independent JSON and preserved-input checks
+accept any correct tool sequence.
+
+From a source checkout with Python 3.11 or later and a built binary:
+
+```bash
+python3 scripts/executable-validation.py --out /tmp/executable-pilot
+```
+
+The registered design uses the local `qwen3.6-35b-a3b` server, three seeds and four
+arms: frozen learned rules off/on crossed with turn limits 12/10. The script checks
+that the configured limit is 12 before calling it the control. These are model-turn
+limits, not counts of individual tool calls; a turn may contain several calls.
+`--binary`, `--config` and `--rules` choose the runtime and snapshot inputs.
+`--candidate /path/to/candidate.json` ties the report to a staged `max_turns=10`
+proposal without changing that proposal.
+
+The output directory contains the native experiment, transcripts, resulting files,
+input/runtime hashes and a paired scorecard. It also contains a private snapshot
+of the operator's rules and config. A cheaper unfinished task counts as a
+regression; cost differences are also reported for pairs that both completed.
+No learning stages run and no override is installed.
+
+This is a synthetic pilot of corrective task execution. It starts from known
+incorrect artifacts, not reconstructed historical conversations. It does not test
+live-service effects or the process that learned the frozen rules. Repeated seeds
+are repeats of the same tasks, not unseen task families; the native gate's
+selection/holdout split is not evidence of transfer to different work.
+
 ## Fixture servers
 
 A manifest may carry a `[fixtures]` table naming MCP servers the trial home

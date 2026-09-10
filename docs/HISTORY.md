@@ -14,6 +14,22 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-10 — executable corrective-task pilot completed with real tools.**
+The existing native experiment runner drove 96 trials over eight synthetic tasks,
+three seeds, frozen rules off/on and max-turn limits 12/10. Every arm started from
+the same registered incorrect artifact in a fresh workspace, and the independent
+oracle read real output files and preserved inputs without prescribing a tool trace.
+The cap comparison favored retaining 12: 19/24 versus 17/24 with rules, 20/24 versus
+18/24 without them; each comparison lost two outcomes and gained none at 10.
+Both-passing pairs also used more calls and turns at 10. Frozen rules produced one
+improvement and two regressions at each cap, not a demonstrated learning benefit.
+Execution hashes stayed fixed. A reporting-only empty-rule-hash correction reran
+no trials. Build, formatting, Clippy and required-backend tests passed (2,626 passed,
+zero failed, three ignored). The native CI fixture test also runs the four Python
+oracle/report checks. No production state changed. See
+[the scorecard](../results/executable-validation-qwen36-35b-20260910/README.md) for
+conditions, task-level results, private-snapshot boundaries and remaining limits.
+
 **2026-09-10 — nightly measurement and gossip grounding, implemented in an
 isolated worktree; not deployed.** `followup_branch` and
 `probe::drive_continuation` retain the correction, restore recorded tools and
@@ -5708,6 +5724,14 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+**A hash can record an empty intervention.** The executable pilot's first exposure
+analyzer treated any nonempty `rules_hash` string as loaded rules. `RulesCarried::none`
+records the hash of the empty block, so it falsely flagged all 48 rules-off trials.
+The corrected reader distinguishes empty, exposed and unknown; original execution
+inputs/results were unchanged and the old audit is retained. Validate metadata's
+meaning against the producer before using presence as proof that an intervention ran.
+
 
 
 **Test the prompt's contract alongside the artifact oracle.** The harder appraisal

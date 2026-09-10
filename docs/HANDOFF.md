@@ -22,6 +22,25 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-10 — executable correction pilot complete, no deployment.**
+`eval/executable-validation.toml` and `scripts/executable-validation.py` ran 96 real
+file-tool trials from reset initial artifacts: eight tasks, three seeds, frozen
+rules off/on and turn limits 12/10. Keep 12 on this evidence: with rules, passes
+were 19/24 versus 17/24; without rules, 20/24 versus 18/24. Lowering the cap caused
+two paired regressions and no gains in each comparison. Both-passing pairs used
+more calls/turns at 10. Rules had mixed effects (one improvement, two regressions
+at either cap), with no individual-rule attribution. Full method, limits and
+checks: [pilot scorecard](../results/executable-validation-qwen36-35b-20260910/README.md).
+Required-backend workspace tests passed 2,626, with zero failures and three ignored;
+formatting, all-target build and Clippy passed. The initial exposure analyzer
+misread the empty rules hash; its reporting-only correction reran no model trials.
+
+**Remaining:** historical followups still need registered starting-state/outcome
+contracts before executable validation can replace trace agreement. This pilot's
+synthetic file tasks do not establish representative coverage, live-service
+correctness or held-out task-family transfer. The staged cap proposal was referenced
+by the scorecard, not applied. Controlled gossip round comparisons remain open.
+
 **2026-09-10 — nightly measurement fixes on `fix/nightly-measurement-grounding`,
 not installed.** Validation now restores recorded tools for followups and records
 attempt identities/reasons; unchanged inputs are deferred before coverage selection.
@@ -3848,7 +3867,9 @@ is true now:
 - **Clean the harness corpus before judging tool budgets.** Explicit test sessions
   are excluded; historical unmarked smoke recordings still need defensible corpus
   classification. Unsupported effort and incomplete tails are now rejected, but
-  neither fix supplies representative pairs or holdout power.
+  neither fix supplies representative pairs or holdout power. The executable
+  correction pilot now supplies a first artifact-graded comparison (see the
+  scorecard above), but synthetic seed repeats do not close the coverage gap.
 - **A steer pass is call-for-call.** Tracking the whole steered continuation
   under sampling biases toward `Fail`/`Fail`; both arms share the bias so
   the ledger's comparisons stand, but if improved/regressed stay rare
