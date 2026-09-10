@@ -1,0 +1,308 @@
+{
+  "elapsed_seconds": 147.145939819,
+  "exchange": {
+    "entity": "Mara Vale",
+    "rounds": [
+      {
+        "abstained": [],
+        "answered": [
+          [
+            "slack",
+            "CLAIM: Mara Vale coordinates the Harbor project, and its handoff remains pending the Lantern review. | EPISODE: complement-1 | QUOTE: \"Mara Vale coordinates the Harbor project. The handoff depends on the Lantern review.\""
+          ],
+          [
+            "bee",
+            "CLAIM: Mara Vale agreed to lead the Lantern review. | EPISODE: complement-2 | QUOTE: \"Mara Vale agreed to lead the Lantern review.\"\nCLAIM: The Lantern review requires the Cedar inventory. | EPISODE: complement-2 | QUOTE: \"The review needs the Cedar inventory.\"\nCLAIM: Mara Vale cannot authorize the Harbor handoff. | EPISODE: complement-4 | QUOTE: \"Mara Vale cannot authorize the Harbor handoff\""
+          ]
+        ],
+        "asked": [
+          [
+            "slack",
+            "What should I know about Mara Vale's responsibilities and unresolved commitments?"
+          ],
+          [
+            "bee",
+            "What should I know about Mara Vale's responsibilities and unresolved commitments?"
+          ]
+        ],
+        "evidence": [
+          [
+            "slack",
+            [
+              {
+                "id": "complement-1",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "Mara Vale coordinates the Harbor project. The handoff depends on the Lantern review."
+              },
+              {
+                "id": "complement-3",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "Mara Vale finished the Cedar inventory and stored it with the operations team."
+              }
+            ]
+          ],
+          [
+            "bee",
+            [
+              {
+                "id": "complement-2",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "Mara Vale agreed to lead the Lantern review. The review needs the Cedar inventory."
+              },
+              {
+                "id": "complement-4",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "Mara Vale cannot authorize the Harbor handoff; the director must approve it."
+              }
+            ]
+          ]
+        ],
+        "grounded": [
+          {
+            "episode_id": "complement-1",
+            "occurred_at": "2026-09-01",
+            "quote": "Mara Vale coordinates the Harbor project. The handoff depends on the Lantern review.",
+            "reader": "slack",
+            "round": 1,
+            "source": "slack",
+            "statement": "Mara Vale coordinates the Harbor project, and its handoff remains pending the Lantern review."
+          },
+          {
+            "episode_id": "complement-2",
+            "occurred_at": "2026-09-01",
+            "quote": "Mara Vale agreed to lead the Lantern review.",
+            "reader": "bee",
+            "round": 1,
+            "source": "bee",
+            "statement": "Mara Vale agreed to lead the Lantern review."
+          },
+          {
+            "episode_id": "complement-2",
+            "occurred_at": "2026-09-01",
+            "quote": "The review needs the Cedar inventory.",
+            "reader": "bee",
+            "round": 1,
+            "source": "bee",
+            "statement": "The Lantern review requires the Cedar inventory."
+          },
+          {
+            "episode_id": "complement-4",
+            "occurred_at": "2026-09-01",
+            "quote": "Mara Vale cannot authorize the Harbor handoff",
+            "reader": "bee",
+            "round": 1,
+            "source": "bee",
+            "statement": "Mara Vale cannot authorize the Harbor handoff."
+          }
+        ],
+        "n": 1,
+        "ungrounded": []
+      },
+      {
+        "abstained": [
+          "slack"
+        ],
+        "answered": [
+          [
+            "slack",
+            "UNKNOWN: no evidence in my retrieved sources."
+          ],
+          [
+            "bee",
+            "CLAIM: Mara Vale cannot authorize the Harbor handoff because the director must approve it | EPISODE: complement-4 | QUOTE: Mara Vale cannot authorize the Harbor handoff; the director must approve it."
+          ]
+        ],
+        "asked": [
+          [
+            "slack",
+            "What authority or reporting relationship prevents Mara Vale from authorizing the Harbor handoff despite her role coordinating the project?"
+          ],
+          [
+            "bee",
+            "What reason does your source provide for Mara Vale being unable to authorize the Harbor handoff?"
+          ]
+        ],
+        "evidence": [
+          [
+            "slack",
+            [
+              {
+                "id": "complement-1",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "Mara Vale coordinates the Harbor project. The handoff depends on the Lantern review."
+              },
+              {
+                "id": "complement-3",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "Mara Vale finished the Cedar inventory and stored it with the operations team."
+              },
+              {
+                "id": "complement-5",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "Mara Vale will deliver the Juniper checklist after the Lantern review."
+              }
+            ]
+          ],
+          [
+            "bee",
+            [
+              {
+                "id": "complement-4",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "Mara Vale cannot authorize the Harbor handoff; the director must approve it."
+              },
+              {
+                "id": "complement-2",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "Mara Vale agreed to lead the Lantern review. The review needs the Cedar inventory."
+              }
+            ]
+          ]
+        ],
+        "grounded": [
+          {
+            "episode_id": "complement-4",
+            "occurred_at": "2026-09-01",
+            "quote": "Mara Vale cannot authorize the Harbor handoff; the director must approve it.",
+            "reader": "bee",
+            "round": 2,
+            "source": "bee",
+            "statement": "Mara Vale cannot authorize the Harbor handoff because the director must approve it"
+          }
+        ],
+        "n": 2,
+        "ungrounded": []
+      },
+      {
+        "abstained": [
+          "slack"
+        ],
+        "answered": [
+          [
+            "slack",
+            "UNKNOWN: no evidence in my retrieved sources."
+          ],
+          [
+            "bee",
+            "CLAIM: Mara Vale lacks the authority to authorize the Harbor handoff, which requires the director's approval. | EPISODE: complement-4 | QUOTE: Mara Vale cannot authorize the Harbor handoff; the director must approve it."
+          ]
+        ],
+        "asked": [
+          [
+            "slack",
+            "What specific role or professional commitment does Mara Vale hold in relation to the director that necessitates their approval for the Harbor handoff?"
+          ],
+          [
+            "bee",
+            "What do your sources show about the professional relationship and approval commitment between Mara Vale and the director concerning the Harbor handoff?"
+          ]
+        ],
+        "evidence": [
+          [
+            "slack",
+            [
+              {
+                "id": "complement-1",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "Mara Vale coordinates the Harbor project. The handoff depends on the Lantern review."
+              },
+              {
+                "id": "complement-3",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "Mara Vale finished the Cedar inventory and stored it with the operations team."
+              }
+            ]
+          ],
+          [
+            "bee",
+            [
+              {
+                "id": "complement-4",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "Mara Vale cannot authorize the Harbor handoff; the director must approve it."
+              },
+              {
+                "id": "complement-2",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "Mara Vale agreed to lead the Lantern review. The review needs the Cedar inventory."
+              }
+            ]
+          ]
+        ],
+        "grounded": [
+          {
+            "episode_id": "complement-4",
+            "occurred_at": "2026-09-01",
+            "quote": "Mara Vale cannot authorize the Harbor handoff; the director must approve it.",
+            "reader": "bee",
+            "round": 3,
+            "source": "bee",
+            "statement": "Mara Vale lacks the authority to authorize the Harbor handoff, which requires the director's approval."
+          }
+        ],
+        "n": 3,
+        "ungrounded": []
+      }
+    ],
+    "vantages": [
+      {
+        "label": "slack",
+        "sources": [
+          "slack"
+        ]
+      },
+      {
+        "label": "bee",
+        "sources": [
+          "bee"
+        ]
+      }
+    ]
+  },
+  "round_yield": [
+    {
+      "abstentions": 0,
+      "grounded_claims": 4,
+      "new_grounded_claims": 4,
+      "repeated_claims": 0,
+      "retrieved_episodes": 4,
+      "round": 1,
+      "stalled_questions": 0,
+      "ungrounded_answers": 0
+    },
+    {
+      "abstentions": 1,
+      "grounded_claims": 1,
+      "new_grounded_claims": 1,
+      "repeated_claims": 0,
+      "retrieved_episodes": 5,
+      "round": 2,
+      "stalled_questions": 0,
+      "ungrounded_answers": 0
+    },
+    {
+      "abstentions": 1,
+      "grounded_claims": 1,
+      "new_grounded_claims": 1,
+      "repeated_claims": 0,
+      "retrieved_episodes": 4,
+      "round": 3,
+      "stalled_questions": 0,
+      "ungrounded_answers": 0
+    }
+  ],
+  "status": "complete"
+}

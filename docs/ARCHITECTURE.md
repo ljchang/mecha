@@ -2767,6 +2767,24 @@ set `probe: true` so measurement traffic does not teach target selection to choo
 itself. Malformed pending reads and failed verdict writes must remain visible;
 a failed filing is not an adjudicated item.
 
+The experimental `FollowupMode::OwnEvidence` control keeps each question generator
+on its reader's own cited answer, with a matching self-followup prompt and question
+routing. `asker` and `exchange` keep selecting `Peer`. A control that removes peer
+evidence while still demanding questions about a different source measures prompt
+confusion alongside information sharing. Compare equal allocated request ceilings
+and report actual consumption; additional rounds may spend more tokens without
+finding a new supported fact. The synthetic runner audits claim IDs directly, but
+this does not repair production `audit`'s free-text origin matching or establish
+semantic accuracy on the live graph.
+
+Pending-claim adjudication is a separate origin-fidelity test: `vet_question`
+receives a candidate and its original evidence, not the gossip exchange. For a
+fixed candidate, extra exploration rounds do not alter that prompt. Keep generated
+peer assertions out of this judge; they would change whether the origin supported
+a claim into whether another model can make it sound plausible. Entity-targeted
+queue work can share selection with exploration without having to pay its model
+budget or consume its prose.
+
 ### Harness rumination
 
 `mecha harness ruminate` (`commands/harness.rs`, nightly from `ruminate.sh`)

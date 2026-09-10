@@ -351,3 +351,16 @@ releasing drafts to the cast and closing each case's task by its grade:
 mecha exp new eval/home-lifetime.toml
 mecha exp run home-loop
 ```
+
+### Gossip follow-up comparison
+
+The developer fixture in `eval/fixtures/gossip/` compares ordinary peer questions
+with follow-ups generated from each reader's own evidence. Build the native actor
+with `cargo build -p mecha-core --example gossip_compare`, then run
+`python3 scripts/gossip-comparison.py --out /tmp/new-gossip-comparison`.
+
+Both conditions have the same request ceilings. Actual calls and tokens are
+recorded, and an explicit citation audit supplies supported/contradicted labels
+before scoring. The sources are synthetic and frozen; this experiment does not
+file graph verdicts or change the ordinary `mecha gossip` behavior. Its README
+specifies the local model requirements, audit format and limits of the comparison.

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A reproducible gossip comparison using real fixture searches, peer versus own-evidence followups, equal request ceilings and an explicit claim audit. Ordinary gossip behavior is unchanged.
+
 - A reproducible executable correction pilot compares frozen rules and turn budgets using real file tools, independent artifact checks and paired task-success reports.
 
 - Validation attempt receipts and `mecha validate --repeat`; unchanged inputs are deferred while transient failures and regression confirmations remain eligible.

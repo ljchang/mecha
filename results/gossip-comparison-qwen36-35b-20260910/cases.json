@@ -1,0 +1,306 @@
+[
+  {
+    "id": "complement",
+    "entity": {
+      "id": "person:complement",
+      "name": "Mara Vale",
+      "aliases": []
+    },
+    "question": "What should I know about Mara Vale's responsibilities and unresolved commitments?",
+    "episodes": [
+      {
+        "id": "complement-1",
+        "kind": "episode",
+        "source": "slack",
+        "occurred_at": "2026-09-01",
+        "text": "Mara Vale coordinates the Harbor project. The handoff depends on the Lantern review."
+      },
+      {
+        "id": "complement-2",
+        "kind": "episode",
+        "source": "bee",
+        "occurred_at": "2026-09-01",
+        "text": "Mara Vale agreed to lead the Lantern review. The review needs the Cedar inventory."
+      },
+      {
+        "id": "complement-3",
+        "kind": "episode",
+        "source": "slack",
+        "occurred_at": "2026-09-01",
+        "text": "Mara Vale finished the Cedar inventory and stored it with the operations team."
+      },
+      {
+        "id": "complement-4",
+        "kind": "episode",
+        "source": "bee",
+        "occurred_at": "2026-09-01",
+        "text": "Mara Vale cannot authorize the Harbor handoff; the director must approve it."
+      },
+      {
+        "id": "complement-5",
+        "kind": "episode",
+        "source": "slack",
+        "occurred_at": "2026-09-01",
+        "text": "Mara Vale will deliver the Juniper checklist after the Lantern review."
+      },
+      {
+        "id": "complement-6",
+        "kind": "episode",
+        "source": "bee",
+        "occurred_at": "2026-09-01",
+        "text": "Mara Vale delegated the Juniper checklist formatting to Oren Pike, retaining responsibility for its contents."
+      }
+    ],
+    "gold": [
+      {
+        "id": "complement-1",
+        "statement": "Mara Vale coordinates Harbor; its handoff depends on the Lantern review."
+      },
+      {
+        "id": "complement-2",
+        "statement": "Mara Vale leads the Lantern review, which needs the Cedar inventory."
+      },
+      {
+        "id": "complement-3",
+        "statement": "Mara Vale finished the Cedar inventory and stored it with operations."
+      },
+      {
+        "id": "complement-4",
+        "statement": "Mara Vale cannot authorize the Harbor handoff; the director must approve."
+      },
+      {
+        "id": "complement-5",
+        "statement": "Mara Vale committed to deliver the Juniper checklist after the Lantern review."
+      },
+      {
+        "id": "complement-6",
+        "statement": "Mara Vale delegated Juniper formatting to Oren Pike but retains content responsibility."
+      }
+    ]
+  },
+  {
+    "id": "conflict",
+    "entity": {
+      "id": "person:conflict",
+      "name": "Tessa Rowan",
+      "aliases": []
+    },
+    "question": "What should I know about Tessa Rowan's current responsibilities and commitments?",
+    "episodes": [
+      {
+        "id": "conflict-1",
+        "kind": "episode",
+        "source": "slack",
+        "occurred_at": "2026-09-01",
+        "text": "The September 1 written roster assigns Tessa Rowan as the sole owner of the Atlas release."
+      },
+      {
+        "id": "conflict-2",
+        "kind": "episode",
+        "source": "bee",
+        "occurred_at": "2026-09-01",
+        "text": "In the September 1 recorded meeting, Tessa Rowan explicitly declined ownership of the Atlas release."
+      },
+      {
+        "id": "conflict-3",
+        "kind": "episode",
+        "source": "slack",
+        "occurred_at": "2026-09-01",
+        "text": "Tessa Rowan is listed as attending the Beacon review, with a tentative invitation rather than confirmed attendance."
+      },
+      {
+        "id": "conflict-4",
+        "kind": "episode",
+        "source": "bee",
+        "occurred_at": "2026-09-01",
+        "text": "Tessa Rowan said the Beacon review invitation was tentative and she had not accepted it."
+      },
+      {
+        "id": "conflict-5",
+        "kind": "episode",
+        "source": "slack",
+        "occurred_at": "2026-09-01",
+        "text": "Tessa Rowan's Quartz budget request remains awaiting finance approval."
+      },
+      {
+        "id": "conflict-6",
+        "kind": "episode",
+        "source": "bee",
+        "occurred_at": "2026-09-01",
+        "text": "Tessa Rowan said she would not spend the Quartz budget before finance approval."
+      }
+    ],
+    "gold": [
+      {
+        "id": "conflict-1",
+        "statement": "The September 1 written roster names Tessa Rowan sole Atlas release owner."
+      },
+      {
+        "id": "conflict-2",
+        "statement": "Tessa Rowan declined Atlas ownership in the September 1 recording; sources conflict."
+      },
+      {
+        "id": "conflict-3",
+        "statement": "Tessa Rowan has a tentative Beacon invitation, not confirmed attendance."
+      },
+      {
+        "id": "conflict-4",
+        "statement": "Tessa Rowan had not accepted the tentative Beacon invitation."
+      },
+      {
+        "id": "conflict-5",
+        "statement": "Tessa Rowan's Quartz budget request awaits finance approval."
+      },
+      {
+        "id": "conflict-6",
+        "statement": "Tessa Rowan committed not to spend Quartz funds before finance approval."
+      }
+    ]
+  },
+  {
+    "id": "temporal",
+    "entity": {
+      "id": "person:temporal",
+      "name": "Ivo Sen",
+      "aliases": []
+    },
+    "question": "What should I know about Ivo Sen's current role and commitments, distinguishing earlier plans from later outcomes?",
+    "episodes": [
+      {
+        "id": "temporal-1",
+        "kind": "episode",
+        "source": "slack",
+        "occurred_at": "2026-09-01",
+        "text": "On August 1, Ivo Sen planned to chair the Birch group for the autumn term."
+      },
+      {
+        "id": "temporal-2",
+        "kind": "episode",
+        "source": "bee",
+        "occurred_at": "2026-09-01",
+        "text": "On August 20, Ivo Sen withdrew from the Birch chair role; Nell Arco accepted the chair instead."
+      },
+      {
+        "id": "temporal-3",
+        "kind": "episode",
+        "source": "slack",
+        "occurred_at": "2026-09-01",
+        "text": "Ivo Sen promised on August 5 to deliver the Maple report by August 25."
+      },
+      {
+        "id": "temporal-4",
+        "kind": "episode",
+        "source": "bee",
+        "occurred_at": "2026-09-01",
+        "text": "Ivo Sen confirmed on August 24 that he delivered the Maple report to the archive that morning."
+      },
+      {
+        "id": "temporal-5",
+        "kind": "episode",
+        "source": "slack",
+        "occurred_at": "2026-09-01",
+        "text": "Ivo Sen reserved a room for the September 15 Oak workshop; the reservation does not show that the workshop occurred."
+      },
+      {
+        "id": "temporal-6",
+        "kind": "episode",
+        "source": "bee",
+        "occurred_at": "2026-09-01",
+        "text": "Ivo Sen said the Oak workshop still depends on enough registrations and could be cancelled."
+      }
+    ],
+    "gold": [
+      {
+        "id": "temporal-1",
+        "statement": "On August 1 Ivo Sen planned to chair Birch; this was a plan, not current confirmation."
+      },
+      {
+        "id": "temporal-2",
+        "statement": "Ivo Sen withdrew from Birch chair on August 20; Nell Arco replaced him."
+      },
+      {
+        "id": "temporal-3",
+        "statement": "Ivo Sen promised on August 5 to deliver Maple by August 25."
+      },
+      {
+        "id": "temporal-4",
+        "statement": "Ivo Sen delivered Maple to the archive on August 24."
+      },
+      {
+        "id": "temporal-5",
+        "statement": "Ivo Sen reserved the September 15 Oak workshop room; occurrence is unconfirmed."
+      },
+      {
+        "id": "temporal-6",
+        "statement": "Ivo Sen said Oak depends on registrations and could be cancelled."
+      }
+    ]
+  },
+  {
+    "id": "identity",
+    "entity": {
+      "id": "person:identity",
+      "name": "Rhea Moss",
+      "aliases": []
+    },
+    "question": "What should I know about Rhea Moss, the North lab researcher, and her commitments?",
+    "episodes": [
+      {
+        "id": "identity-1",
+        "kind": "episode",
+        "source": "slack",
+        "occurred_at": "2026-09-01",
+        "text": "Rhea Moss at North lab maintains the Delta registry. This researcher is person:identity."
+      },
+      {
+        "id": "identity-2",
+        "kind": "episode",
+        "source": "bee",
+        "occurred_at": "2026-09-01",
+        "text": "The interviewee Rhea Moss is a South studio designer, person:south-designer, not the North lab researcher. The designer owns the Ember collection."
+      },
+      {
+        "id": "identity-3",
+        "kind": "episode",
+        "source": "slack",
+        "occurred_at": "2026-09-01",
+        "text": "North lab researcher Rhea Moss agreed to audit the Delta registry before its next release."
+      },
+      {
+        "id": "identity-4",
+        "kind": "episode",
+        "source": "bee",
+        "occurred_at": "2026-09-01",
+        "text": "South studio designer Rhea Moss promised to unveil the Ember collection in October. This is not the North lab researcher."
+      },
+      {
+        "id": "identity-5",
+        "kind": "episode",
+        "source": "slack",
+        "occurred_at": "2026-09-01",
+        "text": "North lab researcher Rhea Moss has not committed to the Pine conference; there is no acceptance from her."
+      },
+      {
+        "id": "identity-6",
+        "kind": "episode",
+        "source": "bee",
+        "occurred_at": "2026-09-01",
+        "text": "The South studio interview contains no evidence about the North lab researcher Rhea Moss or her Pine conference plans."
+      }
+    ],
+    "gold": [
+      {
+        "id": "identity-1",
+        "statement": "Rhea Moss at North lab maintains Delta."
+      },
+      {
+        "id": "identity-3",
+        "statement": "North lab researcher Rhea Moss agreed to audit Delta before release."
+      },
+      {
+        "id": "identity-5",
+        "statement": "North lab researcher Rhea Moss has not committed to Pine."
+      }
+    ]
+  }
+]

@@ -1,0 +1,80 @@
+{
+  "registration_written_at_utc": "2026-09-10T18:12:13.693024+00:00",
+  "finish_audit_written_at_utc": "2026-09-10T19:10:45.446617+00:00",
+  "timestamp_source": "Filesystem mtimes of original registration and finish artifacts, read after execution; no trial timing claim is derived from model prose.",
+  "initial_request_pairs": [
+    {
+      "case": "temporal",
+      "seed": 2,
+      "initial_requests_equal": true
+    },
+    {
+      "case": "temporal",
+      "seed": 1,
+      "initial_requests_equal": true
+    },
+    {
+      "case": "conflict",
+      "seed": 2,
+      "initial_requests_equal": true
+    },
+    {
+      "case": "identity",
+      "seed": 1,
+      "initial_requests_equal": true
+    },
+    {
+      "case": "identity",
+      "seed": 2,
+      "initial_requests_equal": true
+    },
+    {
+      "case": "complement",
+      "seed": 1,
+      "initial_requests_equal": true
+    },
+    {
+      "case": "conflict",
+      "seed": 1,
+      "initial_requests_equal": true
+    },
+    {
+      "case": "complement",
+      "seed": 2,
+      "initial_requests_equal": true
+    }
+  ],
+  "checks": {
+    "build": {
+      "warnings": 0,
+      "errors": 0,
+      "log_sha256": "fecede7c2157efe2f16c8c8b9dce94b0fb4dd384dca8207046c8bf7636eb0ffe"
+    },
+    "clippy": {
+      "warnings": 0,
+      "errors": 0,
+      "log_sha256": "a41051563a4cb5fc1b1bcdd9aa0ba28ca80f7736d629d90cc138218756e8e3a9"
+    },
+    "tests": {
+      "warnings": 0,
+      "errors": 0,
+      "log_sha256": "25863ae07fd4c8c07c91c0dd31aadf4e98d232627e2c5dfae2b5e2721038cd39",
+      "passed": 2628,
+      "failed": 0,
+      "ignored": 3
+    }
+  },
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+  "eval_inventory": {
+    "cases": 36,
+    "tags": 15
+  },
+  "deployment": "No install, service restart or configuration promotion in this session.",
+  "report_review": {
+    "duplicate_verdict_regression": "Failed before explicit rejection; passed after. No model trials rerun.",
+    "frozen_and_current_reporters_agree": true,
+    "archived_scorecard_and_round_costs_reproduced": true,
+    "final_reporter_sha256": "96bf294aba86e11eb7bc327130d29f59affbe94c0bf829a22385b2cb9a099c23"
+  }
+}

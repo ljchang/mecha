@@ -1,0 +1,517 @@
+{
+  "aggregate": {
+    "own_evidence": [
+      {
+        "input_tokens": 40718,
+        "model_requests": 32,
+        "output_tokens": 31956,
+        "requested_searches": 19,
+        "round": 1
+      },
+      {
+        "input_tokens": 39384,
+        "model_requests": 48,
+        "output_tokens": 93220,
+        "requested_searches": 22,
+        "round": 2
+      },
+      {
+        "input_tokens": 52795,
+        "model_requests": 50,
+        "output_tokens": 60791,
+        "requested_searches": 24,
+        "round": 3
+      }
+    ],
+    "peer": [
+      {
+        "input_tokens": 40718,
+        "model_requests": 32,
+        "output_tokens": 31956,
+        "requested_searches": 19,
+        "round": 1
+      },
+      {
+        "input_tokens": 48735,
+        "model_requests": 53,
+        "output_tokens": 48106,
+        "requested_searches": 22,
+        "round": 2
+      },
+      {
+        "input_tokens": 49339,
+        "model_requests": 51,
+        "output_tokens": 60562,
+        "requested_searches": 23,
+        "round": 3
+      }
+    ]
+  },
+  "method": "Derive stopping-prefix costs from native request receipts; no model calls.\n\nQuestion-generation overhead belongs to the next answer round: stopping after\nround 1 would skip the question generators that prepare round 2. Roles and fresh\nconversation boundaries come from the recorded native actor, not generated prose.\n",
+  "trials": [
+    {
+      "case": "temporal",
+      "id": "temporal-2-own_evidence",
+      "mode": "own_evidence",
+      "rounds": [
+        {
+          "input_tokens": 3330,
+          "model_requests": 4,
+          "output_tokens": 2403,
+          "requested_searches": 2,
+          "round": 1
+        },
+        {
+          "input_tokens": 4612,
+          "model_requests": 6,
+          "output_tokens": 11593,
+          "requested_searches": 3,
+          "round": 2
+        },
+        {
+          "input_tokens": 4408,
+          "model_requests": 6,
+          "output_tokens": 4065,
+          "requested_searches": 2,
+          "round": 3
+        }
+      ],
+      "seed": 2
+    },
+    {
+      "case": "temporal",
+      "id": "temporal-2-peer",
+      "mode": "peer",
+      "rounds": [
+        {
+          "input_tokens": 3330,
+          "model_requests": 4,
+          "output_tokens": 2403,
+          "requested_searches": 2,
+          "round": 1
+        },
+        {
+          "input_tokens": 6419,
+          "model_requests": 7,
+          "output_tokens": 5427,
+          "requested_searches": 3,
+          "round": 2
+        },
+        {
+          "input_tokens": 4800,
+          "model_requests": 6,
+          "output_tokens": 5163,
+          "requested_searches": 2,
+          "round": 3
+        }
+      ],
+      "seed": 2
+    },
+    {
+      "case": "temporal",
+      "id": "temporal-1-peer",
+      "mode": "peer",
+      "rounds": [
+        {
+          "input_tokens": 3889,
+          "model_requests": 4,
+          "output_tokens": 4130,
+          "requested_searches": 2,
+          "round": 1
+        },
+        {
+          "input_tokens": 6321,
+          "model_requests": 7,
+          "output_tokens": 6066,
+          "requested_searches": 3,
+          "round": 2
+        },
+        {
+          "input_tokens": 10156,
+          "model_requests": 7,
+          "output_tokens": 15671,
+          "requested_searches": 3,
+          "round": 3
+        }
+      ],
+      "seed": 1
+    },
+    {
+      "case": "temporal",
+      "id": "temporal-1-own_evidence",
+      "mode": "own_evidence",
+      "rounds": [
+        {
+          "input_tokens": 3889,
+          "model_requests": 4,
+          "output_tokens": 4130,
+          "requested_searches": 2,
+          "round": 1
+        },
+        {
+          "input_tokens": 5791,
+          "model_requests": 6,
+          "output_tokens": 7184,
+          "requested_searches": 3,
+          "round": 2
+        },
+        {
+          "input_tokens": 8358,
+          "model_requests": 7,
+          "output_tokens": 5998,
+          "requested_searches": 4,
+          "round": 3
+        }
+      ],
+      "seed": 1
+    },
+    {
+      "case": "conflict",
+      "id": "conflict-2-own_evidence",
+      "mode": "own_evidence",
+      "rounds": [
+        {
+          "input_tokens": 3330,
+          "model_requests": 4,
+          "output_tokens": 1930,
+          "requested_searches": 2,
+          "round": 1
+        },
+        {
+          "input_tokens": 6693,
+          "model_requests": 7,
+          "output_tokens": 6247,
+          "requested_searches": 3,
+          "round": 2
+        },
+        {
+          "input_tokens": 6410,
+          "model_requests": 6,
+          "output_tokens": 7134,
+          "requested_searches": 6,
+          "round": 3
+        }
+      ],
+      "seed": 2
+    },
+    {
+      "case": "conflict",
+      "id": "conflict-2-peer",
+      "mode": "peer",
+      "rounds": [
+        {
+          "input_tokens": 3330,
+          "model_requests": 4,
+          "output_tokens": 1930,
+          "requested_searches": 2,
+          "round": 1
+        },
+        {
+          "input_tokens": 8558,
+          "model_requests": 8,
+          "output_tokens": 6064,
+          "requested_searches": 5,
+          "round": 2
+        },
+        {
+          "input_tokens": 4964,
+          "model_requests": 6,
+          "output_tokens": 6564,
+          "requested_searches": 3,
+          "round": 3
+        }
+      ],
+      "seed": 2
+    },
+    {
+      "case": "identity",
+      "id": "identity-1-peer",
+      "mode": "peer",
+      "rounds": [
+        {
+          "input_tokens": 7418,
+          "model_requests": 4,
+          "output_tokens": 5918,
+          "requested_searches": 2,
+          "round": 1
+        },
+        {
+          "input_tokens": 4338,
+          "model_requests": 5,
+          "output_tokens": 7071,
+          "requested_searches": 1,
+          "round": 2
+        },
+        {
+          "input_tokens": 6795,
+          "model_requests": 6,
+          "output_tokens": 6329,
+          "requested_searches": 4,
+          "round": 3
+        }
+      ],
+      "seed": 1
+    },
+    {
+      "case": "identity",
+      "id": "identity-1-own_evidence",
+      "mode": "own_evidence",
+      "rounds": [
+        {
+          "input_tokens": 7418,
+          "model_requests": 4,
+          "output_tokens": 5918,
+          "requested_searches": 2,
+          "round": 1
+        },
+        {
+          "input_tokens": 5423,
+          "model_requests": 6,
+          "output_tokens": 6116,
+          "requested_searches": 4,
+          "round": 2
+        },
+        {
+          "input_tokens": 6996,
+          "model_requests": 6,
+          "output_tokens": 7536,
+          "requested_searches": 2,
+          "round": 3
+        }
+      ],
+      "seed": 1
+    },
+    {
+      "case": "identity",
+      "id": "identity-2-own_evidence",
+      "mode": "own_evidence",
+      "rounds": [
+        {
+          "input_tokens": 3355,
+          "model_requests": 4,
+          "output_tokens": 2410,
+          "requested_searches": 2,
+          "round": 1
+        },
+        {
+          "input_tokens": 4349,
+          "model_requests": 6,
+          "output_tokens": 9725,
+          "requested_searches": 2,
+          "round": 2
+        },
+        {
+          "input_tokens": 4474,
+          "model_requests": 6,
+          "output_tokens": 10870,
+          "requested_searches": 2,
+          "round": 3
+        }
+      ],
+      "seed": 2
+    },
+    {
+      "case": "identity",
+      "id": "identity-2-peer",
+      "mode": "peer",
+      "rounds": [
+        {
+          "input_tokens": 3355,
+          "model_requests": 4,
+          "output_tokens": 2410,
+          "requested_searches": 2,
+          "round": 1
+        },
+        {
+          "input_tokens": 3523,
+          "model_requests": 5,
+          "output_tokens": 6294,
+          "requested_searches": 1,
+          "round": 2
+        },
+        {
+          "input_tokens": 4829,
+          "model_requests": 6,
+          "output_tokens": 6304,
+          "requested_searches": 2,
+          "round": 3
+        }
+      ],
+      "seed": 2
+    },
+    {
+      "case": "complement",
+      "id": "complement-1-peer",
+      "mode": "peer",
+      "rounds": [
+        {
+          "input_tokens": 8055,
+          "model_requests": 4,
+          "output_tokens": 6631,
+          "requested_searches": 2,
+          "round": 1
+        },
+        {
+          "input_tokens": 6156,
+          "model_requests": 7,
+          "output_tokens": 5491,
+          "requested_searches": 3,
+          "round": 2
+        },
+        {
+          "input_tokens": 6909,
+          "model_requests": 7,
+          "output_tokens": 7771,
+          "requested_searches": 3,
+          "round": 3
+        }
+      ],
+      "seed": 1
+    },
+    {
+      "case": "complement",
+      "id": "complement-1-own_evidence",
+      "mode": "own_evidence",
+      "rounds": [
+        {
+          "input_tokens": 8055,
+          "model_requests": 4,
+          "output_tokens": 6631,
+          "requested_searches": 2,
+          "round": 1
+        },
+        {
+          "input_tokens": 4466,
+          "model_requests": 6,
+          "output_tokens": 5045,
+          "requested_searches": 2,
+          "round": 2
+        },
+        {
+          "input_tokens": 9127,
+          "model_requests": 8,
+          "output_tokens": 7575,
+          "requested_searches": 4,
+          "round": 3
+        }
+      ],
+      "seed": 1
+    },
+    {
+      "case": "conflict",
+      "id": "conflict-1-own_evidence",
+      "mode": "own_evidence",
+      "rounds": [
+        {
+          "input_tokens": 7382,
+          "model_requests": 4,
+          "output_tokens": 6822,
+          "requested_searches": 2,
+          "round": 1
+        },
+        {
+          "input_tokens": 3641,
+          "model_requests": 5,
+          "output_tokens": 36797,
+          "requested_searches": 2,
+          "round": 2
+        },
+        {
+          "input_tokens": 7359,
+          "model_requests": 5,
+          "output_tokens": 8853,
+          "requested_searches": 1,
+          "round": 3
+        }
+      ],
+      "seed": 1
+    },
+    {
+      "case": "conflict",
+      "id": "conflict-1-peer",
+      "mode": "peer",
+      "rounds": [
+        {
+          "input_tokens": 7382,
+          "model_requests": 4,
+          "output_tokens": 6822,
+          "requested_searches": 2,
+          "round": 1
+        },
+        {
+          "input_tokens": 7209,
+          "model_requests": 7,
+          "output_tokens": 5059,
+          "requested_searches": 3,
+          "round": 2
+        },
+        {
+          "input_tokens": 4648,
+          "model_requests": 6,
+          "output_tokens": 7770,
+          "requested_searches": 2,
+          "round": 3
+        }
+      ],
+      "seed": 1
+    },
+    {
+      "case": "complement",
+      "id": "complement-2-peer",
+      "mode": "peer",
+      "rounds": [
+        {
+          "input_tokens": 3959,
+          "model_requests": 4,
+          "output_tokens": 1712,
+          "requested_searches": 5,
+          "round": 1
+        },
+        {
+          "input_tokens": 6211,
+          "model_requests": 7,
+          "output_tokens": 6634,
+          "requested_searches": 3,
+          "round": 2
+        },
+        {
+          "input_tokens": 6238,
+          "model_requests": 7,
+          "output_tokens": 4990,
+          "requested_searches": 4,
+          "round": 3
+        }
+      ],
+      "seed": 2
+    },
+    {
+      "case": "complement",
+      "id": "complement-2-own_evidence",
+      "mode": "own_evidence",
+      "rounds": [
+        {
+          "input_tokens": 3959,
+          "model_requests": 4,
+          "output_tokens": 1712,
+          "requested_searches": 5,
+          "round": 1
+        },
+        {
+          "input_tokens": 4409,
+          "model_requests": 6,
+          "output_tokens": 10513,
+          "requested_searches": 3,
+          "round": 2
+        },
+        {
+          "input_tokens": 5663,
+          "model_requests": 6,
+          "output_tokens": 8760,
+          "requested_searches": 3,
+          "round": 3
+        }
+      ],
+      "seed": 2
+    }
+  ]
+}

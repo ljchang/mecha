@@ -1,0 +1,158 @@
+{
+  "audit_unique_claims": 55,
+  "complete": true,
+  "paired": [
+    {
+      "case": "temporal",
+      "control_facts": 4,
+      "control_only": [],
+      "peer_facts": 4,
+      "peer_only": [],
+      "seed": 2
+    },
+    {
+      "case": "temporal",
+      "control_facts": 3,
+      "control_only": [],
+      "peer_facts": 3,
+      "peer_only": [],
+      "seed": 1
+    },
+    {
+      "case": "conflict",
+      "control_facts": 4,
+      "control_only": [],
+      "peer_facts": 4,
+      "peer_only": [],
+      "seed": 2
+    },
+    {
+      "case": "identity",
+      "control_facts": 2,
+      "control_only": [],
+      "peer_facts": 2,
+      "peer_only": [],
+      "seed": 1
+    },
+    {
+      "case": "identity",
+      "control_facts": 2,
+      "control_only": [],
+      "peer_facts": 2,
+      "peer_only": [],
+      "seed": 2
+    },
+    {
+      "case": "complement",
+      "control_facts": 3,
+      "control_only": [],
+      "peer_facts": 3,
+      "peer_only": [],
+      "seed": 1
+    },
+    {
+      "case": "conflict",
+      "control_facts": 3,
+      "control_only": [],
+      "peer_facts": 3,
+      "peer_only": [],
+      "seed": 1
+    },
+    {
+      "case": "complement",
+      "control_facts": 3,
+      "control_only": [
+        "complement-1"
+      ],
+      "peer_facts": 2,
+      "peer_only": [],
+      "seed": 2
+    }
+  ],
+  "summary": {
+    "own_evidence": {
+      "input_tokens": 132897,
+      "invalid_trials": 0,
+      "output_tokens": 185967,
+      "requests": 130,
+      "rounds": [
+        {
+          "abstentions": 0,
+          "contradicted": 3,
+          "cumulative_supported_facts": 23,
+          "new_supported_facts": 23,
+          "round": 1,
+          "stalls": 0,
+          "supported": 24,
+          "ungrounded_answers": 0,
+          "unresolved": 6
+        },
+        {
+          "abstentions": 9,
+          "contradicted": 2,
+          "cumulative_supported_facts": 23,
+          "new_supported_facts": 0,
+          "round": 2,
+          "stalls": 0,
+          "supported": 2,
+          "ungrounded_answers": 2,
+          "unresolved": 4
+        },
+        {
+          "abstentions": 7,
+          "contradicted": 5,
+          "cumulative_supported_facts": 24,
+          "new_supported_facts": 1,
+          "round": 3,
+          "stalls": 0,
+          "supported": 8,
+          "ungrounded_answers": 1,
+          "unresolved": 3
+        }
+      ],
+      "searches": 65,
+      "trials": 8
+    },
+    "peer": {
+      "input_tokens": 138792,
+      "invalid_trials": 0,
+      "output_tokens": 140624,
+      "requests": 136,
+      "rounds": [
+        {
+          "abstentions": 0,
+          "contradicted": 3,
+          "cumulative_supported_facts": 23,
+          "new_supported_facts": 23,
+          "round": 1,
+          "stalls": 0,
+          "supported": 24,
+          "ungrounded_answers": 0,
+          "unresolved": 6
+        },
+        {
+          "abstentions": 10,
+          "contradicted": 2,
+          "cumulative_supported_facts": 23,
+          "new_supported_facts": 0,
+          "round": 2,
+          "stalls": 0,
+          "supported": 2,
+          "ungrounded_answers": 3
+        },
+        {
+          "abstentions": 9,
+          "contradicted": 1,
+          "cumulative_supported_facts": 23,
+          "new_supported_facts": 0,
+          "round": 3,
+          "stalls": 0,
+          "supported": 10,
+          "ungrounded_answers": 0
+        }
+      ],
+      "searches": 64,
+      "trials": 8
+    }
+  }
+}

@@ -1,0 +1,687 @@
+[
+  {
+    "case": "temporal",
+    "id": "temporal-2-own_evidence",
+    "input_tokens": 12350,
+    "mode": "own_evidence",
+    "output_tokens": 18061,
+    "problems": [],
+    "requests": 16,
+    "rounds": [
+      {
+        "abstentions": 0,
+        "claims": [
+          "b7c0970c307750a36e40",
+          "6ff635f8b1a7e6c96c6f",
+          "33b5927c5871158e6cde",
+          "4922eb8100e3af2e9ffa"
+        ],
+        "round": 1,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 1,
+        "claims": [],
+        "round": 2,
+        "stalls": 0,
+        "ungrounded_answers": 1
+      },
+      {
+        "abstentions": 1,
+        "claims": [
+          "72392b537a99cf8b40ec",
+          "4922eb8100e3af2e9ffa"
+        ],
+        "round": 3,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      }
+    ],
+    "searches": 7,
+    "seed": 2
+  },
+  {
+    "case": "temporal",
+    "id": "temporal-2-peer",
+    "input_tokens": 14549,
+    "mode": "peer",
+    "output_tokens": 12993,
+    "problems": [],
+    "requests": 17,
+    "rounds": [
+      {
+        "abstentions": 0,
+        "claims": [
+          "b7c0970c307750a36e40",
+          "6ff635f8b1a7e6c96c6f",
+          "33b5927c5871158e6cde",
+          "4922eb8100e3af2e9ffa"
+        ],
+        "round": 1,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 2,
+        "claims": [],
+        "round": 2,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 0,
+        "claims": [
+          "bb078a37df054ab9fee1",
+          "4cb42d729119007792b0",
+          "c5a0daea8b60d08b26fd",
+          "50c7c2c4a734edc7eb95"
+        ],
+        "round": 3,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      }
+    ],
+    "searches": 7,
+    "seed": 2
+  },
+  {
+    "case": "temporal",
+    "id": "temporal-1-peer",
+    "input_tokens": 20366,
+    "mode": "peer",
+    "output_tokens": 25867,
+    "problems": [],
+    "requests": 18,
+    "rounds": [
+      {
+        "abstentions": 0,
+        "claims": [
+          "bb078a37df054ab9fee1",
+          "4cb42d729119007792b0",
+          "9d60b3e4e1c23febd972",
+          "0c2fa8c4e10d21ebf0d3"
+        ],
+        "round": 1,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 2,
+        "claims": [],
+        "round": 2,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 1,
+        "claims": [
+          "bb078a37df054ab9fee1",
+          "4cb42d729119007792b0"
+        ],
+        "round": 3,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      }
+    ],
+    "searches": 8,
+    "seed": 1
+  },
+  {
+    "case": "temporal",
+    "id": "temporal-1-own_evidence",
+    "input_tokens": 18038,
+    "mode": "own_evidence",
+    "output_tokens": 17312,
+    "problems": [],
+    "requests": 17,
+    "rounds": [
+      {
+        "abstentions": 0,
+        "claims": [
+          "bb078a37df054ab9fee1",
+          "4cb42d729119007792b0",
+          "9d60b3e4e1c23febd972",
+          "0c2fa8c4e10d21ebf0d3"
+        ],
+        "round": 1,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 2,
+        "claims": [],
+        "round": 2,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 1,
+        "claims": [
+          "22d869a96b96a52e4add",
+          "4618aed488182841c218"
+        ],
+        "round": 3,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      }
+    ],
+    "searches": 9,
+    "seed": 1
+  },
+  {
+    "case": "conflict",
+    "id": "conflict-2-own_evidence",
+    "input_tokens": 16433,
+    "mode": "own_evidence",
+    "output_tokens": 15311,
+    "problems": [],
+    "requests": 17,
+    "rounds": [
+      {
+        "abstentions": 0,
+        "claims": [
+          "a8a80360c245adaf8415",
+          "77eb62a55677685e6eab",
+          "0956d688bd283a98dd28",
+          "42afb09d965729ee43fc"
+        ],
+        "round": 1,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 1,
+        "claims": [
+          "f80c047de01da447be17"
+        ],
+        "round": 2,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 2,
+        "claims": [],
+        "round": 3,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      }
+    ],
+    "searches": 11,
+    "seed": 2
+  },
+  {
+    "case": "conflict",
+    "id": "conflict-2-peer",
+    "input_tokens": 16852,
+    "mode": "peer",
+    "output_tokens": 14558,
+    "problems": [],
+    "requests": 18,
+    "rounds": [
+      {
+        "abstentions": 0,
+        "claims": [
+          "a8a80360c245adaf8415",
+          "77eb62a55677685e6eab",
+          "0956d688bd283a98dd28",
+          "42afb09d965729ee43fc"
+        ],
+        "round": 1,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 1,
+        "claims": [],
+        "round": 2,
+        "stalls": 0,
+        "ungrounded_answers": 1
+      },
+      {
+        "abstentions": 2,
+        "claims": [],
+        "round": 3,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      }
+    ],
+    "searches": 10,
+    "seed": 2
+  },
+  {
+    "case": "identity",
+    "id": "identity-1-peer",
+    "input_tokens": 18551,
+    "mode": "peer",
+    "output_tokens": 19318,
+    "problems": [],
+    "requests": 15,
+    "rounds": [
+      {
+        "abstentions": 0,
+        "claims": [
+          "2a7831f57487da0d1e39",
+          "d173bacff08633b320d1",
+          "4be1e1d17681072c9c0d",
+          "ca9dc4dc0f3d7f057165"
+        ],
+        "round": 1,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 0,
+        "claims": [
+          "348b9c8260e4046c7091",
+          "93ebb29e6b4707914ce0"
+        ],
+        "round": 2,
+        "stalls": 0,
+        "ungrounded_answers": 1
+      },
+      {
+        "abstentions": 1,
+        "claims": [
+          "93ebb29e6b4707914ce0"
+        ],
+        "round": 3,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      }
+    ],
+    "searches": 7,
+    "seed": 1
+  },
+  {
+    "case": "identity",
+    "id": "identity-1-own_evidence",
+    "input_tokens": 19837,
+    "mode": "own_evidence",
+    "output_tokens": 19570,
+    "problems": [],
+    "requests": 16,
+    "rounds": [
+      {
+        "abstentions": 0,
+        "claims": [
+          "2a7831f57487da0d1e39",
+          "d173bacff08633b320d1",
+          "4be1e1d17681072c9c0d",
+          "ca9dc4dc0f3d7f057165"
+        ],
+        "round": 1,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 1,
+        "claims": [
+          "e2e074cfc706ca7b92fa",
+          "1fbda47c3963b05763a7"
+        ],
+        "round": 2,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 0,
+        "claims": [
+          "18c7dcf6da6dce4f026f",
+          "d173bacff08633b320d1",
+          "561936370b7ed2791632",
+          "93ebb29e6b4707914ce0"
+        ],
+        "round": 3,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      }
+    ],
+    "searches": 8,
+    "seed": 1
+  },
+  {
+    "case": "identity",
+    "id": "identity-2-own_evidence",
+    "input_tokens": 12178,
+    "mode": "own_evidence",
+    "output_tokens": 23005,
+    "problems": [],
+    "requests": 16,
+    "rounds": [
+      {
+        "abstentions": 0,
+        "claims": [
+          "f47b96ef4d5617a4d9ed",
+          "fc1caabc74549159d39e",
+          "0b83e43fb07a12d27769",
+          "348b9c8260e4046c7091",
+          "93ebb29e6b4707914ce0"
+        ],
+        "round": 1,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 2,
+        "claims": [],
+        "round": 2,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 0,
+        "claims": [
+          "f47b96ef4d5617a4d9ed",
+          "4a213a2bbb9059eb458a",
+          "521bcc865d5891354804",
+          "348b9c8260e4046c7091",
+          "93ebb29e6b4707914ce0"
+        ],
+        "round": 3,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      }
+    ],
+    "searches": 6,
+    "seed": 2
+  },
+  {
+    "case": "identity",
+    "id": "identity-2-peer",
+    "input_tokens": 11707,
+    "mode": "peer",
+    "output_tokens": 15008,
+    "problems": [],
+    "requests": 15,
+    "rounds": [
+      {
+        "abstentions": 0,
+        "claims": [
+          "f47b96ef4d5617a4d9ed",
+          "fc1caabc74549159d39e",
+          "0b83e43fb07a12d27769",
+          "348b9c8260e4046c7091",
+          "93ebb29e6b4707914ce0"
+        ],
+        "round": 1,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 0,
+        "claims": [
+          "aa1517facfc25b733a28"
+        ],
+        "round": 2,
+        "stalls": 0,
+        "ungrounded_answers": 1
+      },
+      {
+        "abstentions": 1,
+        "claims": [
+          "fc1caabc74549159d39e"
+        ],
+        "round": 3,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      }
+    ],
+    "searches": 5,
+    "seed": 2
+  },
+  {
+    "case": "complement",
+    "id": "complement-1-peer",
+    "input_tokens": 21120,
+    "mode": "peer",
+    "output_tokens": 19893,
+    "problems": [],
+    "requests": 18,
+    "rounds": [
+      {
+        "abstentions": 0,
+        "claims": [
+          "4f88d1ef51a0e2ea112c",
+          "8a840c8ef27605f79c6a",
+          "3504c9f60055ec21f865",
+          "bdba4a94d1b677190f48"
+        ],
+        "round": 1,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 2,
+        "claims": [],
+        "round": 2,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 1,
+        "claims": [
+          "87e7728954205c26fb93",
+          "32f3367d0a67659a7774"
+        ],
+        "round": 3,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      }
+    ],
+    "searches": 8,
+    "seed": 1
+  },
+  {
+    "case": "complement",
+    "id": "complement-1-own_evidence",
+    "input_tokens": 21648,
+    "mode": "own_evidence",
+    "output_tokens": 19251,
+    "problems": [],
+    "requests": 18,
+    "rounds": [
+      {
+        "abstentions": 0,
+        "claims": [
+          "4f88d1ef51a0e2ea112c",
+          "8a840c8ef27605f79c6a",
+          "3504c9f60055ec21f865",
+          "bdba4a94d1b677190f48"
+        ],
+        "round": 1,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 1,
+        "claims": [
+          "3d03cee6ab0efa727237",
+          "45017fc611d23accff12"
+        ],
+        "round": 2,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 1,
+        "claims": [
+          "3504c9f60055ec21f865",
+          "bdba4a94d1b677190f48"
+        ],
+        "round": 3,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      }
+    ],
+    "searches": 8,
+    "seed": 1
+  },
+  {
+    "case": "conflict",
+    "id": "conflict-1-own_evidence",
+    "input_tokens": 18382,
+    "mode": "own_evidence",
+    "output_tokens": 52472,
+    "problems": [],
+    "requests": 14,
+    "rounds": [
+      {
+        "abstentions": 0,
+        "claims": [
+          "76cb9548b57eb7c3157d",
+          "49dd038294092020b2d3",
+          "e93e22610aca8e4fe05f",
+          "3dcf9c34735ef03efd53"
+        ],
+        "round": 1,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 0,
+        "claims": [
+          "76cb9548b57eb7c3157d",
+          "450ba4dbb53642449f88"
+        ],
+        "round": 2,
+        "stalls": 0,
+        "ungrounded_answers": 1
+      },
+      {
+        "abstentions": 1,
+        "claims": [],
+        "round": 3,
+        "stalls": 0,
+        "ungrounded_answers": 1
+      }
+    ],
+    "searches": 5,
+    "seed": 1
+  },
+  {
+    "case": "conflict",
+    "id": "conflict-1-peer",
+    "input_tokens": 19239,
+    "mode": "peer",
+    "output_tokens": 19651,
+    "problems": [],
+    "requests": 17,
+    "rounds": [
+      {
+        "abstentions": 0,
+        "claims": [
+          "76cb9548b57eb7c3157d",
+          "49dd038294092020b2d3",
+          "e93e22610aca8e4fe05f",
+          "3dcf9c34735ef03efd53"
+        ],
+        "round": 1,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 2,
+        "claims": [],
+        "round": 2,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 2,
+        "claims": [],
+        "round": 3,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      }
+    ],
+    "searches": 7,
+    "seed": 1
+  },
+  {
+    "case": "complement",
+    "id": "complement-2-peer",
+    "input_tokens": 16408,
+    "mode": "peer",
+    "output_tokens": 13336,
+    "problems": [],
+    "requests": 18,
+    "rounds": [
+      {
+        "abstentions": 0,
+        "claims": [
+          "5c8d9be75d211db35d57",
+          "a0a3ea8037549b694f23",
+          "27b2451c6c2990764830",
+          "4332c3af73d02eabf80b"
+        ],
+        "round": 1,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 1,
+        "claims": [
+          "befbce0eeb6b750589b2"
+        ],
+        "round": 2,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 1,
+        "claims": [
+          "0943027a5ed5e2c4cf15"
+        ],
+        "round": 3,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      }
+    ],
+    "searches": 12,
+    "seed": 2
+  },
+  {
+    "case": "complement",
+    "id": "complement-2-own_evidence",
+    "input_tokens": 14031,
+    "mode": "own_evidence",
+    "output_tokens": 20985,
+    "problems": [],
+    "requests": 16,
+    "rounds": [
+      {
+        "abstentions": 0,
+        "claims": [
+          "5c8d9be75d211db35d57",
+          "a0a3ea8037549b694f23",
+          "27b2451c6c2990764830",
+          "4332c3af73d02eabf80b"
+        ],
+        "round": 1,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 1,
+        "claims": [
+          "eda53ab6a181370b9740"
+        ],
+        "round": 2,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      },
+      {
+        "abstentions": 1,
+        "claims": [
+          "c665dbf769a2897e96f9"
+        ],
+        "round": 3,
+        "stalls": 0,
+        "ungrounded_answers": 0
+      }
+    ],
+    "searches": 11,
+    "seed": 2
+  }
+]

@@ -1,0 +1,336 @@
+{
+  "elapsed_seconds": 244.230912735,
+  "exchange": {
+    "entity": "Rhea Moss",
+    "rounds": [
+      {
+        "abstained": [],
+        "answered": [
+          [
+            "slack",
+            "CLAIM: Rhea Moss is a researcher at the North lab who maintains the Delta registry | EPISODE: identity-1 | QUOTE: \"Rhea Moss at North lab maintains the Delta registry.\"\nCLAIM: Rhea Moss agreed to audit the Delta registry before its next release | EPISODE: identity-3 | QUOTE: \"agreed to audit the Delta registry before its next release.\""
+          ],
+          [
+            "bee",
+            "CLAIM: Rhea Moss is a South studio designer, not the North lab researcher | EPISODE: identity-2 | QUOTE: \"The interviewee Rhea Moss is a South studio designer, person:south-designer, not the North lab researcher.\"\nCLAIM: Rhea Moss owns the Ember collection | EPISODE: identity-2 | QUOTE: \"The designer owns the Ember collection.\"\nCLAIM: Rhea Moss promised to unveil the Ember collection in October | EPISODE: identity-4 | QUOTE: \"South studio designer Rhea Moss promised to unveil the Ember collection in October.\""
+          ]
+        ],
+        "asked": [
+          [
+            "slack",
+            "What should I know about Rhea Moss, the North lab researcher, and her commitments?"
+          ],
+          [
+            "bee",
+            "What should I know about Rhea Moss, the North lab researcher, and her commitments?"
+          ]
+        ],
+        "evidence": [
+          [
+            "slack",
+            [
+              {
+                "id": "identity-1",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "Rhea Moss at North lab maintains the Delta registry. This researcher is person:identity."
+              },
+              {
+                "id": "identity-3",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "North lab researcher Rhea Moss agreed to audit the Delta registry before its next release."
+              }
+            ]
+          ],
+          [
+            "bee",
+            [
+              {
+                "id": "identity-2",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "The interviewee Rhea Moss is a South studio designer, person:south-designer, not the North lab researcher. The designer owns the Ember collection."
+              },
+              {
+                "id": "identity-4",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "South studio designer Rhea Moss promised to unveil the Ember collection in October. This is not the North lab researcher."
+              }
+            ]
+          ]
+        ],
+        "grounded": [
+          {
+            "episode_id": "identity-1",
+            "occurred_at": "2026-09-01",
+            "quote": "Rhea Moss at North lab maintains the Delta registry.",
+            "reader": "slack",
+            "round": 1,
+            "source": "slack",
+            "statement": "Rhea Moss is a researcher at the North lab who maintains the Delta registry"
+          },
+          {
+            "episode_id": "identity-3",
+            "occurred_at": "2026-09-01",
+            "quote": "agreed to audit the Delta registry before its next release.",
+            "reader": "slack",
+            "round": 1,
+            "source": "slack",
+            "statement": "Rhea Moss agreed to audit the Delta registry before its next release"
+          },
+          {
+            "episode_id": "identity-2",
+            "occurred_at": "2026-09-01",
+            "quote": "The interviewee Rhea Moss is a South studio designer, person:south-designer, not the North lab researcher.",
+            "reader": "bee",
+            "round": 1,
+            "source": "bee",
+            "statement": "Rhea Moss is a South studio designer, not the North lab researcher"
+          },
+          {
+            "episode_id": "identity-2",
+            "occurred_at": "2026-09-01",
+            "quote": "The designer owns the Ember collection.",
+            "reader": "bee",
+            "round": 1,
+            "source": "bee",
+            "statement": "Rhea Moss owns the Ember collection"
+          },
+          {
+            "episode_id": "identity-4",
+            "occurred_at": "2026-09-01",
+            "quote": "South studio designer Rhea Moss promised to unveil the Ember collection in October.",
+            "reader": "bee",
+            "round": 1,
+            "source": "bee",
+            "statement": "Rhea Moss promised to unveil the Ember collection in October"
+          }
+        ],
+        "n": 1,
+        "ungrounded": []
+      },
+      {
+        "abstained": [
+          "slack",
+          "bee"
+        ],
+        "answered": [
+          [
+            "slack",
+            "UNKNOWN: no evidence in my retrieved sources."
+          ],
+          [
+            "bee",
+            "UNKNOWN: no evidence in my retrieved sources."
+          ]
+        ],
+        "asked": [
+          [
+            "slack",
+            "What is the reason Rhea Moss agreed to audit the Delta registry before its next release?"
+          ],
+          [
+            "bee",
+            "What are the specific responsibilities Rhea Moss fulfills as a South studio designer?"
+          ]
+        ],
+        "evidence": [
+          [
+            "slack",
+            [
+              {
+                "id": "identity-3",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "North lab researcher Rhea Moss agreed to audit the Delta registry before its next release."
+              },
+              {
+                "id": "identity-1",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "Rhea Moss at North lab maintains the Delta registry. This researcher is person:identity."
+              }
+            ]
+          ],
+          [
+            "bee",
+            [
+              {
+                "id": "identity-2",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "The interviewee Rhea Moss is a South studio designer, person:south-designer, not the North lab researcher. The designer owns the Ember collection."
+              },
+              {
+                "id": "identity-4",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "South studio designer Rhea Moss promised to unveil the Ember collection in October. This is not the North lab researcher."
+              }
+            ]
+          ]
+        ],
+        "grounded": [],
+        "n": 2,
+        "ungrounded": []
+      },
+      {
+        "abstained": [],
+        "answered": [
+          [
+            "slack",
+            "CLAIM: Rhea Moss is a researcher at the North lab who maintains the Delta registry | EPISODE: identity-1 | QUOTE: Rhea Moss at North lab maintains the Delta registry.\nCLAIM: Rhea Moss agreed to audit the Delta registry before its next release | EPISODE: identity-3 | QUOTE: North lab researcher Rhea Moss agreed to audit the Delta registry before its next release."
+          ],
+          [
+            "bee",
+            "CLAIM: Rhea Moss is a South studio designer | EPISODE: identity-2 | QUOTE: The interviewee Rhea Moss is a South studio designer\nCLAIM: Rhea Moss owns the Ember collection | EPISODE: identity-2 | QUOTE: The designer owns the Ember collection.\nCLAIM: Rhea Moss promised to unveil the Ember collection in October | EPISODE: identity-4 | QUOTE: South studio designer Rhea Moss promised to unveil the Ember collection in October."
+          ]
+        ],
+        "asked": [
+          [
+            "slack",
+            "What are Rhea Moss's primary professional responsibilities and commitments?"
+          ],
+          [
+            "bee",
+            "What specific professional roles and commitments has Rhea Moss held throughout her career?"
+          ]
+        ],
+        "evidence": [
+          [
+            "slack",
+            [
+              {
+                "id": "identity-1",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "Rhea Moss at North lab maintains the Delta registry. This researcher is person:identity."
+              },
+              {
+                "id": "identity-3",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "North lab researcher Rhea Moss agreed to audit the Delta registry before its next release."
+              }
+            ]
+          ],
+          [
+            "bee",
+            [
+              {
+                "id": "identity-2",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "The interviewee Rhea Moss is a South studio designer, person:south-designer, not the North lab researcher. The designer owns the Ember collection."
+              },
+              {
+                "id": "identity-4",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "South studio designer Rhea Moss promised to unveil the Ember collection in October. This is not the North lab researcher."
+              }
+            ]
+          ]
+        ],
+        "grounded": [
+          {
+            "episode_id": "identity-1",
+            "occurred_at": "2026-09-01",
+            "quote": "Rhea Moss at North lab maintains the Delta registry.",
+            "reader": "slack",
+            "round": 3,
+            "source": "slack",
+            "statement": "Rhea Moss is a researcher at the North lab who maintains the Delta registry"
+          },
+          {
+            "episode_id": "identity-3",
+            "occurred_at": "2026-09-01",
+            "quote": "North lab researcher Rhea Moss agreed to audit the Delta registry before its next release.",
+            "reader": "slack",
+            "round": 3,
+            "source": "slack",
+            "statement": "Rhea Moss agreed to audit the Delta registry before its next release"
+          },
+          {
+            "episode_id": "identity-2",
+            "occurred_at": "2026-09-01",
+            "quote": "The interviewee Rhea Moss is a South studio designer",
+            "reader": "bee",
+            "round": 3,
+            "source": "bee",
+            "statement": "Rhea Moss is a South studio designer"
+          },
+          {
+            "episode_id": "identity-2",
+            "occurred_at": "2026-09-01",
+            "quote": "The designer owns the Ember collection.",
+            "reader": "bee",
+            "round": 3,
+            "source": "bee",
+            "statement": "Rhea Moss owns the Ember collection"
+          },
+          {
+            "episode_id": "identity-4",
+            "occurred_at": "2026-09-01",
+            "quote": "South studio designer Rhea Moss promised to unveil the Ember collection in October.",
+            "reader": "bee",
+            "round": 3,
+            "source": "bee",
+            "statement": "Rhea Moss promised to unveil the Ember collection in October"
+          }
+        ],
+        "n": 3,
+        "ungrounded": []
+      }
+    ],
+    "vantages": [
+      {
+        "label": "slack",
+        "sources": [
+          "slack"
+        ]
+      },
+      {
+        "label": "bee",
+        "sources": [
+          "bee"
+        ]
+      }
+    ]
+  },
+  "round_yield": [
+    {
+      "abstentions": 0,
+      "grounded_claims": 5,
+      "new_grounded_claims": 5,
+      "repeated_claims": 0,
+      "retrieved_episodes": 4,
+      "round": 1,
+      "stalled_questions": 0,
+      "ungrounded_answers": 0
+    },
+    {
+      "abstentions": 2,
+      "grounded_claims": 0,
+      "new_grounded_claims": 0,
+      "repeated_claims": 0,
+      "retrieved_episodes": 4,
+      "round": 2,
+      "stalled_questions": 0,
+      "ungrounded_answers": 0
+    },
+    {
+      "abstentions": 0,
+      "grounded_claims": 5,
+      "new_grounded_claims": 1,
+      "repeated_claims": 4,
+      "retrieved_episodes": 4,
+      "round": 3,
+      "stalled_questions": 0,
+      "ungrounded_answers": 0
+    }
+  ],
+  "status": "complete"
+}

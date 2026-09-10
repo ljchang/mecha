@@ -1,0 +1,7 @@
+{
+  "reason": "Control prompt still requested different-source questions while seeing own evidence only; stopped before semantic grading to correct the control instruction. No trial outcomes used for design selection.",
+  "stopped_processes": [
+    2725593,
+    2726748
+  ]
+}
