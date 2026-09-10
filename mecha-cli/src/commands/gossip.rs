@@ -74,6 +74,11 @@ pub struct GossipArgs {
 }
 
 pub async fn run(global: &crate::GlobalOpts, args: &GossipArgs) -> Result<()> {
+    anyhow::ensure!(
+        (1..=8).contains(&args.rounds),
+        "--rounds must be between 1 and 8"
+    );
+
     let cwd = std::env::current_dir().context("cannot determine the working directory")?;
     let cfg = Config::load(&cwd)?;
     let Some(server_cfg) = cfg.mcp.iter().find(|c| c.name == args.server) else {
@@ -101,6 +106,12 @@ pub async fn run(global: &crate::GlobalOpts, args: &GossipArgs) -> Result<()> {
         }
         return Ok(());
     }
+
+    let identity = gossip::identity(&client, &args.entity).await?;
+    anyhow::ensure!(
+        identity.name == name,
+        "target identity changed during selection"
+    );
 
     // A plan is not a fact: the calendar is full of meetings that have not
     // happened, and probing them invites reporting intentions as history.
@@ -139,7 +150,7 @@ pub async fn run(global: &crate::GlobalOpts, args: &GossipArgs) -> Result<()> {
     };
 
     let build = |v: &Vantage, prompt: &str| -> Result<mecha_core::agent::Agent> {
-        gossip::reader(
+        gossip::reader_with_identity(
             mecha_core::provider::build(provider_cfg)?,
             ReaderSetup {
                 client: Arc::clone(&client),
@@ -151,6 +162,7 @@ pub async fn run(global: &crate::GlobalOpts, args: &GossipArgs) -> Result<()> {
                 model: model.clone(),
                 system_prompt: prompt.to_string(),
             },
+            Some(identity.clone()),
         )
     };
 
@@ -197,6 +209,13 @@ pub async fn run(global: &crate::GlobalOpts, args: &GossipArgs) -> Result<()> {
     .await?;
 
     println!("\n{}", gossip::render(&exchange));
+    println!(
+        "Citation coverage by round (not semantic accuracy): {}",
+        gossip::round_yield(&exchange)
+    );
+    if gossip::family(&va.sources[0]) == gossip::family(&vb.sources[0]) {
+        println!("Source coverage required a same-family pair; independence is not established.");
+    }
 
     let mut graph_findings_text: Option<String> = None;
     let mut audit_verdicts = Vec::new();
@@ -252,11 +271,12 @@ pub async fn run(global: &crate::GlobalOpts, args: &GossipArgs) -> Result<()> {
     // mechanism name would have required a new track record before any of it
     // counted, for a judgement that is not actually new.
     let mut adjudicated: Vec<serde_json::Value> = Vec::new();
+    let mut filing_failures = 0usize;
     if args.adjudicate > 0 {
         let cands =
             gossip::pending_about(&client, &name, args.adjudicate, Some("verification"), true)
                 .await
-                .unwrap_or_default();
+                .context("could not read pending claims; queue state is unknown")?;
 
         if cands.is_empty() {
             println!("\nQueue: nothing unvetted pending about {name}.");
@@ -303,6 +323,8 @@ pub async fn run(global: &crate::GlobalOpts, args: &GossipArgs) -> Result<()> {
                 .await
                 {
                     eprintln!("      (verdict not filed: {e:#})");
+                    filing_failures += 1;
+                    continue;
                 }
                 adjudicated.push(serde_json::json!({
                     "candidate_id": cand.candidate_id,
@@ -324,6 +346,9 @@ pub async fn run(global: &crate::GlobalOpts, args: &GossipArgs) -> Result<()> {
         let line = serde_json::json!({
             "at": chrono::Local::now().to_rfc3339(),
             "entity": name,
+            "identity": identity,
+            "round_yield": gossip::round_yield(&exchange),
+            "filing_failures": filing_failures,
             "since": args.since,
             "rounds": args.rounds,
             "model": model,
@@ -335,6 +360,9 @@ pub async fn run(global: &crate::GlobalOpts, args: &GossipArgs) -> Result<()> {
         writeln!(f, "{line}").context("writing --out line")?;
     }
 
+    if filing_failures > 0 {
+        eprintln!("{filing_failures} verdict(s) failed to file; those candidates remain unvetted");
+    }
     println!(
         "\nNo BELIEF was written to the graph — the exchange and the audit are yours \
          to read. {} pending claim(s) got a verdict filed beside them, which decides \

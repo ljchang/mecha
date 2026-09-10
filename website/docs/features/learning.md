@@ -28,7 +28,8 @@ repository. `git log` is the learning history; `git revert` is the undo.
 | `reflections.jsonl` | Append-only evidence, each pointing at its transcript |
 | `rules/<domain>.user.toml` | Yours. Never written by code, only read |
 | `rules/<domain>.learned.toml` | Consolidation's output — edit or delete freely |
-| `validations.jsonl` | Every probe outcome, keyed to the rule set measured |
+| `validations.jsonl` | Every attempted probe outcome, keyed to the rule set measured |
+| `validation-attempts.jsonl` | Input identities, reasons and arm receipts used to schedule retries |
 | `runs.jsonl` | One audit record per consolidation pass |
 | `mined.jsonl`, `mined_outbox.jsonl`, `distilled.jsonl` | Idempotence ledgers |
 | `proposals/<id>.json` | Rule changes waiting for a human |
@@ -289,6 +290,7 @@ mecha validate --unprocessed-only              # the holdout learn left
 mecha validate --trigger steer,denial          # default is all three
 mecha validate --judge-provider gemma26 --judge-model ...
 mecha validate --no-attribute                  # skip bisection
+mecha validate --repeat                        # deliberately remeasure unchanged inputs
 ```
 
 **Steer and denial probes are counterfactual replays, graded structurally.** The
@@ -304,8 +306,18 @@ the verdict is a fact about the trace:
   arguments is not a failure — "not that directory" denies an argument, not a
   capability.
 
-Follow-up probes re-ask the corrective turn and are judge-graded, which is
-non-deterministic; treat a single flip as a prompt to read the two answers.
+Follow-up probes keep the corrective turn and replay its recorded tools and
+results without executing them. Only complete, readable answers with matching
+tool arguments reach the judge. Missing calls, changed arguments and truncated
+answers are inconclusive. These judgments do not drive rule bisection; treat a
+single flip as a prompt to read the answers in `validation-attempts.jsonl`.
+
+Validation defers previously measured inputs when the rules, recording, rubric
+and measurement settings are unchanged. Provider/judge failures retry, and
+regressions remain eligible for the existing retirement confirmation process.
+`--repeat` requests another measurement explicitly. Deferred inputs are filtered
+before `--cover` chooses extra probes. The report separates both-pass from
+both-fail outcomes; neither is evidence of an improvement.
 
 Each row is keyed by `rules_hash` — a stable FNV-1a hash of the rendered block,
 written out longhand because the std hasher is deliberately unstable across Rust

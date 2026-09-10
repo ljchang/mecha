@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Validation attempt receipts and `mecha validate --repeat`; unchanged inputs are deferred while transient failures and regression confirmations remain eligible.
+- Gossip target identity, retrieved citation checks, per-round citation yield and explicit filing failure counts.
+
 - Ground mismatch learning in verified criterion/check failures; owner-bound task diagnostics can carry relevant count constraints without exposing expected answers. Forecast overruns remain observations and no longer justify behavioral rules by themselves.
 
 - `run --mismatch-case` and registered experiment fixtures enable independent JSON-artifact validation of clean planning mismatches in isolated file-only tasks. Validation and rule proposals retain ungraded outcomes for missing evidence or policy refusals; each executed arm records an audit receipt. `--no-goal-guidance` now works before or after a subcommand.
@@ -142,6 +145,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`prefix_tools = false`) exposes.
 
 ### Fixed
+
+- Follow-up validation replays the recorded tool surface and grades only complete answers. Coverage selection skips deferred inputs before spending probe slots.
+- Harness measurements reject unsupported effort controls and incomplete replay tails, retaining arm receipts. MCP capability changes are routed as security proposals.
+
 
 - **Stopping the web service preserves active turns.** SIGTERM and Ctrl-C
   close pending questions, cancel chat and mounted voice work cooperatively,

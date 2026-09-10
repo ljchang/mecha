@@ -37,16 +37,20 @@ use mecha_core::config::{Config, ProviderConfig};
 use mecha_core::counterfactual::ProbeVerdict;
 use mecha_core::eval::Judge;
 use mecha_core::learning::{
-    domain_rules_section_for, locate_followup, rules_hash, strip_rules_block, wrap_rules_block,
-    LearningStore, Origin, Reflexion, Rule, Trigger, ValidationRecord,
+    domain_rules_section_for, rules_hash, wrap_rules_block, LearningStore, Origin, Reflexion, Rule,
+    Trigger, ValidationAttempt, ValidationRecord,
 };
-use mecha_core::message::{CompletionRequest, Message};
 use mecha_core::session::Session;
 use mecha_core::situation::Situation;
 use std::collections::BTreeMap;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
+    /// Repeat unchanged probe inputs deliberately. By default only fresh inputs,
+    /// transient failures, and regressions awaiting confirmation run again.
+    #[arg(long)]
+    pub repeat: bool,
+
     /// Provider entry the judge runs on. Defaults to the model under test,
     /// which is worth avoiding for the usual reason.
     #[arg(long)]
@@ -275,8 +279,8 @@ fn select_probe_corpus(
 /// Whether an answer can be graded at all.
 ///
 /// **An answer that is not there is not a failing answer**, and the
-/// difference decides whether a rule gets blamed. The followup probe re-asks
-/// the corrective turn with `tools: Vec::new()` — no tool surface — so a run
+/// difference decides whether a rule gets blamed. The original followup probe
+/// re-asked the corrective turn without tools, so a run
 /// that would naturally have continued by calling one produces either nothing
 /// or a bare `<tool_call>` residue where the text should be. Handed to the
 /// judge that reads as a bad answer, so the arm "fails"; when only the
@@ -365,41 +369,6 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // the block was rendered from this same state, and a mid-run rules change
     // would make rows describe a set that was never measured.
     let surface = RuleSurface::load(&store)?;
-    // Coverage: rows for (rule, region) pairs nobody has graded. Chosen
-    // from the replayable pool regardless of processed-state, since the
-    // point is the region, and marked so the report can tell a row bought
-    // for coverage from one on fresh evidence.
-    let mut covering: BTreeMap<String, String> = BTreeMap::new();
-    if let Some(all) = for_cover {
-        let tallies = mecha_core::learning::rule_tallies(&store.validations()?);
-        // The replayable half of what this pass was asked to probe: an
-        // explicit `--trigger` narrows the cover pool too, and a followup
-        // has no replayable point in any case.
-        let replayable: Vec<&str> = wanted_triggers
-            .iter()
-            .copied()
-            .filter(|t| *t != Trigger::Followup.as_str())
-            .collect();
-        let pool = select_probe_corpus(all, &replayable, false);
-        let chosen: std::collections::BTreeSet<String> =
-            reflexions.iter().map(|r| r.id.clone()).collect();
-        for (r, why) in cover_selection(&surface.flat, &tallies, &pool, &chosen, args.cover) {
-            covering.insert(r.id.clone(), why);
-            reflexions.push(r);
-        }
-        if !covering.is_empty() {
-            println!(
-                "{} reflection(s) added for coverage of (rule, region) pairs the ledger has \
-                 never graded",
-                covering.len()
-            );
-        }
-    }
-    if reflexions.is_empty() {
-        println!("no reflections to probe");
-        return Ok(());
-    }
-
     let cwd = std::env::current_dir().context("cannot determine the working directory")?;
     let cfg = Config::load(&cwd)?;
     let (provider_name, provider_cfg) = cfg.provider(global.provider.as_deref())?;
@@ -422,82 +391,90 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // keeping a second number here is how the fix stayed applied in one place
     // and not the others for as long as it did.
     ;
+    // Steer and denial probes replay against the recorded tool surface, which
+    // needs the live registry for specs — builtins, MCP servers, subagents.
+    // Built once, only when something will use it; the parent agent it builds
+    // is discarded and only its registry is borrowed, as in `mecha replay`.
+    let prepared = setup::prepare(&global.clone(), false).await?;
+    let prior_attempts = store.validation_attempts()?;
+    let mut reused = 0u32;
+    let mut both_pass = 0u32;
+    let mut both_fail = 0u32;
+    let surface_hash = rules_hash(&serde_json::to_string(&prepared.agent.registry().specs())?);
+    let settings = serde_json::json!({
+        "protocol": "validation-v2-recorded-followup", "model": model,
+        "provider": provider_cfg.kind, "endpoint": provider_cfg.base_url,
+        "temperature": provider_cfg.temperature, "seed": provider_cfg.seed,
+        "judge": judge.model(), "judge_provider": judge_cfg.kind,
+        "judge_endpoint": judge_cfg.base_url, "judge_temperature": judge_cfg.temperature,
+        "judge_seed": judge_cfg.seed, "surface": surface_hash,
+        "agent": prepared.config.agent,
+    });
+
+    let sessions_dir = Session::default_dir()?;
+    // Coverage: rows for (rule, region) pairs nobody has graded. Chosen
+    // from the replayable pool regardless of processed-state, since the
+    // point is the region, and marked so the report can tell a row bought
+    // for coverage from one on fresh evidence.
+    let mut covering: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(all) = for_cover {
+        let tallies = mecha_core::learning::rule_tallies(&store.validations()?);
+        // The replayable half of what this pass was asked to probe: an
+        // explicit `--trigger` narrows the cover pool too, and a followup
+        // has no trace-verifiable region to credit.
+        let replayable: Vec<&str> = wanted_triggers
+            .iter()
+            .copied()
+            .filter(|t| *t != Trigger::Followup.as_str())
+            .collect();
+        // Filter deferred or unpreparable inputs before buying coverage slots:
+        // otherwise --cover 1 selects the same inconclusive ID every night.
+        let mut pool = Vec::new();
+        for r in select_probe_corpus(all, &replayable, false) {
+            let Ok(prep) = probe::prepare_probe(&sessions_dir, &r)? else {
+                continue;
+            };
+            let run = prep.situation();
+            let Some(block) = surface.block_with(&surface.carried(&run), &run) else {
+                continue;
+            };
+            let key = attempt_key(&prep, &r, &rules_hash(&block), &settings)?;
+            if ValidationAttempt::should_run(&prior_attempts, &key, args.repeat) {
+                pool.push(r);
+            }
+        }
+        let chosen: std::collections::BTreeSet<String> =
+            reflexions.iter().map(|r| r.id.clone()).collect();
+        for (r, why) in cover_selection(&surface.flat, &tallies, &pool, &chosen, args.cover) {
+            covering.insert(r.id.clone(), why);
+            reflexions.push(r);
+        }
+        if !covering.is_empty() {
+            println!(
+                "{} reflection(s) added for coverage of (rule, region) pairs the ledger has \
+                 never graded",
+                covering.len()
+            );
+        }
+    }
+    if reflexions.is_empty() {
+        println!("no reflections to probe");
+        return Ok(());
+    }
+
     eprintln!(
         "probing {} reflection(s) with {model} ({provider_name}), judged by {} ({judge_name})",
         reflexions.len(),
         judge.model()
     );
 
-    // Prove the judge answers before grading anything, and only when this
-    // pass will actually use it — a steer/denial-only run replays and never
-    // judges, so demanding a judge there would refuse work that needs none.
-    if reflexions.iter().any(|r| r.trigger == "followup") {
-        judge.preflight().await?;
-    }
-
-    // Steer and denial probes replay against the recorded tool surface, which
-    // needs the live registry for specs — builtins, MCP servers, subagents.
-    // Built once, only when something will use it; the parent agent it builds
-    // is discarded and only its registry is borrowed, as in `mecha replay`.
-    let needs_replay = reflexions
-        .iter()
-        .any(|r| r.trigger != Trigger::Followup.as_str());
-    let prepared = if needs_replay {
-        Some(setup::prepare(&global.clone(), false).await?)
-    } else {
-        None
-    };
-
-    let sessions_dir = Session::default_dir()?;
+    let mut judge_ready = false;
     let mut improved = 0u32;
     let mut regressed = 0u32;
     let mut unchanged = 0u32;
     let mut inconclusive = 0u32;
     let mut skipped = 0u32;
     let mut recorded_rows = 0u32;
-
-    let mut record = |r: &mecha_core::learning::Reflexion,
-                      carried: &[usize],
-                      run: &Situation,
-                      outcome: &str,
-                      attributed: Option<String>|
-     -> Result<()> {
-        // Keyed to the block *this* probe carried: with scoped loading the
-        // measured set is a function of the replayed run's situation, and a
-        // row that named the store's whole set would charge observations to
-        // rules that were not in the prompt.
-        let block = surface.block_with(carried, run).unwrap_or_default();
-        // Append-only, no store lock: a validate run must never block the
-        // reflect a closing session fires, and a single appended line needs
-        // no read-modify-write.
-        store.append_validation(&ValidationRecord {
-            reflexion_id: r.id.clone(),
-            trigger: r.trigger.clone(),
-            domain: r.domain.clone(),
-            rules_hash: rules_hash(&block),
-            rule_ids: surface.rule_ids(carried),
-            outcome: outcome.into(),
-            attributed_rule_id: attributed,
-            model: model.clone(),
-            created_at: chrono::Utc::now().to_rfc3339(),
-            // The sub-region exercised: the window around the intervention,
-            // not the registry — see `ValidationRecord::region`. Only a
-            // window with a focus is evidence of where: a followup's is
-            // from an earlier turn and a front-end focus names whatever ran
-            // before it (`Situation::focus`), and a row placed on one would
-            // release probation and satisfy `--cover` for a region the
-            // probe never touched (found on review). Unknown instead.
-            // A whole-task artifact repeat does not certify the original
-            // intervention's tool window as exercised.
-            region: (r.trigger != Trigger::Mismatch.as_str())
-                .then_some(r)
-                .and_then(|r| r.situation.as_ref())
-                .filter(|s| s.focus().is_some())
-                .map(|s| s.scope()),
-        })?;
-        recorded_rows += 1;
-        Ok(())
-    };
 
     for r in &reflexions {
         if let Some(why) = covering.get(&r.id) {
@@ -512,64 +489,157 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 }
             );
         }
-        let path = match Session::find(&sessions_dir, &r.session_id) {
-            Ok(p) => p,
-            Err(_) => {
-                eprintln!("· {}: session {} not found; skipping", r.id, r.session_id);
+        let prep = match probe::prepare_probe(&sessions_dir, r)? {
+            Ok(prep) => prep,
+            Err(why) => {
+                eprintln!("· {}: {why}; skipping", r.id);
                 skipped += 1;
                 continue;
             }
         };
-        let (_, convo) = Session::load(&path)?;
-
-        // The recorded system prompt, with any rules block of its era removed:
-        // the baseline arm must be rules-free and the treatment arm must carry
-        // exactly the current rules, not a mixture of generations.
-        // ── steers and denials: replay the prefix, grade the trace ──
-        if r.trigger != Trigger::Followup.as_str() {
-            let prepared = prepared.as_ref().expect("built because needs_replay");
-            let prep = match probe::prepare_probe(&sessions_dir, r)? {
-                Ok(prep) => prep,
-                Err(why) => {
-                    eprintln!("· {}: {why}; skipping", r.id);
-                    skipped += 1;
-                    continue;
+        let run = prep.situation();
+        let carried = surface.carried(&run);
+        let Some(rules_block) = surface.block_with(&carried, &run) else {
+            eprintln!(
+                "· {}: no rule rides in the recorded run's situation; skipping",
+                r.id
+            );
+            skipped += 1;
+            continue;
+        };
+        let block_hash = rules_hash(&rules_block);
+        let key = attempt_key(&prep, r, &block_hash, &settings)?;
+        if !ValidationAttempt::should_run(&prior_attempts, &key, args.repeat) {
+            println!(
+                "· {}: same probe inputs already measured; deferred (use --repeat)",
+                r.id
+            );
+            reused += 1;
+            continue;
+        }
+        let mut receipt = ValidationAttempt {
+            key,
+            reflexion_id: r.id.clone(),
+            rules_hash: block_hash.clone(),
+            model: model.clone(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            outcome: "inconclusive".into(),
+            reason_code: None,
+            reason: None,
+            retryable: false,
+            arms: Vec::new(),
+        };
+        let mut verdicts = Vec::new();
+        let followup = r.trigger == Trigger::Followup.as_str();
+        for block in [None, Some(rules_block.as_str())] {
+            let system = prep.system_with(block);
+            if followup {
+                if !judge_ready {
+                    if let Err(e) = judge.preflight().await {
+                        receipt.retryable = true;
+                        receipt.reason_code = Some("judge_preflight_error".into());
+                        receipt.reason = Some(format!("{e:#}"));
+                        break;
+                    }
+                    judge_ready = true;
                 }
-            };
-            // Rendered for the probe's own recorded config, which is the
-            // one the branch replays under (a later attach may differ).
-            let carried = surface.carried(&prep.situation());
-            let Some(rules_block) = surface.block_with(&carried, &prep.situation()) else {
-                eprintln!(
-                    "· {}: no rule rides in the recorded run's situation; skipping",
-                    r.id
-                );
-                skipped += 1;
-                continue;
-            };
-            let mut arms = Vec::new();
-            for block in [None, Some(rules_block.as_str())] {
-                match probe::drive_arm(
-                    prepared,
-                    provider_cfg,
-                    &model,
-                    &prep,
-                    prep.system_with(block),
-                )
-                .await?
+                match probe::drive_continuation(&prepared, provider_cfg, &model, &prep, system)
+                    .await
                 {
-                    Ok(v) => arms.push(v),
-                    Err(why) => {
-                        eprintln!("· {}: {why}; skipping", r.id);
+                    Ok(Ok(report)) => {
+                        receipt.arms.push(serde_json::json!({
+                            "text": report.final_text, "calls": report.replayed_calls,
+                            "divergences": report.divergences, "stats": report.stats,
+                            "recorded_calls": report.recorded_calls, "call_base": report.call_base,
+                        }));
+                        let incomplete = report
+                            .unmeasurable_reason()
+                            .or_else(|| {
+                                // Arguments may be cosmetic for trace agreement; a
+                                // prose judge cannot establish that, so never give it
+                                // an answer built on results for different arguments.
+                                (!report.divergences.is_empty()).then(|| {
+                                    "tool arguments differ from the recorded result".into()
+                                })
+                            })
+                            .or_else(|| {
+                                report
+                                    .stats
+                                    .stop_cause
+                                    .filter(|s| s.cut_short())
+                                    .map(|s| format!("continuation was cut short: {s:?}"))
+                            });
+                        if let Some(why) = incomplete {
+                            receipt.reason_code = Some("replay_divergence".into());
+                            receipt.reason = Some(why);
+                            break;
+                        }
+                        if !is_gradeable(&report.final_text) {
+                            receipt.reason_code = Some("no_gradeable_text".into());
+                            receipt.reason =
+                                Some("continuation has no gradeable final text".into());
+                            break;
+                        }
+                        let rubric = format!("the answer does what the user's message asks, in the light of this known expectation: {}", r.reflexion_text);
+                        match judge
+                            .assess(&r.intervention, &rubric, &report.final_text)
+                            .await
+                        {
+                            Ok(v) => verdicts.push(if v.pass {
+                                ProbeVerdict::Pass
+                            } else {
+                                ProbeVerdict::Fail
+                            }),
+                            Err(e) => {
+                                receipt.retryable = true;
+                                receipt.reason_code = Some("judge_error".into());
+                                receipt.reason = Some(format!("{e:#}"));
+                                break;
+                            }
+                        }
+                    }
+                    result => {
+                        receipt.retryable = true;
+                        receipt.reason_code = Some("replay_error".into());
+                        receipt.reason = Some(match result {
+                            Ok(Err(why)) => why,
+                            Err(e) => format!("{e:#}"),
+                            _ => unreachable!(),
+                        });
+                        break;
+                    }
+                }
+            } else {
+                match probe::drive_arm(&prepared, provider_cfg, &model, &prep, system).await {
+                    Ok(Ok(v)) => {
+                        receipt
+                            .arms
+                            .push(serde_json::json!({"verdict": format!("{v:?}")}));
+                        verdicts.push(v);
+                    }
+                    result => {
+                        receipt.retryable = true;
+                        receipt.reason_code = Some("probe_error".into());
+                        receipt.reason = Some(match result {
+                            Ok(Err(why)) => why,
+                            Err(e) => format!("{e:#}"),
+                            _ => unreachable!(),
+                        });
                         break;
                     }
                 }
             }
-            let [baseline, with] = &arms[..] else {
-                skipped += 1;
-                continue;
-            };
-            match probe::compare(
+        }
+        let mut attributed = None;
+        if let [baseline, with] = &verdicts[..] {
+            receipt.outcome = outcome_str(baseline, with).into();
+            if receipt.outcome == "unchanged_pass" {
+                both_pass += 1;
+            }
+            if receipt.outcome == "unchanged_fail" {
+                both_fail += 1;
+            }
+            if let Some(label) = probe::compare(
                 baseline,
                 with,
                 &mut improved,
@@ -577,222 +647,63 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 &mut unchanged,
                 &mut inconclusive,
             ) {
-                Some(label) => {
-                    println!("· {} [{}, {label}] {}", r.id, r.trigger, r.reflexion_text)
-                }
-                None => {
-                    let why = [baseline, with]
-                        .iter()
-                        .find_map(|v| match v {
-                            ProbeVerdict::Inconclusive(w) => Some(w.clone()),
-                            _ => None,
-                        })
-                        .unwrap_or_default();
-                    println!("· {} [{}] inconclusive: {why}", r.id, r.trigger);
-                }
+                println!("· {} [{}, {label}] {}", r.id, r.trigger, r.reflexion_text);
+            } else {
+                receipt.reason_code = Some("ungradeable_probe".into());
+                receipt.reason = [baseline, with].iter().find_map(|v| match v {
+                    ProbeVerdict::Inconclusive(why) => Some(why.clone()),
+                    _ => None,
+                });
             }
-
-            // A regression is the suspicion attribution acts on: find which
-            // rule flips this probe, against the same recorded prefix.
-            let mut attributed = None;
-            if matches!((baseline, with), (ProbeVerdict::Pass, ProbeVerdict::Fail))
-                && !args.no_attribute
-            {
+            // Judge-graded prose never convicts a rule through bisection.
+            if !followup && !args.no_attribute && receipt.outcome == "regressed" {
                 match attribute_regression(
-                    prepared,
+                    &prepared,
                     provider_cfg,
                     &model,
                     &prep,
                     &surface,
                     &carried,
                 )
-                .await?
+                .await
                 {
-                    Some(i) => {
-                        let (domain, rule) = &surface.flat[i];
-                        match &rule.id {
-                            Some(id) => {
-                                attributed = Some(id.clone());
-                                println!("    attributed to [{domain}] {}", rule.text);
-                            }
-                            // A rule from before identity existed can be
-                            // named but not tallied — the next learn pass
-                            // mints its id.
-                            None => println!(
-                                "    attributed to a pre-identity rule [{domain}]: {}",
-                                rule.text
-                            ),
-                        }
-                    }
-                    None => println!("    no single rule attributable"),
+                    Ok(Some(i)) => attributed = surface.flat[i].1.id.clone(),
+                    Ok(None) => {}
+                    Err(e) => eprintln!("· {}: attribution unavailable: {e:#}", r.id),
                 }
             }
-            record(
-                r,
-                &carried,
-                &prep.situation(),
-                outcome_str(baseline, with),
-                attributed,
-            )?;
-            continue;
-        }
-
-        // ── followups: re-ask the corrective turn, judge both answers ──
-        let first_config = Session::run_configs(&path)?.into_iter().next();
-        let base_system = first_config
-            .as_ref()
-            .and_then(|rc| rc.system_prompt.clone())
-            .map(|s| strip_rules_block(&s))
-            .unwrap_or_default();
-        // The situation the recorded run was in, from its own record. A
-        // session with no config recorded cannot say, and gets the standing
-        // rules only — the set every run carries — rather than a guess.
-        let run = first_config
-            .as_ref()
-            // The workspace the block was matched against, not the jail —
-            // the region a row is placed in is the key the run presented.
-            .map(|rc| {
-                Situation::of_run(&rc.tools, rc.rules_workspace.as_deref()).on(rc.rules_surface)
-            })
-            .unwrap_or_default();
-        // The situation a followup is judged in is the session's first
-        // config's — the judge path re-asks the corrective turn under the
-        // recorded prompt and has no branch to replay. The steer/denial
-        // path above rendered its own block for `prep.situation()`, the
-        // config covering the intervention; an earlier draft gated both
-        // paths on this one and skipped replays for a reason drawn from a
-        // situation the replay never used (found on review).
-        let carried = surface.carried(&run);
-        // A block that renders nothing is nothing to measure: both arms
-        // would be byte-identical and grade as "unchanged", which the
-        // summary counts as a verdict — the measured-clean-versus-not-
-        // measured conflation one function over (found on review). The
-        // predicate is the rendered block, not `carried`: user rules ride
-        // in every block regardless of selection, so a domain with user
-        // rules and nothing scoped to this run still has an arm to measure
-        // (found on the next review). The row is not written.
-        let Some(rules_block) = surface.block_with(&carried, &run) else {
-            eprintln!(
-                "· {}: no rule rides in this session's situation; skipping",
-                r.id
-            );
-            skipped += 1;
-            continue;
-        };
-        let with_rules = if base_system.is_empty() {
-            rules_block.clone()
         } else {
-            format!("{base_system}\n\n{rules_block}")
-        };
-
-        let Some(idx) = locate_followup(&convo.messages, &r.intervention) else {
-            eprintln!(
-                "· {}: could not locate the intervention turn; skipping",
-                r.id
-            );
-            skipped += 1;
-            continue;
-        };
-
-        let mut messages: Vec<Message> = convo.messages[..idx].to_vec();
-        messages.push(Message::user(r.intervention.clone()));
-
-        let mut answers = Vec::new();
-        for system in [&base_system, &with_rules] {
-            let request = CompletionRequest {
-                response_schema: None,
-                model: model.clone(),
-                system: (!system.is_empty()).then(|| system.clone()),
-                messages: messages.clone(),
-                tools: Vec::new(),
-                // **Above the reasoning budget, not merely large.** A local
-                // model with thinking on spends this allowance on
-                // `reasoning_content` first and emits the answer from what is
-                // left; at 4096 it routinely spent all of it and returned
-                // HTTP 200 with empty content — `finish_reason: "length"`,
-                // 10k+ reasoning characters, no answer. The judge then graded
-                // an absent answer as a bad one, and where only one arm did it
-                // the probe reported REGRESSED and blamed the rule.
-                //
-                // The same number, for the same reason, as the judge's own
-                // `with_max_tokens` twenty lines up — whose comment already
-                // records that 4096 was measured insufficient. The fix landed
-                // on the judge and not on the probe it grades, which is how a
-                // measured lesson stays half-applied.
-                max_tokens: mecha_core::provider::LOCAL_MAX_TOKENS,
-                effort: None,
-                thinking: false,
-                cache_prompt: true,
-            };
-            let response = provider.complete(&request, None).await?;
-            answers.push(response.message.text());
-        }
-
-        // The rubric is what the intervention itself established the user
-        // wanted; the reflection's lesson names it directly.
-        let rubric = format!(
-            "the answer does what the user's message asks, in the light of this \
-             known expectation: {}",
-            r.reflexion_text
-        );
-        // Before the judge sees them: an arm with no readable answer cannot
-        // be compared, and pretending otherwise convicts a rule of a harness
-        // artifact.
-        if let Some(i) = answers.iter().position(|a| !is_gradeable(a)) {
-            eprintln!(
-                "· {}: the {} answer has no gradeable text (a tool call with no prose, \
-                 most likely — the followup probe offers no tools); inconclusive",
-                r.id,
-                if i == 0 { "baseline" } else { "with-rules" }
-            );
-            record(r, &carried, &run, "inconclusive", None)?;
             inconclusive += 1;
-            continue;
         }
-
-        let mut verdicts = Vec::new();
-        for answer in &answers {
-            match judge.assess(&r.intervention, &rubric, answer).await {
-                Ok(v) => verdicts.push(v.pass),
-                Err(e) => {
-                    eprintln!("· {}: judge failed ({e:#}); skipping", r.id);
-                    verdicts.clear();
-                    break;
-                }
-            }
+        if let Some(why) = &receipt.reason {
+            eprintln!(
+                "· {}: {}: {why}",
+                r.id,
+                receipt.reason_code.as_deref().unwrap_or("inconclusive")
+            );
         }
-        let [baseline, with] = verdicts[..] else {
-            skipped += 1;
-            continue;
-        };
-
-        let (label, outcome) = match (baseline, with) {
-            (false, true) => {
-                improved += 1;
-                ("IMPROVED", "improved")
-            }
-            (true, false) => {
-                regressed += 1;
-                ("REGRESSED", "regressed")
-            }
-            (true, true) => {
-                unchanged += 1;
-                ("unchanged (both pass)", "unchanged_pass")
-            }
-            (false, false) => {
-                unchanged += 1;
-                ("unchanged (both fail)", "unchanged_fail")
-            }
-        };
-        println!("· {} [{}] {}", r.id, label, r.reflexion_text);
-        if baseline != with {
-            println!("    baseline:   {}", first_line(&answers[0]));
-            println!("    with rules: {}", first_line(&answers[1]));
-        }
-        // Judge-graded, so no bisection: a followup regression is a prompt to
-        // read two answers, not evidence that convicts one rule.
-        record(r, &carried, &run, outcome, None)?;
+        // Write the compact outcome before the receipt: an interrupted append
+        // must not suppress a measurement the retirement ledger never received.
+        store.append_validation(&ValidationRecord {
+            reflexion_id: r.id.clone(),
+            trigger: r.trigger.clone(),
+            domain: r.domain.clone(),
+            rules_hash: block_hash,
+            rule_ids: surface.rule_ids(&carried),
+            outcome: receipt.outcome.clone(),
+            attributed_rule_id: attributed,
+            model: model.clone(),
+            created_at: receipt.created_at.clone(),
+            region: (!followup && r.trigger != Trigger::Mismatch.as_str())
+                .then_some(r)
+                .and_then(|r| r.situation.as_ref())
+                .filter(|s| s.focus().is_some())
+                .map(|s| s.scope()),
+        })?;
+        store.append_validation_attempt(&receipt)?;
+        recorded_rows += 1;
     }
+    println!("coverage: {recorded_rows} probes attempted, {reused} unchanged inputs deferred; unchanged verdicts: {both_pass} both pass, {both_fail} both fail");
 
     println!(
         "\n{improved} improved, {regressed} regressed, {unchanged} unchanged, \
@@ -807,6 +718,20 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         store.commit(&format!("validate: {recorded_rows} probe(s) → ledger"));
     }
     Ok(())
+}
+
+/// Identity includes both the recorded inputs and the applied measurement settings.
+fn attempt_key(
+    prep: &probe::ProbePrep,
+    reflection: &Reflexion,
+    block_hash: &str,
+    settings: &serde_json::Value,
+) -> Result<String> {
+    Ok(rules_hash(&serde_json::to_string(&serde_json::json!({
+        "settings": settings, "input": prep.input_hash()?, "rules": block_hash,
+        "reflection": reflection.id, "rubric": reflection.reflexion_text,
+        "trigger": reflection.trigger,
+    }))?))
 }
 
 /// Reflections to add to a pass so every (rule, support region) pair the
@@ -911,19 +836,6 @@ fn outcome_str(baseline: &ProbeVerdict, with: &ProbeVerdict) -> &'static str {
         (ProbeVerdict::Pass, ProbeVerdict::Fail) => "regressed",
         (ProbeVerdict::Pass, _) => "unchanged_pass",
         (ProbeVerdict::Fail, _) => "unchanged_fail",
-    }
-}
-
-fn first_line(s: &str) -> String {
-    let line = s
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .trim();
-    if line.chars().count() > 140 {
-        format!("{}…", line.chars().take(140).collect::<String>())
-    } else {
-        line.to_string()
     }
 }
 

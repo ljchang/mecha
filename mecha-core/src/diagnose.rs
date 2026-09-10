@@ -574,7 +574,7 @@ impl Evidence {
 /// draft. Those are three of the four boundaries docs/ARCHITECTURE.md says reach a human
 /// however anything scores; the fourth, the path jail, is not configurable and
 /// so cannot be proposed.
-pub const GUARDED_SECTIONS: [&str; 3] = ["security", "sandbox", "outbox"];
+pub const GUARDED_SECTIONS: [&str; 4] = ["security", "sandbox", "outbox", "capabilities"];
 
 /// Settings whose bare names are unambiguous without their section.
 ///
@@ -583,7 +583,11 @@ pub const GUARDED_SECTIONS: [&str; 3] = ["security", "sandbox", "outbox"];
 /// are every field of `SecurityConfig`, and none collides with a key elsewhere
 /// in the config — which is what makes matching them bare safe rather than
 /// merely convenient.
-pub const GUARDED_KEYS: [&str; 6] = [
+pub const GUARDED_KEYS: [&str; 10] = [
+    "private_data",
+    "untrusted_input",
+    "external_send",
+    "destructive",
     "trifecta",
     "block_private_ips",
     "allowed_domains",
@@ -814,6 +818,18 @@ mod tests {
 
     /// Fails on the old brief: it had no threshold and no maximum, so no
     /// sentence could distinguish "never needed" from "never fired".
+    #[test]
+    fn mcp_capability_changes_are_security_changes() {
+        for change in [
+            "capabilities.external_send=false",
+            "untrusted_input=false",
+            "private_data=false",
+            "destructive=false",
+        ] {
+            assert!(names_guarded_setting(change).is_some(), "{change}");
+        }
+    }
+
     #[test]
     fn a_corpus_that_never_neared_the_threshold_says_so() {
         let brief = super::Evidence {

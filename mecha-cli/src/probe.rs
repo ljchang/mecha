@@ -66,6 +66,10 @@ pub struct ProbePrep {
 }
 
 enum ProbeMethod {
+    Followup {
+        trajectory: Trajectory,
+        branch: Branch,
+    },
     Trace {
         trajectory: Trajectory,
         point: ProbePoint,
@@ -79,6 +83,26 @@ enum ProbeMethod {
 }
 
 impl ProbePrep {
+    /// Identity of the recorded inputs; changing a transcript or config makes
+    /// a fresh measurement even when the reflection and rules are unchanged.
+    pub fn input_hash(&self) -> Result<String> {
+        let inputs = match &self.method {
+            ProbeMethod::Trace {
+                trajectory, branch, ..
+            }
+            | ProbeMethod::Followup { trajectory, branch } => serde_json::json!({
+                "recorded": self.recorded, "specs": self.recorded_specs,
+                "seed": branch.seed, "base": branch.call_base, "trajectory": trajectory,
+            }),
+            ProbeMethod::Artifact { case, .. } => {
+                serde_json::json!({"recorded": self.recorded, "case": case})
+            }
+        };
+        Ok(mecha_core::learning::rules_hash(&serde_json::to_string(
+            &inputs,
+        )?))
+    }
+
     /// The situation the recorded run was in: the registry its `RunConfig`
     /// names and the workspace its rules block was matched against — not
     /// the jail, which on `serve` and Slack is a different path. What a
@@ -190,35 +214,48 @@ pub fn prepare_probe_in(
         Err(e) => return Ok(Err(format!("session unreadable: {e:#}"))),
     };
     let messages = &transcript.convo.messages;
-    let point = if trigger == Trigger::Steer.as_str() {
-        locate_steer(messages, intervention)
-    } else if trigger == Trigger::Denial.as_str() {
-        locate_denial(messages, intervention)
+    let (method, message_index) = if trigger == Trigger::Followup.as_str() {
+        let Some((index, branch)) =
+            mecha_core::counterfactual::followup_branch(messages, intervention)
+        else {
+            return Ok(Err("could not locate the corrective turn".into()));
+        };
+        let trajectory = extract(truncate_after_run(messages, index));
+        (ProbeMethod::Followup { trajectory, branch }, index)
     } else {
-        // An `edit` reflection's intervention lives in an outbox item, not in
-        // any transcript — there is no prefix to replay. Explicit, so a new
-        // trigger kind cannot silently be probed as if it were a denial.
-        return Ok(Err(format!(
-            "`{trigger}` interventions have no replayable intervention point"
-        )));
-    };
-    let Some(point) = point else {
-        return Ok(Err("could not locate the intervention".into()));
-    };
-    let slice = truncate_after_run(messages, point.message_index);
-    let trajectory = extract(slice);
-    if trajectory.turns.is_empty() {
-        return Ok(Err("no user turns before the intervention".into()));
-    }
-    let Some(branch) = branch_at(slice, &point) else {
-        return Ok(Err("could not rebuild the branch prefix".into()));
+        let point = if trigger == Trigger::Steer.as_str() {
+            locate_steer(messages, intervention)
+        } else if trigger == Trigger::Denial.as_str() {
+            locate_denial(messages, intervention)
+        } else {
+            return Ok(Err(format!(
+                "`{trigger}` interventions have no replayable intervention point"
+            )));
+        };
+        let Some(point) = point else {
+            return Ok(Err("could not locate the intervention".into()));
+        };
+        let slice = truncate_after_run(messages, point.message_index);
+        let trajectory = extract(slice);
+        let Some(branch) = branch_at(slice, &point) else {
+            return Ok(Err("could not rebuild the branch prefix".into()));
+        };
+        let index = point.message_index;
+        (
+            ProbeMethod::Trace {
+                trajectory,
+                point,
+                branch,
+            },
+            index,
+        )
     };
     // The config in effect *at the intervention*, not `first()`: a resumed
     // session's later attach ran under its own system prompt and tool list,
     // and replaying its turns under the first attach's diverges for reasons
     // that say nothing about the steer — which a counterfactual verdict then
     // reads as `Mattered`, inflating regret out of an artifact of the replay.
-    let Some(recorded) = transcript.config_covering(point.message_index).cloned() else {
+    let Some(recorded) = transcript.config_covering(message_index).cloned() else {
         return Ok(Err("no RunConfig recorded".into()));
     };
 
@@ -237,11 +274,7 @@ pub fn prepare_probe_in(
         .and_then(|h| mecha_core::surface::SurfaceStore::open_default()?.load(h))
         .unwrap_or_default();
     Ok(Ok(ProbePrep {
-        method: ProbeMethod::Trace {
-            trajectory,
-            point,
-            branch,
-        },
+        method,
         recorded,
         recorded_specs,
         base_system,
@@ -406,13 +439,39 @@ pub async fn drive_arm(
         )?;
         return Ok(Ok(verdict));
     }
-    let ProbeMethod::Trace {
-        trajectory,
-        point,
-        branch,
-    } = &prep.method
-    else {
-        unreachable!()
+    let ProbeMethod::Trace { point, .. } = &prep.method else {
+        return Ok(Err(
+            "followups require the judge-graded continuation path".into()
+        ));
+    };
+    Ok(
+        drive_continuation(prepared, provider_cfg, model, prep, system)
+            .await?
+            .map(|report| {
+                let result = verdict(&report, point);
+                tracing::debug!(?result, calls = ?report.replayed_calls,
+                    diffs = ?report.divergences, text = %report.final_text, "probe arm");
+                result
+            }),
+    )
+}
+
+/// Non-executing continuation used by both trace and followup probes.
+/// Followups retain their user correction and expose the recorded tools.
+pub async fn drive_continuation(
+    prepared: &Prepared,
+    provider_cfg: &ProviderConfig,
+    model: &str,
+    prep: &ProbePrep,
+    system: String,
+) -> Result<Result<mecha_core::replay_run::ReplayReport, String>> {
+    let recorded = &prep.recorded;
+    let (trajectory, branch) = match &prep.method {
+        ProbeMethod::Trace {
+            trajectory, branch, ..
+        }
+        | ProbeMethod::Followup { trajectory, branch } => (trajectory, branch),
+        ProbeMethod::Artifact { .. } => return Ok(Err("artifact probes do not replay".into())),
     };
     let cancel = CancellationToken::new();
     // The recording the registry answers from starts at the branch base: the
@@ -486,27 +545,7 @@ pub async fn drive_arm(
     )
     .await
     {
-        // Which rule grades this is carried by the point itself, so a kind
-        // the caller has not heard of cannot be graded as a denial by default.
-        Ok(report) => {
-            let v = verdict(&report, point);
-            // What the arm actually did, for `MECHA_LOG=debug` — a verdict
-            // that surprises is unreadable from Pass/Fail alone, and the
-            // retirement drill's first run was diagnosed blind for want of
-            // exactly this line.
-            tracing::debug!(
-                verdict = ?v,
-                calls = ?report
-                    .replayed_calls
-                    .iter()
-                    .map(|c| c.name.as_str())
-                    .collect::<Vec<_>>(),
-                divergences = report.divergences.len(),
-                text = %report.final_text,
-                "probe arm"
-            );
-            Ok(Ok(v))
-        }
+        Ok(report) => Ok(Ok(report)),
         Err(e) => Ok(Err(format!("replay failed: {e:#}"))),
     }
 }

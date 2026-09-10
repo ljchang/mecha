@@ -418,6 +418,14 @@ async fn measure(
     // plain — the diagnostician's narrowed opts are its own, not the arms'.
     let prepared = setup::prepare(&global.clone(), false).await?;
     let (_, provider_cfg) = prepared.config.provider(global.provider.as_deref())?;
+    if let Err(e) = change.ensure_supported(mecha_core::provider::build(provider_cfg)?.as_ref()) {
+        cand.reason = Some(format!(
+            "inapplicable to the measurement provider: {e}; staged unmeasured"
+        ));
+        store.write(&cand)?;
+        println!("\n{}", cand.reason.as_deref().unwrap_or_default());
+        return Ok(());
+    }
 
     let sessions_dir = Session::default_dir()?;
     // Seeded off the candidate id rather than the clock: re-measuring the same
@@ -465,6 +473,7 @@ async fn measure(
         unusable
     );
 
+    let mut arm_receipts = Vec::new();
     let mut selection_pairs: Vec<Pair> = Vec::new();
     let mut holdout_pairs: Vec<Pair> = Vec::new();
     let mut diverged: Vec<String> = Vec::new();
@@ -479,6 +488,7 @@ async fn measure(
     // one case narrower.
     macro_rules! note_divergence {
         ($arm:expr, $outcome:expr, $id:expr) => {
+            arm_receipts.push(serde_json::json!({"episode": $id, "arm": $arm, "replay": $outcome.receipt}));
             if let Some(why) = &$outcome.divergence {
                 divergence_detail.push(mecha_core::harness::Divergence {
                     episode: $id.clone(),
@@ -657,6 +667,7 @@ async fn measure(
         // misdirects, and `show` would print it directly above the arm
         // split that contradicts it. Nothing paired because every arm left
         // the recording, which is a different finding from too small a draw.
+        record.arm_receipts = arm_receipts;
         record.reason = cand.reason.clone().unwrap_or_default();
         cand.measurement = Some(record);
         store.write(&cand)?;
@@ -693,6 +704,10 @@ async fn measure(
             skipped,
         },
     ));
+
+    if let Some(measurement) = cand.measurement.as_mut() {
+        measurement.arm_receipts = arm_receipts;
+    }
 
     println!(
         "\nselection  {}+ {}- {}=    holdout  {}+ {}- {}=    work {} → {}",

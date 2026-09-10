@@ -2035,6 +2035,64 @@ pub struct ValidationRecord {
     pub region: Option<crate::situation::Situation>,
 }
 
+/// Detailed attempt receipt, kept beside the compact retirement ledger.
+/// Legacy ledger rows without receipts never suppress a fresh measurement.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidationAttempt {
+    pub key: String,
+    pub reflexion_id: String,
+    pub rules_hash: String,
+    pub model: String,
+    pub created_at: String,
+    pub outcome: String,
+    pub reason_code: Option<String>,
+    pub reason: Option<String>,
+    pub retryable: bool,
+    pub arms: Vec<serde_json::Value>,
+}
+
+impl ValidationAttempt {
+    /// Confirm regressions on subsequent nights so retirement's brake still
+    /// operates. Other identical inputs are repeated only on explicit request;
+    /// provider/transport failures never suppress tomorrow's retry.
+    pub fn should_run(prior: &[Self], key: &str, repeat: bool) -> bool {
+        repeat
+            || prior
+                .iter()
+                .rev()
+                .find(|a| a.key == key)
+                .is_none_or(|a| a.retryable || a.outcome == "regressed")
+    }
+}
+
+impl LearningStore {
+    pub fn append_validation_attempt(&self, attempt: &ValidationAttempt) -> Result<()> {
+        self.append_line(
+            "validation-attempts.jsonl",
+            &serde_json::to_string(attempt)?,
+        )
+    }
+
+    pub fn validation_attempts(&self) -> Result<Vec<ValidationAttempt>> {
+        let path = self.root.join("validation-attempts.jsonl");
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut out = Vec::new();
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            match serde_json::from_str(line) {
+                Ok(row) => out.push(row),
+                Err(e) => {
+                    tracing::warn!(%e, "unreadable validation attempt; does not suppress retries")
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
 /// Stable content hash of a rendered rules block. FNV-1a written out here
 /// because the std hasher is deliberately unstable across Rust releases, and
 /// a ledger key that drifts with the toolchain would silently split every
@@ -3517,6 +3575,45 @@ mod tests {
             content: content.into(),
             is_error,
         }
+    }
+
+    #[test]
+    fn validation_reuses_inputs_but_retries_failures_and_confirms_regressions() {
+        let mut row = ValidationAttempt {
+            key: "same".into(),
+            reflexion_id: "r".into(),
+            rules_hash: "rules".into(),
+            model: "model".into(),
+            created_at: "now".into(),
+            outcome: "unchanged_fail".into(),
+            reason_code: None,
+            reason: None,
+            retryable: false,
+            arms: vec![],
+        };
+        assert!(!ValidationAttempt::should_run(
+            &[row.clone()],
+            "same",
+            false
+        ));
+        assert!(ValidationAttempt::should_run(
+            &[row.clone()],
+            "new-settings",
+            false
+        ));
+        assert!(ValidationAttempt::should_run(&[row.clone()], "same", true));
+        row.outcome = "inconclusive".into();
+        assert!(!ValidationAttempt::should_run(
+            &[row.clone()],
+            "same",
+            false
+        ));
+        row.retryable = true;
+        assert!(ValidationAttempt::should_run(&[row.clone()], "same", false));
+        row.retryable = false;
+        row.outcome = "regressed".into();
+        assert!(ValidationAttempt::should_run(&[row], "same", false));
+        assert!(ValidationAttempt::should_run(&[], "same", false));
     }
 
     #[test]

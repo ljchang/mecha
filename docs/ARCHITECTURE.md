@@ -417,6 +417,18 @@ rules-on and the per-case flips are their own artifact, never a comparable
 scorecard. The evidence behind all of this is `docs/MEMORY-RESEARCH.md` and
 `docs/LEARNING-LOOP-RESEARCH.md`.
 
+**Replay completeness and retry identity are separate from a verdict.**
+`counterfactual::followup_branch` retains the corrective user message;
+`probe::drive_continuation` rebuilds its recorded surface under nonexecuting
+`OnDivergence::Stop`. A follow-up prose judgment requires a complete continuation,
+matching arguments and gradeable final text. Otherwise the result is inconclusive,
+never evidence for bisection. `ValidationAttempt` records the input/settings/rules
+identity and the reason beside the compact ledger. Filter deferred attempts before
+buying coverage slots, or the first inconclusive ID monopolizes `--cover 1` forever.
+Transient failures and regression confirmations remain retryable; `--repeat`
+explicitly remeasures other unchanged inputs. Receipts do not make repeated
+observations independent evidence.
+
 **The budget is per domain, and a run carries only the domains it names.**
 `MAX_ACTIVE_RULES_PER_DOMAIN` (25, raised from 15 on 2026-08-18) is the count
 half and `RULES_CHAR_BUDGET` (2600) the size half; the two move together, and
@@ -2738,6 +2750,23 @@ finding (agents update their harnesses without benefiting) answered
 structurally: nothing lands without a measurement, and every disposition is on
 the record, so "is this loop actually helping" is a query, not an impression.
 
+### Gossip evidence
+
+Source lenses and commit-then-reveal preserve separate first answers. Target
+identity (`gossip::EntityIdentity`) is explicit in each reader; generated questions
+must name it, and searches retain the target name alongside the fixed source/time
+window. The graph search API is semantic: this is not an entity-link constraint,
+and its capped hit counts are not exact coverage or proof of independent origins.
+
+`grounded_claims` admits a carried answer only when its episode ID and exact quote
+exist in that reader's retrieved packet. Raw answers remain auditable, but do not
+become the next round's evidence. This stops an uncited identity mistake from
+reinforcing itself. Citation checks do not establish entailment; `round_yield`
+counts citations and repetition, not newly verified truth. All automated searches
+set `probe: true` so measurement traffic does not teach target selection to choose
+itself. Malformed pending reads and failed verdict writes must remain visible;
+a failed filing is not an adjudicated item.
+
 ### Harness rumination
 
 `mecha harness ruminate` (`commands/harness.rs`, nightly from `ruminate.sh`)
@@ -2756,6 +2785,16 @@ everything else stages for review or is rejected with the evidence attached.
 
 The decisions that carry it, each a bug if undone:
 
+- **A configured knob must affect the selected adapter.**
+  `ConfigChange::ensure_supported` checks `Provider::supports_effort` before
+  spending replay budget. The local compatible adapter accepts the config field
+  but does not transmit it; measuring that as an intervention measures sampling
+  noise. A failover chain advertises support only when every possible arm does.
+- **An unfinished replay is not a cheap successful run.**
+  `ReplayReport::unmeasurable_reason` rejects structural missing tails even when
+  no cursor cancellation occurred. Harness arm receipts retain calls, differences,
+  final text and stats before pair admission; `stopped_early` alone misses an agent
+  that simply answers before making all recorded calls.
 - **An accepted change lives in an override layer, never in config.toml.**
   `overrides.toml` applies between defaults and every file layer
   (`harness::apply_accepted_overrides`, called by `Config::load` and

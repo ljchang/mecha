@@ -14,6 +14,38 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-10 — nightly measurement and gossip grounding, implemented in an
+isolated worktree; not deployed.** `followup_branch` and
+`probe::drive_continuation` retain the correction, restore recorded tools and
+reject incomplete or argument-divergent prose before judging. `ValidationAttempt`
+records input identities, reasons and arm receipts, defers unchanged inputs before
+coverage selection, and preserves explicit repeats, transient retries and regression
+confirmations. `ConfigChange::ensure_supported` rejects ignored effort controls;
+`ArmOutcome::from_report` excludes missing tails even without cursor cancellation
+and preserves receipts. Diagnosis routes MCP capability changes as security work.
+Gossip carries resolved identity and structurally checked episode/quote claims,
+keeps raw answers for audit, records citation yield and exposes filing failures.
+A citation is not semantic proof. One bounded two-reader/two-round live smoke
+produced four explicit no-evidence answers and no verdict filings; its 16 retrieved
+hits per round supplied no accepted target claim. That result exposed and corrected
+abstention accounting, now separate from uncited answers. The live retirement drill's first pair passed
+both arms on the local Qwen model, so the expected regression and retirement were
+not demonstrated; the run was not retried to seek a passing result.
+
+One copied nightly followup was replayed with the local Qwen model in an isolated
+store. An extra tool call made its first arm inconclusive without tool execution
+or a prose verdict. A second unchanged invocation deferred the same input and left
+one ledger/attempt row. Build, formatting, Clippy and required-backend workspace
+tests passed (2,625 passed, zero failures, three ignored). The missing-tail
+regression failed under the old admission logic and passed with the fix.
+
+The handoff source sweep also removed stale interactive-validation implementation
+work: `surface_only_registry` and the recorded `SurfaceStore` fallback already
+restore unavailable interactive tools in nonexecuting replay. It narrowed the old
+phase-C item because `learning::extract_mismatches`, `commands::reflect::execute`
+and `MISMATCH_REFLECTOR_SYSTEM` already produce bounded, goal-bound reflections.
+General sampling and per-kind retrieval questions remain open.
+
 **2026-09-09 — corrected attribution pilot complete, without rule exposure.**
 Runtime `c7071ad3` completed 72 Qwen 3.6 35B trials and 54 learning stages across
 three seeds. Both arms passed 30/36 overall, 15/18 transfer and 31/36 artifact

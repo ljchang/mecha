@@ -1,5 +1,10 @@
 # The goal system — design
 
+**2026-09-10 implementation addendum:** recorded followup continuation and
+validation retry identities are implemented; gossip now carries retrieved citations
+and measures citation yield. See [HISTORY](HISTORY.md) under this date for evidence
+and the remaining semantic/round-comparison limits. The proposed body stays intact.
+
 Decided 2026-08-26. **Rungs 0–5 of §14 shipped the same day** (PRs #61–#72),
 rung 5's model-facing half followed on 2026-08-27 (#78), and **rung 6, rung
 7's observation half, and rung 7's quarantined appraiser all shipped the same

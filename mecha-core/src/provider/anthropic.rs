@@ -208,6 +208,10 @@ impl Anthropic {
 
 #[async_trait]
 impl Provider for Anthropic {
+    fn supports_effort(&self) -> bool {
+        true
+    }
+
     fn structured_output(&self) -> bool {
         self.structured_output
     }

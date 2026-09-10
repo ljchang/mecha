@@ -113,6 +113,19 @@ pub struct Branch {
     pub call_base: usize,
 }
 
+/// A corrective top-level user turn stays in a followup's seed. Unlike a
+/// steer counterfactual, this measures responding to the correction itself.
+pub fn followup_branch(messages: &[Message], intervention: &str) -> Option<(usize, Branch)> {
+    let index = crate::learning::locate_followup(messages, intervention)?;
+    Some((
+        index,
+        Branch {
+            seed: messages[..=index].to_vec(),
+            call_base: calls_before(messages, index),
+        },
+    ))
+}
+
 /// Build the branch a probe point implies.
 ///
 /// The two kinds cut differently, and the difference is what each verdict
@@ -410,6 +423,30 @@ mod tests {
             Message::assistant(vec![tool_use("t3", "fs_read", json!({"path": "b.md"}))]),
             Message::user("next task entirely"),
         ]
+    }
+
+    #[test]
+    fn followup_keeps_the_correction_and_rebases_after_prior_calls() {
+        let messages = vec![
+            Message::user("old task"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "a".into(),
+                name: "fs_read".into(),
+                input: serde_json::json!({"path":"a"}),
+            }]),
+            Message::user("Use the updated schedule instead"),
+            Message::assistant(vec![Block::text("new answer")]),
+            Message::user("unrelated next task"),
+        ];
+        let (index, branch) =
+            followup_branch(&messages, "Use the updated schedule instead").unwrap();
+        assert_eq!(index, 2);
+        assert_eq!(branch.call_base, 1);
+        assert_eq!(
+            branch.seed.last().unwrap().text(),
+            "Use the updated schedule instead"
+        );
+        assert_eq!(truncate_after_run(&messages, index).len(), 4);
     }
 
     #[test]
