@@ -1,0 +1,20 @@
+{
+  "at": "2026-09-10T17:24:10.196261+00:00",
+  "inputs": {
+    "/tmp/mecha-nightly-fixes/eval/executable-validation.toml": "9c30470ee92c1994e5c25386d831a2fbf9a539d67c87a2e290c6e3755cf23bad",
+    "/tmp/mecha-nightly-fixes/eval/fixtures/executable-validation/cases.json": "dfca0aa7330c1c983ed28270b2c34cfda9c11cad8e6cb15d7d569743145c8d5a",
+    "/tmp/mecha-nightly-fixes/eval/fixtures/executable-validation/workspace/README.txt": "9ef91684e67f07123c6d07f6edc664c4e120704cdd8ac5a27917a01d2a3421a4",
+    "/tmp/mecha-nightly-fixes/eval/fixtures/executable_validation_source.py": "8e03d53efec6209a5b997c049b1c09feff4286a2085688b21cd81a378516bddb",
+    "/tmp/mecha-nightly-fixes/eval/fixtures/appraisal_mismatch_source.py": "efb60a5a89c711f65aecbac1319fa20bb2eb18513fe423ef4992dcc59617b0b9",
+    "/tmp/mecha-nightly-fixes/eval/fixtures/appraisal_source.py": "ddff3ee0192cc6f8cf1b2d5924cb2d2a76343bfd61b784d0c46f9e5fc36aec25",
+    "/tmp/mecha-nightly-fixes/scripts/executable-validation.py": "9d0d3c612fc856f952b72ba0b4c25a2efab0fa49b873055cc2a5dc9a9a204aa6",
+    "/tmp/mecha-nightly-fixes/target/debug/mecha": "61dace8a0ef168f41c34a5b4c8637ad66ec6461b9d0ca0b911be04f7d6b0bce1",
+    "/tmp/mecha-executable-validation-v1-20260910/bootstrap/config.toml": "eba11ba1fc5246c7973a2bd222cf5ae950f918508d419f7b365eb9958800da56",
+    "/tmp/mecha-executable-validation-v1-20260910/bootstrap/learning/rules/behavior.learned.toml": "63af0636c86506dd09abfeccf371f306daaeadf0d49fe123840be2b1c0cc8a25"
+  },
+  "server": {
+    "model": "qwen3.6-35b-a3b",
+    "slots": 4,
+    "context": 262144
+  }
+}

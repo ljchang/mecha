@@ -1,0 +1,24 @@
+{
+  "build": {
+    "sha256": "5599f0b731c529075281277265d1ecf6838dd28b5bfb5f382bb0a2d819d8c5f8",
+    "errors": 0,
+    "warnings": 0
+  },
+  "clippy": {
+    "sha256": "fecede7c2157efe2f16c8c8b9dce94b0fb4dd384dca8207046c8bf7636eb0ffe",
+    "errors": 0,
+    "warnings": 0
+  },
+  "workspace_tests": {
+    "sha256": "e893c9846873fa7879d90a5610a4ed1ae710dc36c29af773da1d602703260d78",
+    "errors": 0,
+    "warnings": 0
+  },
+  "totals": {
+    "passed": 2626,
+    "failed": 0,
+    "ignored": 3
+  },
+  "required_backends": true,
+  "python_oracle_report_tests": 4
+}

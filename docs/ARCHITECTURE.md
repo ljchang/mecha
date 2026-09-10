@@ -3419,6 +3419,17 @@ model, verdict and task usage. Experiments register the entire fixture in
 and fixtures remain unchanged during a measurement. Forecast-specific validation
 and live-service snapshots remain unsupported.
 
+**Task-success experiments may change their tool sequence.** The executable
+correction pilot (`eval/executable-validation.toml`) reuses `Tasks::mismatch_cases`
+and the task-source oracle with real file tools. Each arm receives the same pinned
+incorrect artifact and preserved evidence in a fresh workspace; gold stays outside
+the acting workspace. Its primary comparison is completed work. A lower turn count
+from an unfinished correction is a regression, never an efficiency win. Report
+costs among both-passing pairs separately from all-run totals. A frozen-rule arm
+tests exposure, not learning. Seed repeats and the experiment gate's pair split do
+not establish generalization to held-out task families; this synthetic pilot cannot
+auto-promote the production proposal it references.
+
 **Training feedback is opt-in and owner-bound.** `ArtifactCase::criteria` names
 specific output fields; `criterion_feedback` compares them with pinned gold after
 the task ends and records `StepFeedback` without actual output prose or expected
