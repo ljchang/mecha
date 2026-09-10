@@ -1,0 +1,404 @@
+[
+  {
+    "id": "0943027a5ed5e2c4cf15",
+    "label": "supported",
+    "facts": [
+      "complement-4"
+    ],
+    "reason": "The quoted source explicitly withholds Mara\u2019s authorization and names the director as approver."
+  },
+  {
+    "id": "0956d688bd283a98dd28",
+    "label": "supported",
+    "facts": [
+      "conflict-2"
+    ],
+    "reason": "The recording explicitly states the historical act of declining Atlas ownership; the roster does not negate that recorded declination."
+  },
+  {
+    "id": "0b83e43fb07a12d27769",
+    "label": "contradicted",
+    "facts": [],
+    "reason": "The resolved target is the North lab researcher. This unqualified statement assigns the South studio namesake\u2019s identity or activity to that target; the cited episode explicitly identifies a different person."
+  },
+  {
+    "id": "0c2fa8c4e10d21ebf0d3",
+    "label": "supported",
+    "facts": [
+      "temporal-4"
+    ],
+    "reason": "The quote proves August 24 delivery; the registered August 5 promise was delivery by August 25. Together they support fulfillment, with only the quoted delivery source item credited."
+  },
+  {
+    "id": "18c7dcf6da6dce4f026f",
+    "label": "supported",
+    "facts": [
+      "identity-1"
+    ],
+    "reason": "The quoted maintenance responsibility concerns the resolved North lab target; the registered context identifies her as the researcher."
+  },
+  {
+    "id": "1fbda47c3963b05763a7",
+    "label": "contradicted",
+    "facts": [],
+    "reason": "The resolved target is the North lab researcher. This unqualified statement assigns the South studio namesake\u2019s identity or activity to that target; the cited episode explicitly identifies a different person."
+  },
+  {
+    "id": "22d869a96b96a52e4add",
+    "label": "unresolved",
+    "facts": [],
+    "reason": "Planning to chair and then withdrawing does not establish that Ivo actually held the chair role."
+  },
+  {
+    "id": "27b2451c6c2990764830",
+    "label": "supported",
+    "facts": [
+      "complement-2"
+    ],
+    "reason": "The cited episode identifies the Lantern review and explicitly states the leadership agreement or Cedar prerequisite expressed in the claim."
+  },
+  {
+    "id": "2a7831f57487da0d1e39",
+    "label": "supported",
+    "facts": [
+      "identity-1"
+    ],
+    "reason": "The quoted maintenance responsibility concerns the resolved North lab target; the registered context identifies her as the researcher."
+  },
+  {
+    "id": "32f3367d0a67659a7774",
+    "label": "supported",
+    "facts": [
+      "complement-4"
+    ],
+    "reason": "The quoted source explicitly withholds Mara\u2019s authorization and names the director as approver."
+  },
+  {
+    "id": "33b5927c5871158e6cde",
+    "label": "supported",
+    "facts": [
+      "temporal-2"
+    ],
+    "reason": "The quote explicitly records withdrawal and, where claimed, Nell\u2019s replacement; it does not assert prior tenure."
+  },
+  {
+    "id": "348b9c8260e4046c7091",
+    "label": "contradicted",
+    "facts": [],
+    "reason": "The resolved target is the North lab researcher. This unqualified statement assigns the South studio namesake\u2019s identity or activity to that target; the cited episode explicitly identifies a different person."
+  },
+  {
+    "id": "3504c9f60055ec21f865",
+    "label": "supported",
+    "facts": [
+      "complement-2"
+    ],
+    "reason": "The cited episode identifies the Lantern review and explicitly states the leadership agreement or Cedar prerequisite expressed in the claim."
+  },
+  {
+    "id": "3d03cee6ab0efa727237",
+    "label": "unresolved",
+    "facts": [],
+    "reason": "A dependency on the Lantern review does not establish that the review or handoff remains unresolved; completion status is not recorded."
+  },
+  {
+    "id": "3dcf9c34735ef03efd53",
+    "label": "supported",
+    "facts": [
+      "conflict-4"
+    ],
+    "reason": "The cited statement explicitly says the Beacon invitation had not been accepted."
+  },
+  {
+    "id": "42afb09d965729ee43fc",
+    "label": "supported",
+    "facts": [
+      "conflict-4"
+    ],
+    "reason": "The cited statement explicitly says the Beacon invitation had not been accepted."
+  },
+  {
+    "id": "4332c3af73d02eabf80b",
+    "label": "supported",
+    "facts": [
+      "complement-4"
+    ],
+    "reason": "The quoted source explicitly withholds Mara\u2019s authorization and names the director as approver."
+  },
+  {
+    "id": "45017fc611d23accff12",
+    "label": "unresolved",
+    "facts": [],
+    "reason": "Storing an inventory with operations establishes that action, not an ongoing relationship being maintained."
+  },
+  {
+    "id": "450ba4dbb53642449f88",
+    "label": "supported",
+    "facts": [
+      "conflict-3"
+    ],
+    "reason": "The claim preserves the tentative-invitation status and does not assert attendance or acceptance."
+  },
+  {
+    "id": "4618aed488182841c218",
+    "label": "unresolved",
+    "facts": [],
+    "reason": "Delivery to the archive is recorded, and a separate promise covers the report; neither establishes a specific assigned responsibility to deliver it to that destination."
+  },
+  {
+    "id": "4922eb8100e3af2e9ffa",
+    "label": "supported",
+    "facts": [
+      "temporal-4"
+    ],
+    "reason": "The cited episode explicitly records delivery to the archive on August 24."
+  },
+  {
+    "id": "49dd038294092020b2d3",
+    "label": "supported",
+    "facts": [
+      "conflict-3"
+    ],
+    "reason": "The claim preserves the tentative-invitation status and does not assert attendance or acceptance."
+  },
+  {
+    "id": "4a213a2bbb9059eb458a",
+    "label": "supported",
+    "facts": [
+      "identity-3"
+    ],
+    "reason": "The quoted agreement concerns the North lab researcher and explicitly sets the audit before the next release; the episode resolves any omitted subject in the quote."
+  },
+  {
+    "id": "4be1e1d17681072c9c0d",
+    "label": "contradicted",
+    "facts": [],
+    "reason": "The resolved target is the North lab researcher. This unqualified statement assigns the South studio namesake\u2019s identity or activity to that target; the cited episode explicitly identifies a different person."
+  },
+  {
+    "id": "4cb42d729119007792b0",
+    "label": "supported",
+    "facts": [
+      "temporal-3"
+    ],
+    "reason": "The claim describes the historical promise to deliver by August 25, not a currently unmet commitment."
+  },
+  {
+    "id": "4f88d1ef51a0e2ea112c",
+    "label": "unresolved",
+    "facts": [],
+    "reason": "The quote records a handoff dependency, not whether the review or handoff is still pending."
+  },
+  {
+    "id": "50c7c2c4a734edc7eb95",
+    "label": "supported",
+    "facts": [
+      "temporal-4"
+    ],
+    "reason": "The cited episode explicitly records delivery to the archive on August 24."
+  },
+  {
+    "id": "521bcc865d5891354804",
+    "label": "contradicted",
+    "facts": [],
+    "reason": "The resolved target is the North lab researcher. This unqualified statement assigns the South studio namesake\u2019s identity or activity to that target; the cited episode explicitly identifies a different person."
+  },
+  {
+    "id": "561936370b7ed2791632",
+    "label": "contradicted",
+    "facts": [],
+    "reason": "The resolved target is the North lab researcher. This unqualified statement assigns the South studio namesake\u2019s identity or activity to that target; the cited episode explicitly identifies a different person."
+  },
+  {
+    "id": "5c8d9be75d211db35d57",
+    "label": "unresolved",
+    "facts": [],
+    "reason": "Depending on a review does not itself prove that the handoff remains pending; the registered facts give no completion status."
+  },
+  {
+    "id": "6ff635f8b1a7e6c96c6f",
+    "label": "supported",
+    "facts": [
+      "temporal-3"
+    ],
+    "reason": "The claim describes the historical promise to deliver by August 25, not a currently unmet commitment."
+  },
+  {
+    "id": "72392b537a99cf8b40ec",
+    "label": "unresolved",
+    "facts": [],
+    "reason": "The reference records a plan and later withdrawal, not actual tenure as chair."
+  },
+  {
+    "id": "76cb9548b57eb7c3157d",
+    "label": "unresolved",
+    "facts": [],
+    "reason": "The roster assigns ownership, but a contemporaneous recording says she declined it. An unqualified actual-ownership assertion is not established."
+  },
+  {
+    "id": "77eb62a55677685e6eab",
+    "label": "supported",
+    "facts": [
+      "conflict-3"
+    ],
+    "reason": "The claim preserves the tentative-invitation status and does not assert attendance or acceptance."
+  },
+  {
+    "id": "87e7728954205c26fb93",
+    "label": "supported",
+    "facts": [
+      "complement-2"
+    ],
+    "reason": "The cited episode identifies the Lantern review and explicitly states the leadership agreement or Cedar prerequisite expressed in the claim."
+  },
+  {
+    "id": "8a840c8ef27605f79c6a",
+    "label": "supported",
+    "facts": [
+      "complement-3"
+    ],
+    "reason": "The cited sentence explicitly records completing the Cedar inventory and storing it with operations."
+  },
+  {
+    "id": "93ebb29e6b4707914ce0",
+    "label": "contradicted",
+    "facts": [],
+    "reason": "The resolved target is the North lab researcher. This unqualified statement assigns the South studio namesake\u2019s identity or activity to that target; the cited episode explicitly identifies a different person."
+  },
+  {
+    "id": "9d60b3e4e1c23febd972",
+    "label": "unresolved",
+    "facts": [],
+    "reason": "Withdrawal and replacement are supported, but originally holding the role is stronger than the registered plan and withdrawal."
+  },
+  {
+    "id": "a0a3ea8037549b694f23",
+    "label": "supported",
+    "facts": [
+      "complement-2"
+    ],
+    "reason": "The cited episode identifies the Lantern review and explicitly states the leadership agreement or Cedar prerequisite expressed in the claim."
+  },
+  {
+    "id": "a8a80360c245adaf8415",
+    "label": "supported",
+    "facts": [
+      "conflict-1"
+    ],
+    "reason": "The claim reports an assignment, which the roster explicitly makes; it does not assert acceptance or resolve the conflicting declination."
+  },
+  {
+    "id": "aa1517facfc25b733a28",
+    "label": "supported",
+    "facts": [
+      "identity-1"
+    ],
+    "reason": "The quoted maintenance responsibility concerns the resolved North lab target; the registered context identifies her as the researcher."
+  },
+  {
+    "id": "b7c0970c307750a36e40",
+    "label": "supported",
+    "facts": [
+      "temporal-1"
+    ],
+    "reason": "The claim preserves the historical plan and does not assert that the chair role was actually held."
+  },
+  {
+    "id": "bb078a37df054ab9fee1",
+    "label": "supported",
+    "facts": [
+      "temporal-1"
+    ],
+    "reason": "The claim preserves the historical plan and does not assert that the chair role was actually held."
+  },
+  {
+    "id": "bdba4a94d1b677190f48",
+    "label": "supported",
+    "facts": [
+      "complement-4"
+    ],
+    "reason": "The quoted source explicitly withholds Mara\u2019s authorization and names the director as approver."
+  },
+  {
+    "id": "befbce0eeb6b750589b2",
+    "label": "supported",
+    "facts": [
+      "complement-4"
+    ],
+    "reason": "The quoted source explicitly withholds Mara\u2019s authorization and names the director as approver."
+  },
+  {
+    "id": "c5a0daea8b60d08b26fd",
+    "label": "supported",
+    "facts": [
+      "temporal-2"
+    ],
+    "reason": "The quote explicitly records withdrawal and, where claimed, Nell\u2019s replacement; it does not assert prior tenure."
+  },
+  {
+    "id": "c665dbf769a2897e96f9",
+    "label": "supported",
+    "facts": [
+      "complement-1"
+    ],
+    "reason": "The cited source explicitly says Mara coordinates Harbor; only that supported responsibility is credited."
+  },
+  {
+    "id": "ca9dc4dc0f3d7f057165",
+    "label": "contradicted",
+    "facts": [],
+    "reason": "The resolved target is the North lab researcher. This unqualified statement assigns the South studio namesake\u2019s identity or activity to that target; the cited episode explicitly identifies a different person."
+  },
+  {
+    "id": "d173bacff08633b320d1",
+    "label": "supported",
+    "facts": [
+      "identity-3"
+    ],
+    "reason": "The quoted agreement concerns the North lab researcher and explicitly sets the audit before the next release; the episode resolves any omitted subject in the quote."
+  },
+  {
+    "id": "e2e074cfc706ca7b92fa",
+    "label": "contradicted",
+    "facts": [],
+    "reason": "The resolved target is the North lab researcher. This unqualified statement assigns the South studio namesake\u2019s identity or activity to that target; the cited episode explicitly identifies a different person."
+  },
+  {
+    "id": "e93e22610aca8e4fe05f",
+    "label": "supported",
+    "facts": [
+      "conflict-2"
+    ],
+    "reason": "The recording explicitly states the historical act of declining Atlas ownership; the roster does not negate that recorded declination."
+  },
+  {
+    "id": "eda53ab6a181370b9740",
+    "label": "supported",
+    "facts": [
+      "complement-4"
+    ],
+    "reason": "The quoted source explicitly withholds Mara\u2019s authorization and names the director as approver."
+  },
+  {
+    "id": "f47b96ef4d5617a4d9ed",
+    "label": "supported",
+    "facts": [
+      "identity-1"
+    ],
+    "reason": "The quoted maintenance responsibility concerns the resolved North lab target; the registered context identifies her as the researcher."
+  },
+  {
+    "id": "f80c047de01da447be17",
+    "label": "unresolved",
+    "facts": [],
+    "reason": "The contemporaneous roster assignment and recorded declination conflict; the statement drops the source qualification and asserts actual ownership."
+  },
+  {
+    "id": "fc1caabc74549159d39e",
+    "label": "supported",
+    "facts": [
+      "identity-3"
+    ],
+    "reason": "The quoted agreement concerns the North lab researcher and explicitly sets the audit before the next release; the episode resolves any omitted subject in the quote."
+  }
+]

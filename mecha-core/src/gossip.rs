@@ -603,11 +603,30 @@ pub fn asker(
     agent_cfg: crate::config::AgentConfig,
     model: Option<String>,
 ) -> Result<Agent> {
+    asker_with_followup(provider, tool_ctx, agent_cfg, model, FollowupMode::Peer)
+}
+
+/// Build the matching question-generation role for an experimental condition.
+/// Own-evidence followups ask the reader to investigate its own gaps; they must
+/// not be told to find something in a different source they cannot see.
+pub fn asker_with_followup(
+    provider: Box<dyn crate::provider::Provider>,
+    tool_ctx: ToolCtx,
+    agent_cfg: crate::config::AgentConfig,
+    model: Option<String>,
+    followup: FollowupMode,
+) -> Result<Agent> {
     let approver = Arc::new(crate::tool::ModeApprover {
         mode: crate::config::PermissionMode::ReadOnly,
     });
     let mut cfg = agent_cfg;
-    cfg.system_prompt = Some(FOLLOWUP_SYS.to_string());
+    cfg.system_prompt = Some(
+        match followup {
+            FollowupMode::Peer => FOLLOWUP_SYS,
+            FollowupMode::OwnEvidence => OWN_FOLLOWUP_SYS,
+        }
+        .to_string(),
+    );
     let mut agent = Agent::new(
         provider,
         crate::tool::Registry::new(),
@@ -957,6 +976,20 @@ answer it yourself, do not summarise what was said, do not explain your \
 reasoning. You have no tools and nothing to look up — the question IS your \
 whole output.";
 
+/// Experimental control: the same question-generation budget, without a peer.
+pub const OWN_FOLLOWUP_SYS: &str = "\
+You are reading sources about one person. You have just answered from your \
+sources. Ask ONE follow-up question that your sources might answer and your \
+previous answer did not settle. Prefer relationships, roles, commitments and \
+the reasons behind things over dates and logistics. If your sources turned \
+up nothing, ask about another aspect of that person's responsibilities.
+
+\
+Output the question and nothing else: one interrogative sentence. Do not \
+answer it yourself, do not summarise what was said, do not explain your \
+reasoning. You have no tools and nothing to look up — the question IS your \
+whole output.";
+
 /// Run one exchange. Deterministic orchestration: the code decides who is
 /// asked what and when, so commit-then-reveal cannot be skipped.
 ///
@@ -969,6 +1002,50 @@ pub async fn exchange(
     entity: &str,
     seed: &str,
     rounds: u32,
+) -> Result<Exchange> {
+    exchange_with_followup(
+        answerers,
+        askers,
+        cx,
+        entity,
+        seed,
+        rounds,
+        FollowupMode::Peer,
+    )
+    .await
+}
+
+/// Which evidence an asker receives. `OwnEvidence` is an experimental control:
+/// its asker sees only the reader's own cited answer and routes the resulting
+/// question back to that reader. The prompts describe this self-followup role;
+/// retries, round limits, answer prompts and source lenses otherwise match.
+/// Pair it with [`asker_with_followup`] using the same mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FollowupMode {
+    Peer,
+    OwnEvidence,
+}
+
+impl FollowupMode {
+    fn respondent(self, asker: usize) -> usize {
+        match self {
+            Self::Peer => 1 - asker,
+            Self::OwnEvidence => asker,
+        }
+    }
+}
+
+/// Run the production protocol with an explicit follow-up evidence condition.
+/// The CLI continues to use [`exchange`], which always selects peer evidence.
+pub async fn exchange_with_followup(
+    answerers: &[(Vantage, Agent)],
+    askers: &[(Vantage, Agent)],
+    cx: &RunContext,
+    entity: &str,
+    seed: &str,
+    rounds: u32,
+    followup: FollowupMode,
 ) -> Result<Exchange> {
     anyhow::ensure!(
         answerers.len() == 2,
@@ -1075,7 +1152,7 @@ pub async fn exchange(
         // it something its own sources cannot settle.
         let mut next = questions.clone();
         for (i, (vantage, _)) in agents.iter().enumerate() {
-            let other = 1 - i;
+            let other = followup.respondent(i);
             // Trimmed, and the imperative goes LAST. A system prompt
             // followed by two twenty-line answers is overwhelmed by the
             // shape of its own input: labelled answers read as "summarise
@@ -1094,6 +1171,13 @@ pub async fn exchange(
                 agents[other].0.sources.join(", "),
                 brief(&said[other].last().unwrap().1),
             );
+            let reveal = match followup {
+                FollowupMode::Peer => reveal,
+                FollowupMode::OwnEvidence => format!(
+                    "The person is {entity}.\n\nYou read: {}\nYou answered: {}\n\nNow ask ONE follow-up question that your own sources could answer. Do not summarise your answer. Your entire output is a single sentence ending in a question mark. Name {entity} explicitly; ask what your sources show about that target, never ask who the assistant is or how it knows the user.",
+                    vantage.sources.join(", "), brief(&said[i].last().unwrap().1),
+                ),
+            };
             // A DIFFERENT agent does the asking: same lens, different
             // system prompt. One agent cannot hold two roles, and giving
             // the answerer the asking prompt would mean whichever ran last
@@ -1108,8 +1192,12 @@ pub async fn exchange(
             // and if the bare form fails too, that is a finding rather
             // than a flake.
             if grounded_question(&outcome.text, entity).is_none() {
+                let witness = match followup {
+                    FollowupMode::Peer => "They",
+                    FollowupMode::OwnEvidence => "You",
+                };
                 let mut bare = Conversation::user(format!(
-                    "They said this about {entity}: {}\n\n\
+                    "{witness} said this about {entity}: {}\n\n\
                      Ask one evidence question explicitly naming {entity}. Do not ask who the assistant or user is. Output only the question.",
                     brief(&said[other].last().unwrap().1),
                 ));
@@ -2614,5 +2702,216 @@ mod vet_tests {
         let claim_at = q.find("Luke prefers DIY.").unwrap();
         let form_at = q.rfind("VERDICT:").unwrap();
         assert!(ev_at < claim_at && claim_at < form_at);
+    }
+}
+
+#[cfg(test)]
+mod exchange_control_tests {
+    use super::*;
+    use crate::{
+        config::AgentConfig,
+        message::{Block, CompletionRequest, CompletionResponse, Message, StopReason, Usage},
+        provider::{Provider, StreamSink},
+        tool::{ModeApprover, Registry},
+    };
+    use std::sync::Mutex;
+
+    struct Packet(&'static str);
+    #[async_trait]
+    impl Tool for Packet {
+        fn name(&self) -> &str {
+            "kg_search"
+        }
+        fn description(&self) -> &str {
+            "fixture"
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type":"object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, _: Value, _: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::ok(
+                json!({"items":[{"kind":"episode", "id":self.0,
+                "source":self.0,"text":format!("Mara Vale owns the {} marker.", self.0)}]})
+                .to_string(),
+            )
+            .from_outside())
+        }
+    }
+    struct Script {
+        source: &'static str,
+        ask: bool,
+        mode: FollowupMode,
+        prompts: Arc<Mutex<Vec<String>>>,
+    }
+    #[async_trait]
+    impl Provider for Script {
+        fn id(&self) -> &str {
+            "script"
+        }
+        fn default_model(&self) -> &str {
+            "script"
+        }
+        async fn complete(
+            &self,
+            req: &CompletionRequest,
+            _: Option<&StreamSink>,
+        ) -> Result<CompletionResponse> {
+            self.prompts.lock().unwrap().push(req.messages[0].text());
+            let (content, stop_reason) = if self.ask {
+                assert!(req.tools.is_empty());
+                assert_eq!(
+                    req.system.as_deref(),
+                    Some(match self.mode {
+                        FollowupMode::Peer => FOLLOWUP_SYS,
+                        FollowupMode::OwnEvidence => OWN_FOLLOWUP_SYS,
+                    })
+                );
+                (
+                    vec![Block::text(format!(
+                        "What does Mara Vale know about {} followup?",
+                        self.source
+                    ))],
+                    StopReason::EndTurn,
+                )
+            } else if req.messages.len() == 1 {
+                (
+                    vec![Block::ToolUse {
+                        id: "read".into(),
+                        name: "kg_search".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                )
+            } else {
+                (vec![Block::text(format!("CLAIM: Mara Vale owns the {} marker. | EPISODE: {} | QUOTE: Mara Vale owns the {} marker.", self.source,self.source,self.source))], StopReason::EndTurn)
+            };
+            Ok(CompletionResponse {
+                message: Message::assistant(content),
+                stop_reason,
+                usage: Usage::default(),
+                refusal: None,
+                model: "script".into(),
+                malformed_tool_args: 0,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn experimental_control_keeps_peer_evidence_out_and_routes_questions_to_self() {
+        for mode in [FollowupMode::Peer, FollowupMode::OwnEvidence] {
+            let mut answerers = vec![];
+            let mut askers = vec![];
+            let mut captured = vec![];
+            for source in ["slack", "bee"] {
+                let answer_log = Arc::new(Mutex::new(vec![]));
+                let ask_log = Arc::new(Mutex::new(vec![]));
+                let v = Vantage {
+                    label: source.into(),
+                    sources: vec![source.into()],
+                };
+                let cfg = AgentConfig {
+                    max_turns: 3,
+                    boredom: false,
+                    force_final_answer: false,
+                    ..AgentConfig::default()
+                };
+                let mut registry = Registry::new();
+                registry.insert(Arc::new(Packet(source)));
+                answerers.push((
+                    v.clone(),
+                    Agent::new(
+                        Box::new(Script {
+                            source,
+                            ask: false,
+                            mode,
+                            prompts: answer_log.clone(),
+                        }),
+                        registry,
+                        Arc::new(ModeApprover {
+                            mode: crate::config::PermissionMode::ReadOnly,
+                        }),
+                        ToolCtx::default(),
+                        cfg.clone(),
+                        None,
+                    )
+                    .unwrap(),
+                ));
+                askers.push((
+                    v,
+                    asker_with_followup(
+                        Box::new(Script {
+                            source,
+                            ask: true,
+                            mode,
+                            prompts: ask_log.clone(),
+                        }),
+                        ToolCtx::default(),
+                        cfg,
+                        None,
+                        mode,
+                    )
+                    .unwrap(),
+                ));
+                captured.push((answer_log, ask_log));
+            }
+            let cx = RunContext::new(
+                ToolCtx::default(),
+                Arc::new(ModeApprover {
+                    mode: crate::config::PermissionMode::ReadOnly,
+                }),
+            );
+            // Exercise the default entry point too: a default changing to the
+            // control must fail the peer assertions below.
+            let x = if mode == FollowupMode::Peer {
+                exchange(
+                    &answerers,
+                    &askers,
+                    &cx,
+                    "Mara Vale",
+                    "What about Mara Vale?",
+                    2,
+                )
+                .await
+                .unwrap()
+            } else {
+                exchange_with_followup(
+                    &answerers,
+                    &askers,
+                    &cx,
+                    "Mara Vale",
+                    "What about Mara Vale?",
+                    2,
+                    mode,
+                )
+                .await
+                .unwrap()
+            };
+            assert_eq!(x.rounds[0].grounded.len(), 2);
+            assert_eq!(x.rounds[1].grounded.len(), 2);
+            for (i, own) in ["slack", "bee"].iter().enumerate() {
+                let peer = ["bee", "slack"][i];
+                let asks = captured[i].1.lock().unwrap();
+                assert!(asks[0].contains(&format!("owns the {own} marker")));
+                assert_eq!(
+                    asks[0].contains(&format!("owns the {peer} marker")),
+                    mode == FollowupMode::Peer
+                );
+                let answers = captured[i].0.lock().unwrap();
+                assert!(answers
+                    .iter()
+                    .all(|p| !p.contains(&format!("owns the {peer} marker"))));
+                let expected = if mode == FollowupMode::Peer {
+                    peer
+                } else {
+                    own
+                };
+                assert!(x.rounds[1].asked[i]
+                    .1
+                    .contains(&format!("{expected} followup")));
+            }
+        }
     }
 }

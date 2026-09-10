@@ -1,0 +1,173 @@
+{
+  "allocation": "Both arms: 3 rounds, 2 readers, max 4 turns per answer, 1 per asker plus one retry; 32 provider requests maximum. Actual tokens/calls are outcomes, not matched consumption.",
+  "decision": "A pilot only: retain default on mixed results, invalid pairs or increased contradictions. No significance/transfer claim from four synthetic cases and two seeds. No graph writes or config promotion.",
+  "grading": "Arm-blind assistant review of every unique structurally admitted statement against its quoted episode and registered target/source/time facts. Citation presence alone does not pass. No model self-report, no acting-model judge. Identity contrasts are supported only when explicitly distinguished. Current-world assertions contradicted by later records fail unless source/time qualified. Count unique reference episode facts within each trial; partial coverage is not full proposition recall.",
+  "input_hashes": {
+    "eval/fixtures/gossip/cases.json": "34d25856ae0f53a5fba415c9afe711c24883b919830b42ee7a11b031434edda7",
+    "eval/fixtures/gossip/server.py": "7b0dbc3b4f88f2ae477fd9be1fe7869e19495e57d1e70aacd6fa73cc1ec1bb83",
+    "mecha-core/examples/gossip_compare.rs": "326cc6b11f6f5339e9c1d60cf51629bc52a126f7ef8428f9b2a6dcc1755cf3a2",
+    "mecha-core/src/gossip.rs": "32617a79c0ff66893fe96bc39d008a4c486321b0885c7c23b14183c21b4a842b",
+    "scripts/gossip-comparison.py": "a0dd015d61425b95f1fa0d44b079a99eed38ad23e6a7a02b8a081d0dc11946dc",
+    "target/debug/examples/gossip_compare": "3ca457e4324d0f25cb6449c152818e9529e8d34db25a9569fbe6b86732d7615f"
+  },
+  "prediction": "Peer questions recover more distinct supported source facts by round 3 than own-evidence followups without increasing contradicted claims.",
+  "runtime_commit": "87ca6dfb6bae254a8df100d2bdb07168eddd5546",
+  "server_start": {
+    "context": 262144,
+    "generation": {
+      "adaptive_decay": 0.8999999761581421,
+      "adaptive_target": -1.0,
+      "backend_sampling": false,
+      "chat_format": "Content-only",
+      "dry_allowed_length": 2,
+      "dry_base": 1.75,
+      "dry_multiplier": 0.0,
+      "dry_penalty_last_n": 64,
+      "dynatemp_exponent": 1.0,
+      "dynatemp_range": 0.0,
+      "frequency_penalty": 0.0,
+      "generation_prompt": "",
+      "ignore_eos": false,
+      "lora": [],
+      "max_tokens": -1,
+      "min_keep": 0,
+      "min_p": 0.0,
+      "mirostat": 0,
+      "mirostat_eta": 0.10000000149011612,
+      "mirostat_tau": 5.0,
+      "n_discard": 0,
+      "n_keep": 0,
+      "n_predict": -1,
+      "n_probs": 0,
+      "post_sampling_probs": false,
+      "presence_penalty": 0.0,
+      "reasoning_format": "none",
+      "reasoning_in_content": false,
+      "repeat_last_n": 64,
+      "repeat_penalty": 1.0,
+      "samplers": [
+        "penalties",
+        "dry",
+        "top_n_sigma",
+        "top_k",
+        "typ_p",
+        "top_p",
+        "min_p",
+        "xtc",
+        "temperature"
+      ],
+      "seed": 4294967295,
+      "speculative.types": "none",
+      "stream": false,
+      "temperature": 0.6000000238418579,
+      "timings_per_token": false,
+      "top_k": 20,
+      "top_n_sigma": -1.0,
+      "top_p": 0.949999988079071,
+      "typical_p": 1.0,
+      "xtc_probability": 0.0,
+      "xtc_threshold": 0.10000000149011612
+    },
+    "model": "qwen3.6-35b-a3b",
+    "slots": 4
+  },
+  "trials": [
+    {
+      "case": "temporal",
+      "id": "temporal-2-own_evidence",
+      "mode": "own_evidence",
+      "seed": 2
+    },
+    {
+      "case": "temporal",
+      "id": "temporal-2-peer",
+      "mode": "peer",
+      "seed": 2
+    },
+    {
+      "case": "temporal",
+      "id": "temporal-1-peer",
+      "mode": "peer",
+      "seed": 1
+    },
+    {
+      "case": "temporal",
+      "id": "temporal-1-own_evidence",
+      "mode": "own_evidence",
+      "seed": 1
+    },
+    {
+      "case": "conflict",
+      "id": "conflict-2-own_evidence",
+      "mode": "own_evidence",
+      "seed": 2
+    },
+    {
+      "case": "conflict",
+      "id": "conflict-2-peer",
+      "mode": "peer",
+      "seed": 2
+    },
+    {
+      "case": "identity",
+      "id": "identity-1-peer",
+      "mode": "peer",
+      "seed": 1
+    },
+    {
+      "case": "identity",
+      "id": "identity-1-own_evidence",
+      "mode": "own_evidence",
+      "seed": 1
+    },
+    {
+      "case": "identity",
+      "id": "identity-2-own_evidence",
+      "mode": "own_evidence",
+      "seed": 2
+    },
+    {
+      "case": "identity",
+      "id": "identity-2-peer",
+      "mode": "peer",
+      "seed": 2
+    },
+    {
+      "case": "complement",
+      "id": "complement-1-peer",
+      "mode": "peer",
+      "seed": 1
+    },
+    {
+      "case": "complement",
+      "id": "complement-1-own_evidence",
+      "mode": "own_evidence",
+      "seed": 1
+    },
+    {
+      "case": "conflict",
+      "id": "conflict-1-own_evidence",
+      "mode": "own_evidence",
+      "seed": 1
+    },
+    {
+      "case": "conflict",
+      "id": "conflict-1-peer",
+      "mode": "peer",
+      "seed": 1
+    },
+    {
+      "case": "complement",
+      "id": "complement-2-peer",
+      "mode": "peer",
+      "seed": 2
+    },
+    {
+      "case": "complement",
+      "id": "complement-2-own_evidence",
+      "mode": "own_evidence",
+      "seed": 2
+    }
+  ],
+  "version": 1
+}

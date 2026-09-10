@@ -1,0 +1,3 @@
+{
+  "reason": "Workspace tests rebuilt target/debug/examples/gossip_compare after registration; binary hash changed while source hashes stayed fixed. Invalid mixed-artifact run, stopped before semantic grading. Next runner freezes its executable before dispatch."
+}

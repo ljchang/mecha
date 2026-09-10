@@ -22,6 +22,24 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-10 — controlled gossip pilot complete; no default change or deployment.**
+The native real-MCP comparison finished all 16 exchanges over four synthetic cases
+and two seeds, with unchanged frozen inputs and server settings. Peer dialogue
+covered 23/42 reference source items after round 1 and still 23/42 after round 3;
+own-evidence followups reached 24/42. Seven pairs tied and one favored the control.
+Extra peer rounds cost 104 requests and 108,668 output tokens with no coverage gain.
+These are source-item counts, not unique world facts or complete proposition recall.
+The assistant-reviewed, arm-blind audit also found wrong-person claims despite
+literal citations. See [the scorecard](../results/gossip-comparison-qwen36-35b-20260910/README.md)
+for full costs, judgments, one token-limited control response and preserved invalid
+setup attempts. Ordinary gossip entry points retain peer behavior.
+
+Full checks passed: 2,628 tests, zero failures, three ignored, with required backends;
+build, formatting and warning-free Clippy passed. The main eval remains 36 cases /
+15 tags. No installation or service restart. Representative graph coverage,
+identity-aware claim admission, production audit attribution and deployment remain
+open. This pilot does not justify increasing nightly rounds.
+
 **2026-09-10 — executable correction pilot complete, no deployment.**
 `eval/executable-validation.toml` and `scripts/executable-validation.py` ran 96 real
 file-tool trials from reset initial artifacts: eight tasks, three seeds, frozen
@@ -39,7 +57,8 @@ misread the empty rules hash; its reporting-only correction reran no model trial
 contracts before executable validation can replace trace agreement. This pilot's
 synthetic file tasks do not establish representative coverage, live-service
 correctness or held-out task-family transfer. The staged cap proposal was referenced
-by the scorecard, not applied. Controlled gossip round comparisons remain open.
+by the scorecard, not applied. The controlled gossip comparison is now implemented;
+its verified result is tracked above. Representative live-graph measurement remains open.
 
 **2026-09-10 — nightly measurement fixes on `fix/nightly-measurement-grounding`,
 not installed.** Validation now restores recorded tools for followups and records
@@ -75,8 +94,9 @@ using debug binaries in an isolated test store: its first pair passed both arms,
 so the expected regression was not elicited and retirement was not demonstrated.
 Do not read this as a successful end-to-end retirement test. Source/test fixes do
 not yet establish improved nightly accuracy, a winning tool budget, or a benefit
-from additional gossip rounds. Legacy unmarked smoke recordings and controlled
-round comparisons remain measurement work. Earlier dated environment claims
+from additional gossip rounds. Legacy unmarked smoke recordings and representative
+live-graph comparisons remain measurement work; the controlled synthetic comparison
+is tracked above. Earlier dated environment claims
 retain their original verification scope; no deployment was performed.
 
 **2026-09-09 — appraisal implementation is on `feat/appraisal-goal-feedback`, not installed.**
@@ -3861,9 +3881,24 @@ is true now:
   prevent accidental identical reruns, but retirement still uses its existing
   regression-count rule. Repeated judgments, alternative windows and deliberately
   independent probes need a predeclared comparison before changing that policy.
-- **Measure gossip's added value by round.** Citation yield now exists, but the
-  free-text audit only attaches an origin on an exact grounded-statement match.
-  Per-round supported/contradicted yield and a budget-matched comparison remain open.
+- **Extend gossip measurement to representative graph evidence.** The controlled
+  synthetic comparison uses the native protocol, equal allocated request ceilings,
+  actual usage receipts and direct claim-ID audit attribution (status above).
+  Four synthetic cases do not establish live-graph benefit, independent source
+  origins, semantic-search coverage or complete proposition recall. Production
+  `audit` still attaches origins only on exact grounded-statement matches. Those
+  attribution and representative-coverage gaps remain open before changing nightly
+  round allocation. The completed pilot found no extra peer source coverage and
+  exposed wrong-person claims with valid quotes; evaluate identity-aware retrieval
+  and admission against the frozen namesake case before crediting citation yield.
+- **Give entity-targeted queue vetting its own execution path.**
+  `commands::gossip::run` performs exploration and optional audit before fetching
+  `pending_about` and calling `vet`. `vet_question` consumes only the candidate and
+  origin evidence; the exchange does not enter the judgment. `VetArgs` currently
+  selects by proposer/predicate, with no entity selector. An entity option backed
+  by `pending_about` would let callers do that queue work without paying for an
+  unused exchange. Preserve origin-only judging; measure exploration on its own
+  outputs rather than crediting it with these independent verdicts.
 - **Clean the harness corpus before judging tool budgets.** Explicit test sessions
   are excluded; historical unmarked smoke recordings still need defensible corpus
   classification. Unsupported effort and incomplete tails are now rejected, but

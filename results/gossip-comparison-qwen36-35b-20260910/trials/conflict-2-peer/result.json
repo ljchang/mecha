@@ -1,0 +1,288 @@
+{
+  "elapsed_seconds": 162.590377581,
+  "exchange": {
+    "entity": "Tessa Rowan",
+    "rounds": [
+      {
+        "abstained": [],
+        "answered": [
+          [
+            "slack",
+            "CLAIM: Tessa Rowan is assigned as the sole owner of the Atlas release | EPISODE: conflict-1 | QUOTE: \"The September 1 written roster assigns Tessa Rowan as the sole owner of the Atlas release.\"\nCLAIM: Tessa Rowan has a tentative invitation to attend the Beacon review | EPISODE: conflict-3 | QUOTE: \"Tessa Rowan is listed as attending the Beacon review, with a tentative invitation rather than confirmed attendance.\""
+          ],
+          [
+            "bee",
+            "CLAIM: Tessa Rowan declined ownership of the Atlas release. | EPISODE: conflict-2 | QUOTE: In the September 1 recorded meeting, Tessa Rowan explicitly declined ownership of the Atlas release.\nCLAIM: Tessa Rowan has not accepted an invitation to review Beacon. | EPISODE: conflict-4 | QUOTE: Tessa Rowan said the Beacon review invitation was tentative and she had not accepted it."
+          ]
+        ],
+        "asked": [
+          [
+            "slack",
+            "What should I know about Tessa Rowan's current responsibilities and commitments?"
+          ],
+          [
+            "bee",
+            "What should I know about Tessa Rowan's current responsibilities and commitments?"
+          ]
+        ],
+        "evidence": [
+          [
+            "slack",
+            [
+              {
+                "id": "conflict-1",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "The September 1 written roster assigns Tessa Rowan as the sole owner of the Atlas release."
+              },
+              {
+                "id": "conflict-3",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "Tessa Rowan is listed as attending the Beacon review, with a tentative invitation rather than confirmed attendance."
+              }
+            ]
+          ],
+          [
+            "bee",
+            [
+              {
+                "id": "conflict-2",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "In the September 1 recorded meeting, Tessa Rowan explicitly declined ownership of the Atlas release."
+              },
+              {
+                "id": "conflict-4",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "Tessa Rowan said the Beacon review invitation was tentative and she had not accepted it."
+              }
+            ]
+          ]
+        ],
+        "grounded": [
+          {
+            "episode_id": "conflict-1",
+            "occurred_at": "2026-09-01",
+            "quote": "The September 1 written roster assigns Tessa Rowan as the sole owner of the Atlas release.",
+            "reader": "slack",
+            "round": 1,
+            "source": "slack",
+            "statement": "Tessa Rowan is assigned as the sole owner of the Atlas release"
+          },
+          {
+            "episode_id": "conflict-3",
+            "occurred_at": "2026-09-01",
+            "quote": "Tessa Rowan is listed as attending the Beacon review, with a tentative invitation rather than confirmed attendance.",
+            "reader": "slack",
+            "round": 1,
+            "source": "slack",
+            "statement": "Tessa Rowan has a tentative invitation to attend the Beacon review"
+          },
+          {
+            "episode_id": "conflict-2",
+            "occurred_at": "2026-09-01",
+            "quote": "In the September 1 recorded meeting, Tessa Rowan explicitly declined ownership of the Atlas release.",
+            "reader": "bee",
+            "round": 1,
+            "source": "bee",
+            "statement": "Tessa Rowan declined ownership of the Atlas release."
+          },
+          {
+            "episode_id": "conflict-4",
+            "occurred_at": "2026-09-01",
+            "quote": "Tessa Rowan said the Beacon review invitation was tentative and she had not accepted it.",
+            "reader": "bee",
+            "round": 1,
+            "source": "bee",
+            "statement": "Tessa Rowan has not accepted an invitation to review Beacon."
+          }
+        ],
+        "n": 1,
+        "ungrounded": []
+      },
+      {
+        "abstained": [
+          "bee"
+        ],
+        "answered": [
+          [
+            "slack",
+            "My sources contain no rationale for these assignments.\nUNKNOWN: no evidence in my retrieved sources."
+          ],
+          [
+            "bee",
+            "UNKNOWN: no evidence in my retrieved sources."
+          ]
+        ],
+        "asked": [
+          [
+            "slack",
+            "What rationale does the Slack record provide for assigning Tessa Rowan as the sole owner of the Atlas release and extending a tentative invitation to the Beacon review?"
+          ],
+          [
+            "bee",
+            "What reason did Tessa Rowan give for declining ownership of the Atlas release?"
+          ]
+        ],
+        "evidence": [
+          [
+            "slack",
+            [
+              {
+                "id": "conflict-1",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "The September 1 written roster assigns Tessa Rowan as the sole owner of the Atlas release."
+              },
+              {
+                "id": "conflict-3",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "Tessa Rowan is listed as attending the Beacon review, with a tentative invitation rather than confirmed attendance."
+              }
+            ]
+          ],
+          [
+            "bee",
+            [
+              {
+                "id": "conflict-2",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "In the September 1 recorded meeting, Tessa Rowan explicitly declined ownership of the Atlas release."
+              },
+              {
+                "id": "conflict-4",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "Tessa Rowan said the Beacon review invitation was tentative and she had not accepted it."
+              }
+            ]
+          ]
+        ],
+        "grounded": [],
+        "n": 2,
+        "ungrounded": [
+          [
+            "slack",
+            "My sources contain no rationale for these assignments.\nUNKNOWN: no evidence in my retrieved sources."
+          ]
+        ]
+      },
+      {
+        "abstained": [
+          "slack",
+          "bee"
+        ],
+        "answered": [
+          [
+            "slack",
+            "UNKNOWN: no evidence in my retrieved sources."
+          ],
+          [
+            "bee",
+            "UNKNOWN: no evidence in my retrieved sources."
+          ]
+        ],
+        "asked": [
+          [
+            "slack",
+            "What do your Slack sources reveal about Tessa Rowan’s specific roles, collaborative commitments, or the underlying reasons for her key professional relationships?"
+          ],
+          [
+            "bee",
+            "What role or commitment involving bees did Tessa Rowan have that their sources might have documented?"
+          ]
+        ],
+        "evidence": [
+          [
+            "slack",
+            [
+              {
+                "id": "conflict-1",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "The September 1 written roster assigns Tessa Rowan as the sole owner of the Atlas release."
+              },
+              {
+                "id": "conflict-3",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "Tessa Rowan is listed as attending the Beacon review, with a tentative invitation rather than confirmed attendance."
+              }
+            ]
+          ],
+          [
+            "bee",
+            [
+              {
+                "id": "conflict-2",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "In the September 1 recorded meeting, Tessa Rowan explicitly declined ownership of the Atlas release."
+              },
+              {
+                "id": "conflict-4",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "Tessa Rowan said the Beacon review invitation was tentative and she had not accepted it."
+              }
+            ]
+          ]
+        ],
+        "grounded": [],
+        "n": 3,
+        "ungrounded": []
+      }
+    ],
+    "vantages": [
+      {
+        "label": "slack",
+        "sources": [
+          "slack"
+        ]
+      },
+      {
+        "label": "bee",
+        "sources": [
+          "bee"
+        ]
+      }
+    ]
+  },
+  "round_yield": [
+    {
+      "abstentions": 0,
+      "grounded_claims": 4,
+      "new_grounded_claims": 4,
+      "repeated_claims": 0,
+      "retrieved_episodes": 4,
+      "round": 1,
+      "stalled_questions": 0,
+      "ungrounded_answers": 0
+    },
+    {
+      "abstentions": 1,
+      "grounded_claims": 0,
+      "new_grounded_claims": 0,
+      "repeated_claims": 0,
+      "retrieved_episodes": 4,
+      "round": 2,
+      "stalled_questions": 0,
+      "ungrounded_answers": 1
+    },
+    {
+      "abstentions": 2,
+      "grounded_claims": 0,
+      "new_grounded_claims": 0,
+      "repeated_claims": 0,
+      "retrieved_episodes": 4,
+      "round": 3,
+      "stalled_questions": 0,
+      "ungrounded_answers": 0
+    }
+  ],
+  "status": "complete"
+}

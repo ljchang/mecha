@@ -14,6 +14,38 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-10 — native gossip comparison and coherent experimental control.**
+`FollowupMode::OwnEvidence` gives each question generator only its own reader's
+cited answer and routes its question back to that reader. Its matching role prompt
+asks for self-followups; the ordinary `asker` and `exchange` keep peer behavior.
+The native `gossip_compare` example executes real read-only MCP retrieval over
+frozen synthetic source worlds. The registered runner records full request/search
+receipts and prepares an arm-blind claim audit, comparing equal request ceilings
+and reporting actual cost. Regression tests exercise evidence isolation, question
+routing and default behavior, real MCP search boundaries, and report accounting
+for repeated facts, contradictions, missing judgments and changed conditions.
+
+All 16 valid exchanges completed. Peer coverage stayed at 23/42 source items from
+round 1 through round 3; own-evidence followups reached 24/42. Seven pairs tied and
+one favored the control. Extra peer rounds cost 104 requests and 108,668 output
+tokens without additional supported coverage. Assistant blind review of 55 distinct
+admitted claims found 36 supported, 12 unresolved and seven contradicted; literal
+citations did not prevent namesake misattribution or unsupported role elaboration.
+Two ambiguous identity contrasts were conservatively marked unresolved before
+unblinding. The valid archive retains one token-limited control answer and all
+actual costs. No default changed or deployment occurred. Full checks passed:
+2,628 tests, zero failures, three ignored, warning-free Clippy, build and formatting.
+See [the complete scorecard](../results/gossip-comparison-qwen36-35b-20260910/README.md)
+for denominators, controls, limits and the complete synthetic evidence trail.
+
+The setup caught two measurement traps before semantic grading. Removing the
+peer's evidence without changing an instruction to ask about the peer's different
+sources gave the control an inconsistent task. Also, running workspace tests
+rebuilt the actor at its Cargo output path after registration, despite unchanged
+source. Those attempts remain invalid and preserved. Freeze the executable actually
+run, not just a hash of a mutable build path; an immutable design needs immutable
+execution inputs. The corrected runner copies its actor before dispatch.
+
 **2026-09-10 — executable corrective-task pilot completed with real tools.**
 The existing native experiment runner drove 96 trials over eight synthetic tasks,
 three seeds, frozen rules off/on and max-turn limits 12/10. Every arm started from
@@ -5724,6 +5756,14 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+**Freeze the executed artifact and give the control a coherent role.** A gossip
+ablation removed peer evidence but kept instructions about a peer's different
+sources; the control was internally inconsistent. A corrected run then executed
+a Cargo output path that workspace tests rebuilt during measurement. Both setup
+attempts were stopped before semantic grading and preserved. Match instructions
+to each arm's available evidence, and run a private executable snapshot rather
+than trusting a recorded hash of a mutable build path.
 
 **A hash can record an empty intervention.** The executable pilot's first exposure
 analyzer treated any nonempty `rules_hash` string as loaded rules. `RulesCarried::none`

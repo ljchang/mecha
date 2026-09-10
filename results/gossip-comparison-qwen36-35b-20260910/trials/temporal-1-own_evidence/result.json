@@ -1,0 +1,302 @@
+{
+  "elapsed_seconds": 193.398667637,
+  "exchange": {
+    "entity": "Ivo Sen",
+    "rounds": [
+      {
+        "abstained": [],
+        "answered": [
+          [
+            "slack",
+            "CLAIM: Ivo Sen planned to chair the Birch group for the autumn term. | EPISODE: temporal-1 | QUOTE: On August 1, Ivo Sen planned to chair the Birch group for the autumn term.\nCLAIM: Ivo Sen committed to delivering the Maple report by August 25. | EPISODE: temporal-3 | QUOTE: Ivo Sen promised on August 5 to deliver the Maple report by August 25.\nUNKNOWN: no evidence in my retrieved sources regarding later outcomes for these commitments."
+          ],
+          [
+            "bee",
+            "CLAIM: Ivo Sen originally held the Birch chair role but withdrew from it, allowing Nell Arco to accept the position. | EPISODE: temporal-2 | QUOTE: \"On August 20, Ivo Sen withdrew from the Birch chair role; Nell Arco accepted the chair instead.\"\nCLAIM: Ivo Sen later fulfilled a commitment by delivering the Maple report to the archive. | EPISODE: temporal-4 | QUOTE: \"Ivo Sen confirmed on August 24 that he delivered the Maple report to the archive that morning.\""
+          ]
+        ],
+        "asked": [
+          [
+            "slack",
+            "What should I know about Ivo Sen's current role and commitments, distinguishing earlier plans from later outcomes?"
+          ],
+          [
+            "bee",
+            "What should I know about Ivo Sen's current role and commitments, distinguishing earlier plans from later outcomes?"
+          ]
+        ],
+        "evidence": [
+          [
+            "slack",
+            [
+              {
+                "id": "temporal-1",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "On August 1, Ivo Sen planned to chair the Birch group for the autumn term."
+              },
+              {
+                "id": "temporal-3",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "Ivo Sen promised on August 5 to deliver the Maple report by August 25."
+              }
+            ]
+          ],
+          [
+            "bee",
+            [
+              {
+                "id": "temporal-2",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "On August 20, Ivo Sen withdrew from the Birch chair role; Nell Arco accepted the chair instead."
+              },
+              {
+                "id": "temporal-4",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "Ivo Sen confirmed on August 24 that he delivered the Maple report to the archive that morning."
+              }
+            ]
+          ]
+        ],
+        "grounded": [
+          {
+            "episode_id": "temporal-1",
+            "occurred_at": "2026-09-01",
+            "quote": "On August 1, Ivo Sen planned to chair the Birch group for the autumn term.",
+            "reader": "slack",
+            "round": 1,
+            "source": "slack",
+            "statement": "Ivo Sen planned to chair the Birch group for the autumn term."
+          },
+          {
+            "episode_id": "temporal-3",
+            "occurred_at": "2026-09-01",
+            "quote": "Ivo Sen promised on August 5 to deliver the Maple report by August 25.",
+            "reader": "slack",
+            "round": 1,
+            "source": "slack",
+            "statement": "Ivo Sen committed to delivering the Maple report by August 25."
+          },
+          {
+            "episode_id": "temporal-2",
+            "occurred_at": "2026-09-01",
+            "quote": "On August 20, Ivo Sen withdrew from the Birch chair role; Nell Arco accepted the chair instead.",
+            "reader": "bee",
+            "round": 1,
+            "source": "bee",
+            "statement": "Ivo Sen originally held the Birch chair role but withdrew from it, allowing Nell Arco to accept the position."
+          },
+          {
+            "episode_id": "temporal-4",
+            "occurred_at": "2026-09-01",
+            "quote": "Ivo Sen confirmed on August 24 that he delivered the Maple report to the archive that morning.",
+            "reader": "bee",
+            "round": 1,
+            "source": "bee",
+            "statement": "Ivo Sen later fulfilled a commitment by delivering the Maple report to the archive."
+          }
+        ],
+        "n": 1,
+        "ungrounded": []
+      },
+      {
+        "abstained": [
+          "slack",
+          "bee"
+        ],
+        "answered": [
+          [
+            "slack",
+            "UNKNOWN: no evidence in my retrieved sources."
+          ],
+          [
+            "bee",
+            "UNKNOWN: no evidence in my retrieved sources."
+          ]
+        ],
+        "asked": [
+          [
+            "slack",
+            "What other responsibilities or commitments does Ivo Sen have outlined in the slack source?"
+          ],
+          [
+            "bee",
+            "What reasons did Ivo Sen provide for withdrawing from the Birch chair position?"
+          ]
+        ],
+        "evidence": [
+          [
+            "slack",
+            [
+              {
+                "id": "temporal-1",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "On August 1, Ivo Sen planned to chair the Birch group for the autumn term."
+              },
+              {
+                "id": "temporal-3",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "Ivo Sen promised on August 5 to deliver the Maple report by August 25."
+              }
+            ]
+          ],
+          [
+            "bee",
+            [
+              {
+                "id": "temporal-2",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "On August 20, Ivo Sen withdrew from the Birch chair role; Nell Arco accepted the chair instead."
+              },
+              {
+                "id": "temporal-4",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "Ivo Sen confirmed on August 24 that he delivered the Maple report to the archive that morning."
+              }
+            ]
+          ]
+        ],
+        "grounded": [],
+        "n": 2,
+        "ungrounded": []
+      },
+      {
+        "abstained": [
+          "slack"
+        ],
+        "answered": [
+          [
+            "slack",
+            "UNKNOWN: no evidence in my retrieved sources."
+          ],
+          [
+            "bee",
+            "CLAIM: Ivo Sen originally held the Birch chair role but withdrew from it | EPISODE: temporal-2 | QUOTE: On August 20, Ivo Sen withdrew from the Birch chair role\nCLAIM: Ivo Sen had the responsibility of delivering the Maple report to the archive | EPISODE: temporal-4 | QUOTE: Ivo Sen confirmed on August 24 that he delivered the Maple report to the archive that morning."
+          ]
+        ],
+        "asked": [
+          [
+            "slack",
+            "What other professional responsibilities or institutional roles does Ivo Sen hold according to the available sources?"
+          ],
+          [
+            "bee",
+            "What professional responsibilities or organizational roles do the available sources show Ivo Sen holds?"
+          ]
+        ],
+        "evidence": [
+          [
+            "slack",
+            [
+              {
+                "id": "temporal-1",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "On August 1, Ivo Sen planned to chair the Birch group for the autumn term."
+              },
+              {
+                "id": "temporal-3",
+                "occurred_at": "2026-09-01",
+                "source": "slack",
+                "text": "Ivo Sen promised on August 5 to deliver the Maple report by August 25."
+              }
+            ]
+          ],
+          [
+            "bee",
+            [
+              {
+                "id": "temporal-2",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "On August 20, Ivo Sen withdrew from the Birch chair role; Nell Arco accepted the chair instead."
+              },
+              {
+                "id": "temporal-4",
+                "occurred_at": "2026-09-01",
+                "source": "bee",
+                "text": "Ivo Sen confirmed on August 24 that he delivered the Maple report to the archive that morning."
+              }
+            ]
+          ]
+        ],
+        "grounded": [
+          {
+            "episode_id": "temporal-2",
+            "occurred_at": "2026-09-01",
+            "quote": "On August 20, Ivo Sen withdrew from the Birch chair role",
+            "reader": "bee",
+            "round": 3,
+            "source": "bee",
+            "statement": "Ivo Sen originally held the Birch chair role but withdrew from it"
+          },
+          {
+            "episode_id": "temporal-4",
+            "occurred_at": "2026-09-01",
+            "quote": "Ivo Sen confirmed on August 24 that he delivered the Maple report to the archive that morning.",
+            "reader": "bee",
+            "round": 3,
+            "source": "bee",
+            "statement": "Ivo Sen had the responsibility of delivering the Maple report to the archive"
+          }
+        ],
+        "n": 3,
+        "ungrounded": []
+      }
+    ],
+    "vantages": [
+      {
+        "label": "slack",
+        "sources": [
+          "slack"
+        ]
+      },
+      {
+        "label": "bee",
+        "sources": [
+          "bee"
+        ]
+      }
+    ]
+  },
+  "round_yield": [
+    {
+      "abstentions": 0,
+      "grounded_claims": 4,
+      "new_grounded_claims": 4,
+      "repeated_claims": 0,
+      "retrieved_episodes": 4,
+      "round": 1,
+      "stalled_questions": 0,
+      "ungrounded_answers": 0
+    },
+    {
+      "abstentions": 2,
+      "grounded_claims": 0,
+      "new_grounded_claims": 0,
+      "repeated_claims": 0,
+      "retrieved_episodes": 4,
+      "round": 2,
+      "stalled_questions": 0,
+      "ungrounded_answers": 0
+    },
+    {
+      "abstentions": 1,
+      "grounded_claims": 2,
+      "new_grounded_claims": 2,
+      "repeated_claims": 0,
+      "retrieved_episodes": 4,
+      "round": 3,
+      "stalled_questions": 0,
+      "ungrounded_answers": 0
+    }
+  ],
+  "status": "complete"
+}

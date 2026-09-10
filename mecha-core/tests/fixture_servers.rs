@@ -587,3 +587,82 @@ async fn fixture_clock_survives_restart_and_mail_metadata_names_its_scope() {
     let rows: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(rows["today"], "2001-10-13");
 }
+
+#[tokio::test]
+async fn gossip_fixture_executes_targeted_lensed_search_and_refuses_widening() {
+    if unavailable("python3", python3_available()) {
+        return;
+    }
+    let dir = tmpdir("gossip-fixture");
+    let cfg = McpServerConfig {
+        name: "gossip-fixture".into(),
+        command: "python3".into(),
+        args: vec![
+            fixtures_dir()
+                .join("gossip/server.py")
+                .display()
+                .to_string(),
+            "--cases".into(),
+            fixtures_dir()
+                .join("gossip/cases.json")
+                .display()
+                .to_string(),
+            "--case".into(),
+            "complement".into(),
+            "--log".into(),
+            dir.join("search.jsonl").display().to_string(),
+        ],
+        ..Default::default()
+    };
+    let client = McpClient::connect(&cfg, &unconfined(), &dir).await.unwrap();
+    let search = mecha_core::gossip::LensedSearch::new(
+        client.clone(),
+        "slack",
+        vec!["slack".into()],
+        "2026-01-01",
+        "2026-09-10",
+    )
+    .with_target(mecha_core::gossip::EntityIdentity {
+        id: "person:complement".into(),
+        name: "Mara Vale".into(),
+        aliases: vec![],
+    });
+    let out = search
+        .call(
+            json!({"query":"Cedar inventory", "sources":["bee"], "probe":false}),
+            &ToolCtx::default(),
+        )
+        .await
+        .unwrap();
+    assert!(!out.is_error);
+    assert!(out.external);
+    let start = out.content.find('{').unwrap();
+    let packet: Value = serde_json::from_str(&out.content[start..]).unwrap();
+    assert_eq!(packet["items"][0]["id"], "complement-3");
+    assert!(packet["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|e| e["source"] == "slack"));
+    let tools = client.list_tools().await.unwrap();
+    let bad = tools[0]
+        .call(
+            json!({"query":"Mara Vale: roles", "sources":["slack","bee"]}),
+            &ToolCtx::default(),
+        )
+        .await
+        .unwrap();
+    assert!(bad.is_error);
+    for script in ["gossip/test_fixture.py", "gossip/test_report.py"] {
+        let python = std::process::Command::new("python3")
+            .arg("-B")
+            .arg(fixtures_dir().join(script))
+            .output()
+            .unwrap();
+        assert!(
+            python.status.success(),
+            "{}",
+            String::from_utf8_lossy(&python.stderr)
+        );
+    }
+}

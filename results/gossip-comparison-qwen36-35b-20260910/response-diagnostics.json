@@ -1,0 +1,32 @@
+{
+  "peer": {
+    "stop_reasons": {
+      "tool_use": 56,
+      "end_turn": 80
+    },
+    "request_errors": 0,
+    "malformed_tool_args": 0,
+    "token_capped_responses": []
+  },
+  "own_evidence": {
+    "stop_reasons": {
+      "tool_use": 50,
+      "end_turn": 79,
+      "max_tokens": 1
+    },
+    "request_errors": 0,
+    "malformed_tool_args": 0,
+    "token_capped_responses": [
+      {
+        "trial": "conflict-1-own_evidence",
+        "role": "bee_answer",
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 133,
+          "input_tokens": 630,
+          "output_tokens": 32768
+        }
+      }
+    ]
+  }
+}
