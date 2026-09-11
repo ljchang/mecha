@@ -61,10 +61,8 @@ same as checking every caller of the prep.
 
 **Seven review passes, and four of the findings were against the change's own
 description and tests rather than its logic.** A doc citing a test name that
-existed nowhere. A cost figure — "two model calls each" — reasoned rather than
-measured, wrong, and repeated in six places including this file; the receipts
-that disproved it were already on disk when it was written (three refusals in
-four seconds, against twelve minutes for the driven probes). A counter
+existed nowhere. The cost figure retracted above — reasoned rather than
+measured, wrong, and repeated in six places including this file. A counter
 incremented and printed by neither readout, which made a fully-lost corpus read
 as zero on every line. And twice a test pinned the producer while the consumer
 dropped the value — `Tally::add` while the readout dropped the summand, then a

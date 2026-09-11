@@ -72,6 +72,26 @@ reinstalled — `cargo tree` shows it does not link `mecha-core` and neither
 range touches `mecha-mail` source — and `web/` and `scripts/voice/` are
 untouched, so no dist rebuild and no voice-worker restart.
 
+**The benchmark's musl binary is the one surface left stale, deliberately.**
+`~/Github/mecha/target-musl/release/mecha` is dated 2026-09-09, before both of
+today's merges, and it *is* built from crates this range changed
+(`mecha-core/src/replay_run.rs`). It is not a live hazard: `bench/run.sh:34`
+calls `bench/build-portable.sh` unconditionally before it sets
+`MECHA_BENCH_BINARY`, so no scorecard can be produced from the stale copy —
+only a direct invocation of that path would get old code. The merged tree does
+build under musl: verified from a clean checkout at `0c5a8352`, 9m42s, static
+ARM aarch64, which is a target CI does not cover.
+
+It was left stale rather than refreshed because **the shared checkout is on
+`feat/appraisal-goal-feedback`**, so a build there would compile the wrong
+branch — which is exactly what nearly happened while writing this, and was
+stopped mid-container with the artifact untouched. Copying the clean-tree
+build over it would have been worse: the mtime would read current while the
+tree it nominally came from did not match, which is the reverse of the
+"a fresh mtime is not a fresh build" trap. Refreshing it in place needs the
+checkout switched to `main`, which is the owner's move (`docs/HANDOFF.md`
+§Machine state has the recipe).
+
 **Owed, and deliberately not done:** whether to add an owner-declared alias
 map pointing retired recorded tool names (`pkg__kg_entity`) at their current
 equivalents (`kg_entity`). It would return three reflections to the measurable
