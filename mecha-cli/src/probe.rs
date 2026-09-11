@@ -82,6 +82,17 @@ enum ProbeMethod {
     },
 }
 
+/// The mode every counterfactual probe replays under, named once.
+///
+/// `lost_recorded_tools` and `drive_continuation` must agree: the preflight
+/// decides what the build will accept, and the two answer differently under a
+/// mode that executes — where neither a recorded blob nor a surface-only
+/// stand-in may substitute. As two literals two hundred lines apart they could
+/// drift silently, and the preflight's own test parametrises over the mode, so
+/// it cannot see the call sites disagree. One constant makes that a
+/// compile-time impossibility instead.
+const PROBE_MODE: OnDivergence = OnDivergence::Stop;
+
 impl ProbePrep {
     /// Recorded tools this machine can no longer offer by any route.
     ///
@@ -99,7 +110,7 @@ impl ProbePrep {
             live,
             Some(&crate::setup::surface_only_registry()),
             &self.recorded_specs,
-            OnDivergence::Stop,
+            PROBE_MODE,
         )
     }
 
@@ -542,7 +553,7 @@ pub async fn drive_continuation(
         Some(&crate::setup::surface_only_registry()),
         &prep.recorded_specs,
         tail_calls,
-        OnDivergence::Stop,
+        PROBE_MODE,
         cancel.clone(),
     ) {
         Ok(reg) => reg,

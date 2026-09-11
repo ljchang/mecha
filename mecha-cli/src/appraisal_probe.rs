@@ -89,7 +89,7 @@ fn annotate_with_fidelity(
 
 /// What probing one session's interventions cost and found.
 ///
-/// **Four ways to produce no finding, counted apart, and the split is the
+/// **Five ways to produce no finding, counted apart, and the split is the
 /// measurement.** Folding them into one `skipped` was the first cut and it hid
 /// the thing worth knowing: an intervention with no replayable point is a
 /// permanent ceiling on what this mechanism can ever reach, where a budget
@@ -98,7 +98,13 @@ fn annotate_with_fidelity(
 /// cannot tell a probe worth extending from one worth abandoning — which is
 /// the same mistake as a queue reporting its own unreadability as zero, one
 /// layer down.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+///
+/// `Serialize` is what the `--json` readout renders, so a channel added here
+/// cannot fall out of it: the first cut of `surface_lost` was incremented and
+/// printed nowhere, and a corpus whose surfaces were all gone read as zero on
+/// every line — "nothing went wrong" where the truth was "nothing could be
+/// measured".
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct Tally {
     /// Arms actually driven — the model runs this cost.
     pub driven: usize,
@@ -375,6 +381,45 @@ mod tests {
         // `surface_lost` are the permanent pair and `unavailable` the fixable
         // one beside them; only the over-budget one is a number somebody chose.
         assert_eq!(t.driven, 0);
+    }
+
+    /// The `--json` readout renders `Tally` itself, so every channel reaches
+    /// it by construction. This pins that: the first cut of `surface_lost`
+    /// was incremented and printed nowhere, and a corpus whose recorded
+    /// surfaces were all gone printed zero on every line — which reads as
+    /// "nothing went wrong" for a corpus where nothing could be measured.
+    /// `Tally::add` was pinned by a test while the readout dropped the
+    /// summand, so pinning the fold is not enough on its own.
+    #[test]
+    fn every_channel_reaches_the_json_readout() {
+        let t = Tally {
+            driven: 1,
+            mattered: 2,
+            redundant: 3,
+            inconclusive: 4,
+            unprobeable: 5,
+            unavailable: 6,
+            surface_lost: 7,
+            over_budget: 8,
+        };
+        let v = serde_json::to_value(t).unwrap();
+        let o = v.as_object().expect("a tally renders as an object");
+        for key in [
+            "driven",
+            "mattered",
+            "redundant",
+            "inconclusive",
+            "unprobeable",
+            "unavailable",
+            "surface_lost",
+            "over_budget",
+        ] {
+            assert!(o.contains_key(key), "`{key}` is missing from --json");
+        }
+        // Every field, not just the ones named above: a channel added to the
+        // struct and to neither this list nor the readout would otherwise pass.
+        assert_eq!(o.len(), 8, "a channel was added without naming it here");
+        assert_eq!(o["surface_lost"], 7);
     }
 
     /// `add` folds every channel, including the newest. A merge that drops one

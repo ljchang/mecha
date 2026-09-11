@@ -449,7 +449,19 @@ surface fails inside `drive_continuation` at `replay_registry`, before
 corpus-wide allowance on a model run that never happened and count it in
 `Tally::driven`. It lands in `Tally::surface_lost` rather than
 `Tally::unavailable`, because that channel means *fixable* and a retired
-server is not.
+server is not — and the `--json` readout renders `Tally` through `Serialize`
+so a channel added to the struct cannot fall out of it. The first cut of
+`surface_lost` was incremented and printed nowhere, which made a corpus whose
+recorded surfaces were all gone read as zero on every line: "nothing went
+wrong" where the truth was "nothing could be measured". Pinning `Tally::add`
+had not caught it, because the fold was complete and the readout was the end
+that dropped the summand.
+
+`probe::PROBE_MODE` names the replay mode once. The preflight and
+`drive_continuation` must agree, and they answer differently under a mode that
+executes; as two literals two hundred lines apart they could drift while
+`the_preflight_matches_what_the_build_accepts` — which parametrises over the
+mode — stayed green.
 
 Found 2026-09-11, the night after the grounded receipts shipped: three of
 seventeen held-out reflections cited `pkg__kg_entity` and
