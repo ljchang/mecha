@@ -51,6 +51,11 @@ OUT="target-musl/release/mecha"
 # An emptiness test then reads "cannot tell" as "clean", and the guard written
 # to refuse an unattributable build would wave through the most unattributable
 # source there is. Unknown is never clean.
+# Bound before either branch: the not-a-checkout path never runs `git status`,
+# and the post-build race check reads `$STATUS` unconditionally. Under `set -u`
+# that aborts the script on precisely the path the escape hatch exists to
+# allow, which would have made `unknown@unknown +unverified` unreachable.
+STATUS=""
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
   if [ "${MECHA_BENCH_ALLOW_DIRTY:-0}" != "1" ]; then
     echo "refusing: $PWD is not a readable git checkout, so $OUT could not be" >&2
