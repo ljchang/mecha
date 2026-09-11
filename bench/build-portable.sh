@@ -171,7 +171,15 @@ AFTER_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 # itself a way to provoke the dubious-ownership refusal. Unknown is never clean
 # on either side of the `docker run`, and stderr is left visible so the
 # operator sees why.
-if ! AFTER_STATUS="$(git status --porcelain)"; then
+if [ "$SOURCE_DIRTY" = " +unverified" ]; then
+  # No trustworthy baseline was captured, so there is nothing for the tree to
+  # have moved *from*: "moved during the build" is not a claim this check can
+  # make, and whatever stopped git answering before the build is still true
+  # now, so asking again only earns a second identical token. The suffix
+  # already says the cleanliness is unknown; saying it twice does not say it
+  # harder, and the operator is told to read the suffix literally.
+  :
+elif ! AFTER_STATUS="$(git status --porcelain)"; then
   if [ "${MECHA_BENCH_ALLOW_DIRTY:-0}" != "1" ]; then
     echo "refusing: git could not read $PWD after the build, so whether the tree" >&2
     echo "  moved under it is unknown and $OUT cannot be tied to $SOURCE_COMMIT." >&2
