@@ -440,11 +440,20 @@ sha256sum target-musl/release/mecha      # must match the line above
 ```
 
 **Read the suffix, and check the digest.** A bare `main@<commit>` is a build
-from a clean checkout. ` +dirty` means `MECHA_BENCH_ALLOW_DIRTY=1` was set over
-uncommitted changes, so the binary matches no commit and the line names only
-where it started; ` +unverified` means git could not read the tree at all and
-the branch and commit are both `unknown`. Neither is a build to hang a
-scorecard on without saying so.
+from a clean checkout — the only form that says the binary matches the commit
+named. Both suffixes mean `MECHA_BENCH_ALLOW_DIRTY=1` was set, because nothing
+else gets past the guard:
+
+- ` +dirty` — the tree had uncommitted changes, so the binary matches no
+  commit and the line names only where it started.
+- ` +unverified` — git could not establish whether the tree was clean. **The
+  branch and commit may still be real** (`master@eb6906a +unverified` is a
+  repo whose `git status` failed on a corrupt index while `rev-parse` answered
+  fine); they read `unknown@unknown` only when git could not read the
+  checkout at all. Either way the cleanliness is unknown, which is not the
+  same as clean.
+
+Neither is a build to hang a scorecard on without saying so.
 
 **A digest that does not match means the binary was replaced without its
 provenance** — most likely by the clean-worktree-build-then-copy procedure in

@@ -82,9 +82,23 @@ else
   if [ -n "$STATUS" ]; then
     SOURCE_DIRTY=" +dirty"
     if [ "${MECHA_BENCH_ALLOW_DIRTY:-0}" != "1" ]; then
+      # Name the files. `$STATUS` is already captured a few lines up — the
+      # operator should not have to re-run `git status` by hand to decide
+      # between committing, stashing and overriding. No `| head`: `pipefail`
+      # plus an early-closing `head` turns a long status into a SIGPIPE abort.
+      #
+      # And say `-u`. Plain `git stash` leaves untracked files, which `git
+      # status --porcelain` reports as `??` — a stray scratch file or a
+      # downloaded log is the commonest way this tree goes dirty, none of it
+      # affecting the artifact. "stash" alone sends the operator into an
+      # identical refusal and then to the override, which is the outcome this
+      # guard exists to avoid: one that refuses legitimate work gets switched
+      # off.
       echo "refusing: $PWD is dirty, so $OUT would match no commit and its" >&2
-      echo "  scorecard could not be tied back to source. Commit, stash, or set" >&2
-      echo "  MECHA_BENCH_ALLOW_DIRTY=1 to measure it anyway." >&2
+      echo "  scorecard could not be tied back to source:" >&2
+      echo "$STATUS" >&2
+      echo "  Commit, stash with 'git stash -u' (plain stash leaves the ?? entries)," >&2
+      echo "  or set MECHA_BENCH_ALLOW_DIRTY=1 to measure it anyway." >&2
       exit 1
     fi
   fi
