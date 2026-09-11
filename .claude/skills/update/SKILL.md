@@ -457,7 +457,10 @@ nothing else gets past the guard:
   checkout at all. Either way the cleanliness is unknown, which is not the
   same as clean.
 
-Neither is a build to hang a scorecard on without saying so.
+Suffixes compose when they say different things — ` +unverified +raced` is a
+build whose tree could not be checked *and* whose `HEAD` moved under it — but
+the same token never repeats. None of these is a build to hang a scorecard on
+without saying so.
 
 **A digest that does not match means the binary was replaced without its
 provenance** — most likely by building in a clean worktree and copying the

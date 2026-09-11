@@ -178,7 +178,20 @@ if [ "$SOURCE_DIRTY" = " +unverified" ]; then
   # now, so asking again only earns a second identical token. The suffix
   # already says the cleanliness is unknown; saying it twice does not say it
   # harder, and the operator is told to read the suffix literally.
-  :
+  #
+  # `rev-parse` is a different question, though, and it answered on both sides
+  # of the build — so whether `HEAD` moved is still checkable here even when
+  # whether the tree was clean is not. Without this, a peer landing commits
+  # during the build is recorded as a bare ` +unverified`, and the skill glosses
+  # that as "the branch and commit may still be real", telling the reader the
+  # named commit is the build's with only cleanliness in doubt. ` +raced` is
+  # the sentence this case needs. The two tokens say different true things, so
+  # they compose; what must not repeat is the same token twice.
+  if [ "$AFTER_COMMIT" != "$SOURCE_COMMIT" ]; then
+    SOURCE="$SOURCE +raced"
+    echo "warning: HEAD moved during the build ($SOURCE_COMMIT -> $AFTER_COMMIT);" >&2
+    echo "  recorded as +raced" >&2
+  fi
 elif ! AFTER_STATUS="$(git status --porcelain)"; then
   if [ "${MECHA_BENCH_ALLOW_DIRTY:-0}" != "1" ]; then
     echo "refusing: git could not read $PWD after the build, so whether the tree" >&2
