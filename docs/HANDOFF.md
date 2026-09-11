@@ -75,36 +75,38 @@ reinstalled — `cargo tree` shows it does not link `mecha-core` and neither
 range touches `mecha-mail` source — and `web/` and `scripts/voice/` are
 untouched, so no dist rebuild and no voice-worker restart.
 
-**The benchmark's musl binary is the one surface left stale, deliberately.**
-`~/Github/mecha/target-musl/release/mecha` is dated 2026-09-09, before both of
-today's merges, and it *is* built from crates this range changed
-(`mecha-core/src/replay_run.rs`). It is not a live hazard: `bench/run.sh` calls
-`bench/build-portable.sh` unconditionally before it sets
-`MECHA_BENCH_BINARY`, so no scorecard can be produced from the stale copy —
-only a direct invocation of that path would get old code. (Verified against
-`0c5a8352`; named by content rather than by line, which rots the moment
-another lane lands.) The merged tree does
-build under musl: verified from a clean checkout at `0c5a8352`, 9m42s, static
-ARM aarch64, which is a target CI does not cover.
+**The benchmark's musl binary was rebuilt and copied, following the recorded
+procedure.** It was stale at 2026-09-09 (pre-#223 by content: the literal
+`permanently unmeasurable, not retried` counted 0), and it is built from crates
+this range changed (`mecha-core/src/replay_run.rs`). Rebuilt from `0c5a8352` by
+`bench/build-portable.sh` in a clean worktree — 9m42s, a musl target CI does not
+cover — then the static binary copied to the shared checkout's
+`target-musl/release/mecha`, the path `bench/run.sh` executes, and verified
+there by content rather than by date: `statically linked`, `strings` carries
+`permanently unmeasurable, not retried` (0 → 3), and it reports `mecha 0.1.19`.
+Same procedure as the 2026-09-03 entry under **Machine state, dated**.
 
-It was left stale rather than refreshed because **the shared checkout is on
-`feat/appraisal-goal-feedback`**, so a build there would compile the wrong
-branch — which is exactly what nearly happened while writing this, and was
-stopped mid-container with the artifact untouched. Copying the clean-tree
-build over it would have been worse: the mtime would read current while the
-tree it nominally came from did not match, which is the reverse of the
-"a fresh mtime is not a fresh build" trap. Refreshing it in place needs the
-checkout switched to `main`, which is the owner's move (`docs/HANDOFF.md`
-§Machine state has the recipe).
+An earlier draft of this entry called that copy worse than leaving the artifact
+stale, on the grounds that a fresh mtime over a non-matching tree is the
+"a fresh mtime is not a fresh build" trap. That was wrong and is recorded
+because the reasoning is the kind that looks careful: the precedent never
+trusted the mtime, it asked the artifact by content, which is that rule's
+answer rather than an instance of it.
 
-**Owed, and deliberately not done:** whether to add an owner-declared alias
-map pointing retired recorded tool names (`pkg__kg_entity`) at their current
-equivalents (`kg_entity`). It would return three reflections to the measurable
-set at the cost of grading a rule against a tool surface the recording never
-saw. That is the owner's trade, not a model's inference. Also owed: the
-budget-ordering fix in `appraisal_probe` has no test — `probe_appraisal` needs
-a real session and a prepared agent, and that file's tests are unit tests over
-`Tally`, `replayable` and `annotate_with_fidelity`.
+**The remaining benchmark hazard is the checkout's branch, not the artifact.**
+`bench/build-portable.sh` does `cd "$(dirname "$0")/.."` and builds that
+checkout's working tree with no branch check, and `bench/run.sh` calls it
+unconditionally before setting `MECHA_BENCH_BINARY`. The shared checkout is on
+`feat/appraisal-goal-feedback`, so a benchmark run from there would overwrite
+this artifact with a fresh build of the wrong branch and label the scorecard
+current — a sharper failure than the stale copy just replaced, because nothing
+about it is stale. Switching the checkout to `main` is the fix and it is the
+owner's move: `HEAD` (`4dd2fb1c`) is an ancestor of `origin/main`, so the move
+is a fast-forward, but 19 files are uncommitted there and two hold content in
+no commit anywhere — `website/docs/features/appraisal.md` (the `commitment`,
+`embarrassment` and `guilt` rows) and `website/docs/reference/cli.md` (the
+`--image` flags and the outbox `approve`/`reconcile` verbs), both last written
+2026-09-08/09. They are not this session's and were not discarded.
 
 **2026-09-11 — the nightly measurement fixes are merged to `main` (`7f9cc701`)
 and installed.** They sat written-but-undeployed for a night, so the 2026-09-11
