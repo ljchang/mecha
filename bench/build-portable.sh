@@ -64,10 +64,26 @@ OUT="target-musl/release/mecha"
 # that aborts the script on precisely the path the escape hatch exists to
 # allow, which would have made `unknown@unknown +unverified` unreachable.
 STATUS=""
-if ! git rev-parse --git-dir >/dev/null 2>&1; then
+# `--show-toplevel` against this directory, not `--git-dir`: discovery walks
+# *upward*, so a tree that is not a checkout of anything still resolves to
+# whatever repo it happens to sit under. An rsync'd copy dropped inside another
+# checkout — three repositories live on these machines — with that path
+# gitignored by the outer one passes both probes: the branch, the commit and a
+# clean status all describe the *outer* repo, and `.source` gets a bare
+# `branch@commit`, the one form that claims the binary matches the commit
+# named, naming a commit from a different repository. That is this script's own
+# failure with the sign flipped: not an absent claim but a confident false one,
+# and the digest cannot catch it because it binds the file to the binary, not
+# the binary to the source.
+#
+# `pwd -P` rather than `$PWD`: the `cd` above leaves bash's *logical* path
+# while `--show-toplevel` returns the physical one, so a checkout reached
+# through a symlink would otherwise be refused for no reason — and a guard that
+# refuses legitimate work is a guard someone switches off.
+if [ "$(git rev-parse --show-toplevel 2>/dev/null)" != "$(pwd -P)" ]; then
   if [ "${MECHA_BENCH_ALLOW_DIRTY:-0}" != "1" ]; then
-    echo "refusing: $PWD is not a readable git checkout, so $OUT could not be" >&2
-    echo "  tied back to source. Set MECHA_BENCH_ALLOW_DIRTY=1 to build anyway." >&2
+    echo "refusing: $PWD is not the root of its own git checkout, so $OUT could" >&2
+    echo "  not be tied back to source. Set MECHA_BENCH_ALLOW_DIRTY=1 to build anyway." >&2
     exit 1
   fi
   SOURCE_BRANCH="unknown"; SOURCE_COMMIT="unknown"; SOURCE_DIRTY=" +unverified"
