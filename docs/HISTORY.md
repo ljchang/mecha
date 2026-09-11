@@ -50,6 +50,15 @@ worse than recording that the corpus lost one; if that trade is ever wanted it
 belongs in an owner-declared alias map, where a wrong mapping is a declaration
 rather than an inference.
 
+Review found the same defect one caller over, and it was the more expensive
+one. `appraisal_probe` charged its arm budget and counted `Tally::driven`
+*before* `drive_arm`, and a lost surface fails at `replay_registry` before
+`Agent::new` — so a corpus-wide allowance documented as "consumed by drives,
+never by skips" was being spent on model runs that never happened, and filed in
+`Tally::unavailable`, whose doc says "Fixable". Checking `harness_probe` and
+clearing it correctly (its corpus is recent sessions, which age out) was not the
+same as checking every caller of the prep.
+
 **Seven review passes, and four of the findings were against the change's own
 description and tests rather than its logic.** A doc citing a test name that
 existed nowhere. A cost figure — "two model calls each" — reasoned rather than
@@ -67,15 +76,6 @@ both bind downward.
 The mechanism was right early. What kept being wrong was everything that
 *describes* the mechanism — and that is the half which outlives the session
 that could check it.
-
-Review found the same defect one caller over, and it was the more expensive
-one. `appraisal_probe` charged its arm budget and counted `Tally::driven`
-*before* `drive_arm`, and a lost surface fails at `replay_registry` before
-`Agent::new` — so a corpus-wide allowance documented as "consumed by drives,
-never by skips" was being spent on model runs that never happened, and filed in
-`Tally::unavailable`, whose doc says "Fixable". Checking `harness_probe` and
-clearing it correctly (its corpus is recent sessions, which age out) was not the
-same as checking every caller of the prep.
 
 **2026-09-11 — the nightly measurement fixes shipped, and re-running the night
 showed last night's two directional findings were both artifacts.** They were
