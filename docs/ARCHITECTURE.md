@@ -452,15 +452,21 @@ or refuses a probe that would have run.
 surface fails inside `drive_continuation` at `replay_registry`, before
 `Agent::new` and so before any provider call, so charging it would spend a
 corpus-wide allowance on a model run that never happened and count it in
-`Tally::driven`. It lands in `Tally::surface_lost` rather than
-`Tally::unavailable`, because that channel means *fixable* and a retired
-server is not — and the `--json` readout renders `Tally` through `Serialize`
+`Tally::driven`. The question is asked before the budget guard, not after: once a
+corpus-wide allowance is spent, a lost surface asked about afterwards files as
+`over_budget` — "never looked at" — and the readout then tells the owner to
+raise a budget that cannot buy one of them. It lands in `Tally::surface_lost`
+rather than `Tally::unavailable`, because that channel means *fixable* and a
+retired server is not — and the `--json` readout renders `Tally` through `Serialize`
 so a channel added to the struct cannot fall out of it. The first cut of
 `surface_lost` was incremented and printed nowhere, which made a corpus whose
 recorded surfaces were all gone read as zero on every line: "nothing went
 wrong" where the truth was "nothing could be measured". Pinning `Tally::add`
 had not caught it, because the fold was complete and the readout was the end
-that dropped the summand.
+that dropped the summand — and the first pin written for the readout had the
+same defect one level down, serializing a `Tally` of its own rather than
+calling `probe_json`, so it would have stayed green through a rewrite back to
+a hand-listed `json!`. A pin has to hold the end a reader actually meets.
 
 `probe::PROBE_MODE` names the replay mode once. The preflight and
 `drive_continuation` must agree, and they answer differently under a mode that
