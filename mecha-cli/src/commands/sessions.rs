@@ -934,16 +934,17 @@ async fn appraise(
                 // and "probed and found nothing" are opposite findings, and a
                 // reader that cannot tell them apart is the bug this whole
                 // rung exists to avoid.
-                "probe": probe.then(|| serde_json::json!({
-                    "driven": tally.driven,
-                    "mattered": tally.mattered,
-                    "redundant": tally.redundant,
-                    "inconclusive": tally.inconclusive,
-                    "unprobeable": tally.unprobeable,
-                    "unavailable": tally.unavailable,
-                    "over_budget": tally.over_budget,
-                    "budget_left": budget,
-                })),
+                // Rendered from `Tally` itself rather than a hand-listed set
+                // of keys: a channel added to the struct and forgotten here
+                // reads as zero, and zero on a no-finding channel is the
+                // opposite of the truth it is hiding.
+                "probe": probe.then(|| {
+                    let mut o = serde_json::to_value(tally).unwrap_or_default();
+                    if let Some(m) = o.as_object_mut() {
+                        m.insert("budget_left".into(), serde_json::json!(budget));
+                    }
+                    o
+                }),
                 // Same "absent, not zero" rule as `probe`: whether the flag
                 // ran at all is a different fact from what it found.
                 "appraiser": run_appraiser.then(|| serde_json::json!({
@@ -1095,8 +1096,11 @@ async fn appraise(
             "    {:<16} {:>5}  — diverged before the probe point",
             "inconclusive", tally.inconclusive
         );
-        // Three ways to have no finding, and they call for three different
-        // responses: extend the mechanism, fix the registry, raise the budget.
+        // Four ways to have no finding, and they call for four different
+        // responses: extend the mechanism, fix the registry, accept the loss,
+        // raise the budget. `surface_lost` is the one that asks for nothing —
+        // which is why it must still be printed, or a corpus that lost every
+        // recorded surface reads as a clean zero on every line.
         println!(
             "    {:<16} {:>5}  — followup/edit: no counterfactual to drive",
             "unprobeable", tally.unprobeable
@@ -1104,6 +1108,10 @@ async fn appraise(
         println!(
             "    {:<16} {:>5}  — session or tool surface unavailable",
             "unavailable", tally.unavailable
+        );
+        println!(
+            "    {:<16} {:>5}  — recorded surface gone for good; not retried",
+            "surface lost", tally.surface_lost
         );
         println!(
             "    {:<16} {:>5}  — budget ran out first",

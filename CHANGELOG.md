@@ -19,7 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `driven` arm, for a probe whose recorded surface is gone — that failure
   happens before any provider call. Such a probe is counted in a new
   `Tally::surface_lost`, apart from the `unavailable` channel that means
-  fixable.
+  fixable, and reported in both the `--json` and human readouts of
+  `mecha sessions appraise`.
 
 ## [0.1.19] - 2026-09-09
 
