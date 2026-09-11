@@ -139,8 +139,17 @@ file "$OUT" | grep -q "statically linked" || {
 # recorded, a `.source` that does not describe the binary beside it says so
 # when asked, and `mecha.source` becomes a claim that can be false out loud
 # rather than a label that is quietly wrong.
+# Captured, not inlined. A command substitution in an *argument* position does
+# not trip `errexit` — the simple command's status is `printf`'s — so a missing
+# or failing `sha256sum` would write a literal `sha256 ` with no digest and
+# exit 0. That is the one line here that could fail open, and it would fail
+# open on the single signal this file carries: a digest that can never match
+# reads as "the binary was replaced without its provenance" and sends the
+# operator to rebuild for nothing. An assignment does trip it, which is why
+# the `STATUS` capture above is written the same way.
+DIGEST="$(sha256sum "$OUT" | cut -d' ' -f1)"
 printf '%s\n' "$SOURCE" > "$OUT.source"
-printf 'sha256 %s\n' "$(sha256sum "$OUT" | cut -d' ' -f1)" >> "$OUT.source"
+printf 'sha256 %s\n' "$DIGEST" >> "$OUT.source"
 
 echo "portable binary: $OUT ($(file -b "$OUT" | cut -d, -f1-2))" >&2
 echo "  built from: $SOURCE (recorded in $OUT.source)" >&2
