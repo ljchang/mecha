@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the other skips, and never buys a `--cover` slot; `--repeat` still forces one
   if a retired provider returns. Previously these were reported as retryable
   and cost two model calls a night each to reach the same refusal.
+- `appraisal_probe` no longer charges its per-corpus arm budget, or counts a
+  `driven` arm, for a probe whose recorded surface is gone — that failure
+  happens before any provider call. Such a probe is counted in a new
+  `Tally::surface_lost`, apart from the `unavailable` channel that means
+  fixable.
 
 ## [0.1.19] - 2026-09-09
 
