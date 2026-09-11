@@ -436,8 +436,13 @@ helpers `build_replay_registry` resolves with, whether each recorded tool can
 still be offered by any route — a live tool, the surface-only registry, or the
 recording's own blob. A name none of the three can construct will not become
 constructible on a later night, so `validate` skips the probe at preparation
-and counts it apart from the other skips, rather than spending two model calls
-to reach the same refusal. The preflight and the build are pinned to each other
+and counts it apart from the other skips.
+
+The saving is not provider calls. `replay_registry` runs before
+`provider::build` in `drive_continuation`, and `validate`'s arm loop breaks on
+the first arm, so a lost surface already refused for free — what it spent was a
+ledger row that can never age, a `--cover` slot that buys no coverage, and the
+session load behind both. The preflight and the build are pinned to each other
 by `the_preflight_matches_what_the_build_accepts` over the whole matrix,
 because a preflight that disagrees either burns the calls it was added to save
 or refuses a probe that would have run.

@@ -511,7 +511,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         };
         // A recorded tool nothing can construct makes this probe unmeasurable
         // now and on every later night, so it is refused before either arm
-        // rather than after two model calls have paid for the same answer.
+        // rather than inside `drive_continuation`, where the same refusal
+        // already costs no provider call but does spend a ledger row and a
+        // `--cover` slot on an answer that cannot change.
         // Counted apart from the other skips because the cause is different
         // in kind: not a recording this run cannot read, but a surface the
         // machine no longer has and will not regain on its own.

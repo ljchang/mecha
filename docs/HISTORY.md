@@ -19,8 +19,16 @@ retried forever.** `validate` marked every replay failure retryable and
 `should_run` re-runs anything retryable, so three of the seventeen held-out
 reflections — naming `pkg__kg_entity` and `google__calendar_create_event` from
 servers retired on 2026-09-04, in recordings made before the surface store
-existed — were re-probed every night at two model calls each to reach an
-identical refusal. The distinguishing fact is in the recordings and was checked
+existed — were re-probed every night to reach an identical refusal, each
+spending a ledger row that can never age and a `--cover` slot that buys no
+coverage. **The first write-up of this said "two model calls each", which was
+reasoned rather than measured and is wrong:** `replay_registry` runs before
+`provider::build`, so the refusal was always free of provider calls. The three
+receipts from the 2026-09-11 re-run are stamped 13:34:59 and 13:35:03 twice,
+while the genuinely driven probes ran 13:35:43 to 13:47:10 — four seconds
+against twelve minutes. A cost figure nobody measured outlives the session that
+could have checked it, which is why it is corrected here rather than quietly
+dropped. The distinguishing fact is in the recordings and was checked
 rather than inferred: those three carry no `tools_hash` at all, while the one
 follow-up that does grade is the one recording that has a blob.
 

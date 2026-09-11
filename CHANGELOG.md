@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   later night, so it is refused at preparation, counted and reported apart from
   the other skips, and never buys a `--cover` slot; `--repeat` still forces one
   if a retired provider returns. Previously these were reported as retryable
-  and cost two model calls a night each to reach the same refusal.
+  and spent a ledger row and a `--cover` slot a night each to reach the same
+  refusal. The refusal itself is free: it happens before any provider call.
 - `appraisal_probe` no longer charges its per-corpus arm budget, or counts a
   `driven` arm, for a probe whose recorded surface is gone — that failure
   happens before any provider call. Such a probe is counted in a new
