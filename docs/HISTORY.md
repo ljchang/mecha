@@ -50,6 +50,24 @@ worse than recording that the corpus lost one; if that trade is ever wanted it
 belongs in an owner-declared alias map, where a wrong mapping is a declaration
 rather than an inference.
 
+**Seven review passes, and four of the findings were against the change's own
+description and tests rather than its logic.** A doc citing a test name that
+existed nowhere. A cost figure — "two model calls each" — reasoned rather than
+measured, wrong, and repeated in six places including this file; the receipts
+that disproved it were already on disk when it was written (three refusals in
+four seconds, against twelve minutes for the driven probes). A counter
+incremented and printed by neither readout, which made a fully-lost corpus read
+as zero on every line. And twice a test pinned the producer while the consumer
+dropped the value — `Tally::add` while the readout dropped the summand, then a
+readout test that serialized its own `Tally` and never called the readout.
+Three more were one mistake repeated: an insertion anchored on `fn name(`
+landing between an item and its attribute or its doc block, in a language where
+both bind downward.
+
+The mechanism was right early. What kept being wrong was everything that
+*describes* the mechanism — and that is the half which outlives the session
+that could check it.
+
 Review found the same defect one caller over, and it was the more expensive
 one. `appraisal_probe` charged its arm budget and counted `Tally::driven`
 *before* `drive_arm`, and a lost surface fails at `replay_registry` before

@@ -60,6 +60,27 @@ correctness or held-out task-family transfer. The staged cap proposal was refere
 by the scorecard, not applied. The controlled gossip comparison is now implemented;
 its verified result is tracked above. Representative live-graph measurement remains open.
 
+**2026-09-11 — #223 is merged (`0c5a8352`) and installed; the surface-loss
+refusal is live.** The installed binary refuses the three lost-surface probes
+on the live corpus before any model call, verified after the install rather
+than assumed: `strings` on `~/.cargo/bin/mecha` finds three literals the range
+added, each of which counted zero beforehand. `mecha-slack`, `mecha-triggers`,
+`mecha-drain` and `mecha-serve` restarted and confirmed by their own startup
+lines; no process holds a deleted install; the graph MCP answers 13 tools from
+the installed path; `doctor` reports 0 broken. `mecha-mail` was not
+reinstalled — `cargo tree` shows it does not link `mecha-core` and neither
+range touches `mecha-mail` source — and `web/` and `scripts/voice/` are
+untouched, so no dist rebuild and no voice-worker restart.
+
+**Owed, and deliberately not done:** whether to add an owner-declared alias
+map pointing retired recorded tool names (`pkg__kg_entity`) at their current
+equivalents (`kg_entity`). It would return three reflections to the measurable
+set at the cost of grading a rule against a tool surface the recording never
+saw. That is the owner's trade, not a model's inference. Also owed: the
+budget-ordering fix in `appraisal_probe` has no test — `probe_appraisal` needs
+a real session and a prepared agent, and that file's tests are unit tests over
+`Tally`, `replayable` and `annotate_with_fidelity`.
+
 **2026-09-11 — the nightly measurement fixes are merged to `main` (`7f9cc701`)
 and installed.** They sat written-but-undeployed for a night, so the 2026-09-11
 nightly still ran the old instrument and still reported the defect they fix; a
