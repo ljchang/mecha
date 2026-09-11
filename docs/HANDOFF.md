@@ -60,8 +60,23 @@ correctness or held-out task-family transfer. The staged cap proposal was refere
 by the scorecard, not applied. The controlled gossip comparison is now implemented;
 its verified result is tracked above. Representative live-graph measurement remains open.
 
-**2026-09-10 — nightly measurement fixes on `fix/nightly-measurement-grounding`,
-not installed.** Validation now restores recorded tools for followups and records
+**2026-09-11 — the nightly measurement fixes are merged to `main` (`7f9cc701`)
+and installed.** They sat written-but-undeployed for a night, so the 2026-09-11
+nightly still ran the old instrument and still reported the defect they fix; a
+branch that is green and unshipped measures nothing. Merging them meant a
+21-file merge against the v0.1.19 squash and the anticipatory lane — resolved by
+authority, since files the fix never touched held only pre-squash equivalents of
+code already upstream. Verified on the merged tree: release build, `fmt --check`,
+warning-free Clippy, **2,650 passed / zero failed / three ignored** across 21
+suites. Installed from a clean tree at `7f9cc701` and probed with a literal the
+range *added* (`followups require the judge-graded continuation path`, 0 before,
+3 after); `mecha-slack`, `mecha-triggers`, `mecha-drain` and `mecha-serve`
+restarted and verified by their startup lines. `mecha-mail` was not reinstalled:
+`cargo tree` shows it does not link `mecha-core` and this range changes no
+`mecha-mail` source. `web/` and `scripts/voice/` are untouched by the range, so
+no dist rebuild and no voice-worker restart.
+
+Validation now restores recorded tools for followups and records
 attempt identities/reasons; unchanged inputs are deferred before coverage selection.
 Harness measurements reject ignored effort controls and structurally incomplete
 replays, retain arm receipts and classify MCP capability changes as security work.
@@ -99,7 +114,6 @@ live-graph comparisons remain measurement work; the controlled synthetic compari
 is tracked above. Earlier dated environment claims
 retain their original verification scope; no deployment was performed.
 
-**2026-09-09 — appraisal implementation is on `feat/appraisal-goal-feedback`, not installed.**
 
 **2026-09-09 — v0.1.19 is installed from release commit `ef283174`.**
 The owner requested a patch release and the update. All four workspace versions
