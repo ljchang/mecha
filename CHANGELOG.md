@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.20] - 2026-09-11
+
 ### Fixed
 
 - `validate` no longer re-probes a reflection whose recording cites a tool this
@@ -22,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Tally::surface_lost`, apart from the `unavailable` channel that means
   fixable, and reported in both the `--json` and human readouts of
   `mecha sessions appraise`.
+- `bench/build-portable.sh` records the branch, commit and sha256 of the tree it
+  built beside the binary, and refuses an unattributable build — a dirty tree,
+  one git cannot read as the root of its own checkout, or one that moved during
+  the build. `MECHA_BENCH_ALLOW_DIRTY=1` opts out and is stamped into the
+  recorded line. Repo tooling only; no crate behaviour changes.
 
 ## [0.1.19] - 2026-09-09
 
@@ -3475,7 +3482,8 @@ under Added; later releases will record only what changed.
   benchmarks, the TUI survey, and a branching design recorded as a deliberate
   non-implementation.
 
-[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.19...HEAD
+[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.20...HEAD
+[0.1.20]: https://github.com/ljchang/mecha/releases/tag/v0.1.20
 [0.1.19]: https://github.com/ljchang/mecha/releases/tag/v0.1.19
 [0.1.18]: https://github.com/ljchang/mecha/releases/tag/v0.1.18
 [0.1.17]: https://github.com/ljchang/mecha/releases/tag/v0.1.17
