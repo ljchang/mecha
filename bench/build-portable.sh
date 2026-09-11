@@ -139,6 +139,30 @@ file "$OUT" | grep -q "statically linked" || {
 # recorded, a `.source` that does not describe the binary beside it says so
 # when asked, and `mecha.source` becomes a claim that can be false out loud
 # rather than a label that is quietly wrong.
+# **The tree could have moved under the build.** The capture above happens
+# before a ~10-minute `docker run` that bind-mounts the live host tree
+# (`-v "$PWD":/w`) rather than a snapshot, so cargo compiles whatever the tree
+# holds *during* the build. A peer landing a commit or touching a file mid-build
+# — eleven concurrent sessions over one checkout is this repo's recorded normal
+# — yields a binary matching no commit, with a `.source` asserting that it
+# matches one. That is worse than the unguarded case: a false claim beats no
+# claim only until someone relies on it. The digest does not catch it, because
+# it binds `.source` to the binary and not the binary to the source.
+AFTER_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if ! AFTER_STATUS="$(git status --porcelain 2>/dev/null)"; then
+  AFTER_STATUS="$STATUS"   # git stopped answering mid-build; below marks it
+fi
+if [ "$AFTER_COMMIT" != "$SOURCE_COMMIT" ] || [ "$AFTER_STATUS" != "$STATUS" ]; then
+  if [ "${MECHA_BENCH_ALLOW_DIRTY:-0}" != "1" ]; then
+    echo "refusing: $PWD changed while the build ran, so $OUT may contain" >&2
+    echo "  source $SOURCE_COMMIT does not describe (now $AFTER_COMMIT)." >&2
+    echo "  Rebuild on a quiet tree, or set MECHA_BENCH_ALLOW_DIRTY=1." >&2
+    exit 1
+  fi
+  SOURCE="$SOURCE +raced"
+  echo "warning: tree moved during the build; recorded as +raced" >&2
+fi
+
 # Captured, not inlined. A command substitution in an *argument* position does
 # not trip `errexit` — the simple command's status is `printf`'s — so a missing
 # or failing `sha256sum` would write a literal `sha256 ` with no digest and

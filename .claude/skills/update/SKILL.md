@@ -446,6 +446,10 @@ else gets past the guard:
 
 - ` +dirty` — the tree had uncommitted changes, so the binary matches no
   commit and the line names only where it started.
+- ` +raced` — the tree changed while the build ran. `build-portable.sh`
+  bind-mounts the live checkout rather than a snapshot, so a commit or an edit
+  landing mid-build is compiled in; the commit named is where it started, not
+  necessarily what it contains.
 - ` +unverified` — git could not establish whether the tree was clean. **The
   branch and commit may still be real** (`master@eb6906a +unverified` is a
   repo whose `git status` failed on a corrupt index while `rev-parse` answered
