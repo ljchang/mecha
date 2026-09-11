@@ -83,6 +83,37 @@ enum ProbeMethod {
 }
 
 impl ProbePrep {
+    /// Recorded tools this machine can no longer offer by any route.
+    ///
+    /// Empty for an artifact probe, which grades a fresh task against its own
+    /// fixture and replays no recorded surface at all. Non-empty means the
+    /// probe cannot be run faithfully now and will not become runnable later:
+    /// the caller should record it as unmeasurable rather than spend two model
+    /// calls reaching the same refusal every night.
+    pub fn lost_recorded_tools(&self, live: &mecha_core::tool::Registry) -> Vec<String> {
+        if matches!(self.method, ProbeMethod::Artifact { .. }) {
+            return Vec::new();
+        }
+        mecha_core::replay_run::unconstructible_recorded_tools(
+            &self.recorded.tools,
+            live,
+            Some(&crate::setup::surface_only_registry()),
+            &self.recorded_specs,
+            OnDivergence::Stop,
+        )
+    }
+
+    /// Whether the surface store still holds the blob this recording cites,
+    /// in words for the refusal message: it is the difference between a tool
+    /// the recording described and one it only named.
+    pub fn recorded_surface_summary(&self) -> &'static str {
+        if self.recorded_specs.is_empty() {
+            "no surface blob"
+        } else {
+            "a surface blob that does not describe them"
+        }
+    }
+
     /// Identity of the recorded inputs; changing a transcript or config makes
     /// a fresh measurement even when the reflection and rules are unchanged.
     pub fn input_hash(&self) -> Result<String> {
