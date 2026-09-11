@@ -49,6 +49,23 @@ pub enum OnDivergence {
     Live,
 }
 
+impl OnDivergence {
+    /// Whether tools genuinely run under this mode, which decides whether a
+    /// recorded spec or a surface-only stand-in may substitute for one.
+    ///
+    /// An exhaustive match rather than `matches!(self, Self::Live)`: a
+    /// `matches!` boolean stays green when a mode is added and nobody decided
+    /// whether it executes, which is exactly the shape this gate's own history
+    /// says took two wrong answers to get right. Naming every arm makes a new
+    /// variant a compile error here until someone chooses.
+    pub fn executes(self) -> bool {
+        match self {
+            Self::Live => true,
+            Self::Stop | Self::Error => false,
+        }
+    }
+}
+
 /// The shared cursor over the recording. One per replay, shared by every
 /// [`ReplayTool`] in the registry, because the recording is one sequence — the
 /// order calls happen in *is* the trajectory, whichever tool they went to.
@@ -453,15 +470,7 @@ fn build_replay_registry(
         // `Stop` alone would leave one non-executing mode still bailing — a
         // guard that reads correct and is wrong for the one variant whose
         // difference is not behavioural.
-        // An exhaustive match rather than `matches!(mode, OnDivergence::Live)`:
-        // a `matches!` boolean stays green when a mode is added and nobody
-        // decided whether it executes, which is exactly the shape this gate's
-        // own history says took two wrong answers to get right. Naming every
-        // arm makes a new variant a compile error here until someone chooses.
-        let executes = match mode {
-            OnDivergence::Live => true,
-            OnDivergence::Stop | OnDivergence::Error => false,
-        };
+        let executes = mode.executes();
         // The recorded spec, when the surface store still holds the blob the
         // recording cites. In the non-executing modes it does two jobs: it
         // overrides a live tool's *words* (re-describe is the drift that
@@ -470,12 +479,8 @@ fn build_replay_registry(
         // construct — a retired integration, a renamed MCP prefix — which
         // used to skip the probe outright. Under `Live` it does neither: the
         // tools genuinely run there, and they deserve their own words.
-        let spec = (!executes)
-            .then(|| recorded_specs.iter().find(|s| s.name == *name))
-            .flatten();
-        let stand_in = (!executes)
-            .then(|| surface_only.and_then(|r| r.get(name)))
-            .flatten();
+        let spec = recorded_spec_for(name, recorded_specs, executes);
+        let stand_in = stand_in_for(name, surface_only, executes);
         let inner: Arc<dyn Tool> = match live.get(name).or(stand_in) {
             Some(tool) => Arc::clone(tool),
             None => match spec {
@@ -498,6 +503,71 @@ fn build_replay_registry(
         }));
     }
     Ok(registry)
+}
+
+/// The recording's own spec for `name`, when the surface store still holds
+/// the blob the recording cites. Never consulted under a mode that executes:
+/// there the tools genuinely run and deserve their own words.
+fn recorded_spec_for<'a>(
+    name: &str,
+    recorded_specs: &'a [crate::message::ToolSpec],
+    executes: bool,
+) -> Option<&'a crate::message::ToolSpec> {
+    (!executes)
+        .then(|| recorded_specs.iter().find(|s| s.name == name))
+        .flatten()
+}
+
+/// The surface-only stand-in for `name` — `ask_user` and friends, which only
+/// a front-end that owns a human ever registers.
+fn stand_in_for<'a>(
+    name: &str,
+    surface_only: Option<&'a Registry>,
+    executes: bool,
+) -> Option<&'a Arc<dyn Tool>> {
+    (!executes)
+        .then(|| surface_only.and_then(|r| r.get(name)))
+        .flatten()
+}
+
+/// The recorded tools no route can offer, in recorded order.
+///
+/// Resolution order is `build_replay_registry`'s, through the same two
+/// helpers, because a preflight that disagrees with the build is worse than
+/// no preflight: it either burns the model calls it was added to save or
+/// refuses a probe that would have run. `the_preflight_matches_what_the_build_accepts`
+/// pins the two together.
+///
+/// **A name none of the three routes can construct will not become
+/// constructible on a later night.** Nothing about tomorrow's machine adds a
+/// tool that no provider still serves and the recording never described — so
+/// a caller should record such a probe as unmeasurable rather than retry it
+/// nightly. Three of the seventeen held-out reflections on 2026-09-11 were in
+/// exactly this state: recordings from before the surface store, citing
+/// `pkg__kg_entity` and `google__calendar_create_event` from an MCP server
+/// retired on 2026-09-04. They were re-probed every night to reach the same
+/// refusal, each spending a ledger row that can never age and a `--cover` slot
+/// that buys no coverage, and were reported as `retryable` — the "an outcome
+/// that cannot be aged repeats forever" shape in a new costume. The refusal
+/// itself was always free of provider calls: this resolution runs before
+/// `provider::build`.
+pub fn unconstructible_recorded_tools(
+    recorded_tools: &[String],
+    live: &Registry,
+    surface_only: Option<&Registry>,
+    recorded_specs: &[crate::message::ToolSpec],
+    mode: OnDivergence,
+) -> Vec<String> {
+    let executes = mode.executes();
+    recorded_tools
+        .iter()
+        .filter(|name| {
+            live.get(name).is_none()
+                && stand_in_for(name, surface_only, executes).is_none()
+                && recorded_spec_for(name, recorded_specs, executes).is_none()
+        })
+        .cloned()
+        .collect()
 }
 
 /// The specs of the surface a replay of `recorded_tools` would actually send.
@@ -1982,6 +2052,162 @@ mod tests {
         assert_eq!(report.turns, 1);
         let structural: Vec<_> = report.structural().collect();
         assert!(!structural.is_empty(), "{:?}", report.divergences);
+    }
+}
+
+#[cfg(test)]
+mod surface_loss_tests {
+    use super::*;
+    use crate::message::ToolSpec;
+    use crate::tool::{Registry, Tool, ToolCtx, ToolOutput};
+    use async_trait::async_trait;
+    use serde_json::json;
+
+    struct Named(&'static str);
+    #[async_trait]
+    impl Tool for Named {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            "t"
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::ok("x"))
+        }
+    }
+
+    fn registry(names: &[&'static str]) -> Registry {
+        let mut r = Registry::new();
+        for n in names {
+            r.insert(Arc::new(Named(n)));
+        }
+        r
+    }
+
+    fn spec(name: &str) -> ToolSpec {
+        ToolSpec {
+            name: name.into(),
+            description: "recorded".into(),
+            input_schema: json!({"type": "object"}),
+        }
+    }
+
+    /// The case the fix exists for: a recording from before the surface store
+    /// that names a tool from a retired MCP server. No route can build it, and
+    /// no later night changes that.
+    #[test]
+    fn a_retired_tool_with_no_surface_blob_is_unconstructible() {
+        let lost = unconstructible_recorded_tools(
+            &["pkg__kg_entity".into(), "fs_read".into()],
+            &registry(&["fs_read"]),
+            None,
+            &[],
+            OnDivergence::Stop,
+        );
+        assert_eq!(lost, vec!["pkg__kg_entity".to_string()]);
+    }
+
+    /// The same name is constructible when the recording described it: the
+    /// blob stands in bodily, which is why the 2026-09-04 recording graded
+    /// while the August ones could not.
+    #[test]
+    fn a_recorded_spec_makes_a_retired_tool_constructible() {
+        let lost = unconstructible_recorded_tools(
+            &["pkg__kg_entity".into()],
+            &registry(&[]),
+            None,
+            &[spec("pkg__kg_entity")],
+            OnDivergence::Stop,
+        );
+        assert!(lost.is_empty(), "the blob should stand in: {lost:?}");
+    }
+
+    /// A surface-only tool is not lost: `ask_user` is on the recorded surface
+    /// of every interactive session and no CLI registry ever holds it.
+    #[test]
+    fn a_surface_only_tool_is_not_lost() {
+        let lost = unconstructible_recorded_tools(
+            &["ask_user".into()],
+            &registry(&[]),
+            Some(&registry(&["ask_user"])),
+            &[],
+            OnDivergence::Stop,
+        );
+        assert!(lost.is_empty(), "{lost:?}");
+    }
+
+    /// Under a mode that executes, neither the blob nor the stand-in may
+    /// substitute — the tools genuinely run there — so the same recording is
+    /// lost that `Stop` could have offered.
+    #[test]
+    fn an_executing_mode_cannot_substitute_a_blob() {
+        let recorded = ["pkg__kg_entity".to_string()];
+        let specs = [spec("pkg__kg_entity")];
+        assert!(unconstructible_recorded_tools(
+            &recorded,
+            &registry(&[]),
+            None,
+            &specs,
+            OnDivergence::Stop
+        )
+        .is_empty());
+        assert_eq!(
+            unconstructible_recorded_tools(
+                &recorded,
+                &registry(&[]),
+                None,
+                &specs,
+                OnDivergence::Live
+            ),
+            vec!["pkg__kg_entity".to_string()]
+        );
+    }
+
+    /// **The preflight and the build must agree.** A preflight that says yes
+    /// where the build says no burns the model calls it was added to save; one
+    /// that says no where the build says yes refuses a probe that would have
+    /// run. Both answers come from the same two helpers, and this pins them
+    /// across the whole matrix rather than trusting that they were written to
+    /// match.
+    #[test]
+    fn the_preflight_matches_what_the_build_accepts() {
+        let specs = [spec("blobbed")];
+        for name in ["live_tool", "stood_in", "blobbed", "gone"] {
+            for mode in [OnDivergence::Stop, OnDivergence::Error, OnDivergence::Live] {
+                let recorded = [name.to_string()];
+                let live = registry(&["live_tool"]);
+                let surface_only = registry(&["stood_in"]);
+                let preflight_says_lost = !unconstructible_recorded_tools(
+                    &recorded,
+                    &live,
+                    Some(&surface_only),
+                    &specs,
+                    mode,
+                )
+                .is_empty();
+                let build_failed = replay_registry(
+                    &recorded,
+                    &live,
+                    Some(&surface_only),
+                    &specs,
+                    Vec::new(),
+                    mode,
+                    CancellationToken::new(),
+                )
+                .is_err();
+                assert_eq!(
+                    preflight_says_lost, build_failed,
+                    "disagreement on `{name}` under {mode:?}"
+                );
+            }
+        }
     }
 }
 
