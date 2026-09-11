@@ -456,9 +456,13 @@ else gets past the guard:
 Neither is a build to hang a scorecard on without saying so.
 
 **A digest that does not match means the binary was replaced without its
-provenance** — most likely by the clean-worktree-build-then-copy procedure in
-step 1, which moves the binary and not the `.source`. Copy both, or rebuild in
-place. A missing `.source` means the binary predates this (2026-09-11) or was
+provenance** — most likely by building in a clean worktree and copying the
+static binary into the shared checkout's `target-musl/release/mecha`, which is
+a real procedure (`docs/HANDOFF.md`, the 2026-09-03 and 2026-09-11 entries) and
+moves the binary without the `.source` beside it. **Copy both files, or rebuild
+in place.** Stated here rather than pointed at, because this is where the
+mismatch is diagnosed and a pointer only beats restating while it points
+somewhere. A missing `.source` means the binary predates this (2026-09-11) or was
 built by hand: rerun `bench/build-portable.sh` from a clean checkout rather
 than guessing.
 
