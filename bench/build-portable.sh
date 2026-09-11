@@ -98,7 +98,18 @@ file "$OUT" | grep -q "statically linked" || {
 # in a stderr line, and "tie the scorecard back to source later" is exactly
 # when stderr is gone. A file next to the binary can be asked, which is the
 # rule this repo applies to every other artifact.
+#
+# **The digest is what binds the two.** This script is not the only writer of
+# `$OUT`: the procedure this repo has followed twice — build in a clean
+# worktree, then `cp` the static binary into the shared checkout's
+# `target-musl/release/mecha`, the path `bench/run.sh` executes — replaces the
+# binary and not this file. Adjacency alone would then assert the provenance of
+# a binary that is gone, which is worse than no file at all. With the digest
+# recorded, a `.source` that does not describe the binary beside it says so
+# when asked, and `mecha.source` becomes a claim that can be false out loud
+# rather than a label that is quietly wrong.
 printf '%s\n' "$SOURCE" > "$OUT.source"
+printf 'sha256 %s\n' "$(sha256sum "$OUT" | cut -d' ' -f1)" >> "$OUT.source"
 
 echo "portable binary: $OUT ($(file -b "$OUT" | cut -d, -f1-2))" >&2
 echo "  built from: $SOURCE (recorded in $OUT.source)" >&2

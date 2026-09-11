@@ -429,17 +429,29 @@ built from the wrong branch does the same while looking current — which is the
 sharper failure, because nothing about it is stale.
 
 The date and the version string answer neither question, so
-`build-portable.sh` writes the branch and commit beside the binary:
+`build-portable.sh` writes the branch, the commit and the binary's digest
+beside it:
 
 ```bash
-cat target-musl/release/mecha.source    # e.g. main@984a1ea0
-ls -l target-musl/release/mecha && target-musl/release/mecha --version
+cat target-musl/release/mecha.source
+#   main@984a1ea0
+#   sha256 9f2c…
+sha256sum target-musl/release/mecha      # must match the line above
 ```
 
-No `.source` file means the binary predates this (2026-09-11) or was built by
-hand; rerun `bench/build-portable.sh` from a clean checkout rather than
-guessing. The script refuses a dirty tree or one git cannot read, so a
-`.source` line that exists is one the build stood behind.
+**Read the suffix, and check the digest.** A bare `main@<commit>` is a build
+from a clean checkout. ` +dirty` means `MECHA_BENCH_ALLOW_DIRTY=1` was set over
+uncommitted changes, so the binary matches no commit and the line names only
+where it started; ` +unverified` means git could not read the tree at all and
+the branch and commit are both `unknown`. Neither is a build to hang a
+scorecard on without saying so.
+
+**A digest that does not match means the binary was replaced without its
+provenance** — most likely by the clean-worktree-build-then-copy procedure in
+step 1, which moves the binary and not the `.source`. Copy both, or rebuild in
+place. A missing `.source` means the binary predates this (2026-09-11) or was
+built by hand: rerun `bench/build-portable.sh` from a clean checkout rather
+than guessing.
 
 ### 5. The factory client (different repository, different version line)
 
