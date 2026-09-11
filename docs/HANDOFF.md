@@ -64,7 +64,10 @@ its verified result is tracked above. Representative live-graph measurement rema
 refusal is live.** The installed binary refuses the three lost-surface probes
 on the live corpus before any model call, verified after the install rather
 than assumed: `strings` on `~/.cargo/bin/mecha` finds three literals the range
-added, each of which counted zero beforehand. `mecha-slack`, `mecha-triggers`,
+added, each of which counted zero beforehand — `recorded tool(s) are gone from
+this machine` (0 → 2), `a surface blob that does not describe them` (0 → 3) and
+`permanently unmeasurable, not retried` (0 → 3). Named so a later session can
+re-run the check rather than take the sentence's word for it. `mecha-slack`, `mecha-triggers`,
 `mecha-drain` and `mecha-serve` restarted and confirmed by their own startup
 lines; no process holds a deleted install; the graph MCP answers 13 tools from
 the installed path; `doctor` reports 0 broken. `mecha-mail` was not
@@ -75,10 +78,12 @@ untouched, so no dist rebuild and no voice-worker restart.
 **The benchmark's musl binary is the one surface left stale, deliberately.**
 `~/Github/mecha/target-musl/release/mecha` is dated 2026-09-09, before both of
 today's merges, and it *is* built from crates this range changed
-(`mecha-core/src/replay_run.rs`). It is not a live hazard: `bench/run.sh:34`
-calls `bench/build-portable.sh` unconditionally before it sets
+(`mecha-core/src/replay_run.rs`). It is not a live hazard: `bench/run.sh` calls
+`bench/build-portable.sh` unconditionally before it sets
 `MECHA_BENCH_BINARY`, so no scorecard can be produced from the stale copy —
-only a direct invocation of that path would get old code. The merged tree does
+only a direct invocation of that path would get old code. (Verified against
+`0c5a8352`; named by content rather than by line, which rots the moment
+another lane lands.) The merged tree does
 build under musl: verified from a clean checkout at `0c5a8352`, 9m42s, static
 ARM aarch64, which is a target CI does not cover.
 
