@@ -93,14 +93,20 @@ because the reasoning is the kind that looks careful: the precedent never
 trusted the mtime, it asked the artifact by content, which is that rule's
 answer rather than an instance of it.
 
-**The remaining benchmark hazard is the checkout's branch, not the artifact.**
-`bench/build-portable.sh` does `cd "$(dirname "$0")/.."` and builds that
-checkout's working tree with no branch check, and `bench/run.sh` calls it
-unconditionally before setting `MECHA_BENCH_BINARY`. The shared checkout is on
-`feat/appraisal-goal-feedback`, so a benchmark run from there would overwrite
-this artifact with a fresh build of the wrong branch and label the scorecard
-current — a sharper failure than the stale copy just replaced, because nothing
-about it is stale. Switching the checkout to `main` is the fix and it is the
+**The remaining hazard is the checkout's branch, and it is not
+benchmark-specific.** Two things build or run from that working tree with no
+branch check. `bench/build-portable.sh` does `cd "$(dirname "$0")/.."`, and
+`bench/run.sh` calls it unconditionally before setting `MECHA_BENCH_BINARY`, so
+a benchmark run from the shared checkout would overwrite the artifact just
+placed with a fresh build of `feat/appraisal-goal-feedback` and label the
+scorecard current — a sharper failure than the stale copy it replaced, because
+nothing about it would look stale. `mecha-voice-worker.service` has
+`WorkingDirectory=/home/ljchang/Github/mecha` and runs `scripts/voice/worker.py`
+from that tree on every restart; that half is latent today only because
+`scripts/voice/` is byte-identical between `4dd2fb1c` and `origin/main`, which
+is a fact about this week rather than a property of the arrangement. The
+hazard is repeated under **What to do next**, because a live hazard recorded
+only inside a dated narrative is one the next session does not read. Switching the checkout to `main` is the fix and it is the
 owner's move: `HEAD` (`4dd2fb1c`) is an ancestor of `origin/main`, so the move
 is a fast-forward, but 19 files are uncommitted there and two hold content in
 no commit anywhere — `website/docs/features/appraisal.md` (the `commitment`,
@@ -2390,6 +2396,26 @@ is recoverable without the checkout's cwd. Record:
 ---
 
 ## What to do next
+
+- **The shared checkout `~/Github/mecha` is on `feat/appraisal-goal-feedback`,
+  not `main` (2026-09-11).** This supersedes the 2026-09-04 bullet below, which
+  says it is on `main` and clean. Two things build from that working tree with
+  no branch check, so both would run the wrong code without looking wrong:
+  `bench/build-portable.sh` (`cd "$(dirname "$0")/.."`, called unconditionally
+  by `bench/run.sh`) would overwrite `target-musl/release/mecha` with a fresh
+  build of the branch and label the scorecard current, and
+  `mecha-voice-worker.service` has `WorkingDirectory=/home/ljchang/Github/mecha`
+  and runs `scripts/voice/worker.py` from it on every restart. The voice half is
+  latent today — `scripts/voice/` is byte-identical between `4dd2fb1c` and
+  `origin/main` — and stops being latent the moment either diverges.
+
+  `HEAD` (`4dd2fb1c`) is an ancestor of `origin/main`, so the switch is a
+  fast-forward. What blocks it: 19 files are uncommitted there, and two hold
+  content that exists in no commit anywhere —
+  `website/docs/features/appraisal.md` (the `commitment`, `embarrassment` and
+  `guilt` rows) and `website/docs/reference/cli.md` (the `--image` flags and the
+  outbox `approve`/`reconcile` verbs), both last written 2026-09-08/09. Preserve
+  those before switching; they are not any current session's.
 
 - **Machine state as of 2026-09-04 10:04, verified surface by surface
   (mecha-26).** `main` is `188b823`; the shared checkout `~/Github/mecha` is
