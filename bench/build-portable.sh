@@ -21,6 +21,14 @@
 # musl. rustls is already the TLS backend (no OpenSSL), so nothing here needs
 # a system library.
 #
+# `--locked` because this build is measured: the container mounts the live tree
+# and `Cargo.lock` is tracked, so a resolver that rewrote it would dirty the
+# checkout *during* the build and the post-build check below would refuse a
+# clean-tree build after ten minutes — escapable only through the flag that
+# also switches the dirty guard off, which is the self-defeating shape this
+# script is trying to avoid. It also matches how the `update` skill installs
+# every other binary here.
+#
 # Caveat worth knowing: a static musl binary cannot use glibc's NSS, so
 # hostname lookups go through musl's resolver. The benchmark config points at
 # the container's gateway *by IP*, so no DNS is involved on the hot path.
@@ -115,7 +123,7 @@ docker run --rm \
   -v "$PWD":/w -w /w \
   -e CARGO_HOME=/w/.cargo-musl \
   -e CARGO_TARGET_DIR=/w/target-musl \
-  rust:alpine sh -c 'apk add --no-cache musl-dev >/dev/null && cargo build --release --bin mecha'
+  rust:alpine sh -c 'apk add --no-cache musl-dev >/dev/null && cargo build --release --locked --bin mecha'
 
 # The build ran as root; hand the artifacts back so the host can read, replace
 # and clean them without sudo.
@@ -154,10 +162,25 @@ file "$OUT" | grep -q "statically linked" || {
 # claim only until someone relies on it. The digest does not catch it, because
 # it binds `.source` to the binary and not the binary to the source.
 AFTER_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-if ! AFTER_STATUS="$(git status --porcelain 2>/dev/null)"; then
-  AFTER_STATUS="$STATUS"   # git stopped answering mid-build; below marks it
-fi
-if [ "$AFTER_COMMIT" != "$SOURCE_COMMIT" ] || [ "$AFTER_STATUS" != "$STATUS" ]; then
+# Fail closed on this side too. Falling back to `$STATUS` here would make a
+# mid-build git failure indistinguishable from an unmoved tree: on a clean
+# tree both are empty, the comparison below is false, nothing is appended, and
+# `.source` is written as a bare `branch@commit` — the one form that claims the
+# binary matches the commit named, asserted from a check that could not run.
+# `chown -R` as root over the tree runs between the capture and here, which is
+# itself a way to provoke the dubious-ownership refusal. Unknown is never clean
+# on either side of the `docker run`, and stderr is left visible so the
+# operator sees why.
+if ! AFTER_STATUS="$(git status --porcelain)"; then
+  if [ "${MECHA_BENCH_ALLOW_DIRTY:-0}" != "1" ]; then
+    echo "refusing: git could not read $PWD after the build, so whether the tree" >&2
+    echo "  moved under it is unknown and $OUT cannot be tied to $SOURCE_COMMIT." >&2
+    echo "  Set MECHA_BENCH_ALLOW_DIRTY=1 to record it as unverified instead." >&2
+    exit 1
+  fi
+  SOURCE="$SOURCE +unverified"
+  echo "warning: git stopped answering during the build; recorded as +unverified" >&2
+elif [ "$AFTER_COMMIT" != "$SOURCE_COMMIT" ] || [ "$AFTER_STATUS" != "$STATUS" ]; then
   if [ "${MECHA_BENCH_ALLOW_DIRTY:-0}" != "1" ]; then
     echo "refusing: $PWD changed while the build ran, so $OUT may contain" >&2
     echo "  source $SOURCE_COMMIT does not describe (now $AFTER_COMMIT)." >&2
