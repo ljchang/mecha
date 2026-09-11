@@ -441,8 +441,8 @@ sha256sum target-musl/release/mecha      # must match the line above
 
 **Read the suffix, and check the digest.** A bare `main@<commit>` is a build
 from a clean checkout — the only form that says the binary matches the commit
-named. Both suffixes mean `MECHA_BENCH_ALLOW_DIRTY=1` was set, because nothing
-else gets past the guard:
+named. All three suffixes mean `MECHA_BENCH_ALLOW_DIRTY=1` was set, because
+nothing else gets past the guard:
 
 - ` +dirty` — the tree had uncommitted changes, so the binary matches no
   commit and the line names only where it started.
