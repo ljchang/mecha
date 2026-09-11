@@ -59,6 +59,22 @@ never by skips" was being spent on model runs that never happened, and filed in
 clearing it correctly (its corpus is recent sessions, which age out) was not the
 same as checking every caller of the prep.
 
+**Seven review passes, and four of the findings were against the change's own
+description and tests rather than its logic.** A doc citing a test name that
+existed nowhere. The cost figure retracted above — reasoned rather than
+measured, wrong, and repeated in six places including this file. A counter
+incremented and printed by neither readout, which made a fully-lost corpus read
+as zero on every line. And twice a test pinned the producer while the consumer
+dropped the value — `Tally::add` while the readout dropped the summand, then a
+readout test that serialized its own `Tally` and never called the readout.
+Three more were one mistake repeated: an insertion anchored on `fn name(`
+landing between an item and its attribute or its doc block, in a language where
+both bind downward.
+
+The mechanism was right early. What kept being wrong was everything that
+*describes* the mechanism — and that is the half which outlives the session
+that could check it.
+
 **2026-09-11 — the nightly measurement fixes shipped, and re-running the night
 showed last night's two directional findings were both artifacts.** They were
 written on 2026-09-10 and left uninstalled, so the 2026-09-11 nightly ran the
