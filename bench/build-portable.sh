@@ -62,7 +62,24 @@ else
   SOURCE_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
   SOURCE_BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || echo detached)"
   SOURCE_DIRTY=""
-  if [ -n "$(git status --porcelain)" ]; then
+  # Capture the status, exit code and all. `[ -n "$(git status …)" ]` would
+  # discard it, and a command substitution inside a test suppresses `errexit`
+  # too — so a failing `git status` would be indistinguishable from a clean
+  # tree, which is the failure the paragraph above describes happening one
+  # line further down. `rev-parse --git-dir` does not settle this: it reads
+  # neither the worktree nor the index, so it passes for a repo whose status
+  # then fails on a bad `core.fsmonitor`, a corrupt index, or an unstat-able
+  # path.
+  if ! STATUS="$(git status --porcelain)"; then
+    if [ "${MECHA_BENCH_ALLOW_DIRTY:-0}" != "1" ]; then
+      echo "refusing: git could not read $PWD, so $OUT could not be tied back" >&2
+      echo "  to source. Set MECHA_BENCH_ALLOW_DIRTY=1 to build anyway." >&2
+      exit 1
+    fi
+    STATUS=""
+    SOURCE_DIRTY=" +unverified"
+  fi
+  if [ -n "$STATUS" ]; then
     SOURCE_DIRTY=" +dirty"
     if [ "${MECHA_BENCH_ALLOW_DIRTY:-0}" != "1" ]; then
       echo "refusing: $PWD is dirty, so $OUT would match no commit and its" >&2
