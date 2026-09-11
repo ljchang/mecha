@@ -932,6 +932,8 @@ mod tests {
     fn the_loaded_candidate_is_found_by_its_start() {
         let r = record(json!({"ranked": ranked()}));
         let mut item = OutboxItem {
+            predictions: Vec::new(),
+            outcomes: Vec::new(),
             delivery_attempts: Vec::new(),
             output: None,
             author: Default::default(),

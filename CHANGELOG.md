@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.19] - 2026-09-09
+
 ### Added
+
+- Anticipatory appraisal for confirmed-goal planning and inline outbox messages:
+  owner-bound commitments, verification and cost evidence derive guilt,
+  embarrassment, regret, disappointment, anxiety and curiosity assessments.
+  `run --appraisal-evidence` supplies invocation evidence; `outbox anticipate`
+  records exact-argument predictions with optional release guidance, and
+  `outbox outcome` links owner feedback to confirmed delivery. Supported
+  exposed-error and impact records produce retrospective embarrassment and guilt.
+  Revised predictions and superseded outcomes retain their history; affected
+  replay/probe paths explicitly report unsupported evidence reproduction.
 
 - A reproducible gossip comparison using real fixture searches, peer versus own-evidence followups, equal request ceilings and an explicit claim audit. Ordinary gossip behavior is unchanged.
 
@@ -27,8 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   measurements. Explicit experiment planning levers now enable disabled settings.
 
 - Goal-aware planning feedback: confirmed goals persist across turns and resume;
-  declared checks execute through the normal guards, and forecast misses, failed
-  checks and frozen-check changes can produce bounded mismatch reflections.
+  declared checks execute through the normal guards; failed criteria/checks and
+  frozen-check changes can produce bounded mismatch reflections. Forecast
+  overruns remain observations. Trace replay explicitly refuses recordings with
+  harness checks until their observations can be reconstructed.
 - `goal_context` retrieves applicable goal-linked rules and recent, clean examples
   with passing checks. Optional `agent.goal_guidance` gives fixed planning advice
   from task progress, confirmed goals and charter sensor discrepancies.
@@ -134,6 +148,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never ride (§17.7 item 8).
 
 ### Changed
+
+- Refreshed the documentation for current CLI commands and configuration, Today
+  and workflows, automatic learning, outbox delivery recovery, and replay limits.
+  Goals and appraisal now covers confirmation and drift, project closure, step
+  metrics, current labels, and the features consuming appraisal evidence.
 
 - **The knowledge graph is named as the graph everywhere in the tree.**
   Comments, tests and one `mecha distill` warning still called it by the
@@ -3440,7 +3459,8 @@ under Added; later releases will record only what changed.
   benchmarks, the TUI survey, and a branching design recorded as a deliberate
   non-implementation.
 
-[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.18...HEAD
+[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.19...HEAD
+[0.1.19]: https://github.com/ljchang/mecha/releases/tag/v0.1.19
 [0.1.18]: https://github.com/ljchang/mecha/releases/tag/v0.1.18
 [0.1.17]: https://github.com/ljchang/mecha/releases/tag/v0.1.17
 [0.1.16]: https://github.com/ljchang/mecha/releases/tag/v0.1.16

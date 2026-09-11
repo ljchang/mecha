@@ -157,6 +157,8 @@ sandbox.rs   bwrap/docker confinement for shell and MCP servers
 compact.rs   the cut, the rebuild, and the state carried across one
 pressure.rs  how big the *next* request will be, from what the last one cost
 step.rs      what a finished plan step actually did, from the run's own trace
+planning.rs  verified step feedback, bounded advice, and goal-specific context
+mismatch.rs  isolated artifact-task grading and owner-bound criterion evidence
 boredom.rs   an approach that has stopped teaching the run anything, named
              while there is still something to do about it
 appraisal.rs how a run went against what it was for: a signed error per
@@ -224,8 +226,8 @@ leaking.
 steering`). Cancel stops at the next safe point and keeps the partial turn;
 steer folds queued text into the message carrying the tool results, because
 two user messages in a row are invalid and there is no legal slot between a
-`tool_use` and its result. Only the TUI can steer — steering needs one owner
-of stdin — and testing the TUI means driving a pty *with a size*.
+`tool_use` and its result. The TUI and web chat can steer an active run. Terminal steering needs one
+owner of stdin, and testing the TUI means driving a pty *with a size*.
 
 ## Provider notes (Claude 5 family)
 

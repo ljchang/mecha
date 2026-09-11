@@ -992,6 +992,7 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         || text.starts_with(crate::boredom::NOTICE_STEM)
         || text.contains(crate::mailbox::DELIVERY_STEM)
         || text.starts_with(crate::step::STEP_ESCALATION_STEM)
+        || text.starts_with(crate::step::CHECK_FEEDBACK_STEM)
         // The step-escalation stem shipped 2026-08-28 (9c2424d); transcripts
         // recorded before it carry the same fully-templated nudge bodies
         // bare, and one such nudge was already mined as a steer and probed as
@@ -1386,6 +1387,17 @@ impl Agent {
     /// model that will only ever be shown its filename.
     pub fn vision(&self) -> bool {
         self.provider.vision()
+    }
+
+    /// Bind owner-authored appraisal evidence to one goal for this invocation.
+    /// The remaining-time budget starts here and does not reset on plan writes.
+    pub fn set_appraisal_evidence(
+        &mut self,
+        evidence: crate::anticipation::Evidence,
+    ) -> Result<()> {
+        let bound = crate::anticipation::BoundEvidence::new(evidence)?;
+        Arc::make_mut(&mut Arc::make_mut(&mut self.cx).tools).appraisal_evidence = Some(bound);
+        Ok(())
     }
 
     /// Install lifecycle hooks on the agent's own context. Copy-on-write like
@@ -2503,10 +2515,9 @@ impl Agent {
                             continue;
                         }
                         checks_used += 1;
-                        let id = format!(
-                            "mecha-check-{}-{checks_used}",
-                            cx.tools.work.map(|w| w.run).unwrap_or_default()
-                        );
+                        // Persisted calls must stay distinct when a session resumes
+                        // in another process; Work::run is only process-local.
+                        let id = format!("mecha-check-{}", uuid::Uuid::new_v4());
                         let mut request = Message::assistant(vec![
                             Block::text("Harness verification of a declared plan check."),
                             Block::ToolUse {
@@ -2518,6 +2529,9 @@ impl Agent {
                         request.harness = true;
                         messages.push(request.clone());
                         let start = trace.len();
+                        // Preserve refused checks in their trace, without reporting
+                        // harness dispatch as a model-initiated send attempt.
+                        let mut check_blocks = 0;
                         let (results, provenance) = self
                             .run_tools(
                                 cx,
@@ -2525,7 +2539,7 @@ impl Agent {
                                 &events,
                                 &mut trace,
                                 &mut taint,
-                                &mut blocked_sends,
+                                &mut check_blocks,
                                 self.output_budget(
                                     cx,
                                     pressure,
@@ -2577,7 +2591,18 @@ impl Agent {
                         let mut answer = Message::tool_results(results);
                         answer.tool_provenance = provenance;
                         messages.push(answer);
-                        if trace[start..].iter().any(|c| c.is_error || c.denied) {
+                        if trace[start..].iter().any(|c| c.is_error && !c.denied) {
+                            // The executor knows which step this check belongs to.
+                            // A global span delta can include a previous step's check.
+                            if let Some(line) =
+                                crate::step::Finding::CheckFailed.line(&check.step, false)
+                            {
+                                append_user_text(
+                                    messages,
+                                    format!("{}{line}", crate::step::CHECK_FEEDBACK_STEM),
+                                );
+                            }
+                        } else if trace[start..].iter().any(|c| c.denied) {
                             append_user_text(messages, "The declared plan check did not establish completion. Review its result before claiming the step is verified.".into());
                         }
                     }
@@ -3830,6 +3855,25 @@ impl Agent {
                     staged_args,
                     *taint,
                     crate::outbox::Provenance {
+                        anticipation: {
+                            let goal = cx.tools.goal_track.as_ref().and_then(|g| g.anchor());
+                            Some(
+                                cx.tools
+                                    .appraisal_evidence
+                                    .as_ref()
+                                    .and_then(|b| b.for_draft(goal.as_ref()))
+                                    .map(|e| (e, crate::anticipation::Source::Owner))
+                                    .unwrap_or_else(|| {
+                                        (
+                                            crate::anticipation::Evidence {
+                                                goal,
+                                                ..crate::anticipation::Evidence::default()
+                                            },
+                                            crate::anticipation::Source::Harness,
+                                        )
+                                    }),
+                            )
+                        },
                         session_id: route.session_id(),
                         // The jail this call was drafted under. A release
                         // happens in another process from another directory,
@@ -3859,7 +3903,7 @@ impl Agent {
                     },
                 ) {
                     Ok(item) => {
-                        let content = format!(
+                        let mut content = format!(
                             "Drafted, not sent: this call is staged in the outbox as \
                              `{}`. The user will review it with `mecha outbox` and \
                              release or reject it. Report it to the user as a draft \
@@ -3867,6 +3911,17 @@ impl Agent {
                              retry the call.",
                             item.id
                         );
+                        if cx.tools.goal_guidance {
+                            if let Some(p) = item
+                                .predictions
+                                .last()
+                                .and_then(|p| p.known())
+                                .filter(|p| !p.assessment.kinds.is_empty())
+                            {
+                                content.push_str("\nAnticipatory guidance: ");
+                                content.push_str(p.assessment.response.guidance());
+                            }
+                        }
                         emit(
                             events,
                             AgentEvent::ToolResult {
@@ -7745,14 +7800,24 @@ mod tests {
             fn input_schema(&self) -> Value {
                 json!({"type":"object"})
             }
+            fn capabilities(&self) -> crate::tool::Capabilities {
+                crate::tool::Capabilities {
+                    external_send: true,
+                    ..Default::default()
+                }
+            }
             async fn call(&self, input: Value, _: &ToolCtx) -> Result<ToolOutput> {
                 assert_eq!(input["command"], "original check");
                 Ok(ToolOutput::err("check failed"))
             }
         }
-        for (mode, replacement) in [PermissionMode::Allow, PermissionMode::Ask]
-            .into_iter()
-            .flat_map(|mode| [Some("replacement"), None].map(|check| (mode, check)))
+        for (mode, armed, replacement) in [
+            (PermissionMode::Allow, false),
+            (PermissionMode::Ask, false),
+            (PermissionMode::Allow, true),
+        ]
+        .into_iter()
+        .flat_map(|(mode, armed)| [Some("replacement"), None].map(|check| (mode, armed, check)))
         {
             let plan = |id: &str, status: &str, check: Option<&str>| {
                 assistant(
@@ -7777,17 +7842,68 @@ mod tests {
                 mode,
             );
             let mut convo = Conversation::user("go");
+            convo.taint = Taint {
+                private: armed,
+                untrusted: armed,
+            };
             let outcome = agent.run(&mut convo, None).await.unwrap();
+            assert_eq!(
+                outcome.blocked_sends, 0,
+                "harness checks are not model send attempts"
+            );
             let check = outcome
                 .tool_calls
                 .iter()
                 .find(|c| c.name == crate::step::CHECK_TRACE)
                 .expect("check dispatched");
-            assert_eq!(check.denied, mode == PermissionMode::Ask);
+            assert_eq!(check.denied, armed || mode == PermissionMode::Ask);
             assert!(
                 !outcome.ended_on_failed_call,
                 "harness check is not the model's last call"
             );
+            assert_eq!(
+                serde_json::to_string(&convo.messages)
+                    .unwrap()
+                    .contains("Fix what the check found"),
+                mode == PermissionMode::Allow && !armed,
+                "the executor emits CheckFailed only for an executed failure, not a refused check"
+            );
+            let trajectory = crate::replay::extract(&convo.messages);
+            assert_eq!(
+                trajectory.calls.len(),
+                2,
+                "replay calls describe the model's two todo writes only"
+            );
+            assert!(
+                !trajectory.steered,
+                "harness check feedback is not owner steering"
+            );
+            let mut with_steer = convo.messages.clone();
+            let result = with_steer
+                .iter_mut()
+                .find(|m| m.content.iter().any(|b| matches!(b,
+                    Block::ToolResult { tool_use_id, .. } if tool_use_id.starts_with("mecha-check-"))))
+                .unwrap();
+            result
+                .content
+                .push(Block::text("Use the owner's revised acceptance criterion."));
+            let interventions = crate::learning::extract_interventions(&with_steer);
+            let steers: Vec<_> = interventions
+                .iter()
+                .filter(|i| i.trigger == crate::learning::Trigger::Steer)
+                .map(|i| i.text.as_str())
+                .collect();
+            assert_eq!(
+                steers,
+                vec!["Use the owner's revised acceptance criterion."],
+                "check advice is harness voice; a real steer sharing its message remains learnable"
+            );
+            let steer = interventions
+                .iter()
+                .find(|i| i.trigger == crate::learning::Trigger::Steer)
+                .unwrap();
+            assert_eq!(steer.tools_before, vec!["todo"]);
+            assert!(steer.context.contains("todo"));
             let steps: Vec<_> = convo
                 .messages
                 .iter()
@@ -7797,7 +7913,7 @@ mod tests {
             assert_eq!(steps.len(), 1);
             assert_eq!(
                 steps[0].verification,
-                if mode == PermissionMode::Ask {
+                if mode == PermissionMode::Ask || armed {
                     crate::planning::Verification::Refused
                 } else {
                     crate::planning::Verification::Failed
@@ -10550,6 +10666,7 @@ mod tests {
         agent.set_outbox(Arc::clone(&route));
 
         let mut convo = Conversation::from(vec![Message::user("send it")]);
+        convo.goal_anchor = Some(crate::goal::GoalRef::Task("confirmed".into()));
         let outcome = agent.run(&mut convo, None).await.unwrap();
 
         // The panicking tool never ran, the model was told it is a draft, and
@@ -10572,10 +10689,78 @@ mod tests {
         let items = route.store.items().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].tool, "send_data");
+        let prediction = items[0].predictions[0].known().unwrap();
+        assert_eq!(prediction.args, items[0].args);
+        assert_eq!(prediction.evidence.goal, convo.goal_anchor);
+        assert_eq!(prediction.source, crate::anticipation::Source::Harness);
+        assert!(!prediction.guide);
+        assert!(
+            !prediction
+                .assessment
+                .kinds
+                .contains(&crate::anticipation::Kind::Guilt),
+            "a confirmed goal alone is not a harmful commitment"
+        );
         assert_eq!(items[0].session_id.as_deref(), Some("sess-42"));
         assert!(!outcome.taint.private && !outcome.taint.untrusted);
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn bound_commitment_reaches_the_draft_but_prior_verification_does_not() {
+        use crate::anticipation::{Commitment, Evidence, Kind, Source, Verification};
+        let (mut agent, _) = agent_with(send_turns(), PermissionMode::ReadOnly);
+        agent.registry.insert(Arc::new(MustNotRun));
+        agent.cfg.goal_guidance = true;
+        let (route, root) = outbox_route("anticipatory-owner");
+        agent.set_outbox(Arc::clone(&route));
+        let goal = crate::goal::GoalRef::Task("meeting".into());
+        agent
+            .set_appraisal_evidence(Evidence {
+                goal: Some(goal.clone()),
+                commitment: Some(Commitment {
+                    beneficiary: "PRIVATE PERSON".into(),
+                    expectation: "PRIVATE COMMITMENT".into(),
+                    consequence: "PRIVATE IMPACT".into(),
+                }),
+                verification: Verification::Passed,
+                verification_evidence: Some("PRIVATE CALENDAR RECEIPT".into()),
+                check_available: true,
+                check_cost_secs: Some(5),
+                time_available_secs: Some(600),
+                ..Evidence::default()
+            })
+            .unwrap();
+        let recorded = crate::session::RunConfig::of(
+            &agent,
+            &crate::config::Config::default(),
+            "scripted",
+            &[],
+            None,
+        );
+        let encoded = serde_json::to_value(&recorded).unwrap();
+        let loaded: crate::session::RunConfig = serde_json::from_value(encoded).unwrap();
+        assert_eq!(
+            loaded.appraisal_evidence.as_ref().unwrap()["commitment"]["expectation"],
+            "PRIVATE COMMITMENT"
+        );
+        assert!(crate::mismatch::validate_recording(&loaded)
+            .unwrap_err()
+            .to_string()
+            .contains("anticipatory evidence"));
+        let mut convo = Conversation::user("draft the invitation");
+        convo.goal_anchor = Some(goal);
+        agent.run(&mut convo, None).await.unwrap();
+        let items = route.store.items().unwrap();
+        let p = items[0].predictions[0].known().unwrap();
+        assert_eq!(p.source, Source::Owner);
+        assert_eq!(p.evidence.verification, Verification::Unknown);
+        assert!(p.assessment.kinds.contains(&Kind::Guilt));
+        let tool_text = serde_json::to_string(&convo.messages[2]).unwrap();
+        assert!(tool_text.contains("Anticipatory guidance"));
+        assert!(!tool_text.contains("PRIVATE"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// The approval card is the other surface that shows a call before it

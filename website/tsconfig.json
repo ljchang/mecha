@@ -8,5 +8,7 @@
     "ignoreDeprecations": "6.0",
     "strict": true
   },
-  "exclude": [".docusaurus", "build"]
+  // Static assets include the already-built web demo and factory gallery.
+  // Their source is checked in their own projects; render-check runs the demo.
+  "exclude": [".docusaurus", "build", "static"]
 }

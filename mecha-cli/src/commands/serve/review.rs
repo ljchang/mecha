@@ -1210,6 +1210,8 @@ mod tests {
 
     fn item(id: &str, status: &str, created: &str) -> OutboxItem {
         OutboxItem {
+            predictions: Vec::new(),
+            outcomes: Vec::new(),
             delivery_attempts: Vec::new(),
             output: None,
             author: Default::default(),

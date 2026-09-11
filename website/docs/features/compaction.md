@@ -51,8 +51,9 @@ pub fn compact_at(&self, context_window: Option<u64>) -> Option<u64> {
 ```
 
 `[providers.X] context_window` is how many tokens the model's context holds —
-for a local server, the `-c` it was started with. **Nothing can discover it**: a
-provider reports what a prompt *cost*, never what is left. Setting it turns
+for llama-server, **`-c / -np`**, confirmed by `n_ctx_slot` at startup.
+Ordinary model responses report usage, not capacity; `mecha setup` can probe
+the local server and save the setting. Setting it turns
 compaction from something you must remember to configure into something that
 works, and the failure it prevents is total rather than gradual — one turn over
 the window and the server refuses the request outright.

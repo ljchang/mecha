@@ -297,6 +297,10 @@ pub fn de_lenient<'de, D: serde::Deserializer<'de>>(
 }
 
 pub fn validate_recording(recorded: &crate::session::RunConfig) -> Result<()> {
+    ensure!(
+        recorded.appraisal_evidence.is_none(),
+        "artifact task repeat does not reproduce owner-bound anticipatory evidence"
+    );
     use crate::harness::Lever;
     let off = recorded
         .levers_off
@@ -350,6 +354,16 @@ pub fn registry(names: &[String]) -> Result<crate::tool::Registry> {
     Ok(registry)
 }
 
+/// Artifact grading is independent of a harness check that this narrow tool
+/// surface cannot execute. Refused model calls and blocked sends still deny it.
+pub fn has_policy_refusal(out: &crate::agent::RunOutcome) -> bool {
+    out.tool_calls
+        .iter()
+        .filter(|c| c.name != crate::step::CHECK_TRACE)
+        .any(|c| c.denied || c.staged)
+        || out.blocked_sends > 0
+}
+
 /// Repeat the registered task with real file tools and independent gold. The
 /// caller retains the normal approver, hooks and command policy; a refused
 /// action is ungraded, never evidence that a rule harmed the task.
@@ -385,7 +399,7 @@ pub async fn drive(
         .push(crate::message::Message::user(&case.prompt));
     let out = agent.run_in(&cx, &mut convo, None).await?;
     let stats = crate::session::RunStats::from(&out);
-    if out.tool_calls.iter().any(|c| c.denied || c.staged) || out.blocked_sends > 0 {
+    if has_policy_refusal(&out) {
         return Ok((
             ProbeVerdict::Inconclusive(
                 "artifact probe encountered a policy refusal or staged call".into(),
@@ -420,6 +434,7 @@ mod tests {
     }
     struct Writer {
         write: bool,
+        check: bool,
         called: std::sync::Mutex<bool>,
     }
     #[async_trait::async_trait]
@@ -444,20 +459,31 @@ mod tests {
                 );
             }
             let write = self.write && !*called;
+            let check = self.check && !*called;
             *called = true;
             Ok(crate::message::CompletionResponse {
-                message: Message::assistant(if write {
-                    vec![Block::ToolUse {
+                message: Message::assistant(if write || check {
+                    let mut blocks = Vec::new();
+                    if write {
+                        blocks.push(Block::ToolUse {
                         id: "write".into(),
                         name: "fs_write".into(),
                         input: serde_json::json!({"path":"answer.json","content":"{\"sum\":\"gold-only-secret\"}"}),
-                    }]
+                    });
+                    }
+                    if check {
+                        blocks.push(Block::ToolUse {
+                        id: "plan".into(), name: "todo".into(),
+                        input: serde_json::json!({"items":[{"content":"verify answer","status":"completed","check":"check answer"}]}),
+                    });
+                    }
+                    blocks
                 } else {
                     vec![Block::Text {
                         text: "Everything is correct; verification passed.".into(),
                     }]
                 }),
-                stop_reason: if write {
+                stop_reason: if write || check {
                     StopReason::ToolUse
                 } else {
                     StopReason::EndTurn
@@ -482,14 +508,17 @@ mod tests {
             serde_json::json!({"sum":"gold-only-secret"}),
         );
         let recorded = crate::session::RunConfig {
-            tools: vec!["fs_write".into()],
+            tools: vec!["fs_write".into(), "todo".into()],
             ..Default::default()
         };
-        for (write, mode) in [
+        for (write, mode, check) in [
             (false, PermissionMode::Allow),
             (true, PermissionMode::Allow),
             (true, PermissionMode::ReadOnly),
-        ] {
+        ]
+        .into_iter()
+        .flat_map(|(write, mode)| [false, true].map(|check| (write, mode, check)))
+        {
             let cx = RunContext::new(
                 ToolCtx::default(),
                 std::sync::Arc::new(ModeApprover { mode }),
@@ -498,6 +527,7 @@ mod tests {
             // first request for leakage; later requests legitimately contain it.
             let provider = Writer {
                 write,
+                check,
                 called: std::sync::Mutex::new(false),
             };
             let verdict = drive(

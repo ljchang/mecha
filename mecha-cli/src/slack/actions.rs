@@ -1688,6 +1688,8 @@ mod tests {
         use mecha_core::agent::Taint;
         use mecha_core::outbox::OutboxKind;
         OutboxItem {
+            predictions: Vec::new(),
+            outcomes: Vec::new(),
             delivery_attempts: Vec::new(),
             output: None,
             author: Default::default(),

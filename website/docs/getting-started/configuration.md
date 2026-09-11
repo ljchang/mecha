@@ -14,10 +14,13 @@ a project file can change one setting without restating everything above it.
 In order, later winning:
 
 1. Built-in defaults.
-2. `~/.mecha/config.toml` — the global file.
-3. `./mecha.toml` — project-local, read from the working directory.
-4. `MECHA_PROVIDER`, `MECHA_MODEL`, `MECHA_EFFORT`.
-5. CLI flags.
+2. Accepted harness overrides from measured self-improvement.
+3. `~/.mecha/config.toml` — the global file.
+4. `./mecha.toml` — project-local, read from the working directory.
+5. `MECHA_PROVIDER`, `MECHA_MODEL`, `MECHA_EFFORT`.
+6. CLI flags.
+
+Your explicit configuration always wins over the harness override layer.
 
 ```bash
 mecha config init              # write a starter ~/.mecha/config.toml
@@ -34,8 +37,8 @@ you wanted to know.
 
 Scalars merge field by field. Tables of things do not:
 
-- **Providers merge by key.** A project file can add `[providers.local]` without
-  redeclaring the Anthropic entry.
+- **Providers merge by name.** A project file can add `[providers.local]` without
+  redeclaring the Anthropic entry. Reusing a name replaces that provider entry.
 - **`[[mcp]]`, `[[hook]]`, `[[subagent]]` and `[[search]]` replace wholesale.**
   Merging lists by name would make it impossible for a project to turn a global
   server or hook *off*, and a project that cannot disable an inherited hook
@@ -43,26 +46,18 @@ Scalars merge field by field. Tables of things do not:
 
 ### What never comes from a project file
 
-The reason is one sentence: `mecha.toml` arrives with a cloned repository, and
-it can name MCP servers to spawn, hooks to execute, and tools to enable. That is
-a reasonable bargain for someone who has just decided to work in that repository
-and is sitting there watching. It is no bargain at all otherwise. So three
-things sit outside that bargain:
+Scheduled [triggers](/docs/features/triggers) live in `~/.mecha/triggers/`,
+outside config, and their runs load no project file. A cloned repository cannot
+install an unattended job.
 
-- **Triggers** — scheduled unattended prompts — are not declarable in config at
-  all. They live as individual files in `~/.mecha/triggers/`, and a trigger run
-  loads the global file only, with no project layer. A repository that could
-  declare one would have been handed a cron slot on your machine. See
-  [Triggers](/docs/features/triggers).
-- **`[messages]`** is receiver-side admission policy for messages between your
-  own agents, so a cloned repository must not get to set `inbound = "accept"` on
-  your sessions.
-- **`[slack]`** is the remote control, which is the sharpest version of the same
-  point.
+`[messages]`, `[slack]`, `[web]`, `[harness]`, and `[approval]` are global-only.
+A project file naming one logs a warning and the section is ignored. These
+settings govern message admission, remote access, and standing trust decisions.
 
-The last two are *stripped* from a project layer rather than merged, and loudly:
-naming either in a `mecha.toml` logs a warning saying the section is ignored,
-because an ignored section that looks applied is worse than one that fails.
+Project approval rules may add `prompt` or `forbid`, but never `allow`.
+Project skill selections may narrow the global selection, and project outbox
+routes may add staging requirements without removing inherited ones. See the
+[configuration reference](/docs/reference/configuration#layering) for merge rules.
 
 ## The settings that matter early
 
@@ -123,19 +118,20 @@ same zone from `MECHA_TZ`, which you set in their `[[mcp]]` `env` block, so they
 render event times in it before the model ever sees them.
 
 An IANA name (`America/New_York`), not an offset, because an offset is wrong
-twice a year. An unrecognised name warns and falls back to the machine's zone
-rather than failing the run.
+twice a year. An unrecognised name is a startup error; correct it before
+retrying.
 
 ### `context_window`
 
 ```toml
 [providers.local]
-context_window = 32768        # the -c llama-server was started with
+context_window = 32768        # llama-server: -c / -np; check n_ctx_slot
 ```
 
 This one is on the *provider*, not on `[agent]`, because it is a property of the
-model as served. Nothing can discover it: a provider reports how many tokens a
-prompt used, never how many are left.
+model as served. Ordinary model responses report usage, not capacity. For
+llama-server use `-c / -np`, confirmed by its `n_ctx_slot` startup value.
+`mecha setup` can probe the local endpoint and save this setting.
 
 Three things depend on it, and without it all three degrade silently:
 
@@ -147,7 +143,7 @@ Three things depend on it, and without it all three degrade silently:
 - **Overflow recovery** knows what it is recovering from. A prompt that does not
   fit is refused outright, and the loop compacts and retries the same turn once.
 
-If you change the server's `-c`, change this to match. A stale value is worse
+If you change the server's `-c` or `-np`, change this to match. A stale value is worse
 than none, because the derived threshold trusts it.
 
 ### `[agent] compact_at_tokens`
