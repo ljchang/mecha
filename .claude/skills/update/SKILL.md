@@ -423,12 +423,23 @@ via `tools/list`.
 `bench/run.sh` uses `target-musl/release/mecha`, a static build — never the
 installed one, because the glibc build will not start in most task containers.
 It is rebuilt by `bench/build-portable.sh` (which `bench/run.sh` calls), but
-**check its date before trusting a scorecard**: a stale one measures old code
-and labels the result with today's model.
+**ask it what it was built from before trusting a scorecard**: a stale one
+measures old code and labels the result with today's model, and a *fresh* one
+built from the wrong branch does the same while looking current — which is the
+sharper failure, because nothing about it is stale.
+
+The date and the version string answer neither question, so
+`build-portable.sh` writes the branch and commit beside the binary:
 
 ```bash
+cat target-musl/release/mecha.source    # e.g. main@984a1ea0
 ls -l target-musl/release/mecha && target-musl/release/mecha --version
 ```
+
+No `.source` file means the binary predates this (2026-09-11) or was built by
+hand; rerun `bench/build-portable.sh` from a clean checkout rather than
+guessing. The script refuses a dirty tree or one git cannot read, so a
+`.source` line that exists is one the build stood behind.
 
 ### 5. The factory client (different repository, different version line)
 
