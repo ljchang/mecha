@@ -423,12 +423,58 @@ via `tools/list`.
 `bench/run.sh` uses `target-musl/release/mecha`, a static build — never the
 installed one, because the glibc build will not start in most task containers.
 It is rebuilt by `bench/build-portable.sh` (which `bench/run.sh` calls), but
-**check its date before trusting a scorecard**: a stale one measures old code
-and labels the result with today's model.
+**ask it what it was built from before trusting a scorecard**: a stale one
+measures old code and labels the result with today's model, and a *fresh* one
+built from the wrong branch does the same while looking current — which is the
+sharper failure, because nothing about it is stale.
+
+The date and the version string answer neither question, so
+`build-portable.sh` writes the branch, the commit and the binary's digest
+beside it:
 
 ```bash
-ls -l target-musl/release/mecha && target-musl/release/mecha --version
+cat target-musl/release/mecha.source
+#   main@984a1ea0
+#   sha256 9f2c…
+sha256sum target-musl/release/mecha      # must match the line above
 ```
+
+**Read the suffix, and check the digest.** A bare `main@<commit>` is a build
+from a clean checkout — the only form that says the binary matches the commit
+named. All three suffixes mean `MECHA_BENCH_ALLOW_DIRTY=1` was set, because
+nothing else gets past the guard:
+
+- ` +dirty` — the tree had uncommitted changes, so the binary matches no
+  commit and the line names only where it started.
+- ` +raced` — the tree changed while the build ran. `build-portable.sh`
+  bind-mounts the live checkout rather than a snapshot, so a commit or an edit
+  landing mid-build is compiled in; the commit named is where it started, not
+  necessarily what it contains.
+- ` +unverified` — git could not establish whether the tree was clean. **The
+  branch and commit may still be real** (`master@eb6906a +unverified` is a
+  repo whose `git status` failed on a corrupt index while `rev-parse` answered
+  fine); they read `unknown@unknown` when git could not read *this directory*
+  as the root of its own checkout — either no repo at all, or a tree sitting
+  inside someone else's, which is what an rsync'd copy under another checkout
+  looks like. That second case is the dangerous one: git reads a repository
+  perfectly well there, just the wrong one, so do not go hunting a broken git.
+  Either way the cleanliness is unknown, which is not the same as clean.
+
+Suffixes compose when they say different things — ` +unverified +raced` is a
+build whose tree could not be checked *and* whose `HEAD` moved under it — but
+the same token never repeats. None of these is a build to hang a scorecard on
+without saying so.
+
+**A digest that does not match means the binary was replaced without its
+provenance** — most likely by building in a clean worktree and copying the
+static binary into the shared checkout's `target-musl/release/mecha`, which is
+a real procedure (`docs/HANDOFF.md`, the 2026-09-03 and 2026-09-11 entries) and
+moves the binary without the `.source` beside it. **Copy both files, or rebuild
+in place.** Stated here rather than pointed at, because this is where the
+mismatch is diagnosed and a pointer only beats restating while it points
+somewhere. A missing `.source` means the binary predates this (2026-09-11) or was
+built by hand: rerun `bench/build-portable.sh` from a clean checkout rather
+than guessing.
 
 ### 5. The factory client (different repository, different version line)
 
