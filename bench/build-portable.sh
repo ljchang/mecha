@@ -135,6 +135,18 @@ fi
 SOURCE="$SOURCE_BRANCH@$SOURCE_COMMIT$SOURCE_DIRTY"
 echo "benchmark source: $SOURCE_BRANCH @ $SOURCE_COMMIT$SOURCE_DIRTY ($PWD)" >&2
 
+# Before anything replaces the binary: a `.source` that outlives its build is
+# the one failure this file cannot survive. Every exit below the `docker run`
+# — the two post-build refusals, and the static/`--version` assertions — leaves
+# a *new* binary in place, and the previous build's `.source` beside it would
+# then be read through the skill's digest-mismatch procedure, which diagnoses
+# the wrong cause ("replaced without its provenance — most likely by copying
+# it in") and prescribes the wrong fix ("copy both files"). No file is the
+# honest state, and one line covers all four paths: the file exists only when
+# it describes the binary next to it, which is the whole of what adjacency is
+# worth here.
+rm -f "$OUT.source"
+
 docker run --rm \
   -v "$PWD":/w -w /w \
   -e CARGO_HOME=/w/.cargo-musl \
@@ -203,7 +215,17 @@ if [ "$SOURCE_DIRTY" = " +unverified" ]; then
   # named commit is the build's with only cleanliness in doubt. ` +raced` is
   # the sentence this case needs. The two tokens say different true things, so
   # they compose; what must not repeat is the same token twice.
-  if [ "$AFTER_COMMIT" != "$SOURCE_COMMIT" ]; then
+  # `!= unknown` because the branch above is reachable two ways, and only one
+  # of them leaves a commit to compare. Where git found no repo at all,
+  # `rev-parse --short HEAD` also fails and both sides read `unknown`. Where it
+  # found a repo *above* this directory — the rsync'd-copy case this guard was
+  # written for — discovery works, so `AFTER_COMMIT` is the outer repo's commit
+  # while `SOURCE_COMMIT` is the literal string `unknown`, and the comparison
+  # would be true by construction: every such build stamped ` +raced` and
+  # warned of a transition (`unknown -> eb6906a`) that never happened. The
+  # comment above states the rule — nothing to have moved *from* — and this is
+  # where the code has to honour it.
+  if [ "$SOURCE_COMMIT" != unknown ] && [ "$AFTER_COMMIT" != "$SOURCE_COMMIT" ]; then
     SOURCE="$SOURCE +raced"
     echo "warning: HEAD moved during the build ($SOURCE_COMMIT -> $AFTER_COMMIT);" >&2
     echo "  recorded as +raced" >&2
