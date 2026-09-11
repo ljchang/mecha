@@ -14,6 +14,41 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-11 — the nightly measurement fixes shipped, and re-running the night
+showed last night's two directional findings were both artifacts.** They were
+written on 2026-09-10 and left uninstalled, so the 2026-09-11 nightly ran the
+old instrument and reported `1 improved, 1 regressed, 8 unchanged, 7
+inconclusive` over its seventeen held-out reflections. Re-running that exact
+stage on the new binary, against an isolated copy of the learning store
+(`MECHA_LEARNING_DIR`, `MECHA_SESSION_KIND=test`; the live ledger stayed at 234
+rows with no attempts file), returned `0 improved, 0 regressed, 9 unchanged, 8
+inconclusive`.
+
+Both of the night's directional verdicts dissolved, and only one of the two is
+attributable. The regression on `20260820T145930-634649cc` was a replay
+artifact — `structural divergence at call #7: Missing "docs__sheets_read"` — a
+cause the old code could not detect and therefore graded anyway; that one the
+fix is responsible for. The improvement on `20260906T033546-21af0876` became
+`unchanged (both pass)`, which a judge-graded arm can do on its own; one re-run
+cannot separate the fix from sampling there. The fix's intended effect does show
+once: `20260906T033607-c958adbc`, previously ungradeable, came back graded as a
+followup.
+
+**The count of inconclusives did not fall — it rose by one — and that is the
+improvement.** The old instrument gave all seven the same explanation, "the
+baseline answer has no gradeable text (the followup probe offers no tools)",
+which named the probe as the culprit. The new receipts name causes and say
+whether they can be retried: three `replay_error` (retryable — a recorded tool
+is gone from today's surface) and four `replay_divergence` (not retryable — the
+model left the recorded trajectory). An unmeasurable probe honestly labelled is
+worth more than a verdict, which is the same lesson as the gate that was put on
+`compactions` where `context_overflows` was the counter.
+
+**Two of the retryable three cite `pkg__kg_entity`,** a tool from the MCP server
+retired on 2026-09-04. Those reflections cannot be validated again until the
+recorded surface is remapped or they are retired, and the old instrument was
+reporting that stale surface as a result about the model's behaviour.
+
 **2026-09-10 — native gossip comparison and coherent experimental control.**
 `FollowupMode::OwnEvidence` gives each question generator only its own reader's
 cited answer and routes its question back to that reader. Its matching role prompt
