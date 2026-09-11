@@ -60,6 +60,60 @@ correctness or held-out task-family transfer. The staged cap proposal was refere
 by the scorecard, not applied. The controlled gossip comparison is now implemented;
 its verified result is tracked above. Representative live-graph measurement remains open.
 
+**2026-09-11 — #223 is merged (`0c5a8352`) and installed; the surface-loss
+refusal is live.** The installed binary refuses the three lost-surface probes
+on the live corpus before any model call, verified after the install rather
+than assumed: `strings` on `~/.cargo/bin/mecha` finds three literals the range
+added, each of which counted zero beforehand — `recorded tool(s) are gone from
+this machine` (0 → 2), `a surface blob that does not describe them` (0 → 3) and
+`permanently unmeasurable, not retried` (0 → 3). Named so a later session can
+re-run the check rather than take the sentence's word for it. `mecha-slack`, `mecha-triggers`,
+`mecha-drain` and `mecha-serve` restarted and confirmed by their own startup
+lines; no process holds a deleted install; the graph MCP answers 13 tools from
+the installed path; `doctor` reports 0 broken. `mecha-mail` was not
+reinstalled — `cargo tree` shows it does not link `mecha-core` and neither
+range touches `mecha-mail` source — and `web/` and `scripts/voice/` are
+untouched, so no dist rebuild and no voice-worker restart.
+
+**The benchmark's musl binary was rebuilt and copied, following the recorded
+procedure.** It was stale at 2026-09-09 (pre-#223 by content: the literal
+`permanently unmeasurable, not retried` counted 0), and it is built from crates
+this range changed (`mecha-core/src/replay_run.rs`). Rebuilt from `0c5a8352` by
+`bench/build-portable.sh` in a clean worktree — 9m42s, a musl target CI does not
+cover — then the static binary copied to the shared checkout's
+`target-musl/release/mecha`, the path `bench/run.sh` executes, and verified
+there by content rather than by date: `statically linked`, `strings` carries
+`permanently unmeasurable, not retried` (0 → 3), and it reports `mecha 0.1.19`.
+Same procedure as the 2026-09-03 entry under **Machine state, dated**.
+
+An earlier draft of this entry called that copy worse than leaving the artifact
+stale, on the grounds that a fresh mtime over a non-matching tree is the
+"a fresh mtime is not a fresh build" trap. That was wrong and is recorded
+because the reasoning is the kind that looks careful: the precedent never
+trusted the mtime, it asked the artifact by content, which is that rule's
+answer rather than an instance of it.
+
+**The remaining hazard is the checkout's branch, and it is not
+benchmark-specific.** Two things build or run from that working tree with no
+branch check. `bench/build-portable.sh` does `cd "$(dirname "$0")/.."`, and
+`bench/run.sh` calls it unconditionally before setting `MECHA_BENCH_BINARY`, so
+a benchmark run from the shared checkout would overwrite the artifact just
+placed with a fresh build of `feat/appraisal-goal-feedback` and label the
+scorecard current — a sharper failure than the stale copy it replaced, because
+nothing about it would look stale. `mecha-voice-worker.service` has
+`WorkingDirectory=/home/ljchang/Github/mecha` and runs `scripts/voice/worker.py`
+from that tree on every restart; that half is latent today only because
+`scripts/voice/` is byte-identical between `4dd2fb1c` and `origin/main`, which
+is a fact about this week rather than a property of the arrangement. The
+hazard is repeated under **What to do next**, because a live hazard recorded
+only inside a dated narrative is one the next session does not read. Switching the checkout to `main` is the fix and it is the
+owner's move: `HEAD` (`4dd2fb1c`) is an ancestor of `origin/main`, so the move
+is a fast-forward, but 19 files are uncommitted there and two hold content in
+no commit anywhere — `website/docs/features/appraisal.md` (the `commitment`,
+`embarrassment` and `guilt` rows) and `website/docs/reference/cli.md` (the
+`--image` flags and the outbox `approve`/`reconcile` verbs), both last written
+2026-09-08/09. They are not this session's and were not discarded.
+
 **2026-09-11 — the nightly measurement fixes are merged to `main` (`7f9cc701`)
 and installed.** They sat written-but-undeployed for a night, so the 2026-09-11
 nightly still ran the old instrument and still reported the defect they fix; a
@@ -2342,6 +2396,26 @@ is recoverable without the checkout's cwd. Record:
 ---
 
 ## What to do next
+
+- **The shared checkout `~/Github/mecha` is on `feat/appraisal-goal-feedback`,
+  not `main` (2026-09-11).** This supersedes the 2026-09-04 bullet below, which
+  says it is on `main` and clean. Two things build from that working tree with
+  no branch check, so both would run the wrong code without looking wrong:
+  `bench/build-portable.sh` (`cd "$(dirname "$0")/.."`, called unconditionally
+  by `bench/run.sh`) would overwrite `target-musl/release/mecha` with a fresh
+  build of the branch and label the scorecard current, and
+  `mecha-voice-worker.service` has `WorkingDirectory=/home/ljchang/Github/mecha`
+  and runs `scripts/voice/worker.py` from it on every restart. The voice half is
+  latent today — `scripts/voice/` is byte-identical between `4dd2fb1c` and
+  `origin/main` — and stops being latent the moment either diverges.
+
+  `HEAD` (`4dd2fb1c`) is an ancestor of `origin/main`, so the switch is a
+  fast-forward. What blocks it: 19 files are uncommitted there, and two hold
+  content that exists in no commit anywhere —
+  `website/docs/features/appraisal.md` (the `commitment`, `embarrassment` and
+  `guilt` rows) and `website/docs/reference/cli.md` (the `--image` flags and the
+  outbox `approve`/`reconcile` verbs), both last written 2026-09-08/09. Preserve
+  those before switching; they are not any current session's.
 
 - **Machine state as of 2026-09-04 10:04, verified surface by surface
   (mecha-26).** `main` is `188b823`; the shared checkout `~/Github/mecha` is
