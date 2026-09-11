@@ -545,10 +545,12 @@ fn stand_in_for<'a>(
 /// nightly. Three of the seventeen held-out reflections on 2026-09-11 were in
 /// exactly this state: recordings from before the surface store, citing
 /// `pkg__kg_entity` and `google__calendar_create_event` from an MCP server
-/// retired on 2026-09-04. They were being re-probed every night, at two model
-/// calls each, to reach the same refusal — and were reported as `retryable`,
-/// which is the "an outcome that cannot be aged repeats forever" shape in a
-/// new costume.
+/// retired on 2026-09-04. They were re-probed every night to reach the same
+/// refusal, each spending a ledger row that can never age and a `--cover` slot
+/// that buys no coverage, and were reported as `retryable` — the "an outcome
+/// that cannot be aged repeats forever" shape in a new costume. The refusal
+/// itself was always free of provider calls: this resolution runs before
+/// `provider::build`.
 pub fn unconstructible_recorded_tools(
     recorded_tools: &[String],
     live: &Registry,

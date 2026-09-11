@@ -99,8 +99,11 @@ impl ProbePrep {
     /// Empty for an artifact probe, which grades a fresh task against its own
     /// fixture and replays no recorded surface at all. Non-empty means the
     /// probe cannot be run faithfully now and will not become runnable later:
-    /// the caller should record it as unmeasurable rather than spend two model
-    /// calls reaching the same refusal every night.
+    /// the caller should record it as unmeasurable rather than spend a ledger
+    /// row and a coverage slot reaching the same refusal every night. The
+    /// refusal is free of provider calls either way — `replay_registry` runs
+    /// before `provider::build` — so what this saves is bookkeeping, not
+    /// tokens.
     pub fn lost_recorded_tools(&self, live: &mecha_core::tool::Registry) -> Vec<String> {
         if matches!(self.method, ProbeMethod::Artifact { .. }) {
             return Vec::new();

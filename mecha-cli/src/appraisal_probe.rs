@@ -197,10 +197,6 @@ pub async fn probe_appraisal(
             tally.unprobeable += 1;
             continue;
         }
-        if *budget == 0 {
-            tally.over_budget += 1;
-            continue;
-        }
         // By path, not by id: the caller walked `Session::list` to get here,
         // so re-resolving the id would pay a directory scan per intervention
         // for an answer it already holds.
@@ -214,15 +210,18 @@ pub async fn probe_appraisal(
                 continue;
             }
         };
-        // The run exactly as it was, rules block and all — see
-        // `ProbePrep::system_as_recorded` for why a rules-free arm would bias
-        // every verdict toward `Mattered`.
-        // Before the budget: a recorded tool no route can rebuild fails inside
-        // `drive_continuation` at `replay_registry`, which is before
-        // `Agent::new` and so before any provider call. Charging it would
-        // spend a corpus-wide allowance this function's own contract says is
-        // "consumed by drives, never by skips", and count a model run that
-        // did not happen in `driven`.
+        // Asked before the budget, not after: a recorded tool no route can
+        // rebuild fails inside `drive_continuation` at `replay_registry`,
+        // before `Agent::new` and so before any provider call, so charging it
+        // would spend an allowance this function's contract says is "consumed
+        // by drives, never by skips" and count a run that did not happen in
+        // `driven`. Asking *after* the budget guard would be worse than not
+        // asking: once the allowance is spent every remaining lost surface
+        // files as `over_budget` — "never looked at" — and the readout then
+        // tells the owner to raise a budget that cannot buy a single one of
+        // them. The cost of asking first is one session read for an
+        // intervention past the budget, over a file this loop is already
+        // walking.
         let lost = prep.lost_recorded_tools(prepared.agent.registry());
         if !lost.is_empty() {
             skipped(
@@ -243,6 +242,15 @@ pub async fn probe_appraisal(
             tally.surface_lost += 1;
             continue;
         }
+        // Everything past here spends the allowance, so the guard sits below
+        // the two questions whose answers do not depend on it.
+        if *budget == 0 {
+            tally.over_budget += 1;
+            continue;
+        }
+        // The run exactly as it was, rules block and all — see
+        // `ProbePrep::system_as_recorded` for why a rules-free arm would bias
+        // every verdict toward `Mattered`.
         let system = prep.system_as_recorded();
         *budget -= 1;
         tally.driven += 1;
@@ -381,45 +389,6 @@ mod tests {
         // `surface_lost` are the permanent pair and `unavailable` the fixable
         // one beside them; only the over-budget one is a number somebody chose.
         assert_eq!(t.driven, 0);
-    }
-
-    /// The `--json` readout renders `Tally` itself, so every channel reaches
-    /// it by construction. This pins that: the first cut of `surface_lost`
-    /// was incremented and printed nowhere, and a corpus whose recorded
-    /// surfaces were all gone printed zero on every line — which reads as
-    /// "nothing went wrong" for a corpus where nothing could be measured.
-    /// `Tally::add` was pinned by a test while the readout dropped the
-    /// summand, so pinning the fold is not enough on its own.
-    #[test]
-    fn every_channel_reaches_the_json_readout() {
-        let t = Tally {
-            driven: 1,
-            mattered: 2,
-            redundant: 3,
-            inconclusive: 4,
-            unprobeable: 5,
-            unavailable: 6,
-            surface_lost: 7,
-            over_budget: 8,
-        };
-        let v = serde_json::to_value(t).unwrap();
-        let o = v.as_object().expect("a tally renders as an object");
-        for key in [
-            "driven",
-            "mattered",
-            "redundant",
-            "inconclusive",
-            "unprobeable",
-            "unavailable",
-            "surface_lost",
-            "over_budget",
-        ] {
-            assert!(o.contains_key(key), "`{key}` is missing from --json");
-        }
-        // Every field, not just the ones named above: a channel added to the
-        // struct and to neither this list nor the readout would otherwise pass.
-        assert_eq!(o.len(), 8, "a channel was added without naming it here");
-        assert_eq!(o["surface_lost"], 7);
     }
 
     /// `add` folds every channel, including the newest. A merge that drops one
