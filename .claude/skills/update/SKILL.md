@@ -453,9 +453,12 @@ nothing else gets past the guard:
 - ` +unverified` — git could not establish whether the tree was clean. **The
   branch and commit may still be real** (`master@eb6906a +unverified` is a
   repo whose `git status` failed on a corrupt index while `rev-parse` answered
-  fine); they read `unknown@unknown` only when git could not read the
-  checkout at all. Either way the cleanliness is unknown, which is not the
-  same as clean.
+  fine); they read `unknown@unknown` when git could not read *this directory*
+  as the root of its own checkout — either no repo at all, or a tree sitting
+  inside someone else's, which is what an rsync'd copy under another checkout
+  looks like. That second case is the dangerous one: git reads a repository
+  perfectly well there, just the wrong one, so do not go hunting a broken git.
+  Either way the cleanliness is unknown, which is not the same as clean.
 
 Suffixes compose when they say different things — ` +unverified +raced` is a
 build whose tree could not be checked *and* whose `HEAD` moved under it — but

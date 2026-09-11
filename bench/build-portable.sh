@@ -135,23 +135,28 @@ fi
 SOURCE="$SOURCE_BRANCH@$SOURCE_COMMIT$SOURCE_DIRTY"
 echo "benchmark source: $SOURCE_BRANCH @ $SOURCE_COMMIT$SOURCE_DIRTY ($PWD)" >&2
 
-# Before anything replaces the binary: a `.source` that outlives its build is
-# the one failure this file cannot survive. Every exit below the `docker run`
-# — the two post-build refusals, and the static/`--version` assertions — leaves
-# a *new* binary in place, and the previous build's `.source` beside it would
-# then be read through the skill's digest-mismatch procedure, which diagnoses
-# the wrong cause ("replaced without its provenance — most likely by copying
-# it in") and prescribes the wrong fix ("copy both files"). No file is the
-# honest state, and one line covers all four paths: the file exists only when
-# it describes the binary next to it, which is the whole of what adjacency is
-# worth here.
-rm -f "$OUT.source"
-
 docker run --rm \
   -v "$PWD":/w -w /w \
   -e CARGO_HOME=/w/.cargo-musl \
   -e CARGO_TARGET_DIR=/w/target-musl \
   rust:alpine sh -c 'apk add --no-cache musl-dev >/dev/null && cargo build --release --locked --bin mecha'
+
+# The binary has just been replaced, so the previous build's `.source` no
+# longer describes it. Every exit from here down — the two post-build refusals
+# and the static/`--version` assertions — would otherwise leave a *new* binary
+# beside an *old* provenance file, read through the skill's digest-mismatch
+# procedure, which names the wrong cause ("replaced without its provenance —
+# most likely by copying it in") and prescribes the wrong fix ("copy both
+# files"). No file is the honest state there.
+#
+# After the build and not before it: an exit from the `docker run` itself — a
+# compile error, a docker daemon that is down, a stale lock under `--locked` —
+# leaves the *previous* binary in place, unchanged and still the file
+# `bench/run.sh` executes. Deleting its `.source` would prescribe a ten-minute
+# rebuild for an artifact that was perfectly attributable a moment earlier. A
+# build killed mid-uplift needs no help from here either: the recorded digest
+# stops matching, which is the file saying so out loud, as designed.
+rm -f "$OUT.source"
 
 # The build ran as root; hand the artifacts back so the host can read, replace
 # and clean them without sudo.
