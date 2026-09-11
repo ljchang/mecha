@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `validate` no longer re-probes a reflection whose recording cites a tool this
+  machine can no longer offer by any route. Such a probe cannot succeed on a
+  later night, so it is refused at preparation, counted and reported apart from
+  the other skips, and never buys a `--cover` slot; `--repeat` still forces one
+  if a retired provider returns. Previously these were reported as retryable
+  and cost two model calls a night each to reach the same refusal.
+
 ## [0.1.19] - 2026-09-09
 
 ### Added

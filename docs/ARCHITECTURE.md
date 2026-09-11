@@ -430,6 +430,28 @@ Transient failures and regression confirmations remain retryable; `--repeat`
 explicitly remeasures other unchanged inputs. Receipts do not make repeated
 observations independent evidence.
 
+**A lost tool surface is refused before either arm, and is not a retry.**
+`replay_run::unconstructible_recorded_tools` asks, through the same two
+helpers `build_replay_registry` resolves with, whether each recorded tool can
+still be offered by any route — a live tool, the surface-only registry, or the
+recording's own blob. A name none of the three can construct will not become
+constructible on a later night, so `validate` skips the probe at preparation
+and counts it apart from the other skips, rather than spending two model calls
+to reach the same refusal. The preflight and the build are pinned to each other
+by `the_preflight_matches_what_the_build_accepts` over the whole matrix,
+because a preflight that disagrees either burns the calls it was added to save
+or refuses a probe that would have run.
+
+Found 2026-09-11, the night after the grounded receipts shipped: three of
+seventeen held-out reflections cited `pkg__kg_entity` and
+`google__calendar_create_event`, from an MCP server retired on 2026-09-04, in
+recordings made before the surface store existed. They were re-probed every
+night, reported `retryable`, and could never succeed — the "an outcome that
+cannot be aged repeats forever" shape wearing a receipt. Note what the fix is
+*not*: mapping the retired name onto today's `kg_entity` would grade a rule
+against a tool surface the recording never saw, which manufactures a verdict
+instead of admitting the corpus lost one.
+
 **The budget is per domain, and a run carries only the domains it names.**
 `MAX_ACTIVE_RULES_PER_DOMAIN` (25, raised from 15 on 2026-08-18) is the count
 half and `RULES_CHAR_BUDGET` (2600) the size half; the two move together, and
