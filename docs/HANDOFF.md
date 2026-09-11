@@ -100,6 +100,92 @@ is tracked above. Earlier dated environment claims
 retain their original verification scope; no deployment was performed.
 
 **2026-09-09 — appraisal implementation is on `feat/appraisal-goal-feedback`, not installed.**
+
+**2026-09-09 — v0.1.19 is installed from release commit `ef283174`.**
+The owner requested a patch release and the update. All four workspace versions
+and the release changelog are tagged `v0.1.19`. Local build, formatting,
+warning-free all-feature Clippy and required-backend workspace tests passed:
+**2,638 passed, zero failed, three ignored**. Web tests and production build
+passed. The release workflow published all four crates and the GitHub release;
+main CI and documentation deployment passed. The portable benchmark executable
+was rebuilt, verified statically linked, installed at the shared checkout
+`target-musl/release/mecha` path, and reports 0.1.19.
+
+The installed CLI reports `mecha 0.1.19`; Cargo's installation records identify
+all four mail/document executables as 0.1.19. `run --help` exposes
+`--appraisal-evidence` and `--mismatch-case`; `outbox --help` exposes `anticipate`
+and `outcome`. Slack, triggers, drain, serve and the voice worker restarted;
+startup logs and running mecha executable hashes were verified. The served web
+page matches the release build, and `/api/ping` returns `ok`.
+
+Both graph executables were reinstalled from clean graph main `940c806`
+(version 0.1.5), and the nightly release build was refreshed. The installed MCP
+answers with 13 tools; all observed running graph processes match its bytes.
+A separate Claude session holds a deleted executable inode with identical bytes;
+it was left running. Factory client and remote server both report 0.2.9 and the
+remote service is active. The sandbox and host both report Cargo 1.97.1.
+
+The shared checkout remains on `feat/appraisal-goal-feedback` with its existing
+uncommitted documentation; installation used the isolated release checkout.
+The live worker, parakeet and model-start scripts were proven byte-identical to
+the release before restarting the worker. No operator config, model default,
+charter, learning store or remote factory deployment changed. The local model
+still serves `qwen3.6-35b-a3b`, four slots, 262,144 context tokens per slot.
+Eval inventories remain 36 cases/15 tags and 5 assistant cases/6 tags.
+
+This deployment supersedes earlier installation/version claims below. The
+historical pilots retain their measured runtimes and are not evaluations of
+this release; learning benefit, replay reconstruction and sensor/outcome
+measurements remain open. See HISTORY for the release/update record.
+
+**Earlier on 2026-09-09 — appraisal PRs #220 and #221 merged.**
+Current main includes confirmed-goal planning and verified-step feedback from
+PR #220 (`08ebaaa5`), then anticipatory appraisal from PR #221 (`fa77852c`).
+Review fixes preserve unsupported evidence without hiding drafts, keep display
+available on appraisal errors, and reject evidence-bearing whole-session probes
+until reproduction is implemented. Confirmed-goal planning and inline message
+drafts accept owner evidence; `outbox anticipate`
+can enable exact-draft guidance, and `outbox outcome` links delivered outcomes.
+Source and implementation evidence are recorded in HISTORY under this date.
+The older aggregate `Homeostat::anticipated_guilt` is still a separate sensor;
+its lack of a behavioral consumer does not mean the new mechanism is absent.
+
+Remaining work for this slice: reconstruct evidence in replay/probes before
+forecast grading; measure whether guidance improves task outcomes; add general
+alternative comparison and calibrated predictions; connect automatic commitment
+capture only after its source/confirmation policy is defined. Current input is
+owner-authored JSON, invocation-bound for runs. Mutable attachments, UI feedback
+forms, cross-session shame and excitement are outside this implementation.
+Old binaries ignore new guidance fields; all releasing processes need this build
+before the optional delivery gate can be relied on. The later v0.1.19 update
+above installed this implementation.
+
+Historical validation at `fa77852c`: `cargo fmt --all`, warning-free
+`cargo clippy --all-targets --all-features`, and
+`MECHA_TEST_REQUIRE_BACKENDS=1 cargo test --workspace` passed. Unit suites:
+CLI 806 passed/1 ignored, core 1527/1, mail library 151/0 plus mail binary 1/0,
+Slack 75/0. Integration suites: CLI anticipation 1, first-run 22, run lifecycle 3,
+serve lifecycle 5; core anticipation 12, appraisal fixtures 7, fixture servers 5,
+MCP server 13, sandbox backends 9; grounding judge remains explicitly ignored.
+One core doctest passed. Docusaurus production build passed; the appraisal page
+rendered without browser errors or page overflow at 1440px and 390px.
+
+
+**2026-09-09 — review status.** The user docs refresh merged as PR #219;
+appraisal PRs #220 and #221 are also merged. Historical measurements below
+retain their original conditions. Review of the Anthropic transcript finding
+found that `body` uses
+adaptive thinking, whose documented rules permit an assistant turn without a
+thinking block. A live synthetic compatibility check could not run because the
+API account had insufficient credits; no provider success is claimed.
+
+
+Trace replay of recordings containing harness tool calls remains unsupported:
+reconstruct their check observations before enabling whole-session or steer/denial
+comparisons. `Trajectory::ensure_replayable` enforces this; independent artifact
+probes remain available.
+
+**2026-09-09 — appraisal measurement boundary.**
 Goal persistence, event attribution, declared plan checks and goal-specific context
 are implemented; the implementation history and earlier pilot comparisons are in
 HISTORY under this date. Guidance remains opt-in through
@@ -112,13 +198,16 @@ cost-only observations from new behavioral lessons. `extract_interventions`
 honors harness provenance in the user role; generic diagnostics do not become
 invented owner corrections. These paths are verified in source and regression tests.
 
-**The corrected three-seed Qwen 3.6 35B pilot is complete.** Both arms passed
+**The corrected three-seed Qwen 3.6 35B pilot is complete.** It measured
+`c7071ad3`, before the merged review fixes and anticipatory implementation; it
+does not establish behavior or benefit on current main. Both arms passed
 **30/36 overall, 15/18 transfer and 31/36 artifact checks**. All 72 trials and 54
 learning stages completed; all 36 paired outcomes tied and the native gate
 rejected promotion. Training yielded 2, 1 and 0 clean criterion reflections per
 learning lifetime, below the unchanged minimum of three. A later ordinary
 check-change reflection left final counts at 2, 1 and 1. No rules were created,
-loaded, validated or retired. No transfer artifact answers entered learning.
+loaded, validated or retired. No transfer artifact answers entered learning. No declared step check executed;
+the five-tool registry omitted `shell`, so check-execution benefits are unmeasured.
 See `results/appraisal-attribution-v2-qwen36-35b-20260909/README.md` for the
 configuration/exposure audit, exact native-versus-artifact distinction and limits.
 
@@ -137,9 +226,10 @@ Semantic interpretation of owner goal corrections and unsolicited mid-run rule
 delivery remain open. The current fixture produced no large forecast overruns;
 it cannot establish improved calibration. Keep guidance opt-in.
 
-Validation: all-target build, `cargo fmt --all`, warning-free
-`cargo clippy --all-targets --all-features`, and
-`MECHA_TEST_REQUIRE_BACKENDS=1 cargo test --workspace`: **2,616 passed, zero
+Historical validation at pilot runtime `c7071ad3`: the archived build and Clippy
+logs record successful completion but omit command flags, so they cannot
+independently establish target/feature coverage. The required-backend workspace
+test log records **2,616 passed, zero
 failed, three intentionally ignored**. Breakdown: 805 CLI, 22 first-run,
 3 run-lifecycle, 5 serve-lifecycle, 1,519 core, 7 appraisal-fixture,
 5 fixture-server, 13 MCP, 9 sandbox-backend, 151 mail, 1 mail binary,
@@ -190,10 +280,9 @@ audit confirms graceful serve shutdown, awaited MCP teardown and typed/steered
 input broadcasts are implemented on main, with evidence in `HISTORY.md`.
 
 Public at **github.com/ljchang/mecha**, MIT licensed. The latest published
-release is **v0.1.18**, published 2026-09-06 (GitHub release reverified
-2026-09-08). The local installation is newer source, `c3f33f4c`, retaining
-that workspace version; this update did not publish another release. Earlier
-release observations have moved to `HISTORY.md`.
+release is **v0.1.19**, published and installed 2026-09-09 from `ef283174`.
+The dated v0.1.18 installation record above describes the previous update;
+the current deployment is the v0.1.19 entry at the top of this document.
 
 **Reading the earlier orientation below:** these entries describe their dated
 work sessions. Their release, installation, service and test-count statements
@@ -661,6 +750,18 @@ binary is absent |
 `cargo clippy --all-targets` is clean and should stay that way.
 
 ## Environment as left
+
+**Verified 2026-09-09 15:56 UTC for the anticipation worktree:** baseline build
+and workspace tests passed; final strict workspace tests and Clippy passed
+(see the validation summary in Where the work is). `eval/cases.jsonl` contains 36 cases
+and 15 tags; no model eval was run for this feature. The local `:8080/props`
+reported four slots, 262144 context per slot, and vision enabled. User-unit files
+list drain, parakeet, serve, Slack, triggers and voice-worker enabled, along with
+frontdoor, mail-classify, ruminate and slots timers. This checks configuration,
+not service health or installed feature capability. No services were changed.
+Other dated environment/deployment claims below are historical and were not
+revalidated by this feature session; they are not a claim about today's artifacts.
+
 
 **Verified update, 2026-09-08, services restarted at 19:58:54 UTC:** the
 shared checkout is `main` at `c3f33f4c`. `cargo install --locked --force`

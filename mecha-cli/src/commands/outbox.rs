@@ -129,6 +129,25 @@ pub enum Cmd {
         #[arg(long)]
         evidence: String,
     },
+    /// Record owner-authored commitment and verification evidence for this draft.
+    /// Without --file, show predictions and their outcome resolution as JSON.
+    Anticipate {
+        id: String,
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Require the latest assessment to support proceeding before any release.
+        #[arg(long, requires = "file", conflicts_with = "observe")]
+        guide: bool,
+        /// Explicitly use observation mode, including when replacing guided evidence.
+        #[arg(long, requires = "file")]
+        observe: bool,
+    },
+    /// Record a post-delivery owner's verdict, linked to a prediction and its evidence.
+    Outcome {
+        id: String,
+        #[arg(long)]
+        file: PathBuf,
+    },
     /// Refuse items. They stay on file as the record of the refusal.
     Reject {
         #[command(flatten)]
@@ -172,8 +191,64 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             );
             Ok(())
         }
+        Cmd::Anticipate {
+            id,
+            file,
+            guide,
+            observe,
+        } => {
+            let _lock = store.lock()?;
+            let item = if let Some(file) = file {
+                let evidence = read_evidence_file(&file)?;
+                // Omitting a flag must not silently disable an existing guidance gate.
+                let current = store.item(&id)?;
+                let guide = if guide || observe {
+                    guide
+                } else {
+                    current
+                        .predictions
+                        .last()
+                        .map(|p| {
+                            p.known()
+                        .context("unsupported prediction; choose --guide or --observe explicitly")
+                        .map(|p| p.guide)
+                        })
+                        .transpose()?
+                        .unwrap_or(false)
+                };
+                store.anticipate(&id, evidence, guide)?
+            } else {
+                store.item(&id)?
+            };
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&item.anticipation_readout())?
+            );
+            Ok(())
+        }
+        Cmd::Outcome { id, file } => {
+            let input = read_evidence_file(&file)?;
+            let _lock = store.lock()?;
+            let item = store.record_outcome(&id, input)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&item.anticipation_readout())?
+            );
+            Ok(())
+        }
         Cmd::Reject { selection, reason } => reject(&store, &selection, reason),
     }
+}
+
+/// Owner CLI file, never a model-supplied tool path. Bound the read before parsing.
+pub(crate) fn read_evidence_file<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(65537)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(bytes.len() <= 65536, "evidence file exceeds 64 KiB");
+    serde_json::from_slice(&bytes).context("invalid appraisal evidence file")
 }
 
 /// The store the *agent* stages into is configured in `[outbox] dir`; the
@@ -402,6 +477,41 @@ fn show(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
     }
     if let Some(error) = &item.error {
         println!("last send attempt failed: {error}\n");
+    }
+    if item.predictions.last().is_some_and(|p| p.known().is_none()) {
+        println!("Appraisal uses unsupported evidence. Review remains available; release requires explicit reassessment.\n");
+    } else if item.predictions.iter().any(|p| p.known().is_none())
+        || item.outcomes.iter().any(|o| o.known().is_none())
+    {
+        println!("Some appraisal history cannot be interpreted; the session readout is partial.\n");
+    }
+    if let Some(p) = item
+        .predictions
+        .last()
+        .and_then(|p| p.known())
+        .filter(|p| p.guide || !p.assessment.kinds.is_empty())
+    {
+        let current = if item.status == "pending" {
+            match p.current_assessment() {
+                Ok(current) => current,
+                Err(error) => {
+                    println!("Appraisal unavailable: {error}. Review remains available; release requires reassessment.\n");
+                    p.assessment.clone()
+                }
+            }
+        } else {
+            p.assessment.clone()
+        };
+        println!(
+            "Appraisal ({}, {:?}): {}\n",
+            if p.guide { "guidance" } else { "observation" },
+            item.prediction_resolution(p),
+            current.response.guidance()
+        );
+        println!(
+            "Evidence and outcomes: mecha outbox anticipate {}\n",
+            item.id
+        );
     }
     // One transcript read for both things this surface derives from it.
     let ReviewReads { reads, serves } = review_reads(&item);
@@ -1298,6 +1408,8 @@ mod tests {
 
     fn item(id: &str, status: &str, kind: OutboxKind, tool: &str) -> OutboxItem {
         OutboxItem {
+            predictions: Vec::new(),
+            outcomes: Vec::new(),
             delivery_attempts: Vec::new(),
             output: None,
             author: Default::default(),
@@ -1374,6 +1486,7 @@ mod tests {
                 json!({"to": "a@example.com"}),
                 Default::default(),
                 mecha_core::outbox::Provenance {
+                    anticipation: None,
                     filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
@@ -1409,6 +1522,7 @@ mod tests {
                 json!({"to": "a@example.com"}),
                 Default::default(),
                 mecha_core::outbox::Provenance {
+                    anticipation: None,
                     filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
@@ -1672,6 +1786,7 @@ mod tests {
                 json!({"to": "a@example.com"}),
                 Default::default(),
                 mecha_core::outbox::Provenance {
+                    anticipation: None,
                     filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
@@ -1719,6 +1834,7 @@ mod tests {
                 json!({"bundle": "site"}),
                 Default::default(),
                 mecha_core::outbox::Provenance {
+                    anticipation: None,
                     filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,

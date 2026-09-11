@@ -32,6 +32,11 @@ pub struct Args {
     #[arg(long, value_name = "KIND:ID")]
     pub goal: Option<mecha_core::goal::GoalRef>,
 
+    /// Owner-authored commitment/check evidence for this invocation's confirmed goal.
+    /// Observation by default; agent.goal_guidance enables fixed advice.
+    #[arg(long, requires = "goal", conflicts_with = "mismatch_case")]
+    pub appraisal_evidence: Option<std::path::PathBuf>,
+
     /// Owner-authored JSON fixture for isolated artifact validation of later mismatches.
     #[arg(long, conflicts_with_all = ["resume", "no_session", "images"])]
     pub mismatch_case: Option<std::path::PathBuf>,
@@ -75,6 +80,19 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let prompt = read_prompt(args.prompt.as_deref())?;
     anyhow::ensure!(!prompt.trim().is_empty(), "no prompt given");
 
+    let appraisal_evidence: Option<mecha_core::anticipation::Evidence> = args
+        .appraisal_evidence
+        .as_ref()
+        .map(|p| super::outbox::read_evidence_file(p))
+        .transpose()?;
+    if let Some(evidence) = &appraisal_evidence {
+        evidence.validate()?;
+        anyhow::ensure!(
+            evidence.goal.is_some() && evidence.goal == args.goal,
+            "appraisal evidence must match --goal"
+        );
+    }
+
     // Nothing can answer an approval prompt when output is being piped or
     // parsed, so those runs use the configured permission mode instead.
     let interactive = std::io::stdin().is_terminal() && !args.json;
@@ -83,6 +101,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         ..global.clone()
     };
     let mut prepared = setup::prepare(&opts, interactive).await?;
+    if let Some(evidence) = appraisal_evidence {
+        prepared.agent.set_appraisal_evidence(evidence)?;
+    }
 
     let mismatch_case = args
         .mismatch_case
@@ -265,8 +286,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 mecha_core::agent::StopCause::Completed
                     | mecha_core::agent::StopCause::MaxTurns
                     | mecha_core::agent::StopCause::OutputTokenBudget
-            ) && !outcome.tool_calls.iter().any(|c| c.denied || c.staged)
-                && outcome.blocked_sends == 0
+            ) && !mecha_core::mismatch::has_policy_refusal(&outcome)
             {
                 append_criterion_feedback(s, case, &prepared.workspace, convo.taint)?;
             }

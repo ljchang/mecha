@@ -13,6 +13,11 @@ arm order, provenance boundaries and limitations. [Conditions](conditions.json)
 and the [finish audit](finish-audit.json) confirm unchanged runtime/input hashes
 and the model alias. No runtime or fixture changed during this valid measurement.
 
+**Historical runtime boundary:** this run predates the check-provenance/replay
+review fixes in PR #220 and the anticipatory appraisal implementation in PR #221.
+It does not validate current main, live Anthropic compatibility, or anticipatory
+guidance. All raw records and native grades retain the measured runtime's behavior.
+
 ## Outcomes
 
 | Measure | Control | Learning |
@@ -77,6 +82,13 @@ exposure cannot establish whether learned guidance helps or hurts.
 
 ## Attribution and validation limits
 
+Step checks were enabled, but the five-tool registry omitted `shell`, making
+their execution unavailable by construction. Across all 72 trials, the trace
+audit records two input check declarations and **zero executed checks in either
+arm**; every run has zero `checks_declared`/`checks_passed` execution counters.
+The pilot cannot establish whether executing checks improves task outcomes.
+This limitation is separate from the absence of learned-rule exposure.
+
 The call-estimate audit found 54 paired estimates in control and 53 in learning;
 98 and 100 other step observations lacked an estimate or a measurable span.
 Neither arm crossed the implemented forecast-miss threshold. The conservative
@@ -93,8 +105,9 @@ failed before the fix. The mismatch prompt also distinguishes a false context
 predicate from a failed artifact verdict. The replacement reused no trial or
 learning state from the invalid run.
 
-Build, formatting and warning-free Clippy passed. Required-backend workspace
-tests passed **2,616**, with zero failures and three intentionally ignored tests.
+The archived build and Clippy logs record successful completion, but omit command
+arguments and cannot independently establish target or feature coverage.
+Required-backend workspace tests at `c7071ad3` passed **2,616**, with zero failures and three intentionally ignored tests.
 The separate [retirement drills](retirement-drills/README.md) must be read with
 their outcomes: an earlier run passed, but the rerun on the corrected runtime
 **failed its strict assertion** because the bad rule elicited no measured
@@ -119,7 +132,18 @@ seeds after seeing these outcomes would answer a different question.
 [task resources](resources.json), and [verification logs](verification).
 JSONL records are archived as JSON arrays; mined-session IDs remain plain text.
 The archive helper records this run's extraction and expects its original
-temporary logs and fingerprint paths; the commands below reproduce the experiment.
+temporary logs and fingerprint paths. The recorded runtime commit `c7071ad3`
+exists in the original local history. For a retrievable source snapshot, use
+[published commit `fba6de53`](https://github.com/ljchang/mecha/commit/fba6de5318727c53db8c5d3c65f091684623494e):
+its four crate trees, Cargo manifests/lockfile, experiment fixtures and scripts
+are byte-identical to `c7071ad3`; only documentation differs. This is source
+equivalence, not a claim that a fresh build reproduces the archived binary hash.
+
+To repeat the registered design, build and use `mecha` from that published
+snapshot, use its fixtures/scripts, and match the provider settings in
+[Conditions](conditions.json). The commands below then run a fresh experiment;
+model outcomes are not guaranteed to repeat. Running them on current main
+measures a different implementation.
 
 ```bash
 MECHA_HOME=/path/to/fresh-bootstrap mecha exp new eval/appraisal-attribution-v2.toml

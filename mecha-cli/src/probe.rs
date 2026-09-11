@@ -228,6 +228,9 @@ pub fn prepare_probe_in(
         } else if trigger == Trigger::Denial.as_str() {
             locate_denial(messages, intervention)
         } else {
+            // An `edit` reflection's intervention lives in an outbox item, not
+            // in any transcript — there is no prefix to replay. Explicit, so a
+            // new trigger kind cannot silently be probed as if it were a denial.
             return Ok(Err(format!(
                 "`{trigger}` interventions have no replayable intervention point"
             )));
@@ -237,6 +240,15 @@ pub fn prepare_probe_in(
         };
         let slice = truncate_after_run(messages, point.message_index);
         let trajectory = extract(slice);
+        // A prefix that cannot be replayed, or one with no user turn before
+        // the intervention, is unmeasurable rather than a failing arm: a
+        // probe that cannot be set up is not evidence that the rules failed.
+        if let Err(error) = trajectory.ensure_replayable() {
+            return Ok(Err(error.to_string()));
+        }
+        if trajectory.turns.is_empty() {
+            return Ok(Err("no user turns before the intervention".into()));
+        }
         let Some(branch) = branch_at(slice, &point) else {
             return Ok(Err("could not rebuild the branch prefix".into()));
         };
@@ -258,6 +270,12 @@ pub fn prepare_probe_in(
     let Some(recorded) = transcript.config_covering(message_index).cloned() else {
         return Ok(Err("no RunConfig recorded".into()));
     };
+    if recorded.appraisal_evidence.is_some() {
+        return Ok(Err(
+            "owner-bound anticipatory evidence is not yet reproduced by counterfactual probes"
+                .into(),
+        ));
+    }
 
     // The recorded system prompt with any rules block of its era removed: an
     // arm must carry exactly the block it was given, not a mixture of

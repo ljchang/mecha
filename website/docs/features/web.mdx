@@ -106,14 +106,13 @@ an unauthenticated probe learns nothing about what the app contains.
 
 ## What the pages do
 
-Every page is a **thin shell over the command line**. Reads come from the
-same stores the CLI reads; every mutation runs `mecha <verb>` as a child
-process. Nothing is reachable from a browser that a script could not do,
-and there is exactly one implementation of each verb.
+The pages share the CLI's stores and core operations. Review and maintenance
+actions use the same command paths; chat and workflow lifecycle handling also
+run inside the server so active conversations stay coordinated.
 
 | Page | What it is |
 |---|---|
-| **Home** | The dashboard: what is waiting in each store, plus [doctor](/docs/features/run-quality)'s findings. Cards with a surface behind them navigate there on tap. A store that cannot be read shows a dash, never a zero |
+| **Home / Today** | Urgent work, decisions, verified results, and waiting items, followed by store counts and doctor findings. [Workflows](/docs/features/workflows) connect tasks to conversations, drafts, questions, and completion evidence. Finished workflows can be reopened. Unreadable sources are shown as unavailable. |
 | **Chat** | A streaming conversation with the agent — steering, cancel, a context gauge, approval cards, and a session drawer holding both live and recorded conversations. The waveform button opens a [voice call](/docs/features/voice) into *this* conversation |
 | **Mail** | Two tabs: the triage queue (what needs you, classified) and a plain inbox (what just arrived). Reading, triaging, and drafting — see [mail](/docs/features/mail) |
 | **Graph** | One surface over the [knowledge graph](/docs/graph/overview): capture a note (typed or dictated) with the graph's own confirmation of what it linked, a recent-notes list with in-place edit, one find field over everything (hybrid keyword + semantic search, ⌘K focuses it), and entity pages — facts with Confirm/Refute on anything unreviewed, aliases, per-source coverage, the connected neighborhood, history with superseded facts, and recent evidence. Opening an entity is itself a review trigger; see [the graph](/docs/graph/overview#where-you-review-what-it-proposes). The old `#notes` address still works |

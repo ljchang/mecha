@@ -1142,7 +1142,20 @@ fn worth_a_follow_up(new_status: &str, a: &mecha_core::appraisal::Appraisal) -> 
     // gate must not stage a "revisit" task from one, or the ungating would
     // have turned every rejected-draft closure into a follow-up nobody
     // asked for. The split lives on the variant, beside the word.
-    new_status == "done" && (a.label.names_residue() || a.cut_short())
+    let label = if a
+        .errors
+        .iter()
+        .any(|e| matches!(e.cite, mecha_core::appraisal::Cite::Outcome { .. }))
+    {
+        let mut prior = a.clone();
+        prior
+            .errors
+            .retain(|e| !matches!(e.cite, mecha_core::appraisal::Cite::Outcome { .. }));
+        mecha_core::appraisal::affect_of(&prior)
+    } else {
+        a.label
+    };
+    new_status == "done" && (label.names_residue() || a.cut_short())
 }
 
 /// Is `id` exactly one ordinary path component — never a root, a `..`,
@@ -3829,6 +3842,42 @@ mod tests {
         }];
         assert!(worth_a_follow_up("done", &cut));
         assert!(!worth_a_follow_up("dropped", &cut));
+    }
+
+    #[test]
+    fn post_delivery_owner_evidence_does_not_itself_stage_follow_up_work() {
+        use mecha_core::appraisal::{Affect, Agency, Channel, Cite, GoalError};
+        let mut a = appraisal(Affect::Guilt);
+        a.errors.push(GoalError {
+            related: Vec::new(),
+            goal: None,
+            channel: Channel::Commitment,
+            sign: -1.0,
+            agency: Agency::Own,
+            visible: false,
+            controllable: None,
+            cite: Cite::Outcome {
+                draft: "draft".into(),
+                event: "event".into(),
+                verdict: mecha_core::anticipation::Verdict::Harm,
+            },
+        });
+        assert_eq!(mecha_core::appraisal::affect_of(&a), Affect::Guilt);
+        assert!(!worth_a_follow_up("done", &a));
+        a.errors.push(GoalError {
+            related: Vec::new(),
+            goal: None,
+            channel: Channel::Counter,
+            sign: -0.5,
+            agency: Agency::Own,
+            visible: false,
+            controllable: Some(true),
+            cite: Cite::Counter("measured".into()),
+        });
+        assert!(
+            worth_a_follow_up("done", &a),
+            "independent measured residue still counts"
+        );
     }
 
     #[test]

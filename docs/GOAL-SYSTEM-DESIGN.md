@@ -1,5 +1,16 @@
 # The goal system — design
 
+> **Implementation addendum, 2026-09-09:** the first behavioral slice of §7.4
+> is implemented locally on `feat/anticipatory-appraisal`: owner-bound evidence
+> reaches confirmed-goal planning and inline outbox messages, with optional
+> fixed guidance and exact-draft delivery checks. Linked post-delivery owner
+> outcomes supply retrospective embarrassment and guilt. The aggregate
+> `Homeostat::anticipated_guilt` remains a separate sensor. General alternative
+> search, forecast calibration, automatic commitment capture, and evidence-aware
+> replay remain open. See [HISTORY](HISTORY.md) under this date and the
+> [user guide](../website/docs/features/appraisal.md). The design below records
+> the earlier proposal, not the full current implementation status.
+
 **2026-09-10 implementation addendum:** recorded followup continuation and
 validation retry identities are implemented; gossip now carries retrieved citations
 and measures citation yield. See [HISTORY](HISTORY.md) under this date for evidence

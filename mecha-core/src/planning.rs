@@ -123,6 +123,11 @@ impl Action {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Decision {
+    /// Local evidence behind the assessment; provider adapters omit planning metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anticipation_evidence: Option<crate::anticipation::Evidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anticipation: Option<crate::anticipation::Assessment>,
     #[serde(default, deserialize_with = "crate::goal::de_lenient")]
     pub goal: Option<GoalRef>,
     #[serde(default, deserialize_with = "crate::goal::de_lenient")]
@@ -137,6 +142,48 @@ pub struct Decision {
     pub applied: bool,
 }
 impl Decision {
+    pub fn with_owner_evidence(&mut self, bound: &crate::anticipation::BoundEvidence) {
+        // An unnamed or drifted plan is handled by goal-alignment guidance first.
+        if self.goal != self.anchor {
+            return;
+        }
+        if let Some(mut evidence) = bound.for_goal(self.anchor.as_ref()) {
+            if let Some(harness) = &self.anticipation_evidence {
+                evidence.budget_shortfall |= harness.budget_shortfall;
+                if evidence.expected_outcome.is_none() {
+                    evidence.expected_outcome = harness.expected_outcome.clone();
+                }
+                // The owner's external check cannot certify unfinished plan verification.
+                if harness.verification == crate::anticipation::Verification::Pending
+                    && matches!(
+                        evidence.verification,
+                        crate::anticipation::Verification::Unknown
+                            | crate::anticipation::Verification::Passed
+                    )
+                {
+                    evidence.verification = crate::anticipation::Verification::Pending;
+                    evidence.verification_evidence = None;
+                }
+            }
+            let assessment = crate::anticipation::assess(&evidence, false);
+            if !matches!(
+                self.action,
+                Action::ClarifyGoal | Action::ReviewCommitment | Action::GatherContext
+            ) {
+                use crate::anticipation::Response;
+                self.action = match assessment.response {
+                    Response::Verify => Action::Verify,
+                    Response::Clarify if self.action == Action::Verify => Action::Verify,
+                    Response::Clarify => Action::GatherContext,
+                    Response::Replan => Action::Replan,
+                    Response::Proceed => self.action,
+                };
+            }
+            self.anticipation = Some(assessment);
+            self.anticipation_evidence = Some(evidence);
+        }
+    }
+
     pub fn assess(
         plan: &crate::tool::todo::Plan,
         anchor: Option<GoalRef>,
@@ -187,7 +234,21 @@ impl Decision {
         } else {
             Action::Complete
         };
+        let prediction_evidence = crate::anticipation::Evidence {
+            goal: anchor.clone(),
+            verification: if unverified_steps > 0 {
+                crate::anticipation::Verification::Pending
+            } else {
+                crate::anticipation::Verification::Unknown
+            },
+            expected_outcome: plan.items.iter().find_map(|i| i.expect.clone()),
+            // A declaration alone does not establish availability or cost of a check.
+            budget_shortfall: turns_left.is_some_and(|n| open_steps as u64 > n),
+            ..crate::anticipation::Evidence::default()
+        };
         Self {
+            anticipation: Some(crate::anticipation::assess(&prediction_evidence, false)),
+            anticipation_evidence: Some(prediction_evidence),
             goal: plan.goal.clone(),
             anchor,
             open_steps,
@@ -328,7 +389,12 @@ pub fn examples(
     situation: &crate::situation::Situation,
 ) -> anyhow::Result<Vec<Example>> {
     let mut out = Vec::new();
-    for (meta, path) in crate::session::Session::list(dir)?.into_iter().take(32) {
+    let population = crate::runlog::Scan::default();
+    for (meta, path) in crate::session::Session::list(dir)?
+        .into_iter()
+        .filter(|(meta, _)| population.admits(meta))
+        .take(32)
+    {
         if !std::fs::metadata(&path).is_ok_and(|m| m.len() <= 2_000_000) {
             continue;
         }
@@ -398,5 +464,72 @@ mod attribution_tests {
         s.verification = Verification::Failed;
         assert_eq!(s.attribution(), "declared_check_failed");
         assert!(s.learnable_failure());
+    }
+}
+
+#[cfg(test)]
+mod example_admission_tests {
+    use super::*;
+    use crate::{
+        agent::Taint,
+        message::Message,
+        session::{Record, RunConfig, SessionKind, SessionMeta},
+        situation::Situation,
+    };
+
+    #[test]
+    fn smoke_tests_cannot_supply_examples_or_crowd_real_work_out_of_the_window() {
+        let root = crate::mismatch::Workspace::new().unwrap();
+        let tools = vec!["todo".into()];
+        let situation = Situation::of_run(&tools, Some(root.path())).on(Some(SessionKind::Run));
+        for i in 0..34 {
+            let mut message = Message::user("harness check observation");
+            message.planning = Some(Feedback {
+                steps: vec![serde_json::from_value(serde_json::json!({
+                    "step":"write answer", "goal":"task:example", "verification":"passed"
+                }))
+                .unwrap()],
+                ..Feedback::default()
+            });
+            let records = [
+                Record::Meta(SessionMeta {
+                    id: format!("example-{i}"),
+                    created_at: chrono::Utc::now() + chrono::Duration::seconds(i),
+                    provider: "scripted".into(),
+                    model: "scripted".into(),
+                    workspace: root.path().into(),
+                    title: None,
+                    kind: Some(if i == 0 {
+                        SessionKind::Run
+                    } else {
+                        SessionKind::Test
+                    }),
+                }),
+                Record::Config(RunConfig {
+                    tools: tools.clone(),
+                    rules_workspace: Some(root.path().into()),
+                    rules_surface: Some(SessionKind::Run),
+                    ..Default::default()
+                }),
+                Record::Message(message),
+                Record::Taint(Taint::default()),
+            ];
+            let text = records
+                .iter()
+                .map(|r| serde_json::to_string(r).unwrap())
+                .collect::<Vec<_>>()
+                .join("\n");
+            std::fs::write(root.path().join(format!("example-{i}.jsonl")), text).unwrap();
+        }
+        let found = examples(root.path(), &situation).unwrap();
+        assert_eq!(
+            found.len(),
+            1,
+            "development runs are not evidence of successful real work"
+        );
+        assert_eq!(
+            found[0].source, "example-0",
+            "admission precedes the recent-session limit"
+        );
     }
 }

@@ -98,22 +98,23 @@ something to the store that the command line cannot.
 
 ## `mecha learn` — reflections become rules
 
-Consolidation rewrites `rules/<domain>.learned.toml` whole: absorb the new
-reflections, merge overlapping rules, resolve contradictions, drop rules too
-narrow to fire again. Rewriting rather than appending is what keeps learning
-from growing the system prompt without bound.
+Consolidation groups reflections by domain and situation, then rewrites the
+rules for that region while preserving rules outside it. It absorbs new
+lessons, merges overlapping rules, and resolves contradictions. The stored
+`rules/<domain>.learned.toml` remains bounded across all regions.
 
 ```bash
 mecha learn                      # apply immediately
 mecha learn --min 5              # need this many unprocessed reflections (default 3)
 mecha learn --holdout 0.25       # leave every k-th out, for validate to probe
-mecha learn --propose            # stage as a proposal instead of applying
+mecha learn --auto               # measure, then apply or refuse
+mecha learn --propose            # measure, then stage for owner review
 mecha learn --dry-run
 ```
 
 Rules ride in the system prompt under a `## Learned rules` heading, user rules
-first, then enabled learned ones, inside the cached prefix — so they change only
-at consolidation time and cost nothing per turn. `--no-learned-rules` opts out
+first, then matching learned ones, inside the cached prefix. The selected block
+is stable during a run and can benefit from prompt caching. `--no-learned-rules` opts out
 anywhere, and `mecha eval` forces it off so a scorecard measures the model
 rather than your accumulated rules.
 
@@ -147,7 +148,32 @@ it — growth past the cap is refused, which is what forces the next pass to mer
 or retire before it may add. User rules are not counted: they are the user's own
 budget to spend.
 
-### Unattended learning never applies its own output
+### Where a rule loads
+
+Rules can be scoped to a tool set, an exact workspace, and a surface such as
+web, TUI, or Slack. The harness derives these keys from the recorded run;
+the learner does not choose them. A matching run must satisfy every named key.
+Rules without scope keys remain standing rules.
+
+A lesson supported in another region can widen its scope. Measured harm in one
+region can narrow it instead of retiring it everywhere. `mecha rules` shows
+scope and tallies; `LOADS NOWHERE` identifies a scope no recorded run presented,
+and `--json` exposes `loads_nowhere`. An unrecognized surface matches nothing.
+
+### Choose how changes go live
+
+Bare `mecha learn` applies immediately, with the learning store's git history as
+undo. The supplied automation uses **`mecha learn --auto`**:
+
+- A candidate that regresses any graded probe is refused.
+- A candidate with graded probes and no regression applies.
+- A candidate with nothing gradeable applies **on probation**, explicitly
+  recorded as unmeasured and eligible for earlier retirement.
+
+Every automatic decision leaves an audit record. The measurement gate does not
+relax provenance checks or allow changes to user-authored rules.
+
+For a review queue, use `--propose` instead of `--auto`:
 
 `mecha learn --propose` measures the candidate rule set by counterfactual replay
 against the currently deployed rules, rejects any candidate that regresses a
@@ -166,8 +192,8 @@ to say so. Rejecting retires the reflections, so a human's "no" is not re-argued
 nightly. Proposals can only ever touch `rules/*.learned.toml` — the security
 layer is not proposable-against, structurally.
 
-Direct `mecha learn` at a terminal still applies immediately, with git history
-as undo. The gate exists for the runs nobody watches.
+`--auto` and `--propose` are mutually exclusive. Both measure; only
+`--propose` waits for the owner to accept a surviving candidate.
 
 ## Provenance gating: why this is stricter than the interlock
 
@@ -354,6 +380,7 @@ mecha rules                                   # every rule with its ledger talli
 mecha rules retire <id> --reason "..."        # by id or unique prefix
 mecha rules restore <id>
 mecha rules propose-retirements --min-attributed 3
+mecha rules propose-retirements --apply       # apply the measured verdict now
 ```
 
 `list` folds `validations.jsonl` into per-rule tallies and prints each rule's
@@ -367,12 +394,13 @@ state, id, creation date, and what has been measured:
       3 improved, 1 regressed, 0 attributed to this rule; last 2026-08-05T03:31:07Z
 ```
 
-`propose-retirements` is a **deterministic ledger scan with no model anywhere**.
-Once a rule accumulates `--min-attributed` (default 3) attributed regressions, it
-stages `enabled = false` plus `retired_at` / `retired_reason` through the same
-proposal gate as any other rule change, with the tallies as the evidence text. A
-pending proposal already retiring those exact rules is not re-staged, so a
-nightly run cannot spam the queue while a human has not looked yet.
+`propose-retirements` scans the validation ledger without a model call.
+The ordinary threshold is `--min-attributed` (default 3); probationary rules
+use 2. A verdict can narrow a rule to supported regions or retire it. By
+default it stages the change for review; `--apply`, used by the nightly script,
+applies it directly and resolves superseded proposals. Probation ends only
+when graded evidence clears its recorded convictions, not merely because a
+probe ran.
 
 **Retirement is a flag, never a deletion.** `Rule::active()` is
 `enabled && retired_at.is_none()`, so the stronger claim wins even if `enabled`
@@ -430,7 +458,8 @@ not reacquire them:
   Agents and nobody validated.
 - **No LLM-adjudicated destructive delete.**
 
-Only *measured harm* argues for retirement, and a human accepts the argument.
+Measured harm drives automatic retirement or narrowing. The owner can also
+retire or restore a rule explicitly; age and usage alone do not remove one.
 
 ## `mecha eval --ab-rules` — the coarse complement
 
@@ -444,31 +473,28 @@ per-memory quality labels", bought with machinery that already existed. See
 
 ## Running the cycle nightly
 
-`scripts/ruminate.sh` chains the whole thing behind a systemd user timer:
+`scripts/learn-live.sh`, when installed as a `session_end` hook, mines a small
+batch and runs `learn --holdout 0.25 --auto` after sessions close. It moves to
+its own work directory before reading config, so the closing project's config
+does not govern an unattended learning pass.
 
+`scripts/ruminate.sh` provides the nightly measurement and catch-up sweep:
+
+```text
+reflect → distill → validate --unprocessed-only --cover 1
+        → learn --holdout 0.25 --auto → rules propose-retirements --apply
+        → work clean → harness ruminate
 ```
-reflect → distill → validate --unprocessed-only → learn --holdout 0.25 --propose
-        → rules propose-retirements → proposals
-```
 
-The ordering is the one deliberate choice. **`validate` runs before `learn`**,
-because `learn` marks reflections processed and measuring afterwards would grade
-the rules on their own training data. Tonight's fresh reflections are unseen by
-the current rules by construction; `--holdout` keeps a slice unseen by the next
-generation too, and the holdout is deterministic (every k-th by id) because a
-measurement set that changes between runs measures nothing.
+`validate` runs before `learn` consumes fresh reflections. Both learning paths
+hold out a deterministic slice so later validation has evidence the learner
+did not consume. `--cover 1` also requests coverage for rule/region pairs not
+yet graded. The script's judge defaults to the local provider; this is not an
+independent judge when it is also the model under test.
 
-Every stage is idempotent and defers on failure. If the model server is not
-answering, the script exits 0 and the whole night is skipped — a skipped night
-is not a failed night, and tomorrow catches up.
-
-The cycle can also drive itself from a [hook](/docs/features/hooks), detached so
-the hook timeout never kills a model call in flight:
-
-```toml
-[[hook]]
-event = "session_end"
-command = "nohup mecha reflect -p local >/dev/null 2>&1 &"
-```
+The script defers the night if the model health check fails. Its scripts and
+systemd units are supplied in `scripts/`; installing the CLI alone does not
+install a hook or timer. Use `mecha learning-report` to inspect correction
+trends, rule health, and consolidation history without a model call.
 
 The evidence behind all of this is `docs/MEMORY-RESEARCH.md` in the repository.

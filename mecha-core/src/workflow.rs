@@ -1122,6 +1122,7 @@ mod tests {
                 serde_json::json!({}),
                 Default::default(),
                 Provenance {
+                    anticipation: None,
                     session_id: Some("session-one".into()),
                     ..Default::default()
                 },

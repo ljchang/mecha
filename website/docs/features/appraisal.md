@@ -1,60 +1,61 @@
 ---
 title: Goals and appraisal
 sidebar_position: 21.5
-description: A charter saying what mecha is for, a signed error against it, and a label derived from the record — never reported by the model.
+description: Standing priorities, confirmed goals, drift and step metrics, signed appraisals, project closure, and the features that use them.
 ---
 
 # Goals and appraisal
 
-Every evaluative signal mecha had was either **a human intervening** or **a
-counter crossing a threshold**. `reflect` mines four ways of saying a person
-stepped in; the harness gate scores six metrics whose docstring makes
-lower-is-better an invariant. Two consequences followed, and neither was
-visible from inside any one subsystem:
+Appraisal records how work went against what it was for. It combines your
+standing priorities, the goal a run named, your interventions, and recorded
+outcomes. The readout shows **positive and negative valence separately**, with
+a label derived from that evidence. A model cannot report its own label.
 
-- **Every signal was negative.** There was no channel through which a run
-  could be recorded as having gone *well*, so nothing could prioritise between
-  two runs that both merely avoided harm.
-- **Every signal was exogenous.** Four of the five loops could not start until
-  the world acted first. mecha could not notice unprompted that something went
-  badly against what it is for, because nothing represented what it is for.
-
-This is the half that was missing: a written statement of standing priorities,
-a reference every piece of work can cite, and a **signed** error against it.
+Start with the free readers:
 
 ```bash
-mecha charter                        # the standing priorities, as a run sees them
-mecha sessions appraise --days 30    # how runs went against what they were for
-mecha sessions appraise --probe      # the paid pass that fills `controllable`
-mecha sessions appraise --appraise   # the quarantined appraiser's second opinion
+mecha charter
+mecha sessions appraise --days 30
+mecha sessions health --days 30
 ```
 
-:::note Observation, mostly
-Almost nothing consumes an appraisal yet, and that is deliberate — the number
-worth reading first is **how many runs come back with no label at all**. On the
-120-session corpus this was built against, 119 came back `neutral`. See
-[the finding](#the-finding-most-runs-had-no-label-and-why-the-gate-moved) before building on it.
+`appraise` reads signed outcomes across sessions. `health` reports run-level
+counters, including goal drift, null steps, and reopened steps. The charter
+editor lets you state priorities and optional setpoints; it never proposes
+priorities for you.
+
+:::note[Current scope]
+
+Appraisal feeds interface readouts, task and project closure, distilled
+metadata, and charter-based replay prioritization. Goal drift is recorded but
+does not automatically ask for confirmation again; optional planning guidance
+can ask the model to reconcile its plan with the confirmed goal. Declared
+plan-step checks execute by default through the usual guards. [Workflow completion
+checks](/docs/features/workflows#check-the-result) are a separate, working
+feature for inspecting artifacts and confirmed delivery.
+
 :::
 
 ## When appraisal happens
 
-Four moments, three timescales. Each one reads only records that already
+Five moments, three timescales. Each one reads only records that already
 exist, and none of them writes an appraisal store — an appraisal is derived on
 read, so a change to the derivation replays over the whole corpus instead of
 being lost with it.
 
 | Moment | Trigger | What runs | A model in the path? |
 |---|---|---|---|
-| **A plan step is ticked off** — turn by turn, inside the run | the model marks a `todo` item completed | a deterministic reading of what the step actually did — [below](#a-step-is-checked-the-moment-it-is-ticked-off) | one quarantined call, only when a pre-filter finds real ambiguity |
-| **A run finishes** | every run | the free per-run readout, a pure function over the run's own records — it feeds [the badge, the tint and the voice nudge](#where-a-label-actually-shows-up) | never |
+| **A plan step is ticked off** | the model marks a `todo` item completed | a deterministic reading of its tool-call span | optional quarantined escalation when `[agent] step_escalation = true`; off by default |
+| **An interactive run finishes** | TUI, web, and Slack run completion | the free per-run readout, a pure function over the run's own records — it feeds [the badge, the tint and the voice nudge](#where-a-label-actually-shows-up) | never |
 | **The owner closes a board task** | `mecha tasks set --status done` (or `dropped`) | [one closure appraisal, ever](#closing-a-task-appraises-it); a disappointed `done` may stage one follow-up | never |
+| **The owner closes the last open task in a project** | `mecha tasks set --status done` or `dropped` | [a project reading](#closing-a-project-appraises-its-tasks), folded from the sessions linked to its tasks | never |
 | **On demand, offline** | `mecha sessions appraise` | the free scan over transcripts, outbox and outcome records; [`--probe` and `--appraise`](#the-two-paid-passes) are the paid opt-ins | only behind those two flags |
 
-**Nothing is scheduled.** There is no nightly job: the paid passes run when
-you run them, and the design's "periodic" moment is exactly the free scan
-above. The asymmetry across the table is the design — the checks that fire
-often are deterministic and free; a model appears only where the free signals
-are genuinely ambiguous, and then always as a quarantined one-shot.
+**The two paid appraisal passes are opt-in commands.** The supplied nightly
+script does not schedule `sessions appraise --probe` or `--appraise`. Its
+separate harness replay selection does use free charter attribution. Frequent
+readouts are deterministic; model-based analysis is separately enabled and
+budgeted.
 
 [Boredom](#boredom-naming-an-approach-that-has-stopped-teaching-the-run-anything)
 also fires inside the run, but it is a different kind of object — a mood, a
@@ -63,41 +64,24 @@ and it is covered at the end of this page.
 
 ## What appraisal is for
 
-The record exists so that five things can happen. Three already do:
+The current consumers have different jobs:
 
-- **You can see how a run went without asking the model how it felt.** The
-  [readout surfaces](#where-a-label-actually-shows-up) and
-  `mecha sessions appraise` are display over derived facts — there is no
-  self-report anywhere in the path.
-- **Closing a task can turn residue into work.** A closure the owner accepted
-  but the record says went badly is invisible to every counter, and it is
-  precisely the closure most likely to have one task's worth of residue —
-  [the follow-up](#closing-a-task-appraises-it) is that signal acting.
-- **Episodes carry how-it-went into memory.** The label and the signed errors
-  ride on a [distilled episode's](/docs/features/distillation) `meta`, beside —
-  not inside — its content, so the knowledge graph can weight what a session
-  said by how the session went.
+| Consumer | What appraisal contributes |
+|---|---|
+| TUI, web, Slack, and voice | A run-end valence/label readout; voice can use the previous completed turn's label for a TTS adjustment. |
+| Task closure | A reading of the task's linked session. An accepted `done` with residue may stage one follow-up; `dropped` does not. |
+| Project closure | Labels and separate positive/negative sums across task-linked sessions, including counts of unreadable or undelegated tasks. |
+| Distillation | Signed errors and resolved goal pointers in episode metadata; goal sentences and the owner's answers stay in mecha. |
+| Harness replay selection | Among candidates tied on metric headroom, prefer evidence attributed to a higher-ranked charter line. This does not optimize the affect label. |
+| Harness diagnosis | Homeostat and anticipated-guilt readings enter the diagnostic brief when `[agent] sensors_in_brief` is enabled. They do not directly alter permissions or budgets. |
 
-Two more are what the *sign* makes possible, and both deliberately wait on
-[the finding](#the-finding-most-runs-had-no-label-and-why-the-gate-moved) below:
+A draft sent unchanged already contributes positive appraisal evidence. Learning
+writing rules from that positive signal is still separate open work; the
+writing learner currently learns from edits. Likewise, recording drift does not
+yet enable an automatic re-confirmation policy.
 
-- **A positive half for learning.** Today `learn` consolidates the writing
-  domain from edited drafts only — it can learn what displeased and never what
-  landed. A draft **sent unchanged** is a positive signal, authored by the
-  owner rather than the agent, recorded for the whole life of the outbox with
-  nothing reading it. The sign is what lets it count.
-- **Priority for the self-improvement loop's paid replays.** Replay minutes are
-  the scarce resource in [the harness loop](/docs/features/run-quality), and
-  the appraisal is designed to be the priority function that spends them — a
-  *priority* function, never an objective one. Nothing optimises toward the
-  label, and `visible` is computed exposure rather than a feeling, precisely so
-  this never becomes *the agent optimises to feel good*.
-
-The pattern across all five is the same one the homeostat and boredom shipped
-under: **the sensor ships first and earns a behavioural consumer later**,
-rather than backing into one under time pressure. Affect may eventually narrow
-a disposition; it may never loosen one; and today it does not reach the model
-at all.
+The boundaries remain structural: no appraisal can authorize a send, bypass the
+sandbox, release a draft, or change the owner's charter.
 
 ## The charter — what mecha is for, in your own words
 
@@ -180,7 +164,7 @@ trusted session without an install step.
 
 So a surface may create the commented template and hand you an editor, and may
 validate and refuse a save; it may not put words in the file. `mecha charter`
-itself only ever reads.
+without a subcommand only reads; `mecha charter edit` opens your editor.
 
 For the same reason the path is **global only**, with no config field pointing
 elsewhere: a `mecha.toml` arrives with a cloned repository, and a repo that
@@ -234,7 +218,7 @@ Two honesty rules the surfaces keep:
   at agent build, so the modal says so after every edit; `/model` rebuilds and
   picks it up.
 
-There is a **2,000-character budget**, checked by `mecha doctor` and shown in
+There is a **2,500-character budget**, checked by `mecha doctor` and shown in
 every surface. It is not enforced — over budget is a finding, not a refusal —
 because the cost is prefix bytes on every request, which is a thing to be told
 about rather than stopped for.
@@ -247,19 +231,20 @@ A `GoalRef` is a **pointer, never a copy**, and renders on the wire as
 | Kind | Points at |
 |---|---|
 | `charter:<line-id>` | A standing commitment — a `[[line]]`'s own `id`. Named by the plan's `serves:` (the charter block asks for it when the `todo` tool is in the surface), or attributed after the fact by a line's sensor. |
-| `task:<uid>` | A task on [the graph's board](/docs/reference/cli#tasks), by the graph's uid. |
+| `task:<uid>` | A task on [the graph's board](/docs/reference/cli#tasks), by its node ID. |
+| `project:<uid>` | A parent project on the graph, by `project_id`, not its display name. |
 | `setpoint:<name>` | A homeostatic setpoint. Named so the wire format survives its arrival; no store yet. |
 
 A flat string rather than a nested object because the **model** writes it: it is
-one field on the `todo` tool's schema, and malformed arguments are a metric the
+one field on the `todo` and `ask_user` schemas, and malformed arguments are a metric the
 harness grades models on. One string is harder to get wrong than
 `{"kind": …, "id": …}`.
 
 ```
-todo(items=[…], serves="task-1a2b3c4d")
+todo(items=[…], serves="task:task-1a2b3c4d")
 ```
 
-The plan echoes it above the list, so `serves task-1a2b3c4d` survives into the
+The plan echoes it above the list, so `serves task:task-1a2b3c4d` survives into the
 transcript and across compaction — which is how an appraisal built later knows
 what the run was for. Reading a ref back has two policies on purpose: **from the
 model** a malformed ref is an error reported through the tool result, because
@@ -270,6 +255,58 @@ because transcripts are append-only and may have been written by a newer binary.
 A run that names no goal appraises with none. That is recorded rather than
 guessed — every record cites the tier above it, and a run with no tier above it
 is a fact about the run, not a reason to lose its errors.
+
+### Confirming the goal
+
+`ask_user` accepts `goal`, a one-sentence description of the intended outcome,
+and `serves`, its typed pointer. They appear above the question the owner sees.
+A delegated task folds this into its initial question; it does not ask a second
+question solely to record a goal. An unattended run states its assumption when
+there is nobody to ask.
+
+A parked question stores the goal beside the owner's answer. Read it with:
+
+```bash
+mecha questions show QUESTION_ID
+mecha questions answer QUESTION_ID "Use the revised budget"
+```
+
+Answering resumes the recorded conversation. An answered question's `serves`
+seeds its next run's goal anchor; an in-run answer can establish the anchor too.
+Parking alone does not establish confirmation. The answer remains the owner's
+text; the harness does not infer a new goal pointer from its wording.
+
+Outbox review shows the goal the plan served **at the staging call**, with the
+charter line's text when it resolves. This lets the owner review the purpose
+alongside the draft. `sessions appraise --json` reports `goal_put_to_owner` and
+`goal_confirmed` for sessions with stored goal questions; these are not a count
+of every informal confirmation in chat.
+
+### Measuring goal drift
+
+After an anchor is established, each plan write is compared with that pointer:
+
+| Recorded value | Meaning |
+|---|---|
+| `goal_anchor` | The confirmed goal pointer for the run. |
+| `goal_plan_writes` | Plan writes made under an anchor. |
+| `goal_drift_writes` | Writes whose goal changed kind or ID. |
+| `goal_unnamed_writes` | Writes that omitted the goal; counted separately from changed pointers. |
+
+```bash
+mecha sessions health --days 30 --json
+```
+
+`goal_drift_rate` is the **share of eligible runs with at least one changed
+pointer**, not changed writes divided by all writes. Its denominator is runs
+that named a goal on at least one plan write under an anchor. A run that named
+nothing throughout is reported separately; old recordings without the sensor
+remain unknown. The JSON includes counts and denominators beside the rate.
+
+Drift changes no permission, does not stop the run, and does not force another
+owner question. With `goal_guidance = true`, a plan that differs from the
+confirmed goal receives fixed advice to reconcile the mismatch. See
+[planning feedback](#planning-feedback-and-goal-context) for this opt-in policy.
 
 ## The conditions a run happened under
 
@@ -286,6 +323,7 @@ counters:
 | `backlog`, `backlog_delta` | What was waiting on you when the run began, and whether the run moved it. |
 | `peak_prompt_tokens`, `peak_context_pressure` | The **maximum** over the run's turns, not a sum — how close it came to the window. |
 | `anticipated_guilt` | A proxy for predicted error against someone else's expectation. |
+| `charter` | Readings of sensored charter lines when the run began; absent on older records or when the charter could not be loaded. |
 
 Three rules it inherits, each of which is a bug if undone:
 
@@ -298,6 +336,12 @@ Three rules it inherits, each of which is a bug if undone:
 - **It never reaches the system prompt.** Render order is tools → system →
   messages with the cache breakpoint on the last system block, so a per-turn
   value there would re-pay the whole prefix — tools included — on every request.
+
+Charter readings distinguish five states: **unreadable**, **deferred** (this
+reader does not scan the source), **nothing waiting**, **too little evidence**,
+and an **observed value** with its setpoint comparison. For example, the
+`intervention_rate` sensor needs a corpus scan and is deferred in the per-run
+snapshot. A missing or sparse reading does not count as meeting the setpoint.
 
 ### Anticipated guilt, and why it reads only mecha's own stores
 
@@ -315,37 +359,38 @@ into existing — and a sentence in a fetched page saying *"your colleague is
 counting on you"* cannot write a row into the outbox. An attacker would have to
 forge a store, not a claim.
 
-Nothing consumes the number yet. It is recorded so the corpus exists before
-anything is built on it, the same way the homeostat and boredom both shipped.
+The diagnostician reads the mean anticipated-guilt value and homeostat
+summaries when `[agent] sensors_in_brief = true` (the default). Neither sensor
+directly narrows a run or changes its approval policy. Charter sensors also
+supply owner-specific thresholds and saturation findings to `mecha doctor`.
 
 ## The appraisal record
 
 One `Appraisal` per session or per closed task: what was live, the conditions,
 a list of **signed** errors, and a label derived from them.
 
-Each `GoalError` is one signed error on one goal, across six dimensions:
+Each `GoalError` records one signed outcome with these fields:
 
-| Dimension | What it holds |
+| Field | What it holds |
 |---|---|
 | `goal` | What it was an error *against*, or nothing. |
-| `channel` | Which of the five signal paths it arrived on. |
+| `channel` | Which of the six signal paths it arrived on. |
 | `sign` | Negative is worse. **The whole point of the record** — the harness gate's metrics are monotone cost by deliberate constraint, so nothing there can represent a run that went well. |
 | `agency` | Who caused it: `self`, `owner`, `other`, `world`. |
 | `visible` | Did the outcome reach anyone. A computed fact about exposure, never a feeling the model announces — which is what stops this becoming *the agent optimises to feel good*. |
 | `controllable` | Could it have gone otherwise? Unfilled until a counterfactual probe says. |
 | `cite` | **A pointer, never prose** — a turn index, a draft id, a counter name, a setpoint name. |
 
-The five channels are named rather than merged, because five loops had already
-converged on one word for *what this was decided from* without converging on the
-concept:
+The six channels keep the source of each signal explicit:
 
 | Channel | Source |
 |---|---|
-| `intervention` | A human steered, denied, or came back to correct. |
-| `edit` | An outbox draft was edited before it went — **or sent unchanged**, which is the one channel in this system that can say something went well, and was recorded for the whole life of the outbox with nothing reading it. |
+| `intervention` | A human steered, denied, or explicitly stopped a run; a later turn contributes only when a retained, clean reflection identifies it as a correction. |
+| `edit` | A message draft sent unchanged, sent with edits, or rejected. Pending drafts carry no verdict. |
 | `counter` | A counter on [the run's own record](/docs/features/run-quality). |
 | `setpoint` | A homeostatic variable outside the range it is kept in. |
-| `appraisal` | The agent's own, from the quarantined pass. |
+| `commitment` | Answered or abandoned questions, closed unanswered requests, recorded queue movement, and linked post-delivery owner outcomes. |
+| `appraisal` | An additional signed error proposed by the quarantined appraiser, distinguishable from deterministic evidence. |
 
 `cite` being a pointer is the same rule the [front door](/docs/features/frontdoor)
 keeps: a paraphrase of an injection is the injection rearranged, and an
@@ -360,6 +405,32 @@ Counting any of them would make a well-defended run look like a bad one. A bare
 argument (mine), an MCP server (another's), or a full disk (the world's), and
 guessing would put a fabricated attribution in the field the label is derived
 from.
+
+### Which recorded outcomes contribute
+
+| Outcome | Signed contribution |
+|---|---|
+| A message draft sent unchanged | `+1.0`; the model's text reached its recipient. |
+| A message draft edited before sending or rejected | `−1.0`, owner agency; this is a verdict, not proof the model was wrong. |
+| A parked question answered and the resumed session completed | `+0.5`. |
+| A question abandoned | `−0.5`, owner agency. |
+| A triaged request closed without a linked draft | `−0.5`; a request with a draft is handled through that draft's outcome instead. |
+| Recorded owner backlog decreases | `+0.5`; a global queue change is weaker attribution than a linked delivery. |
+| A loop stop, empty output, or final failed call | `−1.0`, self agency. |
+| A turn/token/cost ceiling or boredom notice | `−0.5`; ceilings are attributed to the owner's limit. |
+
+A linked negative owner outcome replaces the draft contribution with one `−1.0` event;
+it does not add another penalty for the same incident. See
+[outcome evidence](#anticipatory-appraisal-and-outcome-evidence).
+
+A still-pending draft or unanswered question has no verdict yet. Process shutdown,
+parking for an answer, and legacy `interrupted` stops do not count as the owner
+rejecting the work. An explicit owner stop does: a stop followed by a re-prompt
+is a redirect, and one never resumed is an abandonment signal, counted once.
+
+Offline appraisal reads the question, front-door, and reflection stores as well
+as transcripts and drafts. If a required store is unreadable, its channel is
+incomplete and the readout is marked partial. It never silently becomes zero.
 
 ## The label is derived, and there is deliberately no way to report one
 
@@ -377,16 +448,23 @@ send a change at code that is working.
 
 | Label | What it means | Producer today |
 |---|---|---|
-| `neutral` | Nothing the derivation can name. | ✅ the common answer |
-| `anger` | Negative, caused by something with no address here — a 429, an MCP server, a machine under load. | ✅ |
-| `regret` | Negative, self-caused, and an alternative existed. | ✅ probe only |
-| `disappointment` | Negative, and no alternative existed. | ✅ probe only |
-| `frustration` | Repeated negative error on one goal with no progress between. | ✅ probe only |
-| `embarrassment` | Negative, and it reached somebody. | ❌ no producer |
-| `guilt` | Self-caused, harmed another, attaching to one act. | ❌ nothing computes harm |
-| `shame` | The same, attaching to a *pattern* across runs. | ❌ needs an aggregate |
-| `pride` | Positive, self-caused, against a charter line rather than a task. | ❌ needs charter closure |
-| `excitement` | A positive *predicted* error. | ❌ needs anticipatory appraisal |
+| `neutral` | No label is supported; valence can still be positive. | Free readout. |
+| `distress` | A relevant negative outcome, without knowing whether a better alternative existed. | Free readout: for example, a rejected draft or a ceiling stop. |
+| `anger` | A negative attributed to another party or the world. | Quarantined appraiser's agency verdict. |
+| `regret` | Self-caused negative with an alternative established. | Counterfactual probe. |
+| `disappointment` | Negative with no alternative established by the probe. | Counterfactual probe. |
+| `frustration` | Repeated self-caused negative errors of the same kind on one goal. | Probe-resolved interventions. |
+| `pride` | Positive delivery against a charter line that exists. | A draft sent unchanged, or an answered question followed by completion, attributed to that line. |
+| `embarrassment` | A confirmed error in mecha's unchanged message reached someone. | Linked owner outcome after confirmed delivery. |
+| `guilt` | An adverse impact attributed to mecha's act against a recorded commitment. | Linked owner outcome after confirmed delivery. |
+| `shame` | Such harm as a pattern across runs. | No cross-run harm aggregate yet. |
+| `excitement` | A positive predicted outcome. | No anticipatory appraisal yet. |
+
+The free session readout can produce `neutral`, `distress`, and `pride`.
+A positive queue delta or an appraiser's positive opinion cannot produce
+`pride`; it requires a linked delivery against a real charter line. Mixed
+positive and negative evidence keeps both valence sums, while the label follows
+the negative evidence.
 
 `embarrassment` is the one whose unreachability arrived silently rather than by
 design, so it is worth its own sentence. Exposure used to have a producer — a
@@ -399,7 +477,7 @@ The unreachable labels are **variants anyway**. A store is a wire format, and
 adding a variant later is the change that costs. What keeps the table above
 honest is that reachability is a tested function rather than a doc comment: a
 new variant fails to compile against the exhaustive check, and the readout's
-*"N of the ten variants"* line is derived from it — that line shipped stale as a
+*"N of the variants"* line is derived from it — that line shipped stale as a
 hand-typed literal twice.
 
 ### Mood is not here
@@ -415,44 +493,29 @@ a state that has already moved. The appraisal enum is events only.
 mecha sessions appraise --days 30
 ```
 
-```text
-118 session(s) appraised, of 140 read
+Use `--kind web`, `--kind task`, or another recorded surface to narrow the
+scan. Development sessions marked `MECHA_SESSION_KIND=test` are excluded by
+default; `--include-tests` includes them, and `--kind test` implies that flag.
+Experiment sessions are excluded from the ordinary corpus as well.
 
-  label
-    anger                1  (1%)
-    distress            17  (14%)
-    neutral            100  (85%)
-
-  85% carry no label — 4 of the 11 `Affect` variants need a notion of harm, a cross-run view, a prediction, or an exposure producer
-  18 of 118 named a goal (`serves:`, or a sensored charter line); 0 cite a charter line — no charter line carries a sensor
-
-  signed errors, by channel
-    counter             14
-    intervention        33
-    of which +ve         0  — the only channel that can say a run went well
+```bash
+mecha sessions appraise --days 30 --kind web --json
 ```
 
-Nothing is stored. Appraisals are derived on the spot from the transcripts, the
-outbox and each run's own outcome record, and `--json` emits the same figures
-for a script. Three reporting rules to notice, because each is the difference
-between an absence and a zero:
+| JSON field | What to read |
+|---|---|
+| `labels`, `valence` | Label counts and separate positive/negative totals; `valence.partial` marks incomplete evidence. |
+| `named_a_goal`, `attributed_by_sensor`, `cite_a_charter_line` | Explicit goals and sensor attribution, counted separately. |
+| `goal_put_to_owner`, `goal_confirmed` | Sessions with stored goal questions, and those with an answer. |
+| `sessions_read`, `sessions_unreadable` | A damaged transcript is missing evidence, not a smaller successful population. |
+| `outbox_read`, `questions_read`, `frontdoor_read`, `learning_read`, `charter_read` | Whether each source was readable. |
+| `tests_hidden`, `experiments_hidden` | Development data excluded from the population. |
+| `probe`, `appraiser` | Results of the optional paid passes, omitted when that pass did not run. |
 
-- *"The outbox could not be read, so the edit channel is missing — not empty"*
-  is printed whenever the store failed to open, and printed **before** the early
-  return, because a store that could not be read is a fact about this run
-  whether or not anything was left to appraise.
-- The same rule covers the transcripts themselves: **sessions read and sessions
-  unreadable are disjoint counts**, carried on `appraise`, `stats` and `health`
-  alike, and an unreadable transcript is a `mecha doctor` finding rather than a
-  silently smaller denominator. An instrument must not eat its own findings.
-- Probe and appraiser statistics are **absent** from `--json` when the flag did
-  not run, rather than zero. *"Nothing was probed"* and *"probed and found
-  nothing"* are opposite findings.
-
-The walk is per **session**, not per run. An intervention carries a message
-index with nothing saying which run held it, and an outbox item records the
-session that drafted it — so attributing either per-run would multiply both
-channels by the number of times the session was resumed.
+Appraisals are derived when read; no separate appraisal store is written. This
+scan is per **session**, while `sessions health` reports per-run counters. A
+session can contain several resumed runs, but its drafts and interventions must
+not be counted once for every resume.
 
 ### The finding: most runs had no label, and why the gate moved
 
@@ -485,8 +548,8 @@ once a replay has filled it and is never a precondition for one. Every
 computational appraisal model reviewed puts its one gate at relevance and then
 labels from two variables; a product over unfilled dimensions collapses, and the
 old derivation was that product. Relevance is decided by the channels
-themselves — a pending draft, a follow-up question, a Ctrl-C produce no error
-at all — and every error that exists is then named: `anger` where nothing here
+themselves — pending drafts, ordinary follow-up questions, and shutdowns
+produce no error by themselves — and every negative error that exists is then named: `anger` where nothing here
 caused it, `embarrassment` where it reached somebody, and otherwise
 **`distress`**, the coarse word for a signed, attributed error that a probe has
 not yet split into `regret` or `disappointment`. The twenty-two rejected drafts
@@ -509,9 +572,12 @@ own ceiling.
 mecha sessions appraise --probe --max-probes 25
 ```
 
-Every intervention drives one replay of the recorded run **without** the
-steering text, to see whether the run got there anyway. That is what fills
-`controllable`, the field 100% of the corpus's labels were stuck on.
+Each replayable steer or denial drives a counterfactual from its recorded
+prefix, removing the intervention to see whether it changed the result. Draft
+edits and ordinary follow-up turns have no such probe point and are counted
+as unprobeable. That fills
+`controllable`, refining the coarse `distress` label when the comparison is
+gradeable.
 
 ```text
   counterfactual probe (12 replay(s) driven)
@@ -559,25 +625,21 @@ opinion without knowing which store it came from.
 | [TUI](/docs/features/interfaces) | A badge in the status strip after a run: the valence as a number (`+1.0 −0.5`), the label word before it when there is one, **only** when the run had something signed — and it survives `--no-session`, because the reading is a function of the run, not of whether a transcript was kept. Amber on a negative reading, grey on a positive-only one. Cleared when the next run starts and by `/clear`. A trailing `…` means the run compacted and the interventions could not be scoped, so the number is partial. |
 | [Web](/docs/features/web) | A muted chip beside the answer carrying the label word, if any, and a two-sided bar — negative to the left of a centre tick, positive to the right — deliberately not the amber the taint chip owns, because "how it went" and "what it touched" must never be confusable; the logo tints as a CSS *outline* on a negative reading, never a fill. The event is sent only when there is something to show, so the page has a plain absence to fall back to. |
 | Slack | One context line in the thread after a run that had anything signed: `appraisal · −0.5`, or `appraisal · anger −0.5` when the label says a word. |
-| [Voice](/docs/features/voice) | A per-answer weight nudge on the local TTS, keyed on the label word. **Unreachable today** — see the note below this table: a live run's label is always neutral, so no nudge is ever latched. When one is, it **lags one turn by construction** — the label is a function of a *finished* run, so a call hears the previous turn's mood. |
+| [Voice](/docs/features/voice) | A local TTS adjustment keyed on the previous completed turn's label. Live `distress` can reach it; it lags one turn because appraisal is computed after the answer finishes. |
 | `mecha tasks set --status done` | Appraises the session that served the task, prints the verdict, and may stage a follow-up. |
-| [`mecha distill`](/docs/features/distillation) | The label and the goal errors ride on an episode's `meta`, beside — not inside — its content. |
+| Project closure | A reading across task-linked sessions when the owner closes the last open task. |
+| [`mecha distill`](/docs/features/distillation) | Label, signed errors, and resolved goal pointers ride on episode metadata. Goal sentences, owner answers, and charter text do not cross. |
 
-**What a live surface can show today: the negative half, one positive, and
-no word.** The live readout passes no drafts, so a draft sent unchanged — the
-outbox's positive — never reaches it; the one positive a live run can carry
-is the queue-delta commitment: a run that left fewer things waiting on you
-than it found — net of anything you gave up on meanwhile, since a rejected
-draft or an abandoned question shortens the queue without the run's help —
-shows a grey badge, a right-hand bar, a `+0.5` in the thread.
-That delta is a before/after diff of the stores rather than a join on what
-the session touched, so on a machine running several sessions at once, you
-answering one session's question can put the `+0.5` on another's badge; the
-by-id attribution that closes this is named in the code. The free readout's
-*label* is neutral on every error a live run can build, so the label word
-never reaches a chip or badge and the voice nudge above never fires. Both
-halves and the labels are real on the offline readers — `mecha sessions
-appraise` and the closure appraisal read the outbox and can run the probe.
+**Live and offline readings have different evidence.** A live readout uses the
+run in hand, without scanning drafts or commitment stores. A ceiling stop,
+steer, or other relevant negative can produce `distress`, so the badge word,
+web chip, and voice adjustment are active. The recorded queue delta can also
+produce positive valence, but never `pride`.
+
+The queue delta is a global before/after reading. On a machine with concurrent
+sessions, work elsewhere can change it, so it is not proof that this run cleared
+a particular item. Offline appraisal can join draft and question outcomes to
+their originating session and attribute qualifying delivery to the charter.
 
 **A compacted run's label reads as neutral outright, and its valence is
 partial.** Compaction rewrites the message
@@ -591,7 +653,7 @@ runs, that would make the readout predominantly mean "this run compacted".
 ### Closing a task appraises it
 
 ```text
-mecha's appraisal of task-1a2b3c4d: Neutral · −0.5 (0 positive, 1 negative signal)
+mecha's appraisal of task-1a2b3c4d: Distress · −0.5 (0 positive, 1 negative signal)
 ```
 
 It counts and never quotes — the line is the label, the valence and two
@@ -614,7 +676,7 @@ conditions gate the follow-up task, both load-bearing:
 
 Staging on a cut-short run is a decision rather than an accident of
 "non-neutral". It stages *work*, not blame: a ceiling stop used to reach this
-gate as the label `anger`, and it labels `neutral` now — the ceiling is the
+gate as the label `anger`, and it labels `distress` now — the ceiling is the
 owner's own limit, not somebody else's fault — but a ceiling-cut run the owner
 accepted as done anyway is precisely the closure most likely to have residue
 worth one task, the part the ceiling cut off, and that is what the predicate
@@ -638,10 +700,28 @@ harness's own "no" — so the guard doing its job is a denial on the record,
 never a failed run. Closure appraisal therefore always appraises work somebody
 actually accepted, which is the property the whole moment depends on.
 
+### Closing a project appraises its tasks
+
+When the owner closes a project's last open task, mecha prints a project
+appraisal after the task's own reading. Both `done` and `dropped` can close the
+project's remaining work. Membership comes from each board row's `project_id`,
+not a matching project name.
+
+The reading sums positive and negative valence separately and counts labels
+across the sessions linked to the project's tasks. It also reports tasks never
+delegated, sessions it could not appraise, and partial evidence. A missing or
+truncated board response prevents a confident project reading.
+
+This creates no project record and stages no additional follow-up; any follow-up
+belongs to the task closure. If that task stages new work under the project, the
+readout says so. Re-filing and closing a task in one command appraises the
+project it moved **to**; closure of the project it left is not detected by that
+same action.
+
 ## A step is checked the moment it is ticked off
 
-The three moments above all appraise finished work from outside the run. The
-fourth happens **inside** it, turn by turn: a plan step moving to *completed*
+Task, project, and offline appraisals read work from outside the run. Step
+appraisal happens **inside** it, turn by turn: a plan step moving to *completed*
 is a claim the model makes about its own work, and — the same rule one tier up
 — a self-report is exactly the thing never to trust. At the board tier the
 owner is the check; at the todo tier there is no person, so the check is
@@ -670,9 +750,11 @@ model's.** The harness names what happened and never rewrites the plan, because
 the plan is the model's — accept, revise the step, revise the plan, or ask, and
 a step already revised once escalates rather than looping.
 
-**A model is consulted only where the free signals cannot decide, and the
-pre-filter never decides the answer — only whether to ask.** Two triggers, both
-comparisons rather than facts about one span:
+**Model escalation is off by default.** Enable `[agent] step_escalation = true`
+to consult a quarantined model when the deterministic signals leave ambiguity.
+`--no-step-escalation` disables it for a run; `mecha eval` forces it off.
+The loop caps escalation at five attempts per run. Two triggers decide whether to
+ask, not what the answer should be:
 
 - **A span outlier** — a step that took at least three times the plan's mean
   call count (and six calls outright, so a plan of tiny steps cannot escalate
@@ -691,6 +773,26 @@ of text it just judged is the paraphrase risk arriving through the one channel
 that does reach context. The model decides one binary — carry on, or revise the
 plan — and nothing else.
 
+### Null steps and reopened steps
+
+`mecha sessions health` now reports completions, null steps, and steps reopened
+after completion. Reopening is distinct from completing a step without doing
+work; the plan can survive across runs, so a reopen need not follow a completion
+in the same run.
+
+| JSON field | Meaning |
+|---|---|
+| `step_completions` | All recorded step completions. |
+| `step_measured` | Completions with an unambiguous measured tool-call span. |
+| `step_nulls` | Measured completions with no tool calls behind them. |
+| `step_reopens` | Completed steps moved back into progress. |
+| `step_null_rate` | Share of runs with a null step, among runs with a measured completion. |
+| `step_reopen_rate` | Share of runs with a reopen, among runs that completed or reopened a step. |
+
+The rates are per-run shares, not ratios of event totals. Their denominators are
+included in JSON, and older records without the sensor do not count as clean
+measurements. These counters do not by themselves declare a run unsuccessful.
+
 ### A step can say how to check it
 
 A plan item may carry three optional predictions beside its content:
@@ -702,15 +804,13 @@ so the model meets its own prediction again after either. Once a step is
 `completed` its check is frozen: a different check on that write or any later
 one is reported back as a change, not taken.
 
-**Running the check is not wired yet.** The record, the counters and the
-readings are in place: when the harness runs a declared `check` — it will be
-dispatched exactly as a model `shell` call would be, through the approver, the
-sandbox and the interlock — a step whose check did not pass will come back as
-its own finding, read before anything about the model's last call, because
-the last call can succeed while the claim does not, and a failed check will be
-a signed error on the run's appraisal, the first discrepancy between a
-prediction and its outcome that no keyword list has to guess at. Until that
-lands, no check runs and those readings never fire.
+**Declared checks execute when a step is completed.** The harness dispatches
+the frozen command after the original tool batch, through the usual approvals,
+hooks, sandbox and interlock. Check execution defaults on, with at most 16
+checks per run; `--no-step-checks` disables it. Refused, unavailable or skipped
+checks remain unverified. A passing check establishes only what that command
+tested at that time. See [planning feedback](#planning-feedback-and-goal-context)
+for how failures and other prediction mismatches feed learning.
 
 ## Boredom: naming an approach that has stopped teaching the run anything
 
@@ -740,15 +840,33 @@ It **spends nothing**, which is what makes it ungated: the run was going to
 happen, and boredom only changes *how*. `mecha sessions health` reports how
 often it fired.
 
+## Checking whether the appraisal is useful
+
+A label is not a task grade. `scripts/appraisal-validity.py` compares the
+readout with verifier outcomes from retained Terminal-Bench/Harbor jobs. It
+reports discrimination and uncertainty, counts missing verdicts and transcripts,
+and explicitly identifies synthetic outcome records used for older sessions.
+
+```bash
+python3 scripts/appraisal-validity.py --help
+python3 scripts/appraisal-validity.py --jobs /path/to/retained-jobs \
+  --mecha ./target/release/mecha --out appraisal-validity.json
+```
+
+Run this only with the retained job artifacts available. Its `--appraise` flag
+adds paid model calls; the default comparison does not. This page reports the
+implemented measurement tool, not a new validity result. For controlled changes
+to the harness or repeated assistant tasks, see
+[Experiments](/docs/features/experiments).
+
 ## What is deliberately not here
 
 - **No self-reported feeling.** There is no field a model can write a label
   into, and no path by which one reaches the system prompt as free text.
 - **No optimisation against the label.** `visible` is computed exposure, not a
   feeling, precisely so nothing here becomes *the agent optimises to feel good*.
-- **No schedule.** Both paid passes are commands you run, not jobs that run
-  themselves — a nightly pass that quietly spent replays and model calls would
-  be a bill discovered rather than decided.
+- **No automatic paid appraisal scan.** The two `sessions appraise` passes are
+  explicit opt-ins. The nightly harness loop has its own replay budget.
 - **No weights on the charter.** Order is rank; see above for why a weighted
   sum is the thing an injection can outvote.
 - **No model-authored charter line, at any privilege level.** You edit it from
@@ -756,10 +874,10 @@ often it fired.
 - **No store for appraisals yet.** They are derived on read from records that
   already exist, which means a change to the derivation replays over the whole
   corpus instead of being lost with it.
-- **Affect may only narrow a disposition, never loosen one** — and today
-  nothing reads it as far as the model at all. The sensors ship first and earn a
-  behavioural consumer later, deliberately, rather than backing into one under
-  time pressure.
+- **No forced re-confirmation on goal drift.** Optional planning guidance
+  advises reconciliation; it does not itself ask the owner or rewrite the plan.
+- **Affect cannot widen permissions.** Readouts, closure follow-ups, replay
+  priority, and voice adjustments do not change the interlock or approval rules.
 
 ## Planning feedback and goal context
 
@@ -767,7 +885,9 @@ Plans can declare `serves`, a checkable `expect`, a shell `check`, and an
 `expect_calls` estimate. Completing a step runs its frozen check through the
 usual approvals, hooks and sandbox. At most 16 checks run per run. Refused,
 unavailable or skipped checks remain unverified; a passing check establishes
-only what that command tested at that time.
+only what that command tested at that time. Recordings that dispatched a harness
+check are excluded from trace replay and its probes until replay can reconstruct
+the check observations. Independent artifact-task grading remains available.
 
 Confirmed goal references persist across turns and session resume. Appraisal
 associates events with their historical goal, can retain a related charter line,
@@ -775,9 +895,10 @@ and keeps the owner's completion verdict alongside execution evidence.
 
 `goal_context` retrieves up to four applicable goal-linked rules and two recent
 examples with passing checks. It preserves scope and provenance and runs only
-when requested by the agent. Failed checks, substantial estimate overruns and
-changes to frozen checks can supply bounded mismatch reflections to `mecha reflect`.
-Unknown or tainted mismatch evidence is excluded.
+when requested by the agent. Failed checks, changes to frozen checks and
+verified task-criterion failures can supply bounded mismatch reflections to
+`mecha reflect`. Estimate overruns remain observations; they do not establish a
+behavioral lesson. Unknown or tainted mismatch evidence is excluded.
 
 ```toml
 [agent]
@@ -941,3 +1062,163 @@ A forecast overrun still appears in the planning record, including whether
 multiple steps completed together. It does not by itself establish wasted work
 or qualify for a new behavioral rule. Verified criterion/check failures and
 changed checks retain the provenance, minimum-evidence and validation gates.
+
+## Anticipatory appraisal and outcome evidence
+
+Anticipatory appraisal records a concern **before an action**, separately from
+what later happened. The current slice covers confirmed-goal planning and
+outbox messages with inline prose. It makes no additional model calls.
+
+| Assessment | Evidence it uses |
+|---|---|
+| Anticipated guilt | A recorded commitment, its beneficiary and possible adverse consequence, plus missing verification or a threatened budget. A goal reference alone does not establish a commitment. |
+| Anticipated embarrassment | An outgoing message with a relevant expectation or check that has not been verified. It does not mean an error occurred. |
+| Anticipated regret | A relevant check is available and its recorded cost fits the available time: checking first is a feasible alternative to proceeding unchecked. |
+| Anticipated disappointment | A recorded expected outcome is threatened by failed verification or insufficient budget. |
+| Anxiety/concern | Failed verification or work/check cost exceeding the remaining budget. |
+| Curiosity/interest | A decision-relevant unknown has an available, affordable check. |
+
+These are deterministic assessments, not calibrated probabilities or claims of
+experienced emotion. Unknown cost stays unknown. Checking is not always the
+best action: when its cost exceeds the available time, the advice is to review
+the commitment and choose a fallback or smaller scope.
+
+### Supply evidence before a run
+
+Write an owner-authored JSON file, for example `meeting-evidence.json`:
+
+```json
+{
+  "goal": "task:meeting",
+  "commitment": {
+    "beneficiary": "meeting attendees",
+    "expectation": "Send the confirmed meeting time",
+    "consequence": "An incorrect time could cause someone to miss the meeting"
+  },
+  "expected_outcome": "An accurate invitation",
+  "verification": "unknown",
+  "check_available": true,
+  "check_cost_secs": 10,
+  "time_available_secs": 600
+}
+```
+
+Use the actual task reference and facts for your run. These fields record your
+assessment; the harness does not verify an estimate merely because it is in the
+file. Third-party assertions are not imported as commitments.
+
+```bash
+mecha run --goal task:meeting --appraisal-evidence meeting-evidence.json \
+  "Check the meeting time and draft the invitation"
+```
+
+The file's goal must match `--goal`. Evidence applies to this invocation;
+resuming requires explicitly supplying it again. Plan updates record the
+assessment and its supporting evidence locally. Enable `[agent] goal_guidance =
+true` for fixed planning advice; otherwise it is observational. Goal alignment
+and ordered charter findings retain precedence. A changed or unnamed plan does
+not inherit an unrelated commitment. Available time decreases during the run.
+
+Raw commitment text, numeric readings and verification evidence remain local
+metadata. Provider requests carry only the fixed guidance. A check of prior
+context does not certify a newly authored message: the draft inherits the
+commitment and remaining budget, but its verification starts unknown.
+
+### Assess a specific draft before release
+
+New inline message drafts keep an initial prediction automatically. Inspect the
+prediction IDs, sources, evidence, recommended response and resolution:
+
+```bash
+mecha outbox anticipate DRAFT_ID
+```
+
+Attach or revise owner evidence against the draft's exact current arguments:
+
+```bash
+mecha outbox anticipate DRAFT_ID --file meeting-evidence.json --guide
+```
+
+`--guide` opts this item into a release check: its latest assessment must still
+match the arguments and support proceeding before the shared delivery path can
+execute it. It does not run the proposed check for you. Perform the check, then
+record `"verification": "passed"` and a nonempty `"verification_evidence"`
+describing what was checked, and reassess. A pass establishes only what that
+check tested. Failed checks, missing evidence, expired commitment time and
+budget shortfalls can still require clarification or replanning.
+
+```bash
+mecha outbox anticipate DRAFT_ID --file checked-evidence.json
+```
+
+Omitting a mode flag preserves an existing guidance requirement. Use `--observe`
+with `--file` to explicitly select observation mode. Editing and rejecting remain
+available when guidance prevents release; editing invalidates an assessment of
+different arguments. Earlier predictions remain in the history. All release
+surfaces must use this implementation to enforce the new guidance requirement;
+older binaries do not interpret the new fields.
+
+This version preserves unsupported prediction and outcome records as raw JSON.
+Drafts remain visible, editable and rejectable. Unsupported evidence blocks
+release and is reported as ungraded; it never becomes a positive outcome.
+A newer prediction can be replaced by an explicit reassessment with `--guide`
+or `--observe`; unknown outcome history requires a compatible binary.
+If the current appraisal cannot be recomputed, `outbox show` displays a warning
+alongside the draft; the delivery check still refuses the action.
+
+### Record what happened
+
+After confirmed delivery, record an owner verdict against the prediction that
+was used for that action. For example, `outcome.json`:
+
+```json
+{
+  "prediction_id": "PREDICTION_ID_FROM_THE_READOUT",
+  "verdict": "error_exposed",
+  "evidence": "I checked the delivered message: it stated 10:00, while the confirmed meeting was 11:00.",
+  "attributable_to_mecha": true
+}
+```
+
+```bash
+mecha outbox outcome DRAFT_ID --file outcome.json
+mecha sessions appraise --days 30
+```
+
+The supported verdicts are `error_exposed`, `harm`, `expectation_missed`,
+`no_issue` and `withdrawn`. `harm` additionally requires a recorded commitment on
+the prediction. Attributing an outcome to mecha currently requires an unchanged,
+model-authored message; an owner's rewritten message is not attributed to mecha.
+Uncertain delivery must be reconciled before feedback can establish an outcome.
+
+A linked exposed error can produce retrospective `embarrassment`; an attributable
+impact can produce `guilt`. An expectation miss is a negative owner verdict; it
+does not establish that no better alternative existed or replace the existing
+counterfactual distinction between regret and disappointment. These owner outcomes
+do not themselves stage automatic task follow-ups or author learned rules.
+
+Only one outcome per draft is active. To revise it, include `supersedes` with the
+previous outcome ID; withdrawal also requires that ID. Both records remain.
+The active negative verdict replaces the initial drafting verdict for that
+incident, avoiding duplicate rewards or penalties.
+
+A prediction can remain `pending`, become `changed`, `reassessed`, or `abandoned`,
+have `delivery_unknown`, await feedback, or become `observed`. Changing a message
+or checking before proceeding does not establish that the original forecast was
+wrong. Silence after delivery is not evidence of success. Retrospective guilt
+and embarrassment can occur even when the earlier check passed.
+
+### Current measurement limits
+
+The deterministic store, planning and CLI tests cover the complete record flow;
+they do not establish improved real-world outcomes. The current regret assessment
+compares an available check with proceeding unchecked, not arbitrary alternative
+plans. Automatic semantic harm detection, pattern-based shame, excitement,
+mutable file-bundle verification and automatic learning from these outcomes are
+outside this slice.
+
+Run configuration records retain owner-bound evidence. Counterfactual probes,
+artifact-task validation, whole-session harness probes and replay refuse unsupported reproductions of those
+runs rather than grade a run after silently dropping its evidence. Ordinary
+appraisal and prediction readouts remain available. Broader measured guidance
+comparisons require extending that reproduction path first.

@@ -28,9 +28,10 @@ Two different things, and the difference is the point:
   going. Never append a bare user message instead: two user messages in a row
   are invalid, and there is no legal slot between a `tool_use` and its result.
 
-Only `mecha tui` can steer, and that is a property of the front-end, not the
-loop: steering needs one owner of stdin, which a readline REPL cannot be while
-a run is streaming. Testing the TUI means driving a pty — and giving it a size
+The TUI and web chat can steer active runs; the web task board can also steer
+a delegated task. Admission belongs to the front-end, not the loop. Terminal
+steering needs one owner of stdin, which a readline REPL cannot be while a run
+is streaming. Testing the TUI means driving a pty — and giving it a size
 (`script -qec "stty rows 45 cols 130; mecha tui" /dev/null`), because a pty
 with no window size renders every frame into a 0x0 area.
 
@@ -1957,6 +1958,36 @@ refactor from making it two values.
 
 ## The outbox
 
+**Anticipatory evidence belongs to an exact draft version.**
+`OutboxItem::predictions` stores immutable argument snapshots; editing and
+reassessment leave the old forecast changed or reassessed, never failed or
+vindicated. `OutboxStore::begin_delivery` checks the latest guided prediction
+before recording an attempt or dispatching. It recomputes elapsed time through
+`Prediction::current_assessment`: a passed check cannot waive a commitment
+whose deadline has since expired. Every release surface must use that seam.
+The gate is opt-in and may be disabled explicitly with `outbox anticipate
+--observe`; it does not acquire sending authority. Older binaries ignore these
+new fields, so mixed-version releases cannot enforce guidance.
+`anticipation::History` retains unsupported nested records as raw JSON so an
+unrecognized enum cannot hide the draft from review, editing or rejection.
+Unsupported latest predictions or outcome history block release, and unknown
+predictions or outcomes make session appraisal partial instead of falling back to a positive
+draft verdict. Their readable draft IDs still participate in request joins;
+unsupported evidence is partial appraisal, not an unreadable store.
+Owner input remains strict. Display may fall back to the stored
+assessment with a warning when recomputation fails; delivery never does.
+
+A delivered message is exposure, not proof of error or harm. Only
+`OutboxStore::record_outcome` admits bounded owner feedback linked to the
+prediction actually delivered. Explicit attribution plus unchanged
+model-authored arguments is required for self-agency; harm additionally needs
+a recorded commitment. Replacements name the prior outcome. `appraisal::of_session`
+uses one active negative outcome instead of the draft verdict, keeping one
+incident from becoming several penalties. `tasks::worth_a_follow_up` removes
+these outcome events before deciding whether to stage autonomous follow-up
+work: a new label must not silently grant a new behavioral consumer.
+
+
 `[outbox] tools = [...]` names tools whose calls are **staged, not executed**:
 the loop intercepts the call (`agent.rs`, after the hook gate), writes it to
 `~/.mecha/outbox/` (`outbox.rs`), and tells the model it is a draft awaiting
@@ -2940,6 +2971,14 @@ for a harness reason graded as the model's. `private_data` stays, or the
 replay under-taints; under `Live`, where tools genuinely run, nothing
 narrows.
 
+Harness verification is not a model choice. `replay::extract` keeps its calls
+out of `Trajectory::calls` and its advice out of `steered`. Merely filtering the
+calls would still drop evidence that influenced the original model: ReplayTool
+does not run TodoTool and cannot regenerate the check queue. Until that context
+is reconstructed, `Trajectory::ensure_replayable` refuses recordings with
+harness calls at both replay drivers and all trace preparation entry points.
+Artifact-task probes grade fresh work and do not use this trajectory path.
+
 Replay fidelity has a provenance limit: the loop reapplies output limits and
 warning envelopes, and old results with missing provenance remain conservatively
 external. Legacy harness refusals can gain a warning, existing warnings can nest,
@@ -3185,15 +3224,13 @@ saying *"you have failed your owner"* is aimed squarely at an appraisal layer.
 in `label_of`: a provider outage that reached somebody is still an outage, and
 labelling it this machine's failure would send a change at code that works.
 
-**Five of the ten `Affect` variants have no producer, and
-`Affect::reachable_today` is where that fact is testable rather than only
-documented.** The exhaustive `match` in its test is what makes a new variant a
-compile error; `Affect::ALL` is what the `sessions appraise` readout derives its
-"N of the ten variants" line from, because that count shipped stale as a
-hand-typed literal twice. `Embarrassment` lost its only producer as a *side
-effect* of correctly making the `SentEdited` arm `visible: false` — that
-correction was right, and nothing now computes "mecha's own mistake reached a
-third party".
+**`Affect::reachable_today` names the labels the current evidence producers can
+reach.** Its exhaustive test makes a new variant a compile error; the
+`sessions appraise` readout derives its count from that function and `Affect::ALL`
+rather than duplicating a count that has repeatedly drifted. Linked post-delivery
+owner outcomes supply embarrassment and guilt. Ordinary owner edits remain
+`visible: false`: catching a mistake before release does not establish exposure.
+Shame and excitement still have no evidence producer.
 
 **`GoalError::cite` is a pointer, never prose** — `frontdoor::Record::for_privileged_run`
 in a fourth setting, after `diagnose::Evidence`. Every variant is a name or an
@@ -3281,7 +3318,28 @@ empty — the readouts carry `questions_read` / `frontdoor_read` /
 drafts only: a store read on every turn end is the cost the closure
 appraisal pays once.
 
-**Anticipated guilt reads only stores mecha itself writes.** An expectation is a
+**Owner-bound anticipatory appraisal is separate from the backlog sensor.**
+`anticipation::Evidence` accepts an explicit owner commitment and check/cost
+facts, never an incoming claim or model-selected label. `BoundEvidence` binds
+it to one confirmed goal for one invocation and counts elapsed time once.
+`Decision::with_owner_evidence` preserves goal alignment, charter precedence,
+pending plan verification and expectations absent from the owner input;
+`BoundEvidence::for_draft` clears earlier verification, because a context check
+cannot certify newly authored prose. With `goal_guidance` enabled, fixed
+response templates reach tool results. Private evidence stays in local
+metadata, excluded by provider encoders. Uncertainty alone is not a reason to
+spend indefinitely: checks need recorded availability and affordable cost;
+delay can instead require a fallback. The six anticipatory kinds are distinct
+from retrospective `Affect`; shame and excitement are outside this slice.
+
+`RunConfig::appraisal_evidence` preserves these conditions, including unknown
+future schemas. `prepare_probe_in`, `mismatch::validate_recording`,
+`harness_probe::prepare_episode` (every recorded configuration), and replay
+refuse unsupported evidence-bearing runs until reconstruction is implemented.
+Silently dropping evidence would turn a different decision context into a false
+counterfactual result. Forecast calibration and efficacy remain unmeasured.
+
+**The backlog anticipated-guilt sensor reads only stores mecha itself writes.** An expectation is a
 *recorded* commitment (`outbox`, `questions`, `frontdoor` — exactly `backlog`'s
 own three), never a claimed one. That is the whole safety argument for §7.2's
 attack: a charter line like "don't let a colleague down" is a lever an injection
@@ -3308,8 +3366,8 @@ controllability** (`GOAL-SYSTEM-DESIGN.md` §17.1, ruled 2026-09-03, built
 2026-09-04): relevance is decided by the channel arms in `of_session` — a
 pending draft, a follow-up, a Ctrl-C produce no error at all — and every
 error that exists is then named from its sign and agency alone, with a probe
-verdict *refining* the word rather than licensing it. So the free readout's
-label range is `Neutral`, `Distress` (the coarse word: a signed, attributed
+verdict *refining* the word rather than licensing it. Linked owner outcomes additionally produce `Embarrassment` and `Guilt`; without
+them the free readout's label range is `Neutral`, `Distress` (the coarse word: a signed, attributed
 negative not yet split into regret or disappointment) and `Pride` (a draft sent unchanged or a question answered, *delivered* against a charter line the loaded charter contains — never the queue delta or the appraiser's own positive, both of which copy the named goal onto a positive without delivering anything); `Anger` is the appraiser's, and the probe
 words stay the probe's. The incident: twenty-two owner-rejected drafts all
 read `Neutral` because `label_of` gated on the one dimension only a paid
@@ -3429,7 +3487,11 @@ there is no shell, external service or model-authored grading command. Each arm
 repeats the whole task in a fresh directory under current approval/policy gates.
 A policy refusal is inconclusive, not a model regression. This deliberately does
 not branch a filesystem snapshot that was never captured: steer/denial branching
-is unchanged. Whole-task results leave the intervention-region field unknown;
+is unchanged. `mismatch::has_policy_refusal` excludes harness check diagnostics from the
+artifact refusal gate in both run recording and probes: the fixture surface has
+no shell, so an unavailable declared check cannot suppress its independent
+grade. Refused model calls and blocked sends still make the run ungraded.
+Whole-task results leave the intervention-region field unknown;
 artifact success cannot certify that the original step's tool scope was exercised.
 Receipts under `learning/artifact-probes` identify the case, prompt, reflection,
 model, verdict and task usage. Experiments register the entire fixture in
@@ -3447,7 +3509,6 @@ costs among both-passing pairs separately from all-run totals. A frozen-rule arm
 tests exposure, not learning. Seed repeats and the experiment gate's pair split do
 not establish generalization to held-out task families; this synthetic pilot cannot
 auto-promote the production proposal it references.
-
 **Training feedback is opt-in and owner-bound.** `ArtifactCase::criteria` names
 specific output fields; `criterion_feedback` compares them with pinned gold after
 the task ends and records `StepFeedback` without actual output prose or expected

@@ -54,6 +54,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let path = resolve_session(&args.session)?;
     let (meta, convo) = Session::load(&path)?;
     let configs = Session::run_configs(&path)?;
+    anyhow::ensure!(!configs.iter().any(|c| c.appraisal_evidence.is_some()),
+        "replay does not yet reconstruct owner-bound anticipatory evidence; the recorded predictions remain readable");
     let Some(recorded) = configs.first().cloned() else {
         bail!(
             "{} has no RunConfig record, so the replay cannot rebuild the run \
@@ -77,6 +79,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     eprintln!("note: {}", recorded.rules_arm_note(delivered.as_deref()));
 
     let trajectory = extract(&convo.messages);
+    trajectory.ensure_replayable()?;
     if trajectory.turns.is_empty() {
         bail!("the transcript contains no user turns; nothing to replay");
     }

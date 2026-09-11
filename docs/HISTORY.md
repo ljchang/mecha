@@ -95,6 +95,122 @@ and `MISMATCH_REFLECTOR_SYSTEM` already produce bounded, goal-bound reflections.
 General sampling and per-kind retrieval questions remain open.
 
 **2026-09-09 — corrected attribution pilot complete, without rule exposure.**
+
+**2026-09-09 — v0.1.19 patch release and local update.**
+The owner requested the patch release after PR #222 merged. Release commit
+`ef283174` updates the workspace and lockfile to 0.1.19 and moves the accumulated
+Unreleased changelog into its dated release section, with both link definitions.
+The tag workflow passed, all four crates were independently verified at 0.1.19
+on crates.io, and the GitHub release was published. Main CI and documentation
+deployment passed. Local all-target build, formatting, warning-free all-feature
+Clippy and required-backend tests passed (2,638 passed, zero failed, three
+ignored); web tests and production build passed. The static musl benchmark
+build completed in 9m 52s and was installed at the shared checkout
+`target-musl/release/mecha` path; its hash matches the release build and it
+reports `mecha 0.1.19`.
+
+The CLI and all four mail/document executables were installed from the clean
+release checkout. The installed CLI exposed the new appraisal evidence and
+outbox outcome commands. Both graph executables were reinstalled from graph
+main `940c806` (0.1.5), with the nightly release artifact rebuilt and the installed
+MCP's 13-tool surface checked. Slack, triggers, drain, serve and voice-worker
+units restarted after installation. Startup logs and active mecha executable
+hashes were verified; the web page matched the rebuilt assets and `/api/ping`
+returned `ok`. All five units remained active with zero automatic restarts.
+Factory client/server were already at 0.2.9 and the server was active; no remote
+deployment was performed. Sandbox and host Cargo versions both read 1.97.1.
+
+The shared checkout's existing uncommitted documentation was preserved. Its
+worker, parakeet and model-start scripts were byte-identical to the release;
+only the worker required a restart. The local model remained
+`qwen3.6-35b-a3b`, four slots, 262,144 context tokens per slot. A separate Claude
+session retained a deleted graph executable inode whose bytes matched the
+installed server; it was left running. No operator configuration or learning
+state changed. Earlier pilot reports retain their historical runtimes and do
+not claim live-model validation of this release.
+
+**2026-09-09 — appraisal implementation and review fixes merged.**
+PR #220 merged at `08ebaaa5`, followed by anticipatory appraisal PR #221 at
+`fa77852c`. The implementation and review entries below retain their historical
+verification scope; merging did not install or restart any service.
+
+**2026-09-09 — anticipatory appraisal review fixes, not installed.**
+`harness_probe::prepare_episode` refuses evidence-bearing configurations across
+an entire session until replay reconstructs them. `anticipation::History`
+preserves unsupported prediction/outcome JSON while keeping draft review,
+editing and rejection available; release and outcome grading fail closed.
+`outbox show` now keeps the draft visible when the current assessment fails
+(for example, a future timestamp), without weakening `begin_delivery`.
+Regressions cover these paths through the store, CLI and harness probe.
+A second review found the crossed case: a known harm outcome with an unknown
+prediction fell back to positive drafting credit. Both unknown record kinds now
+make appraisal partial and suppress that fallback; the regression failed before
+the correction. Unsupported evidence marks appraisal partial without claiming
+the outbox itself is unreadable, so request-to-draft joins retain their known
+IDs. Owner evidence preserves pending plan verification and fills a missing
+expectation from the plan; an external passed check cannot certify those steps.
+The request-join and plan-merge regressions failed before these corrections.
+
+
+**2026-09-09 — anticipatory appraisal and linked outcomes, implemented locally.**
+On `feat/anticipatory-appraisal` (isolated `mecha-anticipation` worktree, based
+on `f4c40cbeda1aad61f190b98a66645df2eb3f5c0d`), `anticipation::assess`
+derives anticipated guilt, embarrassment, regret, disappointment, anxiety and
+curiosity from typed evidence. Guilt requires an explicit recorded commitment;
+check-first regret and curiosity require a feasible, affordable check. Delay
+and budget shortfalls can require replanning, even after a check passed.
+`run --goal ... --appraisal-evidence FILE` binds owner evidence to that invocation;
+`Decision::with_owner_evidence` and the agent's outbox staging path consume it
+without prompting private prose. Existing `goal_guidance` enables fixed advice.
+New draft prose clears prior verification. `outbox anticipate` records immutable
+argument snapshots, with a separate explicit `--guide` release gate;
+`OutboxStore::begin_delivery` enforces it before dispatch and binds the attempt
+to its prediction. Revision, reassessment, rejection, uncertain delivery and
+silence have distinct unresolved statuses, never fabricated forecast grades.
+`outbox outcome` admits post-delivery owner evidence with explicit attribution
+and supersession. `appraisal::of_session` replaces one draft verdict with one
+active outcome: embarrassment and guilt now have producers, so nine of eleven
+retrospective labels are reachable. `tasks::worth_a_follow_up` excludes the new
+outcome channel from autonomous follow-up creation. `RunConfig` records bound
+evidence; replay and counterfactual grading explicitly refuse it until they can
+reconstruct it. Tests cover the actual agent, Todo, outbox store, attribution,
+supersession, expiration, legacy records and CLI; the Docusaurus appraisal guide
+and command reference document the workflow. This is implementation evidence,
+not a measured planning benefit. No installation or service restart was performed.
+
+**2026-09-09 — appraisal PR review corrections, not installed.**
+The frozen check executor now emits `Finding::CheckFailed` for an executed,
+failed check; refused or staged checks stay unverified. Attribution remains
+owned by the executor, so unrelated tool-span counters cannot certify a step.
+`planning::examples` applies `runlog::Scan::admits` before its history limit:
+33 newer development sessions previously displaced an older eligible run and
+supplied synthetic successes. The regression failed against that behavior.
+`learning::evidence_for` labels redacted mismatch evidence as `UserTurns`, and
+`Reflector::reflect` skips malformed mismatch context without aborting the run.
+Workspace tests with required sandbox backends and warning-free Clippy passed.
+The next review caught a provenance omission in the restored advice: a frozen
+`CHECK_FEEDBACK_STEM` now keeps that block out of owner-correction mining while
+preserving real owner text sharing the same result message. Persisted synthetic
+check calls use UUIDs rather than process-local run counters. Artifact grading
+uses `mismatch::has_policy_refusal` in both the run and probe paths, excluding
+harness check diagnostics while retaining refused model calls and blocked sends.
+The mining and artifact-probe regressions both failed before these corrections.
+A later review extended that boundary to correction scope and aftermath:
+`extract_interventions` excludes harness tool uses and their denial results,
+while preserving real steering beside them. Check-originated interlock blocks
+stay in the check trace but do not increment the model's `blocked_sends` counter.
+Both regressions failed before the fix; the armed-taint case verifies refusal
+still occurs. Replay extraction now excludes harness calls from model choices
+and filters machine advice from steering. Because replayed tools cannot recreate
+those check observations, `Trajectory::ensure_replayable` refuses such recordings
+in both drivers and all three trace entry points rather than grading changed
+context or serving a check result to a model call. Artifact-task grading remains
+independent of trace replay.
+
+
+**2026-09-09 — corrected attribution pilot complete, without rule exposure.**
+These measurements predate the review fixes merged in PRs #220 and #221;
+they do not validate those fixes or anticipatory appraisal.
 Runtime `c7071ad3` completed 72 Qwen 3.6 35B trials and 54 learning stages across
 three seeds. Both arms passed 30/36 overall, 15/18 transfer and 31/36 artifact
 checks; all 36 paired outcomes tied and the native gate rejected promotion.
@@ -107,8 +223,9 @@ not a learning benefit. The native extra failure on one otherwise-correct task
 per arm came from a harness-generated attempt to execute a model-declared
 `check: "file reads"` through unavailable `shell`; it was not a direct invented
 tool call. The result archive preserves that distinction and the frozen grades.
-Required-backend tests passed 2,616 with zero failures and three ignored tests;
-build, formatting and Clippy passed. The final runtime's separate retirement
+Required-backend tests passed 2,616 with zero failures and three ignored tests.
+Archived build/Clippy logs show completion but omit command flags; target and
+feature coverage cannot be independently established from those logs. The final runtime's separate retirement
 drill failed to elicit its expected regression and retired neither rule; the
 earlier drill pass is retained separately. No score-seeking retry or deployment
 was performed. Full evidence: `results/appraisal-attribution-v2-qwen36-35b-20260909/README.md`.
@@ -5771,7 +5888,6 @@ records the hash of the empty block, so it falsely flagged all 48 rules-off tria
 The corrected reader distinguishes empty, exposed and unknown; original execution
 inputs/results were unchanged and the old audit is retained. Validate metadata's
 meaning against the producer before using presence as proof that an intervention ran.
-
 
 
 **Test the prompt's contract alongside the artifact oracle.** The harder appraisal
