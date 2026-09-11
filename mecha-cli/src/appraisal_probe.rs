@@ -115,6 +115,11 @@ pub struct Tally {
     /// recorded tool the current registry cannot offer. Fixable, and worth
     /// separating for exactly that reason.
     pub unavailable: usize,
+    /// The recorded surface is gone and no route can rebuild it — a retired
+    /// MCP server, in a recording made before the surface store. Kept apart
+    /// from `unavailable` because that channel means *fixable*, and filing a
+    /// permanent loss there reads as a backlog somebody could clear.
+    pub surface_lost: usize,
     /// Never looked at, because the budget ran out first. Says nothing about
     /// the intervention at all.
     pub over_budget: usize,
@@ -136,6 +141,7 @@ impl Tally {
         self.inconclusive += other.inconclusive;
         self.unprobeable += other.unprobeable;
         self.unavailable += other.unavailable;
+        self.surface_lost += other.surface_lost;
         self.over_budget += other.over_budget;
     }
 }
@@ -205,6 +211,32 @@ pub async fn probe_appraisal(
         // The run exactly as it was, rules block and all — see
         // `ProbePrep::system_as_recorded` for why a rules-free arm would bias
         // every verdict toward `Mattered`.
+        // Before the budget: a recorded tool no route can rebuild fails inside
+        // `drive_continuation` at `replay_registry`, which is before
+        // `Agent::new` and so before any provider call. Charging it would
+        // spend a corpus-wide allowance this function's own contract says is
+        // "consumed by drives, never by skips", and count a model run that
+        // did not happen in `driven`.
+        let lost = prep.lost_recorded_tools(prepared.agent.registry());
+        if !lost.is_empty() {
+            skipped(
+                &appraisal.session_id,
+                i.at,
+                &format!(
+                    "{} recorded tool(s) are gone from this machine's surface ({}{}); \
+                     no later night can rebuild them",
+                    lost.len(),
+                    lost.iter().take(3).cloned().collect::<Vec<_>>().join(", "),
+                    if lost.len() > 3 {
+                        format!(", and {} more", lost.len() - 3)
+                    } else {
+                        String::new()
+                    }
+                ),
+            );
+            tally.surface_lost += 1;
+            continue;
+        }
         let system = prep.system_as_recorded();
         *budget -= 1;
         tally.driven += 1;
@@ -318,7 +350,7 @@ mod tests {
         );
     }
 
-    /// The four no-finding outcomes answer four different questions, and the
+    /// The five no-finding outcomes answer five different questions, and the
     /// first cut of this file folded them into one counter — which reported a
     /// corpus that is 78% unprobeable as a probe that had merely run out.
     #[test]
@@ -327,14 +359,40 @@ mod tests {
         t.record(Probe::Inconclusive);
         t.unprobeable += 1;
         t.unavailable += 1;
+        t.surface_lost += 1;
         t.over_budget += 1;
         assert_eq!(
-            (t.inconclusive, t.unprobeable, t.unavailable, t.over_budget),
-            (1, 1, 1, 1)
+            (
+                t.inconclusive,
+                t.unprobeable,
+                t.unavailable,
+                t.surface_lost,
+                t.over_budget
+            ),
+            (1, 1, 1, 1, 1)
         );
-        // Only the inconclusive one cost a model run; only the unprobeable one
-        // is permanent; only the over-budget one is a number somebody chose.
+        // Only the inconclusive one cost a model run; `unprobeable` and
+        // `surface_lost` are the permanent pair and `unavailable` the fixable
+        // one beside them; only the over-budget one is a number somebody chose.
         assert_eq!(t.driven, 0);
+    }
+
+    /// `add` folds every channel, including the newest. A merge that drops one
+    /// reports a corpus-wide total lower than the sessions that made it, which
+    /// reads as a smaller problem rather than a missing summand.
+    #[test]
+    fn merging_tallies_carries_every_channel() {
+        let mut a = Tally {
+            surface_lost: 2,
+            unavailable: 1,
+            ..Default::default()
+        };
+        a.add(Tally {
+            surface_lost: 3,
+            unavailable: 4,
+            ..Default::default()
+        });
+        assert_eq!((a.surface_lost, a.unavailable), (5, 5));
     }
 
     /// A followup has no counterfactual to drive — removing a later user turn

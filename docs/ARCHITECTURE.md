@@ -442,6 +442,15 @@ by `the_preflight_matches_what_the_build_accepts` over the whole matrix,
 because a preflight that disagrees either burns the calls it was added to save
 or refuses a probe that would have run.
 
+`appraisal_probe` asks the same question before it charges its budget, which
+`probe_appraisal` documents as "consumed by drives, never by skips": a lost
+surface fails inside `drive_continuation` at `replay_registry`, before
+`Agent::new` and so before any provider call, so charging it would spend a
+corpus-wide allowance on a model run that never happened and count it in
+`Tally::driven`. It lands in `Tally::surface_lost` rather than
+`Tally::unavailable`, because that channel means *fixable* and a retired
+server is not.
+
 Found 2026-09-11, the night after the grounded receipts shipped: three of
 seventeen held-out reflections cited `pkg__kg_entity` and
 `google__calendar_create_event`, from an MCP server retired on 2026-09-04, in

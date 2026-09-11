@@ -535,7 +535,7 @@ fn stand_in_for<'a>(
 /// Resolution order is `build_replay_registry`'s, through the same two
 /// helpers, because a preflight that disagrees with the build is worse than
 /// no preflight: it either burns the model calls it was added to save or
-/// refuses a probe that would have run. `replay_surface_matches_the_build`
+/// refuses a probe that would have run. `the_preflight_matches_what_the_build_accepts`
 /// pins the two together.
 ///
 /// **A name none of the three routes can construct will not become
