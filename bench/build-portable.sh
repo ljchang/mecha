@@ -44,20 +44,36 @@ OUT="target-musl/release/mecha"
 # produces a binary matching no commit, so its scorecard cannot be tied to
 # source later. `MECHA_BENCH_ALLOW_DIRTY=1` opts out for a throwaway
 # measurement, and says so in the line below.
-SOURCE_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-SOURCE_BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || echo detached)"
-SOURCE_DIRTY=""
-if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
-  SOURCE_DIRTY=" +dirty"
+# Prove git can answer before trusting its silence. `git status --porcelain`
+# exits non-zero with *empty stdout* when it refuses the tree — dubious
+# ownership (plausible here: this script runs docker as root over `$PWD` and
+# chowns back afterwards), git absent, or an rsync'd copy that is not a clone.
+# An emptiness test then reads "cannot tell" as "clean", and the guard written
+# to refuse an unattributable build would wave through the most unattributable
+# source there is. Unknown is never clean.
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
   if [ "${MECHA_BENCH_ALLOW_DIRTY:-0}" != "1" ]; then
-    echo "refusing: $PWD is dirty, so $OUT would match no commit and its" >&2
-    echo "  scorecard could not be tied back to source. Commit, stash, or set" >&2
-    echo "  MECHA_BENCH_ALLOW_DIRTY=1 to measure it anyway." >&2
+    echo "refusing: $PWD is not a readable git checkout, so $OUT could not be" >&2
+    echo "  tied back to source. Set MECHA_BENCH_ALLOW_DIRTY=1 to build anyway." >&2
     exit 1
   fi
+  SOURCE_BRANCH="unknown"; SOURCE_COMMIT="unknown"; SOURCE_DIRTY=" +unverified"
+else
+  SOURCE_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  SOURCE_BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || echo detached)"
+  SOURCE_DIRTY=""
+  if [ -n "$(git status --porcelain)" ]; then
+    SOURCE_DIRTY=" +dirty"
+    if [ "${MECHA_BENCH_ALLOW_DIRTY:-0}" != "1" ]; then
+      echo "refusing: $PWD is dirty, so $OUT would match no commit and its" >&2
+      echo "  scorecard could not be tied back to source. Commit, stash, or set" >&2
+      echo "  MECHA_BENCH_ALLOW_DIRTY=1 to measure it anyway." >&2
+      exit 1
+    fi
+  fi
 fi
+SOURCE="$SOURCE_BRANCH@$SOURCE_COMMIT$SOURCE_DIRTY"
 echo "benchmark source: $SOURCE_BRANCH @ $SOURCE_COMMIT$SOURCE_DIRTY ($PWD)" >&2
-export MECHA_BENCH_SOURCE="$SOURCE_BRANCH@$SOURCE_COMMIT$SOURCE_DIRTY"
 
 docker run --rm \
   -v "$PWD":/w -w /w \
@@ -76,5 +92,13 @@ file "$OUT" | grep -q "statically linked" || {
   echo "refusing: $OUT is not statically linked" >&2; exit 1; }
 "$OUT" --version >/dev/null || { echo "refusing: $OUT does not run" >&2; exit 1; }
 
+# Beside the artifact, not in the environment. `bench/run.sh` calls this
+# script as a child, so an exported variable dies with it and the parent that
+# goes on to run the benchmark never sees it — the provenance would live only
+# in a stderr line, and "tie the scorecard back to source later" is exactly
+# when stderr is gone. A file next to the binary can be asked, which is the
+# rule this repo applies to every other artifact.
+printf '%s\n' "$SOURCE" > "$OUT.source"
+
 echo "portable binary: $OUT ($(file -b "$OUT" | cut -d, -f1-2))" >&2
-echo "  built from: $SOURCE_BRANCH @ $SOURCE_COMMIT$SOURCE_DIRTY" >&2
+echo "  built from: $SOURCE (recorded in $OUT.source)" >&2
