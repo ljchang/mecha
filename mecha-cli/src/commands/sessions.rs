@@ -508,6 +508,22 @@ fn first_line(s: &str) -> String {
     }
 }
 
+/// The `--json` probe block.
+///
+/// Rendered from `Tally` itself rather than a hand-listed set of keys: a
+/// channel added to the struct and forgotten here reads as zero, and zero on a
+/// no-finding channel is the opposite of the truth it hides. Extracted so
+/// `the_probe_readout_renders_every_channel` can pin *this* function — a test
+/// that serializes a `Tally` of its own proves only that the derive works, and
+/// would stay green while this was rewritten back to `json!({...})`.
+fn probe_json(tally: crate::appraisal_probe::Tally, budget: usize) -> serde_json::Value {
+    let mut o = serde_json::to_value(tally).unwrap_or_default();
+    if let Some(m) = o.as_object_mut() {
+        m.insert("budget_left".into(), serde_json::json!(budget));
+    }
+    o
+}
+
 /// `mecha sessions appraise` — the readout rung 7 exists to produce.
 ///
 /// **Observation only.** Nothing consumes an appraisal, and the number worth
@@ -934,16 +950,7 @@ async fn appraise(
                 // and "probed and found nothing" are opposite findings, and a
                 // reader that cannot tell them apart is the bug this whole
                 // rung exists to avoid.
-                "probe": probe.then(|| serde_json::json!({
-                    "driven": tally.driven,
-                    "mattered": tally.mattered,
-                    "redundant": tally.redundant,
-                    "inconclusive": tally.inconclusive,
-                    "unprobeable": tally.unprobeable,
-                    "unavailable": tally.unavailable,
-                    "over_budget": tally.over_budget,
-                    "budget_left": budget,
-                })),
+                "probe": probe.then(|| probe_json(tally, budget)),
                 // Same "absent, not zero" rule as `probe`: whether the flag
                 // ran at all is a different fact from what it found.
                 "appraiser": run_appraiser.then(|| serde_json::json!({
@@ -1095,8 +1102,11 @@ async fn appraise(
             "    {:<16} {:>5}  — diverged before the probe point",
             "inconclusive", tally.inconclusive
         );
-        // Three ways to have no finding, and they call for three different
-        // responses: extend the mechanism, fix the registry, raise the budget.
+        // Four ways to have no finding, and they call for four different
+        // responses: extend the mechanism, fix the registry, accept the loss,
+        // raise the budget. `surface_lost` is the one that asks for nothing —
+        // which is why it must still be printed, or a corpus that lost every
+        // recorded surface reads as a clean zero on every line.
         println!(
             "    {:<16} {:>5}  — followup/edit: no counterfactual to drive",
             "unprobeable", tally.unprobeable
@@ -1104,6 +1114,10 @@ async fn appraise(
         println!(
             "    {:<16} {:>5}  — session or tool surface unavailable",
             "unavailable", tally.unavailable
+        );
+        println!(
+            "    {:<16} {:>5}  — recorded surface gone for good; not retried",
+            "surface lost", tally.surface_lost
         );
         println!(
             "    {:<16} {:>5}  — budget ran out first",
@@ -1508,5 +1522,48 @@ fn pct(rate: Option<f64>) -> String {
     match rate {
         Some(r) => format!("{:.1}%", r * 100.0),
         None => "—".into(),
+    }
+}
+
+#[cfg(test)]
+mod probe_readout_tests {
+    use super::probe_json;
+    use crate::appraisal_probe::Tally;
+
+    /// Pins the readout, not the derive.
+    ///
+    /// The first version of this test built a `Tally` and serialized it
+    /// directly, which proves `Serialize` is complete and nothing about what
+    /// `appraise` prints — it would have stayed green while `probe_json` was
+    /// rewritten to a hand-listed `json!({...})`, returning the exact
+    /// regression it was written to stop. That is this file's own lesson one
+    /// level up: `Tally::add` was pinned while the readout dropped the
+    /// summand, so pinning one end proves nothing about the other.
+    #[test]
+    fn the_probe_readout_renders_every_channel() {
+        let tally = Tally {
+            driven: 1,
+            mattered: 2,
+            redundant: 3,
+            inconclusive: 4,
+            unprobeable: 5,
+            unavailable: 6,
+            surface_lost: 7,
+            over_budget: 8,
+        };
+        let rendered = probe_json(tally, 9);
+        let rendered = rendered.as_object().expect("an object");
+        // Every field of the struct, taken from the struct rather than a list
+        // kept by hand here — a channel added to `Tally` and dropped from the
+        // readout fails without anyone remembering to extend this test.
+        let every_field = serde_json::to_value(tally).unwrap();
+        for key in every_field.as_object().unwrap().keys() {
+            assert!(
+                rendered.contains_key(key),
+                "`{key}` reaches no reader of `mecha sessions appraise --json`"
+            );
+        }
+        assert_eq!(rendered["surface_lost"], 7);
+        assert_eq!(rendered["budget_left"], 9);
     }
 }

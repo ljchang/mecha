@@ -14,6 +14,51 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-11 — a probe whose recorded tool surface is gone is refused, not
+retried forever.** `validate` marked every replay failure retryable and
+`should_run` re-runs anything retryable, so three of the seventeen held-out
+reflections — naming `pkg__kg_entity` and `google__calendar_create_event` from
+servers retired on 2026-09-04, in recordings made before the surface store
+existed — were re-probed every night to reach an identical refusal, each
+spending a ledger row that can never age and a `--cover` slot that buys no
+coverage. **The first write-up of this said "two model calls each", which was
+reasoned rather than measured and is wrong:** `replay_registry` runs before
+`provider::build`, so the refusal was always free of provider calls. The three
+receipts from the 2026-09-11 re-run are stamped 13:34:59 and 13:35:03 twice,
+while the genuinely driven probes ran 13:35:43 to 13:47:10 — four seconds
+against twelve minutes. A cost figure nobody measured outlives the session that
+could have checked it, which is why it is corrected here rather than quietly
+dropped. The distinguishing fact is in the recordings and was checked
+rather than inferred: those three carry no `tools_hash` at all, while the one
+follow-up that does grade is the one recording that has a blob.
+
+Nothing was broken live. No `pkg__`/`google__` reference remains in
+`config.toml`, the skills, the triggers or the charter, `[outbox] tools` is all
+`mail__*`/`docs__*`, and no service warns at start; the 2026-09-04 rename was
+completed properly in operations. What the rename left behind is only in
+append-only history, which is the one place it cannot be corrected.
+
+Measured on the live corpus in an isolated store copy: 17 probes attempted
+before, 14 after, with the three refused at preparation before any model call.
+One recording had lost 23 tools — the whole `google__*` and `outlook__*` stack
+as well as `pkg__*` — because it predates the mail unification too.
+
+**What the fix is not: a rename map.** Pointing `pkg__kg_entity` at today's
+`kg_entity` would make those three gradeable again and would grade a rule
+against a tool surface the recording never saw. Manufacturing a verdict is
+worse than recording that the corpus lost one; if that trade is ever wanted it
+belongs in an owner-declared alias map, where a wrong mapping is a declaration
+rather than an inference.
+
+Review found the same defect one caller over, and it was the more expensive
+one. `appraisal_probe` charged its arm budget and counted `Tally::driven`
+*before* `drive_arm`, and a lost surface fails at `replay_registry` before
+`Agent::new` — so a corpus-wide allowance documented as "consumed by drives,
+never by skips" was being spent on model runs that never happened, and filed in
+`Tally::unavailable`, whose doc says "Fixable". Checking `harness_probe` and
+clearing it correctly (its corpus is recent sessions, which age out) was not the
+same as checking every caller of the prep.
+
 **2026-09-11 — the nightly measurement fixes shipped, and re-running the night
 showed last night's two directional findings were both artifacts.** They were
 written on 2026-09-10 and left uninstalled, so the 2026-09-11 nightly ran the
@@ -33,6 +78,15 @@ fix is responsible for. The improvement on `20260906T033546-21af0876` became
 cannot separate the fix from sampling there. The fix's intended effect does show
 once: `20260906T033607-c958adbc`, previously ungradeable, came back graded as a
 followup.
+
+A third run the same day settled the second case and is worth recording against
+the first reading of it: `20260906T033546-21af0876` graded IMPROVED, then
+unchanged, then IMPROVED again over three runs of identical inputs, and
+`20260906T033607-c958adbc` graded and then diverged. **Judge-graded followups
+move run to run, so a single re-run is not evidence about a directional
+verdict** — it is only evidence about a structural one, which is why the
+regression above is attributable and the improvement is not. The honest summary
+of the night is one finding corrected, not two.
 
 **The count of inconclusives did not fall — it rose by one — and that is the
 improvement.** The old instrument gave all seven the same explanation, "the

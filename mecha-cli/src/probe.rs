@@ -82,7 +82,52 @@ enum ProbeMethod {
     },
 }
 
+/// The mode every counterfactual probe replays under, named once.
+///
+/// `lost_recorded_tools` and `drive_continuation` must agree: the preflight
+/// decides what the build will accept, and the two answer differently under a
+/// mode that executes — where neither a recorded blob nor a surface-only
+/// stand-in may substitute. As two literals two hundred lines apart they could
+/// drift silently, and the preflight's own test parametrises over the mode, so
+/// it cannot see the call sites disagree. One constant makes that a
+/// compile-time impossibility instead.
+const PROBE_MODE: OnDivergence = OnDivergence::Stop;
+
 impl ProbePrep {
+    /// Recorded tools this machine can no longer offer by any route.
+    ///
+    /// Empty for an artifact probe, which grades a fresh task against its own
+    /// fixture and replays no recorded surface at all. Non-empty means the
+    /// probe cannot be run faithfully now and will not become runnable later:
+    /// the caller should record it as unmeasurable rather than spend a ledger
+    /// row and a coverage slot reaching the same refusal every night. The
+    /// refusal is free of provider calls either way — `replay_registry` runs
+    /// before `provider::build` — so what this saves is bookkeeping, not
+    /// tokens.
+    pub fn lost_recorded_tools(&self, live: &mecha_core::tool::Registry) -> Vec<String> {
+        if matches!(self.method, ProbeMethod::Artifact { .. }) {
+            return Vec::new();
+        }
+        mecha_core::replay_run::unconstructible_recorded_tools(
+            &self.recorded.tools,
+            live,
+            Some(&crate::setup::surface_only_registry()),
+            &self.recorded_specs,
+            PROBE_MODE,
+        )
+    }
+
+    /// Whether the surface store still holds the blob this recording cites,
+    /// in words for the refusal message: it is the difference between a tool
+    /// the recording described and one it only named.
+    pub fn recorded_surface_summary(&self) -> &'static str {
+        if self.recorded_specs.is_empty() {
+            "no surface blob"
+        } else {
+            "a surface blob that does not describe them"
+        }
+    }
+
     /// Identity of the recorded inputs; changing a transcript or config makes
     /// a fresh measurement even when the reflection and rules are unchanged.
     pub fn input_hash(&self) -> Result<String> {
@@ -511,7 +556,7 @@ pub async fn drive_continuation(
         Some(&crate::setup::surface_only_registry()),
         &prep.recorded_specs,
         tail_calls,
-        OnDivergence::Stop,
+        PROBE_MODE,
         cancel.clone(),
     ) {
         Ok(reg) => reg,

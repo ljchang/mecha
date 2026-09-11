@@ -434,6 +434,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             let Ok(prep) = probe::prepare_probe(&sessions_dir, &r)? else {
                 continue;
             };
+            // Same refusal as the probe loop below: a coverage slot spent on a
+            // probe that cannot run buys no coverage.
+            if !prep
+                .lost_recorded_tools(prepared.agent.registry())
+                .is_empty()
+            {
+                continue;
+            }
             let run = prep.situation();
             let Some(block) = surface.block_with(&surface.carried(&run), &run) else {
                 continue;
@@ -474,6 +482,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let mut unchanged = 0u32;
     let mut inconclusive = 0u32;
     let mut skipped = 0u32;
+    // Of the skips, the ones a later night cannot fix. Reported apart so a
+    // permanently unmeasurable corpus cannot hide inside a skip count that
+    // also holds transient causes.
+    let mut surface_lost = 0u32;
     let mut recorded_rows = 0u32;
 
     for r in &reflexions {
@@ -497,6 +509,37 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 continue;
             }
         };
+        // A recorded tool nothing can construct makes this probe unmeasurable
+        // now and on every later night, so it is refused before either arm
+        // rather than inside `drive_continuation`, where the same refusal
+        // already costs no provider call but does spend a ledger row and a
+        // `--cover` slot on an answer that cannot change.
+        // Counted apart from the other skips because the cause is different
+        // in kind: not a recording this run cannot read, but a surface the
+        // machine no longer has and will not regain on its own.
+        let lost = prep.lost_recorded_tools(prepared.agent.registry());
+        if !lost.is_empty() {
+            // Name a few and count the rest: a recording from before the mail
+            // unification loses its whole provider surface at once, and
+            // twenty-three names on one line buries the fact that the cause
+            // is one retired server rather than twenty-three problems.
+            eprintln!(
+                "· {}: {} recorded tool(s) are gone from this machine's surface ({}{}) and \
+                 the recording carries {}, so no later night can reconstruct them; skipping",
+                r.id,
+                lost.len(),
+                lost.iter().take(3).cloned().collect::<Vec<_>>().join(", "),
+                if lost.len() > 3 {
+                    format!(", and {} more", lost.len() - 3)
+                } else {
+                    String::new()
+                },
+                prep.recorded_surface_summary()
+            );
+            skipped += 1;
+            surface_lost += 1;
+            continue;
+        }
         let run = prep.situation();
         let carried = surface.carried(&run);
         let Some(rules_block) = surface.block_with(&carried, &run) else {
@@ -704,6 +747,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         recorded_rows += 1;
     }
     println!("coverage: {recorded_rows} probes attempted, {reused} unchanged inputs deferred; unchanged verdicts: {both_pass} both pass, {both_fail} both fail");
+    if surface_lost > 0 {
+        println!(
+            "{surface_lost} reflection(s) cite a tool this machine no longer offers — \
+             permanently unmeasurable, not retried; `mecha reflections` can refuse them \
+             outright, and `--repeat` forces a probe if a retired provider returns"
+        );
+    }
 
     println!(
         "\n{improved} improved, {regressed} regressed, {unchanged} unchanged, \

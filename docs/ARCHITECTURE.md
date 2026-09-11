@@ -430,6 +430,60 @@ Transient failures and regression confirmations remain retryable; `--repeat`
 explicitly remeasures other unchanged inputs. Receipts do not make repeated
 observations independent evidence.
 
+**A lost tool surface is refused before either arm, and is not a retry.**
+`replay_run::unconstructible_recorded_tools` asks, through the same two
+helpers `build_replay_registry` resolves with, whether each recorded tool can
+still be offered by any route — a live tool, the surface-only registry, or the
+recording's own blob. A name none of the three can construct will not become
+constructible on a later night, so `validate` skips the probe at preparation
+and counts it apart from the other skips.
+
+The saving is not provider calls. `replay_registry` runs before
+`provider::build` in `drive_continuation`, and `validate`'s arm loop breaks on
+the first arm, so a lost surface already refused for free — what it spent was a
+ledger row that can never age, a `--cover` slot that buys no coverage, and the
+session load behind both. The preflight and the build are pinned to each other
+by `the_preflight_matches_what_the_build_accepts` over the whole matrix,
+because a preflight that disagrees either burns the calls it was added to save
+or refuses a probe that would have run.
+
+`appraisal_probe` asks the same question before it charges its budget, which
+`probe_appraisal` documents as "consumed by drives, never by skips": a lost
+surface fails inside `drive_continuation` at `replay_registry`, before
+`Agent::new` and so before any provider call, so charging it would spend a
+corpus-wide allowance on a model run that never happened and count it in
+`Tally::driven`. The question is asked before the budget guard, not after: once a
+corpus-wide allowance is spent, a lost surface asked about afterwards files as
+`over_budget` — "never looked at" — and the readout then tells the owner to
+raise a budget that cannot buy one of them. It lands in `Tally::surface_lost`
+rather than `Tally::unavailable`, because that channel means *fixable* and a
+retired server is not — and the `--json` readout renders `Tally` through `Serialize`
+so a channel added to the struct cannot fall out of it. The first cut of
+`surface_lost` was incremented and printed nowhere, which made a corpus whose
+recorded surfaces were all gone read as zero on every line: "nothing went
+wrong" where the truth was "nothing could be measured". Pinning `Tally::add`
+had not caught it, because the fold was complete and the readout was the end
+that dropped the summand — and the first pin written for the readout had the
+same defect one level down, serializing a `Tally` of its own rather than
+calling `probe_json`, so it would have stayed green through a rewrite back to
+a hand-listed `json!`. A pin has to hold the end a reader actually meets.
+
+`probe::PROBE_MODE` names the replay mode once. The preflight and
+`drive_continuation` must agree, and they answer differently under a mode that
+executes; as two literals two hundred lines apart they could drift while
+`the_preflight_matches_what_the_build_accepts` — which parametrises over the
+mode — stayed green.
+
+Found 2026-09-11, the night after the grounded receipts shipped: three of
+seventeen held-out reflections cited `pkg__kg_entity` and
+`google__calendar_create_event`, from an MCP server retired on 2026-09-04, in
+recordings made before the surface store existed. They were re-probed every
+night, reported `retryable`, and could never succeed — the "an outcome that
+cannot be aged repeats forever" shape wearing a receipt. Note what the fix is
+*not*: mapping the retired name onto today's `kg_entity` would grade a rule
+against a tool surface the recording never saw, which manufactures a verdict
+instead of admitting the corpus lost one.
+
 **The budget is per domain, and a run carries only the domains it names.**
 `MAX_ACTIVE_RULES_PER_DOMAIN` (25, raised from 15 on 2026-08-18) is the count
 half and `RULES_CHAR_BUDGET` (2600) the size half; the two move together, and
