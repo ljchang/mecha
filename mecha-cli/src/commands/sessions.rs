@@ -508,15 +508,6 @@ fn first_line(s: &str) -> String {
     }
 }
 
-/// `mecha sessions appraise` — the readout rung 7 exists to produce.
-///
-/// **Observation only.** Nothing consumes an appraisal, and the number worth
-/// reading is the neutral share: §14's own test is that if the labels come back
-/// degenerate the channel is dead, and that is learned cheaply here rather than
-/// after something is built on it.
-///
-/// Derived on the spot from the transcripts, the outbox and each run's own
-/// record — see `appraisal::of_session` on why there is no store yet.
 /// The `--json` probe block.
 ///
 /// Rendered from `Tally` itself rather than a hand-listed set of keys: a
@@ -533,6 +524,15 @@ fn probe_json(tally: crate::appraisal_probe::Tally, budget: usize) -> serde_json
     o
 }
 
+/// `mecha sessions appraise` — the readout rung 7 exists to produce.
+///
+/// **Observation only.** Nothing consumes an appraisal, and the number worth
+/// reading is the neutral share: §14's own test is that if the labels come back
+/// degenerate the channel is dead, and that is learned cheaply here rather than
+/// after something is built on it.
+///
+/// Derived on the spot from the transcripts, the outbox and each run's own
+/// record — see `appraisal::of_session` on why there is no store yet.
 #[allow(clippy::too_many_arguments)]
 async fn appraise(
     global: &GlobalOpts,
