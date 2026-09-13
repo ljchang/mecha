@@ -1473,7 +1473,7 @@
           <span class="vdot" class:live={vLinked}></span>
           <span>{vState.label}</span>
         </div>
-        <div class="meter" title="your microphone, live">
+        <div class="meter" class:paused={vState.name === 'paused'} title="your microphone, live">
           {#each Array(14) as _, i}
             <span
               class="tick"
@@ -2370,6 +2370,17 @@
   }
   .slot.speaking {
     fill: var(--accent-300);
+  }
+  /* Paused is the link, not the call: the slot goes dark rather than to a
+     colour, and the meter dims with it so a lit ring cannot say "heard"
+     over a line the page knows is carrying nothing. Never hazard amber -
+     brand.md keeps that for lines and ticks, and a pause is a wait, not a
+     fault. */
+  .slot.paused {
+    fill: var(--accent-900);
+  }
+  .meter.paused {
+    opacity: 0.3;
   }
   @keyframes slotpulse {
     0%,
