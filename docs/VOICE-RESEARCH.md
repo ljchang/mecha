@@ -881,10 +881,13 @@ how sure the record is:
   microsecond on Aug 25, Aug 31, Sep 1, Sep 4 and Sep 12, each on the first
   turn, each beside a first Parakeet request of 3–5 s. Not the STT server
   (it answers a silent clip in 50 ms after hours idle) and not smart-turn
-  (35 ms cold, measured in the venv). Unnamed; `LinkWatch` now ticks a
-  wall clock and warns `voice loop was unresponsive for N s` when a tick
-  wakes late, which is the measurement that separates a blocked process
-  from a gap on the wire and the journal has never carried.
+  (35 ms cold, measured in the venv). Unnamed; `LoopSampler` — a thread
+  beside the loop, watching a heartbeat coroutine's stamp — now writes the
+  main thread's stack (`sys._current_frames()`) the moment the beat is half
+  a second stale, and the duration when it resumes. A lag measured after
+  the fact says the loop stopped; only a thread that is still running while
+  it is stopped can say where, and that is the line the next first turn
+  will put in the journal.
 - **Both calls then went 40–80 s hearing frames with no speech in them, and
   the owner hung up.** Consistent with — not proven to be — iOS muting the
   microphone track on screen lock: each went quiet about a minute after

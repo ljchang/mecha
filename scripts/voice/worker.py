@@ -22,6 +22,9 @@ The three legs are env-configurable base URLs (D6):
 
 import asyncio
 import os
+import sys
+import threading
+import traceback
 import uuid
 from dataclasses import dataclass
 
@@ -186,15 +189,20 @@ USER_TURN_STOP_TIMEOUT = 15.0
 # A hold this long is no longer a stall being ridden out; it is worth a line
 # at WARNING, because a hold that never lifts is a call that never answers.
 LINK_HOLD_WARN_SECS = 10.0
-# The watchdog's own tick, and the lag past it that is worth naming. The
-# 2026-09-12 stall had a second signature the packet gap alone cannot show:
-# three independent two-second timers logged the same microsecond, which is
-# an event loop that was not running — every call on record since 2026-08-25
-# shows it once, on the first turn, and its cause is still unnamed. A tick
-# that wakes late says so, with the lag, which is the measurement the next
-# diagnosis needs and the journal has never carried.
+# The watchdog's own tick.
 LINK_TICK_SECS = 0.25
+# The loop sampler (`LoopSampler`): how late the event loop's heartbeat may
+# run before the main thread's stack is recorded, and how often the thread
+# looks. The 2026-09-12 stall had a second signature the packet gap alone
+# cannot show: three independent two-second timers logged the same
+# microsecond, which is an event loop that was not running — every call on
+# record since 2026-08-25 shows it once, on the first turn, and its cause is
+# still unnamed. A lag figure alone would say *that* it stopped; the stack
+# says *where*, which is the measurement the next diagnosis needs and the
+# journal has never carried. Off the loop by construction: a thread that
+# only speaks when the loop cannot.
 LOOP_LAG_WARN_SECS = 0.5
+LOOP_SAMPLE_SECS = 0.1
 # pipecat's input track discards every queued audio frame when nothing has
 # read it for `_idle_timeout` (2.0 s, `SmallWebRTCTrack._idle_watcher`) — a
 # memory guard for a track nobody is consuming. On a live pipeline the reader
@@ -203,6 +211,87 @@ LOOP_LAG_WARN_SECS = 0.5
 # late. Raised to a minute, which keeps the guard for a genuinely abandoned
 # track and takes it out of the path of a hiccup.
 TRACK_IDLE_DISCARD_SECS = 60.0
+
+
+class LoopSampler:
+    """A thread that watches the event loop's heartbeat and, when it
+    stops, writes down where the main thread is.
+
+    The heartbeat is a coroutine on the loop stamping a clock every
+    `LOOP_SAMPLE_SECS`; the thread compares that stamp to its own. When the
+    stamp is `LOOP_LAG_WARN_SECS` stale the loop is not running, and
+    `sys._current_frames()` still answers from another thread — it names
+    the frame the main thread is stuck in, C call and all, which is the one
+    thing a lag measured after the fact can never recover. One stack per
+    stall, logged the moment it is caught; the duration follows when the
+    beat resumes. Started once per process, from the first call."""
+
+    _instance = None
+
+    def __init__(self, main_thread_id: int):
+        self._main = main_thread_id
+        self._last_beat = _time.monotonic()
+        self._loop = None
+        self._captured = False
+        self._stalled_since: float | None = None
+        self.stalls: list[tuple[float, str]] = []  # (seconds, stack), for tests
+
+    @classmethod
+    def start(cls):
+        """Idempotent per loop: the worker has one loop for its life, and a
+        test harness has one per case — a heartbeat whose loop has closed
+        would otherwise read as a stall that never ends."""
+        loop = asyncio.get_running_loop()
+        sampler = cls._instance
+        if sampler is None:
+            sampler = cls(threading.main_thread().ident)
+            threading.Thread(target=sampler._watch, name="voice-loop-sampler", daemon=True).start()
+            cls._instance = sampler
+        if sampler._loop is not loop:
+            sampler._loop = loop
+            sampler._last_beat = _time.monotonic()
+            loop.create_task(sampler._heartbeat(loop))
+        return sampler
+
+    async def _heartbeat(self, loop):
+        try:
+            while self._loop is loop:
+                self._last_beat = _time.monotonic()
+                await asyncio.sleep(LOOP_SAMPLE_SECS)
+        finally:
+            if self._loop is loop:
+                self._loop = None  # disarmed: no beat is owed, so no stall can be read
+
+    def _watch(self):
+        from loguru import logger
+
+        while True:
+            _time.sleep(LOOP_SAMPLE_SECS)
+            if self._loop is None:
+                continue
+            now = _time.monotonic()
+            late = now - self._last_beat
+            if late >= LOOP_LAG_WARN_SECS:
+                if not self._captured:
+                    self._captured = True
+                    self._stalled_since = self._last_beat
+                    stack = self._main_stack()
+                    logger.warning(f"voice loop unresponsive for {late:.2f}s so far; main thread at:\n{stack}")
+                    self.stalls.append((late, stack))
+            elif self._captured:
+                total = self._last_beat - self._stalled_since
+                self._captured = False
+                self._stalled_since = None
+                logger.warning(f"voice loop was unresponsive for {total:.2f}s")
+
+    def _main_stack(self) -> str:
+        frame = sys._current_frames().get(self._main)
+        if frame is None:
+            return "  (main thread frame unavailable)"
+        # Innermost last, and only the tail: the outer frames are the runner
+        # and uvicorn on every stall, and the answer is at the bottom.
+        lines = traceback.format_stack(frame, limit=10)
+        return "".join(lines).rstrip()
 
 
 @dataclass
@@ -223,9 +312,8 @@ class LinkResumedFrame(SystemFrame):
 
 
 class LinkWatch(FrameProcessor):
-    """Sits directly behind the transport and watches two clocks: when the
-    last microphone frame arrived, and whether the event loop is keeping
-    time at all.
+    """Sits directly behind the transport and watches when the last
+    microphone frame arrived.
 
     Two sources can pause a call. The pipeline's own view — no audio for
     `LINK_STALL_SECS` — and the page's, which knows things the packets
@@ -277,19 +365,12 @@ class LinkWatch(FrameProcessor):
         await self._settle("page")
 
     async def _tick(self):
-        expected = _time.monotonic() + LINK_TICK_SECS
+        # The loop's own health is `LoopSampler`'s to report: a sleep that
+        # returns late here is the same fact, but only a thread off the loop
+        # can say where the loop was while it was not running.
         while True:
-            await asyncio.sleep(max(0.0, expected - _time.monotonic()))
+            await asyncio.sleep(LINK_TICK_SECS)
             now = _time.monotonic()
-            lag = now - expected
-            expected = now + LINK_TICK_SECS
-            if lag > LOOP_LAG_WARN_SECS:
-                from loguru import logger
-
-                # The loop, not the link: a sleep that returns late is the
-                # process not running, and no packet count can tell that
-                # apart from a gap on the wire. Named so the journal can.
-                logger.warning(f"voice loop was unresponsive for {lag:.2f}s")
             if self._last_audio is not None:
                 gap = now - self._last_audio
                 if not self._audio_stalled and gap >= LINK_STALL_SECS:
@@ -1007,6 +1088,7 @@ class TranscriptStartedTurnStop(TurnAnalyzerUserTurnStopStrategy):
 
 
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
+    LoopSampler.start()
     stt = ParakeetSTT(api_key="unused", base_url=STT_URL)
     tts = LocalTTS(
         api_key="unused",
