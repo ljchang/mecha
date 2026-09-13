@@ -541,12 +541,12 @@ class PageHoldExpiry(unittest.TestCase):
         watch.push_frame = push
         return watch
 
-    def test_unbroken_audio_expires_a_page_hold(self):
+    def test_unbroken_audio_expires_a_link_hold(self):
         async def scenario():
             events = []
             watch = self._watch(events)
             watch._note_audio(0.0)
-            await watch.hold("mic", now=0.0)
+            await watch.hold("link", now=0.0)
             t = 0.0
             while t < LINK_HOLD_WARN_SECS + 0.3:
                 watch._note_audio(t)
@@ -555,6 +555,31 @@ class PageHoldExpiry(unittest.TestCase):
             return events
 
         events = run(scenario())
+        self.assertEqual(events, [("paused", "link"), ("ok", "page-expired")])
+
+    def test_a_mic_hold_survives_unbroken_audio_and_lifts_on_speech(self):
+        """Seventh review: a muted iOS track keeps sending silence, so
+        audio flowing is no witness that the microphone is back. Speech is."""
+
+        async def scenario():
+            events = []
+            watch = self._watch(events)
+            watch._note_audio(0.0)
+            await watch.hold("mic", now=0.0)
+            t = 0.0
+            while t < LINK_HOLD_WARN_SECS + 2.0:
+                watch._note_audio(t)
+                await watch._judge(t)
+                t += 0.02
+            after_audio = list(events)
+            await watch._note_speech(0.3)  # queued audio segmenting just after the mute: not proof
+            after_early_speech = list(events)
+            await watch._note_speech(LINK_HOLD_WARN_SECS + 3.0)
+            return after_audio, after_early_speech, events
+
+        after_audio, after_early, events = run(scenario())
+        self.assertEqual(after_audio, [("paused", "mic")], "silence from a muted track lifted a mic hold")
+        self.assertEqual(after_early, [("paused", "mic")], "speech inside the settling time lifted the hold")
         self.assertEqual(events, [("paused", "mic"), ("ok", "page-expired")])
 
     def test_a_break_in_the_audio_restarts_the_count(self):
@@ -562,7 +587,7 @@ class PageHoldExpiry(unittest.TestCase):
             events = []
             watch = self._watch(events)
             watch._note_audio(0.0)
-            await watch.hold("mic", now=0.0)
+            await watch.hold("link", now=0.0)
             t = 0.0
             while t < LINK_HOLD_WARN_SECS + 0.3:
                 if 5.0 < t < 5.5:  # half a second of nothing
@@ -574,7 +599,7 @@ class PageHoldExpiry(unittest.TestCase):
             return events
 
         events = run(scenario())
-        self.assertEqual(events, [("paused", "mic")], "a broken flow counted as unbroken")
+        self.assertEqual(events, [("paused", "link")], "a broken flow counted as unbroken")
 
 
 class LoopStalls(unittest.TestCase):

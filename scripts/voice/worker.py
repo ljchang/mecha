@@ -197,13 +197,18 @@ LINK_FRAME_GAP_SECS = 0.25
 USER_TURN_STOP_TIMEOUT = 15.0
 # A hold this long is no longer a stall being ridden out; it is worth a line
 # at WARNING, because a hold that never lifts is a call that never answers.
-# It is also how long a hold the *page* asked for survives against audio
-# that has flowed continuously the whole time: the page's `ok` travels over
-# a channel that may be the thing that stalled and is dropped silently when
-# it is not open, so a lost one would otherwise latch the hold for the life
-# of the call (sixth review of #226 — the mirror of the page's own
-# `serverPauseExpired`). The worker holds the stronger witness for this:
-# `_last_audio` *is* the uplink, not a proxy for it.
+# It is also how long a hold the *page* asked for on the link's account
+# survives against audio that has flowed continuously the whole time: the
+# page's `ok` travels over a channel that may be the thing that stalled and
+# is dropped silently when it is not open, so a lost one would otherwise
+# latch the hold for the life of the call (sixth review of #226 — the
+# mirror of the page's own `serverPauseExpired`). For a *link* hold the
+# worker holds the stronger witness: `_last_audio` is the uplink itself.
+# For a *mic* hold it is no witness at all — a track iOS muted on screen
+# lock keeps sending silence, which is the 40–80 s of frames with no speech
+# in them the 2026-09-12 journal measured — so a mic hold is never expired
+# by audio. What proves a microphone live is speech: the first VAD start
+# past the hold's own settling time lifts it (seventh review).
 LINK_HOLD_WARN_SECS = 10.0
 # The watchdog's own tick. The stall is declared at most one tick after
 # `LINK_STALL_SECS`, so the worst case is their sum, and that sum has to
@@ -381,7 +386,25 @@ class LinkWatch(FrameProcessor):
                 self._tick_task = None
         elif isinstance(frame, InputAudioRawFrame):
             self._note_audio(_time.monotonic())
+        elif isinstance(frame, VADUserStartedSpeakingFrame):
+            # Broadcast by the aggregator, so it passes here going upstream.
+            await self._note_speech(_time.monotonic())
         await self.push_frame(frame, direction)
+
+    async def _note_speech(self, now: float):
+        """The VAD found speech. A muted microphone cannot produce it, so a
+        page hold for the mic is over — after a stall's worth of settling,
+        because audio queued before the mute can still be segmenting."""
+        if self._client_paused == "mic" and now - self._client_paused_at > LINK_STALL_SECS:
+            from loguru import logger
+
+            logger.warning(
+                "voice link: the page's mic hold expired — the owner is audibly speaking "
+                "and no ok arrived from the page"
+            )
+            self._client_paused = None
+            self._client_paused_at = None
+            await self._settle("page-expired")
 
     def _note_audio(self, now: float):
         """A microphone frame arrived. While stalled, the settle counts
@@ -427,6 +450,7 @@ class LinkWatch(FrameProcessor):
                 self._flow_since = None
             if (
                 self._client_paused is not None
+                and self._client_paused != "mic"
                 and self._flow_since is not None
                 and now - max(self._flow_since, self._client_paused_at) >= LINK_HOLD_WARN_SECS
             ):
@@ -1364,8 +1388,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
             # gap in the audio would. A prompt-shaped payload has nowhere to
             # go here: the only thing this message can do is pause.
             data = msg.data if isinstance(msg.data, dict) else {}
-            state = str(data.get("state", ""))[:16]
-            reason = str(data.get("reason", ""))[:32]
+            # One printable line each: the journal is the instrument every
+            # diagnosis here is read from, and a page must not be able to
+            # write a second line into it.
+            state = "".join(c for c in str(data.get("state", ""))[:16] if c.isprintable())
+            reason = "".join(c for c in str(data.get("reason", ""))[:32] if c.isprintable())
             print(f"voice link (page): state={state} reason={reason}", flush=True)
             if state == "paused":
                 await link.hold(reason or "page")
