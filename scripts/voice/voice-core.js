@@ -345,6 +345,8 @@ export function createVoiceSession(opts = {}) {
         link = v.next;
         if (v.stalled === true) pause("link");
         else if (v.stalled === false) resume("link");
+        if (pausedBy.reasons.has("server") && !link.stalled && link.packetsAt !== null
+            && Date.now() - serverPausedAt > SERVER_PAUSE_EXPIRY_MS) resume("server");
       }
     }, LEVEL_POLL_MS);
   }
@@ -369,9 +371,21 @@ export function createVoiceSession(opts = {}) {
     server: "mecha stopped hearing you — waiting for the network",
     mic: "microphone paused — is the screen locked?",
   };
+  /* The worker's announcement is cleared by its `ok`, which travels over
+     a channel that may be the thing that stalled. Two other witnesses can
+     clear it: any speaking edge or transcript from the worker (it does not
+     produce those without audio flowing), and this page's own statistics
+     reading healthy for `SERVER_PAUSE_EXPIRY_MS` after the announcement -
+     the worker's settle is 0.6 s, so an `ok` five seconds overdue on a
+     link that is demonstrably carrying packets is a lost message, not a
+     held turn. Without a way out, `setState` swallowing every transition
+     while held would freeze a working call at "paused" (third review). */
+  const SERVER_PAUSE_EXPIRY_MS = 5000;
+  let serverPausedAt = 0;
   function pause(reason) {
     if (ended) return;
     const { first, announce } = pausedBy.add(reason);
+    if (reason === "server") serverPausedAt = Date.now();
     if (announce) sendLink("paused", reason);
     if (!first) return;
     thinkingSound(false);
@@ -392,7 +406,12 @@ export function createVoiceSession(opts = {}) {
     clearTimeout(pauseToneTimer); pauseToneTimer = null;
     if (pauseSounded) resumeTone();
     pauseSounded = false;
-    cfg.onState("listening", "listening");
+    // Back to what the call was doing, not to "listening": a pause during
+    // a twenty-second search must come back as the wait it interrupted,
+    // pulse and all, or the page is silent and lying about it - D7's own
+    // failure mode (third review of #226).
+    if (lastState.name === "thinking") thinkingSound(true);
+    cfg.onState(lastState.name, lastState.label);
   }
   /* Tell the worker, so it holds the turn (a gap the page saw is a gap in
      the owner's sentence) and so the journal carries the phone's view.
@@ -425,7 +444,12 @@ export function createVoiceSession(opts = {}) {
      the call through the terminal arm below without waiting for this. */
   const DROP_GRACE_MS = 15000;
 
+  /* The last state the call was actually in, kept up to date through a
+     pause so the resume restores the present, not the moment the pause
+     began. */
+  let lastState = { name: "listening", label: "listening" };
   function setState(name, label) {
+    if (name !== "idle" && name !== "paused") lastState = { name, label };
     // A paused call stays labelled paused: the worker's speaking edges and
     // the user's own can still arrive over a channel that is half working,
     // and "listening" over a link the page knows is not carrying anything
@@ -435,6 +459,9 @@ export function createVoiceSession(opts = {}) {
   }
 
   function onRtvi(msg) {
+    // A speaking edge or a transcript is the worker hearing audio: its
+    // pause is over whether or not its `ok` arrived.
+    if (pausedBy.reasons.has("server") && /^(user|bot)-/.test(msg.type)) resume("server");
     switch (msg.type) {
       /* Both user-speaking edges are ignored while the bot is audible.
          They come from the VAD, which on a laptop without headphones fires
@@ -459,7 +486,8 @@ export function createVoiceSession(opts = {}) {
         // that never arrived cannot leave the user's own edges suppressed
         // for the rest of the call.
         botSpeaking = false;
-        thinkingSound(true); setState("thinking", "thinking"); break;
+        if (!pausedBy.any) thinkingSound(true);
+        setState("thinking", "thinking"); break;
       case "bot-tts-started":
       case "bot-started-speaking":
         botSpeaking = true;

@@ -134,27 +134,30 @@
     const total = chunks.reduce((n, c) => n + c.length, 0);
     const seconds = total / sourceRate;
     const captured = peak;
-    if (ctx) gotItTone();
-    const wav = encodeWav();
-    // Let the tone finish before the context closes under it.
-    await new Promise((r) => setTimeout(r, 220));
-    cleanup();
-    state_ = 'transcribing';
+    // The refusals come first, and silently: "got it" before "heard
+    // nothing" tells the ear the opposite of what happened, on exactly
+    // the path the guard exists for (third review of #226).
     if (seconds < MIN_SECONDS) {
+      cleanup();
       onText(null, total === 0
         ? 'heard nothing — the microphone delivered no audio (is the page allowed to use it?)'
         : 'heard nothing — tap, speak, then tap again');
-      state_ = 'idle';
       return;
     }
     if (captured < 0.001) {
       // Samples arrived and every one was zero: a muted track, which is
       // what a phone hands over when the screen is locked or another app
       // holds the microphone. Not worth a round trip to find out.
+      cleanup();
       onText(null, 'heard only silence — is the microphone muted?');
-      state_ = 'idle';
       return;
     }
+    gotItTone();
+    const wav = encodeWav();
+    // Let the tone finish before the context closes under it.
+    await new Promise((r) => setTimeout(r, 220));
+    cleanup();
+    state_ = 'transcribing';
     try {
       const res = await fetch('/api/dictate', {
         method: 'POST',
