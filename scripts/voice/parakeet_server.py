@@ -22,7 +22,7 @@ import wave
 
 import numpy as np
 import sherpa_onnx
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 
 MODEL_DIR = os.environ.get(
     "PARAKEET_DIR",
@@ -58,10 +58,21 @@ async def transcribe(file: UploadFile = File(...), model: str = Form("parakeet")
                      language: str = Form(None), prompt: str = Form(None),
                      temperature: float = Form(0.0)):
     raw = await file.read()
-    with wave.open(io.BytesIO(raw)) as w:
-        rate = w.getframerate()
-        frames = w.readframes(w.getnframes())
+    try:
+        with wave.open(io.BytesIO(raw)) as w:
+            rate = w.getframerate()
+            frames = w.readframes(w.getnframes())
+    except (wave.Error, EOFError) as e:
+        raise HTTPException(status_code=400, detail=f"not a WAV clip: {e}")
     samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+    if samples.size == 0:
+        # A clip with a header and no samples. The dictate button used to
+        # send one whenever the page's audio graph never ran (2 of 8 clips
+        # on 2026-09-12), and the encoder crashed on the empty tensor
+        # ("Invalid input shape: {0,128}") as a 500 — which the page showed
+        # as a gateway error rather than as "nothing was recorded". A
+        # request with nothing in it is the caller's mistake, said so.
+        raise HTTPException(status_code=400, detail="empty audio: the clip has no samples")
     stream = recognizer.create_stream()
     stream.accept_waveform(rate, samples)
     recognizer.decode_stream(stream)

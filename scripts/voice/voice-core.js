@@ -23,7 +23,7 @@
  *                          // offer because that is the only message sent
  *                          // before the bot exists, and the bot is what
  *                          // has to know — the data channel opens too late
- *     onState,             // (name, label) — idle|connecting|listening|thinking|speaking
+ *     onState,             // (name, label) — idle|connecting|listening|thinking|speaking|paused
  *     onTranscript,        // ({who: "user"|"bot", text, interim})
  *     onLevel,             // (0..1) real mic level, for state rings
  *     onLink,              // (live: bool)
@@ -117,6 +117,113 @@ export function writeVoicePrefs(patch) {
   writePrefs(patch ?? {});
 }
 
+/* The link verdict, from two counters the browser keeps.
+
+   `packetsIn` is `inbound-rtp.packetsReceived` for the bot's audio track.
+   The worker's output track sends silence whenever it is not speaking
+   (`RawAudioTrack(auto_silence=True)`), so on a working link this rises
+   every tick, and a count that has not moved for `INBOUND_STALL_MS` is a
+   link that has stopped delivering - the same two seconds the worker's own
+   transport waits before it logs "No audio frame received".
+
+   `reportAt` is `remote-inbound-rtp.timestamp`: when this browser last
+   received an RTCP receiver report about the audio it is *sending*. The
+   far end sends one about every second; a stamp that has not advanced for
+   `REPORT_STALL_MS` means the worker has stopped saying it hears us, which
+   is the stall that matters to a person mid-sentence. Longer than the
+   inbound window because the report interval is the far end's to choose.
+
+   Missing counters are unknown, not a stall: a browser that reports neither
+   gets no verdict rather than a pause tone on every call. `stalled` is
+   `true` on the tick the link is declared paused, `false` on the tick it is
+   declared back, and `null` in between - so the caller sounds each
+   transition once. */
+export const INBOUND_STALL_MS = 2000;
+export const REPORT_STALL_MS = 4000;
+
+export function freshLink() {
+  return { packetsIn: null, packetsAt: null, reportAt: null, reportSeenAt: null, stalled: false };
+}
+
+export function linkVerdict(prev, sample, now) {
+  const next = { ...prev };
+  if (typeof sample.packetsIn === "number") {
+    if (next.packetsIn === null || sample.packetsIn > next.packetsIn) {
+      next.packetsIn = sample.packetsIn; next.packetsAt = now;
+    }
+  }
+  if (typeof sample.reportAt === "number") {
+    if (next.reportAt === null || sample.reportAt > next.reportAt) {
+      next.reportAt = sample.reportAt; next.reportSeenAt = now;
+    }
+  }
+  const inboundStalled = next.packetsAt !== null && now - next.packetsAt >= INBOUND_STALL_MS;
+  const reportStalled = next.reportSeenAt !== null && now - next.reportSeenAt >= REPORT_STALL_MS;
+  const known = next.packetsAt !== null || next.reportSeenAt !== null;
+  if (!known) return { next, stalled: null, reason: null };
+  const stalled = inboundStalled || reportStalled;
+  if (stalled === prev.stalled) return { next, stalled: null, reason: null };
+  next.stalled = stalled;
+  return { next, stalled, reason: inboundStalled ? "inbound" : reportStalled ? "report" : null };
+}
+
+/* Why a call is paused, by source, and which transitions are the worker's
+   business. Two kinds of reason: the page's own (`link` from its statistics,
+   `mic` from the track's mute edge) and `server`, the worker's announcement
+   of a pause it is already holding for. The worker is told when the page's
+   *own* reasons begin and when they end - never about `server`, which is
+   the worker talking; echoing that back made the worker hold on the page's
+   behalf until the page said otherwise, which the page would only do once
+   the worker had let go (review of #226 - a call that paused once stayed
+   paused for its life). Sounds and the label follow the whole set: a pause
+   is one pause whoever saw it first, and it is over when nobody holds it. */
+export class Pauses {
+  constructor() { this.reasons = new Set(); }
+  static isLocal(reason) { return reason !== "server"; }
+  get size() { return this.reasons.size; }
+  get any() { return this.reasons.size > 0; }
+  get localCount() { return [...this.reasons].filter(Pauses.isLocal).length; }
+  get first() { const [r] = this.reasons; return r ?? null; }
+  /* add: `first` - the set was empty (sound it, label it);
+     `announce` - this is one of the page's own reasons (tell the worker,
+     naming it). Every local reason is announced, not only the first: the
+     worker holds them as a set and expires each by its own witness, and
+     telling it only the first let a `link` hold's expiry lift a `mic` hold
+     the page still owned (eighth review of #226). */
+  add(reason) {
+    if (this.reasons.has(reason)) return { first: false, announce: false, added: false };
+    const first = this.reasons.size === 0;
+    this.reasons.add(reason);
+    return { first, announce: Pauses.isLocal(reason), added: true };
+  }
+  /* remove: `last` - the set is now empty (resume, sound it);
+     `announce` - one of the page's own reasons ended (tell the worker `ok`, naming it). */
+  remove(reason) {
+    if (!this.reasons.delete(reason)) return { last: false, announce: false, removed: false };
+    return { last: this.reasons.size === 0, announce: Pauses.isLocal(reason), removed: true };
+  }
+  clear() { this.reasons.clear(); }
+}
+
+/* When a pause the *worker* announced may be cleared without its `ok`.
+   The worker pauses on an uplink stall - our audio not reaching it - and
+   the only uplink witness this page has is the far end's receiver report
+   (`reportSeenAt`). Downlink packets arriving prove nothing about it, so a
+   healthy inbound count alone must not clear the pause (fifth review of
+   #226): every witness has to be fresh, the report included, for
+   `SERVER_PAUSE_EXPIRY_MS` after the announcement. A browser that never
+   populates `remote-inbound-rtp` therefore never expires a worker pause -
+   it waits for the `ok` - which is the fail-closed side of an unknown. */
+export const SERVER_PAUSE_EXPIRY_MS = 5000;
+
+export function serverPauseExpired(link, serverPausedAt, now) {
+  if (!serverPausedAt || now - serverPausedAt <= SERVER_PAUSE_EXPIRY_MS) return false;
+  if (link.stalled) return false;
+  if (link.packetsAt === null || now - link.packetsAt >= INBOUND_STALL_MS) return false;
+  if (link.reportSeenAt === null || now - link.reportSeenAt >= REPORT_STALL_MS) return false;
+  return true;
+}
+
 export function createVoiceSession(opts = {}) {
   const cfg = {
     offerUrl: "/api/offer",
@@ -132,6 +239,16 @@ export function createVoiceSession(opts = {}) {
   };
 
   const AC = new (window.AudioContext || window.webkitAudioContext)();
+  function softTone(freq, t0, dur, gain) {
+    const o = AC.createOscillator(), g = AC.createGain(), f = AC.createBiquadFilter();
+    o.type = "sine"; o.frequency.value = freq;
+    f.type = "lowpass"; f.frequency.value = 1100;
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(gain, t0 + 0.12);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(f).connect(g).connect(AC.destination);
+    o.start(t0); o.stop(t0 + dur + 0.05);
+  }
   function tone(freq, t0, dur, gain = 0.08, type = "sine") {
     const o = AC.createOscillator(), g = AC.createGain();
     o.type = type; o.frequency.value = freq;
@@ -143,20 +260,19 @@ export function createVoiceSession(opts = {}) {
   }
   const chimeStart = () => { const t = AC.currentTime; tone(659, t, .18); tone(880, t + .12, .28); };
   const chimeEnd = () => { const t = AC.currentTime; tone(440, t, .22); tone(294, t + .16, .45); };
+  /* Pause and resume: the link went quiet, the link came back. Two soft notes
+     down, two soft notes up - a step, not the end chime's fall, because the
+     call is not over and the sound must not say it is. Quieter than the
+     chimes: they mark an event the listener asked for; these interrupt one.
+     Requested 2026-09-12 after a drive on which the page had no way to say
+     that the far end had stopped hearing anything (docs/VOICE-RESEARCH.md
+     D7, amended). */
+  const pauseTone = () => { const t = AC.currentTime; softTone(494, t, .3, .05); softTone(370, t + .18, .45, .045); };
+  const resumeTone = () => { const t = AC.currentTime; softTone(370, t, .3, .05); softTone(494, t + .18, .45, .045); };
   // Thinking is a soft two-note pulse, not a tick: a slow attack removes the
   // percussive edge (the old triangle tick read as a metronome), the lowpass
   // keeps it warm, and the pair alternates rising/falling so a long wait
   // breathes instead of repeating one sound at you.
-  function softTone(freq, t0, dur, gain) {
-    const o = AC.createOscillator(), g = AC.createGain(), f = AC.createBiquadFilter();
-    o.type = "sine"; o.frequency.value = freq;
-    f.type = "lowpass"; f.frequency.value = 1100;
-    g.gain.setValueAtTime(0, t0);
-    g.gain.linearRampToValueAtTime(gain, t0 + 0.12);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    o.connect(f).connect(g).connect(AC.destination);
-    o.start(t0); o.stop(t0 + dur + 0.05);
-  }
   let thinkTimer = null;
   function thinkingSound(on) {
     if (on && !thinkTimer) {
@@ -203,6 +319,14 @@ export function createVoiceSession(opts = {}) {
      so the trade is not close. */
   const LEVEL_POLL_MS = 100;
   let levelBusy = false;
+  /* The link monitor rides the same poll. `getStats` already carries the
+     two facts a pause needs: whether the far end's audio is still arriving
+     (`inbound-rtp.packetsReceived` - the worker sends silence between
+     replies, so a still count is a stalled link, not a quiet bot) and when
+     the far end last reported hearing *us* (`remote-inbound-rtp.timestamp`,
+     the RTCP receiver report). `linkVerdict` is the decision, kept pure so
+     it can be tested without a browser. */
+  let link = freshLink();
   function startMeter() {
     if (levelTimer) return;
     levelTimer = setInterval(async () => {
@@ -214,9 +338,12 @@ export function createVoiceSession(opts = {}) {
       if (levelBusy || !pc) return;
       levelBusy = true;
       let level = null;
+      const sample = { packetsIn: null, reportAt: null };
       try {
         (await pc.getStats()).forEach(r => {
           if (r.type === "media-source" && r.kind === "audio" && typeof r.audioLevel === "number") level = r.audioLevel;
+          if (r.type === "inbound-rtp" && r.kind === "audio" && typeof r.packetsReceived === "number") sample.packetsIn = r.packetsReceived;
+          if (r.type === "remote-inbound-rtp" && r.kind === "audio" && typeof r.timestamp === "number") sample.reportAt = r.timestamp;
         });
       } catch { /* a closing connection; the next tick is the recovery */ }
       finally { levelBusy = false; }
@@ -229,7 +356,100 @@ export function createVoiceSession(opts = {}) {
       // where ordinary speech sits low enough that a linear ring barely
       // moves. The square root spends the ring's travel where the voice is.
       if (level !== null) cfg.onLevel(Math.min(1, Math.sqrt(level) * 2));
+      // Only once the call is up: before `connected` nothing has arrived
+      // yet and a still count is the connection being made, not lost.
+      if (linked) {
+        // A monotonic clock: the windows below are durations, and the one
+        // environment this runs in guarantees wall-clock steps (NTP on a
+        // phone crossing cells). `reportAt` is compared only for advancing.
+        const now = performance.now();
+        const v = linkVerdict(link, sample, now);
+        link = v.next;
+        if (v.stalled === true) pause("link");
+        else if (v.stalled === false) resume("link");
+        if (pausedBy.reasons.has("server") && serverPauseExpired(link, serverPausedAt, now)) resume("server");
+      }
     }, LEVEL_POLL_MS);
+  }
+  /* Why the call is paused, by source. A pause is sounded when the first
+     reason arrives and the resume when the last one leaves, so a stall the
+     page saw and the worker also announced is one pause, not two - and a
+     mic iOS muted on screen lock stays paused through a link that is fine.
+     `link` is this page's statistics, `server` the worker's own watch over
+     its audio (an RTVI `link` message), `mic` the track's mute edge. */
+  const pausedBy = new Pauses();
+  /* The label changes at once; the sound waits. The worker holds the turn
+     from three-quarters of a second without audio, and says so, and a
+     cellular link blips for that long routinely - a tone for every blip
+     would be the thinking pulse's mistake again, a sound telling you
+     something you did not need to know. A pause that lasts this long is
+     one the listener has already noticed; the tone confirms it, and a
+     resume is only sounded for a pause that was. */
+  const PAUSE_TONE_DELAY_MS = 700;
+  let pauseToneTimer = null, pauseSounded = false;
+  const PAUSE_LABELS = {
+    link: "connection paused — waiting for the network",
+    server: "mecha stopped hearing you — waiting for the network",
+    mic: "microphone paused — is the screen locked?",
+  };
+  /* The worker's announcement is cleared by its `ok`, which travels over
+     a channel that may be the thing that stalled. One other witness can
+     clear it: this page's own statistics reading healthy - uplink and
+     down - for `SERVER_PAUSE_EXPIRY_MS` after the announcement
+     (`serverPauseExpired`): the worker's settle is 0.6 s, so an `ok` five
+     seconds overdue on a link demonstrably carrying packets both ways is
+     a lost message, not a held turn. Without a way out, `setState`
+     swallowing every transition while held would freeze a working call at
+     "paused" (third review of #226). Deliberately *not* the worker's own
+     events: a transcript arrives during a hold - it is the fragment the
+     stall cut, held rather than acted on - and a reply can still be
+     playing out, so either would un-pause the page a second after it
+     paused, over a link it had just been told carries nothing (fourth
+     review). */
+  let serverPausedAt = 0;
+  function pause(reason) {
+    if (ended) return;
+    const { first, announce } = pausedBy.add(reason);
+    if (reason === "server") serverPausedAt = performance.now();
+    if (announce) sendLink("paused", reason);
+    if (!first) return;
+    thinkingSound(false);
+    pauseSounded = false;
+    pauseToneTimer = setTimeout(() => { pauseToneTimer = null; pauseSounded = true; pauseTone(); }, PAUSE_TONE_DELAY_MS);
+    cfg.onState("paused", PAUSE_LABELS[reason] || "paused");
+  }
+  function resume(reason) {
+    const { last, announce, removed } = pausedBy.remove(reason);
+    if (!removed) return;
+    if (announce) sendLink("ok", reason);
+    if (!last) {
+      // Still paused for another reason; relabel to the one that remains.
+      cfg.onState("paused", PAUSE_LABELS[pausedBy.first] || "paused");
+      return;
+    }
+    if (ended) return;
+    clearTimeout(pauseToneTimer); pauseToneTimer = null;
+    if (pauseSounded) resumeTone();
+    pauseSounded = false;
+    // Back to what the call was doing, not to "listening": a pause during
+    // a twenty-second search must come back as the wait it interrupted,
+    // pulse and all, or the page is silent and lying about it - D7's own
+    // failure mode (third review of #226).
+    if (lastState.name === "thinking") thinkingSound(true);
+    cfg.onState(lastState.name, lastState.label);
+  }
+  /* Tell the worker, so it holds the turn (a gap the page saw is a gap in
+     the owner's sentence) and so the journal carries the phone's view.
+     Fire-and-forget over the data channel; a channel that is itself stalled
+     drops it, and the worker's own audio watch covers that case. */
+  function sendLink(state, reason) {
+    if (!dc || dc.readyState !== "open") return;
+    try {
+      dc.send(JSON.stringify({
+        label: "rtvi-ai", type: "client-message", id: crypto.randomUUID(),
+        data: { t: "link", d: { state, reason } },
+      }));
+    } catch { /* closing */ }
   }
   function stopMeter() {
     clearInterval(levelTimer); levelTimer = 0;
@@ -249,7 +469,19 @@ export function createVoiceSession(opts = {}) {
      the call through the terminal arm below without waiting for this. */
   const DROP_GRACE_MS = 15000;
 
-  function setState(name, label) { cfg.onState(name, label); }
+  /* The last state the call was actually in, kept up to date through a
+     pause so the resume restores the present, not the moment the pause
+     began. */
+  let lastState = { name: "listening", label: "listening" };
+  function setState(name, label) {
+    if (name !== "idle" && name !== "paused") lastState = { name, label };
+    // A paused call stays labelled paused: the worker's speaking edges and
+    // the user's own can still arrive over a channel that is half working,
+    // and "listening" over a link the page knows is not carrying anything
+    // is the state this feature exists to stop showing.
+    if (pausedBy.any && name !== "idle") return;
+    cfg.onState(name, label);
+  }
 
   function onRtvi(msg) {
     switch (msg.type) {
@@ -276,7 +508,8 @@ export function createVoiceSession(opts = {}) {
         // that never arrived cannot leave the user's own edges suppressed
         // for the rest of the call.
         botSpeaking = false;
-        thinkingSound(true); setState("thinking", "thinking"); break;
+        if (!pausedBy.any) thinkingSound(true);
+        setState("thinking", "thinking"); break;
       case "bot-tts-started":
       case "bot-started-speaking":
         botSpeaking = true;
@@ -294,6 +527,12 @@ export function createVoiceSession(opts = {}) {
           // server's state rather than from whatever was asked for.
           writePrefs(msg.data);
           cfg.onVoiceConfig(msg.data);
+        }
+        // The worker's own watch over its microphone audio: it saw the gap
+        // (or the page reported one) and is holding the turn. Sounded here
+        // only if this page has not already sounded it.
+        else if (msg.data?.t === "link") {
+          if (msg.data.state === "paused") pause("server"); else resume("server");
         }
         // The worker announces a teardown it is about to perform. Held for
         // `end()` rather than acted on: the close arrives a moment later by
@@ -314,6 +553,12 @@ export function createVoiceSession(opts = {}) {
     // reason the previous one ended.
     ended = false; linked = false; endLabel = null; botSpeaking = false;
     clearTimeout(dropTimer); dropTimer = null;
+    pausedBy.clear(); link = freshLink();
+    // Added per connect and removed per end, so a session reconnected
+    // through the same object keeps the promise above about re-requesting
+    // the lock; `end()` removed it and `connect()` never put it back.
+    document.removeEventListener("visibilitychange", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
     await AC.resume();
     setState("connecting", "connecting…");
     try {
@@ -326,7 +571,22 @@ export function createVoiceSession(opts = {}) {
       setState("idle", "microphone refused — tap to retry");
       return;
     }
+    /* The microphone can be taken away without the call ending. iOS mutes
+       the track when the screen locks or another app takes the audio
+       session (a navigation prompt, a phone call) and unmutes it after; the
+       packets keep flowing, carrying silence, and nothing downstream can
+       tell that from the owner having stopped talking. Both calls on
+       2026-09-12 went quiet ~60 s after the last touch of the screen. The
+       edge is the only witness, so it is what pauses - and `ended` is the
+       track gone for good, which is a reconnect, not a wait. */
+    micStream.getAudioTracks().forEach(t => {
+      t.onmute = () => pause("mic");
+      t.onunmute = () => resume("mic");
+      t.onended = () => end("microphone lost — tap to reconnect");
+    });
     pc = new RTCPeerConnection();
+    // After `pc` exists: the post-await guard in `holdScreen` reads it.
+    holdScreen();
     micStream.getTracks().forEach(t => pc.addTrack(t, micStream));
     pc.addTransceiver("audio", { direction: "recvonly" });
     const speaker = new Audio(); speaker.autoplay = true;
@@ -444,10 +704,40 @@ export function createVoiceSession(opts = {}) {
     return d?.reason ? `call ended (${d.reason}) — tap to reconnect` : null;
   }
 
+  /* Keep the screen on for the length of the call. The lock is what stands
+     between a driver and the mute above: with it, the phone does not lock,
+     the track is not muted, and the pause it would have caused never
+     happens. Best effort - a browser without the API, or a page that is
+     not visible when asked, simply gets no lock - and re-requested whenever
+     the page comes back into view, because the browser releases it on every
+     hide. */
+  let wakeLock = null;
+  async function holdScreen() {
+    if (ended || !navigator.wakeLock || document.visibilityState !== "visible") return;
+    let lock = null;
+    try { lock = await navigator.wakeLock.request("screen"); } catch { lock = null; }
+    // Re-checked after the await, as `startMeter` does: a request in
+    // flight when `end()` ran resolves afterwards, and a lock stored then
+    // outlives the call - the screen stays on in the car until the page
+    // hides (sixth review of #226).
+    if (ended || !pc) { if (lock) lock.release().catch(() => {}); return; }
+    if (wakeLock && wakeLock !== lock) wakeLock.release().catch(() => {});
+    wakeLock = lock;
+  }
+  function releaseScreen() {
+    const l = wakeLock; wakeLock = null;
+    if (l) l.release().catch(() => {});
+  }
+  const onVisible = () => { if (document.visibilityState === "visible" && !ended && pc) holdScreen(); };
+
   function end(label) {
     if (ended) return;
     ended = true;
     clearTimeout(dropTimer); dropTimer = null;
+    document.removeEventListener("visibilitychange", onVisible);
+    releaseScreen();
+    pausedBy.clear();
+    clearTimeout(pauseToneTimer); pauseToneTimer = null;
     thinkingSound(false);
     chimeEnd();
     stopMeter();

@@ -631,11 +631,21 @@ async fn ping() -> &'static str {
     "ok\n"
 }
 
-/// POST /api/offer — the page's WebRTC offer, forwarded to the loopback
-/// voice runner. Same-origin for the browser (no CORS in the path at all)
-/// and behind the owner guard like everything else; the runner's own
-/// origin allowlist still covers its direct door. Body passed through
-/// verbatim both ways — this is a pipe, not a participant.
+/// A `reqwest::Error` with its causes, innermost last. `{e:#}` is anyhow's
+/// idiom and reqwest ignores the flag: the top line says "error sending
+/// request" and the one fact worth logging — `Connection refused` — is two
+/// sources down.
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut cur = e.source();
+    while let Some(next) = cur {
+        out.push_str(": ");
+        out.push_str(&next.to_string());
+        cur = next.source();
+    }
+    out
+}
+
 /// POST /api/dictate — a WAV clip in, its words out, via the local Parakeet
 /// STT (the transducer that CANNOT obey speech — see the voice research).
 /// The page encodes 16 kHz mono WAV itself, so no transcoder runs here; the
@@ -679,19 +689,47 @@ async fn dictate(State(_state): State<WebState>, body: axum::body::Bytes) -> Res
                 .into_response(),
             Err(e) => (StatusCode::BAD_GATEWAY, format!("reading answer: {e}\n")).into_response(),
         },
-        Ok(resp) => (
-            StatusCode::BAD_GATEWAY,
-            format!("stt answered {}\n", resp.status()),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            format!("stt unreachable — is mecha-parakeet up? {e}\n"),
-        )
-            .into_response(),
+        Ok(resp) => {
+            // The refusal's own words travel: a 400 "empty audio" is the
+            // page's fault and says so, where "stt answered 400" says only
+            // that something happened somewhere behind the page.
+            let status = resp.status();
+            // One bounded, printable line: the STT is a loopback service of
+            // our own, but its body is trusted by convention only, and this
+            // reaches the journal — the same rule the worker applies to the
+            // page's `link` strings.
+            let detail: String = resp
+                .text()
+                .await
+                .unwrap_or_default()
+                .chars()
+                .filter(|c| c.is_ascii_graphic() || *c == ' ')
+                .take(200)
+                .collect();
+            tracing::warn!("dictate: stt answered {status}: {}", detail.trim());
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("stt answered {status}: {}\n", detail.trim()),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            let why = error_chain(&e);
+            tracing::warn!("dictate: stt unreachable: {why}");
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("stt unreachable — is mecha-parakeet up? {why}\n"),
+            )
+                .into_response()
+        }
     }
 }
 
+/// POST /api/offer — the page's WebRTC offer, forwarded to the loopback
+/// voice runner. Same-origin for the browser (no CORS in the path at all)
+/// and behind the owner guard like everything else; the runner's own
+/// origin allowlist still covers its direct door. Body passed through
+/// verbatim both ways — this is a pipe, not a participant.
 async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> Response {
     let Some(target) = &state.offer_target else {
         return (StatusCode::NOT_FOUND, "voice offers are disabled\n").into_response();
@@ -708,6 +746,13 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
         Ok(resp) => {
             let status =
                 StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            // Serve logs at `warn` by default, so until this line a call
+            // that never connected left no record anywhere: the worker's
+            // journal shows only offers that reached it. 2026-09-12 had two
+            // calls in the journal and an afternoon of failed attempts.
+            if !status.is_success() {
+                tracing::warn!("voice offer: runner answered {status}");
+            }
             match resp.bytes().await {
                 Ok(bytes) => (
                     status,
@@ -720,11 +765,15 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
                 }
             }
         }
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            format!("voice runner unreachable: {e}\n"),
-        )
-            .into_response(),
+        Err(e) => {
+            let why = error_chain(&e);
+            tracing::warn!("voice offer: runner unreachable: {why}");
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("voice runner unreachable: {why}\n"),
+            )
+                .into_response()
+        }
     }
 }
 
