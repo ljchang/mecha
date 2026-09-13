@@ -42,6 +42,8 @@ except ImportError as e:  # pragma: no cover - the whole point is to be loud
 from openai.types.audio import Transcription  # noqa: E402
 
 from worker import (  # noqa: E402
+    LINK_RESUME_SETTLE_SECS,
+    LINK_STALL_SECS,
     LOOP_LAG_WARN_SECS,
     STT_TTFS_P99,
     LinkResumedFrame,
@@ -476,6 +478,51 @@ class LinkWatchHolds(unittest.TestCase):
 
 async def _record(events, state, reason):
     events.append((state, reason))
+
+
+class LinkWatchClock(unittest.TestCase):
+    """The audio clock that decides the hold, driven with a clock the test
+    owns: frames through `_note_audio`, verdicts through `_judge`."""
+
+    def test_one_stray_frame_does_not_lift_the_hold(self):
+        """Review of #226: the settle measured time since the *first* frame
+        back, so one packet in a dead link released the hold 0.6 s later
+        and the held COMPLETE shipped the fragment anyway."""
+
+        async def scenario():
+            events = []
+            watch = LinkWatch(on_change=lambda s, r, a: _record(events, s, r))
+            pushed = []
+
+            async def push(frame, direction=None):
+                pushed.append(type(frame).__name__)
+
+            watch.push_frame = push
+            t = 0.0
+            while t < 1.0:  # a second of ordinary flow
+                watch._note_audio(t)
+                t += 0.02
+            await watch._judge(1.0 + LINK_STALL_SECS)
+            paused = list(events)
+            # One stray packet, then nothing: no settle can complete on it.
+            watch._note_audio(2.5)
+            await watch._judge(2.5 + LINK_RESUME_SETTLE_SECS)
+            await watch._judge(2.5 + LINK_RESUME_SETTLE_SECS + 0.5)
+            after_stray = list(events)
+            # Real flow: frames every 20 ms for the settle's length and a
+            # little past it (integer steps, so float drift cannot stop the
+            # clock a frame short of the settle).
+            for i in range(int(LINK_RESUME_SETTLE_SECS / 0.02) + 3):
+                t = 4.0 + i * 0.02
+                watch._note_audio(t)
+                await watch._judge(t)
+            return paused, after_stray, events, pushed
+
+        paused, after_stray, events, pushed = run(scenario())
+        self.assertEqual(paused, [("paused", "audio")])
+        self.assertEqual(after_stray, paused, "a single frame lifted the hold")
+        self.assertEqual(events, [("paused", "audio"), ("ok", "audio")])
+        self.assertEqual(pushed, ["LinkStalledFrame", "LinkResumedFrame"])
 
 
 class LoopStalls(unittest.TestCase):

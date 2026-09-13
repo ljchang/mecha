@@ -46,7 +46,7 @@ from pipecat.frames.frames import (
     TranscriptionFrame,
     VADUserStartedSpeakingFrame,
 )
-from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.turns.user_start.transcription_user_turn_start_strategy import (
     TranscriptionUserTurnStartStrategy,
 )
@@ -179,6 +179,14 @@ STT_TTFS_P99 = 2.0
 # window and the transport's track error, exactly as before.
 LINK_STALL_SECS = 0.75
 LINK_RESUME_SETTLE_SECS = 0.6
+# What "flowing" means for the settle: frames arrive every 20 ms on a live
+# link, so a quarter second between two of them is the flow having broken,
+# and the settle restarts from the next frame rather than counting the gap.
+# Without this the settle measured time since the *first* frame back, and
+# one stray packet in a dead link lifted the hold 0.6 s later — the review
+# of #226 found it; the intermittent delivery it fails on is the 2026-09-12
+# shape exactly.
+LINK_FRAME_GAP_SECS = 0.25
 # How long the aggregator lets a user turn stay open with no stop strategy
 # ending it (pipecat's `user_turn_stop_timeout`, default 5.0). The hold
 # above *is* a turn no strategy is ending, so the default would ship the
@@ -348,11 +356,19 @@ class LinkWatch(FrameProcessor):
                 await self.cancel_task(self._tick_task)
                 self._tick_task = None
         elif isinstance(frame, InputAudioRawFrame):
-            now = _time.monotonic()
-            self._last_audio = now
-            if self._audio_stalled and self._resumed_at is None:
-                self._resumed_at = now
+            self._note_audio(_time.monotonic())
         await self.push_frame(frame, direction)
+
+    def _note_audio(self, now: float):
+        """A microphone frame arrived. While stalled, the settle counts
+        from this frame unless the flow has been continuous since it last
+        started — a burst after a break is a new start, not a continuation."""
+        prev = self._last_audio
+        self._last_audio = now
+        if self._audio_stalled and (
+            self._resumed_at is None or prev is None or now - prev > LINK_FRAME_GAP_SECS
+        ):
+            self._resumed_at = now
 
     async def hold(self, reason: str):
         """The page says its side paused (mic muted, screen off, far end
@@ -370,22 +386,27 @@ class LinkWatch(FrameProcessor):
         # can say where the loop was while it was not running.
         while True:
             await asyncio.sleep(LINK_TICK_SECS)
-            now = _time.monotonic()
-            if self._last_audio is not None:
-                gap = now - self._last_audio
-                if not self._audio_stalled and gap >= LINK_STALL_SECS:
-                    self._audio_stalled = True
+            await self._judge(_time.monotonic())
+
+    async def _judge(self, now: float):
+        """The audio clock's verdict at `now`. Split from the tick so it can
+        be driven with a clock the test owns."""
+        if self._last_audio is not None:
+            gap = now - self._last_audio
+            if not self._audio_stalled and gap >= LINK_STALL_SECS:
+                self._audio_stalled = True
+                self._resumed_at = None
+                await self._settle("audio")
+            elif self._audio_stalled and self._resumed_at is not None:
+                if gap > LINK_FRAME_GAP_SECS:
+                    # The flow broke inside the settle: whatever arrives
+                    # next starts it again.
                     self._resumed_at = None
-                    await self._settle("audio")
-                elif (
-                    self._audio_stalled
-                    and self._resumed_at is not None
-                    and now - self._resumed_at >= LINK_RESUME_SETTLE_SECS
-                ):
+                elif now - self._resumed_at >= LINK_RESUME_SETTLE_SECS:
                     self._audio_stalled = False
                     self._resumed_at = None
                     await self._settle("audio")
-            if self.held and not self._hold_warned and now - self._held_since > LINK_HOLD_WARN_SECS:
+        if self.held and not self._hold_warned and now - self._held_since > LINK_HOLD_WARN_SECS:
                 from loguru import logger
 
                 self._hold_warned = True
@@ -396,18 +417,20 @@ class LinkWatch(FrameProcessor):
 
     async def _settle(self, reason: str):
         """Recompute the combined hold and announce a transition, if any."""
+        from loguru import logger
+
         want = self._audio_stalled or self._client_paused is not None
         if want and not self.held:
             self._held_since = _time.monotonic()
             self._hold_warned = False
-            print(f"voice link paused ({reason})", flush=True)
+            logger.info(f"voice link paused ({reason})")
             await self.push_frame(LinkStalledFrame(reason=reason))
             if self._on_change:
                 await self._on_change("paused", reason, 0.0)
         elif not want and self.held:
             after = _time.monotonic() - self._held_since
             self._held_since = None
-            print(f"voice link resumed after {after:.1f}s ({reason})", flush=True)
+            logger.info(f"voice link resumed after {after:.1f}s ({reason})")
             await self.push_frame(LinkResumedFrame(after_secs=after))
             if self._on_change:
                 await self._on_change("ok", reason, after)

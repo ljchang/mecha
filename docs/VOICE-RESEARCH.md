@@ -869,10 +869,13 @@ how sure the record is:
   after two seconds without a reader — a memory guard for an abandoned
   track, applied to a live one — so the words that arrive late in a burst
   are thrown away rather than delayed. `LinkWatch` now sits behind the
-  transport: one second without audio holds every pending end-of-turn
+  transport: three-quarters of a second without audio (ahead of pipecat's
+  own forced VAD stop at 1.0 s) holds every pending end-of-turn
   (`TranscriptStartedTurnStop._link_held`) and says so to the page; 0.6 s of
-  audio flowing again — longer than the VAD's start window, so a resumed
-  sentence reopens the turn *before* the release — lifts it. The track's
+  audio flowing again — *continuous*, frames no more than a quarter second
+  apart, so a stray packet in a dead link counts for nothing — and longer
+  than the VAD's start window, so a resumed sentence reopens the turn
+  *before* the release, lifts it. The track's
   discard timeout is relaxed to a minute (two privates, guarded, a warning
   if pipecat moves them). `test_turn_stop.py` replays the shape and asserts
   the stock strategy still shows it.
