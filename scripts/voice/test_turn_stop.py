@@ -42,10 +42,12 @@ except ImportError as e:  # pragma: no cover - the whole point is to be loud
 from openai.types.audio import Transcription  # noqa: E402
 
 from worker import (  # noqa: E402
+    LOOP_LAG_WARN_SECS,
     STT_TTFS_P99,
     LinkResumedFrame,
     LinkStalledFrame,
     LinkWatch,
+    LoopSampler,
     ParakeetSTT,
     SegmentDroppedFrame,
     TranscriptStartedTurnStop,
@@ -474,6 +476,26 @@ class LinkWatchHolds(unittest.TestCase):
 
 async def _record(events, state, reason):
     events.append((state, reason))
+
+
+class LoopStalls(unittest.TestCase):
+    """The sampler names the frame the loop is stuck in, from a thread,
+    while it is stuck — not after."""
+
+    def test_a_blocked_loop_is_caught_with_its_stack(self):
+        async def scenario():
+            sampler = LoopSampler.start()
+            await asyncio.sleep(0.3)  # let the heartbeat run
+            time.sleep(LOOP_LAG_WARN_SECS + 0.4)  # the fault: blocking the loop
+            await asyncio.sleep(0.4)  # the beat resumes; the duration line follows
+            return sampler.stalls
+
+        stalls = run(scenario())
+        self.assertEqual(len(stalls), 1, f"expected one stall, saw {len(stalls)}")
+        late, stack = stalls[0]
+        self.assertGreaterEqual(late, LOOP_LAG_WARN_SECS)
+        self.assertIn("time.sleep", stack, "the stack does not name the blocking call")
+        self.assertIn("scenario", stack)
 
 
 class Transcripts(unittest.TestCase):

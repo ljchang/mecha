@@ -16,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The page keeps a screen wake lock for the length of a call and treats the
   microphone track's mute edge as the same pause. The tasks page's dictate
   button plays a listening tone, shows the live level, and refuses to send a
-  clip it did not record.
+  clip it did not record. A sampler thread records the main thread's stack
+  whenever the worker's event loop stops for half a second — the unnamed
+  first-turn stall every call since 2026-08-25 has shown.
 
 ### Fixed
 
