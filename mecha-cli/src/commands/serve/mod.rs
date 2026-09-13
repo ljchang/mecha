@@ -631,11 +631,6 @@ async fn ping() -> &'static str {
     "ok\n"
 }
 
-/// POST /api/offer — the page's WebRTC offer, forwarded to the loopback
-/// voice runner. Same-origin for the browser (no CORS in the path at all)
-/// and behind the owner guard like everything else; the runner's own
-/// origin allowlist still covers its direct door. Body passed through
-/// verbatim both ways — this is a pipe, not a participant.
 /// A `reqwest::Error` with its causes, innermost last. `{e:#}` is anyhow's
 /// idiom and reqwest ignores the flag: the top line says "error sending
 /// request" and the one fact worth logging — `Connection refused` — is two
@@ -718,6 +713,11 @@ async fn dictate(State(_state): State<WebState>, body: axum::body::Bytes) -> Res
     }
 }
 
+/// POST /api/offer — the page's WebRTC offer, forwarded to the loopback
+/// voice runner. Same-origin for the browser (no CORS in the path at all)
+/// and behind the owner guard like everything else; the runner's own
+/// origin allowlist still covers its direct door. Body passed through
+/// verbatim both ways — this is a pipe, not a participant.
 async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> Response {
     let Some(target) = &state.offer_target else {
         return (StatusCode::NOT_FOUND, "voice offers are disabled\n").into_response();

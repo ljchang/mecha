@@ -372,14 +372,18 @@ export function createVoiceSession(opts = {}) {
     mic: "microphone paused — is the screen locked?",
   };
   /* The worker's announcement is cleared by its `ok`, which travels over
-     a channel that may be the thing that stalled. Two other witnesses can
-     clear it: any speaking edge or transcript from the worker (it does not
-     produce those without audio flowing), and this page's own statistics
-     reading healthy for `SERVER_PAUSE_EXPIRY_MS` after the announcement -
-     the worker's settle is 0.6 s, so an `ok` five seconds overdue on a
-     link that is demonstrably carrying packets is a lost message, not a
-     held turn. Without a way out, `setState` swallowing every transition
-     while held would freeze a working call at "paused" (third review). */
+     a channel that may be the thing that stalled. One other witness can
+     clear it: this page's own statistics reading healthy for
+     `SERVER_PAUSE_EXPIRY_MS` after the announcement - the worker's settle
+     is 0.6 s, so an `ok` five seconds overdue on a link that is
+     demonstrably carrying packets is a lost message, not a held turn.
+     Without a way out, `setState` swallowing every transition while held
+     would freeze a working call at "paused" (third review of #226).
+     Deliberately *not* the worker's own events: a transcript arrives
+     during a hold - it is the fragment the stall cut, held rather than
+     acted on - and a reply can still be playing out, so either would
+     un-pause the page a second after it paused, over a link it had just
+     been told carries nothing (fourth review). */
   const SERVER_PAUSE_EXPIRY_MS = 5000;
   let serverPausedAt = 0;
   function pause(reason) {
@@ -459,9 +463,6 @@ export function createVoiceSession(opts = {}) {
   }
 
   function onRtvi(msg) {
-    // A speaking edge or a transcript is the worker hearing audio: its
-    // pause is over whether or not its `ok` arrived.
-    if (pausedBy.reasons.has("server") && /^(user|bot)-/.test(msg.type)) resume("server");
     switch (msg.type) {
       /* Both user-speaking edges are ignored while the bot is audible.
          They come from the VAD, which on a laptop without headphones fires
@@ -532,6 +533,11 @@ export function createVoiceSession(opts = {}) {
     ended = false; linked = false; endLabel = null; botSpeaking = false;
     clearTimeout(dropTimer); dropTimer = null;
     pausedBy.clear(); link = freshLink();
+    // Added per connect and removed per end, so a session reconnected
+    // through the same object keeps the promise above about re-requesting
+    // the lock; `end()` removed it and `connect()` never put it back.
+    document.removeEventListener("visibilitychange", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
     await AC.resume();
     setState("connecting", "connecting…");
     try {
@@ -693,7 +699,6 @@ export function createVoiceSession(opts = {}) {
     if (l) l.release().catch(() => {});
   }
   const onVisible = () => { if (document.visibilityState === "visible" && !ended && pc) holdScreen(); };
-  document.addEventListener("visibilitychange", onVisible);
 
   function end(label) {
     if (ended) return;
