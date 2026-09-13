@@ -206,6 +206,25 @@ export class Pauses {
   clear() { this.reasons.clear(); }
 }
 
+/* When a pause the *worker* announced may be cleared without its `ok`.
+   The worker pauses on an uplink stall - our audio not reaching it - and
+   the only uplink witness this page has is the far end's receiver report
+   (`reportSeenAt`). Downlink packets arriving prove nothing about it, so a
+   healthy inbound count alone must not clear the pause (fifth review of
+   #226): every witness has to be fresh, the report included, for
+   `SERVER_PAUSE_EXPIRY_MS` after the announcement. A browser that never
+   populates `remote-inbound-rtp` therefore never expires a worker pause -
+   it waits for the `ok` - which is the fail-closed side of an unknown. */
+export const SERVER_PAUSE_EXPIRY_MS = 5000;
+
+export function serverPauseExpired(link, serverPausedAt, now) {
+  if (!serverPausedAt || now - serverPausedAt <= SERVER_PAUSE_EXPIRY_MS) return false;
+  if (link.stalled) return false;
+  if (link.packetsAt === null || now - link.packetsAt >= INBOUND_STALL_MS) return false;
+  if (link.reportSeenAt === null || now - link.reportSeenAt >= REPORT_STALL_MS) return false;
+  return true;
+}
+
 export function createVoiceSession(opts = {}) {
   const cfg = {
     offerUrl: "/api/offer",
@@ -345,8 +364,7 @@ export function createVoiceSession(opts = {}) {
         link = v.next;
         if (v.stalled === true) pause("link");
         else if (v.stalled === false) resume("link");
-        if (pausedBy.reasons.has("server") && !link.stalled && link.packetsAt !== null
-            && Date.now() - serverPausedAt > SERVER_PAUSE_EXPIRY_MS) resume("server");
+        if (pausedBy.reasons.has("server") && serverPauseExpired(link, serverPausedAt, Date.now())) resume("server");
       }
     }, LEVEL_POLL_MS);
   }
@@ -373,18 +391,18 @@ export function createVoiceSession(opts = {}) {
   };
   /* The worker's announcement is cleared by its `ok`, which travels over
      a channel that may be the thing that stalled. One other witness can
-     clear it: this page's own statistics reading healthy for
-     `SERVER_PAUSE_EXPIRY_MS` after the announcement - the worker's settle
-     is 0.6 s, so an `ok` five seconds overdue on a link that is
-     demonstrably carrying packets is a lost message, not a held turn.
-     Without a way out, `setState` swallowing every transition while held
-     would freeze a working call at "paused" (third review of #226).
-     Deliberately *not* the worker's own events: a transcript arrives
-     during a hold - it is the fragment the stall cut, held rather than
-     acted on - and a reply can still be playing out, so either would
-     un-pause the page a second after it paused, over a link it had just
-     been told carries nothing (fourth review). */
-  const SERVER_PAUSE_EXPIRY_MS = 5000;
+     clear it: this page's own statistics reading healthy - uplink and
+     down - for `SERVER_PAUSE_EXPIRY_MS` after the announcement
+     (`serverPauseExpired`): the worker's settle is 0.6 s, so an `ok` five
+     seconds overdue on a link demonstrably carrying packets both ways is
+     a lost message, not a held turn. Without a way out, `setState`
+     swallowing every transition while held would freeze a working call at
+     "paused" (third review of #226). Deliberately *not* the worker's own
+     events: a transcript arrives during a hold - it is the fragment the
+     stall cut, held rather than acted on - and a reply can still be
+     playing out, so either would un-pause the page a second after it
+     paused, over a link it had just been told carries nothing (fourth
+     review). */
   let serverPausedAt = 0;
   function pause(reason) {
     if (ended) return;
