@@ -439,7 +439,7 @@ class LinkWatch(FrameProcessor):
         """The page says its side paused for `reason` (its link statistics,
         or the mic's mute edge). Held until the page releases that reason,
         or until the witness for it says otherwise: unbroken audio for
-        `LINK_HOLD_WARN_SECS` past this moment for a link hold, speech for a
+        `LINK_PAGE_HOLD_EXPIRY_SECS` past this moment for a link hold, speech for a
         mic hold. `now` is the audio clock's — a test owns it; production
         reads the monotonic one."""
         self._client_paused.setdefault(reason, _time.monotonic() if now is None else now)
