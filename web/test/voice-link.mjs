@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { freshLink, linkVerdict, INBOUND_STALL_MS, REPORT_STALL_MS } from '../../scripts/voice/voice-core.js';
+import { freshLink, linkVerdict, Pauses, INBOUND_STALL_MS, REPORT_STALL_MS } from '../../scripts/voice/voice-core.js';
 
 // A working link: packets rise every tick, reports every second. No verdict.
 let st = freshLink();
@@ -54,3 +54,40 @@ for (let i = 0; i < 100; i++) {
   st = v.next; t += 100;
 }
 console.log('voice link verdict: ok');
+
+// The pause protocol between page and worker. Review of #226: the page
+// echoed the worker's own pause back as a client `paused`, the worker held
+// on the page's behalf, and neither side could let go.
+
+// Worker-first: the worker announces; the page must not tell it anything.
+let p = new Pauses();
+let r = p.add('server');
+assert.deepEqual([r.first, r.announce], [true, false], 'a worker pause was echoed back to the worker');
+r = p.remove('server');
+assert.deepEqual([r.last, r.announce], [true, false]);
+
+// Page-first (the iOS screen-lock shape): the page pauses on the mic edge,
+// tells the worker, the worker holds and announces, the page hears its own
+// pause come back. On unmute the page must tell the worker `ok` even though
+// the worker's echo is still in the set - that echo clears only once the
+// worker, released, announces so.
+p = new Pauses();
+r = p.add('mic');
+assert.deepEqual([r.first, r.announce], [true, true]);
+r = p.add('server');
+assert.deepEqual([r.first, r.announce], [false, false], 'the echo was treated as a new pause');
+r = p.remove('mic');
+assert.deepEqual([r.last, r.announce], [false, true], 'the worker was not told the page had let go');
+assert.equal(p.first, 'server');
+r = p.remove('server');
+assert.deepEqual([r.last, r.announce], [true, false]);
+assert.equal(p.any, false);
+
+// Two page reasons: the worker hears one `paused` and one `ok`.
+p = new Pauses();
+assert.equal(p.add('link').announce, true);
+assert.equal(p.add('mic').announce, false);
+assert.equal(p.remove('link').announce, false);
+assert.equal(p.remove('mic').announce, true);
+console.log('voice pause protocol: ok');
+

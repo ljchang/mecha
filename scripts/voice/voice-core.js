@@ -167,6 +167,45 @@ export function linkVerdict(prev, sample, now) {
   return { next, stalled, reason: inboundStalled ? "inbound" : reportStalled ? "report" : null };
 }
 
+/* Why a call is paused, by source, and which transitions are the worker's
+   business. Two kinds of reason: the page's own (`link` from its statistics,
+   `mic` from the track's mute edge) and `server`, the worker's announcement
+   of a pause it is already holding for. The worker is told when the page's
+   *own* reasons begin and when they end - never about `server`, which is
+   the worker talking; echoing that back made the worker hold on the page's
+   behalf until the page said otherwise, which the page would only do once
+   the worker had let go (review of #226 - a call that paused once stayed
+   paused for its life). Sounds and the label follow the whole set: a pause
+   is one pause whoever saw it first, and it is over when nobody holds it. */
+export class Pauses {
+  constructor() { this.reasons = new Set(); }
+  static isLocal(reason) { return reason !== "server"; }
+  get size() { return this.reasons.size; }
+  get any() { return this.reasons.size > 0; }
+  get localCount() { return [...this.reasons].filter(Pauses.isLocal).length; }
+  get first() { const [r] = this.reasons; return r ?? null; }
+  /* add: `first` - the set was empty (sound it, label it);
+     `announce` - the page's own reasons were empty and are not now (tell the worker). */
+  add(reason) {
+    if (this.reasons.has(reason)) return { first: false, announce: false, added: false };
+    const first = this.reasons.size === 0;
+    const localBefore = this.localCount;
+    this.reasons.add(reason);
+    return { first, announce: Pauses.isLocal(reason) && localBefore === 0, added: true };
+  }
+  /* remove: `last` - the set is now empty (resume, sound it);
+     `announce` - the page's own reasons just ran out (tell the worker `ok`). */
+  remove(reason) {
+    if (!this.reasons.delete(reason)) return { last: false, announce: false, removed: false };
+    return {
+      last: this.reasons.size === 0,
+      announce: Pauses.isLocal(reason) && this.localCount === 0,
+      removed: true,
+    };
+  }
+  clear() { this.reasons.clear(); }
+}
+
 export function createVoiceSession(opts = {}) {
   const cfg = {
     offerUrl: "/api/offer",
@@ -315,7 +354,7 @@ export function createVoiceSession(opts = {}) {
      mic iOS muted on screen lock stays paused through a link that is fine.
      `link` is this page's statistics, `server` the worker's own watch over
      its audio (an RTVI `link` message), `mic` the track's mute edge. */
-  const pausedBy = new Set();
+  const pausedBy = new Pauses();
   /* The label changes at once; the sound waits. The worker holds the turn
      from three-quarters of a second without audio, and says so, and a
      cellular link blips for that long routinely - a tone for every blip
@@ -331,22 +370,22 @@ export function createVoiceSession(opts = {}) {
     mic: "microphone paused — is the screen locked?",
   };
   function pause(reason) {
-    if (ended || pausedBy.has(reason)) return;
-    const first = pausedBy.size === 0;
-    pausedBy.add(reason);
+    if (ended) return;
+    const { first, announce } = pausedBy.add(reason);
+    if (announce) sendLink("paused", reason);
     if (!first) return;
     thinkingSound(false);
     pauseSounded = false;
     pauseToneTimer = setTimeout(() => { pauseToneTimer = null; pauseSounded = true; pauseTone(); }, PAUSE_TONE_DELAY_MS);
     cfg.onState("paused", PAUSE_LABELS[reason] || "paused");
-    sendLink("paused", reason);
   }
   function resume(reason) {
-    if (!pausedBy.delete(reason)) return;
-    if (pausedBy.size) {
+    const { last, announce, removed } = pausedBy.remove(reason);
+    if (!removed) return;
+    if (announce) sendLink("ok", reason);
+    if (!last) {
       // Still paused for another reason; relabel to the one that remains.
-      const [left] = pausedBy;
-      cfg.onState("paused", PAUSE_LABELS[left] || "paused");
+      cfg.onState("paused", PAUSE_LABELS[pausedBy.first] || "paused");
       return;
     }
     if (ended) return;
@@ -354,7 +393,6 @@ export function createVoiceSession(opts = {}) {
     if (pauseSounded) resumeTone();
     pauseSounded = false;
     cfg.onState("listening", "listening");
-    sendLink("ok", reason);
   }
   /* Tell the worker, so it holds the turn (a gap the page saw is a gap in
      the owner's sentence) and so the journal carries the phone's view.
@@ -392,7 +430,7 @@ export function createVoiceSession(opts = {}) {
     // the user's own can still arrive over a channel that is half working,
     // and "listening" over a link the page knows is not carrying anything
     // is the state this feature exists to stop showing.
-    if (pausedBy.size && name !== "idle") return;
+    if (pausedBy.any && name !== "idle") return;
     cfg.onState(name, label);
   }
 
