@@ -83,12 +83,17 @@ r = p.remove('server');
 assert.deepEqual([r.last, r.announce], [true, false]);
 assert.equal(p.any, false);
 
-// Two page reasons: the worker hears one `paused` and one `ok`.
+// Two page reasons: the worker hears each one begin and end by name, so
+// it can hold them as a set and expire each by its own witness - a link
+// pause followed by a mute must leave the worker holding for the mic once
+// the link's hold has expired.
 p = new Pauses();
 assert.equal(p.add('link').announce, true);
-assert.equal(p.add('mic').announce, false);
-assert.equal(p.remove('link').announce, false);
+assert.equal(p.add('mic').announce, true, 'the second local reason was not announced');
+assert.equal(p.add('mic').announce, false, 'a repeat was announced');
+assert.equal(p.remove('link').announce, true);
 assert.equal(p.remove('mic').announce, true);
+assert.equal(p.remove('mic').announce, false);
 console.log('voice pause protocol: ok');
 
 // A worker-announced pause is an uplink stall; only fresh uplink evidence

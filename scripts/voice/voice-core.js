@@ -185,23 +185,22 @@ export class Pauses {
   get localCount() { return [...this.reasons].filter(Pauses.isLocal).length; }
   get first() { const [r] = this.reasons; return r ?? null; }
   /* add: `first` - the set was empty (sound it, label it);
-     `announce` - the page's own reasons were empty and are not now (tell the worker). */
+     `announce` - this is one of the page's own reasons (tell the worker,
+     naming it). Every local reason is announced, not only the first: the
+     worker holds them as a set and expires each by its own witness, and
+     telling it only the first let a `link` hold's expiry lift a `mic` hold
+     the page still owned (eighth review of #226). */
   add(reason) {
     if (this.reasons.has(reason)) return { first: false, announce: false, added: false };
     const first = this.reasons.size === 0;
-    const localBefore = this.localCount;
     this.reasons.add(reason);
-    return { first, announce: Pauses.isLocal(reason) && localBefore === 0, added: true };
+    return { first, announce: Pauses.isLocal(reason), added: true };
   }
   /* remove: `last` - the set is now empty (resume, sound it);
-     `announce` - the page's own reasons just ran out (tell the worker `ok`). */
+     `announce` - one of the page's own reasons ended (tell the worker `ok`, naming it). */
   remove(reason) {
     if (!this.reasons.delete(reason)) return { last: false, announce: false, removed: false };
-    return {
-      last: this.reasons.size === 0,
-      announce: Pauses.isLocal(reason) && this.localCount === 0,
-      removed: true,
-    };
+    return { last: this.reasons.size === 0, announce: Pauses.isLocal(reason), removed: true };
   }
   clear() { this.reasons.clear(); }
 }
@@ -360,11 +359,15 @@ export function createVoiceSession(opts = {}) {
       // Only once the call is up: before `connected` nothing has arrived
       // yet and a still count is the connection being made, not lost.
       if (linked) {
-        const v = linkVerdict(link, sample, Date.now());
+        // A monotonic clock: the windows below are durations, and the one
+        // environment this runs in guarantees wall-clock steps (NTP on a
+        // phone crossing cells). `reportAt` is compared only for advancing.
+        const now = performance.now();
+        const v = linkVerdict(link, sample, now);
         link = v.next;
         if (v.stalled === true) pause("link");
         else if (v.stalled === false) resume("link");
-        if (pausedBy.reasons.has("server") && serverPauseExpired(link, serverPausedAt, Date.now())) resume("server");
+        if (pausedBy.reasons.has("server") && serverPauseExpired(link, serverPausedAt, now)) resume("server");
       }
     }, LEVEL_POLL_MS);
   }
@@ -407,7 +410,7 @@ export function createVoiceSession(opts = {}) {
   function pause(reason) {
     if (ended) return;
     const { first, announce } = pausedBy.add(reason);
-    if (reason === "server") serverPausedAt = Date.now();
+    if (reason === "server") serverPausedAt = performance.now();
     if (announce) sendLink("paused", reason);
     if (!first) return;
     thinkingSound(false);

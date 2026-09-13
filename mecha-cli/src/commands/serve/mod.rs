@@ -703,10 +703,11 @@ async fn dictate(State(_state): State<WebState>, body: axum::body::Bytes) -> Res
                 .into_response()
         }
         Err(e) => {
-            tracing::warn!("dictate: stt unreachable: {}", error_chain(&e));
+            let why = error_chain(&e);
+            tracing::warn!("dictate: stt unreachable: {why}");
             (
                 StatusCode::BAD_GATEWAY,
-                format!("stt unreachable — is mecha-parakeet up? {e}\n"),
+                format!("stt unreachable — is mecha-parakeet up? {why}\n"),
             )
                 .into_response()
         }
@@ -754,10 +755,11 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
             }
         }
         Err(e) => {
-            tracing::warn!("voice offer: runner unreachable: {}", error_chain(&e));
+            let why = error_chain(&e);
+            tracing::warn!("voice offer: runner unreachable: {why}");
             (
                 StatusCode::BAD_GATEWAY,
-                format!("voice runner unreachable: {e}\n"),
+                format!("voice runner unreachable: {why}\n"),
             )
                 .into_response()
         }
