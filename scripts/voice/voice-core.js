@@ -710,7 +710,15 @@ export function createVoiceSession(opts = {}) {
   let wakeLock = null;
   async function holdScreen() {
     if (ended || !navigator.wakeLock || document.visibilityState !== "visible") return;
-    try { wakeLock = await navigator.wakeLock.request("screen"); } catch { wakeLock = null; }
+    let lock = null;
+    try { lock = await navigator.wakeLock.request("screen"); } catch { lock = null; }
+    // Re-checked after the await, as `startMeter` does: a request in
+    // flight when `end()` ran resolves afterwards, and a lock stored then
+    // outlives the call - the screen stays on in the car until the page
+    // hides (sixth review of #226).
+    if (ended || !pc) { if (lock) lock.release().catch(() => {}); return; }
+    if (wakeLock && wakeLock !== lock) wakeLock.release().catch(() => {});
+    wakeLock = lock;
   }
   function releaseScreen() {
     const l = wakeLock; wakeLock = null;

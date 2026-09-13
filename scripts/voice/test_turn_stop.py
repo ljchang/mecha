@@ -42,6 +42,7 @@ except ImportError as e:  # pragma: no cover - the whole point is to be loud
 from openai.types.audio import Transcription  # noqa: E402
 
 from worker import (  # noqa: E402
+    LINK_HOLD_WARN_SECS,
     LINK_RESUME_SETTLE_SECS,
     LINK_STALL_SECS,
     LOOP_LAG_WARN_SECS,
@@ -460,7 +461,7 @@ class LinkWatchHolds(unittest.TestCase):
                 pushed.append(type(frame).__name__)
 
             watch.push_frame = push
-            await watch.hold("mic")
+            await watch.hold("mic", now=0.0)
             watch._audio_stalled = True
             await watch._settle("audio")
             await watch.release()  # the page recovered; the audio has not
@@ -523,6 +524,57 @@ class LinkWatchClock(unittest.TestCase):
         self.assertEqual(after_stray, paused, "a single frame lifted the hold")
         self.assertEqual(events, [("paused", "audio"), ("ok", "audio")])
         self.assertEqual(pushed, ["LinkStalledFrame", "LinkResumedFrame"])
+
+
+class PageHoldExpiry(unittest.TestCase):
+    """Sixth review of #226: a hold the page asked for, whose `ok` was lost
+    on a channel that was not open, must not latch for the life of the
+    call. Unbroken audio for `LINK_HOLD_WARN_SECS` lifts it; audio with a
+    break in it restarts the count."""
+
+    def _watch(self, events):
+        watch = LinkWatch(on_change=lambda s, r, a: _record(events, s, r))
+
+        async def push(frame, direction=None):
+            pass
+
+        watch.push_frame = push
+        return watch
+
+    def test_unbroken_audio_expires_a_page_hold(self):
+        async def scenario():
+            events = []
+            watch = self._watch(events)
+            watch._note_audio(0.0)
+            await watch.hold("mic", now=0.0)
+            t = 0.0
+            while t < LINK_HOLD_WARN_SECS + 0.3:
+                watch._note_audio(t)
+                await watch._judge(t)
+                t += 0.02
+            return events
+
+        events = run(scenario())
+        self.assertEqual(events, [("paused", "mic"), ("ok", "page-expired")])
+
+    def test_a_break_in_the_audio_restarts_the_count(self):
+        async def scenario():
+            events = []
+            watch = self._watch(events)
+            watch._note_audio(0.0)
+            await watch.hold("mic", now=0.0)
+            t = 0.0
+            while t < LINK_HOLD_WARN_SECS + 0.3:
+                if 5.0 < t < 5.5:  # half a second of nothing
+                    await watch._judge(t)
+                else:
+                    watch._note_audio(t)
+                    await watch._judge(t)
+                t += 0.02
+            return events
+
+        events = run(scenario())
+        self.assertEqual(events, [("paused", "mic")], "a broken flow counted as unbroken")
 
 
 class LoopStalls(unittest.TestCase):

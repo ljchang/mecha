@@ -197,6 +197,13 @@ LINK_FRAME_GAP_SECS = 0.25
 USER_TURN_STOP_TIMEOUT = 15.0
 # A hold this long is no longer a stall being ridden out; it is worth a line
 # at WARNING, because a hold that never lifts is a call that never answers.
+# It is also how long a hold the *page* asked for survives against audio
+# that has flowed continuously the whole time: the page's `ok` travels over
+# a channel that may be the thing that stalled and is dropped silently when
+# it is not open, so a lost one would otherwise latch the hold for the life
+# of the call (sixth review of #226 — the mirror of the page's own
+# `serverPauseExpired`). The worker holds the stronger witness for this:
+# `_last_audio` *is* the uplink, not a proxy for it.
 LINK_HOLD_WARN_SECS = 10.0
 # The watchdog's own tick. The stall is declared at most one tick after
 # `LINK_STALL_SECS`, so the worst case is their sum, and that sum has to
@@ -350,6 +357,11 @@ class LinkWatch(FrameProcessor):
         self._last_audio: float | None = None
         self._audio_stalled = False
         self._client_paused: str | None = None
+        self._client_paused_at: float | None = None
+        # When the current unbroken run of frames began (gaps under
+        # LINK_FRAME_GAP_SECS): the settle and the page-hold expiry both
+        # ask "has audio flowed, without a break, since X?"
+        self._flow_since: float | None = None
         self._held_since: float | None = None
         self._resumed_at: float | None = None
         self._hold_warned = False
@@ -377,19 +389,25 @@ class LinkWatch(FrameProcessor):
         started — a burst after a break is a new start, not a continuation."""
         prev = self._last_audio
         self._last_audio = now
+        if self._flow_since is None or prev is None or now - prev > LINK_FRAME_GAP_SECS:
+            self._flow_since = now
         if self._audio_stalled and (
             self._resumed_at is None or prev is None or now - prev > LINK_FRAME_GAP_SECS
         ):
             self._resumed_at = now
 
-    async def hold(self, reason: str):
+    async def hold(self, reason: str, now: float | None = None):
         """The page says its side paused (mic muted, screen off, far end
-        deaf). Holds until `release`, whatever the audio clock says."""
+        deaf). Holds until `release`, or until the audio clock has run
+        unbroken for `LINK_HOLD_WARN_SECS` past this moment. `now` is the
+        audio clock's — a test owns it; production reads the monotonic one."""
         self._client_paused = reason
+        self._client_paused_at = _time.monotonic() if now is None else now
         await self._settle(reason)
 
     async def release(self):
         self._client_paused = None
+        self._client_paused_at = None
         await self._settle("page")
 
     async def _tick(self):
@@ -405,6 +423,22 @@ class LinkWatch(FrameProcessor):
         be driven with a clock the test owns."""
         if self._last_audio is not None:
             gap = now - self._last_audio
+            if gap > LINK_FRAME_GAP_SECS:
+                self._flow_since = None
+            if (
+                self._client_paused is not None
+                and self._flow_since is not None
+                and now - max(self._flow_since, self._client_paused_at) >= LINK_HOLD_WARN_SECS
+            ):
+                from loguru import logger
+
+                logger.warning(
+                    f"voice link: the page's hold ({self._client_paused}) expired — audio has "
+                    f"flowed unbroken for {LINK_HOLD_WARN_SECS:.0f}s with no ok from the page"
+                )
+                self._client_paused = None
+                self._client_paused_at = None
+                await self._settle("page-expired")
             if not self._audio_stalled and gap >= LINK_STALL_SECS:
                 self._audio_stalled = True
                 self._resumed_at = None

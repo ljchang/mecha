@@ -900,6 +900,28 @@ how sure the record is:
   holds a screen wake lock for the length of a call, which is what stops the
   lock happening at all.
 
+Two limits stated rather than found, for the next drive to be read against.
+`LinkResumedFrame` is a `SystemFrame` and overtakes queued data frames, so
+the 0.6 s settle keeps the release behind the VAD's 0.3 s start window only
+when the resumed audio *begins* with speech; audio that resumes with ~0.4 s
+of quiet before the rest of the sentence still releases first. Left as it
+is — the same threshold argument as the gate — and the journal's
+`voice link resumed after` lines beside the transcript are what to read it
+from. And the unit tests drive `strategy.process_frame` directly, so they
+are structurally blind to whether a `SystemFrame` pushed by `LinkWatch`
+reaches the strategy through the aggregator at all; what answers that is
+the end-to-end procedure, worth keeping: a second worker on a spare port
+with the LLM leg pointed nowhere (`MECHA_VOICE_LLM=http://127.0.0.1:1/v1
+python scripts/voice/worker.py --port 7861`), driven by `test_call.py` with
+a TTS-synthesized clip — the player's track ending at EOF is a real audio
+stall, and the journal should show `voice link paused (audio)` before
+pipecat's forced stop, then `COMPLETE` and the transcript with no
+`inference triggered` after them, then the 10 s warning and the 15 s
+backstop. The review loop on #226 found six defects in the recovery path
+over as many passes, every one in code that procedure and the unit tests
+did not drive: the pause protocol between page and worker, in both
+directions, is what a future change here should test first.
+
 Two of eight dictate clips from the tasks page the same afternoon were
 empty WAVs — the page's audio graph never ran and nothing checked — and
 Parakeet 500'd on the empty tensor. The button now resumes its context and
