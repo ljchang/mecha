@@ -389,7 +389,22 @@ observe its trigger.**
   preload is the point: its most important trigger is the network dying,
   and a server cannot announce a drop over the connection that dropped.
   Silence during a twenty-second mail search reads as a dead line; a dead
-  line that sounds like nothing at all is worse. Deliberately *not* narrowing the tool list for voice —
+  line that sounds like nothing at all is worse.
+- *Pause and resume* (amended 2026-09-12, at the owner's request after a
+  drive) — **client-side**, two soft notes down when the link stops
+  carrying anything and two up when it does again, with the label
+  `paused` between. The trigger is what the page can observe on its own:
+  WebRTC's inbound packet count standing still for two seconds, or the far
+  end's receiver reports stopping for four (`linkVerdict`, voice-core.js),
+  or the microphone track's `mute` edge — which is what a phone fires when
+  the screen locks. The worker announces its own watch over the audio
+  (an RTVI `link` message) as belt and braces, and the page sounds whichever
+  arrives first, once. **A pause is a hold, not a notice**: the worker
+  keeps every pending end-of-turn until the audio is back
+  (`LinkStalledFrame`/`LinkResumedFrame`), or the sound would be announcing
+  that the sentence had already been cut. The same amendment gives the
+  tasks page's dictate button a *listening* tone and level bars, for the
+  same reason. Deliberately *not* narrowing the tool list for voice —
 the approver and outbox already govern consequence, and a voice run that
 cannot do what a typed run can would make the safe surface the useless one
 (the read-only-trigger lesson, inverted).
@@ -835,6 +850,62 @@ request at 0.9–3.5 s a sentence and per-turn model latency matched
 premature turn end started, with llama-server re-evaluating the 14k-token
 prefix (5–7 s) whenever the retry landed in a slot whose cache held something
 else.
+
+**A gap in the audio is not silence — 2026-09-12, from a moving car.** Two
+calls reached the worker all afternoon (the rest never got an offer through;
+`serve` logged nothing about them, and now warns), and every spoken turn in
+both was a fragment: `Can you add` / `I need you to` / `urban to schedule and
+furnace.` / `Suburban` / `Um on Monday.` — six turns, six clarifying
+questions, no tool called, no task captured. The first fragment shipped at
+the instant the transport logged `Timeout: No audio frame received` and
+pipecat's input track logged `Disabling receiver … after 2.48s idle` — and,
+the same microsecond, smart-turn's `COMPLETE`. Three findings, in order of
+how sure the record is:
+
+- **The turn logic reads a packet gap as the owner going quiet.** Silero sees
+  no speech, the STT safety net expires, and a `COMPLETE` ruled on the words
+  before the gap ends the turn on them; the rest of the sentence arrives as
+  a new turn. Worse, pipecat's `_idle_watcher` *discards every queued frame*
+  after two seconds without a reader — a memory guard for an abandoned
+  track, applied to a live one — so the words that arrive late in a burst
+  are thrown away rather than delayed. `LinkWatch` now sits behind the
+  transport: one second without audio holds every pending end-of-turn
+  (`TranscriptStartedTurnStop._link_held`) and says so to the page; 0.6 s of
+  audio flowing again — longer than the VAD's start window, so a resumed
+  sentence reopens the turn *before* the release — lifts it. The track's
+  discard timeout is relaxed to a minute (two privates, guarded, a warning
+  if pipecat moves them). `test_turn_stop.py` replays the shape and asserts
+  the stock strategy still shows it.
+- **The worker's own loop stalled, once per call, on turn one — every call on
+  record since 2026-08-25.** The same three timers logged the same
+  microsecond on Aug 25, Aug 31, Sep 1, Sep 4 and Sep 12, each on the first
+  turn, each beside a first Parakeet request of 3–5 s. Not the STT server
+  (it answers a silent clip in 50 ms after hours idle) and not smart-turn
+  (35 ms cold, measured in the venv). Unnamed; `LinkWatch` now ticks a
+  wall clock and warns `voice loop was unresponsive for N s` when a tick
+  wakes late, which is the measurement that separates a blocked process
+  from a gap on the wire and the journal has never carried.
+- **Both calls then went 40–80 s hearing frames with no speech in them, and
+  the owner hung up.** Consistent with — not proven to be — iOS muting the
+  microphone track on screen lock: each went quiet about a minute after
+  the last touch. The page now listens to the track's `mute`/`unmute`/
+  `ended` edges (a pause, a resume, a reconnect), sends the worker its side
+  as an RTVI `link` message so the journal carries the phone's view, and
+  holds a screen wake lock for the length of a call, which is what stops the
+  lock happening at all.
+
+Two of eight dictate clips from the tasks page the same afternoon were
+empty WAVs — the page's audio graph never ran and nothing checked — and
+Parakeet 500'd on the empty tensor. The button now resumes its context and
+refuses to record if it is not running, draws the live level in the button
+so a dead graph is visible, plays a listening tone, and keeps a clip under
+0.3 s or of pure zeros on the phone with a reason; the server answers 400
+to an empty clip. What was *not* changed: the segment gate (a 1.12 s
+segment at RMS 0.0097 was dropped against the 0.010 floor, with the day's
+speech at 0.015–0.032 — a car population the floor has never been measured
+against) and smart-turn's 3 s hold. Both are thresholds on the owner's
+speech, every move of which has cost a turn this month, and the journal now
+carries the numbers to set them from.
 
 **On speakers, the microphone still heard the reply — three layers,
 2026-09-02.** Reported from a real call without headphones: the mic takes the

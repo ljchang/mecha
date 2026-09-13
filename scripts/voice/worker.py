@@ -20,6 +20,7 @@ The three legs are env-configurable base URLs (D6):
                       expressive pacing; it moves *against* exaggeration)
 """
 
+import asyncio
 import os
 import uuid
 from dataclasses import dataclass
@@ -33,10 +34,16 @@ from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
+    CancelFrame,
     DataFrame,
+    EndFrame,
+    InputAudioRawFrame,
+    StartFrame,
+    SystemFrame,
     TranscriptionFrame,
     VADUserStartedSpeakingFrame,
 )
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.turns.user_start.transcription_user_turn_start_strategy import (
     TranscriptionUserTurnStartStrategy,
 )
@@ -142,6 +149,187 @@ MIN_SEGMENT_SECONDS = 0.3
 # strategy holds no earlier text yet, so an expired net has nothing to end
 # the turn on and the turn waits for the transcript regardless.
 STT_TTFS_P99 = 2.0
+
+# The link watch (`LinkWatch`): how long the microphone audio may go missing
+# before the pipeline is told the *link* paused rather than that the owner
+# went quiet, and how long audio must flow again before the hold is lifted.
+#
+# A gap in packets is not silence, but everything downstream reads it as
+# one: Silero sees no speech, smart-turn's silence timer runs, and the STT
+# safety net expires — so a two-second cellular stall mid-sentence ends the
+# turn on the words before it and the rest arrives as a new turn. Measured
+# 2026-09-12 from a moving car: "Can you add" went to the model alone at
+# the instant the transport logged its first two-second audio timeout, and
+# every turn of both calls was a fragment. The stall threshold sits under
+# pipecat's own reaction to the same gap: its VAD controller forces a
+# speech stop one second after audio stops mid-utterance
+# (`audio_idle_timeout`, 1.0), which is the very ruling the hold exists to
+# keep back, so the hold must be in place first; the transport's own
+# complaint comes at 2.0 s. The settle is longer than
+# the VAD's `start_secs` (0.3): if the audio that resumes carries the rest
+# of the sentence, the VAD reopens the turn before the hold is released,
+# and a ruling made on the gap is discarded rather than acted on.
+#
+# Two things the watch is deliberately not: it is not a threshold on the
+# owner's speech (a paused link holds the turn whatever was said), and it
+# does not end anything — a link that never resumes is the client's grace
+# window and the transport's track error, exactly as before.
+LINK_STALL_SECS = 0.75
+LINK_RESUME_SETTLE_SECS = 0.6
+# How long the aggregator lets a user turn stay open with no stop strategy
+# ending it (pipecat's `user_turn_stop_timeout`, default 5.0). The hold
+# above *is* a turn no strategy is ending, so the default would ship the
+# fragment five seconds into a stall regardless — the smoke call showed it
+# (`User stopped speaking (strategy: None)`). Matched to the page's grace
+# window (`DROP_GRACE_MS`, 15 s), past which the call has ended anyway.
+USER_TURN_STOP_TIMEOUT = 15.0
+# A hold this long is no longer a stall being ridden out; it is worth a line
+# at WARNING, because a hold that never lifts is a call that never answers.
+LINK_HOLD_WARN_SECS = 10.0
+# The watchdog's own tick, and the lag past it that is worth naming. The
+# 2026-09-12 stall had a second signature the packet gap alone cannot show:
+# three independent two-second timers logged the same microsecond, which is
+# an event loop that was not running — every call on record since 2026-08-25
+# shows it once, on the first turn, and its cause is still unnamed. A tick
+# that wakes late says so, with the lag, which is the measurement the next
+# diagnosis needs and the journal has never carried.
+LINK_TICK_SECS = 0.25
+LOOP_LAG_WARN_SECS = 0.5
+# pipecat's input track discards every queued audio frame when nothing has
+# read it for `_idle_timeout` (2.0 s, `SmallWebRTCTrack._idle_watcher`) — a
+# memory guard for a track nobody is consuming. On a live pipeline the reader
+# is the pipeline, and the one time it stops reading for two seconds is the
+# stall above: the frames it would discard are the owner's words arriving
+# late. Raised to a minute, which keeps the guard for a genuinely abandoned
+# track and takes it out of the path of a hiccup.
+TRACK_IDLE_DISCARD_SECS = 60.0
+
+
+@dataclass
+class LinkStalledFrame(SystemFrame):
+    """Microphone audio stopped arriving. Not silence: unknown. The turn
+    logic holds every pending end-of-turn until `LinkResumedFrame`. A system
+    frame, so it is not queued behind audio that is not coming."""
+
+    reason: str = "audio"
+
+
+@dataclass
+class LinkResumedFrame(SystemFrame):
+    """Audio has flowed again for `LINK_RESUME_SETTLE_SECS`; whatever the
+    hold was keeping back may now be decided."""
+
+    after_secs: float = 0.0
+
+
+class LinkWatch(FrameProcessor):
+    """Sits directly behind the transport and watches two clocks: when the
+    last microphone frame arrived, and whether the event loop is keeping
+    time at all.
+
+    Two sources can pause a call. The pipeline's own view — no audio for
+    `LINK_STALL_SECS` — and the page's, which knows things the packets
+    cannot show: iOS muting the mic when the screen locks, the browser
+    reporting the far end has stopped hearing it (`hold`/`release`, from
+    the RTVI `link` client message). Either holds; both must clear before
+    the release, and each transition is reported once to `on_change`, which
+    is what tells the page to sound it. The frames the turn logic reads are
+    the same either way, so the strategy has one rule, not two."""
+
+    def __init__(self, on_change=None, **kwargs):
+        super().__init__(**kwargs)
+        self._on_change = on_change
+        self._last_audio: float | None = None
+        self._audio_stalled = False
+        self._client_paused: str | None = None
+        self._held_since: float | None = None
+        self._resumed_at: float | None = None
+        self._hold_warned = False
+        self._tick_task = None
+
+    @property
+    def held(self) -> bool:
+        return self._held_since is not None
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, StartFrame):
+            self._tick_task = self.create_task(self._tick())
+        elif isinstance(frame, (EndFrame, CancelFrame)):
+            if self._tick_task:
+                await self.cancel_task(self._tick_task)
+                self._tick_task = None
+        elif isinstance(frame, InputAudioRawFrame):
+            now = _time.monotonic()
+            self._last_audio = now
+            if self._audio_stalled and self._resumed_at is None:
+                self._resumed_at = now
+        await self.push_frame(frame, direction)
+
+    async def hold(self, reason: str):
+        """The page says its side paused (mic muted, screen off, far end
+        deaf). Holds until `release`, whatever the audio clock says."""
+        self._client_paused = reason
+        await self._settle(reason)
+
+    async def release(self):
+        self._client_paused = None
+        await self._settle("page")
+
+    async def _tick(self):
+        expected = _time.monotonic() + LINK_TICK_SECS
+        while True:
+            await asyncio.sleep(max(0.0, expected - _time.monotonic()))
+            now = _time.monotonic()
+            lag = now - expected
+            expected = now + LINK_TICK_SECS
+            if lag > LOOP_LAG_WARN_SECS:
+                from loguru import logger
+
+                # The loop, not the link: a sleep that returns late is the
+                # process not running, and no packet count can tell that
+                # apart from a gap on the wire. Named so the journal can.
+                logger.warning(f"voice loop was unresponsive for {lag:.2f}s")
+            if self._last_audio is not None:
+                gap = now - self._last_audio
+                if not self._audio_stalled and gap >= LINK_STALL_SECS:
+                    self._audio_stalled = True
+                    self._resumed_at = None
+                    await self._settle("audio")
+                elif (
+                    self._audio_stalled
+                    and self._resumed_at is not None
+                    and now - self._resumed_at >= LINK_RESUME_SETTLE_SECS
+                ):
+                    self._audio_stalled = False
+                    self._resumed_at = None
+                    await self._settle("audio")
+            if self.held and not self._hold_warned and now - self._held_since > LINK_HOLD_WARN_SECS:
+                from loguru import logger
+
+                self._hold_warned = True
+                logger.warning(
+                    f"voice link held for {now - self._held_since:.0f}s "
+                    f"(audio_stalled={self._audio_stalled} page={self._client_paused})"
+                )
+
+    async def _settle(self, reason: str):
+        """Recompute the combined hold and announce a transition, if any."""
+        want = self._audio_stalled or self._client_paused is not None
+        if want and not self.held:
+            self._held_since = _time.monotonic()
+            self._hold_warned = False
+            print(f"voice link paused ({reason})", flush=True)
+            await self.push_frame(LinkStalledFrame(reason=reason))
+            if self._on_change:
+                await self._on_change("paused", reason, 0.0)
+        elif not want and self.held:
+            after = _time.monotonic() - self._held_since
+            self._held_since = None
+            print(f"voice link resumed after {after:.1f}s ({reason})", flush=True)
+            await self.push_frame(LinkResumedFrame(after_secs=after))
+            if self._on_change:
+                await self._on_change("ok", reason, after)
 
 
 # The echo defence: a phone or a laptop on speaker hears its own TTS, and
@@ -729,6 +917,13 @@ class TranscriptStartedTurnStop(TurnAnalyzerUserTurnStopStrategy):
         super().__init__(**kwargs)
         self._refuse_if_pipecat_moved()
         self._segments_awaiting_text = 0
+        # Set by `LinkStalledFrame`, cleared by `LinkResumedFrame`: while
+        # the link is paused no pending end-of-turn is acted on, whatever
+        # smart-turn ruled or the safety net decided about the gap. The
+        # ruling is kept, not discarded — if the audio that resumes is
+        # silence, the turn ends on it then; if it is the rest of the
+        # sentence, the VAD start clears it as it always did.
+        self._link_held = False
 
     async def _handle_vad_user_stopped_speaking(self, frame):
         # A segment just ended and its words are not here yet, whatever an
@@ -745,6 +940,14 @@ class TranscriptStartedTurnStop(TurnAnalyzerUserTurnStopStrategy):
         await super()._handle_transcription(frame)
 
     async def process_frame(self, frame):
+        if isinstance(frame, LinkStalledFrame):
+            self._link_held = True
+            return ProcessFrameResult.CONTINUE
+        if isinstance(frame, LinkResumedFrame):
+            self._link_held = False
+            # Whatever was decided during the hold is decided now.
+            await self._maybe_trigger_user_turn_stopped()
+            return ProcessFrameResult.CONTINUE
         if isinstance(frame, SegmentDroppedFrame):
             self._segments_awaiting_text = max(0, self._segments_awaiting_text - 1)
             if not self._segments_awaiting_text and self._text:
@@ -759,6 +962,11 @@ class TranscriptStartedTurnStop(TurnAnalyzerUserTurnStopStrategy):
     async def handle_user_turn_stopped(self):
         self._segments_awaiting_text = 0
         await super().handle_user_turn_stopped()
+
+    async def _maybe_trigger_user_turn_stopped(self):
+        if self._link_held:
+            return
+        await super()._maybe_trigger_user_turn_stopped()
 
     def _refuse_if_pipecat_moved(self):
         # The one private the override reads. A pipecat upgrade that renames
@@ -902,6 +1110,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         context,
         user_params=LLMUserAggregatorParams(
             vad_analyzer=SileroVADAnalyzer(params=VADParams(start_secs=0.3)),
+            user_turn_stop_timeout=USER_TURN_STOP_TIMEOUT,
             user_turn_strategies=UserTurnStrategies(
                 start=[TranscriptionUserTurnStartStrategy(use_interim=False)],
                 # Pipecat's default stop strategy and analyzer, with the
@@ -917,9 +1126,23 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     # worker observes; the client plays. docs/VOICE-RESEARCH.md D7/D9.
     rtvi = RTVIProcessor()
 
+    async def on_link_change(state, reason, after_secs):
+        # Best effort by design: a paused link may not carry the message
+        # that says so, which is why the page watches its own statistics
+        # too. The one that gets through first is the one that sounds.
+        try:
+            await rtvi.send_server_message(
+                {"t": "link", "state": state, "reason": reason, "after_secs": round(after_secs, 1)}
+            )
+        except Exception as e:  # noqa: BLE001 - an announcement is not load-bearing
+            print(f"voice link: could not announce {state} ({e})", flush=True)
+
+    link = LinkWatch(on_change=on_link_change)
+
     pipeline = Pipeline(
         [
             transport.input(),
+            link,
             rtvi,
             stt,
             user_aggregator,
@@ -983,6 +1206,21 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     # true is that the only settable things are how the answer sounds.
     @rtvi.event_handler("on_client_message")
     async def on_client_message(rtvi, msg):
+        if msg.type == "link":
+            # The page's side of the pause: what it saw (`reason`) is logged
+            # in its own words so the journal carries the phone's view of a
+            # call beside the worker's, and it holds the turn exactly as a
+            # gap in the audio would. A prompt-shaped payload has nowhere to
+            # go here: the only thing this message can do is pause.
+            data = msg.data if isinstance(msg.data, dict) else {}
+            state = str(data.get("state", ""))[:16]
+            reason = str(data.get("reason", ""))[:32]
+            print(f"voice link (page): state={state} reason={reason}", flush=True)
+            if state == "paused":
+                await link.hold(reason or "page")
+            else:
+                await link.release()
+            return
         if msg.type != "voice-config":
             return
         data = msg.data or {}
@@ -1029,6 +1267,22 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         print("voice client connected", flush=True)
+        # See TRACK_IDLE_DISCARD_SECS. Two privates, and a guard on each:
+        # this is a memory limit being relaxed, not a correctness rule, so a
+        # pipecat that moved them costs a warning rather than the call — but
+        # never silence, because the discard it leaves in place is the one
+        # that ate the owner's words.
+        track = getattr(getattr(transport.input(), "_client", None), "_audio_input_track", None)
+        if track is not None and hasattr(track, "_idle_timeout"):
+            track._idle_timeout = TRACK_IDLE_DISCARD_SECS
+        else:
+            from loguru import logger
+
+            logger.warning(
+                "could not relax the input track's idle discard "
+                "(pipecat moved `_client._audio_input_track._idle_timeout`); "
+                "a stall will discard queued audio"
+            )
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):

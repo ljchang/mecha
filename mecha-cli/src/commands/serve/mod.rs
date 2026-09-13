@@ -679,16 +679,27 @@ async fn dictate(State(_state): State<WebState>, body: axum::body::Bytes) -> Res
                 .into_response(),
             Err(e) => (StatusCode::BAD_GATEWAY, format!("reading answer: {e}\n")).into_response(),
         },
-        Ok(resp) => (
-            StatusCode::BAD_GATEWAY,
-            format!("stt answered {}\n", resp.status()),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            format!("stt unreachable — is mecha-parakeet up? {e}\n"),
-        )
-            .into_response(),
+        Ok(resp) => {
+            // The refusal's own words travel: a 400 "empty audio" is the
+            // page's fault and says so, where "stt answered 400" says only
+            // that something happened somewhere behind the page.
+            let status = resp.status();
+            let detail = resp.text().await.unwrap_or_default();
+            tracing::warn!("dictate: stt answered {status}: {}", detail.trim());
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("stt answered {status}: {}\n", detail.trim()),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::warn!("dictate: stt unreachable: {e:#}");
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("stt unreachable — is mecha-parakeet up? {e}\n"),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -708,6 +719,13 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
         Ok(resp) => {
             let status =
                 StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            // Serve logs at `warn` by default, so until this line a call
+            // that never connected left no record anywhere: the worker's
+            // journal shows only offers that reached it. 2026-09-12 had two
+            // calls in the journal and an afternoon of failed attempts.
+            if !status.is_success() {
+                tracing::warn!("voice offer: runner answered {status}");
+            }
             match resp.bytes().await {
                 Ok(bytes) => (
                     status,
@@ -720,11 +738,14 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
                 }
             }
         }
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            format!("voice runner unreachable: {e}\n"),
-        )
-            .into_response(),
+        Err(e) => {
+            tracing::warn!("voice offer: runner unreachable: {e:#}");
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("voice runner unreachable: {e}\n"),
+            )
+                .into_response()
+        }
     }
 }
 

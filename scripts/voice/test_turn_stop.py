@@ -43,6 +43,9 @@ from openai.types.audio import Transcription  # noqa: E402
 
 from worker import (  # noqa: E402
     STT_TTFS_P99,
+    LinkResumedFrame,
+    LinkStalledFrame,
+    LinkWatch,
     ParakeetSTT,
     SegmentDroppedFrame,
     TranscriptStartedTurnStop,
@@ -124,6 +127,13 @@ class Call:
     async def dropped(self):
         """What the STT says about a segment the gate or echo filter ate."""
         await self.strategy.process_frame(SegmentDroppedFrame())
+
+    async def link_stalls(self):
+        """What the link watch says when the microphone audio stops arriving."""
+        await self.strategy.process_frame(LinkStalledFrame(reason="audio"))
+
+    async def link_resumes(self):
+        await self.strategy.process_frame(LinkResumedFrame(after_secs=2.5))
 
     async def close(self):
         await self.strategy.cleanup()
@@ -362,6 +372,108 @@ class TranscriptStartedTurns(unittest.TestCase):
         del s._vad_stopped
         with self.assertRaises(RuntimeError):
             s._refuse_if_pipecat_moved()
+
+
+class LinkStalls(unittest.TestCase):
+    """The 2026-09-12 shape, from a moving car: "Can you add" [COMPLETE]
+    at the instant the audio stopped arriving, and the rest of the sentence
+    in the gap. A gap in packets is not silence."""
+
+    def test_a_ruling_made_on_the_gap_waits_for_the_link(self):
+        """COMPLETE and the transcript both land while the link is paused.
+        The turn must not end until the audio is back — and when what comes
+        back is the owner still talking, it must not end at all."""
+
+        async def scenario(cls):
+            call = Call(cls, [EndOfTurnState.COMPLETE, EndOfTurnState.COMPLETE], STT_TTFS_P99)
+            await call.start()
+            await call.speaks()
+            await call.stops_speaking()
+            await call.link_stalls()
+            await call.turn_starts()
+            await call.transcript("Can you add")
+            await asyncio.sleep(STT_TTFS_P99 + 0.3)  # past the safety net too
+            held = not call.stopped
+            # The audio resumes carrying the rest of the sentence: the VAD
+            # start lands before the release, as the settle guarantees.
+            await call.speaks()
+            await call.link_resumes()
+            await asyncio.sleep(0.05)
+            still_held = not call.stopped
+            await call.stops_speaking()
+            await call.transcript("a reminder to call Suburban about the furnace.")
+            await asyncio.sleep(0.05)
+            ended = len(call.stopped) == 1
+            await call.close()
+            return held, still_held, ended
+
+        held, still_held, ended = run(scenario(TranscriptStartedTurnStop))
+        self.assertTrue(held, "the turn ended on a ruling made across a paused link")
+        self.assertTrue(still_held, "the release ended the turn although the owner had resumed")
+        self.assertTrue(ended, "the whole sentence did not end the turn once")
+
+        # Fails on the stock strategy: it knows nothing of the link and ends
+        # the turn on the fragment.
+        held, _, _ = run(scenario(TurnAnalyzerUserTurnStopStrategy))
+        self.assertFalse(held, "the stock strategy no longer shows the fault this guards")
+
+    def test_a_resumed_link_with_nothing_more_ends_the_turn(self):
+        """The owner really was done: the hold delays the answer by the
+        stall and no more."""
+
+        async def scenario():
+            call = Call(TranscriptStartedTurnStop, [EndOfTurnState.COMPLETE], STT_TTFS_P99)
+            await call.start()
+            await call.speaks()
+            await call.stops_speaking()
+            await call.link_stalls()
+            await call.turn_starts()
+            await call.transcript("What is on my calendar today?")
+            await asyncio.sleep(0.3)
+            held = not call.stopped
+            await call.link_resumes()
+            await asyncio.sleep(0.05)
+            ended = len(call.stopped) == 1
+            await call.close()
+            return held, ended
+
+        held, ended = run(scenario())
+        self.assertTrue(held)
+        self.assertTrue(ended, "the release did not act on the ruling it had been holding")
+
+
+class LinkWatchHolds(unittest.TestCase):
+    """Two sources can pause; both must clear. Driven directly, with the
+    pushes recorded, because the processor needs no pipeline to decide."""
+
+    def test_both_sources_must_clear(self):
+        async def scenario():
+            events = []
+            watch = LinkWatch(on_change=lambda s, r, a: _record(events, s, r))
+            pushed = []
+
+            async def push(frame, direction=None):
+                pushed.append(type(frame).__name__)
+
+            watch.push_frame = push
+            await watch.hold("mic")
+            watch._audio_stalled = True
+            await watch._settle("audio")
+            await watch.release()  # the page recovered; the audio has not
+            still = watch.held
+            watch._audio_stalled = False
+            await watch._settle("audio")
+            return events, pushed, still, watch.held
+
+        events, pushed, still, held_after = run(scenario())
+        self.assertEqual(events, [("paused", "mic"), ("ok", "audio")])
+        self.assertEqual(pushed, ["LinkStalledFrame", "LinkResumedFrame"])
+        self.assertTrue(still, "one source clearing released a hold the other still owned")
+        self.assertFalse(held_after)
+
+
+async def _record(events, state, reason):
+    events.append((state, reason))
 
 
 class Transcripts(unittest.TestCase):
