@@ -361,8 +361,12 @@ class LinkWatch(FrameProcessor):
         self._on_change = on_change
         self._last_audio: float | None = None
         self._audio_stalled = False
-        self._client_paused: str | None = None
-        self._client_paused_at: float | None = None
+        # The page's reasons for holding, each with when it was asked for:
+        # a set, not a latest-wins slot, because the reasons expire by
+        # different witnesses (`link` by unbroken audio, `mic` by speech)
+        # and a hold pinned to whichever came first let the wrong witness
+        # lift it (eighth review of #226).
+        self._client_paused: dict[str, float] = {}
         # When the current unbroken run of frames began (gaps under
         # LINK_FRAME_GAP_SECS): the settle and the page-hold expiry both
         # ask "has audio flowed, without a break, since X?"
@@ -395,15 +399,15 @@ class LinkWatch(FrameProcessor):
         """The VAD found speech. A muted microphone cannot produce it, so a
         page hold for the mic is over — after a stall's worth of settling,
         because audio queued before the mute can still be segmenting."""
-        if self._client_paused == "mic" and now - self._client_paused_at > LINK_STALL_SECS:
+        since = self._client_paused.get("mic")
+        if since is not None and now - since > LINK_STALL_SECS:
             from loguru import logger
 
             logger.warning(
                 "voice link: the page's mic hold expired — the owner is audibly speaking "
                 "and no ok arrived from the page"
             )
-            self._client_paused = None
-            self._client_paused_at = None
+            del self._client_paused["mic"]
             await self._settle("page-expired")
 
     def _note_audio(self, now: float):
@@ -420,17 +424,22 @@ class LinkWatch(FrameProcessor):
             self._resumed_at = now
 
     async def hold(self, reason: str, now: float | None = None):
-        """The page says its side paused (mic muted, screen off, far end
-        deaf). Holds until `release`, or until the audio clock has run
-        unbroken for `LINK_HOLD_WARN_SECS` past this moment. `now` is the
-        audio clock's — a test owns it; production reads the monotonic one."""
-        self._client_paused = reason
-        self._client_paused_at = _time.monotonic() if now is None else now
+        """The page says its side paused for `reason` (its link statistics,
+        or the mic's mute edge). Held until the page releases that reason,
+        or until the witness for it says otherwise: unbroken audio for
+        `LINK_HOLD_WARN_SECS` past this moment for a link hold, speech for a
+        mic hold. `now` is the audio clock's — a test owns it; production
+        reads the monotonic one."""
+        self._client_paused.setdefault(reason, _time.monotonic() if now is None else now)
         await self._settle(reason)
 
-    async def release(self):
-        self._client_paused = None
-        self._client_paused_at = None
+    async def release(self, reason: str | None = None):
+        """The page's `ok` for one reason — or, with none named, for all of
+        them, which is what a page that predates per-reason messages sends."""
+        if reason is None:
+            self._client_paused.clear()
+        else:
+            self._client_paused.pop(reason, None)
         await self._settle("page")
 
     async def _tick(self):
@@ -448,20 +457,22 @@ class LinkWatch(FrameProcessor):
             gap = now - self._last_audio
             if gap > LINK_FRAME_GAP_SECS:
                 self._flow_since = None
-            if (
-                self._client_paused is not None
-                and self._client_paused != "mic"
+            expired = [
+                reason
+                for reason, since in self._client_paused.items()
+                if reason != "mic"
                 and self._flow_since is not None
-                and now - max(self._flow_since, self._client_paused_at) >= LINK_HOLD_WARN_SECS
-            ):
+                and now - max(self._flow_since, since) >= LINK_HOLD_WARN_SECS
+            ]
+            if expired:
                 from loguru import logger
 
                 logger.warning(
-                    f"voice link: the page's hold ({self._client_paused}) expired — audio has "
+                    f"voice link: the page's hold ({', '.join(expired)}) expired — audio has "
                     f"flowed unbroken for {LINK_HOLD_WARN_SECS:.0f}s with no ok from the page"
                 )
-                self._client_paused = None
-                self._client_paused_at = None
+                for reason in expired:
+                    del self._client_paused[reason]
                 await self._settle("page-expired")
             if not self._audio_stalled and gap >= LINK_STALL_SECS:
                 self._audio_stalled = True
@@ -482,14 +493,14 @@ class LinkWatch(FrameProcessor):
             self._hold_warned = True
             logger.warning(
                 f"voice link held for {now - self._held_since:.0f}s "
-                f"(audio_stalled={self._audio_stalled} page={self._client_paused})"
+                f"(audio_stalled={self._audio_stalled} page={sorted(self._client_paused) or None})"
             )
 
     async def _settle(self, reason: str):
         """Recompute the combined hold and announce a transition, if any."""
         from loguru import logger
 
-        want = self._audio_stalled or self._client_paused is not None
+        want = self._audio_stalled or bool(self._client_paused)
         if want and not self.held:
             self._held_since = _time.monotonic()
             self._hold_warned = False
@@ -1397,7 +1408,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
             if state == "paused":
                 await link.hold(reason or "page")
             else:
-                await link.release()
+                await link.release(reason or None)
             return
         if msg.type != "voice-config":
             return

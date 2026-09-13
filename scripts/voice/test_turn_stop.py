@@ -582,6 +582,48 @@ class PageHoldExpiry(unittest.TestCase):
         self.assertEqual(after_early, [("paused", "mic")], "speech inside the settling time lifted the hold")
         self.assertEqual(events, [("paused", "mic"), ("ok", "page-expired")])
 
+    def test_a_link_hold_expiring_does_not_lift_a_mic_hold_beside_it(self):
+        """Eighth review: the page pauses for the link, then the mic is
+        muted. The link's hold expires on unbroken audio; the mic's must
+        not go with it, because the audio is the muted track's silence."""
+
+        async def scenario():
+            events = []
+            watch = self._watch(events)
+            watch._note_audio(0.0)
+            await watch.hold("link", now=0.0)
+            await watch.hold("mic", now=1.0)
+            t = 0.0
+            while t < LINK_HOLD_WARN_SECS + 2.0:
+                watch._note_audio(t)
+                await watch._judge(t)
+                t += 0.02
+            still_held = watch.held
+            after_audio = list(events)
+            await watch._note_speech(LINK_HOLD_WARN_SECS + 3.0)
+            return still_held, after_audio, events
+
+        still_held, after_audio, events = run(scenario())
+        self.assertTrue(still_held, "the link hold's expiry lifted the mic hold with it")
+        self.assertEqual(after_audio, [("paused", "link")])
+        self.assertEqual(events, [("paused", "link"), ("ok", "page-expired")])
+
+    def test_the_page_releases_one_reason_at_a_time(self):
+        async def scenario():
+            events = []
+            watch = self._watch(events)
+            await watch.hold("link", now=0.0)
+            await watch.hold("mic", now=0.0)
+            await watch.release("link")
+            held_after_one = watch.held
+            await watch.release("mic")
+            return held_after_one, watch.held, events
+
+        held_after_one, held, events = run(scenario())
+        self.assertTrue(held_after_one, "releasing one reason released the other")
+        self.assertFalse(held)
+        self.assertEqual(events, [("paused", "link"), ("ok", "page")])
+
     def test_a_break_in_the_audio_restarts_the_count(self):
         async def scenario():
             events = []
