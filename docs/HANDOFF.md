@@ -2338,6 +2338,28 @@ children (two Claude Code sessions, the Hermes dashboard) still run the
 previous graph binary until their hosts restart. Nothing in `~/.mecha/`
 outside the learning store was edited.
 
+**2026-09-13, 03:45Z, mecha-00: #226 (voice link pause and hold) merged at
+`9ae2a00e` and deployed on all four of its surfaces.** `~/.cargo/bin/mecha`
+reinstalled from mecha `main` at `9ae2a00e` — probe `strings
+~/.cargo/bin/mecha | grep -c 'voice offer: runner unreachable'` printed 1
+(0 before; the literal is one #226 added). `mecha-mail` and the graph
+binaries unchanged (nothing in their trees moved). `~/.mecha/web/dist`
+rebuilt from the same commit and rsynced (`deployed-local` tag absent, so
+the Sep 9 dist was main's): the served page at the `:8443` door names
+`index-DlfD91lr.js`, and `grep -c 'connection paused'` on that bundle
+prints 1. Restarted `mecha-slack`, `mecha-triggers`, `mecha-drain`,
+`mecha-serve`, `mecha-voice-worker` **and `mecha-parakeet`** — the last
+because `scripts/voice/parakeet_server.py` changed (the empty-clip 400) —
+at 03:45:24Z; each logged its own startup line in a journal window opened
+at the restart (serve's two doors, Uvicorn on 7860, `parakeet ready in
+2.6s`, Slack `1 owner(s)`, triggers `1 enabled`, drain `Started`). The
+worker's process runs from `~/Github/mecha` on `main`, clean, and the
+`worker.py` it loaded holds `class LinkWatch`. The installed Parakeet
+answers 400 `empty audio` to a zero-sample WAV (verified live). The
+stale-process sweep over `/proc/*/exe` found nothing on the previous
+inode. Benchmark binary, factory client and droplet untouched — nothing
+in the range reaches them. Three live Remote Control sessions were told.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -2876,9 +2898,57 @@ on this machine. `docs/REMOTE-CONTROL-DESIGN.md` is the design; the arc is in
 
 ### The phone surface and voice — what is still open
 
-Everything here is verified in source, re-checked 2026-08-25; the arcs' own
-docs (`REMOTE-SURFACE-DESIGN.md`, `VOICE-RESEARCH.md` §7) hold the shipped
-half.
+Everything here is verified in source, re-checked 2026-08-25 (the voice
+block below, 2026-09-13); the arcs' own docs (`REMOTE-SURFACE-DESIGN.md`,
+`VOICE-RESEARCH.md` §7) hold the shipped half.
+
+**Voice while driving — 2026-09-13.** #226 shipped and is deployed: a
+pause/resume sound and label when the link stops carrying audio
+(`linkVerdict`, `Pauses`, `serverPauseExpired` in `voice-core.js`), the
+worker holding every pending end-of-turn across the gap (`LinkWatch`,
+`TranscriptStartedTurnStop._link_held`), the mic's mute edge and a screen
+wake lock, the dictate button's tone, level bars and empty-clip refusal,
+and `LoopSampler`. HISTORY has the narrative under that date and §7 the
+mechanism. What it deliberately left, in the order to take them:
+
+- **The first-turn loop stall is instrumented, not fixed.** Every call on
+  record since 2026-08-25 shows the worker's event loop unresponsive for
+  ~2.5 s on turn one; not Parakeet (50 ms on a silent clip after hours
+  idle), not smart-turn (35 ms cold). `LoopSampler` now writes the main
+  thread's stack the moment the heartbeat is 0.5 s stale. **The next call's
+  journal names it** (`voice loop unresponsive … main thread at:`); fix it
+  where the stack points, which for a deterministic first-turn stall is
+  usually one initialisation on the wrong thread.
+- **The next drive is a measurement, and nothing needs building for it.**
+  Read the journal afterwards for: the stack above; `voice link (page):
+  reason=mic` (did iOS mute the mic on screen lock, and did the wake lock
+  stop it); `voice link paused`/`resumed after` by source and duration; and
+  the `parakeet: … rms=` lines, gated and not, which are the first car
+  population the segment gate has ever had.
+- **The segment gate and smart-turn's 3 s hold are untouched on purpose.**
+  A 1.12 s segment at RMS 0.0097 was dropped against the 0.010 floor with
+  the day's speech at 0.015–0.032; over the speaker the floor is 0.020,
+  above half the barge-ins measured 2026-09-03. Both are thresholds on the
+  owner's speech, every move of which cost a turn this month; set them from
+  the population above, not before it. The likely shape is a floor relative
+  to the call's own noise rather than one absolute.
+- **The model interrogates instead of capturing — the owner's ruling, not a
+  patch.** Six spoken turns on 2026-09-12 were "add what?", "what time on
+  Monday?": the voice block (`voice/mod.rs::VOICE_BLOCK`) says nothing about
+  capturing with what it has, and the board's inbox exists for exactly an
+  uncommitted capture. One sentence there changes how the assistant acts;
+  wording is the owner's.
+- Two observations from the review loop, unactioned: a page-side `link`
+  pause has no expiry on a counter regression (an SSRC change or a second
+  `inbound-rtp` after renegotiation would latch `stalled`; reset
+  `link = freshLink()` on `iceconnectionstatechange` closes it — no path to
+  it in this deployment); and `linkVerdict`'s inbound-vs-report `reason` is
+  computed and tested but never reaches the journal.
+- `USER_TURN_STOP_TIMEOUT` is 15 s (was 5): a turn no strategy ends now
+  waits fifteen seconds of dead air where it waited five. Every turn on a
+  working link is ended by smart-turn within ~3 s, so this governs only a
+  held turn or a fault; if 15 feels long in the car, 10 still clears the
+  stalls measured and stays above the 10 s page-hold expiry.
 
 - **The website's docs build can fail at random on a network blip, and the
   fix is on an unmerged local branch** (`fix/sync-graph-docs-loud`,

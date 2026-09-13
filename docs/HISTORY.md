@@ -14,6 +14,45 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-13 — a gap in the audio is not silence: the voice call holds the
+turn across a stall and says so, and the owner asked for the sound.** Two
+calls from a moving car on 2026-09-12 reached the model as six fragments —
+`Can you add` / `I need you to` / `urban to schedule and furnace.` /
+`Suburban` / `Um on Monday.` — each answered with a clarifying question, no
+tool called, no task captured, and the page said "listening" throughout,
+because the browser's `disconnected` needs a longer gap than the two-second
+ones that did the damage. The journal named three mechanisms
+(`VOICE-RESEARCH.md` §7, the 2026-09-12 entry): a packet gap reads as the
+owner going quiet to every stage downstream, and pipecat's input track
+*discards* the frames that arrive late; the worker's own event loop stalls
+~2.5 s on the first turn of every call since 2026-08-25, cause unnamed; and
+both calls went 40–80 s hearing frames with no speech in them, consistent
+with iOS muting the mic on screen lock. #226 (`9ae2a00e`) ships `LinkWatch`
+behind the transport — 0.75 s without audio holds every pending
+end-of-turn, ahead of pipecat's forced VAD stop at 1.0 s, and 0.6 s of
+*continuous* audio lifts it — with the discard relaxed to a minute, the
+aggregator's backstop raised to 15 s as the ceiling on a held turn, and
+`LoopSampler`, a thread that writes the main thread's stack the moment the
+loop's heartbeat is half a second stale. On the page: two soft notes down
+and two up (the tone debounced 700 ms; D7 amended), `linkVerdict` over
+WebRTC's own counters with unknown never a stall, the mic track's mute edge
+as the same pause, and a screen wake lock. The dictate button got a
+listening tone, live level bars, and a refusal for the empty clip it used
+to send (2 of 8 that afternoon 500'd Parakeet, which now answers 400).
+**The review loop ran ten passes and found eight real defects, every one in
+the pause *recovery* path** — the page echoing the worker's pause back into
+a deadlock; a settle that one stray packet lifted; a pause mid-inference
+resuming into "listening"; a lost `ok` latching either side; a mic hold
+expiring on the silence a muted iPhone keeps sending; the worker pinning
+its hold to whichever page reason came first — and none reachable by the
+unit tests or the end-to-end smoke, which drove the worker-first ordering
+only. Each fix landed with a test that fails on the behaviour it replaced;
+the pass-nine finding that the backstop's recorded reason was false is
+corrected in the constant's own comment. Deployed the same night on all
+four surfaces (HANDOFF, machine state, 2026-09-13). What it deliberately
+left — the loop stall, the gate, the capture wording — is in HANDOFF under
+the voice section.
+
 **2026-09-11 — a probe whose recorded tool surface is gone is refused, not
 retried forever.** `validate` marked every replay failure retryable and
 `should_run` re-runs anything retryable, so three of the seventeen held-out
@@ -7638,6 +7677,21 @@ and is what finally exercised the path.)
 
 ### Review process
 
+- **Eight defects in ten review passes, every one in the half of a
+  protocol the tests never drove.** #226's pause machinery has two sides
+  that talk — the page's `Pauses` and the worker's `LinkWatch` — and the
+  unit tests drove each alone while the end-to-end smoke drove the
+  worker-first ordering, which happened to be the one that worked. The
+  page-first ordering (a mic mute, the case the feature was for) deadlocked
+  on the first push, and the five passes after it each found the next
+  latch in the recovery path: a settle one packet could lift, a lost `ok`
+  on either side, a hold expiring on a muted track's silence, a hold pinned
+  to the first of two reasons. The general lesson: **when two parties hold
+  state about each other, test the protocol in both orderings before
+  either party's logic** — the taking of a hold is the easy half, and every
+  bug was in how it came off. A pure, exported decision function beside the
+  I/O (`linkVerdict`, `serverPauseExpired`, `_judge`) is what let the
+  churn be tested at all.
 - **The same fail-open gate, re-hit twice in one night with the record of it
   open in the next paragraph.** On 2026-09-07 two pushes went out that did
   not build — a value moved into a loop and read after it, and a function
