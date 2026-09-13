@@ -21,6 +21,7 @@ The three legs are env-configurable base URLs (D6):
 """
 
 import asyncio
+import collections
 import os
 import sys
 import threading
@@ -245,7 +246,10 @@ class LoopSampler:
         self._loop = None
         self._captured = False
         self._stalled_since: float | None = None
-        self.stalls: list[tuple[float, str]] = []  # (seconds, stack), for tests
+        # (seconds, stack): what the tests read, and a bounded diagnostic in
+        # production — a box whose loop crosses the line routinely would
+        # otherwise grow this for the life of the process.
+        self.stalls = collections.deque(maxlen=32)
 
     @classmethod
     def start(cls):

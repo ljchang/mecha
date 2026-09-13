@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { freshLink, linkVerdict, Pauses, INBOUND_STALL_MS, REPORT_STALL_MS } from '../../scripts/voice/voice-core.js';
+import { freshLink, linkVerdict, Pauses, serverPauseExpired, INBOUND_STALL_MS, REPORT_STALL_MS, SERVER_PAUSE_EXPIRY_MS } from '../../scripts/voice/voice-core.js';
 
 // A working link: packets rise every tick, reports every second. No verdict.
 let st = freshLink();
@@ -90,4 +90,17 @@ assert.equal(p.add('mic').announce, false);
 assert.equal(p.remove('link').announce, false);
 assert.equal(p.remove('mic').announce, true);
 console.log('voice pause protocol: ok');
+
+// A worker-announced pause is an uplink stall; only fresh uplink evidence
+// (the far end's receiver report) may expire it without the worker's `ok`.
+const T = 5_000_000;
+const healthy = { packetsIn: 900, packetsAt: T - 100, reportAt: T - 500, reportSeenAt: T - 500, stalled: false };
+assert.equal(serverPauseExpired(healthy, T - SERVER_PAUSE_EXPIRY_MS - 1, T), true);
+assert.equal(serverPauseExpired(healthy, T - SERVER_PAUSE_EXPIRY_MS + 100, T), false, 'expired early');
+assert.equal(serverPauseExpired(healthy, 0, T), false, 'no announcement, nothing to expire');
+assert.equal(serverPauseExpired({ ...healthy, stalled: true }, T - 9000, T), false, 'expired while the page itself sees a stall');
+assert.equal(serverPauseExpired({ ...healthy, reportSeenAt: null }, T - 9000, T), false, 'downlink alone cleared an uplink pause');
+assert.equal(serverPauseExpired({ ...healthy, reportSeenAt: T - REPORT_STALL_MS }, T - 9000, T), false, 'a stale report counted as fresh');
+assert.equal(serverPauseExpired({ ...healthy, packetsAt: T - INBOUND_STALL_MS }, T - 9000, T), false, 'stale inbound counted as fresh');
+console.log('server pause expiry: ok');
 
