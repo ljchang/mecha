@@ -581,8 +581,9 @@ export function createVoiceSession(opts = {}) {
       t.onunmute = () => resume("mic");
       t.onended = () => end("microphone lost — tap to reconnect");
     });
-    holdScreen();
     pc = new RTCPeerConnection();
+    // After `pc` exists: the post-await guard in `holdScreen` reads it.
+    holdScreen();
     micStream.getTracks().forEach(t => pc.addTrack(t, micStream));
     pc.addTransceiver("audio", { direction: "recvonly" });
     const speaker = new Audio(); speaker.autoplay = true;
