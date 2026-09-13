@@ -694,7 +694,18 @@ async fn dictate(State(_state): State<WebState>, body: axum::body::Bytes) -> Res
             // page's fault and says so, where "stt answered 400" says only
             // that something happened somewhere behind the page.
             let status = resp.status();
-            let detail = resp.text().await.unwrap_or_default();
+            // One bounded, printable line: the STT is a loopback service of
+            // our own, but its body is trusted by convention only, and this
+            // reaches the journal — the same rule the worker applies to the
+            // page's `link` strings.
+            let detail: String = resp
+                .text()
+                .await
+                .unwrap_or_default()
+                .chars()
+                .filter(|c| c.is_ascii_graphic() || *c == ' ')
+                .take(200)
+                .collect();
             tracing::warn!("dictate: stt answered {status}: {}", detail.trim());
             (
                 StatusCode::BAD_GATEWAY,

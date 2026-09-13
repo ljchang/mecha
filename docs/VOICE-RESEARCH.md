@@ -878,7 +878,12 @@ how sure the record is:
   *before* the release, lifts it. The track's
   discard timeout is relaxed to a minute (two privates, guarded, a warning
   if pipecat moves them). `test_turn_stop.py` replays the shape and asserts
-  the stock strategy still shows it.
+  the stock strategy still shows it. Behind the hold, pipecat's own
+  `user_turn_stop_timeout` is raised 5 → 15 s as the ceiling on a held turn
+  — not matched to the page's grace window, which starts only on an ICE
+  `disconnected` these stalls never produced — and its price is on the
+  non-stall path: a turn no strategy ends now waits fifteen seconds of dead
+  air where it waited five.
 - **The worker's own loop stalled, once per call, on turn one — every call on
   record since 2026-08-25.** The same three timers logged the same
   microsecond on Aug 25, Aug 31, Sep 1, Sep 4 and Sep 12, each on the first
