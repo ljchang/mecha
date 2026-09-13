@@ -197,8 +197,11 @@ USER_TURN_STOP_TIMEOUT = 15.0
 # A hold this long is no longer a stall being ridden out; it is worth a line
 # at WARNING, because a hold that never lifts is a call that never answers.
 LINK_HOLD_WARN_SECS = 10.0
-# The watchdog's own tick.
-LINK_TICK_SECS = 0.25
+# The watchdog's own tick. The stall is declared at most one tick after
+# `LINK_STALL_SECS`, so the worst case is their sum, and that sum has to
+# land ahead of pipecat's forced stop at 1.0 s: 0.75 + 0.1 = 0.85 does,
+# where the earlier 0.25 s tick tied it exactly (third review of #226).
+LINK_TICK_SECS = 0.1
 # The loop sampler (`LoopSampler`): how late the event loop's heartbeat may
 # run before the main thread's stack is recorded, and how often the thread
 # looks. The 2026-09-12 stall had a second signature the packet gap alone
@@ -276,6 +279,11 @@ class LoopSampler:
         while True:
             _time.sleep(LOOP_SAMPLE_SECS)
             if self._loop is None:
+                # Disarmed mid-stall (the loop closed under it): the stall
+                # is over because the loop is, and the next loop starts
+                # with a clean capture flag.
+                self._captured = False
+                self._stalled_since = None
                 continue
             now = _time.monotonic()
             late = now - self._last_beat
@@ -407,13 +415,13 @@ class LinkWatch(FrameProcessor):
                     self._resumed_at = None
                     await self._settle("audio")
         if self.held and not self._hold_warned and now - self._held_since > LINK_HOLD_WARN_SECS:
-                from loguru import logger
+            from loguru import logger
 
-                self._hold_warned = True
-                logger.warning(
-                    f"voice link held for {now - self._held_since:.0f}s "
-                    f"(audio_stalled={self._audio_stalled} page={self._client_paused})"
-                )
+            self._hold_warned = True
+            logger.warning(
+                f"voice link held for {now - self._held_since:.0f}s "
+                f"(audio_stalled={self._audio_stalled} page={self._client_paused})"
+            )
 
     async def _settle(self, reason: str):
         """Recompute the combined hold and announce a transition, if any."""

@@ -636,6 +636,21 @@ async fn ping() -> &'static str {
 /// and behind the owner guard like everything else; the runner's own
 /// origin allowlist still covers its direct door. Body passed through
 /// verbatim both ways — this is a pipe, not a participant.
+/// A `reqwest::Error` with its causes, innermost last. `{e:#}` is anyhow's
+/// idiom and reqwest ignores the flag: the top line says "error sending
+/// request" and the one fact worth logging — `Connection refused` — is two
+/// sources down.
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut cur = e.source();
+    while let Some(next) = cur {
+        out.push_str(": ");
+        out.push_str(&next.to_string());
+        cur = next.source();
+    }
+    out
+}
+
 /// POST /api/dictate — a WAV clip in, its words out, via the local Parakeet
 /// STT (the transducer that CANNOT obey speech — see the voice research).
 /// The page encodes 16 kHz mono WAV itself, so no transcoder runs here; the
@@ -693,7 +708,7 @@ async fn dictate(State(_state): State<WebState>, body: axum::body::Bytes) -> Res
                 .into_response()
         }
         Err(e) => {
-            tracing::warn!("dictate: stt unreachable: {e:#}");
+            tracing::warn!("dictate: stt unreachable: {}", error_chain(&e));
             (
                 StatusCode::BAD_GATEWAY,
                 format!("stt unreachable — is mecha-parakeet up? {e}\n"),
@@ -739,7 +754,7 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
             }
         }
         Err(e) => {
-            tracing::warn!("voice offer: runner unreachable: {e:#}");
+            tracing::warn!("voice offer: runner unreachable: {}", error_chain(&e));
             (
                 StatusCode::BAD_GATEWAY,
                 format!("voice runner unreachable: {e}\n"),
