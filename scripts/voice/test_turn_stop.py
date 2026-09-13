@@ -42,7 +42,7 @@ except ImportError as e:  # pragma: no cover - the whole point is to be loud
 from openai.types.audio import Transcription  # noqa: E402
 
 from worker import (  # noqa: E402
-    LINK_HOLD_WARN_SECS,
+    LINK_PAGE_HOLD_EXPIRY_SECS,
     LINK_RESUME_SETTLE_SECS,
     LINK_STALL_SECS,
     LOOP_LAG_WARN_SECS,
@@ -529,7 +529,7 @@ class LinkWatchClock(unittest.TestCase):
 class PageHoldExpiry(unittest.TestCase):
     """Sixth review of #226: a hold the page asked for, whose `ok` was lost
     on a channel that was not open, must not latch for the life of the
-    call. Unbroken audio for `LINK_HOLD_WARN_SECS` lifts it; audio with a
+    call. Unbroken audio for `LINK_PAGE_HOLD_EXPIRY_SECS` lifts it; audio with a
     break in it restarts the count."""
 
     def _watch(self, events):
@@ -548,7 +548,7 @@ class PageHoldExpiry(unittest.TestCase):
             watch._note_audio(0.0)
             await watch.hold("link", now=0.0)
             t = 0.0
-            while t < LINK_HOLD_WARN_SECS + 0.3:
+            while t < LINK_PAGE_HOLD_EXPIRY_SECS + 0.3:
                 watch._note_audio(t)
                 await watch._judge(t)
                 t += 0.02
@@ -567,14 +567,14 @@ class PageHoldExpiry(unittest.TestCase):
             watch._note_audio(0.0)
             await watch.hold("mic", now=0.0)
             t = 0.0
-            while t < LINK_HOLD_WARN_SECS + 2.0:
+            while t < LINK_PAGE_HOLD_EXPIRY_SECS + 2.0:
                 watch._note_audio(t)
                 await watch._judge(t)
                 t += 0.02
             after_audio = list(events)
             await watch._note_speech(0.3)  # queued audio segmenting just after the mute: not proof
             after_early_speech = list(events)
-            await watch._note_speech(LINK_HOLD_WARN_SECS + 3.0)
+            await watch._note_speech(LINK_PAGE_HOLD_EXPIRY_SECS + 3.0)
             return after_audio, after_early_speech, events
 
         after_audio, after_early, events = run(scenario())
@@ -594,13 +594,13 @@ class PageHoldExpiry(unittest.TestCase):
             await watch.hold("link", now=0.0)
             await watch.hold("mic", now=1.0)
             t = 0.0
-            while t < LINK_HOLD_WARN_SECS + 2.0:
+            while t < LINK_PAGE_HOLD_EXPIRY_SECS + 2.0:
                 watch._note_audio(t)
                 await watch._judge(t)
                 t += 0.02
             still_held = watch.held
             after_audio = list(events)
-            await watch._note_speech(LINK_HOLD_WARN_SECS + 3.0)
+            await watch._note_speech(LINK_PAGE_HOLD_EXPIRY_SECS + 3.0)
             return still_held, after_audio, events
 
         still_held, after_audio, events = run(scenario())
@@ -631,7 +631,7 @@ class PageHoldExpiry(unittest.TestCase):
             watch._note_audio(0.0)
             await watch.hold("link", now=0.0)
             t = 0.0
-            while t < LINK_HOLD_WARN_SECS + 0.3:
+            while t < LINK_PAGE_HOLD_EXPIRY_SECS + 0.3:
                 if 5.0 < t < 5.5:  # half a second of nothing
                     await watch._judge(t)
                 else:

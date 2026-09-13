@@ -192,13 +192,23 @@ LINK_FRAME_GAP_SECS = 0.25
 # ending it (pipecat's `user_turn_stop_timeout`, default 5.0). The hold
 # above *is* a turn no strategy is ending, so the default would ship the
 # fragment five seconds into a stall regardless — the smoke call showed it
-# (`User stopped speaking (strategy: None)`). Matched to the page's grace
-# window (`DROP_GRACE_MS`, 15 s), past which the call has ended anyway.
+# (`User stopped speaking (strategy: None)`). This is the ceiling on a held
+# turn, and nothing more: it is not matched to anything on the page (the
+# page's `DROP_GRACE_MS` starts only once the browser reports ICE
+# `disconnected`, which the stalls that did the damage never produced), so
+# on exactly that shape the call is still live at fifteen seconds and the
+# turn simply ships late. Its price is paid on the *non*-stall path — a turn
+# no strategy ends, a transcript that never arrives past `STT_TTFS_P99`,
+# now sits for fifteen seconds of dead air where it sat for five. Chosen as
+# the longest wait a person mid-sentence will forgive before the answer to
+# half of it is worse than none (ninth review of #226 corrected the reason
+# recorded here; the number stands).
 USER_TURN_STOP_TIMEOUT = 15.0
 # A hold this long is no longer a stall being ridden out; it is worth a line
 # at WARNING, because a hold that never lifts is a call that never answers.
-# It is also how long a hold the *page* asked for on the link's account
-# survives against audio that has flowed continuously the whole time: the
+LINK_HOLD_WARN_SECS = 10.0
+# How long a hold the *page* asked for on the link's account survives
+# against audio that has flowed continuously the whole time: the
 # page's `ok` travels over a channel that may be the thing that stalled and
 # is dropped silently when it is not open, so a lost one would otherwise
 # latch the hold for the life of the call (sixth review of #226 — the
@@ -208,8 +218,10 @@ USER_TURN_STOP_TIMEOUT = 15.0
 # lock keeps sending silence, which is the 40–80 s of frames with no speech
 # in them the 2026-09-12 journal measured — so a mic hold is never expired
 # by audio. What proves a microphone live is speech: the first VAD start
-# past the hold's own settling time lifts it (seventh review).
-LINK_HOLD_WARN_SECS = 10.0
+# past the hold's own settling time lifts it (seventh review). The same
+# value as the warning, by coincidence and not by identity — two questions,
+# two constants, so tuning one cannot silently retune the other.
+LINK_PAGE_HOLD_EXPIRY_SECS = 10.0
 # The watchdog's own tick. The stall is declared at most one tick after
 # `LINK_STALL_SECS`, so the worst case is their sum, and that sum has to
 # land ahead of pipecat's forced stop at 1.0 s: 0.75 + 0.1 = 0.85 does,
@@ -462,14 +474,14 @@ class LinkWatch(FrameProcessor):
                 for reason, since in self._client_paused.items()
                 if reason != "mic"
                 and self._flow_since is not None
-                and now - max(self._flow_since, since) >= LINK_HOLD_WARN_SECS
+                and now - max(self._flow_since, since) >= LINK_PAGE_HOLD_EXPIRY_SECS
             ]
             if expired:
                 from loguru import logger
 
                 logger.warning(
                     f"voice link: the page's hold ({', '.join(expired)}) expired — audio has "
-                    f"flowed unbroken for {LINK_HOLD_WARN_SECS:.0f}s with no ok from the page"
+                    f"flowed unbroken for {LINK_PAGE_HOLD_EXPIRY_SECS:.0f}s with no ok from the page"
                 )
                 for reason in expired:
                     del self._client_paused[reason]
