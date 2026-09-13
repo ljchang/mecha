@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Voice calls sound a pause when the link stops carrying audio and a resume
+  when it does again, and the worker holds every pending end-of-turn across
+  the gap instead of ending the turn on the words before it (`LinkWatch`,
+  `scripts/voice/worker.py`; `linkVerdict`, `scripts/voice/voice-core.js`).
+  The page keeps a screen wake lock for the length of a call and treats the
+  microphone track's mute edge as the same pause. The tasks page's dictate
+  button plays a listening tone, shows the live level, and refuses to send a
+  clip it did not record. A sampler thread records the main thread's stack
+  whenever the worker's event loop stops for half a second — the unnamed
+  first-turn stall every call since 2026-08-25 has shown.
+
+### Fixed
+
+- `mecha serve` logs a voice offer the runner refused or could not be reached
+  for, and a dictate clip the STT refused, at `warn` — a failed call left no
+  record anywhere before.
+- `parakeet_server.py` answers 400 to a WAV with no samples instead of
+  crashing the request.
+
 ## [0.1.20] - 2026-09-11
 
 ### Fixed

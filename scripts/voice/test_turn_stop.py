@@ -42,7 +42,15 @@ except ImportError as e:  # pragma: no cover - the whole point is to be loud
 from openai.types.audio import Transcription  # noqa: E402
 
 from worker import (  # noqa: E402
+    LINK_PAGE_HOLD_EXPIRY_SECS,
+    LINK_RESUME_SETTLE_SECS,
+    LINK_STALL_SECS,
+    LOOP_LAG_WARN_SECS,
     STT_TTFS_P99,
+    LinkResumedFrame,
+    LinkStalledFrame,
+    LinkWatch,
+    LoopSampler,
     ParakeetSTT,
     SegmentDroppedFrame,
     TranscriptStartedTurnStop,
@@ -124,6 +132,13 @@ class Call:
     async def dropped(self):
         """What the STT says about a segment the gate or echo filter ate."""
         await self.strategy.process_frame(SegmentDroppedFrame())
+
+    async def link_stalls(self):
+        """What the link watch says when the microphone audio stops arriving."""
+        await self.strategy.process_frame(LinkStalledFrame(reason="audio"))
+
+    async def link_resumes(self):
+        await self.strategy.process_frame(LinkResumedFrame(after_secs=2.5))
 
     async def close(self):
         await self.strategy.cleanup()
@@ -362,6 +377,291 @@ class TranscriptStartedTurns(unittest.TestCase):
         del s._vad_stopped
         with self.assertRaises(RuntimeError):
             s._refuse_if_pipecat_moved()
+
+
+class LinkStalls(unittest.TestCase):
+    """The 2026-09-12 shape, from a moving car: "Can you add" [COMPLETE]
+    at the instant the audio stopped arriving, and the rest of the sentence
+    in the gap. A gap in packets is not silence."""
+
+    def test_a_ruling_made_on_the_gap_waits_for_the_link(self):
+        """COMPLETE and the transcript both land while the link is paused.
+        The turn must not end until the audio is back — and when what comes
+        back is the owner still talking, it must not end at all."""
+
+        async def scenario(cls):
+            call = Call(cls, [EndOfTurnState.COMPLETE, EndOfTurnState.COMPLETE], STT_TTFS_P99)
+            await call.start()
+            await call.speaks()
+            await call.stops_speaking()
+            await call.link_stalls()
+            await call.turn_starts()
+            await call.transcript("Can you add")
+            await asyncio.sleep(STT_TTFS_P99 + 0.3)  # past the safety net too
+            held = not call.stopped
+            # The audio resumes carrying the rest of the sentence: the VAD
+            # start lands before the release, as the settle guarantees.
+            await call.speaks()
+            await call.link_resumes()
+            await asyncio.sleep(0.05)
+            still_held = not call.stopped
+            await call.stops_speaking()
+            await call.transcript("a reminder to call Suburban about the furnace.")
+            await asyncio.sleep(0.05)
+            ended = len(call.stopped) == 1
+            await call.close()
+            return held, still_held, ended
+
+        held, still_held, ended = run(scenario(TranscriptStartedTurnStop))
+        self.assertTrue(held, "the turn ended on a ruling made across a paused link")
+        self.assertTrue(still_held, "the release ended the turn although the owner had resumed")
+        self.assertTrue(ended, "the whole sentence did not end the turn once")
+
+        # Fails on the stock strategy: it knows nothing of the link and ends
+        # the turn on the fragment.
+        held, _, _ = run(scenario(TurnAnalyzerUserTurnStopStrategy))
+        self.assertFalse(held, "the stock strategy no longer shows the fault this guards")
+
+    def test_a_resumed_link_with_nothing_more_ends_the_turn(self):
+        """The owner really was done: the hold delays the answer by the
+        stall and no more."""
+
+        async def scenario():
+            call = Call(TranscriptStartedTurnStop, [EndOfTurnState.COMPLETE], STT_TTFS_P99)
+            await call.start()
+            await call.speaks()
+            await call.stops_speaking()
+            await call.link_stalls()
+            await call.turn_starts()
+            await call.transcript("What is on my calendar today?")
+            await asyncio.sleep(0.3)
+            held = not call.stopped
+            await call.link_resumes()
+            await asyncio.sleep(0.05)
+            ended = len(call.stopped) == 1
+            await call.close()
+            return held, ended
+
+        held, ended = run(scenario())
+        self.assertTrue(held)
+        self.assertTrue(ended, "the release did not act on the ruling it had been holding")
+
+
+class LinkWatchHolds(unittest.TestCase):
+    """Two sources can pause; both must clear. Driven directly, with the
+    pushes recorded, because the processor needs no pipeline to decide."""
+
+    def test_both_sources_must_clear(self):
+        async def scenario():
+            events = []
+            watch = LinkWatch(on_change=lambda s, r, a: _record(events, s, r))
+            pushed = []
+
+            async def push(frame, direction=None):
+                pushed.append(type(frame).__name__)
+
+            watch.push_frame = push
+            await watch.hold("mic", now=0.0)
+            watch._audio_stalled = True
+            await watch._settle("audio")
+            await watch.release()  # the page recovered; the audio has not
+            still = watch.held
+            watch._audio_stalled = False
+            await watch._settle("audio")
+            return events, pushed, still, watch.held
+
+        events, pushed, still, held_after = run(scenario())
+        self.assertEqual(events, [("paused", "mic"), ("ok", "audio")])
+        self.assertEqual(pushed, ["LinkStalledFrame", "LinkResumedFrame"])
+        self.assertTrue(still, "one source clearing released a hold the other still owned")
+        self.assertFalse(held_after)
+
+
+async def _record(events, state, reason):
+    events.append((state, reason))
+
+
+class LinkWatchClock(unittest.TestCase):
+    """The audio clock that decides the hold, driven with a clock the test
+    owns: frames through `_note_audio`, verdicts through `_judge`."""
+
+    def test_one_stray_frame_does_not_lift_the_hold(self):
+        """Review of #226: the settle measured time since the *first* frame
+        back, so one packet in a dead link released the hold 0.6 s later
+        and the held COMPLETE shipped the fragment anyway."""
+
+        async def scenario():
+            events = []
+            watch = LinkWatch(on_change=lambda s, r, a: _record(events, s, r))
+            pushed = []
+
+            async def push(frame, direction=None):
+                pushed.append(type(frame).__name__)
+
+            watch.push_frame = push
+            t = 0.0
+            while t < 1.0:  # a second of ordinary flow
+                watch._note_audio(t)
+                t += 0.02
+            await watch._judge(1.0 + LINK_STALL_SECS)
+            paused = list(events)
+            # One stray packet, then nothing: no settle can complete on it.
+            watch._note_audio(2.5)
+            await watch._judge(2.5 + LINK_RESUME_SETTLE_SECS)
+            await watch._judge(2.5 + LINK_RESUME_SETTLE_SECS + 0.5)
+            after_stray = list(events)
+            # Real flow: frames every 20 ms for the settle's length and a
+            # little past it (integer steps, so float drift cannot stop the
+            # clock a frame short of the settle).
+            for i in range(int(LINK_RESUME_SETTLE_SECS / 0.02) + 3):
+                t = 4.0 + i * 0.02
+                watch._note_audio(t)
+                await watch._judge(t)
+            return paused, after_stray, events, pushed
+
+        paused, after_stray, events, pushed = run(scenario())
+        self.assertEqual(paused, [("paused", "audio")])
+        self.assertEqual(after_stray, paused, "a single frame lifted the hold")
+        self.assertEqual(events, [("paused", "audio"), ("ok", "audio")])
+        self.assertEqual(pushed, ["LinkStalledFrame", "LinkResumedFrame"])
+
+
+class PageHoldExpiry(unittest.TestCase):
+    """Sixth review of #226: a hold the page asked for, whose `ok` was lost
+    on a channel that was not open, must not latch for the life of the
+    call. Unbroken audio for `LINK_PAGE_HOLD_EXPIRY_SECS` lifts it; audio with a
+    break in it restarts the count."""
+
+    def _watch(self, events):
+        watch = LinkWatch(on_change=lambda s, r, a: _record(events, s, r))
+
+        async def push(frame, direction=None):
+            pass
+
+        watch.push_frame = push
+        return watch
+
+    def test_unbroken_audio_expires_a_link_hold(self):
+        async def scenario():
+            events = []
+            watch = self._watch(events)
+            watch._note_audio(0.0)
+            await watch.hold("link", now=0.0)
+            t = 0.0
+            while t < LINK_PAGE_HOLD_EXPIRY_SECS + 0.3:
+                watch._note_audio(t)
+                await watch._judge(t)
+                t += 0.02
+            return events
+
+        events = run(scenario())
+        self.assertEqual(events, [("paused", "link"), ("ok", "page-expired")])
+
+    def test_a_mic_hold_survives_unbroken_audio_and_lifts_on_speech(self):
+        """Seventh review: a muted iOS track keeps sending silence, so
+        audio flowing is no witness that the microphone is back. Speech is."""
+
+        async def scenario():
+            events = []
+            watch = self._watch(events)
+            watch._note_audio(0.0)
+            await watch.hold("mic", now=0.0)
+            t = 0.0
+            while t < LINK_PAGE_HOLD_EXPIRY_SECS + 2.0:
+                watch._note_audio(t)
+                await watch._judge(t)
+                t += 0.02
+            after_audio = list(events)
+            await watch._note_speech(0.3)  # queued audio segmenting just after the mute: not proof
+            after_early_speech = list(events)
+            await watch._note_speech(LINK_PAGE_HOLD_EXPIRY_SECS + 3.0)
+            return after_audio, after_early_speech, events
+
+        after_audio, after_early, events = run(scenario())
+        self.assertEqual(after_audio, [("paused", "mic")], "silence from a muted track lifted a mic hold")
+        self.assertEqual(after_early, [("paused", "mic")], "speech inside the settling time lifted the hold")
+        self.assertEqual(events, [("paused", "mic"), ("ok", "page-expired")])
+
+    def test_a_link_hold_expiring_does_not_lift_a_mic_hold_beside_it(self):
+        """Eighth review: the page pauses for the link, then the mic is
+        muted. The link's hold expires on unbroken audio; the mic's must
+        not go with it, because the audio is the muted track's silence."""
+
+        async def scenario():
+            events = []
+            watch = self._watch(events)
+            watch._note_audio(0.0)
+            await watch.hold("link", now=0.0)
+            await watch.hold("mic", now=1.0)
+            t = 0.0
+            while t < LINK_PAGE_HOLD_EXPIRY_SECS + 2.0:
+                watch._note_audio(t)
+                await watch._judge(t)
+                t += 0.02
+            still_held = watch.held
+            after_audio = list(events)
+            await watch._note_speech(LINK_PAGE_HOLD_EXPIRY_SECS + 3.0)
+            return still_held, after_audio, events
+
+        still_held, after_audio, events = run(scenario())
+        self.assertTrue(still_held, "the link hold's expiry lifted the mic hold with it")
+        self.assertEqual(after_audio, [("paused", "link")])
+        self.assertEqual(events, [("paused", "link"), ("ok", "page-expired")])
+
+    def test_the_page_releases_one_reason_at_a_time(self):
+        async def scenario():
+            events = []
+            watch = self._watch(events)
+            await watch.hold("link", now=0.0)
+            await watch.hold("mic", now=0.0)
+            await watch.release("link")
+            held_after_one = watch.held
+            await watch.release("mic")
+            return held_after_one, watch.held, events
+
+        held_after_one, held, events = run(scenario())
+        self.assertTrue(held_after_one, "releasing one reason released the other")
+        self.assertFalse(held)
+        self.assertEqual(events, [("paused", "link"), ("ok", "page")])
+
+    def test_a_break_in_the_audio_restarts_the_count(self):
+        async def scenario():
+            events = []
+            watch = self._watch(events)
+            watch._note_audio(0.0)
+            await watch.hold("link", now=0.0)
+            t = 0.0
+            while t < LINK_PAGE_HOLD_EXPIRY_SECS + 0.3:
+                if 5.0 < t < 5.5:  # half a second of nothing
+                    await watch._judge(t)
+                else:
+                    watch._note_audio(t)
+                    await watch._judge(t)
+                t += 0.02
+            return events
+
+        events = run(scenario())
+        self.assertEqual(events, [("paused", "link")], "a broken flow counted as unbroken")
+
+
+class LoopStalls(unittest.TestCase):
+    """The sampler names the frame the loop is stuck in, from a thread,
+    while it is stuck — not after."""
+
+    def test_a_blocked_loop_is_caught_with_its_stack(self):
+        async def scenario():
+            sampler = LoopSampler.start()
+            await asyncio.sleep(0.3)  # let the heartbeat run
+            time.sleep(LOOP_LAG_WARN_SECS + 0.4)  # the fault: blocking the loop
+            await asyncio.sleep(0.4)  # the beat resumes; the duration line follows
+            return sampler.stalls
+
+        stalls = run(scenario())
+        self.assertEqual(len(stalls), 1, f"expected one stall, saw {len(stalls)}")
+        late, stack = stalls[0]
+        self.assertGreaterEqual(late, LOOP_LAG_WARN_SECS)
+        self.assertIn("time.sleep", stack, "the stack does not name the blocking call")
+        self.assertIn("scenario", stack)
 
 
 class Transcripts(unittest.TestCase):
