@@ -185,3 +185,13 @@ import { UplinkRing, behindVerdict, BEHIND_TONE_MS, CAUGHT_UP_MS } from '../../s
   assert.equal(small.takeBatch(100).seq, b.seq, 'the retry reuses the sequence number');
   console.log('wire backlog + unsend: ok');
 }
+
+{
+  // The pump waits for a batch's worth and a queue with room (fifth review of #231).
+  const { shouldPump, UPLINK_BATCH_MS, UPLINK_SCTP_HIGH_BYTES } = await import('../../scripts/voice/voice-core.js');
+  assert.equal(shouldPump(20, 0), false, 'one frame is not a batch');
+  assert.equal(shouldPump(UPLINK_BATCH_MS - 1, 0), false);
+  assert.equal(shouldPump(UPLINK_BATCH_MS, 0), true);
+  assert.equal(shouldPump(5000, UPLINK_SCTP_HIGH_BYTES), false, 'a full queue waits');
+  console.log('pump gate: ok');
+}

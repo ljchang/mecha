@@ -386,6 +386,37 @@ class Fallback(unittest.TestCase):
         self.assertIsNone(before)
         self.assertIsNone(after, "an ignored batch must not resurrect the backlog")
 
+    def test_the_fallback_stops_queued_audio_and_the_backlog_stays_forgotten(self):
+        """Fifth review of #231: work already queued when the fallback fired
+        kept pushing beside the RTP reader and re-noted the backlog the
+        link had just forgotten."""
+
+        async def scenario():
+            watch = LinkWatch()
+
+            async def push(frame, direction=None):
+                pass
+
+            watch.push_frame = push
+            inp = FakeInput()
+            up = UplinkAudio(inp, watch, FakeSTT())
+            # Twenty live batches queued, none delivered yet (the consumer
+            # paces at 4x and has not run: no await since the enqueue).
+            for seq in range(20):
+                await up.on_audio(opus_batch(seq, seq * 100, 6_000 - seq * 100))
+            queued_before = up._queued_ms
+            noted_before = watch._backlog_ms
+            up.on_fallback()
+            await up.drain()
+            return queued_before, noted_before, len(inp.audio), watch._backlog_ms, up._queued_ms
+
+        queued_before, noted_before, pushed, after, queued_after = run(scenario())
+        self.assertGreater(queued_before, 0)
+        self.assertIsNotNone(noted_before)
+        self.assertLessEqual(pushed, 1, "queued audio kept flowing beside RTP after the fallback")
+        self.assertIsNone(after, "queued work re-noted the backlog after the link forgot it")
+        self.assertEqual(queued_after, 0)
+
 
 class AcrossAGap(unittest.TestCase):
     """The ring survives the end of a call; the prefix must place what it

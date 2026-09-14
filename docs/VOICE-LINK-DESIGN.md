@@ -78,7 +78,10 @@ label check) and JSON-parses its messages: a binary channel would have
 hijacked RTVI and logged an error ten times a second. The cost is a third
 more bytes on ~4 kB/s of Opus, which is nothing.
 
-Each message is one 100 ms batch (`UPLINK_BATCH_MS`): `seq`, `ms` (media
+Each message is one 100 ms batch (`UPLINK_BATCH_MS`) — the pump sends only
+once a batch's worth is waiting (`shouldPump`); the first cut pumped on
+every frame and a healthy link sent fifty one-frame envelopes a second,
+the wrapper tripling the budget below (review of #231): `seq`, `ms` (media
 clock of the first frame), `backlog_ms` (audio captured but not yet sent, at
 send time), `frames` as `[duration_ms, base64]` pairs, and `dropped` spans
 when the ring overflowed since the last batch. The page sends from the ring,
@@ -157,7 +160,11 @@ tells the page
 (`{t: "uplink", state: "rtp"}`), forgets the backlog so the hold resumes
 on flow alone (`LinkWatch.forget_backlog` — a value frozen at the size
 that tripped it would hold the turn for the rest of the call), and ignores
-batches that arrive afterwards rather than doubling the voice. The VAD
+batches that arrive afterwards rather than doubling the voice. The injector
+stops cold at the same moment: audio it had decoded and not yet pushed is
+dropped and its size logged, because pushing it beside the RTP reader's
+frames would interleave old speech with new and each pushed frame re-noted
+the backlog the link had just forgotten (review of #231). The VAD
 idle timeout stays at the channel's 30 s on such a call, which Silero's
 stop on flowing silence makes safe.
 

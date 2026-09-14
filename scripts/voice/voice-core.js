@@ -260,6 +260,16 @@ export const UPLINK_WIRE_BYTES_PER_MS = 6;
 export function wireBacklogMs(pendingMs, bufferedAmount) {
   return pendingMs + (bufferedAmount || 0) / UPLINK_WIRE_BYTES_PER_MS;
 }
+/* Whether the pump should send now: a batch's worth is waiting and the
+   SCTP queue has room. The first cut pumped on every encoded frame and
+   `takeBatch` takes at least one, so a healthy link sent fifty one-frame
+   envelopes a second — the ~200-byte wrapper tripling the uplink §2.2 had
+   budgeted — and batched only when already behind (fifth review of #231).
+   A tail under a batch waits for the next frames; a live microphone
+   always sends more, and the wait is at most `UPLINK_BATCH_MS`. */
+export function shouldPump(pendingMs, bufferedAmount) {
+  return pendingMs >= UPLINK_BATCH_MS && (bufferedAmount || 0) < UPLINK_SCTP_HIGH_BYTES;
+}
 /* Opus at 48 kHz; the transform reports RTP timestamps at the codec clock. */
 const RTP_CLOCK_HZ = 48000;
 const RTP_TS_WRAP = 2 ** 32;
@@ -926,10 +936,12 @@ export function createVoiceSession(opts = {}) {
           w.onerror = () => { clearTimeout(t); res(false); };
         });
         if (!ready || !pc) { try { w.terminate(); } catch { /* gone */ } return false; }
+        try {
+          sender.transform = new RTCRtpScriptTransform(w, {});
+        } catch { try { w.terminate(); } catch { /* gone */ } return false; }
         uplinkWorker = w;
         w.onmessage = (e) => onFrame(e.data);
         w.onerror = () => uplinkFailed("worker error");
-        sender.transform = new RTCRtpScriptTransform(w, {});
         return true;
       }
       if (typeof sender.createEncodedStreams === "function") {
@@ -979,7 +991,7 @@ export function createVoiceSession(opts = {}) {
     if (!dc || dc.readyState !== "open") return;
     pumping = true;
     try {
-      while (ring.frames.length && dc.bufferedAmount < UPLINK_SCTP_HIGH_BYTES) {
+      while (shouldPump(ring.pendingMs, dc.bufferedAmount)) {
         const batch = ring.takeBatch();
         if (!batch) break;
         const dropped = ring.takeDropped();
@@ -990,8 +1002,9 @@ export function createVoiceSession(opts = {}) {
         if (!sendClientMessage("audio", d)) { ring.unsend(batch, dropped); break; }
       }
     } finally { pumping = false; }
-    // Left over because the queue was full: come back when it drains.
-    if (ring.frames.length && !pumpTimer) pumpTimer = setTimeout(() => { pumpTimer = 0; pump(); }, 50);
+    // A batch's worth left over because the queue was full: come back
+    // when it drains. Less than a batch waits for the next frame.
+    if (ring.pendingMs >= UPLINK_BATCH_MS && !pumpTimer) pumpTimer = setTimeout(() => { pumpTimer = 0; pump(); }, 50);
     noteBehind();
   }
   function b64(buf) {
@@ -1064,7 +1077,7 @@ export function createVoiceSession(opts = {}) {
     clearTimeout(pumpTimer); pumpTimer = 0;
     clearInterval(heartbeatTimer); heartbeatTimer = 0; linkPausedSent = false;
     if (uplinkWorker) { try { uplinkWorker.terminate(); } catch { /* gone */ } uplinkWorker = null; }
-    behindShownS = 0; behind = { sounded: false };
+    behindShownS = 0; behind = { sounded: false }; uplinkMode = "rtp";
     if (pc) { try { pc.close(); } catch { /* already gone */ } }
     pc = null; dc = null;
     cfg.onLink(false);
