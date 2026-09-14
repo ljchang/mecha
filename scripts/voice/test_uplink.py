@@ -286,13 +286,16 @@ class Fallback(unittest.TestCase):
     """The watch that rescues a deaf call must not brick a live one
     (review of #231, three findings on one path)."""
 
-    def test_the_witness_is_rtp_arriving_while_no_batch_does(self):
-        # A stalled link stops both: not deaf.
-        self.assertFalse(deaf_verdict(False, UPLINK_DEAF_SECS + 5))
-        # RTP flowing, batches recent: not deaf.
-        self.assertFalse(deaf_verdict(True, 1.0))
-        # RTP flowing, nothing on the channel for the window: deaf.
-        self.assertTrue(deaf_verdict(True, UPLINK_DEAF_SECS))
+    def test_the_witness_is_rtp_and_the_channel_alive_while_no_batch_arrives(self):
+        # A stalled link stops everything: not deaf.
+        self.assertFalse(deaf_verdict(False, False, UPLINK_DEAF_SECS + 5))
+        # A head-of-line-blocked channel: RTP flows, nothing at all on the
+        # channel — a lossy link, not a dead tap (third review of #231).
+        self.assertFalse(deaf_verdict(True, False, UPLINK_DEAF_SECS + 5))
+        # RTP flowing, channel alive, batches recent: not deaf.
+        self.assertFalse(deaf_verdict(True, True, 1.0))
+        # RTP flowing, heartbeats arriving, no audio for the window: deaf.
+        self.assertTrue(deaf_verdict(True, True, UPLINK_DEAF_SECS))
 
     def test_a_late_lane_backlog_is_a_batch_for_the_witness(self):
         async def scenario():

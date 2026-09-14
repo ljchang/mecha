@@ -422,6 +422,12 @@ export function createVoiceSession(opts = {}) {
      the link was down is delivered at the head of the next connection. */
   const ring = new UplinkRing();
   let uplinkWorker = null, uplinkMode = "rtp", pumpTimer = 0, pumping = false, lastFrameAt = 0;
+  /* The channel's proof of life for the worker's deafness watch: sent
+     every `UPLINK_HEARTBEAT_MS` while the channel is in use, so a channel
+     that is merely head-of-line blocked (heartbeats stop too) is never
+     mistaken for a dead tap (audio stops, heartbeats continue). */
+  const UPLINK_HEARTBEAT_MS = 2000;
+  let heartbeatTimer = 0, linkPausedSent = false;
   let behind = { sounded: false }, behindShownS = 0;
   /* Is the bot audible right now? Held so a VAD edge caused by our own
      speaker cannot be rendered as the owner talking - see `onRtvi`. */
@@ -551,12 +557,12 @@ export function createVoiceSession(opts = {}) {
        is still told, so it holds the turn; the sound and the label are
        not made. `mic` — capture itself stopped — stays a real pause (§4.1). */
     if (uplinkMode === "channel" && (reason === "link" || reason === "server")) {
-      if (reason === "link") sendLink("paused", reason);
+      if (reason === "link") { linkPausedSent = true; sendLink("paused", reason); }
       return;
     }
     const { first, announce } = pausedBy.add(reason);
     if (reason === "server") serverPausedAt = performance.now();
-    if (announce) sendLink("paused", reason);
+    if (announce) { if (reason === "link") linkPausedSent = true; sendLink("paused", reason); }
     if (!first) return;
     thinkingSound(false);
     pauseSounded = false;
@@ -564,13 +570,14 @@ export function createVoiceSession(opts = {}) {
     cfg.onState("paused", PAUSE_LABELS[reason] || "paused");
   }
   function resume(reason) {
-    if (uplinkMode === "channel" && (reason === "link" || reason === "server")) {
-      if (reason === "link") sendLink("ok", reason);
-      return;
-    }
+    // A `link` pause the page told the worker about is released the same
+    // way whichever mode the page is in now — a fallback between the two
+    // must not leave the worker waiting for an `ok` (review of #231).
+    if (reason === "link" && linkPausedSent) { linkPausedSent = false; sendLink("ok", reason); }
+    if (uplinkMode === "channel" && (reason === "link" || reason === "server")) return;
     const { last, announce, removed } = pausedBy.remove(reason);
     if (!removed) return;
-    if (announce) sendLink("ok", reason);
+    if (announce && reason !== "link") sendLink("ok", reason);
     if (!last) {
       // Still paused for another reason; relabel to the one that remains.
       cfg.onState("paused", PAUSE_LABELS[pausedBy.first] || "paused");
@@ -776,6 +783,8 @@ export function createVoiceSession(opts = {}) {
         // connection; then whatever the ring already holds — the previous
         // call's tail, if the link died — goes first, in order (§4.2).
         sendClientMessage("audio-start", { tz_offset_min: -new Date().getTimezoneOffset() });
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = setInterval(() => { if (uplinkMode === "channel") sendClientMessage("heartbeat", {}); }, UPLINK_HEARTBEAT_MS);
         pump();
       }
       // Ask immediately: the picker must be populated from the server's
@@ -891,7 +900,11 @@ export function createVoiceSession(opts = {}) {
   async function attachUplinkTap() {
     const sender = pc.getSenders().find(s => s.track && s.track.kind === "audio");
     if (!sender) return false;
-    const onFrame = (m) => { if (m && m.data) { lastFrameAt = performance.now(); ring.push(m.ts, m.data); pump(); } };
+    // Guarded on the mode: on the `createEncodedStreams` path there is no
+    // worker to terminate, so without this the tap would keep filling the
+    // ring after a fallback and the next connection would replay, as a
+    // late turn, speech the model already answered over RTP (review of #231).
+    const onFrame = (m) => { if (uplinkMode !== "channel") return; if (m && m.data) { lastFrameAt = performance.now(); ring.push(m.ts, m.data); pump(); } };
     try {
       if (typeof RTCRtpScriptTransform === "function") {
         const w = new Worker("/voice-uplink-transform.js");
@@ -1041,6 +1054,7 @@ export function createVoiceSession(opts = {}) {
     // The ring is deliberately kept: it is what the next connection
     // delivers first (§4.2). The tap and the pump are per call.
     clearTimeout(pumpTimer); pumpTimer = 0;
+    clearInterval(heartbeatTimer); heartbeatTimer = 0; linkPausedSent = false;
     if (uplinkWorker) { try { uplinkWorker.terminate(); } catch { /* gone */ } uplinkWorker = null; }
     behindShownS = 0; behind = { sounded: false };
     if (pc) { try { pc.close(); } catch { /* already gone */ } }

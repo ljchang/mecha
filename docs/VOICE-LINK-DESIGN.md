@@ -132,9 +132,15 @@ consumption, so an unread track reports `packetsReceived = 0` for ever,
 which the first end-to-end deaf call proved against a `getStats` witness
 — and a stalled link stops both frames and batches and must not trip
 this, since falling back during a stall would gain nothing and discard
-the buffered speech that follows. The witness is a *batch* of either
-lane, because a reconnect's carried-over ring is all late lane for as long
-as it takes to drain. When it fires the worker stops discarding RTP, at
+the buffered speech that follows. A *lossy* link is the harder case: SCTP
+is ordered and reliable, so one lost packet head-of-line-blocks every
+later message while RTP keeps delivering whatever gets through — "RTP
+arriving, no batch for six seconds" on a link that is up. So the page
+heartbeats on the channel every two seconds and the third witness is
+**the channel alive**: no message of any kind means blocked, not deaf, and
+the backlog is delivered when the block clears. The witness is a *batch*
+of either lane, because a reconnect's carried-over ring is all late lane
+for as long as it takes to drain. When it fires the worker stops discarding RTP, at
 `error` level — the six seconds before it are the price of a dead tap —
 tells the page
 (`{t: "uplink", state: "rtp"}`), forgets the backlog so the hold resumes
@@ -210,7 +216,10 @@ on arrival. Age decides which lane it takes:
   captured and so cannot place speech from before an outage (review of
   #231). A span is closed by the first live batch after it,
   or by `LATE_SETTLE_SECS` without one, and is put *before* the live audio
-  that closed it. The model answers it as a turn. This is the outbox and questions shape
+  that closed it. The late lane goes to Parakeet directly, past the live
+  segmenter's RMS floor and the echo text filter: during an outage the
+  downlink is down too, so there is no speaker to echo, and a span is
+  minutes long rather than a breath. The model answers it as a turn. This is the outbox and questions shape
   applied to speech — a run's input surviving the run — and it is what
   keeps "the outage outlasted the conversation" from meaning "what was
   said is gone".
