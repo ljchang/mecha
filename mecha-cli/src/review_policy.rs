@@ -589,10 +589,41 @@ mod tests {
         ] {
             for entry in entries {
                 assert_eq!(parse_answer(entry), kind, "{entry:?}");
+                // A *leading* connective: a trailing `then` is filler and
+                // is stripped before `segment` sees it, which measured
+                // nothing (found on review).
                 assert_eq!(
-                    parse_answer(&format!("{entry} then")),
+                    parse_answer(&format!("just {entry}")),
                     kind,
-                    "{entry:?} then"
+                    "just {entry:?}"
+                );
+            }
+        }
+    }
+
+    /// `normalise` and `voice::spoken_words` must split words identically,
+    /// or the echo gate's normalised check — the one that closes the filler
+    /// hole — compares words that cannot match. They drifted on the
+    /// apostrophe once (this branch's first cut deleted it here and split
+    /// on it there), and `"So, that's right."` off the speaker became a
+    /// release. Checked on every entry and on its apostrophied spelling,
+    /// because the contractions are exactly where the two can disagree.
+    #[test]
+    fn words_split_the_same_way_in_both_normalisations() {
+        let all = SEND_PHRASES
+            .iter()
+            .chain(&LATER_PHRASES)
+            .chain(&READ_PHRASES);
+        for entry in all {
+            for spelling in [
+                entry.to_string(),
+                entry.replace("thats", "that's"),
+                entry.replace("thats", "that\u{2019}s"),
+            ] {
+                assert_eq!(
+                    crate::voice::spoken_words(&normalise(&spelling)),
+                    crate::voice::spoken_words(&spelling),
+                    "{spelling:?}"
                 );
             }
         }

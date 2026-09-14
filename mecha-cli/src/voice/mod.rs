@@ -2343,11 +2343,17 @@ mod tests {
         let body = &src[i + 1..][..src[i + 1..]
             .find("\n}\n")
             .expect("`completion` still has a closing brace at column zero")];
+        // Needles assembled at runtime so this test's own text is not a
+        // match — the idiom the other source-reading tests use.
+        // Method names alone: rustfmt breaks the receiver chain across
+        // lines, so the receiver and the method are not one string in the
+        // source — and this comment must not spell the needle either.
+        let carries = ["carry_", "unanswered("].concat();
         assert!(
-            body.contains(".carry_unanswered("),
+            body.contains(&carries),
             "`completion` no longer carries a dropped question"
         );
-        let consumers = src.matches(".take_carry(").count();
+        let consumers = src.matches(&["take_", "carry("].concat()).count();
         assert_eq!(
             consumers, 2,
             "one `take_carry` per door — hosted and facade slot — and no more"

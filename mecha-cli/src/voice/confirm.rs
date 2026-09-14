@@ -1398,6 +1398,25 @@ mod the_gate_must_not_eat_real_answers {
                 "{heard:?} released a draft the span rule would have caught unfilled"
             );
         }
+
+        // A contraction, with a filler: the two normalisations have to agree
+        // on the apostrophe or neither spelling is a window of what the
+        // model said. This released a draft on the first cut of the composed
+        // parser (found on review).
+        let contracted = compose_offer(&[draft()], "That's right, I've drafted it.")
+            .expect("an offer")
+            .pending;
+        assert_eq!(
+            parse_answer("So, that's right."),
+            crate::review_policy::SpokenAnswer::Send
+        );
+        assert!(
+            matches!(
+                react("So, that's right.", &contracted, Some(&item), None),
+                Reaction::NotConvinced(_)
+            ),
+            "an echo of the model's own \"that's right\" released a draft"
+        );
     }
 
     /// **The re-ask must not narrow what we compare against.** The offer is
