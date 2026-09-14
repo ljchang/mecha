@@ -1911,8 +1911,12 @@ async fn completion(
     cx = cx.with_cancel_handle(cancel.clone());
     // The staged-draft result names this surface's review, so the model
     // cannot send a listener to a command line (`SPOKEN_REVIEW_HINT`).
+    // Only where the question can actually be composed — no baseline, no
+    // offer, no promise (review of #228).
     cx.tools = Arc::new(mecha_core::tool::ToolCtx {
-        review_hint: Some(SPOKEN_REVIEW_HINT.to_string()),
+        review_hint: outbox_baseline
+            .is_some()
+            .then(|| SPOKEN_REVIEW_HINT.to_string()),
         ..(*cx.tools).clone()
     });
     // The facade's own slot is the *second* door a spoken turn can take, and

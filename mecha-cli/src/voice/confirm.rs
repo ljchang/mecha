@@ -29,11 +29,15 @@
 //! - **One draft at a time.** A run that staged three gets three questions,
 //!   because each is its own reviewable object and a single "yes" covering
 //!   three outbound messages is not a review of any of them.
-//! - **An unanswered offer is dropped, not remembered.** Say anything that is
-//!   not an answer and the question is simply gone; the draft stays pending
-//!   in the outbox where it already was. The alternative — a question that
-//!   survives until answered — turns every later "yes" in the conversation
-//!   into a live release.
+//! - **An unanswered offer is never left armed — it is asked again, once.**
+//!   Say anything that is not an answer and the question is taken down; the
+//!   words go to the model, and after its reply the draft is put again, out
+//!   loud, as a fresh question ([`Confirmations::carry_unanswered`]). A
+//!   second drop settles it: the draft stays pending in the outbox where it
+//!   already was, and one line says so. The alternative — a question that
+//!   survives *armed* until answered — turns every later "yes" in the
+//!   conversation into a live release, which is why the re-ask is spoken
+//!   and armed exactly as a first offer is, never carried over silently.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;

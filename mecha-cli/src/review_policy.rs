@@ -217,12 +217,14 @@ const SEND_PHRASES: [&str; 28] = [
     // Multi-word affirmations, added 2026-09-13 after the first real answer
     // to a spoken offer fell through. Multi-word entries are cheap: the span
     // gate in `confirm::react` re-asks any accept that is a piece of what the
-    // speaker *recently* played — two window slots, and a tail bounded by
-    // `SPOKEN_UNPROMPTED_CHARS` — so a phrase the model uttered early in a
-    // long narration is outside the window and ungated. Residual echo lasts
-    // seconds, so that is accepted. A *one-word* entry is the kind that
-    // needs care, because one word is immune to that gate by design — none
-    // is added here without the owner's ruling
+    // speaker *recently* played. "Recently" is two window slots that slide
+    // on every harness utterance — the offer, whole, and before it the tail
+    // of the model's reply that `voice::pump` keeps (`SPOKEN_UNPROMPTED_CHARS`
+    // of it) — so a phrase from a reply is gated for one exchange and a
+    // phrase from early in a long narration is not gated at all. Residual
+    // echo lasts seconds, so that is accepted. A *one-word* entry is the kind
+    // that needs care, because one word is immune to that gate by design —
+    // none is added here without the owner's ruling
     // (`VOICE-APPROVAL-RESEARCH.md` §8).
     "go for it",
     "thats fine",
