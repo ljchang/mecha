@@ -3036,11 +3036,13 @@ neither is restated here.
   pipeline as one late turn. **Open:** §5 the downlink mirror (TTS over
   the channel, the page reporting what it *played* — which also grounds
   the echo window and the playback constant the timing layer has waited
-  on since 2026-09-03); §8's numbers (`BACKLOG_TALK_SECS` 120,
-  `RING_BUFFER_SECS` 300) are guesses until a drive; three minors from the
-  seventh review pass — sample `live_from_ms` at `ring.restart()` rather
-  than `dc.onopen`, evict `rings` entries, `late_segments` splits at a gap
-  of *more* than `LATE_GAP_SECS` (one frame off its docstring); and a stall
+  on since 2026-09-03); §8's numbers (`BACKLOG_TALK_SECS` 120 in
+  `worker.py`; the ring's 300 s, which §8 calls `RING_BUFFER_SECS` and the
+  code spells `UPLINK_RING_MS`) are guesses until a drive; two minors from
+  the seventh review pass — sample `live_from_ms` at `ring.restart()` rather
+  than `dc.onopen`, and evict `rings` entries (a third, an off-by-one in
+  `late_segments`, did not survive the handoff review's read of the code:
+  a gap of exactly `LATE_GAP_SECS` splits, as the docstring says); and a stall
   longer than `USER_TURN_STOP_TIMEOUT` (15 s) still ends the pre-stall
   segment as its own turn — the hold reaches every strategy but not the
   aggregator's own timeout, and that is #226's known limit, not #231's.
@@ -4355,6 +4357,13 @@ is true now:
 
   Both are `mecha-mail`'s surface, not `mecha-core`'s, which is why they
   were deliberately left out of #238 rather than folded in.
+
+- **Re-authenticate the `personal` Google account before 2026-09-15**
+  (`mecha-mail auth personal --provider google`, with `--paste` from an ssh
+  session): the grant is seven days from 2026-09-08T13:01 UTC and refreshing
+  does not extend it. Once it lapses every scheduled run on that account
+  fails as if the token were revoked. `mecha doctor` carries the warning a
+  day ahead; it will again on the 21st.
 
 - **Rule on the `ask_user` decline wording** (measured 2026-08-30,
   deliberately unadopted — the source is restored to control). A/B, 5 runs x
