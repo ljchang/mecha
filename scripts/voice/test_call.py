@@ -50,10 +50,23 @@ async def uplink(dc, packets, stall_at: float, stall_secs: float, deaf: bool = F
         dc.send(json.dumps({"label": "rtvi-ai", "type": "client-message", "id": "test-call", "data": {"t": t, "d": d}}))
 
     send("audio-start", {"tz_offset_min": 0})
+    last_beat = 0.0
+
+    def heartbeat():
+        # The page's proof of life on the channel, every two seconds — not
+        # during a stall, which blocks the whole channel, heartbeats too.
+        nonlocal last_beat
+        if time.monotonic() - last_beat >= 2.0:
+            last_beat = time.monotonic()
+            send("heartbeat", {})
+
     if deaf:
-        # A page whose tap never delivers: the channel declared, no batch
-        # ever sent. The worker's watchdog must read RTP after all.
-        print("uplink: declared and deaf — sending no batches", flush=True)
+        # A page whose tap never delivers: the channel declared and alive,
+        # no batch ever sent. The worker's watchdog must read RTP after all.
+        print("uplink: declared and deaf — heartbeats only, no batches", flush=True)
+        while dc.readyState == "open":
+            heartbeat()
+            await asyncio.sleep(0.2)
         return
     t0 = time.monotonic()
     wall0 = int(time.time() * 1000)
@@ -67,6 +80,7 @@ async def uplink(dc, packets, stall_at: float, stall_secs: float, deaf: bool = F
         if stalled_until is not None and time.monotonic() < stalled_until:
             await asyncio.sleep(0.05)
             continue
+        heartbeat()
         if captured_ms < sent_ms + 100:
             await asyncio.sleep(0.02)
             continue

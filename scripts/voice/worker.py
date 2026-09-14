@@ -1290,12 +1290,21 @@ class TranscriptStartedTurnStop(TurnAnalyzerUserTurnStopStrategy):
 # the first end-to-end deaf call proved.
 UPLINK_DEAF_SECS = 6.0
 UPLINK_WATCH_SECS = 2.0
+# The page heartbeats on the channel every two seconds; a channel with no
+# message of any kind for this long is blocked, not a dead tap. SCTP is
+# ordered and reliable, so one lost packet head-of-line-blocks every later
+# message while RTP keeps delivering whatever gets through — a lossy link
+# is exactly "RTP arriving, no batch for six seconds", and falling back
+# there would discard the buffered speech at the moment it was about to be
+# delivered (review of #231, third pass).
+UPLINK_CHANNEL_ALIVE_SECS = 5.0
 
 
-def deaf_verdict(rtp_arriving: bool, secs_since_batch: float) -> bool:
+def deaf_verdict(rtp_arriving: bool, channel_alive: bool, secs_since_batch: float) -> bool:
     """Is the tap dead? Only when the link is demonstrably carrying the
-    voice and none of it is arriving as batches. Pure, for the test."""
-    return rtp_arriving and secs_since_batch >= UPLINK_DEAF_SECS
+    voice, the channel is demonstrably carrying the page's other messages,
+    and none of the voice is arriving as batches. Pure, for the test."""
+    return rtp_arriving and channel_alive and secs_since_batch >= UPLINK_DEAF_SECS
 
 
 class UplinkInput(SmallWebRTCInputTransport):
@@ -1309,14 +1318,23 @@ class UplinkInput(SmallWebRTCInputTransport):
         self.batches = 0
         self.last_batch_at = _time.monotonic()
         self.last_rtp_at = None
+        self.last_channel_at = None
         self.rtp_fallback = False
         self.on_fallback = None  # sync: the link forgets its backlog
+        self.on_stop = None  # sync: the injector stops its own tasks
         self.announce = None  # async: tell the page
         self._watch_task = None
 
     def note_batch(self):
         self.batches += 1
         self.last_batch_at = _time.monotonic()
+
+    def note_channel(self):
+        """Any client message at all: the channel is carrying."""
+        self.last_channel_at = _time.monotonic()
+
+    def channel_alive(self, now: float) -> bool:
+        return self.last_channel_at is not None and now - self.last_channel_at < UPLINK_CHANNEL_ALIVE_SECS
 
     async def _receive_audio(self):
         from loguru import logger
@@ -1338,6 +1356,8 @@ class UplinkInput(SmallWebRTCInputTransport):
         if self._watch_task:
             await self.cancel_task(self._watch_task)
             self._watch_task = None
+        if self.on_stop:
+            self.on_stop()
         await super()._stop_tasks()
 
     def rtp_arriving(self, now: float) -> bool:
@@ -1351,8 +1371,11 @@ class UplinkInput(SmallWebRTCInputTransport):
             now = _time.monotonic()
             since = now - self.last_batch_at
             arriving = self.rtp_arriving(now)
-            logger.debug(f"uplink watch: rtp_arriving={arriving} since_batch={since:.1f}s batches={self.batches}")
-            if deaf_verdict(arriving, since):
+            alive = self.channel_alive(now)
+            logger.debug(
+                f"uplink watch: rtp_arriving={arriving} channel_alive={alive} since_batch={since:.1f}s batches={self.batches}"
+            )
+            if deaf_verdict(arriving, alive, since):
                 await self.engage_fallback("RTP is arriving and no batch has")
 
     async def engage_fallback(self, why: str):
@@ -1479,6 +1502,13 @@ class UplinkAudio:
                 for r in self._resampler.resample(frame):
                     out += r.to_ndarray().tobytes()
         return bytes(out)
+
+    def close(self):
+        """The transport is stopping: nothing more will be delivered."""
+        for task in (self._consumer, self._settle_task):
+            if task and not task.done():
+                task.cancel()
+        self._consumer = self._settle_task = None
 
     def _ensure_consumer(self):
         if self._consumer is None or self._consumer.done():
@@ -1780,6 +1810,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     if uplink:
         print("voice uplink: buffered over the data channel", flush=True)
         transport.input().on_fallback = link.forget_backlog
+        transport.input().on_stop = uplink.close
         transport.input().announce = rtvi.send_server_message
 
     pipeline = Pipeline(
@@ -1853,11 +1884,20 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         # Audio is not a prompt and not a command — it is the microphone,
         # arriving by a route that retransmits — and it goes where the
         # microphone's frames go, nowhere else.
+        # Every message is the channel's proof of life, for the deafness
+        # watch: a blocked channel carries nothing, a dead tap carries
+        # everything but audio.
+        if uplink is not None:
+            transport.input().note_channel()
+        if msg.type == "heartbeat":
+            return
         if msg.type == "uplink":
             # The page's side of the watch: its tap died, it is on RTP now.
+            # `why` is the page's words: one printable line, as `link`.
             data = msg.data if isinstance(msg.data, dict) else {}
             if uplink is not None and data.get("state") == "rtp":
-                await transport.input().engage_fallback(f"the page reported {data.get('why') or 'a dead tap'}")
+                why = "".join(c for c in str(data.get("why") or "")[:64] if c.isprintable())
+                await transport.input().engage_fallback(f"the page reported {why or 'a dead tap'}")
             return
         if msg.type in ("audio", "audio-start"):
             if uplink is None:
