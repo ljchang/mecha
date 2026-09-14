@@ -193,7 +193,7 @@ pub enum SpokenAnswer {
 const LEADING_FILLER: [&str; 4] = ["um", "uh", "well", "so"];
 const TRAILING_FILLER: [&str; 4] = ["please", "thanks", "thank you", "then"];
 
-const SEND_PHRASES: [&str; 20] = [
+const SEND_PHRASES: [&str; 28] = [
     "yes",
     "yeah",
     "yep",
@@ -214,9 +214,29 @@ const SEND_PHRASES: [&str; 20] = [
     "approve",
     "add it",
     "book it",
+    // Multi-word affirmations, added 2026-09-13 after the first real answer
+    // to a spoken offer fell through. Multi-word entries are cheap: the span
+    // gate in `confirm::react` re-asks any accept that is a piece of what the
+    // speaker *recently* played. "Recently" is two window slots that slide
+    // on every harness utterance — the offer, whole, and before it the tail
+    // of the model's reply that `voice::pump` keeps (`SPOKEN_UNPROMPTED_CHARS`
+    // of it) — so a phrase from a reply is gated for one exchange and a
+    // phrase from early in a long narration is not gated at all. Residual
+    // echo lasts seconds, so that is accepted. A *one-word* entry is the kind
+    // that needs care, because one word is immune to that gate by design —
+    // none is added here without the owner's ruling
+    // (`VOICE-APPROVAL-RESEARCH.md` §8).
+    "go for it",
+    "thats fine",
+    "thats right",
+    "sounds good",
+    "looks good",
+    "i agree",
+    "approve it",
+    "release it",
 ];
 
-const LATER_PHRASES: [&str; 19] = [
+const LATER_PHRASES: [&str; 23] = [
     "later",
     "do it later",
     "not now",
@@ -236,6 +256,10 @@ const LATER_PHRASES: [&str; 19] = [
     "skip it",
     "no",
     "ignore it",
+    "not right now",
+    "hold off",
+    "maybe later",
+    "leave it for now",
 ];
 
 const READ_PHRASES: [&str; 9] = [
@@ -250,14 +274,40 @@ const READ_PHRASES: [&str; 9] = [
     "what does it say",
 ];
 
+/// Words that may join answer phrases without changing what was answered.
+///
+/// A deliberately tiny closed set, on the same reasoning as the fillers: an
+/// answer is *composed* of answer phrases and these, and nothing else. "go
+/// ahead and send it" is `go ahead` · `and` · `send it`. "yes but change the
+/// time first" is `yes` · residue, and residue means the words go to the
+/// model. `but` is the word that must never be here.
+const CONNECTIVES: [&str; 5] = ["and", "then", "now", "please", "just"];
+
+/// The connectives that may not *end* an answer. A dangling "and" is the
+/// strongest available sign that the utterance was cut short — a VAD
+/// endpoint on the pause in *"Yes, and—"* — and an unfinished sentence is
+/// not consent; under the old equality rule every such fragment was a
+/// non-answer, and a tiling that ended on one made it a release. Found on
+/// review. `then`, `now` and `please` end sentences in ordinary speech
+/// ("send it now"), so they may terminate.
+const JOINERS: [&str; 2] = ["and", "just"];
+
 /// One spoken answer, matched against the whole utterance.
 ///
 /// **Whole-utterance, never substring, and that is the whole safety
 /// argument.** A substring rule would read "yes" out of "yes, but change the
 /// time first" and send the draft the speaker was about to correct — and out
 /// of any sentence containing the word at all. So the normalised utterance
-/// must *be* one of the phrases above; anything else is
+/// must be **entirely made of** answer phrases and [`CONNECTIVES`], all of
+/// one kind; anything with a word left over is
 /// [`SpokenAnswer::NotAnAnswer`] and reaches the model as ordinary words.
+///
+/// Composed rather than looked up, since 2026-09-13. The first real answer
+/// to a spoken offer was *"Go ahead and send it."* — two entries of the
+/// list joined by "and" — and equality against the list dropped it. Of
+/// twenty natural spoken accepts tried that day, one matched. The safety
+/// argument never rested on the list being short, only on the utterance
+/// being consumed whole, and that is what [`segment`] still requires.
 ///
 /// Failing that way round is the cheap direction: an unrecognised yes costs
 /// one more question, an unrecognised anything-else costs a send nobody
@@ -267,15 +317,87 @@ pub fn parse_answer(utterance: &str) -> SpokenAnswer {
     if normalised.is_empty() {
         return SpokenAnswer::NotAnAnswer;
     }
-    let phrase = normalised.as_str();
-    if SEND_PHRASES.contains(&phrase) {
-        SpokenAnswer::Send
-    } else if LATER_PHRASES.contains(&phrase) {
-        SpokenAnswer::Later
-    } else if READ_PHRASES.contains(&phrase) {
-        SpokenAnswer::ReadItOut
-    } else {
-        SpokenAnswer::NotAnAnswer
+    segment(&normalised)
+}
+
+/// Which lexicon a phrase belongs to, as a bit. Kept apart from
+/// [`SpokenAnswer`] so a segmentation can carry "several kinds seen" — the
+/// mixed case, which is not an answer.
+const SEND: u8 = 1;
+const LATER: u8 = 2;
+const READ: u8 = 4;
+/// A tiling state whose last tile was a joiner; cleared by the next phrase.
+const DANGLING: u8 = 8;
+
+fn lexicon() -> impl Iterator<Item = (&'static str, u8)> {
+    SEND_PHRASES
+        .iter()
+        .map(|p| (*p, SEND))
+        .chain(LATER_PHRASES.iter().map(|p| (*p, LATER)))
+        .chain(READ_PHRASES.iter().map(|p| (*p, READ)))
+}
+
+/// Can the whole phrase be tiled with lexicon entries and connectives?
+///
+/// Every tiling is tried, not the first found, and the answer is read off
+/// the **pure** tilings — those whose phrases are all of one kind. If the
+/// pure tilings agree on a kind, that is the answer; if there are none, or
+/// they disagree, it is no answer. A mixed tiling is simply not evidence:
+/// "do it later" tiles as the `LATER` entry it is *and* as `do it` · `later`,
+/// and the first cut unioned the two into a kind that matched nothing, so
+/// a listed deferral was unreachable — found on review. "yes later" has
+/// only the mixed tiling and stays a non-answer. At least one lexicon
+/// phrase must have been used: connectives alone ("and then now") answer
+/// nothing. And a tiling that ends on a [`JOINERS`] word is discarded:
+/// "yes and" is a sentence cut short, not a yes.
+fn segment(phrase: &str) -> SpokenAnswer {
+    let words: Vec<&str> = phrase.split(' ').collect();
+    let n = words.len();
+    // `reach[i]` is every state some tiling of `words[..i]` produced — the
+    // kinds seen, plus `DANGLING` when the last tile was a joiner. Empty
+    // means no tiling reaches `i` at all.
+    let mut reach: Vec<Vec<u8>> = vec![Vec::new(); n + 1];
+    reach[0].push(0);
+    for i in 0..n {
+        if reach[i].is_empty() {
+            continue;
+        }
+        let from = reach[i].clone();
+        if CONNECTIVES.contains(&words[i]) {
+            let dangling = if JOINERS.contains(&words[i]) {
+                DANGLING
+            } else {
+                0
+            };
+            for state in &from {
+                push_unique(&mut reach[i + 1], (state & !DANGLING) | dangling);
+            }
+        }
+        for (entry, kind) in lexicon() {
+            let len = entry.split(' ').count();
+            if i + len <= n && words[i..i + len].join(" ") == entry {
+                for state in &from {
+                    push_unique(&mut reach[i + len], (state & !DANGLING) | kind);
+                }
+            }
+        }
+    }
+    let pure: Vec<u8> = reach[n]
+        .iter()
+        .copied()
+        .filter(|k| matches!(k, &SEND | &LATER | &READ))
+        .collect();
+    match pure.as_slice() {
+        [SEND] => SpokenAnswer::Send,
+        [LATER] => SpokenAnswer::Later,
+        [READ] => SpokenAnswer::ReadItOut,
+        _ => SpokenAnswer::NotAnAnswer,
+    }
+}
+
+fn push_unique(set: &mut Vec<u8>, kinds: u8) {
+    if !set.contains(&kinds) {
+        set.push(kinds);
     }
 }
 
@@ -287,6 +409,11 @@ pub fn parse_answer(utterance: &str) -> SpokenAnswer {
 pub(crate) fn normalise(utterance: &str) -> String {
     let mut words: Vec<String> = utterance
         .chars()
+        // An apostrophe joins rather than splits: "that's" is one spoken
+        // word, and splitting it left `that s` for a lexicon nobody would
+        // write. Both the straight and the typographic mark, because a
+        // transcriber picks either.
+        .filter(|c| !matches!(c, '\'' | '\u{2019}'))
         .map(|c| {
             if c.is_alphabetic() || c.is_whitespace() {
                 c.to_ascii_lowercase()
@@ -408,12 +535,169 @@ mod tests {
             "send it to Thea instead",
             "no wait what did you put in the subject line",
             "ok so what about Thursday",
+            // `but` must never become a connective: these two have no
+            // residue beyond it, so they are the only lines here that would
+            // release if it did (review of #228).
+            "yes but send it",
+            "go ahead but wait",
         ] {
             assert_eq!(
                 parse_answer(said),
                 SpokenAnswer::NotAnAnswer,
                 "{said:?} must not be read as an answer"
             );
+        }
+    }
+
+    /// The first real answer to a spoken offer, 2026-09-13 19:37:44 UTC:
+    /// "Go ahead and send it." Equality against the list dropped it, the
+    /// words went to the model, and the model told the owner to use the
+    /// CLI. Every line here is a composition of things the list already
+    /// accepted, and each must release.
+    #[test]
+    fn an_answer_composed_of_answers_is_an_answer() {
+        for said in [
+            "Go ahead and send it.",
+            "Yes, go ahead.",
+            "Sure, send it.",
+            "Yep, do it.",
+            "Okay, go ahead and send it.",
+            "Yes please send it.",
+            "Send it now.",
+            "Approve it.",
+            "Yeah send it",
+            "Looks good, send it",
+            "That's fine, send it",
+            "That\u{2019}s right.",
+            "I agree.",
+            "Go for it.",
+            "yes and then send it please",
+        ] {
+            assert_eq!(parse_answer(said), SpokenAnswer::Send, "{said:?}");
+        }
+        for said in [
+            "No, leave it for now.",
+            "Not right now, thanks.",
+            "hold off then",
+        ] {
+            assert_eq!(parse_answer(said), SpokenAnswer::Later, "{said:?}");
+        }
+    }
+
+    /// Two kinds in one breath is not an answer to either question. And
+    /// connectives on their own answer nothing.
+    #[test]
+    fn a_mixed_answer_is_no_answer() {
+        for said in [
+            "yes later",
+            "no send it",
+            "yes no",
+            "read it and send it",
+            "and then",
+            "now",
+        ] {
+            assert_eq!(parse_answer(said), SpokenAnswer::NotAnAnswer, "{said:?}");
+        }
+    }
+
+    /// Every listed phrase must still mean what the list says. "do it
+    /// later" was on `LATER_PHRASES` and parsed as nothing, because its
+    /// second tiling (`do it` · `later`) was allowed to outvote it; nothing
+    /// measured that until review. Composition too: an entry followed by a
+    /// connective is still that entry.
+    #[test]
+    fn every_lexicon_entry_parses_as_its_own_kind() {
+        for (entries, kind) in [
+            (&SEND_PHRASES[..], SpokenAnswer::Send),
+            (&LATER_PHRASES[..], SpokenAnswer::Later),
+            (&READ_PHRASES[..], SpokenAnswer::ReadItOut),
+        ] {
+            for entry in entries {
+                assert_eq!(parse_answer(entry), kind, "{entry:?}");
+                // A *leading* connective: a trailing `then` is filler and
+                // is stripped before `segment` sees it, which measured
+                // nothing (found on review).
+                assert_eq!(
+                    parse_answer(&format!("just {entry}")),
+                    kind,
+                    "just {entry:?}"
+                );
+            }
+        }
+    }
+
+    /// A sentence cut short at a joiner is not consent: the VAD endpoints on
+    /// the pause in "Yes, and—" and the fragment is a span of nothing, so
+    /// only the parser can refuse it. Found on review. Terminal connectives
+    /// still end an answer, because they end sentences in speech.
+    #[test]
+    fn an_answer_cut_short_at_a_joiner_is_no_answer() {
+        for said in [
+            "yes and",
+            "Okay, and then",
+            "sure and",
+            "yeah just",
+            "no and",
+            "later and",
+        ] {
+            assert_eq!(parse_answer(said), SpokenAnswer::NotAnAnswer, "{said:?}");
+        }
+        for said in [
+            "send it now",
+            "yes then",
+            "yes please",
+            "and yes",
+            "just send it",
+        ] {
+            assert_eq!(parse_answer(said), SpokenAnswer::Send, "{said:?}");
+        }
+    }
+
+    /// `normalise` and `voice::spoken_words` must split words identically,
+    /// or the echo gate's normalised check — the one that closes the filler
+    /// hole — compares words that cannot match. They drifted on the
+    /// apostrophe once (this branch's first cut deleted it here and split
+    /// on it there), and `"So, that's right."` off the speaker became a
+    /// release. Checked on every entry and on its apostrophied spelling,
+    /// because the contractions are exactly where the two can disagree.
+    #[test]
+    fn words_split_the_same_way_in_both_normalisations() {
+        let all = SEND_PHRASES
+            .iter()
+            .chain(&LATER_PHRASES)
+            .chain(&READ_PHRASES);
+        for entry in all {
+            for spelling in [
+                entry.to_string(),
+                entry.replace("thats", "that's"),
+                entry.replace("thats", "that\u{2019}s"),
+            ] {
+                assert_eq!(
+                    crate::voice::spoken_words(&normalise(&spelling)),
+                    crate::voice::spoken_words(&spelling),
+                    "{spelling:?}"
+                );
+            }
+        }
+    }
+
+    /// The tiling argument needs the three lexicons disjoint and free of
+    /// connectives — otherwise one word could tile as two kinds at once.
+    #[test]
+    fn the_lexicons_are_disjoint_and_no_connective_is_an_answer() {
+        let all: Vec<&str> = SEND_PHRASES
+            .iter()
+            .chain(LATER_PHRASES.iter())
+            .chain(READ_PHRASES.iter())
+            .copied()
+            .collect();
+        for (i, a) in all.iter().enumerate() {
+            assert!(!all[i + 1..].contains(a), "{a:?} appears in two lexicons");
+            assert!(
+                !CONNECTIVES.contains(a),
+                "{a:?} is both an answer and a connective"
+            );
+            assert_eq!(*a, normalise(a), "{a:?} is not in normalised form");
         }
     }
 

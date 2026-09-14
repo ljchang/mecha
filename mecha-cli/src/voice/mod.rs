@@ -84,8 +84,23 @@ doing. When a message, email or calendar change was staged for review \
 rather than sent, say one short clause and nothing more -- \"That is \
 drafted.\" -- and do NOT describe what is in it or where it is waiting: \
 the harness reads the draft back word for word and asks whether to send \
-it, so anything you add is the same thing said twice. Keep replies brief \
+it, so anything you add is the same thing said twice. Do not end a reply \
+that staged something with a question of your own: the harness is about \
+to ask one. If the user asks how to send, approve or release a draft, \
+tell them to say yes once it has been read back; never send them to a \
+command, a page or an outbox. Keep replies brief \
 unless the user asks you to go deep.";
+
+/// Appended to the staged-draft tool result on a spoken turn
+/// (`ToolCtx::review_hint`), in place of the sentence naming `mecha outbox`.
+///
+/// On 2026-09-13 the model answered the owner's spoken "go ahead and send it"
+/// with *"You'll need to review and send it through `mecha outbox`"* — a
+/// faithful repetition of what its tool result had told it, on the one
+/// surface where it is untrue. The core composes that result without
+/// knowing which surface is listening; this is the surface saying.
+pub(crate) const SPOKEN_REVIEW_HINT: &str = "The user will be asked aloud whether to send it, \
+right after this reply; they answer by saying yes or later.";
 
 // ------------------------------------------------------- the hosted door
 //
@@ -164,9 +179,18 @@ pub(crate) fn open_spoken_turn(text: &str, previous_turn_was_spoken: bool) -> St
 }
 
 /// Words as an echo comparison sees them: lowercase, punctuation gone.
-fn spoken_words(text: &str) -> Vec<String> {
+/// **Must agree with `review_policy::normalise` on where words begin and
+/// end.** `ours_coming_back` tries the span against both spellings of an
+/// utterance, and the normalised one is what closes the filler hole — which
+/// only works while the two functions split words the same way. They
+/// disagreed once, on the apostrophe: `normalise` deleted it and this split
+/// on it, so `"So, that's right."` off the speaker normalised to a send that
+/// matched no window of `"that s right"`. `words_split_the_same_way` in
+/// `review_policy` pins the agreement.
+pub(crate) fn spoken_words(text: &str) -> Vec<String> {
     text.to_lowercase()
         .chars()
+        .filter(|c| !matches!(c, '\'' | '\u{2019}'))
         .map(|c| if c.is_alphanumeric() { c } else { ' ' })
         .collect::<String>()
         .split_whitespace()
@@ -1360,13 +1384,20 @@ async fn hosted_completion(
     // one stretch out of the speaker and echo together: a run that failed has staged nothing worth
     // confirming, and asking about drafts on top of an error is a question
     // over the top of the thing that needs saying.
+    // The carry is consumed by this turn whatever became of it: a failed
+    // run has no offer to attach it to, and a carry left behind would be
+    // spoken by some later turn as "still waiting" with nothing in the
+    // conversation to explain it. The draft itself is in the outbox either
+    // way. Found on review. (A turn that never *started* — a 503 — keeps
+    // it for the retry; see `completion`.)
+    let carry = shared.confirmations.take_carry(confirm_key).await;
     let offer = match &answer {
         // Everything the speaker played, which on the streaming path is
         // every turn's deltas and not just the last one's text. The blocking
         // path speaks a single JSON body, so its reply *is* the final turn.
         Ok(a) => {
             let spoken = if want_stream { &said } else { &a.text };
-            offer_for_turn(shared, baseline, spoken).await
+            offer_for_turn(shared, baseline, spoken, carry).await
         }
         Err(_) => None,
     };
@@ -1452,13 +1483,37 @@ async fn offer_for_turn(
     shared: &Arc<Shared>,
     baseline: &Option<std::collections::HashSet<String>>,
     reply: &str,
+    carry: Option<confirm::Carry>,
 ) -> Option<confirm::Offer> {
-    let baseline = baseline.as_ref()?;
-    let staged = crate::review_policy::staged_since(
-        OutboxStore::open(&shared.outbox_root).ok()?.items().ok()?,
-        baseline,
-    );
-    confirm::compose_offer(&staged, reply)
+    // The carry first, and above the baseline's `?`: it is already consumed
+    // by the caller, and it needs no baseline — the draft is re-read by id.
+    // Resolving it below the early return threw a re-ask away whenever the
+    // store had been unreadable at the *start* of the turn. Found on review.
+    //
+    // Re-read, not remembered: a carried draft sent from the page in the
+    // meantime is not pending any more, and `item_now` says so by absence.
+    let carried_item = match &carry {
+        Some(confirm::Carry::Reask(id) | confirm::Carry::Settle(id)) => {
+            confirm::item_now(&shared.outbox_root, id)
+        }
+        None => None,
+    };
+    let carried = match (&carry, &carried_item) {
+        (Some(confirm::Carry::Reask(_)), Some(item)) => Some(confirm::Carried::Reask(item)),
+        (Some(confirm::Carry::Settle(_)), Some(item)) => Some(confirm::Carried::Settle(item)),
+        _ => None,
+    };
+    // No baseline means the turn's own drafts cannot be told from older
+    // ones, so none are offered (`review_policy::staged_since`); the carry
+    // still is.
+    let staged = match (baseline, OutboxStore::open(&shared.outbox_root)) {
+        (Some(baseline), Ok(store)) => match store.items() {
+            Ok(items) => crate::review_policy::staged_since(items, baseline),
+            Err(_) => Vec::new(),
+        },
+        _ => Vec::new(),
+    };
+    confirm::compose_offer_after(carried, &staged, reply)
 }
 
 /// Arm the question — **only once the offer has actually gone out.**
@@ -1765,6 +1820,20 @@ async fn completion(
         {
             return handled;
         }
+        // Not an answer: the words go to the model below, and the draft is
+        // asked about again after the reply (`Confirmations::carry_unanswered`).
+        //
+        // The carry outlives the early returns between here and the two
+        // consumers — `Hosted::Busy`, `Hosted::Failed`, no free slot — on
+        // purpose: each of those tells the worker to try again, and the
+        // retry is these same words, which then find the carry and put the
+        // question. A turn the model actually *ran* consumes it whatever
+        // its outcome (`hosted_completion`); a turn that never started is
+        // not a turn.
+        shared
+            .confirmations
+            .carry_unanswered(&confirm_key, &pending)
+            .await;
     }
 
     // What was already waiting before this turn. Taken here, before anything
@@ -1840,6 +1909,16 @@ async fn completion(
     // Through the builder, not a field write: the slot's handle carries this
     // run's own reason cell.
     cx = cx.with_cancel_handle(cancel.clone());
+    // The staged-draft result names this surface's review, so the model
+    // cannot send a listener to a command line (`SPOKEN_REVIEW_HINT`).
+    // Only where the question can actually be composed — no baseline, no
+    // offer, no promise (review of #228).
+    cx.tools = Arc::new(mecha_core::tool::ToolCtx {
+        review_hint: outbox_baseline
+            .is_some()
+            .then(|| SPOKEN_REVIEW_HINT.to_string()),
+        ..(*cx.tools).clone()
+    });
     // The facade's own slot is the *second* door a spoken turn can take, and
     // it needs the same narrowing the hosted one got.
     //
@@ -2044,10 +2123,12 @@ async fn completion(
 
     // Same rule as the hosted path: the drafts this turn staged are offered
     // after the answer, and only when there was one.
+    // Consumed whatever the outcome, as on the hosted path.
+    let carry = shared.confirmations.take_carry(&confirm_key).await;
     let offer = match &outcome {
         Ok(o) => {
             let spoken = if want_stream { &said } else { &o.text };
-            offer_for_turn(shared, &outbox_baseline, spoken).await
+            offer_for_turn(shared, &outbox_baseline, spoken, carry).await
         }
         Err(_) => None,
     };
@@ -2250,6 +2331,80 @@ mod tests {
         // D2: the facade is unreachable from any network. If this constant
         // grows a config knob, the voice layer stops being the only door.
         assert!(LISTEN_HOST.starts_with("127.0.0.1"));
+    }
+
+    /// The carry is wired where the words leave for the model, and consumed
+    /// on both doors. Same idiom and same reason as
+    /// `the_facade_slot_narrows_before_it_grants`: the unit tests drive
+    /// `Confirmations` and `compose_offer_after` directly and would stay
+    /// green with the call sites deleted.
+    #[test]
+    fn a_dropped_question_is_carried_on_the_path_and_consumed_by_both_doors() {
+        let src = include_str!("mod.rs");
+        let i = src
+            .find("\nasync fn completion(")
+            .expect("the request handler is still here");
+        let body = &src[i + 1..][..src[i + 1..]
+            .find("\n}\n")
+            .expect("`completion` still has a closing brace at column zero")];
+        // Needles assembled at runtime so this test's own text is not a
+        // match — the idiom the other source-reading tests use.
+        // Method names alone: rustfmt breaks the receiver chain across
+        // lines, so the receiver and the method are not one string in the
+        // source — and this comment must not spell the needle either.
+        let carries = ["carry_", "unanswered("].concat();
+        assert!(
+            body.contains(&carries),
+            "`completion` no longer carries a dropped question"
+        );
+        let consumers = src.matches(&["take_", "carry("].concat()).count();
+        assert_eq!(
+            consumers, 2,
+            "one `take_carry` per door — hosted and facade slot — and no more"
+        );
+    }
+
+    /// Both spoken doors hand the core the spoken review hint. The core test
+    /// (`a_surface_with_a_review_hint_is_not_sent_to_the_cli`) constructs
+    /// the context by hand and would stay green with both call sites
+    /// deleted — the gap the two source-reading tests above exist for, on
+    /// the third mechanism. Found on review.
+    #[test]
+    fn both_spoken_doors_hand_the_core_the_spoken_review_hint() {
+        let hint = ["SPOKEN_", "REVIEW_HINT"].concat();
+        let field = ["review_", "hint:"].concat();
+
+        // The facade slot: `completion` sets it once, unconditionally —
+        // every turn through that door is spoken.
+        let src = include_str!("mod.rs");
+        let i = src
+            .find("\nasync fn completion(")
+            .expect("the request handler is still here");
+        let body = &src[i + 1..][..src[i + 1..]
+            .find("\n}\n")
+            .expect("`completion` still has a closing brace at column zero")];
+        assert!(
+            body.contains(&field) && body.contains(&hint),
+            "the facade slot no longer hands the core the spoken review hint"
+        );
+
+        // The hosted door: `begin_turn` sets it guarded by `opts.spoken`,
+        // because a typed turn on the same session is reviewed on the page.
+        let chat = include_str!("../commands/serve/chat.rs");
+        let i = chat
+            .find("\nfn begin_turn(")
+            .expect("the shared turn constructor is still here");
+        let body = &chat[i + 1..][..chat[i + 1..]
+            .find("\n}\n")
+            .expect("`begin_turn` still has a closing brace at column zero")];
+        let at = body
+            .find(&field)
+            .expect("`begin_turn` no longer sets the review hint");
+        let setting = &body[at..at + 200.min(body.len() - at)];
+        assert!(
+            setting.contains(".spoken") && setting.contains(&hint),
+            "the hosted door's hint is not guarded by `opts.spoken`: {setting:?}"
+        );
     }
 
     #[test]

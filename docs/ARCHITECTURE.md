@@ -2305,8 +2305,17 @@ medium*. Four decisions carry it (`voice/confirm.rs`,
   argument.** "yes" is an answer; "yes but change the time first" is not, and
   reaches the model as ordinary words with nothing released. An unrecognised
   yes costs one more question; an unrecognised anything-else costs a send
-  nobody authorised. An unanswered offer is *dropped* rather than held, or
-  every later "yes" in the call lands on a forgotten draft.
+  nobody authorised. The match is compositional since 2026-09-14
+  (`review_policy::segment`): the utterance must be *tiled* entirely by
+  answer phrases of one kind and five connectives, with no word left over —
+  "go ahead and send it" releases, "yes later" does not — because the first
+  real spoken answer was two listed phrases joined by "and" and equality
+  against the list dropped it (`VOICE-APPROVAL-RESEARCH.md`). An unanswered
+  offer is never left *armed*: it is taken down, the words go to the model,
+  and after the reply the draft is asked about again, once, as a fresh
+  spoken question (`Confirmations::carry_unanswered`); a second drop settles
+  it in the outbox with one line. A question held armed across turns is
+  what would make every later "yes" in the call land on a forgotten draft.
 - **Utter the whole draft, or do not offer it.** A listener cannot skim back
   over the line where the extra recipient was, so a spoken paraphrase is not
   a smaller review — it is a different document, missing exactly the field an

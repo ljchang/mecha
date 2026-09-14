@@ -29,11 +29,15 @@
 //! - **One draft at a time.** A run that staged three gets three questions,
 //!   because each is its own reviewable object and a single "yes" covering
 //!   three outbound messages is not a review of any of them.
-//! - **An unanswered offer is dropped, not remembered.** Say anything that is
-//!   not an answer and the question is simply gone; the draft stays pending
-//!   in the outbox where it already was. The alternative — a question that
-//!   survives until answered — turns every later "yes" in the conversation
-//!   into a live release.
+//! - **An unanswered offer is never left armed — it is asked again, once.**
+//!   Say anything that is not an answer and the question is taken down; the
+//!   words go to the model, and after its reply the draft is put again, out
+//!   loud, as a fresh question ([`Confirmations::carry_unanswered`]). A
+//!   second drop settles it: the draft stays pending in the outbox where it
+//!   already was, and one line says so. The alternative — a question that
+//!   survives *armed* until answered — turns every later "yes" in the
+//!   conversation into a live release, which is why the re-ask is spoken
+//!   and armed exactly as a first offer is, never carried over silently.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
@@ -73,6 +77,14 @@ pub struct Pending {
     /// [`Pending::recently_said`] for why there are two of these and not one,
     /// and not a log.
     pub asked_before: String,
+    /// The draft this question is putting **for the second time**, if it is
+    /// one — see [`Confirmations::carry_unanswered`]. A draft is carried over
+    /// one dropped question and no further, and this is how the store knows
+    /// which the next drop is. Read only against the head of the queue:
+    /// after a "later" pops that head the value names a draft that is no
+    /// longer first, and `carry_unanswered` correctly treats the new head
+    /// as un-carried.
+    pub carried: Option<String>,
 }
 
 impl Pending {
@@ -97,6 +109,7 @@ impl Pending {
             asked: said.to_string(),
             asked_before: self.asked.clone(),
             reasks,
+            carried: self.carried.clone(),
         }
     }
 
@@ -139,19 +152,91 @@ const MAX_REASKS: u8 = 1;
 /// was made in — a hosted chat session or a facade slot — because an answer
 /// only means anything in the conversation that was asked.
 #[derive(Default)]
-pub struct Confirmations(Mutex<HashMap<String, Pending>>);
+pub struct Confirmations {
+    armed: Mutex<HashMap<String, Pending>>,
+    /// A question that was dropped because the answer was not one — see
+    /// [`Confirmations::carry_unanswered`]. Read once, by the offer that
+    /// follows the model's reply to those words, and stamped so a carry
+    /// nobody came back for expires rather than resurfacing on some later
+    /// call under the same key.
+    carries: Mutex<HashMap<String, (Carry, std::time::Instant)>>,
+}
+
+/// How long a carry waits for the turn that consumes it.
+///
+/// The carry survives a turn that never started — a 503 tells the worker
+/// to try again in a moment, and the retry is the same words — but
+/// nothing makes the worker retry, and `confirm_key` is stable across
+/// calls. Without a bound a carry stranded by a worker that gave up was put
+/// as "Still waiting on the … draft" by the next spoken turn on that key,
+/// however much later: a question outside the conversation it belonged to.
+/// Five minutes is longer than any retry and shorter than any next call.
+const CARRY_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// What the next offer owes a draft whose question was dropped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Carry {
+    /// Ask about it again — once.
+    Reask(String),
+    /// It has been asked twice; say where it is and stop.
+    Settle(String),
+}
 
 impl Confirmations {
     pub async fn set(&self, key: &str, pending: Pending) {
         if pending.queue.is_empty() {
-            self.0.lock().await.remove(key);
+            self.armed.lock().await.remove(key);
         } else {
-            self.0.lock().await.insert(key.to_string(), pending);
+            self.armed.lock().await.insert(key.to_string(), pending);
         }
     }
 
     pub async fn take(&self, key: &str) -> Option<Pending> {
-        self.0.lock().await.remove(key)
+        self.armed.lock().await.remove(key)
+    }
+
+    /// The words were not an answer, so they are on their way to the model —
+    /// and the draft at the head of the question must not fall out of the
+    /// conversation with them.
+    ///
+    /// The module docs' rule stands: an unanswered offer is dropped, never
+    /// kept armed, because a question that survives until answered turns
+    /// every later "yes" into a live release. What this adds is narrower.
+    /// The dropped draft is **asked about again, out loud, after the reply**
+    /// to the words that dropped it — a full re-ask through `say`, seeded
+    /// into the echo window like any offer and armed only if it reached the
+    /// socket — and it is carried exactly once: a draft that has been put
+    /// twice and answered neither time is left where it is, with one line
+    /// saying so.
+    ///
+    /// 2026-09-13, the first real answer to a spoken offer: "Go ahead and
+    /// send it." was not on the list, went to the model, and the draft was
+    /// never spoken of again — the owner's next three attempts to answer
+    /// were answered by a model explaining the CLI. The parser now takes
+    /// that phrase; this is for the next phrase it does not.
+    pub async fn carry_unanswered(&self, key: &str, dropped: &Pending) {
+        let Some(head) = dropped.queue.front() else {
+            return;
+        };
+        let carry = if dropped.carried.as_deref() == Some(head.as_str()) {
+            Carry::Settle(head.clone())
+        } else {
+            Carry::Reask(head.clone())
+        };
+        self.carries
+            .lock()
+            .await
+            .insert(key.to_string(), (carry, std::time::Instant::now()));
+    }
+
+    pub async fn take_carry(&self, key: &str) -> Option<Carry> {
+        self.take_carry_at(key, std::time::Instant::now()).await
+    }
+
+    /// `take_carry` with the clock passed in, so the expiry is testable.
+    async fn take_carry_at(&self, key: &str, now: std::time::Instant) -> Option<Carry> {
+        let (carry, stamped) = self.carries.lock().await.remove(key)?;
+        (now.duration_since(stamped) <= CARRY_TTL).then_some(carry)
     }
 }
 
@@ -193,7 +278,24 @@ pub enum Reaction {
     Release { acknowledge: String, id: String },
 }
 
-/// The question for one run's drafts.
+/// [`compose_offer_after`] with nothing carried — the shape every test of
+/// the offer was written against.
+#[cfg(test)]
+pub fn compose_offer(items: &[OutboxItem], preceded_by: &str) -> Option<Offer> {
+    compose_offer_after(None, items, preceded_by)
+}
+
+/// A draft carried over from a dropped question, resolved against the store
+/// *now* — the item is re-read by the caller, so a draft sent from the page
+/// in between is simply not carried.
+#[derive(Debug, Clone, Copy)]
+pub enum Carried<'a> {
+    Reask(&'a OutboxItem),
+    Settle(&'a OutboxItem),
+}
+
+/// The question for one run's drafts, with a carried draft in front of
+/// whatever this turn staged.
 ///
 /// Returns `None` when there is nothing to ask about — including the case
 /// where everything staged was a publish, which is named rather than offered
@@ -208,14 +310,42 @@ pub enum Reaction {
 /// `"go ahead"`, `"do that"`, `"confirm"`, `"approve"`, `"book it"` — was an
 /// unasked release. Neither window slot held it, `parse_answer` returned
 /// `Send`, `Release` fired.
-pub fn compose_offer(items: &[OutboxItem], preceded_by: &str) -> Option<Offer> {
+///
+/// A carried draft is **re-asked only when the turn staged nothing new**.
+/// Words that were not an answer are usually a correction — "actually, make
+/// it four o'clock" — and the reply to a correction tends to stage the
+/// corrected draft; asking about the old one first would put the wrong
+/// question at the head of the queue. So a re-drafting turn asks about its
+/// new drafts and *names* the old one as still waiting, and a turn that
+/// merely answered a question asks the dropped one again.
+pub fn compose_offer_after(
+    carried: Option<Carried<'_>>,
+    items: &[OutboxItem],
+    preceded_by: &str,
+) -> Option<Offer> {
     let (speakable_items, unspeakable): (Vec<&OutboxItem>, Vec<&OutboxItem>) =
         items.iter().partition(|i| speakable(i.kind));
 
     let mut speech = String::new();
     let mut queue: VecDeque<String> = speakable_items.iter().map(|i| i.id.clone()).collect();
+    let mut carried_id = None;
+
+    match carried {
+        Some(Carried::Reask(item)) if speakable_items.is_empty() => {
+            speech.push_str(&reask_about(item));
+            queue.push_front(item.id.clone());
+            carried_id = Some(item.id.clone());
+        }
+        Some(Carried::Reask(item) | Carried::Settle(item)) => {
+            speech.push_str(&settled_line(item));
+        }
+        None => {}
+    }
 
     if let Some(first) = speakable_items.first() {
+        if !speech.is_empty() {
+            speech.push(' ');
+        }
         speech.push_str(&ask_about(first));
         if speakable_items.len() > 1 {
             speech.push_str(&format!(
@@ -261,9 +391,53 @@ pub fn compose_offer(items: &[OutboxItem], preceded_by: &str) -> Option<Offer> {
             asked: speech.clone(),
             asked_before: preceded_by.to_string(),
             reasks: 0,
+            carried: carried_id,
         },
         speech,
     })
+}
+
+/// The question about a draft, put for the second time.
+///
+/// Short on purpose: the draft was read out or named the first time and is
+/// still in the store unchanged, so what the listener needs is which one
+/// and the two words that answer it. "Read it out" still works, because the
+/// head of the queue is this draft.
+///
+/// **Everything an armable question must carry, it carries**: the taint
+/// line and the identity tail, exactly as `ask_about` does. The first cut
+/// dropped the taint line, so a tainted draft re-asked after an intervening
+/// model turn could be released by a bare "yes" with the addressing warning
+/// spoken only a turn ago — the one fact this surface exists to keep
+/// audible. Found on review.
+fn reask_about(item: &OutboxItem) -> String {
+    let view = DraftView::of(&item.args);
+    format!(
+        "Still waiting on the {} draft.{} Say yes to send it, later to leave it in \
+         your outbox, or read it out to hear it again.{}",
+        headline(item, &view),
+        taint_line(item),
+        identity_tail(&view)
+    )
+}
+
+/// Where a twice-dropped draft is, said once. Not a question — nothing here
+/// is armed, so no later "yes" can land on it.
+fn settled_line(item: &OutboxItem) -> String {
+    format!(
+        "The {} draft is still in your outbox.",
+        headline(item, &DraftView::of(&item.args))
+    )
+}
+
+/// The one line that names a draft: its subject or title, else the store's
+/// own summary.
+fn headline(item: &OutboxItem, view: &DraftView) -> String {
+    view.headers
+        .iter()
+        .find(|(k, _)| k == "subject" || k == "title")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_else(|| item.summary.clone())
 }
 
 /// The question about one draft: read out in full when it is short enough to
@@ -288,14 +462,9 @@ fn ask_about(item: &OutboxItem) -> String {
     } else {
         // Long enough that reading it unasked would be a monologue rather
         // than a question — so the choice of hearing it is the owner's.
-        let headline = view
-            .headers
-            .iter()
-            .find(|(k, _)| k == "subject" || k == "title")
-            .map(|(_, v)| v.clone())
-            .unwrap_or_else(|| item.summary.clone());
         out.push_str(&format!(
-            "I've drafted something longer: {headline}. It is about {} to read out.",
+            "I've drafted something longer: {}. It is about {} to read out.",
+            headline(item, &view),
             seconds_aloud(spoken.chars())
         ));
         out.push_str(taint_line(item));
@@ -667,6 +836,139 @@ mod tests {
             json!({"title": "Coffee with Thea", "when": "Thursday August 27, 3pm to 3:30pm"}),
             false,
         )
+    }
+
+    /// 2026-09-13: the owner's "Go ahead and send it." was not an answer the
+    /// parser knew, the question was dropped, and nothing asked it again.
+    /// A dropped question is now carried over the model's reply and put
+    /// once more — and only once: the second drop settles it.
+    #[tokio::test]
+    async fn a_dropped_question_is_asked_again_once_and_then_settled() {
+        let store = Confirmations::default();
+        let first = compose_offer(&[event()], "").expect("an offer").pending;
+
+        // Dropped once: carried as a re-ask.
+        store.carry_unanswered("k", &first).await;
+        assert_eq!(store.take_carry("k").await, Some(Carry::Reask("a".into())));
+        assert_eq!(store.take_carry("k").await, None, "a carry is read once");
+
+        // The re-ask is a real question: the draft is the head, it is marked
+        // carried, and the ordinary answers still work against it.
+        let ev = event();
+        let again = compose_offer_after(Some(Carried::Reask(&ev)), &[], "").expect("a re-ask");
+        assert!(
+            again
+                .speech
+                .starts_with("Still waiting on the Coffee with Thea draft."),
+            "{}",
+            again.speech
+        );
+        assert_eq!(again.pending.queue, VecDeque::from(vec!["a".to_string()]));
+        assert_eq!(again.pending.carried.as_deref(), Some("a"));
+        assert!(matches!(
+            react("yes", &again.pending, Some(&ev), None),
+            Reaction::Release { .. }
+        ));
+        assert!(matches!(
+            react("read it out", &again.pending, Some(&ev), None),
+            Reaction::Reread(_)
+        ));
+        // And the re-ask is in the echo window like any offer: its own
+        // "send it" coming back off the speaker is re-asked, not acted on.
+        assert!(matches!(
+            react("send it", &again.pending, Some(&ev), None),
+            Reaction::NotConvinced(_)
+        ));
+
+        // A tainted draft says so on the second asking too — the first cut
+        // did not, and a bare "yes" would have released it with the
+        // addressing warning a whole model turn behind.
+        let tainted = item("c", OutboxKind::Message, json!({"title": "x"}), true);
+        let reask = compose_offer_after(Some(Carried::Reask(&tainted)), &[], "")
+            .expect("a re-ask")
+            .speech;
+        assert!(reask.contains("outside content"), "{reask}");
+        assert!(
+            !again.speech.contains("outside content"),
+            "{}",
+            again.speech
+        );
+
+        // Dropped a second time: settled, not asked.
+        store.carry_unanswered("k", &again.pending).await;
+        assert_eq!(store.take_carry("k").await, Some(Carry::Settle("a".into())));
+        let settled = compose_offer_after(Some(Carried::Settle(&ev)), &[], "").expect("a line");
+        assert!(
+            settled.speech.contains("still in your outbox"),
+            "{}",
+            settled.speech
+        );
+        assert!(
+            settled.pending.queue.is_empty(),
+            "a settled draft arms nothing"
+        );
+        assert_eq!(
+            react("yes", &settled.pending, Some(&ev), None),
+            Reaction::PassToModel
+        );
+    }
+
+    /// Words that were not an answer are usually a correction, and the reply
+    /// to a correction stages the corrected draft. That draft is the question;
+    /// the old one is named, not re-asked, so the wrong draft is never at the
+    /// head of the queue.
+    #[test]
+    fn a_redrafting_turn_asks_the_new_draft_and_names_the_old() {
+        let ev = event();
+        let redrafted = item(
+            "d1",
+            OutboxKind::Message,
+            json!({"title": "Coffee with Thea", "when": "Friday August 28, 3pm to 3:30pm"}),
+            false,
+        );
+        let offer =
+            compose_offer_after(Some(Carried::Reask(&ev)), &[redrafted], "").expect("an offer");
+        assert!(
+            offer.speech.starts_with(
+                "The Coffee with Thea draft is still in your outbox. Here it is, in full."
+            ),
+            "{}",
+            offer.speech
+        );
+        assert_eq!(offer.pending.queue, VecDeque::from(vec!["d1".to_string()]));
+        assert_eq!(offer.pending.carried, None);
+    }
+
+    /// A carry nobody came back for expires, so it cannot resurface on a
+    /// later call under the same key as a question out of nowhere.
+    #[tokio::test]
+    async fn a_stranded_carry_expires() {
+        let store = Confirmations::default();
+        let pending = compose_offer(&[event()], "").expect("an offer").pending;
+        store.carry_unanswered("k", &pending).await;
+        let later = std::time::Instant::now() + CARRY_TTL + std::time::Duration::from_secs(1);
+        assert_eq!(store.take_carry_at("k", later).await, None);
+        assert_eq!(
+            store.take_carry("k").await,
+            None,
+            "an expired carry is gone, not kept"
+        );
+
+        store.carry_unanswered("k", &pending).await;
+        let soon = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        assert_eq!(
+            store.take_carry_at("k", soon).await,
+            Some(Carry::Reask("a".into()))
+        );
+    }
+
+    /// The carry lives on the question, not on the drafts: an empty queue —
+    /// a publish-only offer — carries nothing.
+    #[tokio::test]
+    async fn an_offer_with_nothing_to_answer_carries_nothing() {
+        let store = Confirmations::default();
+        store.carry_unanswered("k", &Pending::default()).await;
+        assert_eq!(store.take_carry("k").await, None);
     }
 
     /// A short draft is read out in full, unasked. Every field of it: the one
@@ -1148,6 +1450,25 @@ mod the_gate_must_not_eat_real_answers {
                 "{heard:?} released a draft the span rule would have caught unfilled"
             );
         }
+
+        // A contraction, with a filler: the two normalisations have to agree
+        // on the apostrophe or neither spelling is a window of what the
+        // model said. This released a draft on the first cut of the composed
+        // parser (found on review).
+        let contracted = compose_offer(&[draft()], "That's right, I've drafted it.")
+            .expect("an offer")
+            .pending;
+        assert_eq!(
+            parse_answer("So, that's right."),
+            crate::review_policy::SpokenAnswer::Send
+        );
+        assert!(
+            matches!(
+                react("So, that's right.", &contracted, Some(&item), None),
+                Reaction::NotConvinced(_)
+            ),
+            "an echo of the model's own \"that's right\" released a draft"
+        );
     }
 
     /// **The re-ask must not narrow what we compare against.** The offer is
