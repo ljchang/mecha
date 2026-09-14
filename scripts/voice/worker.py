@@ -436,6 +436,13 @@ class LinkWatch(FrameProcessor):
         self._backlog_ms = backlog_ms
         self._note_audio(now)
 
+    def forget_backlog(self):
+        """The uplink fell back to RTP: no batch will update the backlog
+        again, and a value frozen at the size that tripped the fallback
+        would hold the turn for the rest of the call (review of #231).
+        Flow alone decides from here, as on a call that never had one."""
+        self._backlog_ms = None
+
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
         if isinstance(frame, StartFrame):
@@ -1269,49 +1276,103 @@ class TranscriptStartedTurnStop(TurnAnalyzerUserTurnStopStrategy):
 
 
 # A page that declared the channel and then delivers nothing — the tap's
-# worker script missing from the deployed `dist`, a browser whose transform
-# attaches but never fires — would be a call nobody could hear, silently,
-# with RTP carrying the voice past a parked reader. Both ends watch for it:
-# the page waits for its worker to say it loaded and for a first frame; the
-# worker, which can act without a round trip, starts reading RTP if no batch
-# has reached it this long after the transport came up (review of #231).
+# worker script missing from the deployed `dist`, a transform that attaches
+# and never fires or stops firing mid-call — would be a call nobody could
+# hear, silently, with RTP carrying the voice past a reader that ignores
+# it. Both ends watch, for the whole call, and each tells the other. The
+# worker's witness is **RTP frames still arriving while no batch has**: a
+# stalled link stops both and must not trip this — falling back during a
+# stall would gain nothing and discard the buffered speech that follows —
+# and the first cut's witness (a pushed live frame) tripped on exactly a
+# reconnect's late-lane backlog (review of #231). The RTP track is read and
+# discarded rather than left unread, because aiortc counts packets on
+# consumption: an unread track shows `packetsReceived = 0` forever, which
+# the first end-to-end deaf call proved.
 UPLINK_DEAF_SECS = 6.0
+UPLINK_WATCH_SECS = 2.0
+
+
+def deaf_verdict(rtp_arriving: bool, secs_since_batch: float) -> bool:
+    """Is the tap dead? Only when the link is demonstrably carrying the
+    voice and none of it is arriving as batches. Pure, for the test."""
+    return rtp_arriving and secs_since_batch >= UPLINK_DEAF_SECS
 
 
 class UplinkInput(SmallWebRTCInputTransport):
-    """The transport input with the RTP audio reader parked: audio arrives
-    through `UplinkAudio.push_pcm` → `push_audio_frame` instead — unless
-    nothing does, in which case the reader is started after all."""
+    """The transport input reading RTP audio and **discarding** it: speech
+    arrives through `UplinkAudio.push_pcm` → `push_audio_frame` instead —
+    unless nothing does while RTP flows, in which case the frames stop
+    being discarded and the call is an RTP call from then on."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.injected = 0
+        self.batches = 0
+        self.last_batch_at = _time.monotonic()
+        self.last_rtp_at = None
         self.rtp_fallback = False
-        self._deaf_task = None
+        self.on_fallback = None  # sync: the link forgets its backlog
+        self.announce = None  # async: tell the page
+        self._watch_task = None
+
+    def note_batch(self):
+        self.batches += 1
+        self.last_batch_at = _time.monotonic()
 
     async def _receive_audio(self):
         from loguru import logger
 
-        logger.info("uplink: RTP audio left unread — speech arrives over the data channel")
-        self._deaf_task = self.create_task(self._watch_for_deafness())
+        logger.info("uplink: RTP audio read and discarded — speech arrives over the data channel")
+        self.last_batch_at = _time.monotonic()
+        self._watch_task = self.create_task(self._watch())
+        try:
+            async for frame in self._client.read_audio_frame():
+                if not frame:
+                    continue
+                self.last_rtp_at = _time.monotonic()
+                if self.rtp_fallback:
+                    await super().push_audio_frame(frame)
+        except Exception as e:  # noqa: BLE001 - mirrors the base reader
+            logger.error(f"{self} exception receiving data: {e.__class__.__name__} ({e})")
 
-    async def _watch_for_deafness(self):
+    async def _stop_tasks(self):
+        if self._watch_task:
+            await self.cancel_task(self._watch_task)
+            self._watch_task = None
+        await super()._stop_tasks()
+
+    def rtp_arriving(self, now: float) -> bool:
+        return self.last_rtp_at is not None and now - self.last_rtp_at < UPLINK_WATCH_SECS
+
+    async def _watch(self):
         from loguru import logger
 
-        await asyncio.sleep(UPLINK_DEAF_SECS)
-        if self.injected or self.rtp_fallback:
+        while not self.rtp_fallback:
+            await asyncio.sleep(UPLINK_WATCH_SECS)
+            now = _time.monotonic()
+            since = now - self.last_batch_at
+            arriving = self.rtp_arriving(now)
+            logger.debug(f"uplink watch: rtp_arriving={arriving} since_batch={since:.1f}s batches={self.batches}")
+            if deaf_verdict(arriving, since):
+                await self.engage_fallback("RTP is arriving and no batch has")
+
+    async def engage_fallback(self, why: str):
+        """Stop discarding RTP. Idempotent; the page is told."""
+        from loguru import logger
+
+        if self.rtp_fallback:
             return
         self.rtp_fallback = True
         logger.error(
-            f"uplink: no audio batch in {UPLINK_DEAF_SECS:.0f}s after the page declared the "
-            "channel — reading RTP after all, so the call is not deaf; the page's tap did "
-            "not deliver (is voice-uplink-transform.js deployed?)"
+            f"uplink: falling back to RTP — {why} (is voice-uplink-transform.js deployed?). "
+            "The turn hold no longer waits on a backlog; batches arriving now are ignored."
         )
-        await super()._receive_audio()
-
-    async def push_audio_frame(self, frame):
-        self.injected += 1
-        await super().push_audio_frame(frame)
+        if self.on_fallback:
+            self.on_fallback()
+        if self.announce:
+            try:
+                await self.announce({"t": "uplink", "state": "rtp", "why": why})
+            except Exception as e:  # noqa: BLE001 - an announcement is not load-bearing
+                logger.warning(f"uplink: could not announce the fallback ({e})")
 
 
 class UplinkTransport(SmallWebRTCTransport):
@@ -1338,22 +1399,23 @@ def lane_for(backlog_ms: int) -> str:
     return "late" if backlog_ms >= BACKLOG_TALK_SECS * 1000 else "live"
 
 
-def late_prefix(
-    from_ms: float, to_ms: float, epoch_ms: int | None, media_ms: int, tz_offset_min: int, dropped_ms: float
-) -> str:
+def late_prefix(from_wall_ms: int | None, to_wall_ms: int | None, tz_offset_min: int, dropped_ms: float) -> str:
     """What the model reads ahead of a late span: when it was said, in the
-    phone's own clock, and what was lost before it, if anything. The listener
-    hears only the answer."""
+    phone's own clock, and what was lost before it, if anything. The times
+    are the page's wall-clock stamps on the frames themselves — the only
+    clock that survives an outage, since the media clock does not run while
+    nothing is captured (review of #231). The listener hears only the
+    answer."""
 
-    def clock(ms: float) -> str:
-        if epoch_ms is None:
+    def clock(ms: int | None) -> str:
+        if ms is None:
             return "earlier"
         import datetime as _dt
 
-        at = epoch_ms + (ms - media_ms) + tz_offset_min * 60_000
+        at = ms + tz_offset_min * 60_000
         return _dt.datetime.fromtimestamp(at / 1000, tz=_dt.timezone.utc).strftime("%H:%M")
 
-    span = f"said {clock(from_ms)}–{clock(to_ms)}, delivered late"
+    span = f"said {clock(from_wall_ms)}–{clock(to_wall_ms)}, delivered late"
     if dropped_ms >= 1000:
         lost = round(dropped_ms / 1000)
         span += f"; about {lost} seconds before this were lost while the link was down"
@@ -1372,14 +1434,15 @@ class UplinkAudio:
         self._user_id = user_id
         self._decoder = av.CodecContext.create("opus", "r")
         self._resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
-        self._epoch_ms: int | None = None
-        self._media_ms = 0
         self._tz_offset_min = 0
         self._expect_seq: int | None = None
-        # The late span being assembled: PCM plus where it starts and ends.
+        # The late span being assembled: PCM plus where it starts and ends,
+        # on the media clock and on the page's wall clock.
         self._late_pcm = bytearray()
         self._late_from: float | None = None
         self._late_to: float = 0.0
+        self._late_wall_from: int | None = None
+        self._late_wall_to: int | None = None
         self._late_dropped_ms = 0.0
         self._settle_task = None
         self._rest = b""
@@ -1399,9 +1462,7 @@ class UplinkAudio:
         self.late_turns = 0
 
     async def on_start(self, d: dict):
-        """`audio-start`: the page's clock, once per connection."""
-        self._epoch_ms = int(d.get("epoch_ms")) if d.get("epoch_ms") is not None else None
-        self._media_ms = int(d.get("media_ms") or 0)
+        """`audio-start`: the page's zone, once per connection."""
         self._tz_offset_min = int(d.get("tz_offset_min") or 0)
         self._expect_seq = None
 
@@ -1446,6 +1507,9 @@ class UplinkAudio:
         audio queue; late ones accumulate into a span transcribed whole."""
         from loguru import logger
 
+        note = getattr(self._input, "note_batch", None)
+        if note:
+            note()  # the deafness witness: a batch arrived, whatever its lane
         if getattr(self._input, "rtp_fallback", False):
             if not self._rtp_fallback_warned:
                 self._rtp_fallback_warned = True
@@ -1457,6 +1521,7 @@ class UplinkAudio:
         self._expect_seq = seq + 1
         backlog_ms = int(d.get("backlog_ms") or 0)
         start_ms = float(d.get("ms") or 0)
+        wall_ms = int(d["wall_ms"]) if d.get("wall_ms") is not None else None
         frames = d.get("frames") or []
         dur_ms = sum(float(f[0]) for f in frames if isinstance(f, (list, tuple)) and len(f) == 2)
         dropped_ms = sum(
@@ -1469,7 +1534,9 @@ class UplinkAudio:
         if lane_for(backlog_ms) == "late":
             if self._late_from is None:
                 self._late_from = start_ms
+                self._late_wall_from = wall_ms
             self._late_to = start_ms + dur_ms
+            self._late_wall_to = wall_ms + int(dur_ms) if wall_ms is not None else self._late_wall_to
             self._late_dropped_ms += dropped_ms
             self._late_pcm += pcm
             self._arm_late_settle()
@@ -1523,8 +1590,10 @@ class UplinkAudio:
             self._late_to,
             self._late_dropped_ms,
         )
+        wall_from, wall_to = self._late_wall_from, self._late_wall_to
         self._late_pcm = bytearray()
         self._late_from, self._late_dropped_ms = None, 0.0
+        self._late_wall_from = self._late_wall_to = None
         text = await self._transcribe(pcm)
         if not text:
             logger.info(f"uplink: late span {from_ms:.0f}–{to_ms:.0f} ms held no speech")
@@ -1535,7 +1604,7 @@ class UplinkAudio:
             if not getattr(self._stt, "_bot_speaking", False):
                 break
             await asyncio.sleep(0.1)
-        prefix = late_prefix(from_ms, to_ms, self._epoch_ms, self._media_ms, self._tz_offset_min, dropped_ms)
+        prefix = late_prefix(wall_from, wall_to, self._tz_offset_min, dropped_ms)
         self.late_turns += 1
         logger.info(f"uplink: late turn ({(to_ms - from_ms) / 1000:.0f}s of audio): {prefix}{text[:80]!r}")
         await self._input.push_frame(
@@ -1675,6 +1744,8 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
             vad_analyzer=SileroVADAnalyzer(params=VADParams(start_secs=0.3)),
             user_turn_stop_timeout=USER_TURN_STOP_TIMEOUT,
             # See `UPLINK_VAD_IDLE_SECS`; the RTP path keeps pipecat's 1.0 s.
+            # Chosen once, here: a call that later falls back to RTP keeps
+            # the 30 s, which Silero's stop on flowing silence makes safe.
             audio_idle_timeout=UPLINK_VAD_IDLE_SECS if isinstance(transport, UplinkTransport) else 1.0,
             user_turn_strategies=UserTurnStrategies(
                 start=[TranscriptionUserTurnStartStrategy(use_interim=False)],
@@ -1708,6 +1779,8 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     uplink = UplinkAudio(transport.input(), link, stt) if isinstance(transport, UplinkTransport) else None
     if uplink:
         print("voice uplink: buffered over the data channel", flush=True)
+        transport.input().on_fallback = link.forget_backlog
+        transport.input().announce = rtvi.send_server_message
 
     pipeline = Pipeline(
         [
@@ -1780,6 +1853,12 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         # Audio is not a prompt and not a command — it is the microphone,
         # arriving by a route that retransmits — and it goes where the
         # microphone's frames go, nowhere else.
+        if msg.type == "uplink":
+            # The page's side of the watch: its tap died, it is on RTP now.
+            data = msg.data if isinstance(msg.data, dict) else {}
+            if uplink is not None and data.get("state") == "rtp":
+                await transport.input().engage_fallback(f"the page reported {data.get('why') or 'a dead tap'}")
+            return
         if msg.type in ("audio", "audio-start"):
             if uplink is None:
                 return

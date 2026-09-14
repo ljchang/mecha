@@ -102,10 +102,11 @@ transport's **own audio queue** (`push_audio_frame`) — the place RTP audio
 entered — so Silero, the segmenter, smart-turn and the aggregator see exactly
 what they saw before and learn nothing about the route. The remainder of a
 batch that is not a whole frame carries into the next; dropping it would
-have lost a frame per batch across a drain. The RTP reader is parked by a
-transport subclass (`UplinkTransport` → `UplinkInput._receive_audio` returns
-at once) rather than by `audio_in_enabled=False`, because that flag also
-gates `push_audio_frame` and the VAD that runs on the queue.
+have lost a frame per batch across a drain. The RTP reader is replaced by a
+transport subclass (`UplinkTransport` → `UplinkInput._receive_audio`, which
+reads the track and discards the frames) rather than by
+`audio_in_enabled=False`, because that flag also gates `push_audio_frame`
+and the VAD that runs on the queue.
 
 The page's RTP track keeps sending, **unmuted**: its receiver reports are
 `linkVerdict`'s only uplink witness, and a muted track thins them. The
@@ -116,17 +117,32 @@ a single RTP frame is read — a switch mid-call would deliver the first words
 twice. Whether iOS keeps capture alive with the screen off is unchanged by
 this build, because the track is exactly what it was.
 
-**A tap that attaches and never delivers would be a deaf call**, silently
-— RTP carrying the voice past a parked reader — and the first deploy that
-forgets the worker file at `dist` root is exactly that (review of #231).
-Both ends watch for it. The page declares the channel only after the
-worker script's first message proves it loaded (`UPLINK_READY_MS`), and
-falls back to RTP for the call if no frame reaches the ring within
-`UPLINK_FIRST_FRAME_MS` of `connected`, saying so in the transcript. The
-worker, which can act without a round trip, starts reading RTP after all
-if no batch has arrived `UPLINK_DEAF_SECS` after the transport came up,
-at `error` level, and ignores batches that arrive afterwards rather than
-doubling the voice.
+**A tap that attaches and never delivers — or stops delivering — would be
+a deaf call**, silently: RTP carrying the voice past a parked reader, and
+the first deploy that forgets the worker file at `dist` root is exactly
+that (review of #231). Both ends watch, for the whole call, and each tells
+the other. The page declares the channel only after the worker script's
+first message proves it loaded (`UPLINK_READY_MS`), and on every meter
+tick treats frames stopping while the mic track is live and unmuted as the
+tap dying (`UPLINK_FIRST_FRAME_MS`) — a link stall does not stop them,
+capture is local. The worker's witness is **RTP frames still arriving
+while no batch has** (`deaf_verdict`): the RTP track is read and
+*discarded* rather than left unread — aiortc counts packets on
+consumption, so an unread track reports `packetsReceived = 0` for ever,
+which the first end-to-end deaf call proved against a `getStats` witness
+— and a stalled link stops both frames and batches and must not trip
+this, since falling back during a stall would gain nothing and discard
+the buffered speech that follows. The witness is a *batch* of either
+lane, because a reconnect's carried-over ring is all late lane for as long
+as it takes to drain. When it fires the worker stops discarding RTP, at
+`error` level — the six seconds before it are the price of a dead tap —
+tells the page
+(`{t: "uplink", state: "rtp"}`), forgets the backlog so the hold resumes
+on flow alone (`LinkWatch.forget_backlog` — a value frozen at the size
+that tripped it would hold the turn for the rest of the call), and ignores
+batches that arrive afterwards rather than doubling the voice. The VAD
+idle timeout stays at the channel's 30 s on such a call, which Silero's
+stop on flowing silence makes safe.
 
 On the worker every delivery — live frames and late turns alike — goes
 through **one ordered queue with one consumer, and nothing is cancelled**:
@@ -189,7 +205,10 @@ on arrival. Age decides which lane it takes:
   conversation as **one user turn the harness prefixes** — a
   `TranscriptionFrame` pushed at the head of the pipeline, so the page's
   transcript shows it too: *"(said 08:22–08:23, delivered late)"*, in the
-  phone's own clock. A span is closed by the first live batch after it,
+  phone's own clock — from a wall-clock stamp the ring puts on each frame
+  at capture, because the media clock does not run while nothing is
+  captured and so cannot place speech from before an outage (review of
+  #231). A span is closed by the first live batch after it,
   or by `LATE_SETTLE_SECS` without one, and is put *before* the live audio
   that closed it. The model answers it as a turn. This is the outbox and questions shape
   applied to speech — a run's input surviving the run — and it is what

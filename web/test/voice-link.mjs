@@ -126,6 +126,7 @@ import { UplinkRing, behindVerdict, BEHIND_TONE_MS, CAUGHT_UP_MS } from '../../s
   const b = ring.takeBatch(100);
   assert.equal(b.frames.length, 5, 'a 100 ms batch is five 20 ms frames');
   assert.equal(b.ms, 0);
+  assert.equal(typeof b.wallMs, 'number', 'a batch carries the wall clock its first frame was captured at');
   assert.equal(b.backlogMs, 20, 'what is left is the backlog');
   assert.equal(b.seq, 0);
   assert.equal(ring.takeBatch(100).frames.length, 1);
