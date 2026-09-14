@@ -109,3 +109,100 @@ assert.equal(serverPauseExpired({ ...healthy, reportSeenAt: T - REPORT_STALL_MS 
 assert.equal(serverPauseExpired({ ...healthy, packetsAt: T - INBOUND_STALL_MS }, T - 9000, T), false, 'stale inbound counted as fresh');
 console.log('server pause expiry: ok');
 
+
+// ---- the reliable uplink (docs/VOICE-LINK-DESIGN.md) -----------------------
+import { UplinkRing, behindVerdict, BEHIND_TONE_MS, CAUGHT_UP_MS } from '../../scripts/voice/voice-core.js';
+
+{
+  // 20 ms Opus frames at the 48 kHz RTP clock: each frame's duration is the
+  // gap to the next timestamp, so the first frame is held until the second.
+  const ring = new UplinkRing(1000);
+  ring.push(1000, new Uint8Array([1]).buffer);
+  assert.equal(ring.frames.length, 0, 'a frame is held until its duration is known');
+  for (let i = 1; i <= 6; i++) ring.push(1000 + 960 * i, new Uint8Array([i + 1]).buffer);
+  assert.equal(ring.frames.length, 6);
+  assert.equal(ring.pendingMs, 120);
+  assert.equal(ring.nowMs, 120);
+  const b = ring.takeBatch(100);
+  assert.equal(b.frames.length, 5, 'a 100 ms batch is five 20 ms frames');
+  assert.equal(b.ms, 0);
+  assert.equal(typeof b.wallMs, 'number', 'a batch carries the wall clock its first frame was captured at');
+  assert.equal(b.backlogMs, 20, 'what is left is the backlog');
+  assert.equal(b.seq, 0);
+  assert.equal(ring.takeBatch(100).frames.length, 1);
+  assert.equal(ring.takeBatch(100), null);
+
+  // A reconnect restarts the RTP clock; the media clock continues.
+  ring.restart();
+  assert.equal(ring.frames.length, 1, 'restart closes the held frame at 20 ms');
+  ring.push(5, new Uint8Array([9]).buffer);
+  ring.push(5 + 960, new Uint8Array([10]).buffer);
+  assert.equal(ring.frames[ring.frames.length - 1].ms, 140, 'the new stream is placed after the old');
+
+  // Past the cap the oldest goes, and the loss is recorded, not silent.
+  const small = new UplinkRing(100);
+  for (let i = 0; i <= 10; i++) small.push(960 * i, new Uint8Array([i]).buffer); // 10 closed frames = 200 ms
+  assert.equal(small.pendingMs, 100);
+  const dropped = small.takeDropped();
+  assert.deepEqual(dropped, [{ fromMs: 0, toMs: 100 }], JSON.stringify(dropped));
+  assert.deepEqual(small.takeDropped(), [], 'dropped spans are read once');
+  console.log('uplink ring: ok');
+}
+
+{
+  // The cue keys on how far behind, once per episode, never on packets.
+  let st = { sounded: false }, cues = [];
+  for (const ms of [0, 800, 2900, 3100, 4000, 9000, 1200, 500, 300, 0, 3500, 200]) {
+    const v = behindVerdict(st, ms); st = v.next; if (v.cue) cues.push([ms, v.cue]);
+  }
+  assert.deepEqual(cues, [[3100, 'behind'], [500, 'caught'], [3500, 'behind'], [200, 'caught']], JSON.stringify(cues));
+  assert.ok(BEHIND_TONE_MS > CAUGHT_UP_MS);
+  console.log('behind cue: ok');
+}
+
+{
+  // What the worker is told is the ring *and* the queue (review of #231):
+  // with 32 kB queued at ~6 B/ms, an empty ring is still ~5 s behind.
+  const { wireBacklogMs, UPLINK_WIRE_BYTES_PER_MS } = await import('../../scripts/voice/voice-core.js');
+  assert.equal(wireBacklogMs(0, 0), 0);
+  assert.equal(wireBacklogMs(1500, 0), 1500);
+  assert.equal(wireBacklogMs(0, 32768), 32768 / UPLINK_WIRE_BYTES_PER_MS);
+  assert.ok(wireBacklogMs(0, 32768) > 5000, 'a full SCTP queue is seconds, not nothing');
+
+  // A batch the channel refused goes back, dropped spans and sequence with it.
+  const ring = new UplinkRing(100_000);
+  for (let i = 0; i <= 10; i++) ring.push(960 * i, new Uint8Array([i]).buffer);
+  const small = new UplinkRing(60);
+  for (let i = 0; i <= 5; i++) small.push(960 * i, new Uint8Array([i]).buffer); // 100 ms in, 40 dropped
+  const dropped = small.takeDropped();
+  assert.equal(dropped.length, 1);
+  const b = small.takeBatch(100);
+  assert.equal(small.frames.length, 0);
+  small.unsend(b, dropped);
+  assert.equal(small.frames.length, b.frames.length, 'frames back');
+  assert.equal(small.pendingMs, 60, 'pending restored');
+  assert.deepEqual(small.takeDropped(), dropped, 'the dropped record survives a failed send');
+  assert.equal(small.takeBatch(100).seq, b.seq, 'the retry reuses the sequence number');
+  console.log('wire backlog + unsend: ok');
+}
+
+{
+  // The pump waits for a batch's worth and a queue with room (fifth review of #231).
+  const { shouldPump, UPLINK_BATCH_MS, UPLINK_SCTP_HIGH_BYTES } = await import('../../scripts/voice/voice-core.js');
+  assert.equal(shouldPump(20, 0), false, 'one frame is not a batch');
+  assert.equal(shouldPump(UPLINK_BATCH_MS - 1, 0), false);
+  assert.equal(shouldPump(UPLINK_BATCH_MS, 0), true);
+  assert.equal(shouldPump(5000, UPLINK_SCTP_HIGH_BYTES), false, 'a full queue waits');
+  console.log('pump gate: ok');
+}
+
+{
+  // The ring outlives the session object (sixth review of #231): a
+  // reconnect makes a new session for the same chat key and finds it.
+  const { ringFor } = await import('../../scripts/voice/voice-core.js');
+  const a = ringFor('main'); a.push(0, new Uint8Array([1]).buffer); a.push(960, new Uint8Array([2]).buffer);
+  assert.equal(ringFor('main'), a, 'same key, same ring');
+  assert.equal(ringFor('main').pendingMs, 20, 'what was captured before the reconnect is still there');
+  assert.notEqual(ringFor('other'), a, 'a different conversation gets its own');
+  console.log('ring per key: ok');
+}
