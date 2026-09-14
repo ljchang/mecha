@@ -1597,11 +1597,42 @@ fn begin_turn(
         queued_ids: Arc::clone(&queued_ids),
     });
 
+    // What was already waiting, before this run staged anything. Taken here
+    // rather than inside the task so it is genuinely a *before* — a run that
+    // stages in its first second must not find its own draft in its baseline.
+    // `None` when the store could not be read: no baseline, no offer (see
+    // `review_policy::staged_since`).
+    let outbox_baseline: Option<std::collections::HashSet<String>> =
+        OutboxStore::open(&chat.outbox_root)
+            .ok()
+            .and_then(|store| store.items().ok())
+            .map(|items| {
+                items
+                    .into_iter()
+                    .filter(|i| i.status == "pending")
+                    .map(|i| i.id)
+                    .collect()
+            });
     // Per-run context on the shared agent: jail, approver, budget, cancel,
     // steering, and an outbox route stamped with this session's id.
     let mut cx = (**chat.agent.context()).clone();
     cx.tools = Arc::new(ToolCtx {
         workspace: ws.workspace.clone(),
+        // A spoken turn's staged drafts are reviewed by ear, and the model
+        // must be told so rather than told about a command line — the
+        // 2026-09-13 call, where it repeated the default sentence to a
+        // listener four times.
+        // Not conditioned on this door's `outbox_baseline`: that read gates
+        // the page's `Staged` card, while the spoken offer on a hosted turn
+        // is gated by the facade's own read (`voice::completion`'s
+        // `pending_outbox_ids`, handed to `hosted_completion`). Tying the
+        // hint to the wrong read claimed a coupling the code does not have
+        // (review of #228). The residual — the facade's read failing while
+        // the model was told it would ask — is a transient store failure
+        // between two reads, and accepted.
+        review_hint: opts
+            .spoken
+            .then(|| crate::voice::SPOKEN_REVIEW_HINT.to_string()),
         ..(*chat.agent.ctx()).clone()
     });
     cx.approver = if opts.approve_all {
@@ -1650,22 +1681,6 @@ fn begin_turn(
         }
     }
 
-    // What was already waiting, before this run staged anything. Taken here
-    // rather than inside the task so it is genuinely a *before* — a run that
-    // stages in its first second must not find its own draft in its baseline.
-    // `None` when the store could not be read: no baseline, no offer (see
-    // `review_policy::staged_since`).
-    let outbox_baseline: Option<std::collections::HashSet<String>> =
-        OutboxStore::open(&chat.outbox_root)
-            .ok()
-            .and_then(|store| store.items().ok())
-            .map(|items| {
-                items
-                    .into_iter()
-                    .filter(|i| i.status == "pending")
-                    .map(|i| i.id)
-                    .collect()
-            });
     let outbox_root = chat.outbox_root.clone();
 
     let agent = Arc::clone(&chat.agent);

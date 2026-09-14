@@ -67,6 +67,7 @@ something shipped.
 | [`TASK-RESEARCH.md`](TASK-RESEARCH.md) | What a day of real use said about delegation and the task tier |
 | [`TUI-RESEARCH.md`](TUI-RESEARCH.md) | What the good agent TUIs do that this one does not |
 | [`VERIFICATION-RESEARCH.md`](VERIFICATION-RESEARCH.md) | What verification loops other agents run, and what mecha has instead |
+| [`VOICE-APPROVAL-RESEARCH.md`](VOICE-APPROVAL-RESEARCH.md) | Why the first real spoken yes to a draft fell through (2026-09-13), what fixes the door that exists, and how approvals for everything else would be staged |
 | [`VOICE-RESEARCH.md`](VOICE-RESEARCH.md) | How the owner talks to mecha out loud, and from where |
 
 ### `*-DESIGN.md` — one thing, decided before it was built

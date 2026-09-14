@@ -358,6 +358,12 @@ pub struct CarriedState {
 pub struct ToolCtx {
     /// Owner-bound evidence for the confirmed goal; never supplied by a model tool.
     pub appraisal_evidence: Option<crate::anticipation::BoundEvidence>,
+    /// How the user will review a call this run stages, in this surface's
+    /// own words — spliced into the staged-draft tool result in place of
+    /// the default sentence, which names `mecha outbox`. `None` on every
+    /// surface where that sentence is true. The core prints what it is
+    /// handed and learns nothing about the surface from it.
+    pub review_hint: Option<String>,
     /// Filesystem tools refuse paths outside this root.
     pub workspace: PathBuf,
     pub shell_timeout: std::time::Duration,
@@ -637,6 +643,7 @@ impl Default for ToolCtx {
     fn default() -> Self {
         ToolCtx {
             appraisal_evidence: None,
+            review_hint: None,
             workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             shell_timeout: std::time::Duration::from_secs(120),
             security: SecurityConfig::default(),
