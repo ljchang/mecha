@@ -271,6 +271,16 @@ it.
 Then restart `mecha-serve.service` (step 2). Verify the *served* page, not
 the directory: the 8443 door returning 200 with the new bundle hash.
 
+**`web/public/` lands at `dist` root, and one of those files is
+load-bearing.** `voice-uplink-transform.js` is the buffered uplink's tap
+(`docs/VOICE-LINK-DESIGN.md` §2.1, since #231 on 2026-09-14): a page that
+loads it declares the channel in its offer; a dist rsynced without it is
+a 404 the page turns into an RTP fallback — heard, but with #226's
+behaviour on a stall rather than #231's, and nothing in the repo to say
+why. Check it the way the bundle is checked: `curl -s -o /dev/null -w
+'%{http_code} %{content_type}\n' -H 'Tailscale-User-Login: <owner>'
+http://127.0.0.1:63242/voice-uplink-transform.js` → `200 text/javascript`.
+
 When a header probe echoes a value back (`If-Modified-Since` from a
 `Last-Modified` you just grepped), strip carriage returns first —
 `| tr -d '\r'` — or the CR rides into the outgoing header and the server
