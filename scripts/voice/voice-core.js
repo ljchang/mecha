@@ -332,6 +332,8 @@ export class UplinkRing {
   unsend(batch, dropped = []) {
     this.frames.unshift(...batch.frames);
     this.pendingMs += batch.frames.reduce((a, f) => a + f.durMs, 0);
+    // Over the cap by at most one batch until the next frame closes; the
+    // cap is re-applied there, as it is on every push.
     if (dropped.length) this.dropped = [...dropped, ...this.dropped];
     this.seq = batch.seq;
   }
@@ -714,6 +716,9 @@ export function createVoiceSession(opts = {}) {
         // The worker's side of the watch: RTP was arriving and no batch
         // was, so it is reading RTP now. Follow it — the pauses come back.
         else if (msg.data?.t === "uplink" && msg.data.state === "rtp") uplinkFailed(msg.data.why || "the worker fell back", true);
+        // A late turn (docs/VOICE-LINK-DESIGN.md §2.5): what the model was
+        // given for speech delivered after an outage, shown as the owner's.
+        else if (msg.data?.t === "late-turn" && typeof msg.data.text === "string") cfg.onTranscript({ who: "user", text: msg.data.text, interim: false });
         // The worker announces a teardown it is about to perform. Held for
         // `end()` rather than acted on: the close arrives a moment later by
         // itself, and what was missing was never the ending - it was any
@@ -784,7 +789,10 @@ export function createVoiceSession(opts = {}) {
         // call's tail, if the link died — goes first, in order (§4.2).
         sendClientMessage("audio-start", { tz_offset_min: -new Date().getTimezoneOffset() });
         clearInterval(heartbeatTimer);
-        heartbeatTimer = setInterval(() => { if (uplinkMode === "channel") sendClientMessage("heartbeat", {}); }, UPLINK_HEARTBEAT_MS);
+        // Kept up after a fallback too: if the page's `uplink` notice is
+        // lost, heartbeats without audio are what let the worker's own
+        // watch reach the same verdict (review of #231).
+        heartbeatTimer = setInterval(() => sendClientMessage("heartbeat", {}), UPLINK_HEARTBEAT_MS);
         pump();
       }
       // Ask immediately: the picker must be populated from the server's
