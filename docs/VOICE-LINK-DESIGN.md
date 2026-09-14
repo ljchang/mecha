@@ -1,8 +1,10 @@
 # The reliable voice link — design
 
-Designed 2026-09-14; built the same day on `voice/reliable-uplink` (§2 as
-amended below — three of its mechanisms changed on contact with the code,
-each for a reason recorded in place). The question it answers: **when the
+Designed 2026-09-14; built the same day (§2 as amended below — three of
+its mechanisms changed on contact with the code, each for a reason
+recorded in place), merged as #231 (`2b4a89fa`) after seven review passes,
+and deployed the same afternoon (HISTORY, 2026-09-14). §5, §6's deferrals
+and §8's numbers are open. The question it answers: **when the
 phone's connection to the box is unstable, what happens to what the owner
 said?**
 
