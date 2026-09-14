@@ -76,7 +76,10 @@ pub struct Pending {
     /// The draft this question is putting **for the second time**, if it is
     /// one — see [`Confirmations::carry_unanswered`]. A draft is carried over
     /// one dropped question and no further, and this is how the store knows
-    /// which the next drop is.
+    /// which the next drop is. Read only against the head of the queue:
+    /// after a "later" pops that head the value names a draft that is no
+    /// longer first, and `carry_unanswered` correctly treats the new head
+    /// as un-carried.
     pub carried: Option<String>,
 }
 
@@ -149,9 +152,22 @@ pub struct Confirmations {
     armed: Mutex<HashMap<String, Pending>>,
     /// A question that was dropped because the answer was not one — see
     /// [`Confirmations::carry_unanswered`]. Read once, by the offer that
-    /// follows the model's reply to those words.
-    carries: Mutex<HashMap<String, Carry>>,
+    /// follows the model's reply to those words, and stamped so a carry
+    /// nobody came back for expires rather than resurfacing on some later
+    /// call under the same key.
+    carries: Mutex<HashMap<String, (Carry, std::time::Instant)>>,
 }
+
+/// How long a carry waits for the turn that consumes it.
+///
+/// The carry survives a turn that never started — a 503 tells the worker
+/// to try again in a moment, and the retry is the same words — but
+/// nothing makes the worker retry, and `confirm_key` is stable across
+/// calls. Without a bound a carry stranded by a worker that gave up was put
+/// as "Still waiting on the … draft" by the next spoken turn on that key,
+/// however much later: a question outside the conversation it belonged to.
+/// Five minutes is longer than any retry and shorter than any next call.
+const CARRY_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// What the next offer owes a draft whose question was dropped.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,11 +219,20 @@ impl Confirmations {
         } else {
             Carry::Reask(head.clone())
         };
-        self.carries.lock().await.insert(key.to_string(), carry);
+        self.carries
+            .lock()
+            .await
+            .insert(key.to_string(), (carry, std::time::Instant::now()));
     }
 
     pub async fn take_carry(&self, key: &str) -> Option<Carry> {
-        self.carries.lock().await.remove(key)
+        self.take_carry_at(key, std::time::Instant::now()).await
+    }
+
+    /// `take_carry` with the clock passed in, so the expiry is testable.
+    async fn take_carry_at(&self, key: &str, now: std::time::Instant) -> Option<Carry> {
+        let (carry, stamped) = self.carries.lock().await.remove(key)?;
+        (now.duration_since(stamped) <= CARRY_TTL).then_some(carry)
     }
 }
 
@@ -908,6 +933,29 @@ mod tests {
         );
         assert_eq!(offer.pending.queue, VecDeque::from(vec!["d1".to_string()]));
         assert_eq!(offer.pending.carried, None);
+    }
+
+    /// A carry nobody came back for expires, so it cannot resurface on a
+    /// later call under the same key as a question out of nowhere.
+    #[tokio::test]
+    async fn a_stranded_carry_expires() {
+        let store = Confirmations::default();
+        let pending = compose_offer(&[event()], "").expect("an offer").pending;
+        store.carry_unanswered("k", &pending).await;
+        let later = std::time::Instant::now() + CARRY_TTL + std::time::Duration::from_secs(1);
+        assert_eq!(store.take_carry_at("k", later).await, None);
+        assert_eq!(
+            store.take_carry("k").await,
+            None,
+            "an expired carry is gone, not kept"
+        );
+
+        store.carry_unanswered("k", &pending).await;
+        let soon = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        assert_eq!(
+            store.take_carry_at("k", soon).await,
+            Some(Carry::Reask("a".into()))
+        );
     }
 
     /// The carry lives on the question, not on the drafts: an empty queue —

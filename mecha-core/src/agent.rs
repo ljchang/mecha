@@ -3906,17 +3906,27 @@ impl Agent {
                         // The review sentence is the surface's when it has
                         // one: "review it with `mecha outbox`" is true at a
                         // terminal and false on a call, and a model repeats
-                        // what it is told.
+                        // what it is told. For a *message* only: a publish's
+                        // reviewable object is the rendered page on every
+                        // surface (`OutboxKind::Publish`), so no surface can
+                        // promise to review one any other way — a spoken
+                        // hint on a publish told the model the listener
+                        // would be asked aloud, and they never are (review
+                        // of #228).
+                        let review = match item.kind {
+                            crate::outbox::OutboxKind::Message => cx.tools.review_hint.as_deref(),
+                            crate::outbox::OutboxKind::Publish => None,
+                        }
+                        .unwrap_or(
+                            "The user will review it with `mecha outbox` and \
+                             release or reject it.",
+                        );
                         let mut content = format!(
                             "Drafted, not sent: this call is staged in the outbox as \
                              `{}`. {} Report it to the user as a draft \
                              awaiting their release — never as done — and do not \
                              retry the call.",
-                            item.id,
-                            cx.tools.review_hint.as_deref().unwrap_or(
-                                "The user will review it with `mecha outbox` and \
-                                 release or reject it."
-                            )
+                            item.id, review
                         );
                         if cx.tools.goal_guidance {
                             if let Some(p) = item
@@ -10736,6 +10746,38 @@ mod tests {
                 assert!(content.contains("Drafted, not sent"), "{content}");
                 assert!(content.contains("asked aloud"), "{content}");
                 assert!(!content.contains("mecha outbox"), "{content}");
+            }
+            other => panic!("expected a staged result, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+
+        // A publish is reviewed on a screen on every surface, so the hint
+        // does not apply: the model must not promise the listener a
+        // question that `speakable` will never ask.
+        let (mut agent, _) = agent_with(send_turns(), PermissionMode::ReadOnly);
+        agent.registry.insert(Arc::new(MustNotRun));
+        let root = std::env::temp_dir().join(format!(
+            "mecha-agent-outbox-hint-publish-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = crate::outbox::OutboxStore::open(&root).unwrap();
+        let route = Arc::new(crate::outbox::OutboxRoute::new(
+            store,
+            ["send_data".to_string()],
+            ["send_data".to_string()],
+        ));
+        agent.set_outbox(Arc::clone(&route));
+        Arc::make_mut(&mut agent.cx).tools = Arc::new(ToolCtx {
+            review_hint: Some("The user will be asked aloud.".into()),
+            ..(*agent.cx.tools).clone()
+        });
+        let mut convo = Conversation::from(vec![Message::user("publish it")]);
+        agent.run(&mut convo, None).await.unwrap();
+        match &convo.messages[2].content[0] {
+            Block::ToolResult { content, .. } => {
+                assert!(!content.contains("asked aloud"), "{content}");
+                assert!(content.contains("mecha outbox"), "{content}");
             }
             other => panic!("expected a staged result, got {other:?}"),
         }
