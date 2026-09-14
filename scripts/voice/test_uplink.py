@@ -97,6 +97,104 @@ class FakeSTT:
         self._client = _Client()
 
 
+class SlowSTT(FakeSTT):
+    """Transcription that waits until the test lets it finish — the window
+    in which a second late batch used to cancel the turn."""
+
+    def __init__(self, text):
+        super().__init__(text)
+        self.gate = asyncio.Event()
+        self.started = asyncio.Event()
+        stt = self
+
+        class _Create:
+            async def create(self, model, file):
+                stt.requests.append(file[1])
+                stt.started.set()
+                await stt.gate.wait()
+
+                class R:
+                    pass
+
+                r = R()
+                r.text = text
+                return r
+
+        class _Audio:
+            transcriptions = _Create()
+
+        class _Client:
+            audio = _Audio()
+
+        self._client = _Client()
+
+
+class NothingIsCancelled(unittest.TestCase):
+    """Review of #231: the settle timer used to *be* the flush after its
+    sleep, so a late batch arriving during transcription cancelled the turn
+    with the audio already moved into locals. Now the timer only enqueues,
+    one consumer delivers in order, and a batch mid-flush starts the next
+    span."""
+
+    def test_a_late_batch_during_a_flush_does_not_lose_the_turn(self):
+        async def scenario():
+            inp, stt = FakeInput(), SlowSTT("first span")
+            up = UplinkAudio(inp, LinkWatch(), stt)
+            await up.on_start({"epoch_ms": 1_789_388_520_000, "media_ms": 0, "tz_offset_min": 0})
+            await up.on_audio(opus_batch(0, 0, 130_000, n_frames=25))
+            # The span closes as production closes it: a flush enqueued
+            # (here directly, rather than by the settle timer's sleep).
+            up._work.put_nowait(up.flush_late)
+            await asyncio.wait_for(stt.started.wait(), 2.0)  # transcription is in flight
+            # Mid-flush: another late batch. This used to cancel the flush.
+            await up.on_audio(opus_batch(1, 500, 129_500, n_frames=25))
+            stt.gate.set()
+            up._work.put_nowait(up.flush_late)
+            await asyncio.wait_for(up.drain(), 5.0)
+            return inp, up
+
+        inp, up = run(scenario())
+        self.assertEqual(up.late_turns, 2, "a span was lost")
+        self.assertEqual([f.text.endswith("first span") for f in inp.frames], [True, True])
+
+    def test_live_audio_queues_behind_the_turn_it_closed(self):
+        async def scenario():
+            inp, stt = FakeInput(), SlowSTT("what I said before")
+            up = UplinkAudio(inp, LinkWatch(), stt)
+            await up.on_start({"epoch_ms": 1_789_388_520_000, "media_ms": 0, "tz_offset_min": 0})
+            await up.on_audio(opus_batch(0, 0, 130_000, n_frames=25))
+            await up.on_audio(opus_batch(1, 500, 0))  # live: enqueues flush, then audio
+            await asyncio.wait_for(stt.started.wait(), 2.0)
+            before = list(inp.order)
+            stt.gate.set()
+            await up.drain()
+            return before, inp
+
+        before, inp = run(scenario())
+        self.assertEqual(before, [], "live audio was pushed while its predecessor was still transcribing")
+        self.assertEqual(inp.order[0], "TranscriptionFrame")
+        self.assertGreater(len(inp.audio), 0)
+
+
+class ChunkTail(unittest.TestCase):
+    """A span just past a chunk boundary keeps its last word."""
+
+    def test_a_short_tail_joins_the_piece_before_it(self):
+        async def scenario():
+            inp, stt = FakeInput(), FakeSTT("words")
+            up = UplinkAudio(inp, LinkWatch(), stt)
+            long = b"\x00\x00" * int(16000 * 60.2)  # 60.2 s
+            await up._transcribe(long)
+            sizes = [len(r) - 44 for r in stt.requests]
+            stt.requests.clear()
+            await up._transcribe(b"\x00\x00" * int(16000 * 0.2))  # under the floor: nothing
+            return sizes, len(stt.requests)
+
+        sizes, short = run(scenario())
+        self.assertEqual(sizes, [int(16000 * 60.2) * 2], "the 0.2 s tail was not joined to its chunk")
+        self.assertEqual(short, 0)
+
+
 class CaughtUp(unittest.TestCase):
     """§2.4: "resumed" means caught up. Flow alone must not lift the hold
     while the page still holds audio it has not sent."""
@@ -185,6 +283,7 @@ class Injection(unittest.TestCase):
             await up.on_start({"epoch_ms": 1_789_388_520_000, "media_ms": 0, "tz_offset_min": 0})
             for seq in range(10):
                 await up.on_audio(opus_batch(seq, seq * 100, 0))
+            await up.drain()
             return inp, up
 
         inp, up = run(scenario())
@@ -205,9 +304,11 @@ class Injection(unittest.TestCase):
             # Twenty batches from two minutes behind: late, no frames pushed.
             for seq in range(20):
                 await up.on_audio(opus_batch(seq, seq * 100, 130_000 - seq * 100))
+            await up.drain()
             pushed_during_late = len(inp.audio)
             # A live batch: the span closes first, then the live audio flows.
             await up.on_audio(opus_batch(20, 2000, 0))
+            await up.drain()
             return inp, stt, up, pushed_during_late
 
         inp, stt, up, pushed_during_late = run(scenario())
@@ -232,6 +333,7 @@ class Injection(unittest.TestCase):
                 opus_batch(0, 300_000, 200_000, n_frames=25, dropped=[{"from_ms": 0, "to_ms": 45_000}])
             )
             await up.flush_late()
+            await up.drain()
             return inp
 
         inp = run(scenario())

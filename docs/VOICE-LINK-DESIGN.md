@@ -85,8 +85,14 @@ when the ring overflowed since the last batch. The page sends from the ring,
 paced on `bufferedAmount` (`UPLINK_SCTP_HIGH_BYTES`), so the SCTP queue never
 holds much and what waits, waits in the ring, where the page controls it. A
 stall therefore looks like this from the page: the ring grows, `backlog_ms`
-in each header grows, and nothing is dropped. The channel is SCTP — ordered
-and reliable — and the worker checks `seq` and warns on a gap.
+in each header grows, and nothing is dropped. `backlog_ms` counts the ring
+*and* what the SCTP queue still holds (`wireBacklogMs`): the first cut sent
+the ring alone, and with ~32 kB deliberately queued the last batches of a
+drain reported near zero while seconds of the sentence were in flight, so
+the worker lifted its hold mid-sentence (review of #231). A batch the
+channel refuses goes back into the ring with its dropped spans
+(`UplinkRing.unsend`). The channel is SCTP — ordered and reliable — and the
+worker checks `seq` and warns on a gap.
 
 ### 2.3 Injection on the worker
 
@@ -109,6 +115,28 @@ speed. The page declares the mode in the offer's `request_data`
 a single RTP frame is read — a switch mid-call would deliver the first words
 twice. Whether iOS keeps capture alive with the screen off is unchanged by
 this build, because the track is exactly what it was.
+
+**A tap that attaches and never delivers would be a deaf call**, silently
+— RTP carrying the voice past a parked reader — and the first deploy that
+forgets the worker file at `dist` root is exactly that (review of #231).
+Both ends watch for it. The page declares the channel only after the
+worker script's first message proves it loaded (`UPLINK_READY_MS`), and
+falls back to RTP for the call if no frame reaches the ring within
+`UPLINK_FIRST_FRAME_MS` of `connected`, saying so in the transcript. The
+worker, which can act without a round trip, starts reading RTP after all
+if no batch has arrived `UPLINK_DEAF_SECS` after the transport came up,
+at `error` level, and ignores batches that arrive afterwards rather than
+doubling the voice.
+
+On the worker every delivery — live frames and late turns alike — goes
+through **one ordered queue with one consumer, and nothing is cancelled**:
+pipecat runs each client message's handler as its own task, so `on_audio`
+decides and enqueues before its first `await`; the settle timer only
+enqueues a flush. The first cut's timer *was* the flush after its sleep,
+and a late batch arriving mid-transcription cancelled the turn with the
+audio already moved into locals — minutes of speech gone without a log
+(review of #231). `NothingIsCancelled` in `test_uplink.py` pins both the
+loss and the ordering.
 
 ### 2.4 Turn-taking runs on media time — and mostly already does
 

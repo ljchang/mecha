@@ -248,6 +248,18 @@ export const UPLINK_SCTP_HIGH_BYTES = 32_768;
    nothing under this, one soft cue past it, "caught up" at drain. */
 export const BEHIND_TONE_MS = 3000;
 export const CAUGHT_UP_MS = 500;
+/* What a millisecond of speech costs on the channel: ~4 kB/s of Opus, a
+   third more as base64, plus the JSON around each frame. Used to turn
+   `bufferedAmount` — bytes the SCTP queue still holds — back into time. */
+export const UPLINK_WIRE_BYTES_PER_MS = 6;
+/* How far behind the worker really is: what the ring holds *and* what has
+   been handed to the channel but not delivered. The first cut sent the ring
+   alone, and with the pump keeping ~32 kB queued the last batches of a drain
+   reported near zero while seconds of the sentence were still in flight —
+   so the worker lifted its hold mid-sentence (review of #231). */
+export function wireBacklogMs(pendingMs, bufferedAmount) {
+  return pendingMs + (bufferedAmount || 0) / UPLINK_WIRE_BYTES_PER_MS;
+}
 /* Opus at 48 kHz; the transform reports RTP timestamps at the codec clock. */
 const RTP_CLOCK_HZ = 48000;
 const RTP_TS_WRAP = 2 ** 32;
@@ -311,6 +323,15 @@ export class UplinkRing {
     return { seq: this.seq++, ms: out[0].ms, frames: out, backlogMs: this.pendingMs };
   }
   takeDropped() { const d = this.dropped; this.dropped = []; return d; }
+  /* A batch the channel would not take goes back where it was, its dropped
+     spans with it: the ring's whole job is to not forget, and forgetting on
+     a failed send would be the one place it did (review of #231). */
+  unsend(batch, dropped = []) {
+    this.frames.unshift(...batch.frames);
+    this.pendingMs += batch.frames.reduce((a, f) => a + f.durMs, 0);
+    if (dropped.length) this.dropped = [...dropped, ...this.dropped];
+    this.seq = batch.seq;
+  }
 }
 
 /* The cue policy over a behind-count, kept pure. `prev` is what was last
@@ -612,9 +633,7 @@ export function createVoiceSession(opts = {}) {
     return behindShownS >= 1 ? `${label} · ${behindShownS} s behind` : label;
   }
   function behindMs() {
-    const queued = dc && dc.readyState === "open" ? dc.bufferedAmount : 0;
-    // ~5 kB of Opus per second is the most a voice track sends.
-    return ring.pendingMs + (queued / 5) ;
+    return wireBacklogMs(ring.pendingMs, dc && dc.readyState === "open" ? dc.bufferedAmount : 0);
   }
   function noteBehind() {
     if (ended || uplinkMode !== "channel") return;
@@ -736,7 +755,8 @@ export function createVoiceSession(opts = {}) {
     holdScreen();
     micStream.getTracks().forEach(t => pc.addTrack(t, micStream));
     pc.addTransceiver("audio", { direction: "recvonly" });
-    uplinkMode = attachUplinkTap() ? "channel" : "rtp";
+    uplinkMode = (await attachUplinkTap()) ? "channel" : "rtp";
+    if (!pc) return; // ended while the worker was loading
     ring.restart();
     const speaker = new Audio(); speaker.autoplay = true;
     pc.ontrack = (e) => { speaker.srcObject = e.streams[0]; };
@@ -799,6 +819,7 @@ export function createVoiceSession(opts = {}) {
           linked = true;
           chimeStart();
           startMeter();
+          armFirstFrameWatch();
         }
       } else if (state === "disconnected") {
         if (ended || dropTimer) return;
@@ -859,15 +880,31 @@ export function createVoiceSession(opts = {}) {
      the CSP — then Chrome's older main-thread streams. Returns whether the
      uplink can be buffered at all; a browser with neither keeps the RTP
      path and the #226 behaviour, and says so in the journal via the offer. */
-  function attachUplinkTap() {
+  /* How long the worker script gets to say it loaded (its first message),
+     and how long after `connected` the first frame gets to arrive, before
+     the tap is judged dead and the call falls back to RTP. */
+  const UPLINK_READY_MS = 1500, UPLINK_FIRST_FRAME_MS = 5000;
+  async function attachUplinkTap() {
     const sender = pc.getSenders().find(s => s.track && s.track.kind === "audio");
     if (!sender) return false;
     const onFrame = (m) => { if (m && m.data) { ring.push(m.ts, m.data); pump(); } };
     try {
       if (typeof RTCRtpScriptTransform === "function") {
-        uplinkWorker = new Worker("/voice-uplink-transform.js");
-        uplinkWorker.onmessage = (e) => onFrame(e.data);
-        sender.transform = new RTCRtpScriptTransform(uplinkWorker, {});
+        const w = new Worker("/voice-uplink-transform.js");
+        // Proof of load, not construction: a 404 or a parse error on the
+        // script arrives asynchronously, and a tap that attached but never
+        // delivers is a call nobody hears (review of #231). The script's
+        // first message says it ran; without it, RTP as before.
+        const ready = await new Promise(res => {
+          const t = setTimeout(() => res(false), UPLINK_READY_MS);
+          w.onmessage = (e) => { if (e.data && e.data.ready) { clearTimeout(t); res(true); } };
+          w.onerror = () => { clearTimeout(t); res(false); };
+        });
+        if (!ready || !pc) { try { w.terminate(); } catch { /* gone */ } return false; }
+        uplinkWorker = w;
+        w.onmessage = (e) => onFrame(e.data);
+        w.onerror = () => uplinkFailed("worker error");
+        sender.transform = new RTCRtpScriptTransform(w, {});
         return true;
       }
       if (typeof sender.createEncodedStreams === "function") {
@@ -883,6 +920,27 @@ export function createVoiceSession(opts = {}) {
     } catch { /* fall through to RTP */ }
     return false;
   }
+  /* The tap is not delivering: fall back to RTP for the rest of this call,
+     and say so. The worker's own watchdog (`UPLINK_DEAF_SECS`) starts
+     reading RTP on its side; the two need no message between them. The
+     `link`/`server` pauses come back with the mode. */
+  function uplinkFailed(why) {
+    if (uplinkMode !== "channel") return;
+    uplinkMode = "rtp";
+    clearTimeout(pumpTimer); pumpTimer = 0;
+    if (uplinkWorker) { try { uplinkWorker.terminate(); } catch { /* gone */ } uplinkWorker = null; }
+    behindShownS = 0; behind = { sounded: false };
+    cfg.onTranscript({ who: "bot", text: `voice: the buffered microphone path failed (${why}) — using the direct path for this call`, interim: false });
+    if (!pausedBy.any) cfg.onState(lastState.name, lastState.label);
+  }
+  function armFirstFrameWatch() {
+    if (uplinkMode !== "channel") return;
+    const at = ring.nowMs;
+    setTimeout(() => {
+      if (!pc || ended || uplinkMode !== "channel") return;
+      if (ring.nowMs === at && ring.pendingFrame === null) uplinkFailed("no audio frames from the tap");
+    }, UPLINK_FIRST_FRAME_MS);
+  }
   /* Drain the ring onto the data channel in batches, pacing on the SCTP
      queue (§2.2): what waits, waits in the ring. Each batch carries how far
      behind the ring still is, which is the worker's "caught up" witness. */
@@ -896,9 +954,10 @@ export function createVoiceSession(opts = {}) {
         if (!batch) break;
         const dropped = ring.takeDropped();
         const frames = batch.frames.map(f => [f.durMs, b64(f.data)]);
-        const d = { seq: batch.seq, ms: batch.ms, backlog_ms: Math.round(batch.backlogMs), frames };
+        // The worker's caught-up witness: the ring *and* the queue (§2.4).
+        const d = { seq: batch.seq, ms: batch.ms, backlog_ms: Math.round(wireBacklogMs(batch.backlogMs, dc.bufferedAmount)), frames };
         if (dropped.length) d.dropped = dropped.map(x => ({ from_ms: Math.round(x.fromMs), to_ms: Math.round(x.toMs) }));
-        if (!sendClientMessage("audio", d)) break;
+        if (!sendClientMessage("audio", d)) { ring.unsend(batch, dropped); break; }
       }
     } finally { pumping = false; }
     // Left over because the queue was full: come back when it drains.

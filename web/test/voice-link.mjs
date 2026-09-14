@@ -158,3 +158,29 @@ import { UplinkRing, behindVerdict, BEHIND_TONE_MS, CAUGHT_UP_MS } from '../../s
   assert.ok(BEHIND_TONE_MS > CAUGHT_UP_MS);
   console.log('behind cue: ok');
 }
+
+{
+  // What the worker is told is the ring *and* the queue (review of #231):
+  // with 32 kB queued at ~6 B/ms, an empty ring is still ~5 s behind.
+  const { wireBacklogMs, UPLINK_WIRE_BYTES_PER_MS } = await import('../../scripts/voice/voice-core.js');
+  assert.equal(wireBacklogMs(0, 0), 0);
+  assert.equal(wireBacklogMs(1500, 0), 1500);
+  assert.equal(wireBacklogMs(0, 32768), 32768 / UPLINK_WIRE_BYTES_PER_MS);
+  assert.ok(wireBacklogMs(0, 32768) > 5000, 'a full SCTP queue is seconds, not nothing');
+
+  // A batch the channel refused goes back, dropped spans and sequence with it.
+  const ring = new UplinkRing(100_000);
+  for (let i = 0; i <= 10; i++) ring.push(960 * i, new Uint8Array([i]).buffer);
+  const small = new UplinkRing(60);
+  for (let i = 0; i <= 5; i++) small.push(960 * i, new Uint8Array([i]).buffer); // 100 ms in, 40 dropped
+  const dropped = small.takeDropped();
+  assert.equal(dropped.length, 1);
+  const b = small.takeBatch(100);
+  assert.equal(small.frames.length, 0);
+  small.unsend(b, dropped);
+  assert.equal(small.frames.length, b.frames.length, 'frames back');
+  assert.equal(small.pendingMs, 60, 'pending restored');
+  assert.deepEqual(small.takeDropped(), dropped, 'the dropped record survives a failed send');
+  assert.equal(small.takeBatch(100).seq, b.seq, 'the retry reuses the sequence number');
+  console.log('wire backlog + unsend: ok');
+}
