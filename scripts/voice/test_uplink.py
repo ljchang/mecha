@@ -305,6 +305,28 @@ class Lanes(unittest.TestCase):
         self.assertEqual(lane_for(edge), "late")
         self.assertEqual(lane_for(0), "live")
 
+    def test_speech_from_before_this_connection_is_late_whatever_its_backlog(self):
+        # §2.5's reconnect clause (sixth review of #231): the page marks
+        # where this connection's own capture begins.
+        self.assertEqual(lane_for(0, ms=5_000, live_from_ms=30_000), "late")
+        self.assertEqual(lane_for(0, ms=30_000, live_from_ms=30_000), "live")
+        self.assertEqual(lane_for(0, ms=5_000, live_from_ms=None), "live")
+
+    def test_the_injector_honours_the_pages_mark(self):
+        async def scenario():
+            inp = FakeInput()
+            up = UplinkAudio(inp, LinkWatch(), FakeSTT("before the drop"))
+            await up.on_start({"tz_offset_min": 0, "live_from_ms": 10_000})
+            await up.on_audio(opus_batch(0, 9_000, 0, n_frames=25))  # carried over: late
+            await up.on_audio(opus_batch(1, 10_000, 0))  # this call's own: live
+            await up.drain()
+            return inp, up
+
+        inp, up = run(scenario())
+        self.assertEqual(up.late_turns, 1)
+        self.assertEqual(inp.order[0], "LLMMessagesAppendFrame")
+        self.assertGreater(len(inp.audio), 0)
+
 
 class LatePrefix(unittest.TestCase):
     def test_the_phones_own_clock_and_what_was_lost(self):
@@ -319,7 +341,7 @@ class LatePrefix(unittest.TestCase):
         self.assertIn("about 45 seconds before this were lost", p)
         self.assertTrue(p.endswith("] "))
         # No clock from the page: honest, not invented.
-        self.assertEqual(late_prefix(None, None, 0, 0), "[delivered late — said at earlier while the connection was down] ")
+        self.assertEqual(late_prefix(None, None, 0, 0), "[delivered late — said earlier while the connection was down] ")
 
 
 class Fallback(unittest.TestCase):

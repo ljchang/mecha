@@ -349,6 +349,21 @@ export class UplinkRing {
   }
 }
 
+/* Rings, one per session key, outliving the session object that used
+   them. `Chat.svelte`'s reconnect discards its session and makes a new one
+   (`startVoice` → `createVoiceSession`), which is exactly when §4.2's
+   carried-over ring is needed — a ring that lived on the session object
+   died with the tap-to-reconnect, silently, until the sixth review of
+   #231. Keyed by the chat session so a different conversation gets its
+   own; the page is one document, so this map is per page. */
+const rings = new Map();
+export function ringFor(key, capMs = UPLINK_RING_MS) {
+  const k = key || "";
+  let r = rings.get(k);
+  if (!r) { r = new UplinkRing(capMs); rings.set(k, r); }
+  return r;
+}
+
 /* The cue policy over a behind-count, kept pure. `prev` is what was last
    decided; returns the next state and which sound, if any, to make. A
    "behind" cue is made once per episode, when the count first passes the
@@ -432,7 +447,7 @@ export function createVoiceSession(opts = {}) {
   let pc = null, dc = null, micStream = null, levelTimer = 0, ended = false;
   /* The uplink ring outlives a call on purpose (§4.2): what was said while
      the link was down is delivered at the head of the next connection. */
-  const ring = new UplinkRing();
+  const ring = ringFor(cfg.sessionKey);
   let uplinkWorker = null, uplinkMode = "rtp", pumpTimer = 0, pumping = false, lastFrameAt = 0;
   /* The channel's proof of life for the worker's deafness watch: sent
      every `UPLINK_HEARTBEAT_MS` while the channel is in use, so a channel
@@ -797,7 +812,11 @@ export function createVoiceSession(opts = {}) {
         // The clock the worker converts media time with, sent once per
         // connection; then whatever the ring already holds — the previous
         // call's tail, if the link died — goes first, in order (§4.2).
-        sendClientMessage("audio-start", { tz_offset_min: -new Date().getTimezoneOffset() });
+        // `live_from_ms`: this connection's own capture begins here on the
+        // media clock. Everything the ring holds from before it was said
+        // during a previous call, and is late whatever its backlog (§2.5's
+        // reconnect clause; sixth review of #231).
+        sendClientMessage("audio-start", { tz_offset_min: -new Date().getTimezoneOffset(), live_from_ms: Math.round(ring.nowMs) });
         clearInterval(heartbeatTimer);
         // Kept up after a fallback too: if the page's `uplink` notice is
         // lost, heartbeats without audio are what let the worker's own

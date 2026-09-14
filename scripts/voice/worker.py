@@ -1440,6 +1440,11 @@ class UplinkTransport(SmallWebRTCTransport):
     def input(self) -> SmallWebRTCInputTransport:
         if not self._input:
             self._input = UplinkInput(self._client, self._params, name=self._input_name)
+        # A pipecat that ever built `_input` eagerly would hand back the stock
+        # reader here while `run_bot` still built the injector: RTP read and
+        # batches pushed, one voice at twice speed. Refuse instead.
+        if not isinstance(self._input, UplinkInput):
+            raise RuntimeError("UplinkTransport: pipecat constructed the input before `input()`; re-derive")
         return self._input
 
 
@@ -1499,9 +1504,15 @@ def late_segments(pcm: bytes, rate: int = 16000) -> list[bytes]:
     return [(seg * 32768.0).astype(np.int16).tobytes() for seg in out]
 
 
-def lane_for(backlog_ms: int) -> str:
-    """§2.5: which lane a batch takes, from how far behind the page says it
-    is. A pure function so the boundary is testable on its own."""
+def lane_for(backlog_ms: int, ms: float | None = None, live_from_ms: float | None = None) -> str:
+    """§2.5: which lane a batch takes — from how far behind the page says
+    it is, or from being captured before this connection began
+    (`live_from_ms`, the page's own mark in `audio-start`): speech carried
+    over from a previous call is late whatever its backlog, because it is
+    arriving into a pipeline that never heard the call it belongs to. A
+    pure function so both boundaries are testable on their own."""
+    if ms is not None and live_from_ms is not None and ms < live_from_ms:
+        return "late"
     return "late" if backlog_ms >= BACKLOG_TALK_SECS * 1000 else "live"
 
 
@@ -1524,8 +1535,12 @@ def late_prefix(from_wall_ms: int | None, to_wall_ms: int | None, tz_offset_min:
     a, b = clock(from_wall_ms), clock(to_wall_ms)
     # Unmistakably the harness's note, not the owner's words: the first
     # live run had the model read "(said 15:40–15:40 …)" as a time the
-    # owner was asking about. One clock when both ends share a minute.
-    when = f"at {a}" if a == b else f"between {a} and {b}"
+    # owner was asking about. One clock when both ends share a minute;
+    # no clock at all when the page gave none.
+    if from_wall_ms is None and to_wall_ms is None:
+        when = "earlier"
+    else:
+        when = f"at {a}" if a == b else f"between {a} and {b}"
     note = f"delivered late — said {when} while the connection was down"
     if dropped_ms >= 1000:
         lost = round(dropped_ms / 1000)
@@ -1547,6 +1562,7 @@ class UplinkAudio:
         self._decoder = av.CodecContext.create("opus", "r")
         self._resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
         self._tz_offset_min = 0
+        self._live_from_ms: float | None = None
         self._expect_seq: int | None = None
         # The late span being assembled: PCM plus where it starts and ends,
         # on the media clock and on the page's wall clock.
@@ -1579,8 +1595,10 @@ class UplinkAudio:
         self.late_turns = 0
 
     async def on_start(self, d: dict):
-        """`audio-start`: the page's zone, once per connection."""
+        """`audio-start`: the page's zone and where its live capture begins,
+        once per connection."""
         self._tz_offset_min = int(d.get("tz_offset_min") or 0)
+        self._live_from_ms = float(d["live_from_ms"]) if d.get("live_from_ms") is not None else None
         self._expect_seq = None
 
     def _decode(self, frames) -> bytes:
@@ -1678,7 +1696,7 @@ class UplinkAudio:
         self._page_backlog_ms = backlog_ms
         pcm = self._decode(frames)
         self._ensure_consumer()
-        if lane_for(backlog_ms) == "late":
+        if lane_for(backlog_ms, start_ms, self._live_from_ms) == "late":
             self._link.note_uplink(_time.monotonic(), backlog_ms + self._queued_ms)
             if self._late_from is None:
                 self._late_from = start_ms
@@ -1753,8 +1771,11 @@ class UplinkAudio:
         )
         wall_from, wall_to = self._late_wall_from, self._late_wall_to
         self._late_pcm = bytearray()
-        self._late_from, self._late_dropped_ms = None, 0.0
+        self._late_from, self._late_to, self._late_dropped_ms = None, 0.0, 0.0
         self._late_wall_from = self._late_wall_to = None
+        # `_rest` is deliberately not reset: it is `push_pcm`'s carry, live
+        # audio's business, and a late flush between two live batches must
+        # not drop the frame tail between them.
         text = await self._transcribe(pcm)
         if not text:
             logger.info(f"uplink: late span {from_ms:.0f}–{to_ms:.0f} ms held no speech")

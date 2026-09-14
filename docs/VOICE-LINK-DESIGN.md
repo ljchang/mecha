@@ -306,9 +306,14 @@ three things happen in order as an outage lengthens:
    continues into the ring.
 2. A `disconnected` ICE state opens the existing 15 s grace
    (`DROP_GRACE_MS`) and ends the call if it never recovers. **The ring
-   survives the end of the call**, in page memory, and is delivered at the
-   head of the *next* connection in the same page session, on the late lane
-   (§2.5), with its capture times. No ICE restart is attempted — pipecat's
+   survives the end of the call** — and the session object: `ringFor(key)`
+   keeps one per chat key at module scope, because the app's reconnect
+   discards its session and makes a new one, which is exactly when the
+   ring is needed (sixth review of #231) — and is delivered at the head of
+   the *next* connection, on the late lane (§2.5): `audio-start` carries
+   `live_from_ms`, where this connection's own capture begins on the media
+   clock, and everything before it is late whatever its backlog, with its
+   capture times. No ICE restart is attempted — pipecat's
    `restart_pc` fires the server-side `disconnected` the worker cancels the
    pipeline on, as `voice-core.js` records — so the reconnect is a new call
    whose first input is what was said during the old one.
@@ -358,6 +363,17 @@ the caller's choosing, against any worker (`--offer`). First run,
 2026-09-14, against the branch's worker on a second port: a 6 s stall two
 seconds into a seven-second utterance, every word delivered, one turn, the
 model answering both requests in it.
+
+`--reconnect-at S --reconnect-gap D` is the cellular drop itself: the first
+peer connection is closed S seconds in, capture continues for D seconds
+with no connection at all, and a second connection carries the ring
+across. Measured 2026-09-14 against the branch's worker: eight seconds
+captured while disconnected arrived on the new pipeline as one late turn —
+*"[delivered late — said between 16:11 and 16:12 while the connection was
+down] …"* — the model running on it within a millisecond, and the live
+tail followed as three live segments with both requests answered. The
+late lane on its own (`--stall-secs 125`) was measured the same day, and
+found three things the fakes could not (§2.3, §2.5).
 
 The acceptance shape is the 2026-09-14 morning call. On a stall-heavy call:
 
