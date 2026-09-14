@@ -4362,8 +4362,10 @@ is true now:
   (`mecha-mail auth personal --provider google`, with `--paste` from an ssh
   session): the grant is seven days from 2026-09-08T13:01 UTC and refreshing
   does not extend it. Once it lapses every scheduled run on that account
-  fails as if the token were revoked. `mecha doctor` carries the warning a
-  day ahead; it will again on the 21st.
+  fails as if the token were revoked. `mecha doctor` warns from two days
+  before expiry (`GRANT_WARN_WITHIN_DAYS = 2`, so it has been warning since
+  the 13th); after a re-auth on the 14th the next grant ends on the 21st and
+  the warning returns on the 19th.
 
 - **Rule on the `ask_user` decline wording** (measured 2026-08-30,
   deliberately unadopted — the source is restored to control). A/B, 5 runs x
