@@ -2360,6 +2360,49 @@ mod tests {
         );
     }
 
+    /// Both spoken doors hand the core the spoken review hint. The core test
+    /// (`a_surface_with_a_review_hint_is_not_sent_to_the_cli`) constructs
+    /// the context by hand and would stay green with both call sites
+    /// deleted — the gap the two source-reading tests above exist for, on
+    /// the third mechanism. Found on review.
+    #[test]
+    fn both_spoken_doors_hand_the_core_the_spoken_review_hint() {
+        let hint = ["SPOKEN_", "REVIEW_HINT"].concat();
+        let field = ["review_", "hint:"].concat();
+
+        // The facade slot: `completion` sets it once, unconditionally —
+        // every turn through that door is spoken.
+        let src = include_str!("mod.rs");
+        let i = src
+            .find("\nasync fn completion(")
+            .expect("the request handler is still here");
+        let body = &src[i + 1..][..src[i + 1..]
+            .find("\n}\n")
+            .expect("`completion` still has a closing brace at column zero")];
+        assert!(
+            body.contains(&field) && body.contains(&hint),
+            "the facade slot no longer hands the core the spoken review hint"
+        );
+
+        // The hosted door: `begin_turn` sets it guarded by `opts.spoken`,
+        // because a typed turn on the same session is reviewed on the page.
+        let chat = include_str!("../commands/serve/chat.rs");
+        let i = chat
+            .find("\nfn begin_turn(")
+            .expect("the shared turn constructor is still here");
+        let body = &chat[i + 1..][..chat[i + 1..]
+            .find("\n}\n")
+            .expect("`begin_turn` still has a closing brace at column zero")];
+        let at = body
+            .find(&field)
+            .expect("`begin_turn` no longer sets the review hint");
+        let setting = &body[at..at + 200.min(body.len() - at)];
+        assert!(
+            setting.contains(".spoken") && setting.contains(&hint),
+            "the hosted door's hint is not guarded by `opts.spoken`: {setting:?}"
+        );
+    }
+
     #[test]
     fn the_voice_block_carries_no_markdown() {
         // D10: the block teaches ear-shaped output; it had better practice
