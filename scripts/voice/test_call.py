@@ -37,7 +37,7 @@ def opus_packets(wav: str):
     return out
 
 
-async def uplink(dc, packets, stall_at: float, stall_secs: float):
+async def uplink(dc, packets, stall_at: float, stall_secs: float, deaf: bool = False):
     """Speak the page's uplink protocol (docs/VOICE-LINK-DESIGN.md §2.2):
     `audio-start`, then 100 ms batches paced in real time — except across a
     stall, during which capture continues (the clock advances, nothing is
@@ -49,8 +49,14 @@ async def uplink(dc, packets, stall_at: float, stall_secs: float):
     def send(t, d):
         dc.send(json.dumps({"label": "rtvi-ai", "type": "client-message", "id": "test-call", "data": {"t": t, "d": d}}))
 
-    send("audio-start", {"epoch_ms": int(time.time() * 1000), "media_ms": 0, "tz_offset_min": 0})
+    send("audio-start", {"tz_offset_min": 0})
+    if deaf:
+        # A page whose tap never delivers: the channel declared, no batch
+        # ever sent. The worker's watchdog must read RTP after all.
+        print("uplink: declared and deaf — sending no batches", flush=True)
+        return
     t0 = time.monotonic()
+    wall0 = int(time.time() * 1000)
     seq, i, stalled_until = 0, 0, None
     while i < len(packets):
         captured_ms = (time.monotonic() - t0) * 1000
@@ -66,7 +72,7 @@ async def uplink(dc, packets, stall_at: float, stall_secs: float):
             continue
         batch = packets[i : i + 5]
         backlog_ms = max(0, int(captured_ms - (sent_ms + len(batch) * 20)))
-        send("audio", {"seq": seq, "ms": sent_ms, "backlog_ms": backlog_ms,
+        send("audio", {"seq": seq, "ms": sent_ms, "wall_ms": wall0 + sent_ms, "backlog_ms": backlog_ms,
                        "frames": [[20, base64.b64encode(p).decode()] for p in batch]})
         seq += 1
         i += len(batch)
@@ -74,7 +80,7 @@ async def uplink(dc, packets, stall_at: float, stall_secs: float):
 
 
 async def call(wav: str, offer_url: str, seconds: float, use_uplink: bool = False,
-               stall_at: float | None = None, stall_secs: float = 6.0) -> int:
+               stall_at: float | None = None, stall_secs: float = 6.0, deaf: bool = False) -> int:
     pc = RTCPeerConnection()
     player = MediaPlayer(wav)
     pc.addTrack(player.audio)
@@ -88,7 +94,7 @@ async def call(wav: str, offer_url: str, seconds: float, use_uplink: bool = Fals
     def _open():
         dc.send(json.dumps({"label": "rtvi-ai", "type": "client-ready", "id": "test-call"}))
         if use_uplink:
-            asyncio.ensure_future(uplink(dc, packets, stall_at, stall_secs))
+            asyncio.ensure_future(uplink(dc, packets, stall_at, stall_secs, deaf))
 
     @dc.on("message")
     def _msg(m):
@@ -135,5 +141,6 @@ if __name__ == "__main__":
     ap.add_argument("--uplink", action="store_true", help="speak the buffered-uplink protocol")
     ap.add_argument("--stall-at", type=float, default=None, help="seconds into the wav to stall the uplink")
     ap.add_argument("--stall-secs", type=float, default=6.0)
+    ap.add_argument("--deaf", action="store_true", help="declare the channel, then send no batches")
     a = ap.parse_args()
-    sys.exit(asyncio.run(call(a.wav, a.offer, a.seconds, a.uplink, a.stall_at, a.stall_secs)))
+    sys.exit(asyncio.run(call(a.wav, a.offer, a.seconds, a.uplink, a.stall_at, a.stall_secs, a.deaf)))

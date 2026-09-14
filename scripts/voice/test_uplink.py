@@ -16,9 +16,11 @@ from worker import (  # noqa: E402
     LINK_CAUGHT_UP_MS,
     LINK_RESUME_SETTLE_SECS,
     LINK_STALL_SECS,
+    UPLINK_DEAF_SECS,
     LinkWatch,
     UplinkAudio,
     _wav16,
+    deaf_verdict,
     lane_for,
     late_prefix,
 )
@@ -32,7 +34,7 @@ async def _record(events, state, reason):
     events.append((state, reason))
 
 
-def opus_batch(seq, ms, backlog_ms, n_frames=5, dropped=None):
+def opus_batch(seq, ms, backlog_ms, n_frames=5, dropped=None, wall_ms=None):
     """`n_frames` 20 ms Opus packets of a 440 Hz tone, as the page sends them."""
     import av
     import numpy as np
@@ -49,14 +51,23 @@ def opus_batch(seq, ms, backlog_ms, n_frames=5, dropped=None):
     packets += enc.encode(None)
     frames = [[20, base64.b64encode(bytes(p)).decode()] for p in packets[:n_frames]]
     d = {"seq": seq, "ms": ms, "backlog_ms": backlog_ms, "frames": frames}
+    d["wall_ms"] = WALL0 + ms if wall_ms is None else wall_ms
     if dropped:
         d["dropped"] = dropped
     return d
 
 
+# 2026-09-14 12:22:00 UTC, the page's wall clock at media zero.
+WALL0 = 1_789_388_520_000
+
+
 class FakeInput:
     def __init__(self):
         self.audio, self.frames, self.order = [], [], []
+        self.batches, self.rtp_fallback = 0, False
+
+    def note_batch(self):
+        self.batches += 1
 
     async def push_audio_frame(self, frame):
         self.audio.append(frame)
@@ -140,7 +151,7 @@ class NothingIsCancelled(unittest.TestCase):
         async def scenario():
             inp, stt = FakeInput(), SlowSTT("first span")
             up = UplinkAudio(inp, LinkWatch(), stt)
-            await up.on_start({"epoch_ms": 1_789_388_520_000, "media_ms": 0, "tz_offset_min": 0})
+            await up.on_start({"tz_offset_min": 0})
             await up.on_audio(opus_batch(0, 0, 130_000, n_frames=25))
             # The span closes as production closes it: a flush enqueued
             # (here directly, rather than by the settle timer's sleep).
@@ -161,7 +172,7 @@ class NothingIsCancelled(unittest.TestCase):
         async def scenario():
             inp, stt = FakeInput(), SlowSTT("what I said before")
             up = UplinkAudio(inp, LinkWatch(), stt)
-            await up.on_start({"epoch_ms": 1_789_388_520_000, "media_ms": 0, "tz_offset_min": 0})
+            await up.on_start({"tz_offset_min": 0})
             await up.on_audio(opus_batch(0, 0, 130_000, n_frames=25))
             await up.on_audio(opus_batch(1, 500, 0))  # live: enqueues flush, then audio
             await asyncio.wait_for(stt.started.wait(), 2.0)
@@ -262,14 +273,98 @@ class Lanes(unittest.TestCase):
 class LatePrefix(unittest.TestCase):
     def test_the_phones_own_clock_and_what_was_lost(self):
         # 2026-09-14 12:22:00 UTC, on a phone at UTC-4: 08:22 local.
-        epoch = 1_789_388_520_000
-        p = late_prefix(0, 60_000, epoch, 0, -240, 0)
+        p = late_prefix(WALL0, WALL0 + 60_000, -240, 0)
         self.assertEqual(p, "(said 08:22–08:23, delivered late) ")
-        p = late_prefix(0, 60_000, epoch, 0, -240, 45_000)
+        p = late_prefix(WALL0, WALL0 + 60_000, -240, 45_000)
         self.assertIn("about 45 seconds before this were lost", p)
         self.assertTrue(p.endswith(") "))
         # No clock from the page: honest, not invented.
-        self.assertEqual(late_prefix(0, 1000, None, 0, 0, 0), "(said earlier–earlier, delivered late) ")
+        self.assertEqual(late_prefix(None, None, 0, 0), "(said earlier–earlier, delivered late) ")
+
+
+class Fallback(unittest.TestCase):
+    """The watch that rescues a deaf call must not brick a live one
+    (review of #231, three findings on one path)."""
+
+    def test_the_witness_is_rtp_arriving_while_no_batch_does(self):
+        # A stalled link stops both: not deaf.
+        self.assertFalse(deaf_verdict(False, UPLINK_DEAF_SECS + 5))
+        # RTP flowing, batches recent: not deaf.
+        self.assertFalse(deaf_verdict(True, 1.0))
+        # RTP flowing, nothing on the channel for the window: deaf.
+        self.assertTrue(deaf_verdict(True, UPLINK_DEAF_SECS))
+
+    def test_a_late_lane_backlog_is_a_batch_for_the_witness(self):
+        async def scenario():
+            inp = FakeInput()
+            up = UplinkAudio(inp, LinkWatch(), FakeSTT())
+            await up.on_start({"tz_offset_min": 0})
+            for seq in range(5):
+                await up.on_audio(opus_batch(seq, seq * 100, 200_000))
+            return inp.batches, len(inp.audio)
+
+        batches, pushed = run(scenario())
+        self.assertEqual(batches, 5, "late batches must count as arrivals or a reconnect trips the fallback")
+        self.assertEqual(pushed, 0)
+
+    def test_after_the_fallback_flow_alone_resumes_and_batches_are_ignored(self):
+        async def scenario():
+            events = []
+            watch = LinkWatch(on_change=lambda s, r, a: _record(events, s, r))
+
+            async def push(frame, direction=None):
+                pass
+
+            watch.push_frame = push
+            inp = FakeInput()
+            up = UplinkAudio(inp, watch, FakeSTT())
+            # A backlog was reported, then the link went quiet: held.
+            watch.note_uplink(0.0, 200_000)
+            await watch._judge(LINK_STALL_SECS + 0.05)
+            # The fallback engages: the sticky backlog must go with it.
+            inp.rtp_fallback = True
+            watch.forget_backlog()
+            # RTP audio flows; nothing else ever updates the backlog.
+            t = 3.0
+            while t < 3.0 + LINK_RESUME_SETTLE_SECS + 0.5:
+                watch._note_audio(t)
+                await watch._judge(t)
+                t += 0.1
+            # Batches that still arrive are counted for the witness and ignored.
+            before = watch._backlog_ms
+            await up.on_audio(opus_batch(0, 0, 150_000))
+            await up.drain()
+            return events, inp.batches, len(inp.audio), before, watch._backlog_ms
+
+        events, batches, pushed, before, after = run(scenario())
+        self.assertEqual(events, [("paused", "audio"), ("ok", "audio")], "the fallback left the turn held")
+        self.assertEqual(batches, 1)
+        self.assertEqual(pushed, 0, "a batch after the fallback doubled the voice")
+        self.assertIsNone(before)
+        self.assertIsNone(after, "an ignored batch must not resurrect the backlog")
+
+
+class AcrossAGap(unittest.TestCase):
+    """The ring survives the end of a call; the prefix must place what it
+    held at the time it was said, not at the reconnect."""
+
+    def test_the_prefix_uses_the_frames_own_wall_clock(self):
+        async def scenario():
+            inp, stt = FakeInput(), FakeSTT("what I said before the gap")
+            up = UplinkAudio(inp, LinkWatch(), stt)
+            await up.on_start({"tz_offset_min": -240})
+            # Captured at 08:19 local, delivered at a reconnect three
+            # minutes later with the media clock still near zero.
+            said_at = WALL0 - 180_000
+            await up.on_audio(opus_batch(0, 0, 200_000, n_frames=25, wall_ms=said_at))
+            await up.on_audio(opus_batch(1, 500, 199_500, n_frames=25, wall_ms=said_at + 500))
+            await up.flush_late()
+            await up.drain()
+            return inp
+
+        inp = run(scenario())
+        self.assertEqual(len(inp.frames), 1)
+        self.assertTrue(inp.frames[0].text.startswith("(said 08:19–08:19, delivered late) "), inp.frames[0].text)
 
 
 class Injection(unittest.TestCase):
@@ -280,7 +375,7 @@ class Injection(unittest.TestCase):
             inp, stt = FakeInput(), FakeSTT()
             link = LinkWatch()
             up = UplinkAudio(inp, link, stt)
-            await up.on_start({"epoch_ms": 1_789_388_520_000, "media_ms": 0, "tz_offset_min": 0})
+            await up.on_start({"tz_offset_min": 0})
             for seq in range(10):
                 await up.on_audio(opus_batch(seq, seq * 100, 0))
             await up.drain()
@@ -300,7 +395,7 @@ class Injection(unittest.TestCase):
             inp, stt = FakeInput(), FakeSTT("call the dentist tomorrow")
             link = LinkWatch()
             up = UplinkAudio(inp, link, stt)
-            await up.on_start({"epoch_ms": 1_789_388_520_000, "media_ms": 0, "tz_offset_min": -240})
+            await up.on_start({"tz_offset_min": -240})
             # Twenty batches from two minutes behind: late, no frames pushed.
             for seq in range(20):
                 await up.on_audio(opus_batch(seq, seq * 100, 130_000 - seq * 100))
@@ -328,7 +423,7 @@ class Injection(unittest.TestCase):
         async def scenario():
             inp, stt = FakeInput(), FakeSTT("and the second thing")
             up = UplinkAudio(inp, LinkWatch(), stt)
-            await up.on_start({"epoch_ms": 1_789_388_520_000, "media_ms": 0, "tz_offset_min": 0})
+            await up.on_start({"tz_offset_min": 0})
             await up.on_audio(
                 opus_batch(0, 300_000, 200_000, n_frames=25, dropped=[{"from_ms": 0, "to_ms": 45_000}])
             )

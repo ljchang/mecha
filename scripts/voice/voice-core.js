@@ -294,13 +294,16 @@ export class UplinkRing {
       this._flushPending(durMs);
     }
     this.lastTs = ts;
-    this.pendingFrame = { data };
+    // The wall clock at capture, on the frame itself: the media clock does
+    // not run while nothing is captured, so it cannot place speech from
+    // before an outage — this can (review of #231).
+    this.pendingFrame = { data, wallMs: Date.now() };
   }
   _flushPending(durMs) {
     const f = this.pendingFrame;
     if (!f) return;
     this.pendingFrame = null;
-    this.frames.push({ ms: this.nowMs, durMs, data: f.data });
+    this.frames.push({ ms: this.nowMs, durMs, data: f.data, wallMs: f.wallMs });
     this.nowMs += durMs;
     this.pendingMs += durMs;
     while (this.pendingMs > this.capMs && this.frames.length) {
@@ -320,7 +323,7 @@ export class UplinkRing {
       const f = this.frames.shift();
       out.push(f); ms += f.durMs; this.pendingMs -= f.durMs;
     }
-    return { seq: this.seq++, ms: out[0].ms, frames: out, backlogMs: this.pendingMs };
+    return { seq: this.seq++, ms: out[0].ms, wallMs: out[0].wallMs, frames: out, backlogMs: this.pendingMs };
   }
   takeDropped() { const d = this.dropped; this.dropped = []; return d; }
   /* A batch the channel would not take goes back where it was, its dropped
@@ -418,7 +421,7 @@ export function createVoiceSession(opts = {}) {
   /* The uplink ring outlives a call on purpose (§4.2): what was said while
      the link was down is delivered at the head of the next connection. */
   const ring = new UplinkRing();
-  let uplinkWorker = null, uplinkMode = "rtp", pumpTimer = 0, pumping = false;
+  let uplinkWorker = null, uplinkMode = "rtp", pumpTimer = 0, pumping = false, lastFrameAt = 0;
   let behind = { sounded: false }, behindShownS = 0;
   /* Is the bot audible right now? Held so a VAD edge caused by our own
      speaker cannot be rendered as the owner talking - see `onRtvi`. */
@@ -499,6 +502,7 @@ export function createVoiceSession(opts = {}) {
         if (v.stalled === true) pause("link");
         else if (v.stalled === false) resume("link");
         if (pausedBy.reasons.has("server") && serverPauseExpired(link, serverPausedAt, now)) resume("server");
+        watchUplinkFrames(now);
         noteBehind();
       }
     }, LEVEL_POLL_MS);
@@ -700,6 +704,9 @@ export function createVoiceSession(opts = {}) {
         else if (msg.data?.t === "link") {
           if (msg.data.state === "paused") pause("server"); else resume("server");
         }
+        // The worker's side of the watch: RTP was arriving and no batch
+        // was, so it is reading RTP now. Follow it — the pauses come back.
+        else if (msg.data?.t === "uplink" && msg.data.state === "rtp") uplinkFailed(msg.data.why || "the worker fell back", true);
         // The worker announces a teardown it is about to perform. Held for
         // `end()` rather than acted on: the close arrives a moment later by
         // itself, and what was missing was never the ending - it was any
@@ -768,10 +775,7 @@ export function createVoiceSession(opts = {}) {
         // The clock the worker converts media time with, sent once per
         // connection; then whatever the ring already holds — the previous
         // call's tail, if the link died — goes first, in order (§4.2).
-        sendClientMessage("audio-start", {
-          epoch_ms: Date.now(), media_ms: ring.nowMs,
-          tz_offset_min: -new Date().getTimezoneOffset(),
-        });
+        sendClientMessage("audio-start", { tz_offset_min: -new Date().getTimezoneOffset() });
         pump();
       }
       // Ask immediately: the picker must be populated from the server's
@@ -819,7 +823,7 @@ export function createVoiceSession(opts = {}) {
           linked = true;
           chimeStart();
           startMeter();
-          armFirstFrameWatch();
+          lastFrameAt = performance.now();
         }
       } else if (state === "disconnected") {
         if (ended || dropTimer) return;
@@ -887,7 +891,7 @@ export function createVoiceSession(opts = {}) {
   async function attachUplinkTap() {
     const sender = pc.getSenders().find(s => s.track && s.track.kind === "audio");
     if (!sender) return false;
-    const onFrame = (m) => { if (m && m.data) { ring.push(m.ts, m.data); pump(); } };
+    const onFrame = (m) => { if (m && m.data) { lastFrameAt = performance.now(); ring.push(m.ts, m.data); pump(); } };
     try {
       if (typeof RTCRtpScriptTransform === "function") {
         const w = new Worker("/voice-uplink-transform.js");
@@ -924,22 +928,27 @@ export function createVoiceSession(opts = {}) {
      and say so. The worker's own watchdog (`UPLINK_DEAF_SECS`) starts
      reading RTP on its side; the two need no message between them. The
      `link`/`server` pauses come back with the mode. */
-  function uplinkFailed(why) {
+  function uplinkFailed(why, fromWorker = false) {
     if (uplinkMode !== "channel") return;
     uplinkMode = "rtp";
     clearTimeout(pumpTimer); pumpTimer = 0;
     if (uplinkWorker) { try { uplinkWorker.terminate(); } catch { /* gone */ } uplinkWorker = null; }
     behindShownS = 0; behind = { sounded: false };
+    // Each end tells the other; the worker's reader stays parked otherwise.
+    if (!fromWorker) sendClientMessage("uplink", { state: "rtp", why });
     cfg.onTranscript({ who: "bot", text: `voice: the buffered microphone path failed (${why}) — using the direct path for this call`, interim: false });
     if (!pausedBy.any) cfg.onState(lastState.name, lastState.label);
   }
-  function armFirstFrameWatch() {
-    if (uplinkMode !== "channel") return;
-    const at = ring.nowMs;
-    setTimeout(() => {
-      if (!pc || ended || uplinkMode !== "channel") return;
-      if (ring.nowMs === at && ring.pendingFrame === null) uplinkFailed("no audio frames from the tap");
-    }, UPLINK_FIRST_FRAME_MS);
+  /* Standing, not one-shot (review of #231): a tap that dies mid-call is
+     as deaf as one that never started. Frames stopping while the mic track
+     is live and unmuted is the witness — a link stall does not stop them,
+     capture is local. Read on the meter tick. */
+  function micLive() {
+    return !!micStream && micStream.getAudioTracks().some(t => t.readyState === "live" && t.enabled && !t.muted);
+  }
+  function watchUplinkFrames(now) {
+    if (uplinkMode !== "channel" || !linked || !micLive()) return;
+    if (now - lastFrameAt > UPLINK_FIRST_FRAME_MS) uplinkFailed("no audio frames from the tap");
   }
   /* Drain the ring onto the data channel in batches, pacing on the SCTP
      queue (§2.2): what waits, waits in the ring. Each batch carries how far
@@ -955,7 +964,7 @@ export function createVoiceSession(opts = {}) {
         const dropped = ring.takeDropped();
         const frames = batch.frames.map(f => [f.durMs, b64(f.data)]);
         // The worker's caught-up witness: the ring *and* the queue (§2.4).
-        const d = { seq: batch.seq, ms: batch.ms, backlog_ms: Math.round(wireBacklogMs(batch.backlogMs, dc.bufferedAmount)), frames };
+        const d = { seq: batch.seq, ms: batch.ms, wall_ms: batch.wallMs, backlog_ms: Math.round(wireBacklogMs(batch.backlogMs, dc.bufferedAmount)), frames };
         if (dropped.length) d.dropped = dropped.map(x => ({ from_ms: Math.round(x.fromMs), to_ms: Math.round(x.toMs) }));
         if (!sendClientMessage("audio", d)) { ring.unsend(batch, dropped); break; }
       }
