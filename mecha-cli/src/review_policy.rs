@@ -283,6 +283,15 @@ const READ_PHRASES: [&str; 9] = [
 /// model. `but` is the word that must never be here.
 const CONNECTIVES: [&str; 5] = ["and", "then", "now", "please", "just"];
 
+/// The connectives that may not *end* an answer. A dangling "and" is the
+/// strongest available sign that the utterance was cut short — a VAD
+/// endpoint on the pause in *"Yes, and—"* — and an unfinished sentence is
+/// not consent; under the old equality rule every such fragment was a
+/// non-answer, and a tiling that ended on one made it a release. Found on
+/// review. `then`, `now` and `please` end sentences in ordinary speech
+/// ("send it now"), so they may terminate.
+const JOINERS: [&str; 2] = ["and", "just"];
+
 /// One spoken answer, matched against the whole utterance.
 ///
 /// **Whole-utterance, never substring, and that is the whole safety
@@ -317,6 +326,8 @@ pub fn parse_answer(utterance: &str) -> SpokenAnswer {
 const SEND: u8 = 1;
 const LATER: u8 = 2;
 const READ: u8 = 4;
+/// A tiling state whose last tile was a joiner; cleared by the next phrase.
+const DANGLING: u8 = 8;
 
 fn lexicon() -> impl Iterator<Item = (&'static str, u8)> {
     SEND_PHRASES
@@ -337,12 +348,14 @@ fn lexicon() -> impl Iterator<Item = (&'static str, u8)> {
 /// a listed deferral was unreachable — found on review. "yes later" has
 /// only the mixed tiling and stays a non-answer. At least one lexicon
 /// phrase must have been used: connectives alone ("and then now") answer
-/// nothing.
+/// nothing. And a tiling that ends on a [`JOINERS`] word is discarded:
+/// "yes and" is a sentence cut short, not a yes.
 fn segment(phrase: &str) -> SpokenAnswer {
     let words: Vec<&str> = phrase.split(' ').collect();
     let n = words.len();
-    // `reach[i]` is every kind-set some tiling of `words[..i]` produced;
-    // `None` means no tiling reaches `i` at all.
+    // `reach[i]` is every state some tiling of `words[..i]` produced — the
+    // kinds seen, plus `DANGLING` when the last tile was a joiner. Empty
+    // means no tiling reaches `i` at all.
     let mut reach: Vec<Vec<u8>> = vec![Vec::new(); n + 1];
     reach[0].push(0);
     for i in 0..n {
@@ -351,15 +364,20 @@ fn segment(phrase: &str) -> SpokenAnswer {
         }
         let from = reach[i].clone();
         if CONNECTIVES.contains(&words[i]) {
-            for kinds in &from {
-                push_unique(&mut reach[i + 1], *kinds);
+            let dangling = if JOINERS.contains(&words[i]) {
+                DANGLING
+            } else {
+                0
+            };
+            for state in &from {
+                push_unique(&mut reach[i + 1], (state & !DANGLING) | dangling);
             }
         }
         for (entry, kind) in lexicon() {
             let len = entry.split(' ').count();
             if i + len <= n && words[i..i + len].join(" ") == entry {
-                for kinds in &from {
-                    push_unique(&mut reach[i + len], kinds | kind);
+                for state in &from {
+                    push_unique(&mut reach[i + len], (state & !DANGLING) | kind);
                 }
             }
         }
@@ -600,6 +618,33 @@ mod tests {
                     "just {entry:?}"
                 );
             }
+        }
+    }
+
+    /// A sentence cut short at a joiner is not consent: the VAD endpoints on
+    /// the pause in "Yes, and—" and the fragment is a span of nothing, so
+    /// only the parser can refuse it. Found on review. Terminal connectives
+    /// still end an answer, because they end sentences in speech.
+    #[test]
+    fn an_answer_cut_short_at_a_joiner_is_no_answer() {
+        for said in [
+            "yes and",
+            "Okay, and then",
+            "sure and",
+            "yeah just",
+            "no and",
+            "later and",
+        ] {
+            assert_eq!(parse_answer(said), SpokenAnswer::NotAnAnswer, "{said:?}");
+        }
+        for said in [
+            "send it now",
+            "yes then",
+            "yes please",
+            "and yes",
+            "just send it",
+        ] {
+            assert_eq!(parse_answer(said), SpokenAnswer::Send, "{said:?}");
         }
     }
 

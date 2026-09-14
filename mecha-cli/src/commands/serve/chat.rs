@@ -1622,11 +1622,16 @@ fn begin_turn(
         // must be told so rather than told about a command line — the
         // 2026-09-13 call, where it repeated the default sentence to a
         // listener four times.
-        // Only where the question can actually be composed: with no
-        // baseline (`outbox_baseline` is `None` when the store could not be
-        // read) nothing is offered, and a promise to ask aloud would be the
-        // same defect one state further out (review of #228).
-        review_hint: (opts.spoken && outbox_baseline.is_some())
+        // Not conditioned on this door's `outbox_baseline`: that read gates
+        // the page's `Staged` card, while the spoken offer on a hosted turn
+        // is gated by the facade's own read (`voice::completion`'s
+        // `pending_outbox_ids`, handed to `hosted_completion`). Tying the
+        // hint to the wrong read claimed a coupling the code does not have
+        // (review of #228). The residual — the facade's read failing while
+        // the model was told it would ask — is a transient store failure
+        // between two reads, and accepted.
+        review_hint: opts
+            .spoken
             .then(|| crate::voice::SPOKEN_REVIEW_HINT.to_string()),
         ..(*chat.agent.ctx()).clone()
     });
