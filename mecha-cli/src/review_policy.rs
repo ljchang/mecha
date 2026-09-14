@@ -326,11 +326,15 @@ fn lexicon() -> impl Iterator<Item = (&'static str, u8)> {
 
 /// Can the whole phrase be tiled with lexicon entries and connectives?
 ///
-/// Every tiling is tried, not the first found, because two tilings of one
-/// utterance could in principle disagree about its kind and the safe
-/// answer to a disagreement is no answer. The union of kinds over all
-/// complete tilings must be exactly one kind, and at least one lexicon
-/// phrase must have been used — connectives alone ("and then now") answer
+/// Every tiling is tried, not the first found, and the answer is read off
+/// the **pure** tilings — those whose phrases are all of one kind. If the
+/// pure tilings agree on a kind, that is the answer; if there are none, or
+/// they disagree, it is no answer. A mixed tiling is simply not evidence:
+/// "do it later" tiles as the `LATER` entry it is *and* as `do it` · `later`,
+/// and the first cut unioned the two into a kind that matched nothing, so
+/// a listed deferral was unreachable — found on review. "yes later" has
+/// only the mixed tiling and stays a non-answer. At least one lexicon
+/// phrase must have been used: connectives alone ("and then now") answer
 /// nothing.
 fn segment(phrase: &str) -> SpokenAnswer {
     let words: Vec<&str> = phrase.split(' ').collect();
@@ -358,11 +362,15 @@ fn segment(phrase: &str) -> SpokenAnswer {
             }
         }
     }
-    let seen = reach[n].iter().fold(0u8, |acc, k| acc | k);
-    match seen {
-        SEND => SpokenAnswer::Send,
-        LATER => SpokenAnswer::Later,
-        READ => SpokenAnswer::ReadItOut,
+    let pure: Vec<u8> = reach[n]
+        .iter()
+        .copied()
+        .filter(|k| matches!(k, &SEND | &LATER | &READ))
+        .collect();
+    match pure.as_slice() {
+        [SEND] => SpokenAnswer::Send,
+        [LATER] => SpokenAnswer::Later,
+        [READ] => SpokenAnswer::ReadItOut,
         _ => SpokenAnswer::NotAnAnswer,
     }
 }
@@ -564,6 +572,29 @@ mod tests {
             "now",
         ] {
             assert_eq!(parse_answer(said), SpokenAnswer::NotAnAnswer, "{said:?}");
+        }
+    }
+
+    /// Every listed phrase must still mean what the list says. "do it
+    /// later" was on `LATER_PHRASES` and parsed as nothing, because its
+    /// second tiling (`do it` · `later`) was allowed to outvote it; nothing
+    /// measured that until review. Composition too: an entry followed by a
+    /// connective is still that entry.
+    #[test]
+    fn every_lexicon_entry_parses_as_its_own_kind() {
+        for (entries, kind) in [
+            (&SEND_PHRASES[..], SpokenAnswer::Send),
+            (&LATER_PHRASES[..], SpokenAnswer::Later),
+            (&READ_PHRASES[..], SpokenAnswer::ReadItOut),
+        ] {
+            for entry in entries {
+                assert_eq!(parse_answer(entry), kind, "{entry:?}");
+                assert_eq!(
+                    parse_answer(&format!("{entry} then")),
+                    kind,
+                    "{entry:?} then"
+                );
+            }
         }
     }
 

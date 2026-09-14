@@ -1379,7 +1379,8 @@ async fn hosted_completion(
     // run has no offer to attach it to, and a carry left behind would be
     // spoken by some later turn as "still waiting" with nothing in the
     // conversation to explain it. The draft itself is in the outbox either
-    // way. Found on review.
+    // way. Found on review. (A turn that never *started* — a 503 — keeps
+    // it for the retry; see `completion`.)
     let carry = shared.confirmations.take_carry(confirm_key).await;
     let offer = match &answer {
         // Everything the speaker played, which on the streaming path is
@@ -1802,6 +1803,14 @@ async fn completion(
         }
         // Not an answer: the words go to the model below, and the draft is
         // asked about again after the reply (`Confirmations::carry_unanswered`).
+        //
+        // The carry outlives the early returns between here and the two
+        // consumers — `Hosted::Busy`, `Hosted::Failed`, no free slot — on
+        // purpose: each of those tells the worker to try again, and the
+        // retry is these same words, which then find the carry and put the
+        // question. A turn the model actually *ran* consumes it whatever
+        // its outcome (`hosted_completion`); a turn that never started is
+        // not a turn.
         shared
             .confirmations
             .carry_unanswered(&confirm_key, &pending)
