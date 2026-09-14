@@ -249,21 +249,8 @@ pub enum Reaction {
     Release { acknowledge: String, id: String },
 }
 
-/// The question for one run's drafts.
-///
-/// Returns `None` when there is nothing to ask about — including the case
-/// where everything staged was a publish, which is named rather than offered
-/// and so leaves no question open.
-/// `preceded_by` is the model's own reply, spoken immediately before this
-/// offer and in the *same stretch* out of the speaker — `completion` says the
-/// answer and then `say(" {offer}")`, with no pause between. So it echoes
-/// exactly as the offer does, and it seeds `asked_before`.
-///
-/// Found on review, and it is the offer's own tail one step back: any
-/// `SEND_PHRASES` entry a reply can contain but the offer cannot —
-/// `"go ahead"`, `"do that"`, `"confirm"`, `"approve"`, `"book it"` — was an
-/// unasked release. Neither window slot held it, `parse_answer` returned
-/// `Send`, `Release` fired.
+/// [`compose_offer_after`] with nothing carried — the shape every test of
+/// the offer was written against.
 #[cfg(test)]
 pub fn compose_offer(items: &[OutboxItem], preceded_by: &str) -> Option<Offer> {
     compose_offer_after(None, items, preceded_by)
@@ -278,8 +265,22 @@ pub enum Carried<'a> {
     Settle(&'a OutboxItem),
 }
 
-/// [`compose_offer`], with a carried draft in front of whatever this turn
-/// staged.
+/// The question for one run's drafts, with a carried draft in front of
+/// whatever this turn staged.
+///
+/// Returns `None` when there is nothing to ask about — including the case
+/// where everything staged was a publish, which is named rather than offered
+/// and so leaves no question open.
+/// `preceded_by` is the model's own reply, spoken immediately before this
+/// offer and in the *same stretch* out of the speaker — `completion` says the
+/// answer and then `say(" {offer}")`, with no pause between. So it echoes
+/// exactly as the offer does, and it seeds `asked_before`.
+///
+/// Found on review, and it is the offer's own tail one step back: any
+/// `SEND_PHRASES` entry a reply can contain but the offer cannot —
+/// `"go ahead"`, `"do that"`, `"confirm"`, `"approve"`, `"book it"` — was an
+/// unasked release. Neither window slot held it, `parse_answer` returned
+/// `Send`, `Release` fired.
 ///
 /// A carried draft is **re-asked only when the turn staged nothing new**.
 /// Words that were not an answer are usually a correction — "actually, make
@@ -369,17 +370,24 @@ pub fn compose_offer_after(
 
 /// The question about a draft, put for the second time.
 ///
-/// Short on purpose: the draft was read in full the first time and is still
-/// in the store unchanged, so what the listener needs is which one and the
-/// two words that answer it — plus the account, the one fact the identity
-/// tail exists to keep audible. "Read it out" still works, because the head
-/// of the queue is this draft.
+/// Short on purpose: the draft was read out or named the first time and is
+/// still in the store unchanged, so what the listener needs is which one
+/// and the two words that answer it. "Read it out" still works, because the
+/// head of the queue is this draft.
+///
+/// **Everything an armable question must carry, it carries**: the taint
+/// line and the identity tail, exactly as `ask_about` does. The first cut
+/// dropped the taint line, so a tainted draft re-asked after an intervening
+/// model turn could be released by a bare "yes" with the addressing warning
+/// spoken only a turn ago — the one fact this surface exists to keep
+/// audible. Found on review.
 fn reask_about(item: &OutboxItem) -> String {
     let view = DraftView::of(&item.args);
     format!(
-        "Still waiting on the {} draft. Say yes to send it, later to leave it in \
+        "Still waiting on the {} draft.{} Say yes to send it, later to leave it in \
          your outbox, or read it out to hear it again.{}",
         headline(item, &view),
+        taint_line(item),
         identity_tail(&view)
     )
 }
@@ -842,6 +850,20 @@ mod tests {
             react("send it", &again.pending, Some(&ev), None),
             Reaction::NotConvinced(_)
         ));
+
+        // A tainted draft says so on the second asking too — the first cut
+        // did not, and a bare "yes" would have released it with the
+        // addressing warning a whole model turn behind.
+        let tainted = item("c", OutboxKind::Message, json!({"title": "x"}), true);
+        let reask = compose_offer_after(Some(Carried::Reask(&tainted)), &[], "")
+            .expect("a re-ask")
+            .speech;
+        assert!(reask.contains("outside content"), "{reask}");
+        assert!(
+            !again.speech.contains("outside content"),
+            "{}",
+            again.speech
+        );
 
         // Dropped a second time: settled, not asked.
         store.carry_unanswered("k", &again.pending).await;

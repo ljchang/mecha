@@ -1375,13 +1375,18 @@ async fn hosted_completion(
     // one stretch out of the speaker and echo together: a run that failed has staged nothing worth
     // confirming, and asking about drafts on top of an error is a question
     // over the top of the thing that needs saying.
+    // The carry is consumed by this turn whatever became of it: a failed
+    // run has no offer to attach it to, and a carry left behind would be
+    // spoken by some later turn as "still waiting" with nothing in the
+    // conversation to explain it. The draft itself is in the outbox either
+    // way. Found on review.
+    let carry = shared.confirmations.take_carry(confirm_key).await;
     let offer = match &answer {
         // Everything the speaker played, which on the streaming path is
         // every turn's deltas and not just the last one's text. The blocking
         // path speaks a single JSON body, so its reply *is* the final turn.
         Ok(a) => {
             let spoken = if want_stream { &said } else { &a.text };
-            let carry = shared.confirmations.take_carry(confirm_key).await;
             offer_for_turn(shared, baseline, spoken, carry).await
         }
         Err(_) => None,
@@ -2086,10 +2091,11 @@ async fn completion(
 
     // Same rule as the hosted path: the drafts this turn staged are offered
     // after the answer, and only when there was one.
+    // Consumed whatever the outcome, as on the hosted path.
+    let carry = shared.confirmations.take_carry(&confirm_key).await;
     let offer = match &outcome {
         Ok(o) => {
             let spoken = if want_stream { &said } else { &o.text };
-            let carry = shared.confirmations.take_carry(&confirm_key).await;
             offer_for_turn(shared, &outbox_baseline, spoken, carry).await
         }
         Err(_) => None,
