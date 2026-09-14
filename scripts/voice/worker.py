@@ -1558,6 +1558,7 @@ class UplinkAudio:
         self._late_dropped_ms = 0.0
         self._settle_task = None
         self._rest = b""
+        self.rtp_fallback = False
         # Audio decoded and queued for the pipeline but not yet pushed, and
         # the page's last reported backlog: together the link's witness.
         self._queued_ms = 0
@@ -1596,6 +1597,29 @@ class UplinkAudio:
                     out += r.to_ndarray().tobytes()
         return bytes(out)
 
+    def on_fallback(self):
+        """The transport fell back to RTP: this injector is done. Queued
+        audio is dropped — pushing it beside the RTP reader's frames would
+        interleave old speech with new — and dropped with its size in the
+        journal, never silently; and the link forgets its backlog *after*
+        this, because a queued `push_pcm` re-noting it was how the second
+        pass's fix came undone (fifth review of #231)."""
+        from loguru import logger
+
+        self.rtp_fallback = True
+        dropped_ms = self._queued_ms
+        while not self._work.empty():
+            try:
+                self._work.get_nowait()
+                self._work.task_done()
+            except asyncio.QueueEmpty:
+                break
+        self._queued_ms = 0
+        self._page_backlog_ms = 0
+        if dropped_ms:
+            logger.warning(f"uplink: {dropped_ms / 1000:.1f}s of decoded audio dropped at the fallback")
+        self._link.forget_backlog()
+
     def close(self):
         """The transport is stopping: nothing more will be delivered."""
         for task in (self._consumer, self._settle_task):
@@ -1633,7 +1657,7 @@ class UplinkAudio:
         note = getattr(self._input, "note_batch", None)
         if note:
             note()  # the deafness witness: a batch arrived, whatever its lane
-        if getattr(self._input, "rtp_fallback", False):
+        if self.rtp_fallback or getattr(self._input, "rtp_fallback", False):
             if not self._rtp_fallback_warned:
                 self._rtp_fallback_warned = True
                 logger.warning("uplink: batches arriving after the RTP fallback started — ignored, not doubled")
@@ -1688,6 +1712,9 @@ class UplinkAudio:
         whole = len(buf) - len(buf) % step
         frame_secs = 0.02 / UPLINK_DRAIN_SPEED
         for i in range(0, whole, step):
+            if self.rtp_fallback:
+                # Whatever is left is RTP's now; see `on_fallback`.
+                return
             await self._input.push_audio_frame(
                 InputAudioRawFrame(audio=buf[i : i + step], sample_rate=16000, num_channels=1)
             )
@@ -1917,7 +1944,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     )
     if uplink:
         print("voice uplink: buffered over the data channel", flush=True)
-        transport.input().on_fallback = link.forget_backlog
+        transport.input().on_fallback = uplink.on_fallback  # drops its queue, then the link forgets
         transport.input().on_stop = uplink.close
         transport.input().announce = rtvi.send_server_message
 
