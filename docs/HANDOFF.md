@@ -2409,11 +2409,13 @@ reflections are dropped. The nightly's "3 reflection(s) cite a tool this
 machine no longer offers" line ends with this; the population is closed,
 since every recording since carries a blob.
 
-**2026-09-14 — the `personal` Google sign-in expires 2026-09-15**
-(`mecha doctor`: a seven-day grant from 2026-09-08T13:01 UTC that
-refreshing does not extend). `mecha-mail auth personal --provider google`
-before it lapses, or every scheduled run on that account fails looking
-like a revoked token.
+**2026-09-14 ~20:30 UTC — the `personal` Google account re-authenticated
+by the owner** (`mecha-mail auth personal --provider google`); `mecha
+doctor` went from five findings to four with the `mail` section gone. The
+grant is seven days and refreshing does not extend it, so it ends
+2026-09-21 and the doctor warns again from the 19th
+(`GRANT_WARN_WITHIN_DAYS = 2`); the re-auth is a terminal-only flow —
+`--paste` from an ssh session — and never a button.
 
 ## What the measurements say
 
@@ -4287,14 +4289,6 @@ is true now:
 
 ### Cheap, and worth doing first
 
-- **Re-authenticate the `personal` Google account before 2026-09-15**
-  (`mecha-mail auth personal --provider google`, with `--paste` from an ssh
-  session): the grant is seven days from 2026-09-08T13:01 UTC and refreshing
-  does not extend it. Once it lapses every scheduled run on that account
-  fails as if the token were revoked. `mecha doctor` warns from two days
-  before expiry (`GRANT_WARN_WITHIN_DAYS = 2`, so it has been warning since
-  the 13th); after a re-auth on the 14th the next grant ends on the 21st and
-  the warning returns on the 19th.
 
 - **Rule on the `ask_user` decline wording** (measured 2026-08-30,
   deliberately unadopted — the source is restored to control). A/B, 5 runs x
