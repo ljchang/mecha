@@ -100,7 +100,15 @@ worker checks `seq` and warns on a gap.
 resamples to 16 kHz mono, and pushes 20 ms `InputAudioRawFrame`s into the
 transport's **own audio queue** (`push_audio_frame`) — the place RTP audio
 entered — so Silero, the segmenter, smart-turn and the aggregator see exactly
-what they saw before and learn nothing about the route. The remainder of a
+what they saw before and learn nothing about the route. **Paced at
+`UPLINK_DRAIN_SPEED` (4×) real time**, not as fast as the channel delivers:
+pipecat's segmented STT accumulates audio only after the aggregator's VAD
+edge comes back upstream to it, with a one-second pre-roll, so a backlog
+pushed as a burst outruns that loop and hands Parakeet segments with their
+beginnings missing or nothing at all — the first 125 s live run turned
+fifteen seconds of speech into one second and four empty segments. At 4× a
+two-minute backlog is heard in thirty seconds, and the caught-up witness
+counts what the injector still holds as well as what the page does. The remainder of a
 batch that is not a whole frame carries into the next; dropping it would
 have lost a frame per batch across a drain. The RTP reader is replaced by a
 transport subclass (`UplinkTransport` → `UplinkInput._receive_audio`, which
@@ -138,7 +146,10 @@ later message while RTP keeps delivering whatever gets through — "RTP
 arriving, no batch for six seconds" on a link that is up. So the page
 heartbeats on the channel every two seconds and the third witness is
 **the channel alive**: no message of any kind means blocked, not deaf, and
-the backlog is delivered when the block clears. The witness is a *batch*
+the backlog is delivered when the block clears. The heartbeat continues
+after the page's own fallback, so if the page's `uplink` notice is lost the
+worker's watch still sees heartbeats without audio and reaches the same
+verdict on its own — neither end's notice is load-bearing. The witness is a *batch*
 of either lane, because a reconnect's carried-over ring is all late lane
 for as long as it takes to drain. When it fires the worker stops discarding RTP, at
 `error` level — the six seconds before it are the price of a dead tap —
@@ -208,18 +219,34 @@ on arrival. Age decides which lane it takes:
   reconnect — §4.2): turn-taking is bypassed. The span is transcribed as a
   whole (in pieces of `LATE_CHUNK_SECS` to the same Parakeet server), waits
   for the bot to stop speaking so it never interrupts, and lands in the
-  conversation as **one user turn the harness prefixes** — a
-  `TranscriptionFrame` pushed at the head of the pipeline, so the page's
-  transcript shows it too: *"(said 08:22–08:23, delivered late)"*, in the
+  conversation as **one user message the harness prefixes**, appended to
+  the context and run at once (`LLMMessagesAppendFrame(run_llm=True)`),
+  with the page told separately so its transcript shows it: *"[delivered
+  late — said at 08:22 while the connection was down]"*, in the
   phone's own clock — from a wall-clock stamp the ring puts on each frame
   at capture, because the media clock does not run while nothing is
   captured and so cannot place speech from before an outage (review of
   #231). A span is closed by the first live batch after it,
   or by `LATE_SETTLE_SECS` without one, and is put *before* the live audio
-  that closed it. The late lane goes to Parakeet directly, past the live
-  segmenter's RMS floor and the echo text filter: during an outage the
-  downlink is down too, so there is no speaker to echo, and a span is
-  minutes long rather than a breath. The model answers it as a turn. This is the outbox and questions shape
+  that closed it. The late lane goes to Parakeet directly, past the echo
+  text filter — during an outage the downlink is down too, so there is no
+  speaker to echo — but **segmented on silence first** (`late_segments`:
+  runs of speech split at `LATE_GAP_SECS`, padded, under the live gate's
+  duration and energy floors). Not an optimisation: Parakeet-TDT, handed
+  one clip with speech, a second of silence and more speech, returns only
+  what follows the silence, or nothing at all — measured 2026-09-14 on the
+  same five seconds at 4.5 s (text), 4.9–6.0 s (nothing), 7.0 s (only the
+  words after the gap). The live lane never hands it such a clip, because
+  VAD segments end at silence; the late lane's first real span did, and
+  "held no speech". The model answers the span as a turn. Appended rather
+  than pushed as a transcription because a transcript-only turn has no VAD
+  edge for any stop strategy to rule on: measured 2026-09-14, it sat on
+  the aggregator's 15 s wall-clock timeout (`strategy: None`) before the
+  model saw it, exactly as the review of #231 predicted; appended, the
+  model had it within a millisecond. The note is bracketed and worded as
+  the harness's, and collapses to one clock when both ends share a minute,
+  because the first live run had the model read *"(said 15:40–15:40 …)"*
+  as a time the owner was asking about. This is the outbox and questions shape
   applied to speech — a run's input surviving the run — and it is what
   keeps "the outage outlasted the conversation" from meaning "what was
   said is gone".

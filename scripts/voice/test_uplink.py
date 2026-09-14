@@ -166,7 +166,7 @@ class NothingIsCancelled(unittest.TestCase):
 
         inp, up = run(scenario())
         self.assertEqual(up.late_turns, 2, "a span was lost")
-        self.assertEqual([f.text.endswith("first span") for f in inp.frames], [True, True])
+        self.assertEqual([f.messages[0]["content"].endswith("first span") for f in inp.frames], [True, True])
 
     def test_live_audio_queues_behind_the_turn_it_closed(self):
         async def scenario():
@@ -183,27 +183,63 @@ class NothingIsCancelled(unittest.TestCase):
 
         before, inp = run(scenario())
         self.assertEqual(before, [], "live audio was pushed while its predecessor was still transcribing")
-        self.assertEqual(inp.order[0], "TranscriptionFrame")
+        self.assertEqual(inp.order[0], "LLMMessagesAppendFrame")
         self.assertGreater(len(inp.audio), 0)
 
 
-class ChunkTail(unittest.TestCase):
-    """A span just past a chunk boundary keeps its last word."""
+class LateSegments(unittest.TestCase):
+    """The late lane hands Parakeet what the live lane hands it: one run of
+    speech at a time, never a clip with a second of silence inside it —
+    which Parakeet-TDT answers with nothing, or only what follows the gap."""
 
-    def test_a_short_tail_joins_the_piece_before_it(self):
+    @staticmethod
+    def tone(secs, amp=0.3):
+        import numpy as np
+
+        t = np.arange(int(16000 * secs)) / 16000.0
+        return (np.sin(2 * np.pi * 440 * t) * amp * 32767).astype(np.int16).tobytes()
+
+    @staticmethod
+    def silence(secs):
+        return b"\x00\x00" * int(16000 * secs)
+
+    def test_speech_silence_speech_is_two_segments_with_padding(self):
+        from worker import LATE_PAD_SECS, late_segments
+
+        pcm = self.silence(1.0) + self.tone(2.0) + self.silence(1.5) + self.tone(1.0) + self.silence(1.0)
+        segs = late_segments(pcm)
+        self.assertEqual(len(segs), 2, [len(s) / 32000 for s in segs])
+        self.assertAlmostEqual(len(segs[0]) / 32000, 2.0 + 2 * LATE_PAD_SECS, delta=0.05)
+        self.assertAlmostEqual(len(segs[1]) / 32000, 1.0 + 2 * LATE_PAD_SECS, delta=0.05)
+
+    def test_a_short_gap_does_not_split_and_the_floors_apply(self):
+        from worker import late_segments
+
+        # A 0.3 s pause inside a phrase stays one segment.
+        self.assertEqual(len(late_segments(self.tone(1.0) + self.silence(0.3) + self.tone(1.0))), 1)
+        # A blip under the duration floor, and a whisper under the energy
+        # floor, are nothing — the live gate's floors.
+        self.assertEqual(late_segments(self.silence(1.0) + self.tone(0.1) + self.silence(1.0)), [])
+        self.assertEqual(late_segments(self.tone(2.0, amp=0.002)), [])
+        self.assertEqual(late_segments(b""), [])
+
+    def test_a_long_run_is_cut_at_the_chunk_length(self):
+        from worker import LATE_CHUNK_SECS, late_segments
+
+        segs = late_segments(self.tone(LATE_CHUNK_SECS + 5))
+        self.assertEqual(len(segs), 2)
+        self.assertAlmostEqual(len(segs[0]) / 32000, LATE_CHUNK_SECS, delta=0.05)
+
+    def test_transcribe_asks_once_per_segment(self):
         async def scenario():
             inp, stt = FakeInput(), FakeSTT("words")
             up = UplinkAudio(inp, LinkWatch(), stt)
-            long = b"\x00\x00" * int(16000 * 60.2)  # 60.2 s
-            await up._transcribe(long)
-            sizes = [len(r) - 44 for r in stt.requests]
-            stt.requests.clear()
-            await up._transcribe(b"\x00\x00" * int(16000 * 0.2))  # under the floor: nothing
-            return sizes, len(stt.requests)
+            text = await up._transcribe(self.tone(1.0) + self.silence(1.0) + self.tone(1.0))
+            return text, len(stt.requests)
 
-        sizes, short = run(scenario())
-        self.assertEqual(sizes, [int(16000 * 60.2) * 2], "the 0.2 s tail was not joined to its chunk")
-        self.assertEqual(short, 0)
+        text, n = run(scenario())
+        self.assertEqual(n, 2)
+        self.assertEqual(text, "words words")
 
 
 class CaughtUp(unittest.TestCase):
@@ -274,12 +310,16 @@ class LatePrefix(unittest.TestCase):
     def test_the_phones_own_clock_and_what_was_lost(self):
         # 2026-09-14 12:22:00 UTC, on a phone at UTC-4: 08:22 local.
         p = late_prefix(WALL0, WALL0 + 60_000, -240, 0)
-        self.assertEqual(p, "(said 08:22–08:23, delivered late) ")
+        self.assertEqual(p, "[delivered late — said between 08:22 and 08:23 while the connection was down] ")
+        # Both ends in one minute: one clock, not a range the model reads
+        # as a time the owner asked about (first live run, 2026-09-14).
+        p = late_prefix(WALL0, WALL0 + 5_000, -240, 0)
+        self.assertEqual(p, "[delivered late — said at 08:22 while the connection was down] ")
         p = late_prefix(WALL0, WALL0 + 60_000, -240, 45_000)
         self.assertIn("about 45 seconds before this were lost", p)
-        self.assertTrue(p.endswith(") "))
+        self.assertTrue(p.endswith("] "))
         # No clock from the page: honest, not invented.
-        self.assertEqual(late_prefix(None, None, 0, 0), "(said earlier–earlier, delivered late) ")
+        self.assertEqual(late_prefix(None, None, 0, 0), "[delivered late — said at earlier while the connection was down] ")
 
 
 class Fallback(unittest.TestCase):
@@ -367,7 +407,8 @@ class AcrossAGap(unittest.TestCase):
 
         inp = run(scenario())
         self.assertEqual(len(inp.frames), 1)
-        self.assertTrue(inp.frames[0].text.startswith("(said 08:19–08:19, delivered late) "), inp.frames[0].text)
+        text = inp.frames[0].messages[0]["content"]
+        self.assertTrue(text.startswith("[delivered late — said at 08:19 while the connection was down] "), text)
 
 
 class Injection(unittest.TestCase):
@@ -413,11 +454,11 @@ class Injection(unittest.TestCase):
         self.assertEqual(pushed_during_late, 0, "late audio reached the live pipeline")
         self.assertEqual(up.late_turns, 1)
         self.assertEqual(len(inp.frames), 1)
-        text = inp.frames[0].text
-        self.assertTrue(text.startswith("(said 08:22–08:22, delivered late) "), text)
+        text = inp.frames[0].messages[0]["content"]
+        self.assertTrue(text.startswith("[delivered late — said at 08:22 while the connection was down] "), text)
         self.assertTrue(text.endswith("call the dentist tomorrow"))
-        self.assertTrue(inp.frames[0].finalized)
-        self.assertEqual(inp.order[0], "TranscriptionFrame", "the late turn must precede the live audio")
+        self.assertTrue(inp.frames[0].run_llm, "a late turn runs the model at once; a transcript-only turn waits 15 s")
+        self.assertEqual(inp.order[0], "LLMMessagesAppendFrame", "the late turn must precede the live audio")
         self.assertGreater(len(inp.audio), 0)
         self.assertEqual(len(stt.requests), 1)
         self.assertTrue(stt.requests[0].startswith(b"RIFF"))
@@ -436,7 +477,7 @@ class Injection(unittest.TestCase):
 
         inp = run(scenario())
         self.assertEqual(len(inp.frames), 1)
-        self.assertIn("about 45 seconds before this were lost", inp.frames[0].text)
+        self.assertIn("about 45 seconds before this were lost", inp.frames[0].messages[0]["content"])
 
     def test_the_wav_header_is_what_the_stt_server_reads(self):
         wav = _wav16(b"\x00\x00" * 160)

@@ -34,7 +34,7 @@ from openai.types.audio import Transcription
 
 import base64
 
-from pipecat.utils.time import time_now_iso8601
+from pipecat.frames.frames import LLMMessagesAppendFrame
 
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -244,8 +244,27 @@ LINK_CAUGHT_UP_MS = 500
 BACKLOG_TALK_SECS = 120.0
 # The STT server is asked in pieces no longer than this.
 LATE_CHUNK_SECS = 60.0
+# A late span is cut into segments at runs of silence this long, and
+# each is transcribed on its own — as the live lane's VAD segments are.
+# Not an optimisation: Parakeet-TDT, given one clip with speech, a
+# second of silence and more speech, returns only what follows the
+# silence, or nothing — measured 2026-09-14 on the same five seconds at
+# lengths 4.5 s (text), 4.9–6.0 s (nothing), 7.0 s (only the words after
+# the gap). The live lane never hands it such a clip; the late lane did,
+# and its first real span "held no speech".
+LATE_GAP_SECS = 0.5
+LATE_PAD_SECS = 0.2
 # A late span is closed when no batch has followed it for this long.
 LATE_SETTLE_SECS = 1.0
+# How much faster than real time a backlog is pushed into the live
+# pipeline. Not unbounded: the segmented STT accumulates audio only after
+# the aggregator's VAD edge comes back *upstream* to it, with a one-second
+# pre-roll, so a burst that outruns that loop hands Parakeet segments with
+# their beginnings missing or nothing at all — the first 125 s live run
+# turned fifteen seconds of speech into one second and four empty
+# segments. At this pace the in-flight audio stays well inside the pre-roll
+# and a two-minute backlog is heard in thirty seconds.
+UPLINK_DRAIN_SPEED = 4.0
 # How long a late turn waits for the bot to finish speaking before it is put
 # anyway: live speech queues behind it, and a listener would rather hear a
 # reply cut than wait half a minute for their own words.
@@ -1264,7 +1283,7 @@ class TranscriptStartedTurnStop(TurnAnalyzerUserTurnStopStrategy):
 # decoded and pushed into the transport's own audio queue, where Silero, the
 # segmenter and smart-turn see them exactly as they saw RTP audio. RTP is
 # still sent (the page's receiver reports are its only uplink witness) and
-# deliberately *not read*: two copies of one voice is a stream at twice
+# read only to be *discarded*: two copies of one voice is a stream at twice
 # speed. The page declares the mode in the offer's `request_data`, so the
 # choice is made before a single RTP frame is read.
 #
@@ -1315,6 +1334,7 @@ class UplinkInput(SmallWebRTCInputTransport):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._refuse_if_pipecat_moved()
         self.batches = 0
         self.last_batch_at = _time.monotonic()
         self.last_rtp_at = None
@@ -1324,6 +1344,24 @@ class UplinkInput(SmallWebRTCInputTransport):
         self.on_stop = None  # sync: the injector stops its own tasks
         self.announce = None  # async: tell the page
         self._watch_task = None
+
+    def _refuse_if_pipecat_moved(self):
+        # Two pipecat privates are overridden here, and a rename of either
+        # degrades silently in the worse direction: `_receive_audio` renamed
+        # means the base reader runs beside the batches — one voice at
+        # twice speed, as garbled transcripts — and `_stop_tasks` renamed
+        # means the injector's tasks leak per call. The same shape as
+        # `TranscriptStartedTurnStop._refuse_if_pipecat_moved`: a refusal to
+        # start the call, not a quiet fallback (review of #231).
+        base = SmallWebRTCInputTransport
+        for method in ("_receive_audio", "_stop_tasks", "push_audio_frame", "start"):
+            if not any(method in vars(c) for c in base.__mro__):
+                raise RuntimeError(
+                    f"UplinkInput: pipecat's input transport no longer defines `{method}`; "
+                    "re-derive the override against this version"
+                )
+        if not hasattr(self._client, "read_audio_frame"):
+            raise RuntimeError("UplinkInput: pipecat's client no longer has `read_audio_frame`")
 
     def note_batch(self):
         self.batches += 1
@@ -1416,6 +1454,51 @@ def _wav16(pcm: bytes, rate: int = 16000) -> bytes:
     return header + pcm
 
 
+def late_segments(pcm: bytes, rate: int = 16000) -> list[bytes]:
+    """Runs of speech in a late span, each padded by `LATE_PAD_SECS`, split
+    at silence of `LATE_GAP_SECS` or more and at `LATE_CHUNK_SECS`, and
+    dropped under `MIN_SEGMENT_SECONDS` or `MIN_SEGMENT_RMS` — the live
+    gate's floors. Pure, for the test."""
+    import numpy as np
+
+    frame = rate // 50  # 20 ms
+    x = np.frombuffer(pcm[: len(pcm) - len(pcm) % 2], dtype=np.int16).astype(np.float32) / 32768.0
+    n = len(x) // frame
+    if n == 0:
+        return []
+    rms = np.sqrt((x[: n * frame].reshape(n, frame) ** 2).mean(axis=1))
+    speech = rms >= MIN_SEGMENT_RMS
+    gap = int(LATE_GAP_SECS * 50)
+    pad = int(LATE_PAD_SECS * 50)
+    runs: list[list[int]] = []
+    i = 0
+    while i < n:
+        if not speech[i]:
+            i += 1
+            continue
+        start = i
+        last = i
+        while i < n and (speech[i] or i - last < gap):
+            if speech[i]:
+                last = i
+            i += 1
+        runs.append([start, last + 1])
+    out = []
+    max_frames = int(LATE_CHUNK_SECS * 50)
+    min_frames = int(MIN_SEGMENT_SECONDS * 50)
+    for start, end in runs:
+        # The floor is on the speech itself; the padding comes after, or a
+        # blip grows past the floor on padding alone.
+        if end - start < min_frames:
+            continue
+        a, b = max(0, start - pad), min(n, end + pad)
+        while b - a > max_frames:
+            out.append(x[a * frame : (a + max_frames) * frame])
+            a += max_frames
+        out.append(x[a * frame : b * frame])
+    return [(seg * 32768.0).astype(np.int16).tobytes() for seg in out]
+
+
 def lane_for(backlog_ms: int) -> str:
     """§2.5: which lane a batch takes, from how far behind the page says it
     is. A pure function so the boundary is testable on its own."""
@@ -1438,20 +1521,26 @@ def late_prefix(from_wall_ms: int | None, to_wall_ms: int | None, tz_offset_min:
         at = ms + tz_offset_min * 60_000
         return _dt.datetime.fromtimestamp(at / 1000, tz=_dt.timezone.utc).strftime("%H:%M")
 
-    span = f"said {clock(from_wall_ms)}–{clock(to_wall_ms)}, delivered late"
+    a, b = clock(from_wall_ms), clock(to_wall_ms)
+    # Unmistakably the harness's note, not the owner's words: the first
+    # live run had the model read "(said 15:40–15:40 …)" as a time the
+    # owner was asking about. One clock when both ends share a minute.
+    when = f"at {a}" if a == b else f"between {a} and {b}"
+    note = f"delivered late — said {when} while the connection was down"
     if dropped_ms >= 1000:
         lost = round(dropped_ms / 1000)
-        span += f"; about {lost} seconds before this were lost while the link was down"
-    return f"({span}) "
+        note += f"; about {lost} seconds before this were lost"
+    return f"[{note}] "
 
 
 class UplinkAudio:
     """Decodes what the page sends and routes it by age (§2.5)."""
 
-    def __init__(self, transport_input, link: "LinkWatch", stt: "ParakeetSTT", user_id: str = ""):
+    def __init__(self, transport_input, link: "LinkWatch", stt: "ParakeetSTT", user_id: str = "", announce=None):
         import av
 
         self._input = transport_input
+        self._announce = announce
         self._link = link
         self._stt = stt
         self._user_id = user_id
@@ -1469,6 +1558,10 @@ class UplinkAudio:
         self._late_dropped_ms = 0.0
         self._settle_task = None
         self._rest = b""
+        # Audio decoded and queued for the pipeline but not yet pushed, and
+        # the page's last reported backlog: together the link's witness.
+        self._queued_ms = 0
+        self._page_backlog_ms = 0
         # One ordered queue of delivery work, one consumer, nothing ever
         # cancelled. pipecat runs each client-message handler as its own
         # task, so `on_audio` must decide and enqueue before its first
@@ -1558,10 +1651,11 @@ class UplinkAudio:
             max(0.0, float(x.get("to_ms", 0)) - float(x.get("from_ms", 0))) for x in (d.get("dropped") or [])
         )
         self.batches += 1
-        self._link.note_uplink(_time.monotonic(), backlog_ms)
+        self._page_backlog_ms = backlog_ms
         pcm = self._decode(frames)
         self._ensure_consumer()
         if lane_for(backlog_ms) == "late":
+            self._link.note_uplink(_time.monotonic(), backlog_ms + self._queued_ms)
             if self._late_from is None:
                 self._late_from = start_ms
                 self._late_wall_from = wall_ms
@@ -1576,20 +1670,30 @@ class UplinkAudio:
         self._work.put_nowait(self.flush_late)
         if dropped_ms:
             logger.warning(f"uplink: the page dropped {dropped_ms / 1000:.0f}s of audio before batch {seq}")
+        self._queued_ms += int(len(pcm) / 32)
+        self._link.note_uplink(_time.monotonic(), backlog_ms + self._queued_ms)
         self._work.put_nowait(lambda: self.push_pcm(pcm))
 
     async def push_pcm(self, pcm: bytes):
-        """Into the transport's own queue, in 20 ms frames, as RTP audio was.
-        A batch rarely decodes to a whole number of frames (the resampler
+        """Into the transport's own queue, in 20 ms frames, as RTP audio was,
+        paced at `UPLINK_DRAIN_SPEED` times real time (see the constant). A
+        batch rarely decodes to a whole number of frames (the resampler
         holds a few samples), so the tail carries into the next batch rather
-        than being dropped — a frame a batch, across a drain, is real loss."""
+        than being dropped — a frame a batch, across a drain, is real loss.
+        What is still queued here counts toward the link's backlog: the
+        page's number reaches zero when the last batch leaves the phone,
+        which is well before the last frame reaches the pipeline."""
         step = 16000 * 2 // 50
         buf = self._rest + pcm
         whole = len(buf) - len(buf) % step
+        frame_secs = 0.02 / UPLINK_DRAIN_SPEED
         for i in range(0, whole, step):
             await self._input.push_audio_frame(
                 InputAudioRawFrame(audio=buf[i : i + step], sample_rate=16000, num_channels=1)
             )
+            self._queued_ms = max(0, self._queued_ms - 20)
+            self._link.note_uplink(_time.monotonic(), self._page_backlog_ms + self._queued_ms)
+            await asyncio.sleep(frame_secs)
         self._rest = buf[whole:]
 
     def _arm_late_settle(self):
@@ -1637,27 +1741,27 @@ class UplinkAudio:
         prefix = late_prefix(wall_from, wall_to, self._tz_offset_min, dropped_ms)
         self.late_turns += 1
         logger.info(f"uplink: late turn ({(to_ms - from_ms) / 1000:.0f}s of audio): {prefix}{text[:80]!r}")
+        # Appended to the context and run at once — not a `TranscriptionFrame`.
+        # A transcript-only turn has no VAD edge for any stop strategy to
+        # rule on, so it sat on the aggregator's 15 s wall-clock timeout
+        # (`strategy: None`) before the model saw it; measured 2026-09-14,
+        # as the review of #231 predicted. The page is told separately, so
+        # its transcript shows what the model was given.
+        if self._announce:
+            try:
+                await self._announce({"t": "late-turn", "text": prefix + text})
+            except Exception as e:  # noqa: BLE001 - display, not delivery
+                logger.warning(f"uplink: could not show the late turn ({e})")
         await self._input.push_frame(
-            TranscriptionFrame(
-                text=prefix + text, user_id=self._user_id, timestamp=time_now_iso8601(), finalized=True
-            )
+            LLMMessagesAppendFrame(messages=[{"role": "user", "content": prefix + text}], run_llm=True)
         )
 
     async def _transcribe(self, pcm: bytes) -> str:
-        """In pieces of `LATE_CHUNK_SECS`. A tail too short to be speech on
-        its own is joined to the piece before it rather than skipped — a
-        span just past a boundary must not lose its last word (review of
-        #231); only a whole span under the floor is nothing."""
-        chunk = int(LATE_CHUNK_SECS * 16000 * 2)
-        floor = int(16000 * 2 * MIN_SEGMENT_SECONDS)
-        pieces = [pcm[i : i + chunk] for i in range(0, len(pcm), chunk)]
-        if len(pieces) > 1 and len(pieces[-1]) < floor:
-            tail = pieces.pop()
-            pieces[-1] += tail
+        """Segment by segment, as the live lane does (see `LATE_GAP_SECS`):
+        each run of speech, padded, under `LATE_CHUNK_SECS`, above the same
+        duration and energy floors the live segment gate applies."""
         parts = []
-        for piece in pieces:
-            if len(piece) < floor:
-                continue
+        for piece in late_segments(pcm):
             r = await self._stt._client.audio.transcriptions.create(
                 model="parakeet", file=("late.wav", _wav16(piece), "audio/wav")
             )
@@ -1806,7 +1910,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     link = LinkWatch(on_change=on_link_change)
     # The buffered uplink (docs/VOICE-LINK-DESIGN.md), when the page declared
     # it in the offer; a page without the tap runs the RTP path unchanged.
-    uplink = UplinkAudio(transport.input(), link, stt) if isinstance(transport, UplinkTransport) else None
+    uplink = (
+        UplinkAudio(transport.input(), link, stt, announce=rtvi.send_server_message)
+        if isinstance(transport, UplinkTransport)
+        else None
+    )
     if uplink:
         print("voice uplink: buffered over the data channel", flush=True)
         transport.input().on_fallback = link.forget_backlog

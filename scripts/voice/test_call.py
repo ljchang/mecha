@@ -33,6 +33,18 @@ def opus_packets(wav: str):
             for r in rs.resample(frame):
                 r.pts = None
                 out += [bytes(p) for p in enc.encode(r)]
+    # Five seconds of encoded silence after the speech, as a live
+    # microphone would keep sending: smart-turn ends a turn on 3 s of
+    # silence in the *audio*, and a stream that simply stops — or stops at
+    # exactly 3 s — leaves it to the 15 s wall-clock timeout, which
+    # measures the client, not the worker.
+    import numpy as np
+
+    quiet = av.AudioFrame.from_ndarray(np.zeros((1, 960), dtype=np.int16), format="s16", layout="mono")
+    quiet.sample_rate = 48000
+    for _ in range(250):
+        quiet.pts = None
+        out += [bytes(p) for p in enc.encode(quiet)]
     out += [bytes(p) for p in enc.encode(None)]
     return out
 
@@ -125,6 +137,9 @@ async def call(wav: str, offer_url: str, seconds: float, use_uplink: bool = Fals
         elif t in ("user-started-speaking", "user-stopped-speaking", "bot-llm-started",
                    "bot-started-speaking", "error"):
             print(f"event: {t}", flush=True)
+        elif t == "server-message" and isinstance(ev.get("data"), dict) and ev["data"].get("t") == "late-turn":
+            print(f"late-turn: {ev['data'].get('text', '')!r}", flush=True)
+            got.append(ev["data"].get("text", ""))
 
     offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
