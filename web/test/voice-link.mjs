@@ -109,3 +109,52 @@ assert.equal(serverPauseExpired({ ...healthy, reportSeenAt: T - REPORT_STALL_MS 
 assert.equal(serverPauseExpired({ ...healthy, packetsAt: T - INBOUND_STALL_MS }, T - 9000, T), false, 'stale inbound counted as fresh');
 console.log('server pause expiry: ok');
 
+
+// ---- the reliable uplink (docs/VOICE-LINK-DESIGN.md) -----------------------
+import { UplinkRing, behindVerdict, BEHIND_TONE_MS, CAUGHT_UP_MS } from '../../scripts/voice/voice-core.js';
+
+{
+  // 20 ms Opus frames at the 48 kHz RTP clock: each frame's duration is the
+  // gap to the next timestamp, so the first frame is held until the second.
+  const ring = new UplinkRing(1000);
+  ring.push(1000, new Uint8Array([1]).buffer);
+  assert.equal(ring.frames.length, 0, 'a frame is held until its duration is known');
+  for (let i = 1; i <= 6; i++) ring.push(1000 + 960 * i, new Uint8Array([i + 1]).buffer);
+  assert.equal(ring.frames.length, 6);
+  assert.equal(ring.pendingMs, 120);
+  assert.equal(ring.nowMs, 120);
+  const b = ring.takeBatch(100);
+  assert.equal(b.frames.length, 5, 'a 100 ms batch is five 20 ms frames');
+  assert.equal(b.ms, 0);
+  assert.equal(b.backlogMs, 20, 'what is left is the backlog');
+  assert.equal(b.seq, 0);
+  assert.equal(ring.takeBatch(100).frames.length, 1);
+  assert.equal(ring.takeBatch(100), null);
+
+  // A reconnect restarts the RTP clock; the media clock continues.
+  ring.restart();
+  assert.equal(ring.frames.length, 1, 'restart closes the held frame at 20 ms');
+  ring.push(5, new Uint8Array([9]).buffer);
+  ring.push(5 + 960, new Uint8Array([10]).buffer);
+  assert.equal(ring.frames[ring.frames.length - 1].ms, 140, 'the new stream is placed after the old');
+
+  // Past the cap the oldest goes, and the loss is recorded, not silent.
+  const small = new UplinkRing(100);
+  for (let i = 0; i <= 10; i++) small.push(960 * i, new Uint8Array([i]).buffer); // 10 closed frames = 200 ms
+  assert.equal(small.pendingMs, 100);
+  const dropped = small.takeDropped();
+  assert.deepEqual(dropped, [{ fromMs: 0, toMs: 100 }], JSON.stringify(dropped));
+  assert.deepEqual(small.takeDropped(), [], 'dropped spans are read once');
+  console.log('uplink ring: ok');
+}
+
+{
+  // The cue keys on how far behind, once per episode, never on packets.
+  let st = { sounded: false }, cues = [];
+  for (const ms of [0, 800, 2900, 3100, 4000, 9000, 1200, 500, 300, 0, 3500, 200]) {
+    const v = behindVerdict(st, ms); st = v.next; if (v.cue) cues.push([ms, v.cue]);
+  }
+  assert.deepEqual(cues, [[3100, 'behind'], [500, 'caught'], [3500, 'behind'], [200, 'caught']], JSON.stringify(cues));
+  assert.ok(BEHIND_TONE_MS > CAUGHT_UP_MS);
+  console.log('behind cue: ok');
+}
