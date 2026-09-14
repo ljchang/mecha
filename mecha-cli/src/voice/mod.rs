@@ -179,9 +179,18 @@ pub(crate) fn open_spoken_turn(text: &str, previous_turn_was_spoken: bool) -> St
 }
 
 /// Words as an echo comparison sees them: lowercase, punctuation gone.
-fn spoken_words(text: &str) -> Vec<String> {
+/// **Must agree with `review_policy::normalise` on where words begin and
+/// end.** `ours_coming_back` tries the span against both spellings of an
+/// utterance, and the normalised one is what closes the filler hole — which
+/// only works while the two functions split words the same way. They
+/// disagreed once, on the apostrophe: `normalise` deleted it and this split
+/// on it, so `"So, that's right."` off the speaker normalised to a send that
+/// matched no window of `"that s right"`. `words_split_the_same_way` in
+/// `review_policy` pins the agreement.
+pub(crate) fn spoken_words(text: &str) -> Vec<String> {
     text.to_lowercase()
         .chars()
+        .filter(|c| !matches!(c, '\'' | '\u{2019}'))
         .map(|c| if c.is_alphanumeric() { c } else { ' ' })
         .collect::<String>()
         .split_whitespace()
@@ -1476,11 +1485,11 @@ async fn offer_for_turn(
     reply: &str,
     carry: Option<confirm::Carry>,
 ) -> Option<confirm::Offer> {
-    let baseline = baseline.as_ref()?;
-    let staged = crate::review_policy::staged_since(
-        OutboxStore::open(&shared.outbox_root).ok()?.items().ok()?,
-        baseline,
-    );
+    // The carry first, and above the baseline's `?`: it is already consumed
+    // by the caller, and it needs no baseline — the draft is re-read by id.
+    // Resolving it below the early return threw a re-ask away whenever the
+    // store had been unreadable at the *start* of the turn. Found on review.
+    //
     // Re-read, not remembered: a carried draft sent from the page in the
     // meantime is not pending any more, and `item_now` says so by absence.
     let carried_item = match &carry {
@@ -1493,6 +1502,16 @@ async fn offer_for_turn(
         (Some(confirm::Carry::Reask(_)), Some(item)) => Some(confirm::Carried::Reask(item)),
         (Some(confirm::Carry::Settle(_)), Some(item)) => Some(confirm::Carried::Settle(item)),
         _ => None,
+    };
+    // No baseline means the turn's own drafts cannot be told from older
+    // ones, so none are offered (`review_policy::staged_since`); the carry
+    // still is.
+    let staged = match (baseline, OutboxStore::open(&shared.outbox_root)) {
+        (Some(baseline), Ok(store)) => match store.items() {
+            Ok(items) => crate::review_policy::staged_since(items, baseline),
+            Err(_) => Vec::new(),
+        },
+        _ => Vec::new(),
     };
     confirm::compose_offer_after(carried, &staged, reply)
 }
@@ -2308,6 +2327,31 @@ mod tests {
         // D2: the facade is unreachable from any network. If this constant
         // grows a config knob, the voice layer stops being the only door.
         assert!(LISTEN_HOST.starts_with("127.0.0.1"));
+    }
+
+    /// The carry is wired where the words leave for the model, and consumed
+    /// on both doors. Same idiom and same reason as
+    /// `the_facade_slot_narrows_before_it_grants`: the unit tests drive
+    /// `Confirmations` and `compose_offer_after` directly and would stay
+    /// green with the call sites deleted.
+    #[test]
+    fn a_dropped_question_is_carried_on_the_path_and_consumed_by_both_doors() {
+        let src = include_str!("mod.rs");
+        let i = src
+            .find("\nasync fn completion(")
+            .expect("the request handler is still here");
+        let body = &src[i + 1..][..src[i + 1..]
+            .find("\n}\n")
+            .expect("`completion` still has a closing brace at column zero")];
+        assert!(
+            body.contains(".carry_unanswered("),
+            "`completion` no longer carries a dropped question"
+        );
+        let consumers = src.matches(".take_carry(").count();
+        assert_eq!(
+            consumers, 2,
+            "one `take_carry` per door — hosted and facade slot — and no more"
+        );
     }
 
     #[test]
