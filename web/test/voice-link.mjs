@@ -195,3 +195,14 @@ import { UplinkRing, behindVerdict, BEHIND_TONE_MS, CAUGHT_UP_MS } from '../../s
   assert.equal(shouldPump(5000, UPLINK_SCTP_HIGH_BYTES), false, 'a full queue waits');
   console.log('pump gate: ok');
 }
+
+{
+  // The ring outlives the session object (sixth review of #231): a
+  // reconnect makes a new session for the same chat key and finds it.
+  const { ringFor } = await import('../../scripts/voice/voice-core.js');
+  const a = ringFor('main'); a.push(0, new Uint8Array([1]).buffer); a.push(960, new Uint8Array([2]).buffer);
+  assert.equal(ringFor('main'), a, 'same key, same ring');
+  assert.equal(ringFor('main').pendingMs, 20, 'what was captured before the reconnect is still there');
+  assert.notEqual(ringFor('other'), a, 'a different conversation gets its own');
+  console.log('ring per key: ok');
+}
