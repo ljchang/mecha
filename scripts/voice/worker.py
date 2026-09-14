@@ -246,6 +246,10 @@ BACKLOG_TALK_SECS = 120.0
 LATE_CHUNK_SECS = 60.0
 # A late span is closed when no batch has followed it for this long.
 LATE_SETTLE_SECS = 1.0
+# How long a late turn waits for the bot to finish speaking before it is put
+# anyway: live speech queues behind it, and a listener would rather hear a
+# reply cut than wait half a minute for their own words.
+LATE_BOT_WAIT_SECS = 10.0
 # pipecat's VAD controller forces a speech stop `audio_idle_timeout` (1.0 s,
 # wall clock) after frames stop arriving. On the buffered uplink frames stop
 # arriving exactly when the link stalls, the hold already keeps the *turn*
@@ -1264,14 +1268,50 @@ class TranscriptStartedTurnStop(TurnAnalyzerUserTurnStopStrategy):
 # Opus and nothing else.
 
 
+# A page that declared the channel and then delivers nothing — the tap's
+# worker script missing from the deployed `dist`, a browser whose transform
+# attaches but never fires — would be a call nobody could hear, silently,
+# with RTP carrying the voice past a parked reader. Both ends watch for it:
+# the page waits for its worker to say it loaded and for a first frame; the
+# worker, which can act without a round trip, starts reading RTP if no batch
+# has reached it this long after the transport came up (review of #231).
+UPLINK_DEAF_SECS = 6.0
+
+
 class UplinkInput(SmallWebRTCInputTransport):
     """The transport input with the RTP audio reader parked: audio arrives
-    through `UplinkAudio.push_pcm` → `push_audio_frame` instead."""
+    through `UplinkAudio.push_pcm` → `push_audio_frame` instead — unless
+    nothing does, in which case the reader is started after all."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.injected = 0
+        self.rtp_fallback = False
+        self._deaf_task = None
 
     async def _receive_audio(self):
         from loguru import logger
 
         logger.info("uplink: RTP audio left unread — speech arrives over the data channel")
+        self._deaf_task = self.create_task(self._watch_for_deafness())
+
+    async def _watch_for_deafness(self):
+        from loguru import logger
+
+        await asyncio.sleep(UPLINK_DEAF_SECS)
+        if self.injected or self.rtp_fallback:
+            return
+        self.rtp_fallback = True
+        logger.error(
+            f"uplink: no audio batch in {UPLINK_DEAF_SECS:.0f}s after the page declared the "
+            "channel — reading RTP after all, so the call is not deaf; the page's tap did "
+            "not deliver (is voice-uplink-transform.js deployed?)"
+        )
+        await super()._receive_audio()
+
+    async def push_audio_frame(self, frame):
+        self.injected += 1
+        await super().push_audio_frame(frame)
 
 
 class UplinkTransport(SmallWebRTCTransport):
@@ -1341,8 +1381,20 @@ class UplinkAudio:
         self._late_from: float | None = None
         self._late_to: float = 0.0
         self._late_dropped_ms = 0.0
-        self._late_task = None
+        self._settle_task = None
         self._rest = b""
+        # One ordered queue of delivery work, one consumer, nothing ever
+        # cancelled. pipecat runs each client-message handler as its own
+        # task, so `on_audio` must decide and enqueue before its first
+        # `await` or two batches could interleave; and a flush must never
+        # be a cancellable task's body — the first cut's settle timer *was*
+        # the flush after its sleep, and a late batch arriving mid-flush
+        # cancelled the turn being transcribed with the audio already moved
+        # into locals: minutes of speech gone without a log (review of
+        # #231). Here the timer only enqueues.
+        self._work: asyncio.Queue = asyncio.Queue()
+        self._consumer = None
+        self._rtp_fallback_warned = False
         self.batches = 0
         self.late_turns = 0
 
@@ -1367,11 +1419,38 @@ class UplinkAudio:
                     out += r.to_ndarray().tobytes()
         return bytes(out)
 
-    async def on_audio(self, d: dict):
-        """One batch. Live batches go straight into the transport's audio
-        queue; late ones accumulate into a span that is transcribed whole."""
+    def _ensure_consumer(self):
+        if self._consumer is None or self._consumer.done():
+            self._consumer = asyncio.get_event_loop().create_task(self._consume())
+
+    async def _consume(self):
         from loguru import logger
 
+        while True:
+            item = await self._work.get()
+            try:
+                await item()
+            except Exception as e:  # noqa: BLE001 - one item must not end delivery
+                logger.error(f"uplink: delivery failed ({e.__class__.__name__}: {e})")
+            finally:
+                self._work.task_done()
+
+    async def drain(self):
+        """Wait until everything enqueued so far has been delivered."""
+        await self._work.join()
+
+    async def on_audio(self, d: dict):
+        """One batch. Everything here up to the enqueue is synchronous, so
+        batches are delivered in the order they arrived whatever pipecat
+        does with the handler tasks. Live batches go to the transport's
+        audio queue; late ones accumulate into a span transcribed whole."""
+        from loguru import logger
+
+        if getattr(self._input, "rtp_fallback", False):
+            if not self._rtp_fallback_warned:
+                self._rtp_fallback_warned = True
+                logger.warning("uplink: batches arriving after the RTP fallback started — ignored, not doubled")
+            return
         seq = int(d.get("seq") or 0)
         if self._expect_seq is not None and seq != self._expect_seq:
             logger.warning(f"uplink: batch {seq} after {self._expect_seq - 1} — the channel reordered or dropped")
@@ -1386,6 +1465,7 @@ class UplinkAudio:
         self.batches += 1
         self._link.note_uplink(_time.monotonic(), backlog_ms)
         pcm = self._decode(frames)
+        self._ensure_consumer()
         if lane_for(backlog_ms) == "late":
             if self._late_from is None:
                 self._late_from = start_ms
@@ -1395,11 +1475,11 @@ class UplinkAudio:
             self._arm_late_settle()
             return
         # Live: a span that was being assembled is closed first, so its turn
-        # precedes the speech that ended it.
-        await self.flush_late()
+        # precedes the speech that ended it — both are queue items, in order.
+        self._work.put_nowait(self.flush_late)
         if dropped_ms:
             logger.warning(f"uplink: the page dropped {dropped_ms / 1000:.0f}s of audio before batch {seq}")
-        await self.push_pcm(pcm)
+        self._work.put_nowait(lambda: self.push_pcm(pcm))
 
     async def push_pcm(self, pcm: bytes):
         """Into the transport's own queue, in 20 ms frames, as RTP audio was.
@@ -1416,15 +1496,18 @@ class UplinkAudio:
         self._rest = buf[whole:]
 
     def _arm_late_settle(self):
+        """A span with no batch after it for `LATE_SETTLE_SECS` is closed.
+        The timer only enqueues the flush; cancelling it cancels a sleep and
+        nothing else."""
         loop = asyncio.get_event_loop()
-        if self._late_task and not self._late_task.done():
-            self._late_task.cancel()
+        if self._settle_task and not self._settle_task.done():
+            self._settle_task.cancel()
 
         async def settle():
             await asyncio.sleep(LATE_SETTLE_SECS)
-            await self.flush_late()
+            self._work.put_nowait(self.flush_late)
 
-        self._late_task = loop.create_task(settle())
+        self._settle_task = loop.create_task(settle())
 
     async def flush_late(self):
         """Transcribe the assembled span and put it to the model as one
@@ -1446,7 +1529,9 @@ class UplinkAudio:
         if not text:
             logger.info(f"uplink: late span {from_ms:.0f}–{to_ms:.0f} ms held no speech")
             return
-        for _ in range(300):
+        # Never interrupts — within reason: the queue behind this holds live
+        # speech, so the wait for the bot to finish is bounded.
+        for _ in range(int(LATE_BOT_WAIT_SECS * 10)):
             if not getattr(self._stt, "_bot_speaking", False):
                 break
             await asyncio.sleep(0.1)
@@ -1460,11 +1545,19 @@ class UplinkAudio:
         )
 
     async def _transcribe(self, pcm: bytes) -> str:
+        """In pieces of `LATE_CHUNK_SECS`. A tail too short to be speech on
+        its own is joined to the piece before it rather than skipped — a
+        span just past a boundary must not lose its last word (review of
+        #231); only a whole span under the floor is nothing."""
         chunk = int(LATE_CHUNK_SECS * 16000 * 2)
+        floor = int(16000 * 2 * MIN_SEGMENT_SECONDS)
+        pieces = [pcm[i : i + chunk] for i in range(0, len(pcm), chunk)]
+        if len(pieces) > 1 and len(pieces[-1]) < floor:
+            tail = pieces.pop()
+            pieces[-1] += tail
         parts = []
-        for i in range(0, len(pcm), chunk):
-            piece = pcm[i : i + chunk]
-            if len(piece) < 16000 * 2 * MIN_SEGMENT_SECONDS:
+        for piece in pieces:
+            if len(piece) < floor:
                 continue
             r = await self._stt._client.audio.transcriptions.create(
                 model="parakeet", file=("late.wav", _wav16(piece), "audio/wav")

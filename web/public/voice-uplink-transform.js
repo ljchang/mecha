@@ -17,6 +17,12 @@
    Tapping the *encoded* stream is deliberate: attaching WebAudio to a
    microphone track silently disables echo cancellation in WebKit (the page
    records the incident), and this path touches no track at all. */
+/* Said first, so the page can prove this file loaded before it declares
+   the channel in the offer: a 404 or a parse error surfaces only as an
+   asynchronous error, and a tap that attached but never delivers is a
+   call nobody can hear (review of #231). */
+self.postMessage({ ready: true });
+
 onrtctransform = (event) => {
   const { readable, writable } = event.transformer;
   const tap = new TransformStream({
