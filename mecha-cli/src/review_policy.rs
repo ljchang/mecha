@@ -535,6 +535,11 @@ mod tests {
             "send it to Thea instead",
             "no wait what did you put in the subject line",
             "ok so what about Thursday",
+            // `but` must never become a connective: these two have no
+            // residue beyond it, so they are the only lines here that would
+            // release if it did (review of #228).
+            "yes but send it",
+            "go ahead but wait",
         ] {
             assert_eq!(
                 parse_answer(said),
