@@ -3903,13 +3903,20 @@ impl Agent {
                     },
                 ) {
                     Ok(item) => {
+                        // The review sentence is the surface's when it has
+                        // one: "review it with `mecha outbox`" is true at a
+                        // terminal and false on a call, and a model repeats
+                        // what it is told.
                         let mut content = format!(
                             "Drafted, not sent: this call is staged in the outbox as \
-                             `{}`. The user will review it with `mecha outbox` and \
-                             release or reject it. Report it to the user as a draft \
+                             `{}`. {} Report it to the user as a draft \
                              awaiting their release — never as done — and do not \
                              retry the call.",
-                            item.id
+                            item.id,
+                            cx.tools.review_hint.as_deref().unwrap_or(
+                                "The user will review it with `mecha outbox` and \
+                                 release or reject it."
+                            )
                         );
                         if cx.tools.goal_guidance {
                             if let Some(p) = item
@@ -10704,6 +10711,34 @@ mod tests {
         assert_eq!(items[0].session_id.as_deref(), Some("sess-42"));
         assert!(!outcome.taint.private && !outcome.taint.untrusted);
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The staged result tells the model how the user will review; on a
+    /// surface that says how, the core says that and not the CLI. The
+    /// 2026-09-13 voice call: the model sent a listener to `mecha outbox`
+    /// because its tool result had.
+    #[tokio::test]
+    async fn a_surface_with_a_review_hint_is_not_sent_to_the_cli() {
+        let (mut agent, _) = agent_with(send_turns(), PermissionMode::ReadOnly);
+        agent.registry.insert(Arc::new(MustNotRun));
+        let (route, root) = outbox_route("hint");
+        agent.set_outbox(Arc::clone(&route));
+        Arc::make_mut(&mut agent.cx).tools = Arc::new(ToolCtx {
+            review_hint: Some("The user will be asked aloud.".into()),
+            ..(*agent.cx.tools).clone()
+        });
+
+        let mut convo = Conversation::from(vec![Message::user("send it")]);
+        agent.run(&mut convo, None).await.unwrap();
+        match &convo.messages[2].content[0] {
+            Block::ToolResult { content, .. } => {
+                assert!(content.contains("Drafted, not sent"), "{content}");
+                assert!(content.contains("asked aloud"), "{content}");
+                assert!(!content.contains("mecha outbox"), "{content}");
+            }
+            other => panic!("expected a staged result, got {other:?}"),
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -84,8 +84,23 @@ doing. When a message, email or calendar change was staged for review \
 rather than sent, say one short clause and nothing more -- \"That is \
 drafted.\" -- and do NOT describe what is in it or where it is waiting: \
 the harness reads the draft back word for word and asks whether to send \
-it, so anything you add is the same thing said twice. Keep replies brief \
+it, so anything you add is the same thing said twice. Do not end a reply \
+that staged something with a question of your own: the harness is about \
+to ask one. If the user asks how to send, approve or release a draft, \
+tell them to say yes once it has been read back; never send them to a \
+command, a page or an outbox. Keep replies brief \
 unless the user asks you to go deep.";
+
+/// Appended to the staged-draft tool result on a spoken turn
+/// (`ToolCtx::review_hint`), in place of the sentence naming `mecha outbox`.
+///
+/// On 2026-09-13 the model answered the owner's spoken "go ahead and send it"
+/// with *"You'll need to review and send it through `mecha outbox`"* — a
+/// faithful repetition of what its tool result had told it, on the one
+/// surface where it is untrue. The core composes that result without
+/// knowing which surface is listening; this is the surface saying.
+pub(crate) const SPOKEN_REVIEW_HINT: &str = "The user will be asked aloud whether to send it, \
+right after this reply; they answer by saying yes or later.";
 
 // ------------------------------------------------------- the hosted door
 //
@@ -1366,7 +1381,8 @@ async fn hosted_completion(
         // path speaks a single JSON body, so its reply *is* the final turn.
         Ok(a) => {
             let spoken = if want_stream { &said } else { &a.text };
-            offer_for_turn(shared, baseline, spoken).await
+            let carry = shared.confirmations.take_carry(confirm_key).await;
+            offer_for_turn(shared, baseline, spoken, carry).await
         }
         Err(_) => None,
     };
@@ -1452,13 +1468,27 @@ async fn offer_for_turn(
     shared: &Arc<Shared>,
     baseline: &Option<std::collections::HashSet<String>>,
     reply: &str,
+    carry: Option<confirm::Carry>,
 ) -> Option<confirm::Offer> {
     let baseline = baseline.as_ref()?;
     let staged = crate::review_policy::staged_since(
         OutboxStore::open(&shared.outbox_root).ok()?.items().ok()?,
         baseline,
     );
-    confirm::compose_offer(&staged, reply)
+    // Re-read, not remembered: a carried draft sent from the page in the
+    // meantime is not pending any more, and `item_now` says so by absence.
+    let carried_item = match &carry {
+        Some(confirm::Carry::Reask(id) | confirm::Carry::Settle(id)) => {
+            confirm::item_now(&shared.outbox_root, id)
+        }
+        None => None,
+    };
+    let carried = match (&carry, &carried_item) {
+        (Some(confirm::Carry::Reask(_)), Some(item)) => Some(confirm::Carried::Reask(item)),
+        (Some(confirm::Carry::Settle(_)), Some(item)) => Some(confirm::Carried::Settle(item)),
+        _ => None,
+    };
+    confirm::compose_offer_after(carried, &staged, reply)
 }
 
 /// Arm the question — **only once the offer has actually gone out.**
@@ -1765,6 +1795,12 @@ async fn completion(
         {
             return handled;
         }
+        // Not an answer: the words go to the model below, and the draft is
+        // asked about again after the reply (`Confirmations::carry_unanswered`).
+        shared
+            .confirmations
+            .carry_unanswered(&confirm_key, &pending)
+            .await;
     }
 
     // What was already waiting before this turn. Taken here, before anything
@@ -1840,6 +1876,12 @@ async fn completion(
     // Through the builder, not a field write: the slot's handle carries this
     // run's own reason cell.
     cx = cx.with_cancel_handle(cancel.clone());
+    // The staged-draft result names this surface's review, so the model
+    // cannot send a listener to a command line (`SPOKEN_REVIEW_HINT`).
+    cx.tools = Arc::new(mecha_core::tool::ToolCtx {
+        review_hint: Some(SPOKEN_REVIEW_HINT.to_string()),
+        ..(*cx.tools).clone()
+    });
     // The facade's own slot is the *second* door a spoken turn can take, and
     // it needs the same narrowing the hosted one got.
     //
@@ -2047,7 +2089,8 @@ async fn completion(
     let offer = match &outcome {
         Ok(o) => {
             let spoken = if want_stream { &said } else { &o.text };
-            offer_for_turn(shared, &outbox_baseline, spoken).await
+            let carry = shared.confirmations.take_carry(&confirm_key).await;
+            offer_for_turn(shared, &outbox_baseline, spoken, carry).await
         }
         Err(_) => None,
     };

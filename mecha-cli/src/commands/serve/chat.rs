@@ -1602,6 +1602,13 @@ fn begin_turn(
     let mut cx = (**chat.agent.context()).clone();
     cx.tools = Arc::new(ToolCtx {
         workspace: ws.workspace.clone(),
+        // A spoken turn's staged drafts are reviewed by ear, and the model
+        // must be told so rather than told about a command line — the
+        // 2026-09-13 call, where it repeated the default sentence to a
+        // listener four times.
+        review_hint: opts
+            .spoken
+            .then(|| crate::voice::SPOKEN_REVIEW_HINT.to_string()),
         ..(*chat.agent.ctx()).clone()
     });
     cx.approver = if opts.approve_all {
