@@ -35,7 +35,7 @@ When you connect a Google account, mecha requests these OAuth scopes:
 | `gmail.modify` | Read your mail, change labels and read state, **report a thread as spam, and move a thread to the trash**. Trashing is recoverable and spam also trains your provider's filter. It stops deliberately short of `https://mail.google.com/`, so it does **not** allow permanent deletion. |
 | `gmail.send` | Send mail. |
 | `calendar` | Full access to your calendars — read, create, update and **delete** events, and read free/busy time. Deletion is a shipped capability, not a theoretical one. |
-| `calendar.events` | Create and update individual events — for example, turning a confirmed booking into a meeting on your calendar. |
+| `calendar.events` | Create, update and delete individual events — for example, turning a confirmed booking into a meeting on your calendar, or removing one that was cancelled. |
 
 Google Docs support is a **separate, optional grant** with its own OAuth client
 and its own token file. It asks for one scope, `drive.file`, which gives access
