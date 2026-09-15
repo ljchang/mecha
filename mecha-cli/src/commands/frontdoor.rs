@@ -208,8 +208,13 @@ fn list(store: &Frontdoor, state: Option<&str>) -> Result<()> {
 /// runs UTC and the model has no clock, which is why this is an IANA name in
 /// config and never an offset.
 fn owner_timezone() -> Option<chrono_tz::Tz> {
-    let cwd = std::env::current_dir().ok()?;
-    mecha_core::config::Config::load(&cwd)
+    // `load_global`, not `load(&cwd)`: the project layer would let a cloned
+    // repo vote on the zone a stranger's booking renders in, and the same
+    // command would answer differently from two directories. The request
+    // store lives in `~/.mecha/`, so its zone is the global one — the same
+    // reasoning, and the same call, as the other readers of this setting
+    // for a `~/.mecha/` store (`commands/trigger.rs`, `tui/triggers.rs`).
+    mecha_core::config::Config::load_global()
         .ok()?
         .agent
         .timezone()

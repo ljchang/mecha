@@ -66,6 +66,15 @@ pub fn parse_record(record: &Value) -> Option<DrainedBooking> {
         return None;
     }
     let values = record["values"].as_object()?;
+    // A cancellation carries every key a confirmation does — the box sends
+    // `{_booking_id, _cancelled: true, _slot_start, _slot_end}` — so the
+    // withdrawal must be excluded by name rather than by which stamps
+    // happen to be missing. Without this, a cancellation whose original
+    // creation never reached the ledger parses as a fresh booking and the
+    // sweep creates an event for a slot the visitor gave back.
+    if values.get("_cancelled").and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
     let booking_id = values.get("_booking_id")?.as_str()?.to_string();
     let start = values.get("_slot_start")?.as_str()?.to_string();
     let end = values.get("_slot_end")?.as_str()?.to_string();
@@ -572,10 +581,15 @@ mod tests {
     /// cancellation is remembered apart from them.
     #[test]
     fn cancellations_parse_and_the_ledger_remembers_both_actions() {
+        // Both stamps, exactly as `manage_cancel` sends them. The fixture
+        // used to omit `_slot_end`, so "a cancellation is not a booking"
+        // passed because a key was missing rather than because the
+        // cancellation was recognised — and the real payload has it.
         let cancel = json!({
             "seq": 30, "type_id": "book", "valid": true,
             "values": {"_booking_id": "abc123", "_cancelled": true,
-                        "_slot_start": "2026-08-25T18:00:00Z"}
+                        "_slot_start": "2026-08-25T18:00:00Z",
+                        "_slot_end": "2026-08-25T18:30:00Z"}
         });
         assert_eq!(parse_cancellation(&cancel), Some((30, "abc123".into())));
         assert!(

@@ -105,10 +105,14 @@
   // machinery already answered. Kept on the page (the record is the archive)
   // but out of the queue, because a queue that lists finished work stops
   // reading as a queue.
-  const queue = $derived((rows ?? []).filter((r) => !r.booking?.settled));
+  // `state === 'booked'`, not "is this a booking": a booking somebody later
+  // closed by hand with a reason is not filed under "nothing owed". The
+  // terminal renderer gates the same sentence on the same state.
+  const settled = (r) => r.state === 'booked';
+  const queue = $derived((rows ?? []).filter((r) => !settled(r)));
   const booked = $derived(
     (rows ?? [])
-      .filter((r) => r.booking?.settled)
+      .filter(settled)
       .sort((a, b) => new Date(b.booking.start) - new Date(a.booking.start)),
   );
   let showBooked = $state(false);
@@ -201,24 +205,26 @@
     </div>
     {#if reading.text !== null}
       <div class="actionbar">
-        <!-- A settled booking gets no primary action, because there is no
-             action owed. Drafting a reply is still *possible* — it is how you
-             say "actually, can we move this" — but it stops being the thing
-             the page suggests you do, which is what made every confirmed
-             meeting look like unanswered mail. -->
-        {#if reading.row.booking?.settled}
-          <button class="abtn" disabled={busy} onclick={async () => { if (await act('triage', reading.row)) back(); }}>Reply anyway…</button>
+        <!-- A settled booking gets no draft action at all. It briefly had a
+             "Reply anyway…" button, which could not work: `frontdoor triage`
+             selects on `state == EXTRACTED` and a settled booking is never
+             extracted, so the detached child printed `nothing to triage` and
+             the page reported success for a draft that was never coming.
+             Proposing another time needs the decline path, which does not
+             exist yet — a dead button is worse than an absent one. -->
+        {#if settled(reading.row)}
+          <!-- nothing to draft; Close… below is the real action -->
         {:else if ['drained', 'extraction_failed'].includes(reading.row.state)}
           <button class="abtn primary" disabled={busy} onclick={async () => { if (await act('extract', reading.row)) back(); }}>Extract</button>
         {:else}
           <button class="abtn primary" disabled={busy} onclick={async () => { if (await act('triage', reading.row)) back(); }}>Draft a reply…</button>
         {/if}
-        {#if !reading.row.booking?.settled}
+        {#if !settled(reading.row)}
           <button class="abtn" disabled={busy} onclick={() => prompt('needs-info', 'What is missing before this can proceed?', 'which dates they need')}>Park…</button>
         {/if}
         <button class="abtn" disabled={busy} onclick={() => prompt('close', 'Why? The reason is the record.', 'out of scope — not taking new students', true)}>Close…</button>
       </div>
-      {#if reading.row.booking?.settled}
+      {#if settled(reading.row)}
         <div class="barnote">Confirmed at the gate and on your calendar — the invite went from your own mailbox. Nothing here is waiting on you.</div>
       {:else}
         <div class="barnote">Drafted replies land in the outbox for review — nothing sends from here.</div>

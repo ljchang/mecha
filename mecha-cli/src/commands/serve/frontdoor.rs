@@ -45,18 +45,23 @@ pub async fn list(State(_state): St) -> Response {
                 "reading": r.extraction.as_ref().map(|x| x.reading.clone()),
                 "urgency_claimed": r.extraction.as_ref().map(|x| x.urgency_claimed.clone()),
                 "extraction_error": r.extraction_error,
-                // The meeting, when this record is one. Stamps go over as
-                // RFC 3339 and the page renders them in the *viewer's* zone —
-                // the phone in your hand knows where it is, and this page is
-                // only ever read by its owner. `settled` is the server's
-                // answer, never re-derived in JavaScript: which bookings need
-                // a decision is a policy question and it has one home.
+                // The meeting, when this record is one — facts only. Stamps
+                // go over as RFC 3339 and the page renders them in the
+                // *viewer's* zone: the phone in your hand knows where it is,
+                // and this page is only ever read by its owner.
+                //
+                // Deliberately no `settled` flag. The page needs to know
+                // whether this record owes anybody anything, and that is the
+                // **state**, not the policy predicate — `is_settled_booking()`
+                // stays true for a booking a person later closed by hand with
+                // a reason, which would have filed it under "nothing owed"
+                // beside a `closed` chip. `show` gates that same sentence on
+                // `state == BOOKED`, and now so does the page.
                 "booking": r.booking().map(|b| serde_json::json!({
                     "start": b.start,
                     "end": b.end,
                     "duration_minutes": b.duration_minutes,
                     "manage_url": b.manage_url,
-                    "settled": r.is_settled_booking(),
                 })),
                 // Prose is never in the list payload — it opens only through
                 // the read endpoint, which is a person's explicit act. The

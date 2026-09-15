@@ -880,7 +880,7 @@ fn collect_queues() -> Vec<Queue> {
             // rather than by backlog.
             let open: Vec<_> = records
                 .iter()
-                .filter(|r| r.state != frontdoor::CLOSED)
+                .filter(|r| frontdoor::counts_as_open(&r.state))
                 .collect();
             let failed = open
                 .iter()

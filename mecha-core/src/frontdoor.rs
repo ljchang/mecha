@@ -391,6 +391,22 @@ impl Record {
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
         };
+        // A cancellation is not a booking, and it carries the same stamps.
+        // The box's withdrawal payload is `{_booking_id, _cancelled: true,
+        // _slot_start, _slot_end}` — every key a confirmation has — so
+        // without this check a *withdrawn* meeting parses as a settled one,
+        // leaves the queue, and `show` tells the owner it is on their
+        // calendar. `mecha_mail::bookings` splits the two with
+        // `parse_cancellation`; this is the same split, and the two sides
+        // must agree or one of them acts on a meeting the other cancelled.
+        if self
+            .values
+            .get("_cancelled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return None;
+        }
         let booking_id = text("_booking_id")?;
         let (start, end) = (text("_slot_start")?, text("_slot_end")?);
         for stamp in [&start, &end] {
@@ -531,20 +547,6 @@ impl Frontdoor {
         Ok(())
     }
 
-    /// Advance anything whose draft has since been released or rejected.
-    ///
-    /// **The outbox is the truth about a draft, and this store is the truth
-    /// about a request.** Neither writes into the other; this reads the first
-    /// and updates the second, which is why releasing a draft with
-    /// `mecha outbox send` — a different process, hours later, knowing nothing
-    /// about requests — still closes the loop. The alternative was a callback
-    /// from the outbox, which would have made every sink in the system learn
-    /// what a request is.
-    ///
-    /// Called before `list` and `next` rather than only on demand: a state
-    /// that is only correct after you remember to run a verb is a state nobody
-    /// can trust, and the whole point of `awaiting_me` is that it answers
-    /// "what is on me right now".
     /// Move settled bookings to [`BOOKED`], so nothing downstream treats a
     /// confirmed meeting as an open question.
     ///
@@ -594,6 +596,20 @@ impl Frontdoor {
         Ok(moved)
     }
 
+    /// Advance anything whose draft has since been released or rejected.
+    ///
+    /// **The outbox is the truth about a draft, and this store is the truth
+    /// about a request.** Neither writes into the other; this reads the first
+    /// and updates the second, which is why releasing a draft with
+    /// `mecha outbox send` — a different process, hours later, knowing nothing
+    /// about requests — still closes the loop. The alternative was a callback
+    /// from the outbox, which would have made every sink in the system learn
+    /// what a request is.
+    ///
+    /// Called before `list` and `next` rather than only on demand: a state
+    /// that is only correct after you remember to run a verb is a state nobody
+    /// can trust, and the whole point of `awaiting_me` is that it answers
+    /// "what is on me right now".
     pub fn reconcile(&self, outbox: &crate::outbox::OutboxStore) -> Result<Vec<Transition>> {
         let items = outbox.items()?;
         let mut moved = Vec::new();
@@ -712,6 +728,22 @@ pub const WAITING_ON_OWNER: [&str; 3] = [EXTRACTED, AWAITING_ME, TRIAGED];
 
 pub fn waiting_on_owner(state: &str) -> bool {
     WAITING_ON_OWNER.contains(&state)
+}
+
+/// Whether a request still counts as **open work** on the queue surfaces —
+/// `/queues`' front-door row and the backlog's depth.
+///
+/// Both used to ask only "is it not `closed`", on the reasoning that anything
+/// else is still somebody's problem. A confirmed booking is nobody's problem:
+/// it was settled by machinery on arrival, and bookings arrive at a far higher
+/// rate than requests do, so counting them is precisely how a review queue
+/// comes to read as a backlog of work that already happened.
+///
+/// `answered` deliberately stays *in*. It means a draft was released, and both
+/// surfaces have always counted those until somebody closes them; narrowing
+/// that is a separate decision from this one.
+pub fn counts_as_open(state: &str) -> bool {
+    state != CLOSED && state != BOOKED
 }
 
 impl Record {
@@ -1002,6 +1034,38 @@ mod tests {
         assert_eq!(booking.end, "2026-09-16T15:00:00Z");
         assert_eq!(booking.duration_minutes, Some(60));
         assert!(booking.manage_url.is_some());
+    }
+
+    /// A visitor's cancellation carries **every key a confirmation does** —
+    /// `manage_cancel` sends `{_booking_id, _cancelled, _slot_start,
+    /// _slot_end}` — so the withdrawal has to be excluded by name. Without
+    /// that, the front door files a cancelled meeting as settled and tells
+    /// its owner it is on their calendar with nothing waiting on them.
+    #[test]
+    fn a_cancellation_is_not_a_booking() {
+        let mut record = booking_record();
+        record.values.insert("_cancelled".into(), json!(true));
+        assert!(record.booking().is_none());
+        assert!(!record.is_settled_booking());
+
+        let stores = Stores::new("cancel");
+        stores.front.write(&record).unwrap();
+        assert!(
+            stores.front.settle_bookings().unwrap().is_empty(),
+            "a cancellation must stay in the queue for a person"
+        );
+    }
+
+    /// `booked` is finished work; `answered` deliberately is not, because the
+    /// queue surfaces have always counted a released draft until somebody
+    /// closes it.
+    #[test]
+    fn a_booked_request_is_not_open_work_but_an_answered_one_still_is() {
+        assert!(!counts_as_open(BOOKED));
+        assert!(!counts_as_open(CLOSED));
+        assert!(counts_as_open(ANSWERED));
+        assert!(counts_as_open(EXTRACTED));
+        assert!(counts_as_open(AWAITING_ME));
     }
 
     /// An ordinary request is not a booking, so nothing here changes what the

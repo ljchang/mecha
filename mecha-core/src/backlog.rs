@@ -203,7 +203,7 @@ impl Backlog {
     ) -> (Depth, Depth) {
         let open: Vec<_> = records
             .iter()
-            .filter(|r| r.state != frontdoor::CLOSED)
+            .filter(|r| frontdoor::counts_as_open(&r.state))
             .collect();
         let on_owner: Vec<_> = records
             .iter()
