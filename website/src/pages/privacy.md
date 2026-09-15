@@ -23,23 +23,30 @@ person's Google data, and has no ability to read it.
 
 When you connect a Google account, mecha requests these OAuth scopes:
 
-| Scope | Why it is needed |
+| Scope | What it allows |
 | --- | --- |
-| `gmail.modify` | Read your mail so you can ask questions about it, and change message labels and read state during triage. It does **not** include permanent deletion. |
-| `gmail.send` | Send mail you have reviewed and approved. |
-| `calendar` | Read your calendar so scheduling questions can be answered, and see free/busy time. |
-| `calendar.events` | Create and update events — for example, turning a confirmed booking into a meeting on your calendar. |
+| `gmail.modify` | Read your mail, and change labels and read state during triage. It stops deliberately short of `https://mail.google.com/`, so it does **not** allow permanent deletion. |
+| `gmail.send` | Send mail. |
+| `calendar` | Full access to your calendars — read, create, update and **delete** events, and read free/busy time. Deletion is a shipped capability, not a theoretical one. |
+| `calendar.events` | Create and update individual events — for example, turning a confirmed booking into a meeting on your calendar. |
 
-mecha asks for these only if you choose to connect a Google account. Connecting
-one is optional; mecha runs without any mail or calendar access at all.
+Google Docs support is a **separate, optional grant** with its own OAuth client
+and its own token file. It asks for one scope, `drive.file`, which gives access
+only to files you explicitly pick and files the app itself creates — never your
+whole Drive.
+
+mecha asks for any of this only if you choose to connect an account. Connecting
+one is optional; mecha runs with no mail, calendar or document access at all.
 
 ## Where the data goes
 
 **It stays on your computer.** Specifically:
 
-- **OAuth tokens** are written to `~/.mecha/mail/<account>/oauth.json` on your own
-  machine, with owner-only file permissions. They are never transmitted anywhere
-  except to Google, to refresh themselves.
+- **OAuth tokens** are written on your own machine — mail and calendar at
+  `~/.mecha/mail/<account>/oauth.json`, documents at
+  `~/.mecha/docs/<account>/oauth.json` — with owner-only permissions (`0600` on
+  the file, `0700` on the directory). They are never transmitted anywhere except
+  to Google, to refresh themselves.
 - **Message and calendar content** is read on demand over the network from Google
   to your machine. Anything cached is written under `~/.mecha/` on the same machine.
 - **Nothing is sent to the maintainer.** There is no telemetry, no analytics, no
@@ -66,6 +73,12 @@ Neither choice sends anything to the maintainer of mecha. If you want to know
 which applies to your installation, `default_provider` in your configuration file
 is the answer.
 
+Two further destinations exist if you enable them, and both are your
+configuration to make: **web search backends**, which receive the search queries
+mecha issues (a query is itself a channel, which is why mecha treats search as
+outbound), and **MCP servers** you connect, which receive whatever the tool call
+you asked for sends them. mecha ships with neither pointed anywhere by default.
+
 mecha never sells Google user data, never uses it for advertising, and never uses
 it to train a model. It is not shared with any third party other than the model
 provider you yourself configure, as described above.
@@ -78,18 +91,32 @@ including the Limited Use requirements.
 
 ## Sending is not automatic
 
-Worth stating because it is unusual: mecha does not send mail on your behalf
-without your review. Outbound messages are staged as drafts in a local review
-queue, and a person has to read and release each one before it leaves. Calendar
-invitations for meetings that a visitor booked through your own published booking
-page are the deliberate exception, because you approved those slots when you
-published them.
+mecha can route outbound tools through a local review queue: a call becomes a
+draft, and nothing leaves until a person reads it and releases it. **This is off
+until you turn it on** — the setting is `[outbox] tools` and it is empty by
+default, because routing a tool is a policy decision rather than something to
+assume. Configured, it is the strongest guarantee here. Unconfigured, a send is
+a send.
+
+Two things send without passing through that queue even when it is configured,
+and both are worth knowing:
+
+- **Creating a calendar event with attendees notifies them immediately.** mecha
+  sets `sendUpdates=all`, so the provider mails an invitation from your account
+  the moment the event exists. This is true of any event with attendees, not
+  only booked meetings.
+- **Bookings taken through your own published booking page** become calendar
+  events by a scheduled, deterministic path with no model and no review step.
+  That is deliberate: you approved those slots when you published them, and a
+  visitor who books one should not wait on you to find out whether it took.
 
 ## Retention and deletion
 
 All of it is on your machine, so you control it directly:
 
-- **Disconnect one account:** delete `~/.mecha/mail/<account>/`.
+- **Disconnect one mail/calendar account:** delete `~/.mecha/mail/<account>/`.
+- **Disconnect a documents account:** delete `~/.mecha/docs/<account>/`. This is
+  a separate grant, so removing the mail one does not revoke it.
 - **Remove everything:** delete `~/.mecha/`.
 - **Revoke access from Google's side:** visit
   [myaccount.google.com/permissions](https://myaccount.google.com/permissions)

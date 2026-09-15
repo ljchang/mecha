@@ -46,9 +46,11 @@ By running mecha you agree that:
   connect — including [Google's Terms of Service](https://policies.google.com/terms)
   when you connect a Google account.
 - **The sending is yours.** Mail, calendar invitations and anything else mecha
-  sends go out under your own identity, from your own accounts. You are
-  responsible for what leaves, which is the reason outbound messages are staged
-  for your review rather than sent automatically.
+  sends go out under your own identity, from your own accounts, and you are
+  responsible for what leaves. mecha can stage outbound calls as drafts for you
+  to review first, but that routing is **off by default** and some paths — a
+  calendar invitation to an attendee, a booking taken through your own published
+  page — send without it. The [privacy policy](/privacy) says which.
 - **The model is your choice.** If you configure a hosted model provider, you
   are bound by that provider's terms as well, and the content you hand mecha is
   sent to them. See the [privacy policy](/privacy) for what that means.
