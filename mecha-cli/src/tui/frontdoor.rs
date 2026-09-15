@@ -48,6 +48,14 @@ pub struct RequestRow {
     /// The sweep found this booking's slot already taken, so no event exists.
     /// The one shape where "nobody is being waited on" is false.
     pub collided: bool,
+    /// Whether a plain `frontdoor extract` would do anything to this record.
+    ///
+    /// `inert` asks with `force: true` on purpose — "already extracted" is not
+    /// inert, it is done. But `x` spawns the *un*-forced verb, so an extracted
+    /// row passed every gate, the child printed `nothing to extract`, exited 0,
+    /// and the watch announced "still extracted after 30m". The last dead key
+    /// in this modal, and the same shape as the three before it.
+    pub extractable: bool,
     pub valid: bool,
     /// The full detail view, prose included, prebuilt like the outbox rows.
     pub detail: Vec<Line<'static>>,
@@ -305,6 +313,7 @@ fn row(record: &Record, tz: Option<chrono_tz::Tz>) -> RequestRow {
         valid: record.valid,
         inert: crate::commands::frontdoor::inert(record),
         collided: record.collided,
+        extractable: crate::commands::frontdoor::extractable(record, false),
         detail: detail_lines(record),
     }
 }

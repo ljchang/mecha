@@ -328,6 +328,16 @@ pub struct Swept {
     /// no event, no invite, and its ledger never retries. A person is owed
     /// these, so they stay in the queue and say why.
     pub conflicted: std::collections::BTreeSet<String>,
+    /// Booking ids whose calendar event the sweep has actually **deleted**.
+    ///
+    /// The mail crate appends this line only after the delete succeeds, so it
+    /// is positive evidence in the same way `created` is — and the withdrawal
+    /// arm needs it for the same reason. Saying "it is no longer on your
+    /// calendar" on the strength of the request store alone is the same
+    /// unrecoverable false assertion `created` exists to prevent, reached from
+    /// the other direction: the visitor cancels, this store closes the record
+    /// terminally, and the event is still sitting there until the next sweep.
+    pub cancelled: std::collections::BTreeSet<String>,
 }
 
 /// The booking machinery on a record, when it carries any.
@@ -746,29 +756,37 @@ impl Frontdoor {
                             .to_string(),
                     ),
                     (None, Some(b)) if cancelled.contains(&b.booking_id) => {
-                        Some(
-                            if !record.collided && !swept.created.contains(&b.booking_id) {
-                                // Cancelled inside the drain→sweep window, so no
-                                // event was ever made for it either. Transient,
-                                // but the same false assertion the collided branch
-                                // below exists to avoid — and `swept` is already
-                                // in hand, so there is no reason to guess.
-                                "the requester cancelled this booking before it reached your \
-                             calendar"
-                                    .to_string()
-                            } else if record.collided && !swept.created.contains(&b.booking_id) {
-                                // It never reached the calendar, so "no longer on
-                                // your calendar" would be true of the record and
-                                // false of the calendar.
-                                "the requester cancelled this booking; its slot had already \
+                        // Four states, four sentences, and the point of each is
+                        // that it is true of the **calendar** — which the
+                        // request store alone can never tell you. Saying "no
+                        // longer on your calendar" and going terminal on this
+                        // store's word is the same unrecoverable false
+                        // assertion `created` exists to prevent, reached from
+                        // the other direction.
+                        let created = swept.created.contains(&b.booking_id);
+                        Some(if record.collided && !created {
+                            "the requester cancelled this booking; its slot had already \
                              collided, so no event was ever created"
-                                    .to_string()
-                            } else {
-                                "the requester cancelled this booking; it is no longer on your \
+                                .to_string()
+                        } else if !created {
+                            // Cancelled inside the drain→sweep window: nothing
+                            // was ever made for it.
+                            "the requester cancelled this booking before it reached your \
                              calendar"
-                                    .to_string()
-                            },
-                        )
+                                .to_string()
+                        } else if swept.cancelled.contains(&b.booking_id) {
+                            "the requester cancelled this booking; the event has been \
+                             removed from your calendar"
+                                .to_string()
+                        } else {
+                            // Created, and the sweep has not withdrawn it yet.
+                            // The ledger writes `cancelled` only after the
+                            // delete succeeds, so until that line exists the
+                            // meeting is still on the calendar.
+                            "the requester cancelled this booking; the sweep has not yet \
+                             removed the event from your calendar"
+                                .to_string()
+                        })
                     }
                     _ => None,
                 };
@@ -1282,6 +1300,7 @@ mod tests {
         Swept {
             created,
             conflicted: Default::default(),
+            cancelled: Default::default(),
         }
     }
 
@@ -1292,6 +1311,7 @@ mod tests {
             conflicted: ["2f6d21b33b6273fe41d4bf22b9bce655".to_string()]
                 .into_iter()
                 .collect(),
+            cancelled: Default::default(),
         }
     }
 
@@ -1482,6 +1502,48 @@ mod tests {
             manage_url: None,
         }
         .is_past(t("2030-01-01T00:00:00Z")));
+    }
+
+    /// "It is no longer on your calendar" needs the ledger to say the event
+    /// was deleted, not merely that a withdrawal arrived. The ledger writes
+    /// `cancelled` only after the delete succeeds, so between the visitor's
+    /// click and the next sweep the meeting is still there.
+    #[test]
+    fn a_withdrawal_does_not_claim_the_event_is_gone_until_it_is() {
+        let stores = Stores::new("withdraw-wording");
+        let swept_created = swept(&[]);
+
+        let write_pair = || {
+            stores.front.write(&booking_record()).unwrap();
+            let mut withdrawal = booking_record();
+            withdrawal.seq = 11;
+            withdrawal.values.insert("_cancelled".into(), json!(true));
+            stores.front.write(&withdrawal).unwrap();
+        };
+
+        // Created, withdrawal seen, sweep has not deleted yet.
+        write_pair();
+        stores.front.settle_bookings(&swept_created).unwrap();
+        let note = stores.front.record(10).unwrap().note.unwrap();
+        assert!(
+            note.contains("has not yet removed"),
+            "the event is still on the calendar: {note}"
+        );
+
+        // Now the sweep has deleted it and said so in the ledger.
+        let mut after_delete = swept(&[]);
+        after_delete
+            .cancelled
+            .insert("2f6d21b33b6273fe41d4bf22b9bce655".to_string());
+        let mut reopened = booking_record();
+        reopened.state = DRAINED.into();
+        stores.front.write(&reopened).unwrap();
+        stores.front.settle_bookings(&after_delete).unwrap();
+        let note = stores.front.record(10).unwrap().note.unwrap();
+        assert!(
+            note.contains("has been\n removed") || note.contains("has been removed"),
+            "now it is gone, and the note may say so: {note}"
+        );
     }
 
     /// A collision a person closes is decided, so the doctor stops naming it.

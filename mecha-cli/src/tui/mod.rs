@@ -4390,6 +4390,13 @@ fn handle_frontdoor_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         "{} is booking machinery — there is nothing to extract",
                         row.seq
                     ));
+                } else if !row.extractable {
+                    // Already extracted. `inert` asks with `force: true`, so it
+                    // says nothing about the un-forced verb this key spawns.
+                    modal.status = Some(format!(
+                        "{} is already extracted — `t` triages it from here",
+                        row.seq
+                    ));
                 } else {
                     let (seq, state_before) = (row.seq, row.state.clone());
                     let spawned =

@@ -92,7 +92,11 @@ pub async fn list(State(_state): St) -> Response {
                 // requester's address is not prose: it is the value the box
                 // proved a stranger controls, and a booking row that cannot
                 // say who is coming is the card this change exists to fix.
-                "reply_to": r.reply_to,
+                // Only where the card reads it — inside the booking branch,
+                // which is the one row that says who is coming. Shipping it on
+                // every record made it a field with no reader, which is exactly
+                // what the `manage_url` note above declines to do.
+                "reply_to": r.booking().and(r.reply_to.clone()),
                 // Whether the CLI's verbs will refuse this record — a
                 // different question from "is it `booked`", and the two
                 // disagree for a collided booking (permanently `drained`) and

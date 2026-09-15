@@ -184,7 +184,8 @@ fn read_swept(path: &std::path::Path) -> mecha_core::frontdoor::Swept {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Swept::default();
     };
-    let (mut conflicted, mut created) = (BTreeSet::new(), BTreeSet::new());
+    let (mut conflicted, mut created, mut cancelled) =
+        (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
     for line in text.lines() {
         let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
             continue; // a torn trailing line, as the ledger's own readers do
@@ -222,6 +223,11 @@ fn read_swept(path: &std::path::Path) -> mecha_core::frontdoor::Swept {
             "created" => {
                 created.insert(id.to_string());
             }
+            // Written only after `delete_event_quiet` succeeds, so it means
+            // the event is really gone rather than that a withdrawal arrived.
+            "cancelled" => {
+                cancelled.insert(id.to_string());
+            }
             _ => {}
         }
     }
@@ -229,6 +235,7 @@ fn read_swept(path: &std::path::Path) -> mecha_core::frontdoor::Swept {
     Swept {
         created,
         conflicted,
+        cancelled,
     }
 }
 
@@ -328,7 +335,7 @@ fn list(store: &Frontdoor, state: Option<&str>) -> Result<()> {
 ///   line for a record no run will ever be handed.
 ///
 /// Lifted out of the iterator chain so it can be asserted rather than read.
-fn extractable(record: &Record, force: bool) -> bool {
+pub(crate) fn extractable(record: &Record, force: bool) -> bool {
     record.valid
         && !record.is_settled_booking()
         && !is_withdrawal(record)

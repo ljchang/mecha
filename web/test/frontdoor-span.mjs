@@ -59,7 +59,17 @@ t('names two clock times after it', times.length === 2);
 // No spaces: the Rust renderer's spelling, which the detail view behind this
 // card uses.
 t('separates them with an unspaced en dash', /\S–\S/.test(parts[1] ?? ''));
-t('carries a zone label', /\b([A-Z]{2,5}|GMT[+-]?\d{1,2}(:\d{2})?)\b/.test(parts[1] ?? ''));
+// The zone label is whatever survives after the two clock readings and the
+// meridiem markers are removed. Matching `[A-Z]{2,5}` against the whole string
+// was the second vacuous assertion in this file: it matches `PM`, so it passed
+// with `zone` undefined — and Node with no LANG resolves to en-US, which is
+// exactly the CI case. Strip what a clock legitimately contains, then require
+// something to be left.
+const zoneOnly = (parts[1] ?? '')
+  .replace(/\d{1,2}:\d{2}/g, '')
+  .replace(/\b[AP]M\b/gi, '')
+  .replace(/[–\s()]/g, '');
+t('carries a zone label beyond the clock itself', zoneOnly.length > 0);
 
 // A meeting that ends on a different local day must say which. Build one that
 // crosses midnight wherever this runs: start 30 minutes before local midnight.
