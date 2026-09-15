@@ -46,6 +46,11 @@ const config: Config = {
 
   // A broken link is a docs bug, and CI is the right place to find it.
   onBrokenLinks: 'throw',
+  // Anchors too, not just links. The default is `warn`, so the eight
+  // intra-page links in the privacy policy's overview table were checked by
+  // eye rather than by the build — and "verified" meant "I looked". The next
+  // one that does not resolve now fails CI.
+  onBrokenAnchors: 'throw',
 
   i18n: {
     defaultLocale: 'en',
@@ -118,6 +123,14 @@ const config: Config = {
           href: 'https://github.com/ljchang/mecha',
           label: 'GitHub',
           position: 'right',
+        },
+        {
+          label: 'Legal',
+          position: 'right',
+          items: [
+            {to: '/privacy', label: 'Privacy policy'},
+            {to: '/terms', label: 'Terms of service'},
+          ],
         },
       ],
     },
