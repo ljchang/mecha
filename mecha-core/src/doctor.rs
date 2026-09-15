@@ -2386,6 +2386,74 @@ mod tests {
     use serde_json::json;
     use std::path::PathBuf;
 
+    /// The collided-booking finding, which is the only reader of
+    /// `Record::collided` — and the flag's own doc says "the doctor keys on
+    /// this". A collision never leaves `drained`, and `drained` is outside
+    /// `WAITING_ON_OWNER`, so if this finding stopped firing nothing else
+    /// would mention the record at all.
+    #[test]
+    fn a_collided_booking_is_named_and_a_settled_one_is_not() {
+        let dir = std::env::temp_dir().join(format!(
+            "doctor-collided-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        // Removed first rather than after: the neighbouring stores do the
+        // same, so a run that panicked last time cleans itself up.
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |seq: i64, body: serde_json::Value| {
+            std::fs::write(
+                dir.join(format!("{seq:010}-book.json")),
+                serde_json::to_string(&body).unwrap(),
+            )
+            .unwrap();
+        };
+        let base = |seq: i64| {
+            json!({
+                "seq": seq, "type_id": "book", "created_at": "2026-09-16T00:00:00Z",
+                "drained_at": "2026-09-16T00:00:00Z", "valid": true,
+                "values": {"_booking_id": format!("b{seq}")}
+            })
+        };
+
+        let mut collided = base(1);
+        collided["state"] = json!("drained");
+        collided["collided"] = json!(true);
+        write(1, collided);
+
+        let mut settled = base(2);
+        settled["state"] = json!("booked");
+        write(2, settled);
+
+        let found = check_frontdoor(&dir, utc("2026-09-16T01:00:00Z"), None);
+        let collisions: Vec<_> = found
+            .iter()
+            .filter(|f| f.summary.contains("collided"))
+            .collect();
+        assert_eq!(collisions.len(), 1, "one finding, for the collided one");
+        assert!(collisions[0].summary.contains("booking 1"));
+        assert_eq!(collisions[0].severity, Severity::Broken);
+        assert!(
+            collisions[0].detail.contains("no invite was sent"),
+            "the detail has to say what the requester is holding"
+        );
+
+        // A collision a later sweep resolved stops being reported: the flag is
+        // cleared, and a person who closed it by hand is not nagged either.
+        let mut resolved = base(1);
+        resolved["state"] = json!("closed");
+        resolved["collided"] = json!(true);
+        write(1, resolved);
+        let after = check_frontdoor(&dir, utc("2026-09-16T01:00:00Z"), None);
+        assert!(
+            !after.iter().any(|f| f.summary.contains("collided")),
+            "a closed collision is somebody's decision, not an open finding"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn utc(s: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
     }

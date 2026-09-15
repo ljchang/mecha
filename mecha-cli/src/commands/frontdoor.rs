@@ -155,10 +155,25 @@ fn reconcile(store: &Frontdoor) -> Result<()> {
 /// then real.
 pub(crate) fn swept_bookings() -> mecha_core::frontdoor::Swept {
     use mecha_core::frontdoor::Swept;
-    let Ok(home) = mecha_core::work::mecha_home() else {
+    let Some(dir) = mail_dir() else {
         return Swept::default();
     };
-    read_swept(&home.join("mail").join("bookings.jsonl"))
+    read_swept(&dir.join("bookings.jsonl"))
+}
+
+/// `~/.mecha/mail`, resolved **exactly as `mecha_mail::accounts::dir` does**.
+///
+/// Not `mecha_home().join("mail")`, which is what this used to be and which is
+/// wrong in both directions: the mail crate honours `$MECHA_MAIL_DIR` and
+/// ignores `$MECHA_HOME`, so with either variable set the two sides looked in
+/// different places, `swept_bookings()` found no ledger, and — being
+/// fail-closed — nothing settled at all, silently. A reader of somebody else's
+/// store has to use their rule for finding it, not its own.
+fn mail_dir() -> Option<std::path::PathBuf> {
+    if let Ok(dir) = std::env::var("MECHA_MAIL_DIR") {
+        return Some(std::path::PathBuf::from(dir));
+    }
+    Some(dirs::home_dir()?.join(".mecha").join("mail"))
 }
 
 /// [`swept_bookings`] over an explicit path, so the ledger contract is
@@ -174,7 +189,19 @@ fn read_swept(path: &std::path::Path) -> mecha_core::frontdoor::Swept {
         let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
             continue; // a torn trailing line, as the ledger's own readers do
         };
-        let Some(id) = entry.get("booking_id").and_then(|v| v.as_str()) else {
+        // Every field `mecha_mail::bookings::entries()` requires, because it
+        // parses `LedgerEntry` and skips what does not fit. A reader that
+        // accepts lines the writer's own reader rejects would license the
+        // terminal `BOOKED` for a booking the sweep still considers unhandled
+        // — the looser-reader shape the rest of this change argues against.
+        let complete = ["booking_id", "event_id", "account", "seq", "created_at"]
+            .iter()
+            .all(|k| entry.get(*k).is_some());
+        let Some(id) = entry
+            .get("booking_id")
+            .and_then(|v| v.as_str())
+            .filter(|_| complete)
+        else {
             continue;
         };
         // A line written before the `action` field existed is a *creation* —
@@ -378,15 +405,13 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
     // Reading the slot out of a column of `_`-prefixed machinery is how a
     // confirmed meeting came to look like an unanswered question.
     let booking = record.booking();
-    // Whether `purpose` rendered in the header above. Filtering it out of the
-    // field list unconditionally made a non-string `purpose` — a value the
-    // form validated — render in neither place and vanish silently.
-    // Which machinery keys the header actually printed. Filtering the whole
-    // set unconditionally while rendering each one conditionally is how a
-    // value the form validated renders in neither place: `purpose` had that
-    // bug, and `_duration_minutes` and `_manage_url` had the same shape.
+    // Which keys the header actually printed, so the field list below drops
+    // exactly those and no others. Filtering the whole machinery set
+    // unconditionally while rendering each member conditionally is how a value
+    // the form validated renders in neither place and vanishes: `purpose` had
+    // that bug, and `_duration_minutes` and `_manage_url` had the same shape.
+    // One list, because two mechanisms for one job is how they drifted apart.
     let mut shown: Vec<&str> = Vec::new();
-    let mut shown_purpose = false;
     if let Some(booking) = &booking {
         let tz = owner_timezone();
         println!("\n── the meeting ──────────────────────────────────────────────");
@@ -414,7 +439,7 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
         let typed = record.typed_values();
         if let Some(purpose) = typed.get("purpose").and_then(|v| v.as_str()) {
             println!("  purpose   {purpose}");
-            shown_purpose = true;
+            shown.push("purpose");
         }
         if record.state == mecha_core::frontdoor::BOOKED {
             println!(
@@ -444,8 +469,6 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
         .typed_values()
         .into_iter()
         .filter(|(name, _)| !machinery.contains(&name.as_str()))
-        // `purpose` is dropped only when the header actually printed it.
-        .filter(|(name, _)| !(shown_purpose && name == "purpose"))
         .collect();
     if !fields.is_empty() {
         println!("\nfields the form validated:");
@@ -961,7 +984,14 @@ mod tests {
     #[test]
     fn the_ledger_keys_and_the_action_default_match_the_sweep() {
         use std::io::Write;
-        let dir = std::env::temp_dir().join(format!("ledger-keys-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "ledger-keys-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        // Removed before the test rather than only after: a run that panicked
+        // last time then cleans itself up, which is what the request store's
+        // own fixtures do.
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("mail")).unwrap();
         let path = dir.join("mail").join("bookings.jsonl");
@@ -986,6 +1016,34 @@ mod tests {
         assert!(swept.conflicted.contains("c1"));
         assert!(!swept.created.contains("c1"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The ledger lives wherever `mecha-mail` put it, which is not where
+    /// `mecha_home()` would look. `accounts::dir()` honours `$MECHA_MAIL_DIR`
+    /// and ignores `$MECHA_HOME`; resolving it the other way meant that with
+    /// either variable set the two sides looked in different places, no ledger
+    /// was found, and — fail-closed — nothing settled at all, silently.
+    #[test]
+    fn the_ledger_path_follows_the_mail_crates_rule_not_ours() {
+        // Serialised against the other env-reading test in this module by
+        // being the only one that touches these two variables.
+        let restore = std::env::var("MECHA_MAIL_DIR").ok();
+        std::env::set_var("MECHA_MAIL_DIR", "/tmp/somewhere-else");
+        assert_eq!(
+            mail_dir().unwrap(),
+            std::path::PathBuf::from("/tmp/somewhere-else"),
+            "$MECHA_MAIL_DIR wins, as it does for the sweep"
+        );
+        std::env::remove_var("MECHA_MAIL_DIR");
+        let fallback = mail_dir().unwrap();
+        assert!(
+            fallback.ends_with(".mecha/mail"),
+            "and the fallback is ~/.mecha/mail, not $MECHA_HOME/mail: {}",
+            fallback.display()
+        );
+        if let Some(v) = restore {
+            std::env::set_var("MECHA_MAIL_DIR", v);
+        }
     }
 
     /// A visitor's withdrawal is machinery with nothing to answer, and it
