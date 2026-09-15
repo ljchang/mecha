@@ -12,9 +12,14 @@ _Last updated: 15 September 2026_
 These terms describe what you are agreeing to by downloading and running it.
 
 They are short, because the arrangement is simple: **you are not signing up for
-a service.** There is no mecha server, no account to create, and nothing to pay
-for. You download software, you run it on your own computer, and it talks to
-whatever services *you* connect it to using *your* credentials.
+a service.** There is no account to create and nothing to pay for. You download
+software, you run it on your own computer, and it talks to whatever services
+*you* connect it to using *your* credentials.
+
+One optional piece is a hosted server — the public surface that serves a booking
+page or a form, if you publish one. It is described in the
+[privacy policy](/privacy#the-public-surface), including what it holds and how
+to clear it.
 
 ## What you get
 
@@ -24,8 +29,10 @@ it.
 
 ## What you do not get
 
-- **A service.** Nothing here is hosted on your behalf. If your machine is off,
-  mecha is off.
+- **A service.** The agent is not hosted on your behalf. If your machine is off,
+  mecha is off — the public surface keeps accepting submissions and holds them
+  until your machine comes back, and that is the whole of what it does without
+  you.
 - **Support.** Issues and discussion happen in the open at
   [github.com/ljchang/mecha](https://github.com/ljchang/mecha), on a
   best-effort basis. Nobody is on call.

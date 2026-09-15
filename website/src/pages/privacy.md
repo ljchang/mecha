@@ -173,24 +173,26 @@ default, because routing a tool is a policy decision rather than something to
 assume. Configured, it is the strongest guarantee here. Unconfigured, a send is
 a send.
 
-Four things send without passing through that queue even when it is configured,
-and all are worth knowing:
+**Two things bypass that queue entirely, even when it is configured**, because
+neither is a tool call:
 
-- **Creating a calendar event with attendees notifies them immediately.** mecha
-  sets `sendUpdates=all`, so the provider mails an invitation from your account
-  the moment the event exists. This is true of any event with attendees, not
-  only booked meetings.
-- **Deleting a calendar event mails a cancellation to every attendee**, and
-  unlike creation this is unconditional. On Google, updating an event is the one
-  calendar verb that notifies nobody; on Microsoft there is no quiet verb —
-  Graph mails attendees on create, update and delete alike.
 - **Bookings taken through your own published booking page** become calendar
-  events by a scheduled, deterministic path with no model and no review step.
+  events on a scheduled, deterministic path with no model and no review step.
   That is deliberate: you approved those slots when you published them, and a
   visitor who books one should not wait on you to find out whether it took.
 - **Meeting polls**, if you run one, mail each invitee their own link and one
-  reminder from your account on the same scheduled path, and book the winning
-  slot. Same reasoning, same absence of a review step.
+  reminder from your account on that same path, and book the winning slot. Same
+  reasoning, same absence of a review step.
+
+Everything else that sends is an ordinary tool call and is covered by the queue
+if you have routed it — including the calendar ones.
+
+Worth knowing separately, because it is about *who hears about it* rather than
+about review: **creating a calendar event with attendees notifies them
+immediately**, and **deleting one mails a cancellation unconditionally**. On
+Google, updating an event is the single calendar operation that notifies
+nobody; on Microsoft there is no quiet one — Graph mails attendees on create,
+update and delete alike.
 
 ## Retention and deletion
 

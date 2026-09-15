@@ -5,9 +5,11 @@
 //! translation live under [`crate::microsoft`] instead. Two deliberate
 //! choices: the loopback port is a parameter rather than a hardcoded
 //! constant, so another desktop OAuth client on the same machine can hold
-//! its own port and both flows can run; and the scope list drops
-//! `gmail.modify` — nothing here modifies messages, and least-privilege
-//! beats saving a future consent click.
+//! its own port and both flows can run; and the scope list stops short of
+//! `https://mail.google.com/`, so triage can label, archive, spam and trash a
+//! thread but nothing can permanently delete one. `gmail.modify` replaced
+//! `gmail.readonly` on 2026-08-18 when triage needed to write — see
+//! [`google_oauth_config`], which this header used to contradict.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::Rng;
