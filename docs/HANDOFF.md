@@ -1573,12 +1573,35 @@ because the triage scopes widened, and both are recorded in each account's
 The Google client (Cloud project **FlowMail**, the same registration the old
 app used) is in **Testing** publishing status with User type External, and
 Google expires a Testing app's refresh token exactly 7 days after consent —
-refreshing does not extend it. Moving to production would fix that but needs
-verification plus a CASA security assessment (~$540/yr), because
-`gmail.modify` is a restricted scope. **Decided 2026-08-18: stay in Testing,
-and revisit CASA once the main development features are done** — so this is
-deferred rather than open, and should not be re-litigated as though it were
-undecided.
+refreshing does not extend it. Moving to production would fix that but was
+understood to need verification plus a CASA security assessment (~$540/yr),
+because `gmail.modify` is a restricted scope. **Decided 2026-08-18: stay in
+Testing, and revisit CASA once the main development features are done.**
+
+**Reopened 2026-09-15, by the owner, on evidence that the premise was wrong —
+and not yet settled.** Google's own *OAuth app state overview* says an app may
+be published to production **without** completing verification: the result is
+a 100-user hard cap, no app name or logo on the consent screen, and an
+"unverified app" interstitial — but no seven-day expiry, because that expiry is
+tied to *Testing* status specifically and not to being unverified. CASA is the
+price of *verification*, which an app with one user does not need. If that
+reading holds, the 2026-08-18 decision was answering a question nobody had to
+ask.
+
+It is **not confirmed**, and the distinction matters: the publish attempt has
+not been made. It was blocked on something else entirely — Branding requires a
+homepage URL and a privacy policy URL on a registered authorized domain, and
+the site had neither. PR #234 adds `/privacy` and `/terms` so that the button
+can be reached at all. The empirical test is what happens on the click:
+
+- **Publishes** → the premise above was wrong, the seven-day re-consent ends,
+  and this note should record the reversal as settled.
+- **Bounced into scope verification** → the 2026-08-18 decision was right for
+  the right reason, and Testing stands until CASA is worth paying for.
+
+Ask the artifact, not the banner: `HANDOFF.md` already records that the
+Verification Center's banner misdescribes this. The two cards there, and the
+outcome of the click, are the evidence.
 
 Two things to carry into that revisit, both measured on 2026-08-18 by the
 parallel documents work (`docs/DOCS-RESEARCH.md` §6.2): the console
