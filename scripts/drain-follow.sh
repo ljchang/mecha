@@ -37,7 +37,14 @@ while :; do
   # `?wait=`, or a regression in the hold — this must degrade to a paced
   # poll, never a hot loop hammering the gate.
   began=$(date +%s)
-  if out=$(factory-publish drain --wait 25 --json 2>&1); then
+  # stderr to its own file, not into `out`: this is JSON that `jq` parses, and
+  # merging the two means any warning line from `drain` makes `.drained` fail,
+  # fall back to 0, and skip the sweep for records that *did* come home. The
+  # fifteen-minute timer catches those, so it degrades to pre-loop latency
+  # rather than to silence — but the fast path should not depend on how chatty
+  # the box is feeling.
+  err=$(mktemp)
+  if out=$(factory-publish drain --wait 25 --json 2>"$err"); then
     drained=$(printf '%s' "$out" | jq -r '.drained // 0' 2>/dev/null || echo 0)
     if [ "${drained:-0}" -eq 0 ] && [ $(($(date +%s) - began)) -lt 5 ]; then
       sleep 5
@@ -57,7 +64,8 @@ while :; do
         echo "slot refresh after drain failed; the timer will catch it" >&2
     fi
   else
-    printf 'drain failed: %s\n' "$out" >&2
+    printf 'drain failed: %s\n' "$(cat "$err")" >&2
     sleep 10
   fi
+  rm -f "$err"
 done

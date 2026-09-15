@@ -192,11 +192,22 @@ impl Backlog {
         Some(Self::frontdoor_depths(&records, sent))
     }
 
-    /// The two front-door depths over a set of records: every request not
-    /// yet closed (what `Backlog::frontdoor` has always counted, give-ups
-    /// included, aged from `created_at` as every recorded row is), and the
-    /// requests waiting on the owner, aged from the clock the doctor's
-    /// stale-request finding uses (`Record::arrived_at`).
+    /// The two front-door depths over a set of records: every request that
+    /// still [counts as open](frontdoor::counts_as_open) — give-ups included,
+    /// aged from `created_at` as every recorded row is — and the requests
+    /// waiting on the owner, aged from the clock the doctor's stale-request
+    /// finding uses (`Record::arrived_at`).
+    ///
+    /// **The first predicate changed, and so did the meaning of the recorded
+    /// series.** It counted `state != CLOSED` until `booked` existed; a
+    /// confirmed booking is settled by machinery on arrival and now does not
+    /// count. Bookings arrive far faster than requests, so rows written
+    /// before that commit sit systematically higher than rows after it, with
+    /// nothing on a row to say which predicate produced it — the numeric
+    /// cousin of the append-only-enum rule. `anticipated_guilt` folds this
+    /// depth, so the discontinuity reaches `guilt.rs`'s reading too; its
+    /// `AGE_HALF_AT_HOURS` note documents the same shape for its own formula
+    /// change. Compare across that boundary only with the change in mind.
     fn frontdoor_depths(
         records: &[frontdoor::Record],
         sent: Option<&HashSet<&str>>,

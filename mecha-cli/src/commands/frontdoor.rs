@@ -260,7 +260,14 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
         if let Some(reply_to) = &record.reply_to {
             println!("  with      {reply_to}  (verified by click)");
         }
-        if let Some(purpose) = record.values.get("purpose").and_then(|v| v.as_str()) {
+        // `typed_values()`, not `values`: which fields are prose is the
+        // manifest's call, not this renderer's, and `show` is also what the
+        // web detail view prints. `purpose` is a validated select today, so
+        // this changes nothing — but reading the raw map is how a field that
+        // later becomes free text would print as prose in a header that
+        // claims to hold typed answers.
+        let typed = record.typed_values();
+        if let Some(purpose) = typed.get("purpose").and_then(|v| v.as_str()) {
             println!("  purpose   {purpose}");
             shown_purpose = true;
         }

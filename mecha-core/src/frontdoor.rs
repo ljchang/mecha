@@ -345,7 +345,7 @@ impl Booking {
                     "{} · {}–{} {}",
                     start.format("%a %-d %b"),
                     start.format("%H:%M"),
-                    end.format("%H:%M"),
+                    Self::end_label(start.date_naive(), end.date_naive(), end.format("%H:%M")),
                     start.format("%Z")
                 )
             }
@@ -358,9 +358,30 @@ impl Booking {
                     "{} · {}–{} UTC",
                     start.format("%a %-d %b"),
                     start.format("%H:%M"),
-                    end.format("%H:%M")
+                    Self::end_label(start.date_naive(), end.date_naive(), end.format("%H:%M")),
                 )
             }
+        }
+    }
+
+    /// The end of the span, carrying its own day when the meeting crosses
+    /// local midnight.
+    ///
+    /// Only the start's day is labelled otherwise, which is right almost
+    /// always and silently wrong for an evening slot in a far-east zone:
+    /// `Wed 16 Sep · 23:30–00:30` puts the end on Thursday and never says so.
+    /// Whether that is reachable depends on the published availability
+    /// windows — a property of the owner's policy file, not of this renderer,
+    /// which is precisely why the renderer should not assume it.
+    fn end_label(
+        start_day: chrono::NaiveDate,
+        end_day: chrono::NaiveDate,
+        time: impl std::fmt::Display,
+    ) -> String {
+        if start_day == end_day {
+            time.to_string()
+        } else {
+            format!("{time} ({})", end_day.format("%a %-d %b"))
         }
     }
 
@@ -1218,6 +1239,40 @@ mod tests {
             booking.local_span(None),
             "Wed 16 Sep · 14:00–15:00 UTC",
             "no configured zone falls back to UTC, never to a guess"
+        );
+    }
+
+    /// A meeting that crosses local midnight says which day it ends on.
+    /// Labelling only the start's day renders `23:30–00:30` with the end
+    /// silently on the next day.
+    #[test]
+    fn a_span_crossing_midnight_names_the_day_it_ends_on() {
+        let mut record = booking_record();
+        record
+            .values
+            .insert("_slot_start".into(), json!("2026-09-17T03:30:00Z"));
+        record
+            .values
+            .insert("_slot_end".into(), json!("2026-09-17T04:30:00Z"));
+        let booking = record.booking().unwrap();
+        let tokyo: chrono_tz::Tz = "Asia/Tokyo".parse().unwrap();
+        // 03:30Z is 12:30 in Tokyo — same day, so no label.
+        assert_eq!(
+            booking.local_span(Some(tokyo)),
+            "Thu 17 Sep · 12:30–13:30 JST"
+        );
+
+        record
+            .values
+            .insert("_slot_start".into(), json!("2026-09-17T14:30:00Z"));
+        record
+            .values
+            .insert("_slot_end".into(), json!("2026-09-17T15:30:00Z"));
+        let booking = record.booking().unwrap();
+        // 14:30Z is 23:30 in Tokyo and the end lands on Friday.
+        assert_eq!(
+            booking.local_span(Some(tokyo)),
+            "Thu 17 Sep · 23:30–00:30 (Fri 18 Sep) JST"
         );
     }
 

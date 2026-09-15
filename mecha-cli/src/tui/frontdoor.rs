@@ -210,6 +210,13 @@ impl FrontdoorModal {
 /// only wanted to cross-check would be worse than a slightly stale one.
 pub fn load() -> anyhow::Result<Vec<RequestRow>> {
     let store = mecha_core::frontdoor::Frontdoor::open_default()?;
+    // Settle bookings and reconcile drafts before reading, exactly as the
+    // terminal verbs and the web list do. Without the first of these a
+    // confirmed booking stays `drained` in this modal, `x` spawns an extract
+    // that prints `nothing to extract` and exits 0, and `Watch::Request` then
+    // warns "still drained after 30m" about a meeting that has been on the
+    // calendar the whole time. A store read is not a store reconciled.
+    let _ = store.settle_bookings();
     if let Some(outbox) = mecha_core::outbox::OutboxStore::open_existing_default() {
         let _ = store.reconcile(&outbox);
     }

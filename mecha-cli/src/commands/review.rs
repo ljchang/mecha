@@ -889,7 +889,16 @@ fn collect_queues() -> Vec<Queue> {
             let d = if failed > 0 {
                 format!("{failed} whose extraction failed — those need you by design")
             } else {
-                format!("{} closed", records.len() - open.len())
+                // Counted by state, never as `records.len() - open.len()`:
+                // that difference silently absorbed `booked` the moment it
+                // stopped counting as open, and reported confirmed meetings
+                // as closes.
+                let by = |state: &str| records.iter().filter(|r| r.state == state).count();
+                match (by(frontdoor::CLOSED), by(frontdoor::BOOKED)) {
+                    (closed, 0) => format!("{closed} closed"),
+                    (0, booked) => format!("{booked} booked"),
+                    (closed, booked) => format!("{closed} closed, {booked} booked"),
+                }
             };
             let oldest = oldest_age(open.iter().map(|r| r.created_at.as_str()));
             (Some(open.len()), d, oldest)
