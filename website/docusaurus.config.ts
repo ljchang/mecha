@@ -155,6 +155,7 @@ const config: Config = {
               label: 'License (MIT)',
               href: 'https://github.com/ljchang/mecha/blob/main/LICENSE',
             },
+            {label: 'Privacy', to: '/privacy'},
           ],
         },
       ],
