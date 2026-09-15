@@ -125,8 +125,17 @@ fn reconcile(store: &Frontdoor) -> Result<()> {
     // exists to cross-check. Doing it here rather than in each verb is the
     // same rule as the outbox reconciliation below — a state that is only
     // correct after someone runs a command is a state nobody can trust.
-    for moved in store.settle_bookings()? {
-        eprintln!("{:<5} {} → {}", moved.seq, moved.from, moved.to);
+    // Best-effort, like the outbox reconciliation below and like the other
+    // two callers (the web warns, the TUI ignores). A `?` here made a single
+    // failed write stop `frontdoor list` printing anything at all, under a
+    // doc comment promising the opposite.
+    match store.settle_bookings() {
+        Ok(moved) => {
+            for moved in moved {
+                eprintln!("{:<5} {} → {}", moved.seq, moved.from, moved.to);
+            }
+        }
+        Err(e) => eprintln!("could not settle bookings: {e:#}"),
     }
     let Some(outbox) = mecha_core::outbox::OutboxStore::open_existing_default() else {
         return Ok(());

@@ -807,6 +807,15 @@ person's reason must not be overwritten, and `awaiting_me`, because
 `reconcile` only advances records in that state and settling one would orphan
 its staged draft.
 
+**And a cancellation un-books what it withdraws.** `booked` is terminal, so
+the same walk joins each `_cancelled` record to the confirmation it cancels
+and closes both — otherwise the front door goes on asserting a meeting the
+sweep has already deleted, which is a false claim on the one surface this
+design asks the owner to trust. The join is by `_booking_id` inside the
+request store: the front door does not read `bookings.jsonl` and should not,
+because that ledger is the calendar's record and a request store that
+depended on it would break wherever mail is not configured.
+
 - **A rejected draft returns the request to `extracted`, never to `closed`.**
   "Not this reply" is not "not this request", and a request closed because its
   first draft was wrong is precisely the silence this component exists to fix.

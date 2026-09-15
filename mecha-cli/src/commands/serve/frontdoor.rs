@@ -70,7 +70,11 @@ pub async fn list(State(_state): St) -> Response {
                     "start": b.start,
                     "end": b.end,
                     "duration_minutes": b.duration_minutes,
-                    "manage_url": b.manage_url,
+                    // No `manage_url`: the page renders it nowhere, and the
+                    // read endpoint is where `show` already prints it. It is
+                    // a capability URL the owner holds anyway, so shipping it
+                    // unread is untidy rather than unsafe — but a field with
+                    // no reader is one nobody notices growing a reader.
                 })),
                 // Prose is never in the list payload — it opens only through
                 // the read endpoint, which is a person's explicit act. The

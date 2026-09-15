@@ -200,10 +200,17 @@ pub fn parse_cancellation(record: &Value) -> Option<(i64, String)> {
     if values.get("_cancelled").and_then(Value::as_bool) != Some(true) {
         return None;
     }
-    Some((
-        record["seq"].as_i64().unwrap_or(0),
-        values.get("_booking_id")?.as_str()?.to_string(),
-    ))
+    // Trimmed and non-empty, as `parse_record` and the front door's own
+    // `Record::cancellation` both are. Harmless today — an empty id matches
+    // nothing in the ledger — but "the two sides must agree about acceptance"
+    // is an argument about all three readers of these keys, not two.
+    let booking_id = values
+        .get("_booking_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    Some((record["seq"].as_i64().unwrap_or(0), booking_id))
 }
 
 /// `~/.mecha/mail/bookings.jsonl` (beside the account registry).

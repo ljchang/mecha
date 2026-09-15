@@ -442,6 +442,34 @@ impl Record {
         })
     }
 
+    /// The booking id this record **withdraws**, when it is a cancellation.
+    ///
+    /// A visitor who uses their manage link produces a machinery-only record
+    /// — `{_booking_id, _cancelled: true, _slot_start, _slot_end}` — which
+    /// [`Record::booking`] deliberately refuses. This is the other half of
+    /// that refusal: recognising it, so the confirmation it cancels can stop
+    /// claiming to be on the owner's calendar.
+    ///
+    /// The mail crate's `parse_cancellation` reads the same two keys for the
+    /// same purpose; this side needs its own because the front door does not
+    /// read `bookings.jsonl` and never should — that ledger is the calendar's
+    /// record, and a request store that depended on it would be a request
+    /// store that breaks when mail is not configured.
+    pub fn cancellation(&self) -> Option<String> {
+        if !self.valid {
+            return None;
+        }
+        if self.values.get("_cancelled").and_then(Value::as_bool) != Some(true) {
+            return None;
+        }
+        self.values
+            .get("_booking_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    }
+
     /// Whether this record is a booking that needs no human decision.
     ///
     /// Today every valid booking is settled, which is the owner's standing
@@ -585,10 +613,49 @@ impl Frontdoor {
     /// rejected by hand over the preceding five weeks.
     pub fn settle_bookings(&self) -> Result<Vec<Transition>> {
         let mut moved = Vec::new();
-        for mut record in self.records()? {
-            // Terminal states are left alone — including `closed`, because a
-            // person who closed a booking with a reason has said something
-            // this must not overwrite.
+        let records = self.records()?;
+        // Which bookings the visitor has since withdrawn. `booked` is
+        // terminal, so without this join a cancelled meeting keeps claiming
+        // to be on the calendar: `show` printing "confirmed at the gate …
+        // nothing here is waiting on you" for an event `mecha-mail bookings`
+        // has already deleted. A false assertion on the one surface this
+        // whole change asks the owner to trust.
+        let cancelled: std::collections::BTreeSet<String> =
+            records.iter().filter_map(Record::cancellation).collect();
+        for mut record in records {
+            // A withdrawal, and the confirmation it withdraws, both end at
+            // `closed` — the state that already means "ended, and here is
+            // why". `closed` is skipped below, so a reason a person wrote by
+            // hand is never overwritten by either of these.
+            if record.state != CLOSED {
+                let note = match (record.cancellation(), record.booking()) {
+                    (Some(_), _) => Some(
+                        "a booking the requester withdrew — the sweep removes the calendar event"
+                            .to_string(),
+                    ),
+                    (None, Some(b)) if cancelled.contains(&b.booking_id) => Some(
+                        "the requester cancelled this booking; it is no longer on your calendar"
+                            .to_string(),
+                    ),
+                    _ => None,
+                };
+                if let Some(note) = note {
+                    let from = std::mem::replace(&mut record.state, CLOSED.to_string());
+                    record.note = Some(note);
+                    self.write(&record)?;
+                    moved.push(Transition {
+                        seq: record.seq,
+                        from,
+                        to: CLOSED.to_string(),
+                    });
+                    continue;
+                }
+            }
+            // States this must not move. Not all of them are terminal —
+            // `answered`, `needs_info` and `awaiting_me` are not — so the
+            // reason is per state rather than a category: `closed` and
+            // `answered` are somebody's recorded conclusion, `needs_info` is
+            // a deliberate park, and `awaiting_me` is the one below.
             //
             // `awaiting_me` is left alone for a different and sharper reason:
             // it means a draft is staged against this record, and
@@ -1083,10 +1150,11 @@ mod tests {
 
         let stores = Stores::new("cancel");
         stores.front.write(&record).unwrap();
-        assert!(
-            stores.front.settle_bookings().unwrap().is_empty(),
-            "a cancellation must stay in the queue for a person"
-        );
+        // It does not settle as a *booking* — it is closed as a withdrawal,
+        // which is what `a_cancellation_closes_the_booking_it_withdraws_and_itself`
+        // covers. What matters here is that it never becomes `booked`.
+        stores.front.settle_bookings().unwrap();
+        assert_ne!(stores.front.record(10).unwrap().state, BOOKED);
     }
 
     /// `booked` is finished work; `answered` deliberately is not, because the
@@ -1205,6 +1273,64 @@ mod tests {
             manage_url: None,
         }
         .is_past(t("2030-01-01T00:00:00Z")));
+    }
+
+    /// A visitor's cancellation must un-book the confirmation it withdraws,
+    /// or the front door goes on asserting a meeting that `mecha-mail
+    /// bookings` has already deleted from the calendar.
+    #[test]
+    fn a_cancellation_closes_the_booking_it_withdraws_and_itself() {
+        let stores = Stores::new("cancel-join");
+        stores.front.write(&booking_record()).unwrap();
+
+        // First pass: nothing has been withdrawn, so it settles as usual.
+        stores.front.settle_bookings().unwrap();
+        assert_eq!(stores.front.record(10).unwrap().state, BOOKED);
+
+        // The visitor uses their manage link. The box sends a machinery-only
+        // record naming the same booking.
+        let mut withdrawal = booking_record();
+        withdrawal.seq = 11;
+        withdrawal.values.insert("_cancelled".into(), json!(true));
+        withdrawal.free_text.clear();
+        stores.front.write(&withdrawal).unwrap();
+
+        let moved = stores.front.settle_bookings().unwrap();
+        assert_eq!(moved.len(), 2, "the withdrawal and what it withdraws");
+
+        let booking = stores.front.record(10).unwrap();
+        assert_eq!(booking.state, CLOSED, "no longer claiming the calendar");
+        assert!(booking.note.unwrap().contains("cancelled"));
+
+        // And the withdrawal itself never walks extract → triage: it is
+        // machinery with no prose, and there is nothing to draft a reply to.
+        let record = stores.front.record(11).unwrap();
+        assert_eq!(record.state, CLOSED);
+        assert!(record.booking().is_none());
+
+        // Idempotent.
+        assert!(stores.front.settle_bookings().unwrap().is_empty());
+    }
+
+    /// A reason a person wrote by hand outlives the join.
+    #[test]
+    fn a_hand_written_close_reason_survives_a_later_cancellation() {
+        let stores = Stores::new("cancel-keeps-reason");
+        let mut record = booking_record();
+        record.state = CLOSED.into();
+        record.note = Some("they emailed me to call it off".into());
+        stores.front.write(&record).unwrap();
+
+        let mut withdrawal = booking_record();
+        withdrawal.seq = 11;
+        withdrawal.values.insert("_cancelled".into(), json!(true));
+        stores.front.write(&withdrawal).unwrap();
+
+        stores.front.settle_bookings().unwrap();
+        assert_eq!(
+            stores.front.record(10).unwrap().note.as_deref(),
+            Some("they emailed me to call it off")
+        );
     }
 
     /// A person who closed a booking with a reason has said something, and a
