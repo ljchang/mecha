@@ -821,12 +821,15 @@ because settling it would leave `counts_as_open`, fold under "nothing owed",
 and have `show` assert an invite that was never sent — while the visitor holds
 a confirmation page for a meeting that does not exist.
 
-Note what staying in `drained` does **not** buy: `WAITING_ON_OWNER` is
-`[EXTRACTED, AWAITING_ME, TRIAGED]`, so the doctor's stale-request finding does
-not name a `drained` collision either. The benefit is that the record stays
-visible in `frontdoor list` and counted in the queue's depth — real, and
-narrower than "the doctor sees it". Making a collision *loud* is an open
-decision, not something this arrangement already achieves.
+Staying in `drained` is not by itself enough, and assuming it was would have
+been a regression: `WAITING_ON_OWNER` is `[EXTRACTED, AWAITING_ME, TRIAGED]`,
+so neither the doctor nor the `request_closure` sensor nor the Slack card names
+a `drained` record — and before bookings were settled at all, the extract pass
+lifted a collision to `extracted`, where the doctor *did* watch it. So the
+record carries `collided`, a field rather than only a note, and `doctor.rs`
+names it the way it names `extraction_failed`: waiting on a human by design
+rather than by backlog. A later sweep that does create the event clears the
+flag, so a collision resolved by hand stops being reported.
 
 **And a cancellation un-books what it withdraws.** `booked` is terminal, so
 the same walk joins each `_cancelled` record to the confirmation it cancels

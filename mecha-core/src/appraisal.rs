@@ -1661,6 +1661,16 @@ pub fn of_session(
         {
             continue;
         }
+        // A booking or the withdrawal that cancels it is never the owner's
+        // verdict. `settle_bookings` is the first thing in this codebase that
+        // writes `closed` with nobody deciding — two rows per cancellation —
+        // and signing -0.5 against whichever session happened to have triaged
+        // the booking earlier charges a person for a visitor's change of
+        // plans. `backlog::frontdoor_given_up` carries the same exclusion for
+        // the same reason.
+        if req.booking().is_some() || req.cancellation().is_some() {
+            continue;
+        }
         // Any draft this session staged for the request, whatever became
         // of it, hands the request to the draft channel.
         let something_drafted = records.drafts.iter().any(|d| req.outbox.contains(&d.id));

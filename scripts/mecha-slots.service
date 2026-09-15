@@ -14,6 +14,7 @@
 # previous cache meanwhile, stale but honest, and says so.
 [Unit]
 Description=mecha slot refresh (freebusy → availability → box)
+Wants=network-online.target
 After=network-online.target
 
 [Service]

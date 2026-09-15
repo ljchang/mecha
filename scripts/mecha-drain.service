@@ -22,6 +22,7 @@
 # installed-binaries trap wearing a path.
 [Unit]
 Description=mecha drain loop (long-poll the factory queue, sweep bookings)
+Wants=network-online.target
 After=network-online.target
 
 [Service]

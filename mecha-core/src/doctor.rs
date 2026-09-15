@@ -989,6 +989,32 @@ fn check_frontdoor(
             ));
             continue;
         };
+        // A booking whose slot was gone by the time the sweep re-verified it.
+        // No event, no invite, and its ledger never retries — while the
+        // visitor holds a confirmation page for a meeting that does not
+        // exist. It is refused by extract and triage (it is still a booking),
+        // so it never leaves `drained` and no *state* the rest of this
+        // function watches will ever describe it. Named here for the same
+        // reason `extraction_failed` is: it waits on a human by design rather
+        // than by backlog, and nothing else will ever say so.
+        if record.collided && record.state != crate::frontdoor::CLOSED {
+            out.push(Finding {
+                component: "frontdoor".to_string(),
+                severity: Severity::Broken,
+                summary: format!(
+                    "booking {} collided and never reached your calendar",
+                    record.seq
+                ),
+                detail: format!(
+                    "{} ({}) — the slot was taken before the sweep could create the event, \
+                     so no invite was sent and the requester is holding a confirmation page \
+                     for a meeting that does not exist. Offer them another time, then close \
+                     the request.",
+                    record.seq, record.type_id
+                ),
+                remedy: Some(list.clone()),
+            });
+        }
         if record.state == crate::frontdoor::EXTRACTION_FAILED {
             out.push(Finding {
                 component: "frontdoor".to_string(),

@@ -140,6 +140,22 @@ pub struct Record {
     /// `frontdoor show`, for a human.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<Attachment>,
+    /// Set when the sweep found this booking's slot already taken: no event
+    /// was created, no invite was sent, and its ledger will never retry.
+    ///
+    /// **A field rather than only a note, because something has to be able to
+    /// find these.** A collided booking is refused by `extractable` and
+    /// `triageable` (it is still a settled booking), so it never leaves
+    /// `drained` — and `drained` is outside `WAITING_ON_OWNER`, which is what
+    /// the doctor, the `request_closure` sensor and the Slack card all read.
+    /// Before bookings were settled at all, the extract pass lifted such a
+    /// record to `extracted` and the doctor watched it from there; keeping it
+    /// in `drained` silently took that away. The doctor keys on this.
+    ///
+    /// Cleared if a later sweep does create the event, so a collision resolved
+    /// by hand stops being reported.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collided: bool,
     /// Anything the other side wrote that this side does not model. Kept so a
     /// round-trip through here never drops a field.
     #[serde(flatten)]
@@ -786,7 +802,9 @@ impl Frontdoor {
                 // booking on its second draft always has a note, and that is
                 // exactly the migration population this change is for. They
                 // could collide and never say so.
-                if !record.note.as_deref().is_some_and(|n| n.contains(COLLIDED)) {
+                if !record.collided || !record.note.as_deref().is_some_and(|n| n.contains(COLLIDED))
+                {
+                    record.collided = true;
                     record.note = Some(format!(
                         "{COLLIDED} — no event was created and no invite was sent, and the \
                          requester is holding a confirmation page for a meeting that does \
@@ -803,6 +821,8 @@ impl Frontdoor {
                 continue;
             }
             let from = std::mem::replace(&mut record.state, BOOKED.to_string());
+            // A collision resolved by hand stops being reported.
+            record.collided = false;
             // Only when there is nothing to lose: a note already on the record
             // is somebody's explanation of how it got here.
             if record.note.is_none() {
@@ -1189,6 +1209,7 @@ mod tests {
             outbox: Vec::new(),
             note: None,
             attachments: Vec::new(),
+            collided: false,
             rest: Map::new(),
         }
     }
@@ -1432,6 +1453,29 @@ mod tests {
             manage_url: None,
         }
         .is_past(t("2030-01-01T00:00:00Z")));
+    }
+
+    /// A collision has to be findable by something other than prose: the
+    /// record never leaves `drained`, and `drained` is outside
+    /// `WAITING_ON_OWNER`, so no state the doctor watches describes it.
+    #[test]
+    fn a_collision_is_marked_on_the_record_and_cleared_when_it_resolves() {
+        let stores = Stores::new("collide-flag");
+        stores.front.write(&booking_record()).unwrap();
+
+        stores.front.settle_bookings(&swept_conflicting()).unwrap();
+        assert!(
+            stores.front.record(10).unwrap().collided,
+            "the doctor keys on this, not on the note's wording"
+        );
+
+        // Resolved by hand: a later sweep creates the event, and the record
+        // stops being reported.
+        let moved = stores.front.settle_bookings(&swept(&[])).unwrap();
+        assert_eq!(moved.len(), 1);
+        let after = stores.front.record(10).unwrap();
+        assert_eq!(after.state, BOOKED);
+        assert!(!after.collided);
     }
 
     /// A collided booking must still say so on a second pass, even though it

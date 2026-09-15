@@ -312,10 +312,13 @@ fn extractable(record: &Record, force: bool) -> bool {
 ///
 /// `Record::booking()` refuses a `_cancelled` record on purpose, which makes
 /// `is_settled_booking()` answer *false* for one — so a freshly drained
-/// withdrawal passed both locks. `Extract` and `Triage` do not reconcile, so
-/// nothing had closed it yet either, and `frontdoor triage --seq N` (what the
-/// web button and the TUI `t` key spawn) would hand a full privileged run a
-/// record whose entire content is a booking id and two timestamps.
+/// withdrawal passed both locks. `Extract` does not reconcile, so nothing has
+/// closed it by the time the quarantined pass selects: that is the live hole
+/// this closes. `Triage` *does* reconcile first, so the withdrawal is already
+/// `closed` before it selects — this is its second lock, held because
+/// `triageable` is also what `next` filters on, and because a guard that
+/// depends on another verb having run first is a guard one refactor from
+/// being gone.
 fn is_withdrawal(record: &Record) -> bool {
     record.cancellation().is_some()
 }
@@ -378,6 +381,11 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
     // Whether `purpose` rendered in the header above. Filtering it out of the
     // field list unconditionally made a non-string `purpose` — a value the
     // form validated — render in neither place and vanish silently.
+    // Which machinery keys the header actually printed. Filtering the whole
+    // set unconditionally while rendering each one conditionally is how a
+    // value the form validated renders in neither place: `purpose` had that
+    // bug, and `_duration_minutes` and `_manage_url` had the same shape.
+    let mut shown: Vec<&str> = Vec::new();
     let mut shown_purpose = false;
     if let Some(booking) = &booking {
         let tz = owner_timezone();
@@ -390,6 +398,7 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
         println!("  when      {}{past}", booking.local_span(tz));
         if let Some(minutes) = booking.duration_minutes {
             println!("  length    {minutes} minutes");
+            shown.push("_duration_minutes");
         }
         // The requester's name is prose and stays below with the rest of it;
         // what belongs here is what the form typed and the box verified.
@@ -415,22 +424,21 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
         }
         if let Some(url) = &booking.manage_url {
             println!("\n  their cancel link: {url}");
+            shown.push("_manage_url");
         }
         println!("  booking id: {}", booking.booking_id);
     }
 
     // The machinery is rendered above for a booking, so printing it again
     // under "fields" is the wall of underscores this replaced.
-    let machinery: &[&str] = if booking.is_some() {
-        &[
-            "_booking_id",
-            "_slot_start",
-            "_slot_end",
-            "_duration_minutes",
-            "_manage_url",
-        ]
+    // `_booking_id` and the two stamps always render in the header above; the
+    // rest are dropped only when they actually did.
+    let machinery: Vec<&str> = if booking.is_some() {
+        let mut keys = vec!["_booking_id", "_slot_start", "_slot_end"];
+        keys.extend(shown.iter().copied());
+        keys
     } else {
-        &[]
+        Vec::new()
     };
     let fields: Vec<(String, serde_json::Value)> = record
         .typed_values()
@@ -899,6 +907,7 @@ mod tests {
             outbox: Vec::new(),
             note: None,
             attachments: Vec::new(),
+            collided: false,
             rest: Default::default(),
         }
     }
