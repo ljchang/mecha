@@ -152,10 +152,18 @@ is fully writable through `documents.batchUpdate` and friends.
 self-scan was withdrawn; every restricted-scope app must pass a lab
 assessment yearly. This is not a hypothetical for this repo — it is the
 live reason `HANDOFF.md` records the `personal` Google account
-re-consenting **every seven days**: the FlowMail Cloud project is stuck
-in Testing/External because `gmail.modify` is restricted, and a Testing
-app's refresh tokens expire after exactly seven days regardless of
-refresh.
+re-consenting **every seven days**: the FlowMail Cloud project sits in
+Testing/External, and a Testing app's refresh tokens expire after exactly
+seven days regardless of refresh.
+
+*Amended 2026-09-15:* this paragraph used to say the project was stuck
+there *because* `gmail.modify` is restricted. That does not follow from
+the sentence below it, which is the load-bearing one — publishing is
+what removes the expiry, and Google permits publishing **unverified**,
+at the cost of a 100-user cap and an interstitial. The restricted tier
+sets the price of *verification*, not of publishing. Untested as of this
+writing; `HANDOFF.md` holds the reopening and what the click will
+settle.
 
 **The documents work does not have to inherit that.** Verification is
 assessed against a *consent screen's* scope set, and a consent screen
