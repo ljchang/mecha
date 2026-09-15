@@ -1,7 +1,6 @@
 ---
 title: Privacy policy
 description: What mecha does with Google account data, where it is stored, and who else can see it.
-hide_table_of_contents: false
 ---
 
 # Privacy policy
@@ -25,7 +24,7 @@ When you connect a Google account, mecha requests these OAuth scopes:
 
 | Scope | What it allows |
 | --- | --- |
-| `gmail.modify` | Read your mail, and change labels and read state during triage. It stops deliberately short of `https://mail.google.com/`, so it does **not** allow permanent deletion. |
+| `gmail.modify` | Read your mail, change labels and read state, **report a thread as spam, and move a thread to the trash**. Trashing is recoverable and spam also trains your provider's filter. It stops deliberately short of `https://mail.google.com/`, so it does **not** allow permanent deletion. |
 | `gmail.send` | Send mail. |
 | `calendar` | Full access to your calendars — read, create, update and **delete** events, and read free/busy time. Deletion is a shipped capability, not a theoretical one. |
 | `calendar.events` | Create and update individual events — for example, turning a confirmed booking into a meeting on your calendar. |
@@ -33,7 +32,8 @@ When you connect a Google account, mecha requests these OAuth scopes:
 Google Docs support is a **separate, optional grant** with its own OAuth client
 and its own token file. It asks for one scope, `drive.file`, which gives access
 only to files you explicitly pick and files the app itself creates — never your
-whole Drive.
+whole Drive. Within that set it can read, write and **move a file to your
+trash**, which is recoverable.
 
 mecha asks for any of this only if you choose to connect an account. Connecting
 one is optional; mecha runs with no mail, calendar or document access at all.
@@ -100,8 +100,8 @@ default, because routing a tool is a policy decision rather than something to
 assume. Configured, it is the strongest guarantee here. Unconfigured, a send is
 a send.
 
-Two things send without passing through that queue even when it is configured,
-and both are worth knowing:
+Three things send without passing through that queue even when it is configured,
+and all are worth knowing:
 
 - **Creating a calendar event with attendees notifies them immediately.** mecha
   sets `sendUpdates=all`, so the provider mails an invitation from your account
