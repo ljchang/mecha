@@ -11,11 +11,15 @@ _Last updated: 15 September 2026_
 It is maintained by Luke Chang and distributed under the MIT license at
 [github.com/ljchang/mecha](https://github.com/ljchang/mecha).
 
-This policy describes what happens to Google account data when someone connects
-a Google account to their own installation of mecha.
+This policy describes what happens to your data when you connect an account to
+your own installation of mecha — Google, Microsoft, Slack, or anything else
+below. Google is named throughout because its scopes are the most detailed and
+because Google reads this page when reviewing the app, but nothing here is
+Google-only: where tokens live, who else can see your data, what sends without
+review and how to delete it apply the same way to every account you connect.
 
 **The agent runs on your machine.** Every copy of mecha holds its own
-credentials and talks to Google directly; no part of the agent, its mail
+credentials and talks to each provider directly; no part of the agent, its mail
 handling, its calendar work or its model calls passes through anything the
 maintainer runs. Your OAuth tokens never leave your computer.
 
@@ -100,10 +104,11 @@ own machine; nothing brokers it.
 
 Two differences from Google worth knowing:
 
-- **Every calendar change notifies attendees.** Microsoft Graph mails them on
-  create, update *and* delete. Google only notifies on create when there are
-  attendees, and never on update — so on Microsoft there is no quiet calendar
-  operation at all.
+- **Updating an event notifies attendees.** Microsoft Graph mails them on
+  create, update *and* delete; Google is silent on update alone. Both notify on
+  create when there are attendees, and both notify on delete unconditionally —
+  so the difference is one verb, and it is the one you would least expect to
+  send mail.
 - **Sign-in uses a device code** — mecha shows you a code, you enter it at
   Microsoft. Some organisations block that flow, or require an administrator to
   approve the app before a member can consent at all.
