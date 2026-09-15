@@ -26,6 +26,26 @@ pub async fn list(State(_state): St) -> Response {
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
     };
+    // Reconcile, then settle — the terminal verbs' order, and it is
+    // load-bearing: a booking triaged before any of this existed sits in
+    // `awaiting_me`, which settling refuses to touch, so reconcile has to lift
+    // it out first or the migration takes two page loads. This page said it
+    // settled "exactly as the terminal verbs do" while doing only half of it.
+    //
+    // Without settling at all the page reads a store nobody reconciled: a
+    // confirmed booking sits in the queue behind an **Extract** button whose
+    // child prints `nothing to extract` and exits 0, so the page reports
+    // success for work that did not happen.
+    //
+    // Both best-effort — a store this cannot write to is still worth showing.
+    if let Some(outbox) = mecha_core::outbox::OutboxStore::open_existing_default() {
+        if let Err(e) = store.reconcile(&outbox) {
+            tracing::warn!(error = %e, "reconciling front-door drafts for the page");
+        }
+    }
+    if let Err(e) = store.settle_bookings(&super::super::frontdoor::swept_bookings()) {
+        tracing::warn!(error = %e, "settling bookings for the front door page");
+    }
     let mut records = match store.records() {
         Ok(r) => r,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
@@ -45,6 +65,43 @@ pub async fn list(State(_state): St) -> Response {
                 "reading": r.extraction.as_ref().map(|x| x.reading.clone()),
                 "urgency_claimed": r.extraction.as_ref().map(|x| x.urgency_claimed.clone()),
                 "extraction_error": r.extraction_error,
+                // The meeting, when this record is one — facts only. Stamps
+                // go over as RFC 3339 and the page renders them in the
+                // *viewer's* zone: the phone in your hand knows where it is,
+                // and this page is only ever read by its owner.
+                //
+                // Deliberately no `settled` flag. The page needs to know
+                // whether this record owes anybody anything, and that is the
+                // **state**, not the policy predicate — `is_settled_booking()`
+                // stays true for a booking a person later closed by hand with
+                // a reason, which would have filed it under "nothing owed"
+                // beside a `closed` chip. `show` gates that same sentence on
+                // `state == BOOKED`, and now so does the page.
+                "booking": r.booking().map(|b| serde_json::json!({
+                    "start": b.start,
+                    "end": b.end,
+                    "duration_minutes": b.duration_minutes,
+                    // No `manage_url`: the page renders it nowhere, and the
+                    // read endpoint is where `show` already prints it. It is
+                    // a capability URL the owner holds anyway, so shipping it
+                    // unread is untidy rather than unsafe — but a field with
+                    // no reader is one nobody notices growing a reader.
+                })),
+                // Prose is never in the list payload — it opens only through
+                // the read endpoint, which is a person's explicit act. The
+                // requester's address is not prose: it is the value the box
+                // proved a stranger controls, and a booking row that cannot
+                // say who is coming is the card this change exists to fix.
+                "reply_to": r.reply_to,
+                // Whether the CLI's verbs will refuse this record — a
+                // different question from "is it `booked`", and the two
+                // disagree for a collided booking (permanently `drained`) and
+                // for anything inside the drain→sweep window. The page gates
+                // its **Extract** button on this, because gating it on the
+                // state left the button live on exactly those records, where
+                // the child prints `nothing to extract` and exits 0 and the
+                // page reports success for work that did not happen.
+                "inert": super::super::frontdoor::inert(r),
             })
         })
         .collect();

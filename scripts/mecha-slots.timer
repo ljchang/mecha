@@ -1,0 +1,25 @@
+# Install: cp scripts/mecha-slots.{service,timer} ~/.config/systemd/user/
+#          systemctl --user daemon-reload
+#          systemctl --user enable --now mecha-slots.timer
+#          loginctl enable-linger "$USER"
+#
+# Every two minutes, down from fifteen (2026-08-08): the calendar→box
+# freshness window was the one real double-booking risk — an event landing
+# *directly* on a calendar only removes its overlapping slots at the next
+# push, so the cadence is the width of that window. Freebusy is one API
+# call per provider and the push a few KB, so two minutes costs nothing
+# that matters; the drain-time freebusy re-verification in `mecha-mail
+# bookings` is the belt to this suspender. The sweep leg stays aboard as
+# the drain loop's backstop (mecha-drain.service is the fast path), safe
+# beside it because the sweep takes a flock. Persistent, so a wake owes
+# one refresh, not a backlog.
+[Unit]
+Description=Refresh booking slots every two minutes
+
+[Timer]
+OnCalendar=*:0/2
+RandomizedDelaySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

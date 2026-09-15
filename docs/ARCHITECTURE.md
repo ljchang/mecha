@@ -789,6 +789,57 @@ correct after someone runs a command is a state nobody can trust.
 
 Three more decisions there:
 
+**A confirmed booking is not a request, and `booked` is where it goes.** The
+gate only publishes slots freebusy says are free, the verification click
+confirms one, and `mecha-mail bookings` — deterministic, no model — makes the
+calendar event whose invite the provider sends. So a booking arrives already
+answered, and `Frontdoor::settle_bookings` moves it to the terminal `booked` rather than letting it walk extract → triage → a draft. It used to
+walk it: one draft told a requester the slot she had just booked "is already
+booked" and asked her to rebook, having read the booking's own event as a
+conflict. `Record::is_settled_booking` is the single home for the policy — an
+allowlist of who may auto-confirm narrows it there and nowhere else — and
+`booked` stays out of `WAITING_ON_OWNER` and out of `counts_as_open`, so
+neither the charter sensor nor the queue surfaces count finished meetings as
+work owed. Two states are deliberately *not* settled: `closed`, because a
+person's reason must not be overwritten, and `awaiting_me`, because
+`reconcile` only advances records in that state and settling one would orphan
+its staged draft.
+
+**Every surface settles, and none of them is `reconcile`.** `settle_bookings`
+is *not* called from `Frontdoor::reconcile` — it takes a set of collided
+booking ids the store cannot know, so each of the three readers (the CLI's
+`reconcile`, the web list, the TUI modal) calls it after the outbox pass with
+the ledger's answer. Three call sites rather than one is a cost, paid so the
+request store never reaches across to `bookings.jsonl`: that ledger is the
+calendar's record and is absent wherever mail is not configured.
+
+**A booking whose slot collided is never settled.** The sweep re-verifies
+against live freebusy and, when the slot has gone since the gate sold it,
+writes a `conflict` line and creates nothing — no event, no invite — and never
+retries. That record stays in the queue with the collision written on it,
+because settling it would leave `counts_as_open`, fold under "nothing owed",
+and have `show` assert an invite that was never sent — while the visitor holds
+a confirmation page for a meeting that does not exist.
+
+Staying in `drained` is not by itself enough, and assuming it was would have
+been a regression: `WAITING_ON_OWNER` is `[EXTRACTED, AWAITING_ME, TRIAGED]`,
+so neither the doctor nor the `request_closure` sensor nor the Slack card names
+a `drained` record — and before bookings were settled at all, the extract pass
+lifted a collision to `extracted`, where the doctor *did* watch it. So the
+record carries `collided`, a field rather than only a note, and `doctor.rs`
+names it the way it names `extraction_failed`: waiting on a human by design
+rather than by backlog. A later sweep that does create the event clears the
+flag, so a collision resolved by hand stops being reported.
+
+**And a cancellation un-books what it withdraws.** `booked` is terminal, so
+the same walk joins each `_cancelled` record to the confirmation it cancels
+and closes both — otherwise the front door goes on asserting a meeting the
+sweep has already deleted, which is a false claim on the one surface this
+design asks the owner to trust. The join is by `_booking_id` inside the
+request store: the front door does not read `bookings.jsonl` and should not,
+because that ledger is the calendar's record and a request store that
+depended on it would break wherever mail is not configured.
+
 - **A rejected draft returns the request to `extracted`, never to `closed`.**
   "Not this reply" is not "not this request", and a request closed because its
   first draft was wrong is precisely the silence this component exists to fix.

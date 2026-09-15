@@ -4372,9 +4372,22 @@ fn handle_frontdoor_key(app: &mut App, key: KeyEvent) -> Result<()> {
         // faster than a child process would.
         KeyCode::Char('x') => {
             if let Some(row) = modal.selected_row() {
+                // Gated here and not only in the hint line. Hiding a key from
+                // the title while leaving it live is how a dead action
+                // survives being "fixed": `x` on a confirmed booking spawned
+                // a child that printed `nothing to extract`, exited 0, and
+                // left a watch to announce "still booked after 30m".
+                // `!valid` first: `inert` subsumes it, so testing `inert`
+                // above this made the branch unreachable and told the owner an
+                // ordinary invalid request "is booking machinery".
                 if !row.valid {
                     modal.status = Some(format!(
                         "{} is invalid — invalid records are never extracted",
+                        row.seq
+                    ));
+                } else if row.inert {
+                    modal.status = Some(format!(
+                        "{} is booking machinery — there is nothing to extract",
                         row.seq
                     ));
                 } else {
@@ -4401,7 +4414,20 @@ fn handle_frontdoor_key(app: &mut App, key: KeyEvent) -> Result<()> {
         // in drafts — which is where /outbox picks up.
         KeyCode::Char('t') => {
             if let Some(row) = modal.selected_row() {
-                if row.state != mecha_core::frontdoor::EXTRACTED {
+                // `inert` first: an inert record *in* `extracted` passes the
+                // state check and spawns a child that prints `nothing to
+                // triage`, exits 0, and leaves the watch announcing "still
+                // extracted after 30m". `x` and `n` got this gate and `t` did
+                // not, which is the third key in this modal to be hidden from
+                // the hint line while staying live.
+                if !row.valid {
+                    modal.status = Some(format!("{} is invalid — it never reaches a run", row.seq));
+                } else if row.inert {
+                    modal.status = Some(format!(
+                        "{} is booking machinery — there is nothing to draft",
+                        row.seq
+                    ));
+                } else if row.state != mecha_core::frontdoor::EXTRACTED {
                     modal.status = Some(format!(
                         "{} is `{}` — triage runs on `extracted`",
                         row.seq, row.state
@@ -4430,11 +4456,44 @@ fn handle_frontdoor_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('n') => {
             if let Some(row) = modal.selected_row() {
-                modal.input = Some(frontdoor::NoteInput {
-                    seq: row.seq,
-                    action: frontdoor::NoteAction::NeedsInfo,
-                    buffer: String::new(),
-                });
+                // Parking a confirmed meeting is worse than a no-op: it moves
+                // the record back inside `counts_as_open`, so a settled
+                // booking reappears as work owed and waits on a requester who
+                // has nothing left to answer.
+                // **Not `inert`.** That predicate answers "both model-spending
+                // verbs refuse this", which is true of an invalid record too —
+                // and an invalid record is exactly the kind a person parks
+                // while they ask the requester to resend it. Gating `n` on it
+                // removed a capability rather than a dead key. The question
+                // here is narrower: does this owe anybody an answer? For a
+                // valid record, `inert` means a settled booking or a
+                // withdrawal, and nothing else.
+                if row.inert && row.valid {
+                    // A *collided* booking is the one shape where "nobody is
+                    // being waited on" is false: the doctor reports it
+                    // `Broken` and says the requester is holding a
+                    // confirmation page for a meeting that does not exist.
+                    // Refusing `n` is still right — `close` is the action the
+                    // doctor names — but the sentence has to match.
+                    modal.status = Some(if row.collided {
+                        format!(
+                            "{} collided and never reached your calendar — the requester is \
+                             waiting on you, but this is a `close`, not a park",
+                            row.seq
+                        )
+                    } else {
+                        format!(
+                            "{} is booking machinery — nobody is being waited on",
+                            row.seq
+                        )
+                    });
+                } else {
+                    modal.input = Some(frontdoor::NoteInput {
+                        seq: row.seq,
+                        action: frontdoor::NoteAction::NeedsInfo,
+                        buffer: String::new(),
+                    });
+                }
             }
         }
         KeyCode::Char('c') => {

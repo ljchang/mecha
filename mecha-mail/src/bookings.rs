@@ -66,9 +66,31 @@ pub fn parse_record(record: &Value) -> Option<DrainedBooking> {
         return None;
     }
     let values = record["values"].as_object()?;
-    let booking_id = values.get("_booking_id")?.as_str()?.to_string();
-    let start = values.get("_slot_start")?.as_str()?.to_string();
-    let end = values.get("_slot_end")?.as_str()?.to_string();
+    // A cancellation carries every key a confirmation does — the box sends
+    // `{_booking_id, _cancelled: true, _slot_start, _slot_end}` — so the
+    // withdrawal must be excluded by name rather than by which stamps
+    // happen to be missing. Without this, a cancellation whose original
+    // creation never reached the ledger parses as a fresh booking and the
+    // sweep creates an event for a slot the visitor gave back.
+    if values.get("_cancelled").and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
+    // Trimmed and non-empty, matching `mecha_core::frontdoor::Record::booking`.
+    // The two sides must agree about which records are bookings, and an empty
+    // `_booking_id` used to be a booking here and an ordinary request there —
+    // the one disagreement a test pinning key *names* cannot catch, because it
+    // is about acceptance.
+    let required = |key: &str| {
+        values
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let booking_id = required("_booking_id")?;
+    let start = required("_slot_start")?;
+    let end = required("_slot_end")?;
     for stamp in [&start, &end] {
         chrono::DateTime::parse_from_rfc3339(stamp).ok()?;
     }
@@ -178,10 +200,17 @@ pub fn parse_cancellation(record: &Value) -> Option<(i64, String)> {
     if values.get("_cancelled").and_then(Value::as_bool) != Some(true) {
         return None;
     }
-    Some((
-        record["seq"].as_i64().unwrap_or(0),
-        values.get("_booking_id")?.as_str()?.to_string(),
-    ))
+    // Trimmed and non-empty, as `parse_record` and the front door's own
+    // `Record::cancellation` both are. Harmless today — an empty id matches
+    // nothing in the ledger — but "the two sides must agree about acceptance"
+    // is an argument about all three readers of these keys, not two.
+    let booking_id = values
+        .get("_booking_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    Some((record["seq"].as_i64().unwrap_or(0), booking_id))
 }
 
 /// `~/.mecha/mail/bookings.jsonl` (beside the account registry).
@@ -572,10 +601,15 @@ mod tests {
     /// cancellation is remembered apart from them.
     #[test]
     fn cancellations_parse_and_the_ledger_remembers_both_actions() {
+        // Both stamps, exactly as `manage_cancel` sends them. The fixture
+        // used to omit `_slot_end`, so "a cancellation is not a booking"
+        // passed because a key was missing rather than because the
+        // cancellation was recognised — and the real payload has it.
         let cancel = json!({
             "seq": 30, "type_id": "book", "valid": true,
             "values": {"_booking_id": "abc123", "_cancelled": true,
-                        "_slot_start": "2026-08-25T18:00:00Z"}
+                        "_slot_start": "2026-08-25T18:00:00Z",
+                        "_slot_end": "2026-08-25T18:30:00Z"}
         });
         assert_eq!(parse_cancellation(&cancel), Some((30, "abc123".into())));
         assert!(

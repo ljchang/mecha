@@ -1661,6 +1661,16 @@ pub fn of_session(
         {
             continue;
         }
+        // A booking or the withdrawal that cancels it is never the owner's
+        // verdict. `settle_bookings` is the first thing in this codebase that
+        // writes `closed` with nobody deciding — two rows per cancellation —
+        // and signing -0.5 against whichever session happened to have triaged
+        // the booking earlier charges a person for a visitor's change of
+        // plans. `backlog::frontdoor_given_up` carries the same exclusion for
+        // the same reason.
+        if req.booking().is_some() || req.cancellation().is_some() {
+            continue;
+        }
         // Any draft this session staged for the request, whatever became
         // of it, hands the request to the draft channel.
         let something_drafted = records.drafts.iter().any(|d| req.outbox.contains(&d.id));
@@ -5152,6 +5162,23 @@ text = "Tell me the truth early."
             .any(|e| e.cite == Cite::Question("q1".into())));
     }
 
+    /// A closed record carrying the box's booking machinery — a confirmation
+    /// when `cancelled` is false, the withdrawal that cancels it when true.
+    fn booking_request(seq: i64, session: &str, cancelled: bool) -> crate::frontdoor::Record {
+        serde_json::from_value(serde_json::json!({
+            "seq": seq, "type_id": "book", "state": "closed",
+            "created_at": "2026-08-28T00:00:00Z", "drained_at": "2026-08-28T00:00:00Z",
+            "valid": true, "free_text": [], "triage_session": session, "outbox": [],
+            "values": {
+                "_booking_id": "b1",
+                "_slot_start": "2026-09-16T14:00:00Z",
+                "_slot_end": "2026-09-16T15:00:00Z",
+                "_cancelled": cancelled,
+            },
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn a_request_closed_with_nothing_sent_is_the_owners_verdict_on_the_triage() {
         let sent = draft("o1", "sent", false);
@@ -5165,6 +5192,13 @@ text = "Tell me the truth early."
             // request must not sign again for the same refusal.
             request(5, "s1", "closed", &["o2"]),
             request(6, "s1", "closed", &[]),
+            // A booking and the withdrawal that cancels it: `settle_bookings`
+            // closed both with nobody deciding, so neither is the owner's
+            // verdict on anything. Without the exclusion these add
+            // `Request(7)` and `Request(8)` below — a visitor changing their
+            // plans signing -0.5 twice against whoever triaged the booking.
+            booking_request(7, "s1", false),
+            booking_request(8, "s1", true),
         ];
         let s = stats();
         let a = of_session(

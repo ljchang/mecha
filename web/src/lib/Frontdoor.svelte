@@ -80,7 +80,66 @@
   }
 
   const stateChip = (s) =>
-    ({ drained: 'new', extraction_failed: 'extraction failed' })[s] ?? s;
+    ({ drained: 'new', extraction_failed: 'extraction failed', booked: 'on your calendar' })[s] ??
+    s.replaceAll('_', ' ');
+
+  // The meeting in the *viewer's* zone. This page is only ever read by its
+  // owner on a device that knows where it is, so the browser is the right
+  // clock — the terminal renderer uses `[agent] timezone` instead, because a
+  // server has no way to know.
+  const span = (b) => {
+    const start = new Date(b.start);
+    const end = new Date(b.end);
+    if (isNaN(start) || isNaN(end)) return `${b.start} – ${b.end}`;
+    const day = (d) => d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+    const t = (d) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    // The end carries its own day when the meeting crosses local midnight,
+    // and the zone is always named. `Booking::end_label` does the first on
+    // the Rust side; the second is because this card renders in the
+    // *viewer's* zone while the detail view behind it renders in the
+    // owner's `[agent] timezone` — away from home those are two different
+    // times for one meeting, and an unlabelled one is the worse of them.
+    const ends = day(end) === day(start) ? t(end) : `${t(end)} (${day(end)})`;
+    const zone = new Intl.DateTimeFormat([], { timeZoneName: 'short' })
+      .formatToParts(start)
+      .find((p) => p.type === 'timeZoneName')?.value;
+    // No spaces around the en dash, matching `Booking::local_span` on the Rust
+    // side — the detail view behind this card is that renderer, so a reader
+    // tapping through should not meet a different punctuation.
+    //
+    // The clock itself still differs on purpose: this is `hour: 'numeric'` in
+    // the *viewer's* locale (so 2:00 PM in en-US) against the Rust side's
+    // `%H:%M` in the *owner's* zone. Both are deliberate — a phone knows where
+    // it is and a server does not — so the dash is the only thing worth
+    // matching, and claiming more than that would be the overclaim this file
+    // has already been corrected for once.
+    return `${day(start)} · ${t(start)}–${ends}${zone ? ` ${zone}` : ''}`;
+  };
+
+  const isPast = (b) => {
+    const end = new Date(b.end);
+    return !isNaN(end) && end < new Date();
+  };
+
+  // Settled bookings are not review work — they are a confirmed meeting the
+  // machinery already answered. Kept on the page (the record is the archive)
+  // but out of the queue, because a queue that lists finished work stops
+  // reading as a queue.
+  // `state === 'booked'`, not "is this a booking": a booking somebody later
+  // closed by hand with a reason is not filed under "nothing owed". The
+  // terminal renderer gates the same sentence on the same state.
+  // `&& r.booking` is not reachable through the code paths that exist — only
+  // `settle_bookings` writes `booked`, and it requires a parseable booking —
+  // but a hand-edited or future-written record would take the whole page down
+  // on the dereference below rather than degrade. It costs nothing.
+  const settled = (r) => r.state === 'booked' && r.booking;
+  const queue = $derived((rows ?? []).filter((r) => !settled(r)));
+  const booked = $derived(
+    (rows ?? [])
+      .filter(settled)
+      .sort((a, b) => new Date(b.booking.start) - new Date(a.booking.start)),
+  );
+  let showBooked = $state(false);
 </script>
 
 {#snippet hazardGlyph(size = 13)}
@@ -96,7 +155,7 @@
       {#if rows === null && !error}
         <div class="empty">reading the requests…</div>
       {:else}
-        {#each rows ?? [] as r}
+        {#each queue as r}
           <button class="card rowbtn" onclick={() => open(r)}>
             <div class="rowtop">
               <span class="chip">{r.type_id}</span>
@@ -104,14 +163,50 @@
               {#if !r.valid}<span class="chip hazard">invalid</span>{/if}
               <span class="when">#{r.seq} · {(r.created_at ?? '').slice(0, 10)}</span>
             </div>
-            {#if r.topic}<div class="topic">{r.topic}</div>{/if}
-            {#if r.reading}<div class="readingline">{r.reading}</div>{/if}
-            {#if r.urgency_claimed}<div class="claim">claims: {r.urgency_claimed}</div>{/if}
+            {#if r.booking}
+              <!-- A booking leads with the meeting. Reading the slot out of a
+                   column of `_`-prefixed machinery is how a confirmed meeting
+                   came to look like an unanswered question. -->
+              <div class="topic" class:past={isPast(r.booking)}>{span(r.booking)}</div>
+              <div class="meta">
+                {#if r.reply_to}<span>{r.reply_to}</span>{/if}
+                {#if r.booking.duration_minutes}<span>{r.booking.duration_minutes} min</span>{/if}
+                {#if isPast(r.booking)}<span>already happened</span>{/if}
+              </div>
+            {:else}
+              {#if r.topic}<div class="topic">{r.topic}</div>{/if}
+              {#if r.reading}<div class="readingline">{r.reading}</div>{/if}
+              {#if r.urgency_claimed}<div class="claim">claims: {r.urgency_claimed}</div>{/if}
+            {/if}
             {#if r.extraction_error}<div class="claim hazardtext">{r.extraction_error}</div>{/if}
           </button>
         {:else}
           <div class="empty">Nobody is waiting at the door.</div>
         {/each}
+
+        {#if booked.length}
+          <button class="foldrow" onclick={() => (showBooked = !showBooked)}>
+            <span>{booked.length} confirmed booking{booked.length === 1 ? '' : 's'}</span>
+            <span class="foldnote">on your calendar · nothing owed</span>
+            <span class="chev" class:open={showBooked}>›</span>
+          </button>
+          {#if showBooked}
+            {#each booked as r}
+              <button class="card rowbtn muted" onclick={() => open(r)}>
+                <div class="rowtop">
+                  <span class="chip">{r.type_id}</span>
+                  <span class="chip">{stateChip(r.state)}</span>
+                  <span class="when">#{r.seq}</span>
+                </div>
+                <div class="topic" class:past={isPast(r.booking)}>{span(r.booking)}</div>
+                <div class="meta">
+                  {#if r.reply_to}<span>{r.reply_to}</span>{/if}
+                  {#if r.booking.duration_minutes}<span>{r.booking.duration_minutes} min</span>{/if}
+                </div>
+              </button>
+            {/each}
+          {/if}
+        {/if}
       {/if}
     </div>
   {:else}
@@ -134,15 +229,40 @@
     </div>
     {#if reading.text !== null}
       <div class="actionbar">
-        {#if ['drained', 'extraction_failed'].includes(reading.row.state)}
+        <!-- A settled booking gets no draft action at all. It briefly had a
+             "Reply anyway…" button, which could not work: `frontdoor triage`
+             selects on `state == EXTRACTED` and a settled booking is never
+             extracted, so the detached child printed `nothing to triage` and
+             the page reported success for a draft that was never coming.
+             Proposing another time needs the decline path, which does not
+             exist yet — a dead button is worse than an absent one. -->
+        {#if reading.row.inert}
+          <!-- Nothing to draft *and* nothing to extract: the CLI verbs refuse
+               this record, so offering either is a button whose child exits 0
+               having done nothing. Gated on `inert` rather than on the state,
+               because a collided booking stays `drained` forever and would
+               otherwise keep its Extract button. Close… below is the real
+               action. -->
+        {:else if ['drained', 'extraction_failed'].includes(reading.row.state)}
           <button class="abtn primary" disabled={busy} onclick={async () => { if (await act('extract', reading.row)) back(); }}>Extract</button>
         {:else}
           <button class="abtn primary" disabled={busy} onclick={async () => { if (await act('triage', reading.row)) back(); }}>Draft a reply…</button>
         {/if}
-        <button class="abtn" disabled={busy} onclick={() => prompt('needs-info', 'What is missing before this can proceed?', 'which dates they need')}>Park…</button>
+        <!-- `inert && valid`, not `inert`: an invalid record is one the model
+             verbs refuse *and* one a person parks while asking the requester to
+             resend it. The TUI keeps the key for exactly that reason; this card
+             was gated a notch too wide and lost the capability on the phone,
+             where Close… would have become the only action. -->
+        {#if !(reading.row.inert && reading.row.valid)}
+          <button class="abtn" disabled={busy} onclick={() => prompt('needs-info', 'What is missing before this can proceed?', 'which dates they need')}>Park…</button>
+        {/if}
         <button class="abtn" disabled={busy} onclick={() => prompt('close', 'Why? The reason is the record.', 'out of scope — not taking new students', true)}>Close…</button>
       </div>
-      <div class="barnote">Drafted replies land in the outbox for review — nothing sends from here.</div>
+      {#if settled(reading.row)}
+        <div class="barnote">Confirmed at the gate and on your calendar — the invite went from your own mailbox. Nothing here is waiting on you.</div>
+      {:else}
+        <div class="barnote">Drafted replies land in the outbox for review — nothing sends from here.</div>
+      {/if}
     {/if}
 
     {#if asking}
@@ -172,6 +292,13 @@
   .topic { font-size: 14px; font-weight: 500; line-height: 1.35; overflow-wrap: anywhere; }
   .readingline { font-size: 12px; line-height: 1.45; color: var(--text-muted); overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
   .claim { font-family: var(--mono); font-size: 10px; color: var(--text-muted); }
+  .meta { display: flex; flex-wrap: wrap; gap: 4px 10px; font-family: var(--mono); font-size: 10px; color: var(--text-muted); overflow-wrap: anywhere; }
+  .topic.past { color: var(--text-muted); }
+  .rowbtn.muted { opacity: 0.72; }
+  .foldrow { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 4px; background: none; border: none; border-top: 1px solid var(--accent-900); color: var(--text-muted); font: inherit; font-size: 12px; cursor: pointer; text-align: left; margin-top: 4px; }
+  .foldnote { font-family: var(--mono); font-size: 10px; color: var(--accent-700); }
+  .chev { margin-left: auto; transition: transform 120ms ease; }
+  .chev.open { transform: rotate(90deg); }
   .empty { color: var(--text-muted); font-size: 14px; padding: 24px 0; text-align: center; }
   .warnline { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--hazard); line-height: 1.45; }
   .deckhead { display: flex; align-items: center; gap: 8px; }

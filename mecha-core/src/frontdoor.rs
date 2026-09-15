@@ -140,6 +140,22 @@ pub struct Record {
     /// `frontdoor show`, for a human.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<Attachment>,
+    /// Set when the sweep found this booking's slot already taken: no event
+    /// was created, no invite was sent, and its ledger will never retry.
+    ///
+    /// **A field rather than only a note, because something has to be able to
+    /// find these.** A collided booking is refused by `extractable` and
+    /// `triageable` (it is still a settled booking), so it never leaves
+    /// `drained` — and `drained` is outside `WAITING_ON_OWNER`, which is what
+    /// the doctor, the `request_closure` sensor and the Slack card all read.
+    /// Before bookings were settled at all, the extract pass lifted such a
+    /// record to `extracted` and the doctor watched it from there; keeping it
+    /// in `drained` silently took that away. The doctor keys on this.
+    ///
+    /// Cleared if a later sweep does create the event, so a collision resolved
+    /// by hand stops being reported.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collided: bool,
     /// Anything the other side wrote that this side does not model. Kept so a
     /// round-trip through here never drops a field.
     #[serde(flatten)]
@@ -289,6 +305,239 @@ impl Record {
     }
 }
 
+/// What the calendar sweep has actually done, as the front door needs to know it.
+///
+/// **Positive evidence, not an absence.** The first version of this passed only
+/// the collided ids, which made "the sweep has not looked at this yet" and "the
+/// sweep created the event" the same answer — so a booking drained seconds
+/// earlier settled as though its invite had gone out, and because [`BOOKED`] is
+/// terminal the `conflict` line written moments later never un-booked it. The
+/// mis-filing was permanent, outside `counts_as_open`, invisible to the doctor,
+/// and `show` asserted an invite that never existed. Unknown is never clean.
+///
+/// So `created` is what licenses settling and nothing else does. A booking in
+/// neither set is simply not swept yet: it stays in the queue, silently, and
+/// settles on a later pass once the ledger says so.
+#[derive(Debug, Clone, Default)]
+pub struct Swept {
+    /// Booking ids the sweep made a calendar event for. The only thing that
+    /// licenses [`BOOKED`], because it is the only thing that makes "swept
+    /// onto the calendar" true.
+    pub created: std::collections::BTreeSet<String>,
+    /// Booking ids whose slot had gone by the time the sweep re-verified it:
+    /// no event, no invite, and its ledger never retries. A person is owed
+    /// these, so they stay in the queue and say why.
+    pub conflicted: std::collections::BTreeSet<String>,
+}
+
+/// The booking machinery on a record, when it carries any.
+///
+/// A booking does not arrive asking for a decision — it arrives **already
+/// settled**. The gate only publishes slots freebusy says are free, the
+/// verification click converts the soft hold into the booking, and
+/// `mecha-mail bookings` — a deterministic sweep with no model anywhere in
+/// it — turns the record into a calendar event whose invite the *provider*
+/// sends from the owner's own mailbox. By the time the front door sees one,
+/// every question it could ask has been answered by machinery.
+///
+/// Parsed out of `values` rather than shared with `mecha_mail::bookings`,
+/// which parses the same keys for the same purpose. The seam between the two
+/// is the directory of JSON, not a crate dependency: `mecha-mail` has no
+/// `mecha-core` dependency and must never grow one, so the *keys* are the
+/// contract and `the_booking_keys_match_the_sweep` pins them against a
+/// record shaped like the one the drain writes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Booking {
+    /// The box's booking id — the join to the mail crate's ledger.
+    pub booking_id: String,
+    /// RFC 3339 UTC, exactly as the record carries them. Never reformatted
+    /// here: a surface renders them in the owner's zone, and a store that
+    /// rewrites stamps is a store that eventually disagrees with the gate.
+    pub start: String,
+    pub end: String,
+    pub duration_minutes: Option<u64>,
+    /// The box-minted cancel capability. A URL the *owner* may open — it is
+    /// the visitor's link, and using it records `cancelled_by_booker`.
+    pub manage_url: Option<String>,
+}
+
+impl Booking {
+    /// The meeting as a person reads it: `"Wed 16 Sep · 10:00–11:00 EDT"`.
+    ///
+    /// Rendered in the owner's `[agent] timezone` when one is configured and
+    /// in UTC when none is — an IANA zone, never an offset, because an offset
+    /// is wrong twice a year and a booking page sells time across exactly
+    /// those boundaries. The stored stamps are never touched; this is a view.
+    ///
+    /// Falls back to the raw stamps rather than inventing a rendering if they
+    /// somehow do not parse, so a surface degrades to "less readable" instead
+    /// of to "wrong about when the meeting is".
+    pub fn local_span(&self, tz: Option<chrono_tz::Tz>) -> String {
+        let (Ok(start), Ok(end)) = (
+            chrono::DateTime::parse_from_rfc3339(&self.start),
+            chrono::DateTime::parse_from_rfc3339(&self.end),
+        ) else {
+            return format!("{} – {}", self.start, self.end);
+        };
+        match tz {
+            Some(tz) => {
+                let (start, end) = (start.with_timezone(&tz), end.with_timezone(&tz));
+                format!(
+                    "{} · {}–{} {}",
+                    start.format("%a %-d %b"),
+                    start.format("%H:%M"),
+                    Self::end_label(start.date_naive(), end.date_naive(), end.format("%H:%M")),
+                    start.format("%Z")
+                )
+            }
+            None => {
+                let (start, end) = (
+                    start.with_timezone(&chrono::Utc),
+                    end.with_timezone(&chrono::Utc),
+                );
+                format!(
+                    "{} · {}–{} UTC",
+                    start.format("%a %-d %b"),
+                    start.format("%H:%M"),
+                    Self::end_label(start.date_naive(), end.date_naive(), end.format("%H:%M")),
+                )
+            }
+        }
+    }
+
+    /// The end of the span, carrying its own day when the meeting crosses
+    /// local midnight.
+    ///
+    /// Only the start's day is labelled otherwise, which is right almost
+    /// always and silently wrong for an evening slot in a far-east zone:
+    /// `Wed 16 Sep · 23:30–00:30` puts the end on Thursday and never says so.
+    /// Whether that is reachable depends on the published availability
+    /// windows — a property of the owner's policy file, not of this renderer,
+    /// which is precisely why the renderer should not assume it.
+    fn end_label(
+        start_day: chrono::NaiveDate,
+        end_day: chrono::NaiveDate,
+        time: impl std::fmt::Display,
+    ) -> String {
+        if start_day == end_day {
+            time.to_string()
+        } else {
+            format!("{time} ({})", end_day.format("%a %-d %b"))
+        }
+    }
+
+    /// Whether the meeting has already happened, as of `now`. Unparseable
+    /// stamps read as *not* past: a meeting that might still be ahead is the
+    /// safer thing to keep showing.
+    pub fn is_past(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        chrono::DateTime::parse_from_rfc3339(&self.end)
+            .map(|end| end.with_timezone(&chrono::Utc) < now)
+            .unwrap_or(false)
+    }
+}
+
+impl Record {
+    /// The booking this record is, or `None` for an ordinary request.
+    ///
+    /// Deliberately **not** gated on `valid`, where
+    /// `mecha_mail::bookings::parse_record` is: this answers "is this record
+    /// shaped like a booking", so an invalid one still renders its meeting for
+    /// a person reading it. Every *decision* goes through
+    /// [`Record::is_settled_booking`], which does require `valid` — so the two
+    /// sides agree wherever agreement matters and differ only in what a human
+    /// is shown.
+    ///
+    /// `None` rather than an error for a record with a `_booking_id` but
+    /// unparseable stamps, exactly as the sweep answers: a booking with
+    /// invented times is worse than a record nothing recognises, and the
+    /// two sides must agree about which records are bookings or one of them
+    /// will act on a meeting the other never made.
+    pub fn booking(&self) -> Option<Booking> {
+        let text = |key: &str| {
+            self.values
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        // A cancellation is not a booking, and it carries the same stamps.
+        // The box's withdrawal payload is `{_booking_id, _cancelled: true,
+        // _slot_start, _slot_end}` — every key a confirmation has — so
+        // without this check a *withdrawn* meeting parses as a settled one,
+        // leaves the queue, and `show` tells the owner it is on their
+        // calendar. `mecha_mail::bookings` splits the two with
+        // `parse_cancellation`; this is the same split, and the two sides
+        // must agree or one of them acts on a meeting the other cancelled.
+        if self
+            .values
+            .get("_cancelled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        let booking_id = text("_booking_id")?;
+        let (start, end) = (text("_slot_start")?, text("_slot_end")?);
+        for stamp in [&start, &end] {
+            chrono::DateTime::parse_from_rfc3339(stamp).ok()?;
+        }
+        Some(Booking {
+            booking_id,
+            start,
+            end,
+            duration_minutes: self.values.get("_duration_minutes").and_then(Value::as_u64),
+            manage_url: text("_manage_url"),
+        })
+    }
+
+    /// The booking id this record **withdraws**, when it is a cancellation.
+    ///
+    /// A visitor who uses their manage link produces a machinery-only record
+    /// — `{_booking_id, _cancelled: true, _slot_start, _slot_end}` — which
+    /// [`Record::booking`] deliberately refuses. This is the other half of
+    /// that refusal: recognising it, so the confirmation it cancels can stop
+    /// claiming to be on the owner's calendar.
+    ///
+    /// The mail crate's `parse_cancellation` reads the same two keys for the
+    /// same purpose; this side needs its own because the front door does not
+    /// read `bookings.jsonl` and never should — that ledger is the calendar's
+    /// record, and a request store that depended on it would be a request
+    /// store that breaks when mail is not configured.
+    pub fn cancellation(&self) -> Option<String> {
+        if !self.valid {
+            return None;
+        }
+        if self.values.get("_cancelled").and_then(Value::as_bool) != Some(true) {
+            return None;
+        }
+        self.values
+            .get("_booking_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    }
+
+    /// Whether this record is a booking that needs no human decision.
+    ///
+    /// Today every valid booking is settled, which is the owner's standing
+    /// ruling: the approval happened when the bookable slots were published,
+    /// and re-asking per booking is the approval fatigue the whole design is
+    /// trying to spend down. **This function is the seam where that stops
+    /// being unconditional** — an allowlist (auto-confirm a named set,
+    /// hold the rest for review) narrows it here and nowhere else, so the
+    /// listing, the extractor and the triage pass cannot come to different
+    /// conclusions about the same record.
+    ///
+    /// An *invalid* record is never settled: it did not validate against the
+    /// manifest, so nothing about it is known to be the shape it claims —
+    /// including the slot it appears to have taken.
+    pub fn is_settled_booking(&self) -> bool {
+        self.valid && self.booking().is_some()
+    }
+}
+
 /// The directory of inbound requests.
 pub struct Frontdoor {
     root: PathBuf,
@@ -394,6 +643,231 @@ impl Frontdoor {
         std::fs::write(&temp, serde_json::to_string_pretty(&record)?)?;
         std::fs::rename(&temp, &path)?;
         Ok(())
+    }
+
+    /// Move settled bookings to [`BOOKED`], so nothing downstream treats a
+    /// confirmed meeting as an open question.
+    ///
+    /// Runs beside [`Frontdoor::reconcile`] and for the same reason: a state
+    /// that is only correct after somebody remembers a command is a state
+    /// nobody can trust. Idempotent — a record already terminal is left
+    /// alone, so this is safe to call from every verb.
+    ///
+    /// **[`Swept`] is the one thing this cannot decide for itself.** The
+    /// sweep re-verifies every booking against live freebusy before creating
+    /// an event, and when the slot has since been taken it writes a
+    /// `conflict` line and *creates nothing* — no event, no invite, and its
+    /// ledger never retries it. The visitor holds a confirmation page for a
+    /// meeting that does not exist, and a person has to fix it.
+    ///
+    /// Settling such a record would be the worst outcome this module can
+    /// produce: it would drop out of `counts_as_open`, sit outside
+    /// `WAITING_ON_OWNER` so the doctor never names it, fold under "on your
+    /// calendar · nothing owed", and `show` would state that the invite went
+    /// from the owner's own mailbox. Before any of this existed it at least
+    /// stayed in the queue. So the ids are passed **in**, by a caller that
+    /// can read the mail crate's ledger — this store must not reach across to
+    /// `bookings.jsonl` itself, which is the calendar's record and absent
+    /// wherever mail is not configured.
+    ///
+    /// An empty [`Swept`] is the honest answer for a machine with no mail:
+    /// nothing has been created, so nothing settles and nothing claims a
+    /// calendar it never reached.
+    ///
+    /// The cost of *not* having this was measured rather than imagined. A
+    /// booking walked the whole pipeline — a quarantined extraction, then a
+    /// full privileged agent run with mail and calendar — to produce a draft
+    /// telling the requester their slot "is already booked" and asking them
+    /// to pick another time. It was reading the booking's *own* calendar
+    /// event as a conflict. Four earlier drafts of the same shape were
+    /// rejected by hand over the preceding five weeks.
+    pub fn settle_bookings(&self, swept: &Swept) -> Result<Vec<Transition>> {
+        let mut moved = Vec::new();
+        let records = self.records()?;
+        // Which bookings the visitor has since withdrawn. `booked` is
+        // terminal, so without this join a cancelled meeting keeps claiming
+        // to be on the calendar: `show` printing "confirmed at the gate …
+        // nothing here is waiting on you" for an event `mecha-mail bookings`
+        // has already deleted. A false assertion on the one surface this
+        // whole change asks the owner to trust.
+        let cancelled: std::collections::BTreeSet<String> =
+            records.iter().filter_map(Record::cancellation).collect();
+        for mut record in records {
+            // A withdrawal, and the confirmation it withdraws, both end at
+            // `closed` — the state that already means "ended, and here is
+            // why". `closed` is skipped, so a reason a person wrote by hand
+            // when closing is never overwritten. A `needs_info` or `answered`
+            // note *is* replaced, deliberately: "waiting on them to tell me
+            // which dates", or the record of a draft released about a meeting
+            // that is no longer happening, both stop being what became of
+            // this request once the visitor cancelled it. The withdrawal is
+            // the newer fact and the one a person opening the record needs.
+            // `awaiting_me` is excluded here for the same reason the skip
+            // list below excludes it: a draft is staged against this record
+            // and only `reconcile` advances it, so closing it here orphans
+            // the draft — the exact failure
+            // `a_booking_whose_draft_is_still_pending_is_left_for_reconcile`
+            // exists to prevent, arrived at down the other arm. A person
+            // running `frontdoor close` does the same thing, but there a
+            // person decided.
+            // `awaiting_me` keeps its state (only `reconcile` may advance it,
+            // and settling orphans the draft) but must still learn it was
+            // withdrawn: `note` advances nothing, `show` prints it, and this
+            // is precisely the case with a live sendable draft about a
+            // meeting that is no longer happening. Silence there is the worst
+            // version of the guard.
+            // Not `note.is_none()`: `reconcile` writes a rejection reason and
+            // returns the record to `extracted`, and a re-triage then writes
+            // `awaiting_me` without clearing it — so a booking on its second
+            // draft always has a note, and the guard suppressed the
+            // withdrawal in exactly the case with a live draft against it.
+            // Idempotent on the sentence instead.
+            const WITHDRAWN: &str = "the requester cancelled this booking";
+            if record.state == AWAITING_ME
+                && !record
+                    .note
+                    .as_deref()
+                    .is_some_and(|n| n.contains(WITHDRAWN))
+            {
+                if let Some(b) = record.booking() {
+                    if cancelled.contains(&b.booking_id) {
+                        record.note = Some(format!(
+                            "{WITHDRAWN} — the draft staged against it is about a meeting \
+                             that is no longer happening"
+                        ));
+                        self.write(&record)?;
+                    }
+                }
+            }
+            if record.state != CLOSED && record.state != AWAITING_ME {
+                let note = match (record.cancellation(), record.booking()) {
+                    (Some(_), _) => Some(
+                        "a booking the requester withdrew — the sweep removes the calendar event"
+                            .to_string(),
+                    ),
+                    (None, Some(b)) if cancelled.contains(&b.booking_id) => {
+                        Some(
+                            if !record.collided && !swept.created.contains(&b.booking_id) {
+                                // Cancelled inside the drain→sweep window, so no
+                                // event was ever made for it either. Transient,
+                                // but the same false assertion the collided branch
+                                // below exists to avoid — and `swept` is already
+                                // in hand, so there is no reason to guess.
+                                "the requester cancelled this booking before it reached your \
+                             calendar"
+                                    .to_string()
+                            } else if record.collided && !swept.created.contains(&b.booking_id) {
+                                // It never reached the calendar, so "no longer on
+                                // your calendar" would be true of the record and
+                                // false of the calendar.
+                                "the requester cancelled this booking; its slot had already \
+                             collided, so no event was ever created"
+                                    .to_string()
+                            } else {
+                                "the requester cancelled this booking; it is no longer on your \
+                             calendar"
+                                    .to_string()
+                            },
+                        )
+                    }
+                    _ => None,
+                };
+                if let Some(note) = note {
+                    let from = std::mem::replace(&mut record.state, CLOSED.to_string());
+                    // Cleared here too, not only on the `booked` transition: a
+                    // closed record is decided, and a doctor finding that
+                    // keeps naming it after the decision is one people learn
+                    // to skip. (`closed` and `booked` are the only two exits
+                    // a collided booking has today — `n` and `Park…` both
+                    // refuse it — so this is the complete set until a decline
+                    // path adds another.)
+                    record.collided = false;
+                    record.note = Some(note);
+                    self.write(&record)?;
+                    moved.push(Transition {
+                        seq: record.seq,
+                        from,
+                        to: CLOSED.to_string(),
+                    });
+                    continue;
+                }
+            }
+            // States this must not move. Not all of them are terminal —
+            // `answered`, `needs_info` and `awaiting_me` are not — so the
+            // reason is per state rather than a category: `closed` and
+            // `answered` are somebody's recorded conclusion, `needs_info` is
+            // a deliberate park, and `awaiting_me` is the one below.
+            //
+            // `awaiting_me` is left alone for a different and sharper reason:
+            // it means a draft is staged against this record, and
+            // [`Frontdoor::reconcile`] only advances records that *are*
+            // `awaiting_me`. Settling one here would orphan its draft — still
+            // pending, still sendable, and now attached to a record nothing
+            // will ever reconcile. It resolves itself: when the person
+            // releases or rejects the draft, reconcile moves the record to
+            // `answered` or back to `extracted`, and the next pass settles it
+            // from there. This is reachable in exactly one place — the
+            // migration, where bookings triaged before this existed are
+            // sitting in `awaiting_me` with drafts against them.
+            if matches!(
+                record.state.as_str(),
+                BOOKED | ANSWERED | CLOSED | NEEDS_INFO | AWAITING_ME
+            ) {
+                continue;
+            }
+            let Some(booking) = record.booking().filter(|_| record.is_settled_booking()) else {
+                continue;
+            };
+            // A collided booking stays exactly where it is, visible, with the
+            // collision written down. Not settled, and deliberately not
+            // triaged either — `is_settled_booking` still answers true, so no
+            // model is spent drafting a reply to it. A person reads the note
+            // and decides.
+            const COLLIDED: &str = "the slot collided with something already on your calendar";
+            if swept.conflicted.contains(&booking.booking_id) {
+                // Sentence-containment, not `note.is_none()` — the withdrawal
+                // arm forty lines up rejects that guard for the same reason:
+                // reconcile's rejection reason survives into `extracted`, so a
+                // booking on its second draft always has a note, and that is
+                // exactly the migration population this change is for. They
+                // could collide and never say so.
+                if !record.collided || !record.note.as_deref().is_some_and(|n| n.contains(COLLIDED))
+                {
+                    record.collided = true;
+                    record.note = Some(format!(
+                        "{COLLIDED} — no event was created and no invite was sent, and the \
+                         requester is holding a confirmation page for a meeting that does \
+                         not exist"
+                    ));
+                    self.write(&record)?;
+                }
+                continue;
+            }
+            // Not swept yet. `booked` says the event exists and the invite
+            // went out; without a `created` line that is a guess, and a wrong
+            // one is unrecoverable because `booked` is terminal. It waits.
+            if !swept.created.contains(&booking.booking_id) {
+                continue;
+            }
+            let from = std::mem::replace(&mut record.state, BOOKED.to_string());
+            // A collision resolved by hand stops being reported.
+            record.collided = false;
+            // Only when there is nothing to lose: a note already on the record
+            // is somebody's explanation of how it got here.
+            if record.note.is_none() {
+                record.note = Some(
+                    "confirmed at the gate and swept onto the calendar — no decision was owed"
+                        .into(),
+                );
+            }
+            self.write(&record)?;
+            moved.push(Transition {
+                seq: record.seq,
+                from,
+                to: BOOKED.to_string(),
+            });
+        }
+        Ok(moved)
     }
 
     /// Advance anything whose draft has since been released or rejected.
@@ -507,6 +981,12 @@ pub const AWAITING_ME: &str = "awaiting_me";
 pub const NEEDS_INFO: &str = "needs_info";
 pub const ANSWERED: &str = "answered";
 pub const CLOSED: &str = "closed";
+/// A booking that needed no decision: the slot was held, the click confirmed
+/// it, and the sweep put it on a calendar. Terminal on arrival, and
+/// deliberately **not** in [`WAITING_ON_OWNER`] — a confirmed meeting is not
+/// a request anybody owes an answer to, and counting it as one is what made
+/// the review queue read as a backlog of work that had already happened.
+pub const BOOKED: &str = "booked";
 
 /// The states in which a request waits on the **owner** rather than on the
 /// requester or on the harness: `extracted` awaits triage, `awaiting_me` a
@@ -522,6 +1002,22 @@ pub const WAITING_ON_OWNER: [&str; 3] = [EXTRACTED, AWAITING_ME, TRIAGED];
 
 pub fn waiting_on_owner(state: &str) -> bool {
     WAITING_ON_OWNER.contains(&state)
+}
+
+/// Whether a request still counts as **open work** on the queue surfaces —
+/// `/queues`' front-door row and the backlog's depth.
+///
+/// Both used to ask only "is it not `closed`", on the reasoning that anything
+/// else is still somebody's problem. A confirmed booking is nobody's problem:
+/// it was settled by machinery on arrival, and bookings arrive at a far higher
+/// rate than requests do, so counting them is precisely how a review queue
+/// comes to read as a backlog of work that already happened.
+///
+/// `answered` deliberately stays *in*. It means a draft was released, and both
+/// surfaces have always counted those until somebody closes them; narrowing
+/// that is a separate decision from this one.
+pub fn counts_as_open(state: &str) -> bool {
+    state != CLOSED && state != BOOKED
 }
 
 impl Record {
@@ -742,6 +1238,7 @@ mod tests {
             outbox: Vec::new(),
             note: None,
             attachments: Vec::new(),
+            collided: false,
             rest: Map::new(),
         }
     }
@@ -770,6 +1267,569 @@ mod tests {
             !rendered.contains("Ada Lovelace"),
             "a free-text name is still prose: {rendered}"
         );
+    }
+
+    /// A ledger answer saying the sweep created events for these bookings.
+    /// `booking_record()`'s id is included by default, because "the sweep has
+    /// run and this is on the calendar" is the ordinary case every other test
+    /// is about.
+    fn swept(extra: &[&str]) -> Swept {
+        let mut created: std::collections::BTreeSet<String> =
+            ["2f6d21b33b6273fe41d4bf22b9bce655".to_string()]
+                .into_iter()
+                .collect();
+        created.extend(extra.iter().map(|s| s.to_string()));
+        Swept {
+            created,
+            conflicted: Default::default(),
+        }
+    }
+
+    /// The same booking, but the sweep found its slot taken.
+    fn swept_conflicting() -> Swept {
+        Swept {
+            created: Default::default(),
+            conflicted: ["2f6d21b33b6273fe41d4bf22b9bce655".to_string()]
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    /// A record shaped like the one `factory-publish drain` actually writes
+    /// for a booking. The machinery keys are the contract between this module
+    /// and `mecha_mail::bookings::parse_record`, which has no crate
+    /// dependency on this one — so the only thing holding the two together is
+    /// that they agree about these names.
+    fn booking_record() -> Record {
+        Record {
+            seq: 10,
+            type_id: "book".into(),
+            state: DRAINED.into(),
+            values: serde_json::from_value(json!({
+                "_booking_id": "2f6d21b33b6273fe41d4bf22b9bce655",
+                "_duration_minutes": 60,
+                "_manage_url": "https://gate.example.test/s/ada/book/m/3b313155f9",
+                "_slot_start": "2026-09-16T14:00:00Z",
+                "_slot_end": "2026-09-16T15:00:00Z",
+                "purpose": "research",
+                "requester_name": "Ada Lovelace",
+                "requester_email": "ada@example.test",
+                "topic": "touch base on the difference engine",
+            }))
+            .unwrap(),
+            free_text: vec![
+                "requester_name".into(),
+                "requester_email".into(),
+                "topic".into(),
+            ],
+            reply_to: Some("ada@example.test".into()),
+            ..record_with_prose()
+        }
+    }
+
+    #[test]
+    fn the_booking_keys_match_the_sweep() {
+        let booking = booking_record().booking().expect("a booking");
+        assert_eq!(booking.booking_id, "2f6d21b33b6273fe41d4bf22b9bce655");
+        assert_eq!(booking.start, "2026-09-16T14:00:00Z");
+        assert_eq!(booking.end, "2026-09-16T15:00:00Z");
+        assert_eq!(booking.duration_minutes, Some(60));
+        assert!(booking.manage_url.is_some());
+    }
+
+    /// A visitor's cancellation carries **every key a confirmation does** —
+    /// `manage_cancel` sends `{_booking_id, _cancelled, _slot_start,
+    /// _slot_end}` — so the withdrawal has to be excluded by name. Without
+    /// that, the front door files a cancelled meeting as settled and tells
+    /// its owner it is on their calendar with nothing waiting on them.
+    #[test]
+    fn a_cancellation_is_not_a_booking() {
+        let mut record = booking_record();
+        record.values.insert("_cancelled".into(), json!(true));
+        assert!(record.booking().is_none());
+        assert!(!record.is_settled_booking());
+
+        let stores = Stores::new("cancel");
+        stores.front.write(&record).unwrap();
+        // It does not settle as a *booking* — it is closed as a withdrawal,
+        // which is what `a_cancellation_closes_the_booking_it_withdraws_and_itself`
+        // covers. What matters here is that it never becomes `booked`.
+        stores.front.settle_bookings(&swept(&[])).unwrap();
+        assert_ne!(stores.front.record(10).unwrap().state, BOOKED);
+    }
+
+    /// `booked` is finished work; `answered` deliberately is not, because the
+    /// queue surfaces have always counted a released draft until somebody
+    /// closes it.
+    #[test]
+    fn a_booked_request_is_not_open_work_but_an_answered_one_still_is() {
+        assert!(!counts_as_open(BOOKED));
+        assert!(!counts_as_open(CLOSED));
+        assert!(counts_as_open(ANSWERED));
+        assert!(counts_as_open(EXTRACTED));
+        assert!(counts_as_open(AWAITING_ME));
+    }
+
+    /// An ordinary request is not a booking, so nothing here changes what the
+    /// front door does with the requests it was built for.
+    #[test]
+    fn an_ordinary_request_is_not_a_booking() {
+        assert!(record_with_prose().booking().is_none());
+        assert!(!record_with_prose().is_settled_booking());
+    }
+
+    /// The sweep returns `None` rather than a booking with invented times.
+    /// This side must answer the same way, or one of them acts on a meeting
+    /// the other never made.
+    #[test]
+    fn a_booking_with_unreadable_stamps_is_not_a_booking() {
+        let mut record = booking_record();
+        record
+            .values
+            .insert("_slot_start".into(), json!("whenever"));
+        assert!(record.booking().is_none());
+        assert!(!record.is_settled_booking());
+    }
+
+    /// Invalid means "nothing about this is known to be the shape it claims",
+    /// which includes the slot it appears to have taken. It stays in the queue
+    /// for a person.
+    #[test]
+    fn an_invalid_booking_is_never_settled() {
+        let mut record = booking_record();
+        record.valid = false;
+        assert!(record.booking().is_some(), "still recognisably a booking");
+        assert!(!record.is_settled_booking(), "but not one to settle");
+    }
+
+    /// The regression this whole change exists for: a confirmed booking must
+    /// leave the queue, and must not be something the owner is waiting on.
+    #[test]
+    fn a_settled_booking_leaves_the_queue_and_owes_nobody_an_answer() {
+        let stores = Stores::new("settle");
+        stores.front.write(&booking_record()).unwrap();
+        stores.front.write(&record_with_prose()).unwrap();
+
+        let moved = stores.front.settle_bookings(&swept(&[])).unwrap();
+        assert_eq!(moved.len(), 1, "only the booking moves");
+        assert_eq!(moved[0].seq, 10);
+        assert_eq!(moved[0].from, DRAINED);
+        assert_eq!(moved[0].to, BOOKED);
+
+        assert_eq!(stores.front.record(10).unwrap().state, BOOKED);
+        assert!(!waiting_on_owner(BOOKED));
+        // The ordinary request is untouched and still waiting.
+        assert_eq!(stores.front.record(1).unwrap().state, DRAINED);
+
+        // Idempotent: a second pass moves nothing.
+        assert!(stores
+            .front
+            .settle_bookings(&swept(&[]))
+            .unwrap()
+            .is_empty());
+    }
+
+    /// The migration case, and the one that orphans a draft. `reconcile`
+    /// only advances records that *are* `awaiting_me`, so settling one here
+    /// would leave its staged draft live, sendable, and attached to a record
+    /// nothing will ever reconcile.
+    #[test]
+    fn a_booking_whose_draft_is_still_pending_is_left_for_reconcile() {
+        let stores = Stores::new("settle-awaiting");
+        let mut record = booking_record();
+        record.state = AWAITING_ME.into();
+        record.outbox = vec!["20260914T180315-3d3c97c2".into()];
+        stores.front.write(&record).unwrap();
+
+        assert!(
+            stores
+                .front
+                .settle_bookings(&swept(&[]))
+                .unwrap()
+                .is_empty(),
+            "settling it would orphan the draft staged against it"
+        );
+        assert_eq!(stores.front.record(10).unwrap().state, AWAITING_ME);
+
+        // Once the draft is resolved and reconcile has moved it on, the next
+        // pass settles it from there.
+        let mut record = stores.front.record(10).unwrap();
+        record.state = EXTRACTED.into();
+        stores.front.write(&record).unwrap();
+        let moved = stores.front.settle_bookings(&swept(&[])).unwrap();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].to, BOOKED);
+    }
+
+    /// A meeting that has already happened says so, and an unreadable stamp
+    /// reads as *not* past — a meeting that might still be ahead is the safer
+    /// thing to keep showing.
+    #[test]
+    fn a_past_meeting_is_named_and_an_unreadable_one_is_not_guessed_at() {
+        let booking = booking_record().booking().unwrap();
+        let t = |s: &str| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        };
+        assert!(booking.is_past(t("2026-09-16T15:00:01Z")));
+        assert!(!booking.is_past(t("2026-09-16T14:59:59Z")));
+        assert!(!Booking {
+            booking_id: "b1".into(),
+            start: "whenever".into(),
+            end: "later".into(),
+            duration_minutes: None,
+            manage_url: None,
+        }
+        .is_past(t("2030-01-01T00:00:00Z")));
+    }
+
+    /// A collision a person closes is decided, so the doctor stops naming it.
+    /// The flag used to clear only on the `booked` transition, which a
+    /// collided record cannot reach until somebody fixes the calendar.
+    #[test]
+    fn closing_a_collided_booking_clears_the_flag_the_doctor_reads() {
+        let stores = Stores::new("collide-closed");
+        stores.front.write(&booking_record()).unwrap();
+        stores.front.settle_bookings(&swept_conflicting()).unwrap();
+        assert!(stores.front.record(10).unwrap().collided);
+
+        // The visitor gives the slot back; the withdrawal closes both.
+        let mut withdrawal = booking_record();
+        withdrawal.seq = 11;
+        withdrawal.values.insert("_cancelled".into(), json!(true));
+        stores.front.write(&withdrawal).unwrap();
+        stores.front.settle_bookings(&swept_conflicting()).unwrap();
+
+        let after = stores.front.record(10).unwrap();
+        assert_eq!(after.state, CLOSED);
+        assert!(!after.collided, "decided, so it stops being a finding");
+        assert!(
+            after.note.unwrap().contains("no event was ever created"),
+            "and the note says what is true of a collided booking"
+        );
+    }
+
+    /// A collision has to be findable by something other than prose: the
+    /// record never leaves `drained`, and `drained` is outside
+    /// `WAITING_ON_OWNER`, so no state the doctor watches describes it.
+    #[test]
+    fn a_collision_is_marked_on_the_record_and_cleared_when_it_resolves() {
+        let stores = Stores::new("collide-flag");
+        stores.front.write(&booking_record()).unwrap();
+
+        stores.front.settle_bookings(&swept_conflicting()).unwrap();
+        assert!(
+            stores.front.record(10).unwrap().collided,
+            "the doctor keys on this, not on the note's wording"
+        );
+
+        // Resolved by hand: a later sweep creates the event, and the record
+        // stops being reported.
+        let moved = stores.front.settle_bookings(&swept(&[])).unwrap();
+        assert_eq!(moved.len(), 1);
+        let after = stores.front.record(10).unwrap();
+        assert_eq!(after.state, BOOKED);
+        assert!(!after.collided);
+    }
+
+    /// A collided booking must still say so on a second pass, even though it
+    /// already carries a note from an earlier rejected draft. `note.is_none()`
+    /// silenced exactly the population this change exists to migrate.
+    #[test]
+    fn a_collision_is_recorded_even_over_a_stale_rejection_note() {
+        let stores = Stores::new("collide-over-note");
+        let mut record = booking_record();
+        record.note = Some("every draft rejected: wrong tone".into());
+        stores.front.write(&record).unwrap();
+
+        stores.front.settle_bookings(&swept_conflicting()).unwrap();
+        assert!(stores
+            .front
+            .record(10)
+            .unwrap()
+            .note
+            .unwrap()
+            .contains("collided"));
+    }
+
+    /// **Unknown is never clean.** A booking the sweep has not reached yet
+    /// looks exactly like a collided one from the ledger's silence, and
+    /// settling on that silence is unrecoverable: `booked` is terminal, so the
+    /// `conflict` line written two minutes later never un-books it.
+    ///
+    /// The drain and the sweep are separate commands in both units, with every
+    /// settle caller free to fire between them, so this window is ordinary
+    /// rather than exotic.
+    #[test]
+    fn a_booking_the_sweep_has_not_reached_yet_is_not_settled() {
+        let stores = Stores::new("unswept");
+        stores.front.write(&booking_record()).unwrap();
+
+        // The ledger knows nothing about it yet.
+        let nothing = Swept::default();
+        assert!(
+            stores.front.settle_bookings(&nothing).unwrap().is_empty(),
+            "silence is not evidence that the invite went out"
+        );
+        let after = stores.front.record(10).unwrap();
+        assert_eq!(after.state, DRAINED, "it waits where a person can see it");
+        assert!(after.note.is_none(), "and says nothing it does not know");
+
+        // Once the sweep records the event, the next pass settles it.
+        let moved = stores.front.settle_bookings(&swept(&[])).unwrap();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].to, BOOKED);
+    }
+
+    /// The worst thing this module could do: file a booking that never
+    /// reached the calendar as one that did.
+    ///
+    /// The sweep writes a `conflict` line when the slot has been taken since
+    /// the gate sold it, creates no event and sends no invite, and never
+    /// retries. Settling that record would drop it out of `counts_as_open`,
+    /// hide it from the doctor, fold it under "nothing owed", and have `show`
+    /// assert the invite went from the owner's own mailbox — for a visitor
+    /// holding a confirmation page and no meeting.
+    #[test]
+    fn a_booking_whose_slot_collided_stays_in_the_queue_and_says_why() {
+        let stores = Stores::new("conflict");
+        stores.front.write(&booking_record()).unwrap();
+        assert!(
+            stores
+                .front
+                .settle_bookings(&swept_conflicting())
+                .unwrap()
+                .is_empty(),
+            "a collided booking must not be settled"
+        );
+        let after = stores.front.record(10).unwrap();
+        assert_eq!(after.state, DRAINED, "it stays where a person will see it");
+        assert!(
+            after.note.unwrap().contains("no event"),
+            "and says what went wrong"
+        );
+
+        // Idempotent, and the note is written once.
+        assert!(stores
+            .front
+            .settle_bookings(&swept_conflicting())
+            .unwrap()
+            .is_empty());
+
+        // The same record with no conflict recorded settles as usual — so the
+        // refusal above is the ledger's doing, not something about the record.
+        let moved = stores.front.settle_bookings(&swept(&[])).unwrap();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].to, BOOKED);
+    }
+
+    /// A booking parked in `awaiting_me` keeps its state when the visitor
+    /// cancels — but must not stay silent about it, because that is the case
+    /// with a live sendable draft about a meeting that is off.
+    #[test]
+    fn a_cancelled_booking_awaiting_review_still_learns_it_was_withdrawn() {
+        let stores = Stores::new("cancel-awaiting-note");
+        let mut record = booking_record();
+        record.state = AWAITING_ME.into();
+        record.outbox = vec!["20260914T180315-3d3c97c2".into()];
+        stores.front.write(&record).unwrap();
+
+        let mut withdrawal = booking_record();
+        withdrawal.seq = 11;
+        withdrawal.values.insert("_cancelled".into(), json!(true));
+        stores.front.write(&withdrawal).unwrap();
+
+        // A stale rejection reason from an earlier draft must not suppress the
+        // withdrawal — that is exactly the second-draft case, and the one with
+        // a live sendable draft against it.
+        let mut with_note = stores.front.record(10).unwrap();
+        with_note.note = Some("every draft rejected: wrong tone".into());
+        stores.front.write(&with_note).unwrap();
+
+        stores.front.settle_bookings(&swept(&[])).unwrap();
+        let after = stores.front.record(10).unwrap();
+        assert_eq!(after.state, AWAITING_ME, "the draft is still reconcile's");
+        assert!(
+            after.note.unwrap().contains("cancelled"),
+            "but the reviewer is told before they read the draft"
+        );
+    }
+
+    /// A visitor's cancellation must un-book the confirmation it withdraws,
+    /// or the front door goes on asserting a meeting that `mecha-mail
+    /// bookings` has already deleted from the calendar.
+    #[test]
+    fn a_cancellation_closes_the_booking_it_withdraws_and_itself() {
+        let stores = Stores::new("cancel-join");
+        stores.front.write(&booking_record()).unwrap();
+
+        // First pass: nothing has been withdrawn, so it settles as usual.
+        stores.front.settle_bookings(&swept(&[])).unwrap();
+        assert_eq!(stores.front.record(10).unwrap().state, BOOKED);
+
+        // The visitor uses their manage link. The box sends a machinery-only
+        // record naming the same booking.
+        let mut withdrawal = booking_record();
+        withdrawal.seq = 11;
+        withdrawal.values.insert("_cancelled".into(), json!(true));
+        withdrawal.free_text.clear();
+        stores.front.write(&withdrawal).unwrap();
+
+        let moved = stores.front.settle_bookings(&swept(&[])).unwrap();
+        assert_eq!(moved.len(), 2, "the withdrawal and what it withdraws");
+
+        let booking = stores.front.record(10).unwrap();
+        assert_eq!(booking.state, CLOSED, "no longer claiming the calendar");
+        assert!(booking.note.unwrap().contains("cancelled"));
+
+        // And the withdrawal itself never walks extract → triage: it is
+        // machinery with no prose, and there is nothing to draft a reply to.
+        let record = stores.front.record(11).unwrap();
+        assert_eq!(record.state, CLOSED);
+        assert!(record.booking().is_none());
+
+        // Idempotent.
+        assert!(stores
+            .front
+            .settle_bookings(&swept(&[]))
+            .unwrap()
+            .is_empty());
+    }
+
+    /// The cancellation join must respect the same guard the settle path
+    /// does: a booking with a staged draft is left for `reconcile`, or the
+    /// draft is orphaned — reached down the other arm, which is how the
+    /// first version of this join got it wrong.
+    #[test]
+    fn a_cancelled_booking_with_a_pending_draft_is_still_left_for_reconcile() {
+        let stores = Stores::new("cancel-awaiting");
+        let mut record = booking_record();
+        record.state = AWAITING_ME.into();
+        record.outbox = vec!["20260914T180315-3d3c97c2".into()];
+        stores.front.write(&record).unwrap();
+
+        let mut withdrawal = booking_record();
+        withdrawal.seq = 11;
+        withdrawal.values.insert("_cancelled".into(), json!(true));
+        stores.front.write(&withdrawal).unwrap();
+
+        let moved = stores.front.settle_bookings(&swept(&[])).unwrap();
+        assert_eq!(moved.len(), 1, "only the withdrawal itself moves");
+        assert_eq!(moved[0].seq, 11);
+        assert_eq!(
+            stores.front.record(10).unwrap().state,
+            AWAITING_ME,
+            "closing it here would orphan the draft staged against it"
+        );
+    }
+
+    /// A reason a person wrote by hand outlives the join.
+    #[test]
+    fn a_hand_written_close_reason_survives_a_later_cancellation() {
+        let stores = Stores::new("cancel-keeps-reason");
+        let mut record = booking_record();
+        record.state = CLOSED.into();
+        record.note = Some("they emailed me to call it off".into());
+        stores.front.write(&record).unwrap();
+
+        let mut withdrawal = booking_record();
+        withdrawal.seq = 11;
+        withdrawal.values.insert("_cancelled".into(), json!(true));
+        stores.front.write(&withdrawal).unwrap();
+
+        stores.front.settle_bookings(&swept(&[])).unwrap();
+        assert_eq!(
+            stores.front.record(10).unwrap().note.as_deref(),
+            Some("they emailed me to call it off")
+        );
+    }
+
+    /// A person who closed a booking with a reason has said something, and a
+    /// sweep that runs inside every verb must not talk over it.
+    #[test]
+    fn settling_leaves_a_closed_booking_and_its_reason_alone() {
+        let stores = Stores::new("settle-closed");
+        let mut record = booking_record();
+        record.state = CLOSED.into();
+        record.note = Some("they cancelled by mail".into());
+        stores.front.write(&record).unwrap();
+
+        assert!(stores
+            .front
+            .settle_bookings(&swept(&[]))
+            .unwrap()
+            .is_empty());
+        let after = stores.front.record(10).unwrap();
+        assert_eq!(after.state, CLOSED);
+        assert_eq!(after.note.as_deref(), Some("they cancelled by mail"));
+    }
+
+    /// The stamps are UTC and the owner is not. A booking at 14:00Z in
+    /// September is 10:00 in New York, and getting that wrong by an hour is
+    /// the whole reason `[agent] timezone` is an IANA name and not an offset.
+    #[test]
+    fn a_booking_renders_in_the_owners_zone_not_utc() {
+        let booking = booking_record().booking().unwrap();
+        let ny: chrono_tz::Tz = "America/New_York".parse().unwrap();
+        assert_eq!(
+            booking.local_span(Some(ny)),
+            "Wed 16 Sep · 10:00–11:00 EDT",
+            "September is daylight time; the same slot in January is EST"
+        );
+        assert_eq!(
+            booking.local_span(None),
+            "Wed 16 Sep · 14:00–15:00 UTC",
+            "no configured zone falls back to UTC, never to a guess"
+        );
+    }
+
+    /// A meeting that crosses local midnight says which day it ends on.
+    /// Labelling only the start's day renders `23:30–00:30` with the end
+    /// silently on the next day.
+    #[test]
+    fn a_span_crossing_midnight_names_the_day_it_ends_on() {
+        let mut record = booking_record();
+        record
+            .values
+            .insert("_slot_start".into(), json!("2026-09-17T03:30:00Z"));
+        record
+            .values
+            .insert("_slot_end".into(), json!("2026-09-17T04:30:00Z"));
+        let booking = record.booking().unwrap();
+        let tokyo: chrono_tz::Tz = "Asia/Tokyo".parse().unwrap();
+        // 03:30Z is 12:30 in Tokyo — same day, so no label.
+        assert_eq!(
+            booking.local_span(Some(tokyo)),
+            "Thu 17 Sep · 12:30–13:30 JST"
+        );
+
+        record
+            .values
+            .insert("_slot_start".into(), json!("2026-09-17T14:30:00Z"));
+        record
+            .values
+            .insert("_slot_end".into(), json!("2026-09-17T15:30:00Z"));
+        let booking = record.booking().unwrap();
+        // 14:30Z is 23:30 in Tokyo and the end lands on Friday.
+        assert_eq!(
+            booking.local_span(Some(tokyo)),
+            "Thu 17 Sep · 23:30–00:30 (Fri 18 Sep) JST"
+        );
+    }
+
+    /// Unreadable stamps degrade to "less readable", never to a confident
+    /// wrong answer about when somebody is expected.
+    #[test]
+    fn an_unreadable_span_falls_back_to_the_raw_stamps() {
+        let booking = Booking {
+            booking_id: "b1".into(),
+            start: "whenever".into(),
+            end: "later".into(),
+            duration_minutes: None,
+            manage_url: None,
+        };
+        assert_eq!(booking.local_span(None), "whenever – later");
     }
 
     /// A record parked in `awaiting_me` with `n` drafts against it.
