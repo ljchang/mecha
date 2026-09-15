@@ -398,6 +398,14 @@ impl Booking {
 impl Record {
     /// The booking this record is, or `None` for an ordinary request.
     ///
+    /// Deliberately **not** gated on `valid`, where
+    /// `mecha_mail::bookings::parse_record` is: this answers "is this record
+    /// shaped like a booking", so an invalid one still renders its meeting for
+    /// a person reading it. Every *decision* goes through
+    /// [`Record::is_settled_booking`], which does require `valid` — so the two
+    /// sides agree wherever agreement matters and differ only in what a human
+    /// is shown.
+    ///
     /// `None` rather than an error for a record with a `_booking_id` but
     /// unparseable stamps, exactly as the sweep answers: a booking with
     /// invented times is worse than a record nothing recognises, and the
@@ -626,10 +634,12 @@ impl Frontdoor {
             // A withdrawal, and the confirmation it withdraws, both end at
             // `closed` — the state that already means "ended, and here is
             // why". `closed` is skipped, so a reason a person wrote by hand
-            // when closing is never overwritten. A `needs_info` note *is*
-            // replaced, deliberately: "waiting on them to tell me which
-            // dates" stops being what happened to this request once they
-            // cancelled it, and the newer fact is the one worth keeping.
+            // when closing is never overwritten. A `needs_info` or `answered`
+            // note *is* replaced, deliberately: "waiting on them to tell me
+            // which dates", or the record of a draft released about a meeting
+            // that is no longer happening, both stop being what became of
+            // this request once the visitor cancelled it. The withdrawal is
+            // the newer fact and the one a person opening the record needs.
             // `awaiting_me` is excluded here for the same reason the skip
             // list below excludes it: a draft is staged against this record
             // and only `reconcile` advances it, so closing it here orphans

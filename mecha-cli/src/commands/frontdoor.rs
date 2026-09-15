@@ -120,15 +120,33 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
 /// `list` that refuses to print because a store it only wanted to cross-check
 /// is absent would be worse than one that prints slightly stale states.
 fn reconcile(store: &Frontdoor) -> Result<()> {
-    // Bookings settle first, and without the outbox: a confirmed meeting owes
-    // nobody a reply, so it must leave the queue whether or not a draft store
-    // exists to cross-check. Doing it here rather than in each verb is the
-    // same rule as the outbox reconciliation below — a state that is only
-    // correct after someone runs a command is a state nobody can trust.
-    // Best-effort, like the outbox reconciliation below and like the other
-    // two callers (the web warns, the TUI ignores). A `?` here made a single
-    // failed write stop `frontdoor list` printing anything at all, under a
-    // doc comment promising the opposite.
+    let Some(outbox) = mecha_core::outbox::OutboxStore::open_existing_default() else {
+        // No outbox is an ordinary machine. Bookings still settle: a confirmed
+        // meeting owes nobody a reply, so it must leave the queue whether or
+        // not a draft store exists to cross-check.
+        settle(store);
+        return Ok(());
+    };
+    for moved in store.reconcile(&outbox)? {
+        eprintln!("{:<5} {} → {}", moved.seq, moved.from, moved.to);
+    }
+    settle(store);
+    Ok(())
+}
+
+/// Move confirmed bookings out of the queue. Best-effort, like the outbox
+/// reconciliation it follows and like the other two callers (the web warns,
+/// the TUI ignores) — a `?` here once stopped `frontdoor list` printing
+/// anything at all under a doc comment promising the opposite.
+///
+/// **After the outbox pass, not before.** A booking triaged before any of this
+/// existed sits in `awaiting_me`, which `settle_bookings` refuses to touch
+/// because only `reconcile` may advance it. Settling first therefore needed
+/// two invocations to migrate one record; settling second lets reconcile lift
+/// it to `extracted` and this settle it, in one pass. Nothing is lost by the
+/// order: reconcile only ever touches `awaiting_me`, which is exactly the
+/// state settling skips.
+fn settle(store: &Frontdoor) {
     match store.settle_bookings() {
         Ok(moved) => {
             for moved in moved {
@@ -137,13 +155,6 @@ fn reconcile(store: &Frontdoor) -> Result<()> {
         }
         Err(e) => eprintln!("could not settle bookings: {e:#}"),
     }
-    let Some(outbox) = mecha_core::outbox::OutboxStore::open_existing_default() else {
-        return Ok(());
-    };
-    for moved in store.reconcile(&outbox)? {
-        eprintln!("{:<5} {} → {}", moved.seq, moved.from, moved.to);
-    }
-    Ok(())
 }
 
 fn mark(store: &Frontdoor, seq: i64, state: &str, note: Option<String>) -> Result<()> {
@@ -210,12 +221,6 @@ fn list(store: &Frontdoor, state: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// The owner's `[agent] timezone`, or `None` when config cannot be read.
-///
-/// `None` rather than a guess: a surface that renders a meeting in the wrong
-/// zone is worse than one that renders it in UTC and says so. The machine
-/// runs UTC and the model has no clock, which is why this is an IANA name in
-/// config and never an offset.
 /// Whether `extract` should spend a quarantined model call on this record.
 ///
 /// - **Invalid records never are**: one that did not validate against the
@@ -245,6 +250,12 @@ fn triageable(record: &Record) -> bool {
         && record.for_privileged_run().is_some()
 }
 
+/// The owner's `[agent] timezone`, or `None` when config cannot be read.
+///
+/// `None` rather than a guess: a surface that renders a meeting in the wrong
+/// zone is worse than one that renders it in UTC and says so. The machine
+/// runs UTC and the model has no clock, which is why this is an IANA name in
+/// config and never an offset.
 fn owner_timezone() -> Option<chrono_tz::Tz> {
     // `load_global`, not `load(&cwd)`: the project layer would let a cloned
     // repo vote on the zone a stranger's booking renders in, and the same

@@ -4372,7 +4372,17 @@ fn handle_frontdoor_key(app: &mut App, key: KeyEvent) -> Result<()> {
         // faster than a child process would.
         KeyCode::Char('x') => {
             if let Some(row) = modal.selected_row() {
-                if !row.valid {
+                // Gated here and not only in the hint line. Hiding a key from
+                // the title while leaving it live is how a dead action
+                // survives being "fixed": `x` on a confirmed booking spawned
+                // a child that printed `nothing to extract`, exited 0, and
+                // left a watch to announce "still booked after 30m".
+                if row.settled {
+                    modal.status = Some(format!(
+                        "{} is a confirmed booking — nothing to extract",
+                        row.seq
+                    ));
+                } else if !row.valid {
                     modal.status = Some(format!(
                         "{} is invalid — invalid records are never extracted",
                         row.seq
@@ -4430,11 +4440,22 @@ fn handle_frontdoor_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('n') => {
             if let Some(row) = modal.selected_row() {
-                modal.input = Some(frontdoor::NoteInput {
-                    seq: row.seq,
-                    action: frontdoor::NoteAction::NeedsInfo,
-                    buffer: String::new(),
-                });
+                // Parking a confirmed meeting is worse than a no-op: it moves
+                // the record back inside `counts_as_open`, so a settled
+                // booking reappears as work owed and waits on a requester who
+                // has nothing left to answer.
+                if row.settled {
+                    modal.status = Some(format!(
+                        "{} is a confirmed booking — nobody is being waited on",
+                        row.seq
+                    ));
+                } else {
+                    modal.input = Some(frontdoor::NoteInput {
+                        seq: row.seq,
+                        action: frontdoor::NoteAction::NeedsInfo,
+                        buffer: String::new(),
+                    });
+                }
             }
         }
         KeyCode::Char('c') => {
