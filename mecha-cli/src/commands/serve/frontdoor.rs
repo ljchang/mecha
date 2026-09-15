@@ -26,13 +26,24 @@ pub async fn list(State(_state): St) -> Response {
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
     };
-    // Settle first, exactly as the terminal verbs do. Without this the page
-    // reads a store nobody has reconciled: a confirmed booking still sits in
-    // the queue with an **Extract** button, and pressing it spawns a child
-    // that prints `nothing to extract` and exits 0, so the page reports
-    // success for work that did not happen. Best-effort — a store this cannot
-    // write to is still a store worth showing.
-    if let Err(e) = store.settle_bookings(&super::super::frontdoor::collided_bookings()) {
+    // Reconcile, then settle — the terminal verbs' order, and it is
+    // load-bearing: a booking triaged before any of this existed sits in
+    // `awaiting_me`, which settling refuses to touch, so reconcile has to lift
+    // it out first or the migration takes two page loads. This page said it
+    // settled "exactly as the terminal verbs do" while doing only half of it.
+    //
+    // Without settling at all the page reads a store nobody reconciled: a
+    // confirmed booking sits in the queue behind an **Extract** button whose
+    // child prints `nothing to extract` and exits 0, so the page reports
+    // success for work that did not happen.
+    //
+    // Both best-effort — a store this cannot write to is still worth showing.
+    if let Some(outbox) = mecha_core::outbox::OutboxStore::open_existing_default() {
+        if let Err(e) = store.reconcile(&outbox) {
+            tracing::warn!(error = %e, "reconciling front-door drafts for the page");
+        }
+    }
+    if let Err(e) = store.settle_bookings(&super::super::frontdoor::swept_bookings()) {
         tracing::warn!(error = %e, "settling bookings for the front door page");
     }
     let mut records = match store.records() {

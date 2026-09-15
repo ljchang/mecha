@@ -240,7 +240,7 @@ pub fn load() -> anyhow::Result<Vec<RequestRow>> {
     if let Some(outbox) = mecha_core::outbox::OutboxStore::open_existing_default() {
         let _ = store.reconcile(&outbox);
     }
-    let _ = store.settle_bookings(&crate::commands::frontdoor::collided_bookings());
+    let _ = store.settle_bookings(&crate::commands::frontdoor::swept_bookings());
     // The zone once, not once per row: `row` used to call `load_global()` for
     // every booking it rendered, re-reading and re-parsing config each time.
     let tz = owner_timezone();

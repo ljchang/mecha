@@ -134,7 +134,7 @@ fn reconcile(store: &Frontdoor) -> Result<()> {
     Ok(())
 }
 
-/// The bookings whose slot collided, from the mail crate's ledger.
+/// What the sweep has done, from the mail crate's ledger.
 ///
 /// The sweep re-verifies against live freebusy and, when the slot has since
 /// been taken, writes a `conflict` line and creates nothing — no event, no
@@ -146,20 +146,21 @@ fn reconcile(store: &Frontdoor) -> Result<()> {
 /// record, owned by a crate that has no `mecha-core` dependency and must not
 /// grow one, and the seam between them is a file at a known path — the same
 /// arrangement as the request store this reads *for*. Absent, unreadable or
-/// torn, the answer is the empty set, and the reasoning is honest rather than
-/// fail-open: no ledger means no sweep ran, so nothing collided and nothing
-/// claims a calendar either.
+/// torn, the answer is an empty `Swept`, which settles nothing: no ledger
+/// means no sweep ran, so no booking reached a calendar and none may claim to
+/// have. Fail-closed, and the same answer on a machine with no mail at all.
 ///
 /// A `created` line for the same booking wins over a `conflict` — the sweep
 /// would have to have been re-run by hand for both to exist, and the event is
 /// then real.
-pub(crate) fn collided_bookings() -> std::collections::BTreeSet<String> {
+pub(crate) fn swept_bookings() -> mecha_core::frontdoor::Swept {
+    use mecha_core::frontdoor::Swept;
     use std::collections::BTreeSet;
     let Ok(home) = mecha_core::work::mecha_home() else {
-        return BTreeSet::new();
+        return Swept::default();
     };
     let Ok(text) = std::fs::read_to_string(home.join("mail").join("bookings.jsonl")) else {
-        return BTreeSet::new();
+        return Swept::default();
     };
     let (mut conflicted, mut created) = (BTreeSet::new(), BTreeSet::new());
     for line in text.lines() {
@@ -183,7 +184,10 @@ pub(crate) fn collided_bookings() -> std::collections::BTreeSet<String> {
         }
     }
     conflicted.retain(|id| !created.contains(id));
-    conflicted
+    Swept {
+        created,
+        conflicted,
+    }
 }
 
 /// Move confirmed bookings out of the queue. Best-effort, like the outbox
@@ -199,7 +203,7 @@ pub(crate) fn collided_bookings() -> std::collections::BTreeSet<String> {
 /// order: reconcile only ever touches `awaiting_me`, which is exactly the
 /// state settling skips.
 fn settle(store: &Frontdoor) {
-    match store.settle_bookings(&collided_bookings()) {
+    match store.settle_bookings(&swept_bookings()) {
         Ok(moved) => {
             for moved in moved {
                 eprintln!("{:<5} {} → {}", moved.seq, moved.from, moved.to);
@@ -283,7 +287,22 @@ fn list(store: &Frontdoor, state: Option<&str>) -> Result<()> {
 ///
 /// Lifted out of the iterator chain so it can be asserted rather than read.
 fn extractable(record: &Record, force: bool) -> bool {
-    record.valid && !record.is_settled_booking() && (force || record.extraction.is_none())
+    record.valid
+        && !record.is_settled_booking()
+        && !is_withdrawal(record)
+        && (force || record.extraction.is_none())
+}
+
+/// A visitor's cancellation: machinery only, and nothing to answer.
+///
+/// `Record::booking()` refuses a `_cancelled` record on purpose, which makes
+/// `is_settled_booking()` answer *false* for one — so a freshly drained
+/// withdrawal passed both locks. `Extract` and `Triage` do not reconcile, so
+/// nothing had closed it yet either, and `frontdoor triage --seq N` (what the
+/// web button and the TUI `t` key spawn) would hand a full privileged run a
+/// record whose entire content is a booking id and two timestamps.
+fn is_withdrawal(record: &Record) -> bool {
+    record.cancellation().is_some()
 }
 
 /// Whether `triage` may draft a reply for this record.
@@ -299,6 +318,7 @@ fn extractable(record: &Record, force: bool) -> bool {
 fn triageable(record: &Record) -> bool {
     record.state == mecha_core::frontdoor::EXTRACTED
         && !record.is_settled_booking()
+        && !is_withdrawal(record)
         && record.for_privileged_run().is_some()
 }
 
@@ -904,6 +924,27 @@ mod tests {
         assert!(triageable(&record));
         assert!(!extractable(&record, false), "already extracted");
         assert!(extractable(&record, true), "--force re-extracts it");
+    }
+
+    /// A visitor's withdrawal is machinery with nothing to answer, and it
+    /// slipped both locks: `Record::booking()` refuses a `_cancelled` record,
+    /// which makes `is_settled_booking()` answer *false* for it. `Extract` and
+    /// `Triage` do not reconcile, so nothing has closed it either — and
+    /// `frontdoor triage --seq N` is what the web button and the TUI `t` key
+    /// spawn.
+    #[test]
+    fn a_withdrawal_reaches_neither_the_extractor_nor_a_triage_run() {
+        let mut record = booking(EXTRACTED);
+        record.values.insert("_cancelled".into(), json!(true));
+        record.extraction = Some(Extraction::default());
+
+        assert!(
+            !record.is_settled_booking(),
+            "the settled-booking lock does not catch it, by design"
+        );
+        assert!(!extractable(&record, false), "and it is still refused");
+        assert!(!extractable(&record, true));
+        assert!(!triageable(&record));
     }
 
     /// `booked` is not `extracted`, so the first lock holds on its own too.
