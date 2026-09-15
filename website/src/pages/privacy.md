@@ -1,6 +1,6 @@
 ---
 title: Privacy policy
-description: What mecha does with Google account data, where it is stored, and who else can see it.
+description: What mecha does with the accounts you connect, where the data is stored, and who else can see it.
 ---
 
 # Privacy policy
@@ -277,7 +277,9 @@ about review: **creating a calendar event with attendees notifies them
 immediately**, and **deleting one mails a cancellation unconditionally**. On
 Google, updating an event is the single calendar operation that notifies
 nobody; on Microsoft there is no quiet one — Graph mails attendees on create,
-update and delete alike.
+update and delete alike. The same difference is stated under
+[mecha-mail](#microsoft), which is two places to keep in step the next time a
+provider changes a default.
 
 ## Retention and deletion
 
