@@ -12,11 +12,19 @@ It is maintained by Luke Chang and distributed under the MIT license at
 [github.com/ljchang/mecha](https://github.com/ljchang/mecha).
 
 This policy describes what happens to Google account data when someone connects
-a Google account to their own installation of mecha. It is short because the
-architecture is simple: **there is no mecha server.** Every copy of mecha runs on
-its user's machine, holds its own credentials, and talks to Google directly. The
-maintainer operates no service that receives, stores, or processes another
-person's Google data, and has no ability to read it.
+a Google account to their own installation of mecha.
+
+**The agent runs on your machine.** Every copy of mecha holds its own
+credentials and talks to Google directly; no part of the agent, its mail
+handling, its calendar work or its model calls passes through anything the
+maintainer runs. Your OAuth tokens never leave your computer.
+
+**One optional piece is a hosted service, and it is worth reading about
+separately.** If you want a public surface — a booking page strangers can use,
+a form they can submit — that surface is served by *mecha-factory*, which is a
+real multi-user server. It is optional, it is off unless you publish something
+to it, and it is described in [its own section below](#the-public-surface). It
+never receives your mail, and it never holds an OAuth token.
 
 ## What mecha asks for, and why
 
@@ -49,8 +57,11 @@ one is optional; mecha runs with no mail, calendar or document access at all.
   to Google, to refresh themselves.
 - **Message and calendar content** is read on demand over the network from Google
   to your machine. Anything cached is written under `~/.mecha/` on the same machine.
-- **Nothing is sent to the maintainer.** There is no telemetry, no analytics, no
-  crash reporting, and no hosted backend.
+- **Nothing is reported about you.** There is no telemetry, no analytics and no
+  crash reporting anywhere in mecha — it never phones home, and the maintainer
+  learns nothing about your installation or your use of it. The one service in
+  the picture is the optional public surface described below, which you reach
+  only by deliberately publishing something to it.
 
 ## Who else can see it
 
@@ -94,6 +105,28 @@ computes free slots from your calendars' busy time and pushes them to that page.
 What is published is availability — when you are free, in the windows you chose —
 never event titles, attendees, or any other detail of what you are busy *with*.
 Take the page down and nothing further is published.
+
+## The public surface
+
+Publishing a booking page or a public form means putting something on a server
+that strangers can reach. That server is *mecha-factory*, and this is what it
+holds:
+
+- **Your published availability** — the free slots computed from your calendars,
+  pushed to it so the booking page can show them. Availability only: when you
+  are free, in the windows you chose, never event titles, attendees or anything
+  about what you are busy with.
+- **Inbound submissions, until your machine collects them.** A booking or a form
+  submission is queued there and stays queued until your mecha drains it. How
+  long an undrained row survives is set by the request type's own retention
+  policy; a type that sets none keeps its rows until they are drained.
+
+It never receives your mail, your calendar events, your documents, or any OAuth
+token — those stay between your machine and Google.
+
+This is the one part of mecha that somebody else can operate on your behalf, and
+whoever operates the instance you publish to can see what is on it. mecha-factory
+is open source and can be self-hosted, in which case that person is you.
 
 ## Other people's data
 

@@ -660,8 +660,9 @@ raw description kept in parentheses.
 
 Google, by contrast, uses a loopback PKCE flow on `127.0.0.1:8924` with
 `access_type=offline&prompt=consent` (Google needs both to reliably return a
-refresh token every time), four scopes (`gmail.readonly`, `gmail.send`,
-`calendar`, `calendar.events` — `gmail.modify` excluded), and a 120-second
+refresh token every time), four scopes (`gmail.modify`, `gmail.send`,
+`calendar`, `calendar.events` — stopping short of `https://mail.google.com/`,
+so permanent deletion is not granted), and a 120-second
 timeout on the redirect.
 
 ## The token lifecycle
