@@ -14,6 +14,60 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-14 — the owner can say yes by voice, and a bad link delays the
+owner's words instead of losing them.** Two arcs, one day, both measured
+before they merged and both deployed the same day.
+
+*#228 — the spoken yes.* On 2026-09-13 at 19:37 UTC the spoken outbox
+confirmation played its first real offer and the owner answered *"Go ahead
+and send it."* — two phrases the parser accepted, joined by a word it did
+not — and `parse_answer`'s whole-utterance equality dropped it; the
+question was dropped with the words, and the model, whose tool result had
+said *"review it with `mecha outbox`"*, told the owner so four times. Of
+twenty natural accepts tried that day, one matched. `review_policy::segment`
+now tiles the utterance with a closed lexicon and five connectives: every
+word consumed, all phrases one kind, a tiling that ends on `and`/`just` is
+a sentence cut short. A dropped question is carried over the model's reply
+and asked again once (`Confirmations::carry_unanswered`); the staged-draft
+result names this surface's review (`ToolCtx::review_hint`, messages only —
+a publish is reviewed on a screen everywhere). Nine review passes; the ones
+that mattered: `do it later` (a listed deferral) made unreachable by a
+mixed tiling outvoting the pure one; `normalise` and `spoken_words`
+disagreeing on the apostrophe, which reopened the filler hole for exactly
+the contractions the branch added; the hint promised aloud on a publish.
+`docs/VOICE-APPROVAL-RESEARCH.md` holds the incident, the measurement (51
+sessions with spoken turns; 12 drafts from them, every one resolved on a
+screen) and the design for the rest.
+
+*#231 — the reliable uplink.* The 2026-09-14 morning call stalled eighteen
+times and Parakeet received eleven seconds of a five-minute call — every
+fragment right, every truncation a stall; RTP does not retransmit.
+`docs/VOICE-LINK-DESIGN.md`, designed and built the same day: the page
+taps the *encoded* Opus frames at the RTP sender (`RTCRtpScriptTransform`
+— never the microphone track, which WebKit punishes by disabling echo
+cancellation), keeps them in a ring on a media clock that runs across
+reconnects and outlives the session object, and ships them as base64
+batches over the RTVI channel (pipecat claims every data channel as RTVI,
+so a second one would have hijacked it); the worker reads and discards
+RTP, decodes the batches into the transport's own audio queue at four times
+real time, and holds the turn until the page's backlog and its own are
+drained. Audio older than two minutes on arrival — or from before this
+connection began — is one late message, segmented on silence and appended
+to the context to run at once. Both ends watch for a dead tap for the whole
+call with three witnesses (RTP arriving, the channel alive by heartbeat, no
+batch), and a stalled link cannot trip it. Measured with
+`scripts/voice/test_call.py`: a 6 s stall mid-sentence, every word in one
+turn; a 125 s block, the backlog as one late turn the model ran on within a
+millisecond; a channel never fed, RTP fallback at six seconds; a dropped
+connection, eight seconds captured with no connection delivered first.
+Seven review passes found real things on every one, all in the fallback
+seam and the late lane, and the design records each with its reason. What
+the fakes could not find, the live runs did: a burst outruns pipecat's
+VAD→STT loop; Parakeet-TDT discards what precedes a silence gap inside a
+clip; a transcript-only turn waits out a 15 s timeout; aiortc counts RTP
+packets only on consumption. Deployed ~16:30 UTC — `web/dist` with a new
+file at its root, `mecha-serve` and `mecha-voice-worker` restarted.
+
 **2026-09-13 — a gap in the audio is not silence: the voice call holds the
 turn across a stall and says so, and the owner asked for the sound.** Two
 calls from a moving car on 2026-09-12 reached the model as six fragments —
@@ -6018,6 +6072,25 @@ matters is the general shape.
 
 ### Measuring
 
+**A recognizer's contract includes the shape of the clip, not just its
+words.** The late lane handed Parakeet-TDT five seconds of clear speech
+with a second of silence inside it and got nothing back; the same words
+without the gap transcribed. Measured on one clip start at 4.5 s (text),
+4.9–6.0 s (nothing), 7.0 s (only the words *after* the gap): the model
+drops what precedes a silence it is given as one input. The live lane never
+sees this because VAD segments end at silence; any new path into the same
+recognizer must segment as the live one does *before* comparing results,
+or "held no speech" is the recognizer's habit, not the audio's.
+
+**A pipeline built for real time has rate assumptions nothing declares.**
+Replaying a two-minute backlog into pipecat as fast as the channel
+delivered it turned fifteen seconds of speech into one second and four
+empty segments: the segmented STT accumulates audio only after the
+aggregator's VAD edge comes back upstream, with a one-second pre-roll, and
+a burst outruns that loop. Nothing errored. When feeding recorded or
+buffered media into a live pipeline, bound the rate against the slowest
+feedback loop in it and count what is still in flight as backlog.
+
 **Freeze the executed artifact and give the control a coherent role.** A gossip
 ablation removed peer evidence but kept instructions about a peer's different
 sources; the control was internally inconsistent. A corrected run then executed
@@ -7959,6 +8032,21 @@ check the timestamp before re-running anything.**
 
 
 ### Environment
+
+**A stats counter is a witness only under the condition you rely on.** The
+uplink's deafness watch first used aiortc's `inbound-rtp.packetsReceived`
+to prove RTP was arriving while no batch was; on a track nothing read it
+stayed at zero for the life of the call — aiortc counts packets on
+consumption, not arrival — and the watch never fired. Read the track and
+discard it, and a frame arriving is the witness. Before trusting a counter,
+make it move under exactly the condition the check depends on.
+
+**`pkill -f <pattern>` matches the shell running it.** Twice in one
+session a `pkill -f "worker.py --port 7861"` killed the `bash -c` whose own
+command line contained the pattern, taking the rest of the chain with it
+and reading as a mysterious exit 144. Anchor on the interpreter path
+(`pkill -f "^/path/to/python worker.py …"`), or kill by port, or iterate
+`pgrep -f` and `kill` the pids.
 
 **An executable path can be right while its bytes belong to another tree.**
 During the 2026-09-08 lifecycle checks, integration tests launched Cargo's
