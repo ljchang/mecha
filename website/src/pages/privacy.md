@@ -38,8 +38,11 @@ never receives your mail, and it never holds an OAuth token.
   mecha at something that is not on your machine, which is the next two points.
 - **Every account is one you connected.** No mailbox, calendar, document store
   or Slack workspace is reached until you connect it, and each disconnects
-  separately. Most of what you have connected is named in `~/.mecha/config.toml`
-  — Slack is the exception, and lives in `~/.mecha/slack/` instead.
+  separately. Everything you have connected lives under `~/.mecha/`, though not
+  all in one file: mail and calendar accounts in `mail/accounts.toml`, documents
+  as a directory each under `docs/`, Slack under `slack/`, and your model
+  provider, search backends and MCP servers in `config.toml`. The table below
+  says which is which.
 - **Some things do leave, and each has its own section below.** A language model
   reads whatever you ask it about, and **the built-in default names a hosted
   provider** — so check `default_provider` rather than assume it is local. A
@@ -86,6 +89,21 @@ no mail or calendar access at all. Tokens for both live at
 file, `0700` on the directory) and are never sent anywhere except back to the
 provider that issued them, to refresh themselves.
 
+#### Who gets told about a calendar change
+
+Creating, updating or deleting an event can mail every attendee, and the rules
+differ by provider. This is the one table to check before assuming a change is
+quiet:
+
+| | create (with attendees) | update | delete |
+| --- | --- | --- | --- |
+| **Google** | notifies | **silent** | notifies |
+| **Microsoft** | notifies | notifies | notifies |
+
+So Google has exactly one quiet calendar operation and Microsoft has none.
+Deletion notifies unconditionally on both — it is not conditional on attendees
+the way creation is.
+
 ### Google
 
 | Scope | What it allows |
@@ -109,14 +127,11 @@ own machine; nothing brokers it.
 
 Two differences from Google worth knowing:
 
-- **Updating an event notifies attendees.** Microsoft Graph mails them on
-  create, update *and* delete; Google is silent on update alone. Both notify on
-  create when there are attendees, and both notify on delete unconditionally —
-  so the difference is one verb, and it is the one you would least expect to
-  send mail.
 - **Sign-in uses a device code** — mecha shows you a code, you enter it at
-  Microsoft. Some organisations block that flow, or require an administrator to
-  approve the app before a member can consent at all.
+  Microsoft. Some organisations block that flow under Conditional Access, or
+  require an administrator to approve the app before a member can consent at
+  all; where device code is blocked, the browser-and-loopback flow Google uses
+  is still available.
 
 From 31 December 2026 Microsoft moves changes to *sensitive* mail properties
 behind a further scope. mecha does not touch those properties, so the list above
@@ -186,9 +201,10 @@ file is the answer.
 
 Nobody beyond the destinations you configured yourself — the model provider, any
 search backend, any MCP server, the Slack transport, a knowledge graph, and the
-public surface if you publish one. Each is named in `~/.mecha/config.toml`,
-except Slack, whose binding lives under `~/.mecha/slack/` and is deliberately
-kept out of layered config. All of them are off until you turn them on, with one
+public surface if you publish one. Each is recorded under `~/.mecha/`, in the place its
+own section names — `config.toml` for the model provider, search and MCP; the
+mail, docs and slack directories for the rest. All of them are off until you
+turn them on, with one
 exception worth stating plainly: a model provider is configured out of the box,
 and the built-in default is a hosted one.
 
@@ -280,14 +296,10 @@ neither is a tool call:
 Everything else that sends is an ordinary tool call and is covered by the queue
 if you have routed it — including the calendar ones.
 
-Worth knowing separately, because it is about *who hears about it* rather than
-about review: **creating a calendar event with attendees notifies them
-immediately**, and **deleting one mails a cancellation unconditionally**. On
-Google, updating an event is the single calendar operation that notifies
-nobody; on Microsoft there is no quiet one — Graph mails attendees on create,
-update and delete alike. The same difference is stated under
-[mecha-mail](#microsoft), which is two places to keep in step the next time a
-provider changes a default.
+Separately from review, and worth knowing because it is about *who hears about
+it*: most calendar changes mail every attendee immediately. The rules differ by
+provider and are tabled once, under
+[who gets told about a calendar change](#who-gets-told-about-a-calendar-change).
 
 ## Retention and deletion
 
