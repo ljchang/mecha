@@ -288,13 +288,21 @@ Most of it is on your machine, so you control it directly:
 - **Disconnect one mail/calendar account:** delete `~/.mecha/mail/<account>/`.
 - **Disconnect a documents account:** delete `~/.mecha/docs/<account>/`. This is
   a separate grant, so removing the mail one does not revoke it.
-- **Revoke access from the provider's side:** for Google, visit
-  [myaccount.google.com/permissions](https://myaccount.google.com/permissions)
-  and remove the app. This invalidates the stored tokens immediately, whether or
-  not you have deleted them locally.
+- **Disconnect Slack:** delete `~/.mecha/slack/`.
 - **Remove everything local:** delete `~/.mecha/`. This also catches credentials
   from older installs, which kept them in a per-provider file rather than per
   account.
+
+Deleting a token stops mecha using it. **Revoking at the provider invalidates
+it**, whether or not you deleted the local copy, and that is the stronger move
+if you are not sure what a machine still holds. It is a different place for
+each:
+
+| Provider | Where |
+| --- | --- |
+| **Google** | [myaccount.google.com/permissions](https://myaccount.google.com/permissions) — remove mecha. This covers the mail/calendar grant and the documents grant separately, since they are two clients; revoke both if you connected both. |
+| **Microsoft** | Your account's app permissions. On a **work or school** account your administrator can also revoke it for you, and on some tenants only they can. |
+| **Slack** | Remove the app from the workspace, in that workspace's app settings. A workspace owner can do this whether or not you can. |
 
 **Two things live outside `~/.mecha/`, and `rm` does not reach either.**
 
