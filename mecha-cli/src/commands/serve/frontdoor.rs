@@ -45,6 +45,25 @@ pub async fn list(State(_state): St) -> Response {
                 "reading": r.extraction.as_ref().map(|x| x.reading.clone()),
                 "urgency_claimed": r.extraction.as_ref().map(|x| x.urgency_claimed.clone()),
                 "extraction_error": r.extraction_error,
+                // The meeting, when this record is one. Stamps go over as
+                // RFC 3339 and the page renders them in the *viewer's* zone —
+                // the phone in your hand knows where it is, and this page is
+                // only ever read by its owner. `settled` is the server's
+                // answer, never re-derived in JavaScript: which bookings need
+                // a decision is a policy question and it has one home.
+                "booking": r.booking().map(|b| serde_json::json!({
+                    "start": b.start,
+                    "end": b.end,
+                    "duration_minutes": b.duration_minutes,
+                    "manage_url": b.manage_url,
+                    "settled": r.is_settled_booking(),
+                })),
+                // Prose is never in the list payload — it opens only through
+                // the read endpoint, which is a person's explicit act. The
+                // requester's address is not prose: it is the value the box
+                // proved a stranger controls, and a booking row that cannot
+                // say who is coming is the card this change exists to fix.
+                "reply_to": r.reply_to,
             })
         })
         .collect();

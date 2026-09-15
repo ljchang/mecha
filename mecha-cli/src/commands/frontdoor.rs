@@ -120,6 +120,14 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
 /// `list` that refuses to print because a store it only wanted to cross-check
 /// is absent would be worse than one that prints slightly stale states.
 fn reconcile(store: &Frontdoor) -> Result<()> {
+    // Bookings settle first, and without the outbox: a confirmed meeting owes
+    // nobody a reply, so it must leave the queue whether or not a draft store
+    // exists to cross-check. Doing it here rather than in each verb is the
+    // same rule as the outbox reconciliation below — a state that is only
+    // correct after someone runs a command is a state nobody can trust.
+    for moved in store.settle_bookings()? {
+        eprintln!("{:<5} {} → {}", moved.seq, moved.from, moved.to);
+    }
     let Some(outbox) = mecha_core::outbox::OutboxStore::open_existing_default() else {
         return Ok(());
     };
@@ -148,6 +156,7 @@ fn mark(store: &Frontdoor, seq: i64, state: &str, note: Option<String>) -> Resul
 
 fn list(store: &Frontdoor, state: Option<&str>) -> Result<()> {
     let records = store.records()?;
+    let tz = owner_timezone();
     let shown: Vec<&Record> = records
         .iter()
         .filter(|r| state.is_none_or(|s| r.state == s))
@@ -172,20 +181,38 @@ fn list(store: &Frontdoor, state: Option<&str>) -> Result<()> {
         } else {
             ""
         };
-        println!(
-            "{:<5} {:<14} {:<18} {}{}",
-            record.seq,
-            record.type_id,
-            record.state,
-            record
+        // A booking says when it is. That is the whole of what the row has to
+        // tell you, and it is never the extraction's topic — a settled
+        // booking is deliberately never extracted, so the topic column would
+        // be an em dash on every one of them.
+        let summary = match record.booking() {
+            Some(booking) => booking.local_span(tz),
+            None => record
                 .extraction
                 .as_ref()
                 .map(|e| e.topic.clone())
                 .unwrap_or_else(|| "—".into()),
-            flag
+        };
+        println!(
+            "{:<5} {:<14} {:<18} {}{}",
+            record.seq, record.type_id, record.state, summary, flag
         );
     }
     Ok(())
+}
+
+/// The owner's `[agent] timezone`, or `None` when config cannot be read.
+///
+/// `None` rather than a guess: a surface that renders a meeting in the wrong
+/// zone is worse than one that renders it in UTC and says so. The machine
+/// runs UTC and the model has no clock, which is why this is an IANA name in
+/// config and never an offset.
+fn owner_timezone() -> Option<chrono_tz::Tz> {
+    let cwd = std::env::current_dir().ok()?;
+    mecha_core::config::Config::load(&cwd)
+        .ok()?
+        .agent
+        .timezone()
 }
 
 fn show(store: &Frontdoor, seq: i64) -> Result<()> {
@@ -203,9 +230,63 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
         );
     }
 
-    println!("\nfields the form validated:");
-    for (name, value) in record.typed_values() {
-        println!("  {name:<22} {value}");
+    // A booking leads with the meeting, because that is what the record *is*.
+    // Reading the slot out of a column of `_`-prefixed machinery is how a
+    // confirmed meeting came to look like an unanswered question.
+    let booking = record.booking();
+    if let Some(booking) = &booking {
+        let tz = owner_timezone();
+        println!("\n── the meeting ──────────────────────────────────────────────");
+        println!("  when      {}", booking.local_span(tz));
+        if let Some(minutes) = booking.duration_minutes {
+            println!("  length    {minutes} minutes");
+        }
+        // The requester's name is prose and stays below with the rest of it;
+        // what belongs here is what the form typed and the box verified.
+        if let Some(reply_to) = &record.reply_to {
+            println!("  with      {reply_to}  (verified by click)");
+        }
+        if let Some(purpose) = record.values.get("purpose").and_then(|v| v.as_str()) {
+            println!("  purpose   {purpose}");
+        }
+        if record.state == mecha_core::frontdoor::BOOKED {
+            println!(
+                "\n  This was confirmed at the gate and swept onto the calendar — the\n\
+                 \x20 invite went from your own mailbox. Nothing here is waiting on you."
+            );
+        }
+        if let Some(url) = &booking.manage_url {
+            println!("\n  their cancel link: {url}");
+        }
+        println!("  booking id: {}", booking.booking_id);
+    }
+
+    // The machinery is rendered above for a booking, so printing it again
+    // under "fields" is the wall of underscores this replaced.
+    let machinery: &[&str] = if booking.is_some() {
+        &[
+            "_booking_id",
+            "_slot_start",
+            "_slot_end",
+            "_duration_minutes",
+            "_manage_url",
+            // Rendered in the header above as the meeting's purpose. Printing
+            // it twice is how the wall of fields grew in the first place.
+            "purpose",
+        ]
+    } else {
+        &[]
+    };
+    let fields: Vec<(String, serde_json::Value)> = record
+        .typed_values()
+        .into_iter()
+        .filter(|(name, _)| !machinery.contains(&name.as_str()))
+        .collect();
+    if !fields.is_empty() {
+        println!("\nfields the form validated:");
+        for (name, value) in fields {
+            println!("  {name:<22} {value}");
+        }
     }
 
     match &record.extraction {
@@ -291,6 +372,10 @@ async fn extract_all(
         // An invalid record is never extracted: it did not validate against the
         // manifest, so nothing about it is known to be the shape it claims.
         .filter(|r| r.valid)
+        // Nor is a settled booking. Its prose is shown to a person by `show`
+        // and read by nothing else, so extracting it buys a model call and a
+        // topic line for a record no run will ever be handed.
+        .filter(|r| !r.is_settled_booking())
         .filter(|r| force || r.extraction.is_none())
         .collect();
 
@@ -384,6 +469,13 @@ async fn triage(
         .into_iter()
         .filter(|r| seq.is_none_or(|s| r.seq == s))
         .filter(|r| r.state == fd::EXTRACTED)
+        // `reconcile` above has already moved settled bookings to `booked`,
+        // so this is the second lock on the same door — and it is here because
+        // the first one is a *state* and this one is a *fact about the
+        // record*. A booking that reached `extracted` by any route at all
+        // (an older store, a hand-edited state, a future allowlist changing
+        // its mind) still must not become a draft.
+        .filter(|r| !r.is_settled_booking())
         // `for_privileged_run` is the gate, and it returns `None` for anything
         // unextracted or invalid. Filtering on it here means the rule lives in
         // one place instead of being restated as a condition.

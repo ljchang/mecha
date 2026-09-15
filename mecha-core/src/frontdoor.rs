@@ -289,6 +289,141 @@ impl Record {
     }
 }
 
+/// The booking machinery on a record, when it carries any.
+///
+/// A booking does not arrive asking for a decision — it arrives **already
+/// settled**. The gate only publishes slots freebusy says are free, the
+/// verification click converts the soft hold into the booking, and
+/// `mecha-mail bookings` — a deterministic sweep with no model anywhere in
+/// it — turns the record into a calendar event whose invite the *provider*
+/// sends from the owner's own mailbox. By the time the front door sees one,
+/// every question it could ask has been answered by machinery.
+///
+/// Parsed out of `values` rather than shared with `mecha_mail::bookings`,
+/// which parses the same keys for the same purpose. The seam between the two
+/// is the directory of JSON, not a crate dependency: `mecha-mail` has no
+/// `mecha-core` dependency and must never grow one, so the *keys* are the
+/// contract and `the_booking_keys_match_the_sweep` pins them against a
+/// record shaped like the one the drain writes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Booking {
+    /// The box's booking id — the join to the mail crate's ledger.
+    pub booking_id: String,
+    /// RFC 3339 UTC, exactly as the record carries them. Never reformatted
+    /// here: a surface renders them in the owner's zone, and a store that
+    /// rewrites stamps is a store that eventually disagrees with the gate.
+    pub start: String,
+    pub end: String,
+    pub duration_minutes: Option<u64>,
+    /// The box-minted cancel capability. A URL the *owner* may open — it is
+    /// the visitor's link, and using it records `cancelled_by_booker`.
+    pub manage_url: Option<String>,
+}
+
+impl Booking {
+    /// The meeting as a person reads it: `"Wed 16 Sep · 10:00–11:00 EDT"`.
+    ///
+    /// Rendered in the owner's `[agent] timezone` when one is configured and
+    /// in UTC when none is — an IANA zone, never an offset, because an offset
+    /// is wrong twice a year and a booking page sells time across exactly
+    /// those boundaries. The stored stamps are never touched; this is a view.
+    ///
+    /// Falls back to the raw stamps rather than inventing a rendering if they
+    /// somehow do not parse, so a surface degrades to "less readable" instead
+    /// of to "wrong about when the meeting is".
+    pub fn local_span(&self, tz: Option<chrono_tz::Tz>) -> String {
+        let (Ok(start), Ok(end)) = (
+            chrono::DateTime::parse_from_rfc3339(&self.start),
+            chrono::DateTime::parse_from_rfc3339(&self.end),
+        ) else {
+            return format!("{} – {}", self.start, self.end);
+        };
+        match tz {
+            Some(tz) => {
+                let (start, end) = (start.with_timezone(&tz), end.with_timezone(&tz));
+                format!(
+                    "{} · {}–{} {}",
+                    start.format("%a %-d %b"),
+                    start.format("%H:%M"),
+                    end.format("%H:%M"),
+                    start.format("%Z")
+                )
+            }
+            None => {
+                let (start, end) = (
+                    start.with_timezone(&chrono::Utc),
+                    end.with_timezone(&chrono::Utc),
+                );
+                format!(
+                    "{} · {}–{} UTC",
+                    start.format("%a %-d %b"),
+                    start.format("%H:%M"),
+                    end.format("%H:%M")
+                )
+            }
+        }
+    }
+
+    /// Whether the meeting has already happened, as of `now`. Unparseable
+    /// stamps read as *not* past: a meeting that might still be ahead is the
+    /// safer thing to keep showing.
+    pub fn is_past(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        chrono::DateTime::parse_from_rfc3339(&self.end)
+            .map(|end| end.with_timezone(&chrono::Utc) < now)
+            .unwrap_or(false)
+    }
+}
+
+impl Record {
+    /// The booking this record is, or `None` for an ordinary request.
+    ///
+    /// `None` rather than an error for a record with a `_booking_id` but
+    /// unparseable stamps, exactly as the sweep answers: a booking with
+    /// invented times is worse than a record nothing recognises, and the
+    /// two sides must agree about which records are bookings or one of them
+    /// will act on a meeting the other never made.
+    pub fn booking(&self) -> Option<Booking> {
+        let text = |key: &str| {
+            self.values
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        let booking_id = text("_booking_id")?;
+        let (start, end) = (text("_slot_start")?, text("_slot_end")?);
+        for stamp in [&start, &end] {
+            chrono::DateTime::parse_from_rfc3339(stamp).ok()?;
+        }
+        Some(Booking {
+            booking_id,
+            start,
+            end,
+            duration_minutes: self.values.get("_duration_minutes").and_then(Value::as_u64),
+            manage_url: text("_manage_url"),
+        })
+    }
+
+    /// Whether this record is a booking that needs no human decision.
+    ///
+    /// Today every valid booking is settled, which is the owner's standing
+    /// ruling: the approval happened when the bookable slots were published,
+    /// and re-asking per booking is the approval fatigue the whole design is
+    /// trying to spend down. **This function is the seam where that stops
+    /// being unconditional** — an allowlist (auto-confirm a named set,
+    /// hold the rest for review) narrows it here and nowhere else, so the
+    /// listing, the extractor and the triage pass cannot come to different
+    /// conclusions about the same record.
+    ///
+    /// An *invalid* record is never settled: it did not validate against the
+    /// manifest, so nothing about it is known to be the shape it claims —
+    /// including the slot it appears to have taken.
+    pub fn is_settled_booking(&self) -> bool {
+        self.valid && self.booking().is_some()
+    }
+}
+
 /// The directory of inbound requests.
 pub struct Frontdoor {
     root: PathBuf,
@@ -410,6 +545,55 @@ impl Frontdoor {
     /// that is only correct after you remember to run a verb is a state nobody
     /// can trust, and the whole point of `awaiting_me` is that it answers
     /// "what is on me right now".
+    /// Move settled bookings to [`BOOKED`], so nothing downstream treats a
+    /// confirmed meeting as an open question.
+    ///
+    /// Runs beside [`Frontdoor::reconcile`] and for the same reason: a state
+    /// that is only correct after somebody remembers a command is a state
+    /// nobody can trust. Idempotent — a record already terminal is left
+    /// alone, so this is safe to call from every verb.
+    ///
+    /// The cost of *not* having this was measured rather than imagined. A
+    /// booking walked the whole pipeline — a quarantined extraction, then a
+    /// full privileged agent run with mail and calendar — to produce a draft
+    /// telling the requester their slot "is already booked" and asking them
+    /// to pick another time. It was reading the booking's *own* calendar
+    /// event as a conflict. Four earlier drafts of the same shape were
+    /// rejected by hand over the preceding five weeks.
+    pub fn settle_bookings(&self) -> Result<Vec<Transition>> {
+        let mut moved = Vec::new();
+        for mut record in self.records()? {
+            // Terminal states are left alone — including `closed`, because a
+            // person who closed a booking with a reason has said something
+            // this must not overwrite.
+            if matches!(
+                record.state.as_str(),
+                BOOKED | ANSWERED | CLOSED | NEEDS_INFO
+            ) {
+                continue;
+            }
+            if !record.is_settled_booking() {
+                continue;
+            }
+            let from = std::mem::replace(&mut record.state, BOOKED.to_string());
+            // Only when there is nothing to lose: a note already on the record
+            // is somebody's explanation of how it got here.
+            if record.note.is_none() {
+                record.note = Some(
+                    "confirmed at the gate and swept onto the calendar — no decision was owed"
+                        .into(),
+                );
+            }
+            self.write(&record)?;
+            moved.push(Transition {
+                seq: record.seq,
+                from,
+                to: BOOKED.to_string(),
+            });
+        }
+        Ok(moved)
+    }
+
     pub fn reconcile(&self, outbox: &crate::outbox::OutboxStore) -> Result<Vec<Transition>> {
         let items = outbox.items()?;
         let mut moved = Vec::new();
@@ -507,6 +691,12 @@ pub const AWAITING_ME: &str = "awaiting_me";
 pub const NEEDS_INFO: &str = "needs_info";
 pub const ANSWERED: &str = "answered";
 pub const CLOSED: &str = "closed";
+/// A booking that needed no decision: the slot was held, the click confirmed
+/// it, and the sweep put it on a calendar. Terminal on arrival, and
+/// deliberately **not** in [`WAITING_ON_OWNER`] — a confirmed meeting is not
+/// a request anybody owes an answer to, and counting it as one is what made
+/// the review queue read as a backlog of work that had already happened.
+pub const BOOKED: &str = "booked";
 
 /// The states in which a request waits on the **owner** rather than on the
 /// requester or on the harness: `extracted` awaits triage, `awaiting_me` a
@@ -770,6 +960,152 @@ mod tests {
             !rendered.contains("Ada Lovelace"),
             "a free-text name is still prose: {rendered}"
         );
+    }
+
+    /// A record shaped like the one `factory-publish drain` actually writes
+    /// for a booking. The machinery keys are the contract between this module
+    /// and `mecha_mail::bookings::parse_record`, which has no crate
+    /// dependency on this one — so the only thing holding the two together is
+    /// that they agree about these names.
+    fn booking_record() -> Record {
+        Record {
+            seq: 10,
+            type_id: "book".into(),
+            state: DRAINED.into(),
+            values: serde_json::from_value(json!({
+                "_booking_id": "2f6d21b33b6273fe41d4bf22b9bce655",
+                "_duration_minutes": 60,
+                "_manage_url": "https://gate.example.test/s/ada/book/m/3b313155f9",
+                "_slot_start": "2026-09-16T14:00:00Z",
+                "_slot_end": "2026-09-16T15:00:00Z",
+                "purpose": "research",
+                "requester_name": "Ada Lovelace",
+                "requester_email": "ada@example.test",
+                "topic": "touch base on the difference engine",
+            }))
+            .unwrap(),
+            free_text: vec![
+                "requester_name".into(),
+                "requester_email".into(),
+                "topic".into(),
+            ],
+            reply_to: Some("ada@example.test".into()),
+            ..record_with_prose()
+        }
+    }
+
+    #[test]
+    fn the_booking_keys_match_the_sweep() {
+        let booking = booking_record().booking().expect("a booking");
+        assert_eq!(booking.booking_id, "2f6d21b33b6273fe41d4bf22b9bce655");
+        assert_eq!(booking.start, "2026-09-16T14:00:00Z");
+        assert_eq!(booking.end, "2026-09-16T15:00:00Z");
+        assert_eq!(booking.duration_minutes, Some(60));
+        assert!(booking.manage_url.is_some());
+    }
+
+    /// An ordinary request is not a booking, so nothing here changes what the
+    /// front door does with the requests it was built for.
+    #[test]
+    fn an_ordinary_request_is_not_a_booking() {
+        assert!(record_with_prose().booking().is_none());
+        assert!(!record_with_prose().is_settled_booking());
+    }
+
+    /// The sweep returns `None` rather than a booking with invented times.
+    /// This side must answer the same way, or one of them acts on a meeting
+    /// the other never made.
+    #[test]
+    fn a_booking_with_unreadable_stamps_is_not_a_booking() {
+        let mut record = booking_record();
+        record
+            .values
+            .insert("_slot_start".into(), json!("whenever"));
+        assert!(record.booking().is_none());
+        assert!(!record.is_settled_booking());
+    }
+
+    /// Invalid means "nothing about this is known to be the shape it claims",
+    /// which includes the slot it appears to have taken. It stays in the queue
+    /// for a person.
+    #[test]
+    fn an_invalid_booking_is_never_settled() {
+        let mut record = booking_record();
+        record.valid = false;
+        assert!(record.booking().is_some(), "still recognisably a booking");
+        assert!(!record.is_settled_booking(), "but not one to settle");
+    }
+
+    /// The regression this whole change exists for: a confirmed booking must
+    /// leave the queue, and must not be something the owner is waiting on.
+    #[test]
+    fn a_settled_booking_leaves_the_queue_and_owes_nobody_an_answer() {
+        let stores = Stores::new("settle");
+        stores.front.write(&booking_record()).unwrap();
+        stores.front.write(&record_with_prose()).unwrap();
+
+        let moved = stores.front.settle_bookings().unwrap();
+        assert_eq!(moved.len(), 1, "only the booking moves");
+        assert_eq!(moved[0].seq, 10);
+        assert_eq!(moved[0].from, DRAINED);
+        assert_eq!(moved[0].to, BOOKED);
+
+        assert_eq!(stores.front.record(10).unwrap().state, BOOKED);
+        assert!(!waiting_on_owner(BOOKED));
+        // The ordinary request is untouched and still waiting.
+        assert_eq!(stores.front.record(1).unwrap().state, DRAINED);
+
+        // Idempotent: a second pass moves nothing.
+        assert!(stores.front.settle_bookings().unwrap().is_empty());
+    }
+
+    /// A person who closed a booking with a reason has said something, and a
+    /// sweep that runs inside every verb must not talk over it.
+    #[test]
+    fn settling_leaves_a_closed_booking_and_its_reason_alone() {
+        let stores = Stores::new("settle-closed");
+        let mut record = booking_record();
+        record.state = CLOSED.into();
+        record.note = Some("they cancelled by mail".into());
+        stores.front.write(&record).unwrap();
+
+        assert!(stores.front.settle_bookings().unwrap().is_empty());
+        let after = stores.front.record(10).unwrap();
+        assert_eq!(after.state, CLOSED);
+        assert_eq!(after.note.as_deref(), Some("they cancelled by mail"));
+    }
+
+    /// The stamps are UTC and the owner is not. A booking at 14:00Z in
+    /// September is 10:00 in New York, and getting that wrong by an hour is
+    /// the whole reason `[agent] timezone` is an IANA name and not an offset.
+    #[test]
+    fn a_booking_renders_in_the_owners_zone_not_utc() {
+        let booking = booking_record().booking().unwrap();
+        let ny: chrono_tz::Tz = "America/New_York".parse().unwrap();
+        assert_eq!(
+            booking.local_span(Some(ny)),
+            "Wed 16 Sep · 10:00–11:00 EDT",
+            "September is daylight time; the same slot in January is EST"
+        );
+        assert_eq!(
+            booking.local_span(None),
+            "Wed 16 Sep · 14:00–15:00 UTC",
+            "no configured zone falls back to UTC, never to a guess"
+        );
+    }
+
+    /// Unreadable stamps degrade to "less readable", never to a confident
+    /// wrong answer about when somebody is expected.
+    #[test]
+    fn an_unreadable_span_falls_back_to_the_raw_stamps() {
+        let booking = Booking {
+            booking_id: "b1".into(),
+            start: "whenever".into(),
+            end: "later".into(),
+            duration_minutes: None,
+            manage_url: None,
+        };
+        assert_eq!(booking.local_span(None), "whenever – later");
     }
 
     /// A record parked in `awaiting_me` with `n` drafts against it.
