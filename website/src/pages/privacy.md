@@ -26,9 +26,58 @@ real multi-user server. It is optional, it is off unless you publish something
 to it, and it is described in [its own section below](#the-public-surface). It
 never receives your mail, and it never holds an OAuth token.
 
-## What mecha asks for, and why
+## In short
 
-When you connect a Google account, mecha requests these OAuth scopes:
+- **The agent runs on your machine.** Your credentials, your mail, your calendar
+  and your documents stay there. Nothing about your installation or your use of
+  it is reported to anyone.
+- **Nothing is connected until you connect it.** Every integration below is
+  optional and off by default, and each one names itself in your own
+  configuration file.
+- **The exceptions are yours to switch on**, and each has its own section: the
+  language model you choose, and the public surface if you publish a booking
+  page or a form.
+
+| What | What it reaches | Where its credentials live |
+| --- | --- | --- |
+| [mecha-mail](#mecha-mail--mail-and-calendar) | your mail and calendar, at Google or Microsoft | `~/.mecha/mail/<account>/` |
+| [mecha-docs](#mecha-docs--documents) | only documents you pick or it creates | `~/.mecha/docs/<account>/` |
+| [mecha-slack](#mecha-slack--the-remote-control) | one Slack workspace you install it into | `~/.mecha/slack/` |
+| [a knowledge graph](#a-knowledge-graph) | a store outside `~/.mecha/`, if you connect one | its own |
+| [search and MCP servers](#web-search-and-mcp-servers) | whatever you point them at | your config |
+| [your model provider](#your-model-provider) | the text you ask about | your config |
+| [the public surface](#the-public-surface) | strangers, deliberately | not applicable |
+
+## Where the data goes
+
+**It stays on your computer.** Specifically:
+
+- **OAuth tokens** are written on your own machine, under `~/.mecha/`, with
+  owner-only permissions (`0600` on the file, `0700` on the directory). Each
+  integration below names its own path. They are never transmitted anywhere
+  except back to the provider that issued them, to refresh themselves.
+- **Message, calendar and document content** is read on demand over the network
+  from the provider to your machine. Anything cached is written under
+  `~/.mecha/` on the same machine.
+- **Nothing is reported about you.** There is no telemetry, no analytics and no
+  crash reporting anywhere in mecha — it never phones home, and the maintainer
+  learns nothing about your installation or your use of it. The one service in
+  the picture is the optional public surface described below, which you reach
+  only by deliberately publishing something to it.
+
+Each integration below is optional, off until you connect it, and named in your
+own configuration file. What follows is what each one reaches — and what it
+cannot.
+
+## mecha-mail — mail and calendar
+
+One component, two providers. Connect either, both, or neither; mecha runs with
+no mail or calendar access at all. Tokens for both live at
+`~/.mecha/mail/<account>/oauth.json` with owner-only permissions (`0600` on the
+file, `0700` on the directory) and are never sent anywhere except back to the
+provider that issued them, to refresh themselves.
+
+### Google
 
 | Scope | What it allows |
 | --- | --- |
@@ -37,44 +86,78 @@ When you connect a Google account, mecha requests these OAuth scopes:
 | `calendar` | Full access to your calendars — read, create, update and **delete** events, and read free/busy time. Deletion is a shipped capability, not a theoretical one. |
 | `calendar.events` | Create, update and delete individual events — for example, turning a confirmed booking into a meeting on your calendar, or removing one that was cancelled. |
 
-Google Docs support is a **separate, optional grant** with its own OAuth client
-and its own token file. It asks for one scope, `drive.file`, which gives access
-only to files you explicitly pick and files the app itself creates — never your
-whole Drive. Within that set it can read, write and **move a file to your
-trash**, which is recoverable.
+Consent happens in your browser and the token comes back to a listener on your
+own machine; nothing brokers it.
 
-mecha asks for any of this only if you choose to connect an account. Connecting
-one is optional; mecha runs with no mail, calendar or document access at all.
+### Microsoft
 
-mecha also supports Microsoft accounts for mail and calendar. This policy names
-Google's scopes because it is the one Google reads, but everything below —
-where tokens live, who else can see your data, what sends without review, how
-to delete it — applies the same way to any account you connect.
+| Scope | What it allows |
+| --- | --- |
+| `Mail.ReadWrite` | Read your mail and change its state — the same triage moves as Google's `gmail.modify`. |
+| `Mail.Send` | Send mail. |
+| `Calendars.ReadWrite` | Read, create, update and delete calendar events, and read free/busy time. |
+| `offline_access` | Keep working without re-consenting every hour. This is the scope that yields a refresh token. |
 
-## Where the data goes
+Two differences from Google worth knowing:
 
-**It stays on your computer.** Specifically:
+- **Every calendar change notifies attendees.** Microsoft Graph mails them on
+  create, update *and* delete. Google only notifies on create when there are
+  attendees, and never on update — so on Microsoft there is no quiet calendar
+  operation at all.
+- **Sign-in uses a device code** — mecha shows you a code, you enter it at
+  Microsoft. Some organisations block that flow, or require an administrator to
+  approve the app before a member can consent at all.
 
-- **OAuth tokens** are written on your own machine — mail and calendar at
-  `~/.mecha/mail/<account>/oauth.json`, documents at
-  `~/.mecha/docs/<account>/oauth.json` — with owner-only permissions (`0600` on
-  the file, `0700` on the directory). They are never transmitted anywhere except
-  back to the provider that issued them, to refresh themselves.
-- **Message and calendar content** is read on demand over the network from Google
-  to your machine. Anything cached is written under `~/.mecha/` on the same machine.
-- **Nothing is reported about you.** There is no telemetry, no analytics and no
-  crash reporting anywhere in mecha — it never phones home, and the maintainer
-  learns nothing about your installation or your use of it. The one service in
-  the picture is the optional public surface described below, which you reach
-  only by deliberately publishing something to it.
+From 31 December 2026 Microsoft moves changes to *sensitive* mail properties
+behind a further scope. mecha does not touch those properties, so the list above
+is unchanged by it.
 
-## Who else can see it
+## mecha-docs — documents
 
-Nobody, with one disclosure you should read carefully.
+A **separate, optional grant with its own OAuth client and its own token file**
+at `~/.mecha/docs/<account>/oauth.json`. Removing your mail account does not
+revoke it, and removing this one does not affect mail.
 
-mecha is an agent harness, which means it passes text to a language model in order
-to answer questions about it. **Which model, and therefore where that text goes,
-is set by you** in `~/.mecha/config.toml`:
+It asks for exactly one scope, `drive.file`. That scope reaches **only files you
+explicitly pick and files the app itself creates** — never your whole Drive,
+never anything you have not handed it. Within that set it can read, write and
+move a file to your trash, which is recoverable.
+
+## mecha-slack — the remote control
+
+Optional, and only if you install mecha's Slack app into a workspace yourself.
+It lets you drive mecha from Slack instead of a terminal.
+
+Its credentials live at `~/.mecha/slack/credentials.json`, owner-only. It dials
+Slack rather than listening, so **no port on your machine is ever exposed**. What
+reaches Slack is what you send through it — the messages of the conversation you
+are having, and any files you move in either direction — and that is handled
+under Slack's terms and your workspace's retention settings, not this policy.
+
+## A knowledge graph
+
+If you connect one, mecha can distil what a session left behind into an
+*episode* and file it there as evidence. A graph keeps **its own store, outside
+`~/.mecha/`** — so deleting mecha's directory does not empty it, and removing it
+is a separate step. See [Retention and deletion](#retention-and-deletion).
+
+## Web search and MCP servers
+
+Both are off until you point them somewhere.
+
+- **Web search backends** receive the queries mecha issues. A query is itself a
+  channel — what you search for says something — which is why mecha treats
+  search as outbound rather than as reading.
+- **MCP servers** you connect receive whatever the tool call you asked for sends
+  them. What that is depends entirely on the server.
+
+mecha ships with neither configured.
+
+## Your model provider
+
+mecha is an agent harness, which means it passes text to a language model in
+order to answer questions about it. **Which model, and therefore where that text
+goes, is set by you** in `~/.mecha/config.toml`:
 
 - **A local model.** mecha exists to make a local, open-weight model usable as a
   personal assistant, and many installations point it at a model served on the
@@ -86,21 +169,18 @@ is set by you** in `~/.mecha/config.toml`:
   provider's own terms and privacy policy rather than this one.
 
 Neither choice sends anything to the maintainer of mecha. If you want to know
-which applies to your installation, `default_provider` in your configuration file
-is the answer.
+which applies to your installation, `default_provider` in your configuration
+file is the answer.
 
-Two further destinations exist if you enable them, and both are your
-configuration to make: **web search backends**, which receive the search queries
-mecha issues (a query is itself a channel, which is why mecha treats search as
-outbound), and **MCP servers** you connect, which receive whatever the tool call
-you asked for sends them. mecha ships with neither pointed anywhere by default.
+## Who else can see it
 
-mecha never sells Google user data, never uses it for advertising, and never uses
-it to train a model. Beyond the destinations you configure yourself — the model
-provider, any search backend, any MCP server, the Slack transport if you connect
-one, and the booking page described below if you publish one — it is not shared
-with anyone. Every one of those is off until you turn it on, and each is named in
-your own configuration file.
+Nobody beyond the destinations you configured yourself — the model provider, any
+search backend, any MCP server, the Slack transport, a knowledge graph, and the
+public surface if you publish one. Every one is off until you turn it on, and
+each is named in your own configuration file.
+
+mecha never sells your data, never uses it for advertising, and never uses it to
+train a model.
 
 ### If you publish a booking page
 
