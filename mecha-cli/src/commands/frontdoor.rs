@@ -216,6 +216,35 @@ fn list(store: &Frontdoor, state: Option<&str>) -> Result<()> {
 /// zone is worse than one that renders it in UTC and says so. The machine
 /// runs UTC and the model has no clock, which is why this is an IANA name in
 /// config and never an offset.
+/// Whether `extract` should spend a quarantined model call on this record.
+///
+/// - **Invalid records never are**: one that did not validate against the
+///   manifest is not known to be the shape it claims.
+/// - **Nor are settled bookings.** Their prose is shown to a person by `show`
+///   and read by nothing else, so extracting one buys a model call and a topic
+///   line for a record no run will ever be handed.
+///
+/// Lifted out of the iterator chain so it can be asserted rather than read.
+fn extractable(record: &Record, force: bool) -> bool {
+    record.valid && !record.is_settled_booking() && (force || record.extraction.is_none())
+}
+
+/// Whether `triage` may draft a reply for this record.
+///
+/// **Two locks, and they are different locks.** The first is a *state*:
+/// `reconcile` has already moved settled bookings to `booked`, so one should
+/// never be sitting in `extracted`. The second is a *fact about the record*,
+/// and it is what catches a booking that reached `extracted` by any route at
+/// all — an older store, a hand-edited state, a future allowlist changing its
+/// mind. `for_privileged_run` is the third and the oldest: it returns `None`
+/// for anything unextracted or invalid, so that rule lives in one place
+/// instead of being restated here.
+fn triageable(record: &Record) -> bool {
+    record.state == mecha_core::frontdoor::EXTRACTED
+        && !record.is_settled_booking()
+        && record.for_privileged_run().is_some()
+}
+
 fn owner_timezone() -> Option<chrono_tz::Tz> {
     // `load_global`, not `load(&cwd)`: the project layer would let a cloned
     // repo vote on the zone a stranger's booking renders in, and the same
@@ -364,6 +393,14 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
         }
     }
 
+    // The note, wherever it came from: a person's close reason, a triage
+    // failure, or the sweep saying a booking was withdrawn. It was written by
+    // three code paths and printed by none of them — a record that explains
+    // itself only to whoever ran the command that set it.
+    if let Some(note) = &record.note {
+        println!("\nnote: {note}");
+    }
+
     let prose = record.prose();
     if !prose.is_empty() {
         println!("\n─── what they wrote ─────────────────────────────────────────");
@@ -399,14 +436,7 @@ async fn extract_all(
         .records()?
         .into_iter()
         .filter(|r| seq.is_none_or(|s| r.seq == s))
-        // An invalid record is never extracted: it did not validate against the
-        // manifest, so nothing about it is known to be the shape it claims.
-        .filter(|r| r.valid)
-        // Nor is a settled booking. Its prose is shown to a person by `show`
-        // and read by nothing else, so extracting it buys a model call and a
-        // topic line for a record no run will ever be handed.
-        .filter(|r| !r.is_settled_booking())
-        .filter(|r| force || r.extraction.is_none())
+        .filter(|r| extractable(r, force))
         .collect();
 
     if records.is_empty() {
@@ -498,18 +528,7 @@ async fn triage(
         .records()?
         .into_iter()
         .filter(|r| seq.is_none_or(|s| r.seq == s))
-        .filter(|r| r.state == fd::EXTRACTED)
-        // `reconcile` above has already moved settled bookings to `booked`,
-        // so this is the second lock on the same door — and it is here because
-        // the first one is a *state* and this one is a *fact about the
-        // record*. A booking that reached `extracted` by any route at all
-        // (an older store, a hand-edited state, a future allowlist changing
-        // its mind) still must not become a draft.
-        .filter(|r| !r.is_settled_booking())
-        // `for_privileged_run` is the gate, and it returns `None` for anything
-        // unextracted or invalid. Filtering on it here means the rule lives in
-        // one place instead of being restated as a condition.
-        .filter(|r| r.for_privileged_run().is_some())
+        .filter(triageable)
         .take(limit)
         .collect();
 
@@ -738,9 +757,96 @@ fn next(store: &Frontdoor, limit: usize) -> Result<()> {
         .records()?
         .iter()
         .filter(|r| r.state == "extracted")
+        // The same second lock `triage` carries. `Triage`'s own doc says the
+        // agent is "told only what `next` would print", so a settled booking
+        // reaching `extracted` by a hand edit or a failed settle write must
+        // not print a brief here either — printing is not running, but this
+        // is the text a prompt is built from.
+        .filter(|r| !r.is_settled_booking())
         .filter_map(|r| r.for_privileged_run())
         .take(limit)
         .collect();
     println!("{}", serde_json::to_string_pretty(&handed)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mecha_core::frontdoor::{Extraction, BOOKED, EXTRACTED};
+    use serde_json::json;
+
+    /// A record shaped like the drain's, carrying the booking machinery.
+    fn booking(state: &str) -> Record {
+        Record {
+            seq: 10,
+            type_id: "book".into(),
+            state: state.into(),
+            created_at: "2026-09-14T17:41:52Z".into(),
+            drained_at: "2026-09-14T17:48:43Z".into(),
+            valid: true,
+            invalid_reason: None,
+            values: serde_json::from_value(json!({
+                "_booking_id": "b1",
+                "_slot_start": "2026-09-16T14:00:00Z",
+                "_slot_end": "2026-09-16T15:00:00Z",
+                "purpose": "research",
+                "topic": "the difference engine",
+            }))
+            .unwrap(),
+            free_text: vec!["topic".into()],
+            reply_to: Some("ada@example.test".into()),
+            extraction: None,
+            extraction_error: None,
+            triage_session: None,
+            outbox: Vec::new(),
+            note: None,
+            attachments: Vec::new(),
+            rest: Default::default(),
+        }
+    }
+
+    /// The **second lock**, which is the claim this whole change rests on and
+    /// was previously asserted only by reading the source.
+    ///
+    /// `reconcile` moves settled bookings to `booked`, so the state filter
+    /// alone catches them in practice. This pins the other one: a booking
+    /// sitting in `extracted` *with* an extraction — reachable through an
+    /// older store, a hand-edited state, or a settle write that failed — is
+    /// still refused by both verbs. Delete either `!is_settled_booking()` and
+    /// this fails.
+    #[test]
+    fn a_settled_booking_in_extracted_is_refused_by_extract_and_triage() {
+        let mut record = booking(EXTRACTED);
+        record.extraction = Some(Extraction::default());
+
+        assert!(!extractable(&record, false), "extract must skip it");
+        assert!(
+            !extractable(&record, true),
+            "--force re-extracts, but never a booking"
+        );
+        assert!(!triageable(&record), "triage must skip it");
+        // And the brief it would otherwise have produced does exist, so the
+        // refusal is the filter's doing and not `for_privileged_run` declining.
+        assert!(record.for_privileged_run().is_some());
+    }
+
+    /// The ordinary request the front door was built for is unaffected.
+    #[test]
+    fn an_ordinary_extracted_request_is_still_triageable() {
+        let mut record = booking(EXTRACTED);
+        record.values.remove("_booking_id");
+        record.extraction = Some(Extraction::default());
+
+        assert!(triageable(&record));
+        assert!(!extractable(&record, false), "already extracted");
+        assert!(extractable(&record, true), "--force re-extracts it");
+    }
+
+    /// `booked` is not `extracted`, so the first lock holds on its own too.
+    #[test]
+    fn a_booked_record_is_refused_by_the_state_lock_as_well() {
+        assert!(!triageable(&booking(BOOKED)));
+        assert!(!extractable(&booking(BOOKED), false));
+    }
 }

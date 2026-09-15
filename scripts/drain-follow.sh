@@ -11,7 +11,7 @@
 #
 # Deliberately a dumb loop, like the trigger daemon: each iteration is the
 # same drain-then-sweep a hand run performs, the sweep is flock-guarded in
-# `mecha-mail bookings` itself (the fifteen-minute timer also runs it), and
+# `mecha-mail bookings` itself (the two-minute timer also runs it), and
 # the ledger makes re-runs idempotent. A drain failure sleeps and retries —
 # the box being down must not turn this into a busy loop.
 #
@@ -40,7 +40,7 @@ while :; do
   # stderr to its own file, not into `out`: this is JSON that `jq` parses, and
   # merging the two means any warning line from `drain` makes `.drained` fail,
   # fall back to 0, and skip the sweep for records that *did* come home. The
-  # fifteen-minute timer catches those, so it degrades to pre-loop latency
+  # two-minute timer catches those, so it degrades to pre-loop latency
   # rather than to silence — but the fast path should not depend on how chatty
   # the box is feeling.
   err=$(mktemp)

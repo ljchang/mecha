@@ -625,8 +625,11 @@ impl Frontdoor {
         for mut record in records {
             // A withdrawal, and the confirmation it withdraws, both end at
             // `closed` — the state that already means "ended, and here is
-            // why". `closed` is skipped below, so a reason a person wrote by
-            // hand is never overwritten by either of these.
+            // why". `closed` is skipped, so a reason a person wrote by hand
+            // when closing is never overwritten. A `needs_info` note *is*
+            // replaced, deliberately: "waiting on them to tell me which
+            // dates" stops being what happened to this request once they
+            // cancelled it, and the newer fact is the one worth keeping.
             // `awaiting_me` is excluded here for the same reason the skip
             // list below excludes it: a draft is staged against this record
             // and only `reconcile` advances it, so closing it here orphans

@@ -31,6 +31,11 @@ pub struct RequestRow {
     pub topic: String,
     /// "INVALID", "⚠ reads like instructions", or empty.
     pub flag: &'static str,
+    /// A confirmed booking: `x` and `t` do nothing to it, so the hint line
+    /// stops offering them. Same reasoning as the web card dropping its
+    /// "Reply anyway…" button — a key that exits 0 having done nothing is
+    /// worse than a key that was never advertised.
+    pub settled: bool,
     pub valid: bool,
     /// The full detail view, prose included, prebuilt like the outbox rows.
     pub detail: Vec<Line<'static>>,
@@ -111,12 +116,24 @@ impl FrontdoorModal {
         (self.selected + 1).saturating_sub(visible) as u16
     }
 
+    /// The verbs worth offering for the selected row. A settled booking is
+    /// answered already: `x` prints `nothing to extract` and `t` `nothing to
+    /// triage`, both exiting 0, and `n` parks a request nobody is waiting on.
+    /// Only `close` still means anything.
+    fn actions_hint(&self) -> &'static str {
+        match self.rows.get(self.selected) {
+            Some(row) if row.settled => "",
+            _ => "x extract · t triage · n needs-info · ",
+        }
+    }
+
     pub fn title(&self) -> String {
         match &self.status {
             Some(s) => format!(" frontdoor · {s} "),
             None => format!(
-                " {} request(s) · enter detail · x extract · t triage · n needs-info · c close · esc ",
-                self.rows.len()
+                " {} request(s) · enter detail · {}c close · esc ",
+                self.rows.len(),
+                self.actions_hint()
             ),
         }
     }
@@ -195,8 +212,9 @@ impl FrontdoorModal {
                         .borders(Borders::ALL)
                         .border_style(Style::new().fg(Color::Cyan))
                         .title(format!(
-                            " request {} · ↑↓ scroll · x extract · t triage · n needs-info · c close · esc back ",
-                            row.seq
+                            " request {} · ↑↓ scroll · {}c close · esc back ",
+                            row.seq,
+                            self.actions_hint()
                         )),
                 ),
             area,
@@ -223,6 +241,16 @@ pub fn load() -> anyhow::Result<Vec<RequestRow>> {
     Ok(store.records()?.iter().map(row).collect())
 }
 
+/// The owner's `[agent] timezone`. `load_global`, not the project layer: the
+/// request store lives in `~/.mecha/`, so a checkout must not vote on the zone
+/// a stranger's booking renders in.
+fn owner_timezone() -> Option<chrono_tz::Tz> {
+    mecha_core::config::Config::load_global()
+        .ok()?
+        .agent
+        .timezone()
+}
+
 fn row(record: &Record) -> RequestRow {
     let flag = if !record.valid {
         "INVALID"
@@ -239,13 +267,23 @@ fn row(record: &Record) -> RequestRow {
         seq: record.seq,
         type_id: record.type_id.clone(),
         state: record.state.clone(),
-        topic: record
-            .extraction
-            .as_ref()
-            .map(|e| e.topic.clone())
-            .unwrap_or_else(|| "—".into()),
+        // A settled booking is never extracted, so its topic column would be
+        // an em dash on every row. It says when the meeting is instead, as
+        // `frontdoor list` does.
+        topic: match record.booking() {
+            Some(booking) => booking.local_span(owner_timezone()),
+            None => record
+                .extraction
+                .as_ref()
+                .map(|e| e.topic.clone())
+                .unwrap_or_else(|| "—".into()),
+        },
         flag,
         valid: record.valid,
+        // The state, not the policy predicate — a booking a person later
+        // closed by hand is not filed as needing nothing. The web card and
+        // `show` gate the same sentence on the same state.
+        settled: record.state == mecha_core::frontdoor::BOOKED,
         detail: detail_lines(record),
     }
 }

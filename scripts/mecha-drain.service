@@ -5,7 +5,7 @@
 # ever has to dial home, and "instant" is a property of who waits, not of
 # who calls.
 #
-# The fifteen-minute mecha-slots timer keeps running as the backstop: its
+# The two-minute mecha-slots timer keeps running as the backstop: its
 # drain-and-sweep leg is idempotent beside this loop (the sweep takes a
 # flock), and a wedged loop degrades to exactly the pre-loop latency
 # instead of to silence.

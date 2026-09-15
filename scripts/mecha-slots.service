@@ -24,7 +24,7 @@ Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 ExecStart=-/bin/sh -c 'mecha-mail freebusy --days 60 --json | factory-publish slots push book --policy %h/.mecha/instruments/book-policy.toml'
 # The booking lifecycle sweep rides the same cadence: events for new
 # bookings, withdrawals for cancellations, and reminders — whose 1-hour
-# tier is what needs the fifteen-minute resolution (the front door's
+# tier is what needs the two-minute resolution (the front door's
 # hourly tick alone could fire it late or not at all). Drain runs first
 # for the same reason: a confirmed booking's record must come home before
 # its invite can exist, and an invite that waits on the hourly front door
