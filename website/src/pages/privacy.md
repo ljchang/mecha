@@ -80,8 +80,10 @@ outbound), and **MCP servers** you connect, which receive whatever the tool call
 you asked for sends them. mecha ships with neither pointed anywhere by default.
 
 mecha never sells Google user data, never uses it for advertising, and never uses
-it to train a model. It is not shared with any third party other than the model
-provider you yourself configure, as described above.
+it to train a model. Beyond the destinations you configure yourself — the model
+provider, any search backend, any MCP server, and the Slack transport if you
+connect one — it is not shared with anyone. Every one of those is off until you
+turn it on, and each is named in your own configuration file.
 
 ## Limited Use
 
@@ -105,6 +107,9 @@ and both are worth knowing:
   sets `sendUpdates=all`, so the provider mails an invitation from your account
   the moment the event exists. This is true of any event with attendees, not
   only booked meetings.
+- **Deleting a calendar event mails a cancellation to every attendee**, and
+  unlike creation this is unconditional. Of the three calendar verbs, updating
+  an event is the only quiet one.
 - **Bookings taken through your own published booking page** become calendar
   events by a scheduled, deterministic path with no model and no review step.
   That is deliberate: you approved those slots when you published them, and a
@@ -123,6 +128,18 @@ All of it is on your machine, so you control it directly:
   and remove the app. This invalidates the stored tokens immediately.
 
 Uninstalling mecha removes the software; deleting `~/.mecha/` removes the data.
+
+## About this website
+
+Everything above describes the software. This documentation site is a separate
+thing and deserves its own sentence, because "no telemetry, no analytics" is a
+claim about mecha and a reader could reasonably hear it as a claim about the page
+they are reading.
+
+The site runs no analytics and sets no cookies. It does load its typefaces from
+Google Fonts, which means opening any page here — including this one — sends your
+IP address and browser user-agent to Google, as loading any third-party asset
+does. There is nothing else.
 
 ## Children
 
