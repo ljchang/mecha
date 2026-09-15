@@ -156,6 +156,7 @@ const config: Config = {
               href: 'https://github.com/ljchang/mecha/blob/main/LICENSE',
             },
             {label: 'Privacy', to: '/privacy'},
+            {label: 'Terms', to: '/terms'},
           ],
         },
       ],
