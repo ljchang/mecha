@@ -45,6 +45,9 @@ pub struct RequestRow {
     /// buttons; this modal renders the state in its own column, so the action
     /// gate is the only one it needs.
     pub inert: bool,
+    /// The sweep found this booking's slot already taken, so no event exists.
+    /// The one shape where "nobody is being waited on" is false.
+    pub collided: bool,
     pub valid: bool,
     /// The full detail view, prose included, prebuilt like the outbox rows.
     pub detail: Vec<Line<'static>>,
@@ -301,6 +304,7 @@ fn row(record: &Record, tz: Option<chrono_tz::Tz>) -> RequestRow {
         flag,
         valid: record.valid,
         inert: crate::commands::frontdoor::inert(record),
+        collided: record.collided,
         detail: detail_lines(record),
     }
 }

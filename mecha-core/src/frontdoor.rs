@@ -756,7 +756,7 @@ impl Frontdoor {
                                 "the requester cancelled this booking before it reached your \
                              calendar"
                                     .to_string()
-                            } else if record.collided {
+                            } else if record.collided && !swept.created.contains(&b.booking_id) {
                                 // It never reached the calendar, so "no longer on
                                 // your calendar" would be true of the record and
                                 // false of the calendar.
@@ -774,6 +774,14 @@ impl Frontdoor {
                 };
                 if let Some(note) = note {
                     let from = std::mem::replace(&mut record.state, CLOSED.to_string());
+                    // Cleared here too, not only on the `booked` transition: a
+                    // closed record is decided, and a doctor finding that
+                    // keeps naming it after the decision is one people learn
+                    // to skip. (`closed` and `booked` are the only two exits
+                    // a collided booking has today — `n` and `Park…` both
+                    // refuse it — so this is the complete set until a decline
+                    // path adds another.)
+                    record.collided = false;
                     record.note = Some(note);
                     self.write(&record)?;
                     moved.push(Transition {
@@ -1474,6 +1482,32 @@ mod tests {
             manage_url: None,
         }
         .is_past(t("2030-01-01T00:00:00Z")));
+    }
+
+    /// A collision a person closes is decided, so the doctor stops naming it.
+    /// The flag used to clear only on the `booked` transition, which a
+    /// collided record cannot reach until somebody fixes the calendar.
+    #[test]
+    fn closing_a_collided_booking_clears_the_flag_the_doctor_reads() {
+        let stores = Stores::new("collide-closed");
+        stores.front.write(&booking_record()).unwrap();
+        stores.front.settle_bookings(&swept_conflicting()).unwrap();
+        assert!(stores.front.record(10).unwrap().collided);
+
+        // The visitor gives the slot back; the withdrawal closes both.
+        let mut withdrawal = booking_record();
+        withdrawal.seq = 11;
+        withdrawal.values.insert("_cancelled".into(), json!(true));
+        stores.front.write(&withdrawal).unwrap();
+        stores.front.settle_bookings(&swept_conflicting()).unwrap();
+
+        let after = stores.front.record(10).unwrap();
+        assert_eq!(after.state, CLOSED);
+        assert!(!after.collided, "decided, so it stops being a finding");
+        assert!(
+            after.note.unwrap().contains("no event was ever created"),
+            "and the note says what is true of a collided booking"
+        );
     }
 
     /// A collision has to be findable by something other than prose: the

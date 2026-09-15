@@ -104,9 +104,15 @@
       .formatToParts(start)
       .find((p) => p.type === 'timeZoneName')?.value;
     // No spaces around the en dash, matching `Booking::local_span` on the Rust
-    // side. Two surfaces render the same meeting and the detail view behind
-    // this card is the Rust one, so a reader tapping through saw the same time
-    // spelled two ways.
+    // side — the detail view behind this card is that renderer, so a reader
+    // tapping through should not meet a different punctuation.
+    //
+    // The clock itself still differs on purpose: this is `hour: 'numeric'` in
+    // the *viewer's* locale (so 2:00 PM in en-US) against the Rust side's
+    // `%H:%M` in the *owner's* zone. Both are deliberate — a phone knows where
+    // it is and a server does not — so the dash is the only thing worth
+    // matching, and claiming more than that would be the overclaim this file
+    // has already been corrected for once.
     return `${day(start)} · ${t(start)}–${ends}${zone ? ` ${zone}` : ''}`;
   };
 
@@ -242,7 +248,12 @@
         {:else}
           <button class="abtn primary" disabled={busy} onclick={async () => { if (await act('triage', reading.row)) back(); }}>Draft a reply…</button>
         {/if}
-        {#if !reading.row.inert}
+        <!-- `inert && valid`, not `inert`: an invalid record is one the model
+             verbs refuse *and* one a person parks while asking the requester to
+             resend it. The TUI keeps the key for exactly that reason; this card
+             was gated a notch too wide and lost the capability on the phone,
+             where Close… would have become the only action. -->
+        {#if !(reading.row.inert && reading.row.valid)}
           <button class="abtn" disabled={busy} onclick={() => prompt('needs-info', 'What is missing before this can proceed?', 'which dates they need')}>Park…</button>
         {/if}
         <button class="abtn" disabled={busy} onclick={() => prompt('close', 'Why? The reason is the record.', 'out of scope — not taking new students', true)}>Close…</button>
