@@ -59,7 +59,7 @@ to delete it — applies the same way to any account you connect.
   `~/.mecha/mail/<account>/oauth.json`, documents at
   `~/.mecha/docs/<account>/oauth.json` — with owner-only permissions (`0600` on
   the file, `0700` on the directory). They are never transmitted anywhere except
-  to Google, to refresh themselves.
+  back to the provider that issued them, to refresh themselves.
 - **Message and calendar content** is read on demand over the network from Google
   to your machine. Anything cached is written under `~/.mecha/` on the same machine.
 - **Nothing is reported about you.** There is no telemetry, no analytics and no
@@ -177,8 +177,9 @@ and all are worth knowing:
   the moment the event exists. This is true of any event with attendees, not
   only booked meetings.
 - **Deleting a calendar event mails a cancellation to every attendee**, and
-  unlike creation this is unconditional. Of the three calendar verbs, updating
-  an event is the only quiet one.
+  unlike creation this is unconditional. On Google, updating an event is the one
+  calendar verb that notifies nobody; on Microsoft there is no quiet verb —
+  Graph mails attendees on create, update and delete alike.
 - **Bookings taken through your own published booking page** become calendar
   events by a scheduled, deterministic path with no model and no review step.
   That is deliberate: you approved those slots when you published them, and a
@@ -189,12 +190,28 @@ and all are worth knowing:
 
 ## Retention and deletion
 
-All of it is on your machine, so you control it directly:
+Almost all of it is on your machine, so you control it directly:
 
 - **Disconnect one mail/calendar account:** delete `~/.mecha/mail/<account>/`.
 - **Disconnect a documents account:** delete `~/.mecha/docs/<account>/`. This is
   a separate grant, so removing the mail one does not revoke it.
-- **Remove everything:** delete `~/.mecha/`.
+- **Remove everything:** delete `~/.mecha/`. This also removes credentials from
+  older installs, which kept them in a per-provider file rather than per account.
+
+The exception is the public surface, if you publish one. What sits there is
+covered by its own steps:
+
+- **Collect what is queued:** draining brings submissions to your machine and
+  clears them from the server. Undrained rows also age out under the retention
+  policy you set for that request type.
+- **Stop new arrivals:** unpublish the booking page or form. Nothing further is
+  accepted or stored for it.
+- **Your availability:** published slots are replaced on every refresh and stop
+  being pushed once the page is gone.
+
+This is the one part of your data you cannot delete with `rm`, and it is also
+the part that holds other people's — worth knowing before you publish rather
+than after.
 - **Revoke access from Google's side:** visit
   [myaccount.google.com/permissions](https://myaccount.google.com/permissions)
   and remove the app. This invalidates the stored tokens immediately.
