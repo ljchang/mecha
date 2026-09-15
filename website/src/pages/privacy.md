@@ -36,12 +36,16 @@ never receives your mail, and it never holds an OAuth token.
   nothing about your installation or your use of it is reported to anyone. Your
   mail, calendar and documents stay there too — except where you have pointed
   mecha at something that is not on your machine, which is the next two points.
-- **Nothing is connected until you connect it.** Every integration below is
-  optional and off by default, and each one names itself in your own
-  configuration file.
-- **The exceptions are yours to switch on**, and each has its own section: the
-  language model you choose, and the public surface if you publish a booking
-  page or a form.
+- **Every account is one you connected.** No mailbox, calendar, document store
+  or Slack workspace is reached until you connect it, and each disconnects
+  separately. Most of what you have connected is named in `~/.mecha/config.toml`
+  — Slack is the exception, and lives in `~/.mecha/slack/` instead.
+- **Some things do leave, and each has its own section below.** A language model
+  reads whatever you ask it about, and **the built-in default names a hosted
+  provider** — so check `default_provider` rather than assume it is local. A
+  published booking page or form is served by a real server. Search backends and
+  MCP servers reach whatever you point them at. Slack receives what you send
+  through it.
 
 | What | What it reaches | Where its credentials live |
 | --- | --- | --- |
@@ -120,8 +124,8 @@ is unchanged by it.
 
 ## mecha-docs — documents
 
-A **separate, optional grant with its own OAuth client and its own token file**
-at `~/.mecha/docs/<account>/oauth.json`. Removing your mail account does not
+Google Docs and Drive, through a **separate, optional grant with its own OAuth
+client and its own token file** at `~/.mecha/docs/<account>/oauth.json`. Removing your mail account does not
 revoke it, and removing this one does not affect mail.
 
 It asks for exactly one scope, `drive.file`. That scope reaches **only files you
@@ -182,8 +186,11 @@ file is the answer.
 
 Nobody beyond the destinations you configured yourself — the model provider, any
 search backend, any MCP server, the Slack transport, a knowledge graph, and the
-public surface if you publish one. Every one is off until you turn it on, and
-each is named in your own configuration file.
+public surface if you publish one. Each is named in `~/.mecha/config.toml`,
+except Slack, whose binding lives under `~/.mecha/slack/` and is deliberately
+kept out of layered config. All of them are off until you turn them on, with one
+exception worth stating plainly: a model provider is configured out of the box,
+and the built-in default is a hosted one.
 
 mecha never sells your data, never uses it for advertising, and never uses it to
 train a model.
