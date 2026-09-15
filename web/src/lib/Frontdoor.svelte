@@ -103,7 +103,11 @@
     const zone = new Intl.DateTimeFormat([], { timeZoneName: 'short' })
       .formatToParts(start)
       .find((p) => p.type === 'timeZoneName')?.value;
-    return `${day(start)} · ${t(start)} – ${ends}${zone ? ` ${zone}` : ''}`;
+    // No spaces around the en dash, matching `Booking::local_span` on the Rust
+    // side. Two surfaces render the same meeting and the detail view behind
+    // this card is the Rust one, so a reader tapping through saw the same time
+    // spelled two ways.
+    return `${day(start)} · ${t(start)}–${ends}${zone ? ` ${zone}` : ''}`;
   };
 
   const isPast = (b) => {

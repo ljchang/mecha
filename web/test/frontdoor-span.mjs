@@ -44,8 +44,22 @@ const t = (name, cond) => {
 // pass in one timezone, which is the trap this function exists inside.
 const within = { start: '2026-09-16T14:00:00Z', end: '2026-09-16T15:00:00Z' };
 const out = span(within);
-t('names a weekday, a date and two times', /\w{3},? \w{3} \d+ · .+ – .+/.test(out) || /·/.test(out));
-t('carries a zone label', /[A-Z]{2,5}|GMT[+-]?\d*/.test(out));
+
+// Locale-tolerant but *not* vacuous. The first version of this ended in
+// `|| /·/.test(out)` as a hedge against the runner's locale, and since the
+// separator is always present that made the whole assertion unconditionally
+// true — a test that cannot fail, in a file whose entire reason for existing
+// is that the other renderer was already covered. Structure instead: one
+// separator, a day before it, two clock times after it.
+const parts = out.split('·');
+t('has exactly one day/time separator', parts.length === 2);
+t('names a day before the separator', /\d/.test(parts[0]) && /[A-Za-z]{3}/.test(parts[0]));
+const times = (parts[1] ?? '').match(/\d{1,2}:\d{2}/g) ?? [];
+t('names two clock times after it', times.length === 2);
+// No spaces: the Rust renderer's spelling, which the detail view behind this
+// card uses.
+t('separates them with an unspaced en dash', /\S–\S/.test(parts[1] ?? ''));
+t('carries a zone label', /\b([A-Z]{2,5}|GMT[+-]?\d{1,2}(:\d{2})?)\b/.test(parts[1] ?? ''));
 
 // A meeting that ends on a different local day must say which. Build one that
 // crosses midnight wherever this runs: start 30 minutes before local midnight.

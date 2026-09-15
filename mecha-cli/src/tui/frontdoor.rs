@@ -295,7 +295,7 @@ fn row(record: &Record, tz: Option<chrono_tz::Tz>) -> RequestRow {
         },
         flag,
         valid: record.valid,
-        inert: record.is_settled_booking() || record.cancellation().is_some(),
+        inert: crate::commands::frontdoor::inert(record),
         detail: detail_lines(record),
     }
 }
@@ -473,6 +473,57 @@ mod tests {
             "free_text": ["message"],
         }))
         .unwrap()
+    }
+
+    /// A record the CLI verbs will refuse, shaped like the drain's booking.
+    fn booked(seq: i64) -> Record {
+        serde_json::from_value(json!({
+            "seq": seq,
+            "type_id": "book",
+            "state": "booked",
+            "created_at": "2026-09-14T17:41:52Z",
+            "drained_at": "2026-09-14T17:48:43Z",
+            "valid": true,
+            "free_text": [],
+            "values": {
+                "_booking_id": "b1",
+                "_slot_start": "2026-09-16T14:00:00Z",
+                "_slot_end": "2026-09-16T15:00:00Z",
+            },
+        }))
+        .unwrap()
+    }
+
+    /// The hint line stops offering keys that would do nothing.
+    ///
+    /// The web card got `frontdoor-span.mjs` and this modal had nothing, which
+    /// is the same one-of-two-surfaces gap that let `x`, `n` and then `t` each
+    /// stay live here after being hidden. The keys themselves are gated in
+    /// `tui/mod.rs`; this pins the half that tells a person they exist.
+    #[test]
+    fn a_settled_booking_is_offered_no_key_that_would_do_nothing() {
+        let modal = FrontdoorModal::new(vec![row(&booked(10), None)]);
+        let title = modal.title();
+        for absent in ["x extract", "t triage", "n needs-info"] {
+            assert!(
+                !title.contains(absent),
+                "`{absent}` does nothing to a confirmed booking: {title}"
+            );
+        }
+        assert!(title.contains("c close"), "close still means something");
+
+        // And the row carries the meeting rather than the em dash an
+        // unextracted record would otherwise leave in the topic column.
+        assert!(
+            modal.rows[0].topic.contains("Sep"),
+            "expected a date, got {:?}",
+            modal.rows[0].topic
+        );
+
+        // An ordinary request is unaffected — the gate is about the record,
+        // not about the modal.
+        let plain = FrontdoorModal::new(vec![row(&record(1, "drained"), None)]);
+        assert!(plain.title().contains("x extract"));
     }
 
     #[test]

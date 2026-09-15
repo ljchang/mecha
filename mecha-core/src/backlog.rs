@@ -249,6 +249,11 @@ impl Backlog {
             // deciding — two rows per cancellation, which would otherwise be
             // counted against the owner as abandoned requests.
             .filter(|r| r.booking().is_none() && r.cancellation().is_none())
+            // A booking or the withdrawal that cancels it is never a give-up.
+            // Nobody owed either an answer, and `settle_bookings` is the first
+            // thing in this codebase that writes `closed` with no human
+            // deciding — two rows per cancellation, which would otherwise be
+            // counted against the owner as abandoned requests.
             .filter(|r| {
                 !r.outbox
                     .iter()
@@ -655,6 +660,38 @@ mod tests {
         ];
         let sent: HashSet<&str> = ["o-sent"].into_iter().collect();
         assert_eq!(Backlog::frontdoor_given_up(&records, Some(&sent)), 2);
+
+        // A booking and the withdrawal that cancels it are *not* give-ups.
+        // `settle_bookings` is the first thing in this codebase that writes
+        // `closed` with nobody deciding — two rows per cancellation — so a
+        // visitor changing their plans would otherwise be recorded as the
+        // owner abandoning two requests. Deleting the filter these pin makes
+        // this assertion 4.
+        let machinery = |seq: i64, cancelled: bool| -> frontdoor::Record {
+            serde_json::from_value(serde_json::json!({
+                "seq": seq,
+                "type_id": "book",
+                "state": frontdoor::CLOSED,
+                "created_at": "2026-09-01T00:00:00Z",
+                "drained_at": "2026-09-01T00:00:00Z",
+                "valid": true,
+                "values": {
+                    "_booking_id": "b1",
+                    "_slot_start": "2026-09-16T14:00:00Z",
+                    "_slot_end": "2026-09-16T15:00:00Z",
+                    "_cancelled": cancelled,
+                },
+            }))
+            .unwrap()
+        };
+        let mut with_booking = records.clone();
+        with_booking.push(machinery(5, false)); // the confirmation
+        with_booking.push(machinery(6, true)); // the withdrawal
+        assert_eq!(
+            Backlog::frontdoor_given_up(&with_booking, Some(&sent)),
+            2,
+            "machine-written closes are nobody's give-up"
+        );
         // Outbox unreadable: a close with anything staged reads as a
         // give-up — under-crediting, never inventing a clearance.
         assert_eq!(Backlog::frontdoor_given_up(&records, None), 3);

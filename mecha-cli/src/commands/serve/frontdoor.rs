@@ -101,7 +101,7 @@ pub async fn list(State(_state): St) -> Response {
                 // state left the button live on exactly those records, where
                 // the child prints `nothing to extract` and exits 0 and the
                 // page reports success for work that did not happen.
-                "inert": r.is_settled_booking() || r.cancellation().is_some(),
+                "inert": super::super::frontdoor::inert(r),
             })
         })
         .collect();

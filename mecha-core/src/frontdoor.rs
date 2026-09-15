@@ -745,10 +745,20 @@ impl Frontdoor {
                         "a booking the requester withdrew — the sweep removes the calendar event"
                             .to_string(),
                     ),
-                    (None, Some(b)) if cancelled.contains(&b.booking_id) => Some(
-                        "the requester cancelled this booking; it is no longer on your calendar"
-                            .to_string(),
-                    ),
+                    (None, Some(b)) if cancelled.contains(&b.booking_id) => {
+                        Some(if record.collided {
+                            // It never reached the calendar, so "no longer on
+                            // your calendar" would be true of the record and
+                            // false of the calendar.
+                            "the requester cancelled this booking; its slot had already \
+                             collided, so no event was ever created"
+                                .to_string()
+                        } else {
+                            "the requester cancelled this booking; it is no longer on your \
+                             calendar"
+                                .to_string()
+                        })
+                    }
                     _ => None,
                 };
                 if let Some(note) = note {

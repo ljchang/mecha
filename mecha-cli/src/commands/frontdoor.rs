@@ -335,6 +335,22 @@ fn extractable(record: &Record, force: bool) -> bool {
         && (force || record.extraction.is_none())
 }
 
+/// Whether **neither** model-spending verb will do anything with this record,
+/// so no surface should offer one.
+///
+/// Derived from the two predicates rather than restated beside them. The web
+/// payload used to spell out its own version — `is_settled_booking() ||
+/// cancellation().is_some()` — which reproduced two of `extractable`'s three
+/// conditions and dropped `record.valid`, leaving the **Extract** button live
+/// on an invalid record where the child refuses and the page reports success.
+/// A copy of a predicate is a copy that goes stale; this one cannot.
+///
+/// `force: true` on the extract side on purpose: a record that only
+/// `--force` would re-extract is not inert, it is already extracted.
+pub(crate) fn inert(record: &Record) -> bool {
+    !extractable(record, true) && !triageable(record)
+}
+
 /// A visitor's cancellation: machinery only, and nothing to answer.
 ///
 /// `Record::booking()` refuses a `_cancelled` record on purpose, which makes
@@ -412,6 +428,9 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
     // that bug, and `_duration_minutes` and `_manage_url` had the same shape.
     // One list, because two mechanisms for one job is how they drifted apart.
     let mut shown: Vec<&str> = Vec::new();
+    // Parsed once. The header and the field list below both read it, and this
+    // used to build the map twice over the same record.
+    let typed = record.typed_values();
     if let Some(booking) = &booking {
         let tz = owner_timezone();
         println!("\n── the meeting ──────────────────────────────────────────────");
@@ -436,7 +455,6 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
         // this changes nothing — but reading the raw map is how a field that
         // later becomes free text would print as prose in a header that
         // claims to hold typed answers.
-        let typed = record.typed_values();
         if let Some(purpose) = typed.get("purpose").and_then(|v| v.as_str()) {
             println!("  purpose   {purpose}");
             shown.push("purpose");
@@ -465,8 +483,7 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
     } else {
         Vec::new()
     };
-    let fields: Vec<(String, serde_json::Value)> = record
-        .typed_values()
+    let fields: Vec<(String, serde_json::Value)> = typed
         .into_iter()
         .filter(|(name, _)| !machinery.contains(&name.as_str()))
         .collect();
@@ -1016,6 +1033,38 @@ mod tests {
         assert!(swept.conflicted.contains("c1"));
         assert!(!swept.created.contains("c1"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `inert` has to mean "both verbs refuse", not "it is a booking". The web
+    /// payload used to reproduce two of `extractable`'s three conditions and
+    /// drop `record.valid`, so **Extract** stayed live on an invalid record —
+    /// the dead-button-reports-success failure `inert` exists to close.
+    #[test]
+    fn an_invalid_record_is_inert_even_though_it_is_not_a_booking() {
+        let mut record = booking(EXTRACTED);
+        record.values.remove("_booking_id");
+        record.extraction = Some(Extraction::default());
+        assert!(
+            !inert(&record),
+            "an ordinary extracted request is not inert"
+        );
+
+        record.valid = false;
+        assert!(!extractable(&record, true), "invalid is never extracted");
+        assert!(!triageable(&record), "nor triaged");
+        assert!(
+            inert(&record),
+            "so no surface should offer either — this is what was missing"
+        );
+    }
+
+    /// And the cases it was already covering stay covered, now by derivation.
+    #[test]
+    fn a_settled_booking_and_a_withdrawal_are_both_inert() {
+        assert!(inert(&booking(BOOKED)));
+        let mut withdrawal = booking(EXTRACTED);
+        withdrawal.values.insert("_cancelled".into(), json!(true));
+        assert!(inert(&withdrawal));
     }
 
     /// The ledger lives wherever `mecha-mail` put it, which is not where
