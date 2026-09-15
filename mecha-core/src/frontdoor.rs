@@ -627,7 +627,15 @@ impl Frontdoor {
             // `closed` — the state that already means "ended, and here is
             // why". `closed` is skipped below, so a reason a person wrote by
             // hand is never overwritten by either of these.
-            if record.state != CLOSED {
+            // `awaiting_me` is excluded here for the same reason the skip
+            // list below excludes it: a draft is staged against this record
+            // and only `reconcile` advances it, so closing it here orphans
+            // the draft — the exact failure
+            // `a_booking_whose_draft_is_still_pending_is_left_for_reconcile`
+            // exists to prevent, arrived at down the other arm. A person
+            // running `frontdoor close` does the same thing, but there a
+            // person decided.
+            if record.state != CLOSED && record.state != AWAITING_ME {
                 let note = match (record.cancellation(), record.booking()) {
                     (Some(_), _) => Some(
                         "a booking the requester withdrew — the sweep removes the calendar event"
@@ -1310,6 +1318,33 @@ mod tests {
 
         // Idempotent.
         assert!(stores.front.settle_bookings().unwrap().is_empty());
+    }
+
+    /// The cancellation join must respect the same guard the settle path
+    /// does: a booking with a staged draft is left for `reconcile`, or the
+    /// draft is orphaned — reached down the other arm, which is how the
+    /// first version of this join got it wrong.
+    #[test]
+    fn a_cancelled_booking_with_a_pending_draft_is_still_left_for_reconcile() {
+        let stores = Stores::new("cancel-awaiting");
+        let mut record = booking_record();
+        record.state = AWAITING_ME.into();
+        record.outbox = vec!["20260914T180315-3d3c97c2".into()];
+        stores.front.write(&record).unwrap();
+
+        let mut withdrawal = booking_record();
+        withdrawal.seq = 11;
+        withdrawal.values.insert("_cancelled".into(), json!(true));
+        stores.front.write(&withdrawal).unwrap();
+
+        let moved = stores.front.settle_bookings().unwrap();
+        assert_eq!(moved.len(), 1, "only the withdrawal itself moves");
+        assert_eq!(moved[0].seq, 11);
+        assert_eq!(
+            stores.front.record(10).unwrap().state,
+            AWAITING_ME,
+            "closing it here would orphan the draft staged against it"
+        );
     }
 
     /// A reason a person wrote by hand outlives the join.

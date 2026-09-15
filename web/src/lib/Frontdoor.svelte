@@ -91,9 +91,19 @@
     const start = new Date(b.start);
     const end = new Date(b.end);
     if (isNaN(start) || isNaN(end)) return `${b.start} – ${b.end}`;
-    const day = start.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+    const day = (d) => d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
     const t = (d) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-    return `${day} · ${t(start)} – ${t(end)}`;
+    // The end carries its own day when the meeting crosses local midnight,
+    // and the zone is always named. `Booking::end_label` does the first on
+    // the Rust side; the second is because this card renders in the
+    // *viewer's* zone while the detail view behind it renders in the
+    // owner's `[agent] timezone` — away from home those are two different
+    // times for one meeting, and an unlabelled one is the worse of them.
+    const ends = day(end) === day(start) ? t(end) : `${t(end)} (${day(end)})`;
+    const zone = new Intl.DateTimeFormat([], { timeZoneName: 'short' })
+      .formatToParts(start)
+      .find((p) => p.type === 'timeZoneName')?.value;
+    return `${day(start)} · ${t(start)} – ${ends}${zone ? ` ${zone}` : ''}`;
   };
 
   const isPast = (b) => {
