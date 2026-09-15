@@ -58,32 +58,7 @@ const config: Config = {
       onBrokenMarkdownLinks: 'throw',
     },
   },
-  themes: [
-    '@docusaurus/theme-mermaid',
-    // Search that runs entirely in the reader's browser: the index is built
-    // at build time and shipped with the site, so a query never leaves the
-    // page. Algolia DocSearch is the Docusaurus default and would send every
-    // keystroke to a third party — which would also make `/privacy`'s "About
-    // this website" section false, since it says loading a page sends your IP
-    // to Google Fonts and *that is everything*. A docs site for a local-first
-    // agent should not need a hosted service to find a heading.
-    [
-      require.resolve('@easyops-cn/docusaurus-search-local'),
-      {
-        hashed: true,
-        indexBlog: false,
-        docsRouteBasePath: '/docs',
-        // The standalone pages — `/privacy`, `/terms` — are not under `docs`,
-        // and they are exactly what somebody arrives searching for.
-        indexPages: true,
-        highlightSearchTermsOnTargetPage: true,
-        // The changelog stays indexed. Excluding it saves 20% of the index
-        // and costs every searchable release note, which is a bad trade —
-        // measured, not assumed. The index is ~1.2 MB gzipped and loads on
-        // first use rather than on page load.
-      },
-    ],
-  ],
+  themes: ['@docusaurus/theme-mermaid'],
 
   presets: [
     [
