@@ -139,8 +139,16 @@ Everything above is about *your* data. A booking page also collects data from th
 people who use it: the name, email address and purpose they type into the form,
 plus the slot they chose. That information is queued on the public
 surface until your machine collects it, and then lands in a request file under
-`~/.mecha/` and in the calendar event created for the meeting. Those three
-places are all of them.
+`~/.mecha/` and in the calendar event created for the meeting.
+
+It may also reach your model. Working out how to answer a submission means
+reading it, so if you have configured a hosted provider, a visitor's words can
+travel the same hop your own mail does — described under *Who else can see it*
+above, and true of their data for the same reason. mecha is built so that free
+text a stranger typed is read by a quarantined pass with no tools and no
+history, and only typed fields reach anything with access to your accounts;
+that is a safety boundary, not a privacy one, and it does not change where the
+bytes go.
 
 If you publish such a page, you are the one collecting that information and the
 one answerable for it. mecha gives visitors a link to cancel, which frees the
