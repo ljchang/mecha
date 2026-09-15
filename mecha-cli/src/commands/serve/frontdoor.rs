@@ -32,7 +32,7 @@ pub async fn list(State(_state): St) -> Response {
     // that prints `nothing to extract` and exits 0, so the page reports
     // success for work that did not happen. Best-effort — a store this cannot
     // write to is still a store worth showing.
-    if let Err(e) = store.settle_bookings() {
+    if let Err(e) = store.settle_bookings(&super::super::frontdoor::collided_bookings()) {
         tracing::warn!(error = %e, "settling bookings for the front door page");
     }
     let mut records = match store.records() {

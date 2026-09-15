@@ -240,8 +240,11 @@ pub fn load() -> anyhow::Result<Vec<RequestRow>> {
     if let Some(outbox) = mecha_core::outbox::OutboxStore::open_existing_default() {
         let _ = store.reconcile(&outbox);
     }
-    let _ = store.settle_bookings();
-    Ok(store.records()?.iter().map(row).collect())
+    let _ = store.settle_bookings(&crate::commands::frontdoor::collided_bookings());
+    // The zone once, not once per row: `row` used to call `load_global()` for
+    // every booking it rendered, re-reading and re-parsing config each time.
+    let tz = owner_timezone();
+    Ok(store.records()?.iter().map(|r| row(r, tz)).collect())
 }
 
 /// The owner's `[agent] timezone`. `load_global`, not the project layer: the
@@ -254,7 +257,7 @@ fn owner_timezone() -> Option<chrono_tz::Tz> {
         .timezone()
 }
 
-fn row(record: &Record) -> RequestRow {
+fn row(record: &Record, tz: Option<chrono_tz::Tz>) -> RequestRow {
     let flag = if !record.valid {
         "INVALID"
     } else if record
@@ -274,7 +277,7 @@ fn row(record: &Record) -> RequestRow {
         // an em dash on every row. It says when the meeting is instead, as
         // `frontdoor list` does.
         topic: match record.booking() {
-            Some(booking) => booking.local_span(owner_timezone()),
+            Some(booking) => booking.local_span(tz),
             None => record
                 .extraction
                 .as_ref()
@@ -468,7 +471,7 @@ mod tests {
 
     #[test]
     fn the_title_names_the_keys_or_answers_the_last_action() {
-        let modal = FrontdoorModal::new(vec![row(&record(1, "drained"))]);
+        let modal = FrontdoorModal::new(vec![row(&record(1, "drained"), None)]);
         let title = modal.title();
         for key in [
             "enter",
@@ -491,8 +494,8 @@ mod tests {
     #[test]
     fn the_selection_wraps_and_an_empty_list_does_not_panic() {
         let mut modal = FrontdoorModal::new(vec![
-            row(&record(1, "drained")),
-            row(&record(2, "extracted")),
+            row(&record(1, "drained"), None),
+            row(&record(2, "extracted"), None),
         ]);
         modal.move_by(-1);
         assert_eq!(modal.selected, 1);
@@ -522,7 +525,7 @@ mod tests {
         let mut r = record(3, "drained");
         r.valid = false;
         r.invalid_reason = Some("unknown type".into());
-        let row = row(&r);
+        let row = row(&r, None);
         assert_eq!(row.flag, "INVALID");
         assert!(text(&row.detail).contains("INVALID: unknown type"));
     }
@@ -536,7 +539,7 @@ mod tests {
             reads_like_instructions: true,
             ..Default::default()
         });
-        let row = row(&r);
+        let row = row(&r, None);
         assert_eq!(row.flag, "⚠ reads like instructions");
         let body = text(&row.detail);
         assert!(body.contains("not a block"), "{body}");
@@ -566,7 +569,7 @@ mod tests {
     /// each new one is written by opening whichever sibling is nearest.
     #[test]
     fn a_tiny_terminal_shrinks_the_list_rather_than_panicking() {
-        let modal = FrontdoorModal::new(vec![row(&record(1, "drained"))]);
+        let modal = FrontdoorModal::new(vec![row(&record(1, "drained"), None)]);
         for height in 0..=6u16 {
             let mut terminal =
                 ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, height.max(1)))

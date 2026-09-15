@@ -134,6 +134,58 @@ fn reconcile(store: &Frontdoor) -> Result<()> {
     Ok(())
 }
 
+/// The bookings whose slot collided, from the mail crate's ledger.
+///
+/// The sweep re-verifies against live freebusy and, when the slot has since
+/// been taken, writes a `conflict` line and creates nothing — no event, no
+/// invite — and never retries it. Those are the bookings a person still owes
+/// something, so [`Frontdoor::settle_bookings`] must not file them as
+/// confirmed.
+///
+/// Read here rather than in `mecha-core`: `bookings.jsonl` is the calendar's
+/// record, owned by a crate that has no `mecha-core` dependency and must not
+/// grow one, and the seam between them is a file at a known path — the same
+/// arrangement as the request store this reads *for*. Absent, unreadable or
+/// torn, the answer is the empty set, and the reasoning is honest rather than
+/// fail-open: no ledger means no sweep ran, so nothing collided and nothing
+/// claims a calendar either.
+///
+/// A `created` line for the same booking wins over a `conflict` — the sweep
+/// would have to have been re-run by hand for both to exist, and the event is
+/// then real.
+pub(crate) fn collided_bookings() -> std::collections::BTreeSet<String> {
+    use std::collections::BTreeSet;
+    let Ok(home) = mecha_core::work::mecha_home() else {
+        return BTreeSet::new();
+    };
+    let Ok(text) = std::fs::read_to_string(home.join("mail").join("bookings.jsonl")) else {
+        return BTreeSet::new();
+    };
+    let (mut conflicted, mut created) = (BTreeSet::new(), BTreeSet::new());
+    for line in text.lines() {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue; // a torn trailing line, as the ledger's own readers do
+        };
+        let (Some(id), Some(action)) = (
+            entry.get("booking_id").and_then(|v| v.as_str()),
+            entry.get("action").and_then(|v| v.as_str()),
+        ) else {
+            continue;
+        };
+        match action {
+            "conflict" => {
+                conflicted.insert(id.to_string());
+            }
+            "created" => {
+                created.insert(id.to_string());
+            }
+            _ => {}
+        }
+    }
+    conflicted.retain(|id| !created.contains(id));
+    conflicted
+}
+
 /// Move confirmed bookings out of the queue. Best-effort, like the outbox
 /// reconciliation it follows and like the other two callers (the web warns,
 /// the TUI ignores) — a `?` here once stopped `frontdoor list` printing
@@ -147,7 +199,7 @@ fn reconcile(store: &Frontdoor) -> Result<()> {
 /// order: reconcile only ever touches `awaiting_me`, which is exactly the
 /// state settling skips.
 fn settle(store: &Frontdoor) {
-    match store.settle_bookings() {
+    match store.settle_bookings(&collided_bookings()) {
         Ok(moved) => {
             for moved in moved {
                 eprintln!("{:<5} {} → {}", moved.seq, moved.from, moved.to);

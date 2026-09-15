@@ -612,6 +612,26 @@ impl Frontdoor {
     /// nobody can trust. Idempotent — a record already terminal is left
     /// alone, so this is safe to call from every verb.
     ///
+    /// **`conflicted` is the one thing this cannot decide for itself.** The
+    /// sweep re-verifies every booking against live freebusy before creating
+    /// an event, and when the slot has since been taken it writes a
+    /// `conflict` line and *creates nothing* — no event, no invite, and its
+    /// ledger never retries it. The visitor holds a confirmation page for a
+    /// meeting that does not exist, and a person has to fix it.
+    ///
+    /// Settling such a record would be the worst outcome this module can
+    /// produce: it would drop out of `counts_as_open`, sit outside
+    /// `WAITING_ON_OWNER` so the doctor never names it, fold under "on your
+    /// calendar · nothing owed", and `show` would state that the invite went
+    /// from the owner's own mailbox. Before any of this existed it at least
+    /// stayed in the queue. So the ids are passed **in**, by a caller that
+    /// can read the mail crate's ledger — this store must not reach across to
+    /// `bookings.jsonl` itself, which is the calendar's record and absent
+    /// wherever mail is not configured.
+    ///
+    /// An empty set is the honest answer for a machine with no mail: nothing
+    /// is known to have collided, and nothing claims a calendar either.
+    ///
     /// The cost of *not* having this was measured rather than imagined. A
     /// booking walked the whole pipeline — a quarantined extraction, then a
     /// full privileged agent run with mail and calendar — to produce a draft
@@ -619,7 +639,10 @@ impl Frontdoor {
     /// to pick another time. It was reading the booking's *own* calendar
     /// event as a conflict. Four earlier drafts of the same shape were
     /// rejected by hand over the preceding five weeks.
-    pub fn settle_bookings(&self) -> Result<Vec<Transition>> {
+    pub fn settle_bookings(
+        &self,
+        conflicted: &std::collections::BTreeSet<String>,
+    ) -> Result<Vec<Transition>> {
         let mut moved = Vec::new();
         let records = self.records()?;
         // Which bookings the visitor has since withdrawn. `booked` is
@@ -648,6 +671,24 @@ impl Frontdoor {
             // exists to prevent, arrived at down the other arm. A person
             // running `frontdoor close` does the same thing, but there a
             // person decided.
+            // `awaiting_me` keeps its state (only `reconcile` may advance it,
+            // and settling orphans the draft) but must still learn it was
+            // withdrawn: `note` advances nothing, `show` prints it, and this
+            // is precisely the case with a live sendable draft about a
+            // meeting that is no longer happening. Silence there is the worst
+            // version of the guard.
+            if record.state == AWAITING_ME && record.note.is_none() {
+                if let Some(b) = record.booking() {
+                    if cancelled.contains(&b.booking_id) {
+                        record.note = Some(
+                            "the requester cancelled this booking — the draft staged against it \
+                             is about a meeting that is no longer happening"
+                                .into(),
+                        );
+                        self.write(&record)?;
+                    }
+                }
+            }
             if record.state != CLOSED && record.state != AWAITING_ME {
                 let note = match (record.cancellation(), record.booking()) {
                     (Some(_), _) => Some(
@@ -695,7 +736,24 @@ impl Frontdoor {
             ) {
                 continue;
             }
-            if !record.is_settled_booking() {
+            let Some(booking) = record.booking().filter(|_| record.is_settled_booking()) else {
+                continue;
+            };
+            // A collided booking stays exactly where it is, visible, with the
+            // collision written down. Not settled, and deliberately not
+            // triaged either — `is_settled_booking` still answers true, so no
+            // model is spent drafting a reply to it. A person reads the note
+            // and decides.
+            if conflicted.contains(&booking.booking_id) {
+                if record.note.is_none() {
+                    record.note = Some(
+                        "the slot collided with something already on your calendar — no event \
+                         was created and no invite was sent, and the requester is holding a \
+                         confirmation page for a meeting that does not exist"
+                            .into(),
+                    );
+                    self.write(&record)?;
+                }
                 continue;
             }
             let from = std::mem::replace(&mut record.state, BOOKED.to_string());
@@ -1174,7 +1232,7 @@ mod tests {
         // It does not settle as a *booking* — it is closed as a withdrawal,
         // which is what `a_cancellation_closes_the_booking_it_withdraws_and_itself`
         // covers. What matters here is that it never becomes `booked`.
-        stores.front.settle_bookings().unwrap();
+        stores.front.settle_bookings(&Default::default()).unwrap();
         assert_ne!(stores.front.record(10).unwrap().state, BOOKED);
     }
 
@@ -1230,7 +1288,7 @@ mod tests {
         stores.front.write(&booking_record()).unwrap();
         stores.front.write(&record_with_prose()).unwrap();
 
-        let moved = stores.front.settle_bookings().unwrap();
+        let moved = stores.front.settle_bookings(&Default::default()).unwrap();
         assert_eq!(moved.len(), 1, "only the booking moves");
         assert_eq!(moved[0].seq, 10);
         assert_eq!(moved[0].from, DRAINED);
@@ -1242,7 +1300,11 @@ mod tests {
         assert_eq!(stores.front.record(1).unwrap().state, DRAINED);
 
         // Idempotent: a second pass moves nothing.
-        assert!(stores.front.settle_bookings().unwrap().is_empty());
+        assert!(stores
+            .front
+            .settle_bookings(&Default::default())
+            .unwrap()
+            .is_empty());
     }
 
     /// The migration case, and the one that orphans a draft. `reconcile`
@@ -1258,7 +1320,11 @@ mod tests {
         stores.front.write(&record).unwrap();
 
         assert!(
-            stores.front.settle_bookings().unwrap().is_empty(),
+            stores
+                .front
+                .settle_bookings(&Default::default())
+                .unwrap()
+                .is_empty(),
             "settling it would orphan the draft staged against it"
         );
         assert_eq!(stores.front.record(10).unwrap().state, AWAITING_ME);
@@ -1268,7 +1334,7 @@ mod tests {
         let mut record = stores.front.record(10).unwrap();
         record.state = EXTRACTED.into();
         stores.front.write(&record).unwrap();
-        let moved = stores.front.settle_bookings().unwrap();
+        let moved = stores.front.settle_bookings(&Default::default()).unwrap();
         assert_eq!(moved.len(), 1);
         assert_eq!(moved[0].to, BOOKED);
     }
@@ -1296,6 +1362,78 @@ mod tests {
         .is_past(t("2030-01-01T00:00:00Z")));
     }
 
+    /// The worst thing this module could do: file a booking that never
+    /// reached the calendar as one that did.
+    ///
+    /// The sweep writes a `conflict` line when the slot has been taken since
+    /// the gate sold it, creates no event and sends no invite, and never
+    /// retries. Settling that record would drop it out of `counts_as_open`,
+    /// hide it from the doctor, fold it under "nothing owed", and have `show`
+    /// assert the invite went from the owner's own mailbox — for a visitor
+    /// holding a confirmation page and no meeting.
+    #[test]
+    fn a_booking_whose_slot_collided_stays_in_the_queue_and_says_why() {
+        let stores = Stores::new("conflict");
+        stores.front.write(&booking_record()).unwrap();
+        let conflicted: std::collections::BTreeSet<String> =
+            ["2f6d21b33b6273fe41d4bf22b9bce655".to_string()]
+                .into_iter()
+                .collect();
+
+        assert!(
+            stores
+                .front
+                .settle_bookings(&conflicted)
+                .unwrap()
+                .is_empty(),
+            "a collided booking must not be settled"
+        );
+        let after = stores.front.record(10).unwrap();
+        assert_eq!(after.state, DRAINED, "it stays where a person will see it");
+        assert!(
+            after.note.unwrap().contains("no event"),
+            "and says what went wrong"
+        );
+
+        // Idempotent, and the note is written once.
+        assert!(stores
+            .front
+            .settle_bookings(&conflicted)
+            .unwrap()
+            .is_empty());
+
+        // The same record with no conflict recorded settles as usual — so the
+        // refusal above is the ledger's doing, not something about the record.
+        let moved = stores.front.settle_bookings(&Default::default()).unwrap();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].to, BOOKED);
+    }
+
+    /// A booking parked in `awaiting_me` keeps its state when the visitor
+    /// cancels — but must not stay silent about it, because that is the case
+    /// with a live sendable draft about a meeting that is off.
+    #[test]
+    fn a_cancelled_booking_awaiting_review_still_learns_it_was_withdrawn() {
+        let stores = Stores::new("cancel-awaiting-note");
+        let mut record = booking_record();
+        record.state = AWAITING_ME.into();
+        record.outbox = vec!["20260914T180315-3d3c97c2".into()];
+        stores.front.write(&record).unwrap();
+
+        let mut withdrawal = booking_record();
+        withdrawal.seq = 11;
+        withdrawal.values.insert("_cancelled".into(), json!(true));
+        stores.front.write(&withdrawal).unwrap();
+
+        stores.front.settle_bookings(&Default::default()).unwrap();
+        let after = stores.front.record(10).unwrap();
+        assert_eq!(after.state, AWAITING_ME, "the draft is still reconcile's");
+        assert!(
+            after.note.unwrap().contains("cancelled"),
+            "but the reviewer is told before they read the draft"
+        );
+    }
+
     /// A visitor's cancellation must un-book the confirmation it withdraws,
     /// or the front door goes on asserting a meeting that `mecha-mail
     /// bookings` has already deleted from the calendar.
@@ -1305,7 +1443,7 @@ mod tests {
         stores.front.write(&booking_record()).unwrap();
 
         // First pass: nothing has been withdrawn, so it settles as usual.
-        stores.front.settle_bookings().unwrap();
+        stores.front.settle_bookings(&Default::default()).unwrap();
         assert_eq!(stores.front.record(10).unwrap().state, BOOKED);
 
         // The visitor uses their manage link. The box sends a machinery-only
@@ -1316,7 +1454,7 @@ mod tests {
         withdrawal.free_text.clear();
         stores.front.write(&withdrawal).unwrap();
 
-        let moved = stores.front.settle_bookings().unwrap();
+        let moved = stores.front.settle_bookings(&Default::default()).unwrap();
         assert_eq!(moved.len(), 2, "the withdrawal and what it withdraws");
 
         let booking = stores.front.record(10).unwrap();
@@ -1330,7 +1468,11 @@ mod tests {
         assert!(record.booking().is_none());
 
         // Idempotent.
-        assert!(stores.front.settle_bookings().unwrap().is_empty());
+        assert!(stores
+            .front
+            .settle_bookings(&Default::default())
+            .unwrap()
+            .is_empty());
     }
 
     /// The cancellation join must respect the same guard the settle path
@@ -1350,7 +1492,7 @@ mod tests {
         withdrawal.values.insert("_cancelled".into(), json!(true));
         stores.front.write(&withdrawal).unwrap();
 
-        let moved = stores.front.settle_bookings().unwrap();
+        let moved = stores.front.settle_bookings(&Default::default()).unwrap();
         assert_eq!(moved.len(), 1, "only the withdrawal itself moves");
         assert_eq!(moved[0].seq, 11);
         assert_eq!(
@@ -1374,7 +1516,7 @@ mod tests {
         withdrawal.values.insert("_cancelled".into(), json!(true));
         stores.front.write(&withdrawal).unwrap();
 
-        stores.front.settle_bookings().unwrap();
+        stores.front.settle_bookings(&Default::default()).unwrap();
         assert_eq!(
             stores.front.record(10).unwrap().note.as_deref(),
             Some("they emailed me to call it off")
@@ -1391,7 +1533,11 @@ mod tests {
         record.note = Some("they cancelled by mail".into());
         stores.front.write(&record).unwrap();
 
-        assert!(stores.front.settle_bookings().unwrap().is_empty());
+        assert!(stores
+            .front
+            .settle_bookings(&Default::default())
+            .unwrap()
+            .is_empty());
         let after = stores.front.record(10).unwrap();
         assert_eq!(after.state, CLOSED);
         assert_eq!(after.note.as_deref(), Some("they cancelled by mail"));

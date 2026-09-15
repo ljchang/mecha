@@ -793,9 +793,7 @@ Three more decisions there:
 gate only publishes slots freebusy says are free, the verification click
 confirms one, and `mecha-mail bookings` — deterministic, no model — makes the
 calendar event whose invite the provider sends. So a booking arrives already
-answered, and `Frontdoor::settle_bookings` (inside `reconcile`, like everything
-else that must not depend on a remembered verb) moves it to the terminal
-`booked` rather than letting it walk extract → triage → a draft. It used to
+answered, and `Frontdoor::settle_bookings` moves it to the terminal `booked` rather than letting it walk extract → triage → a draft. It used to
 walk it: one draft told a requester the slot she had just booked "is already
 booked" and asked her to rebook, having read the booking's own event as a
 conflict. `Record::is_settled_booking` is the single home for the policy — an
@@ -806,6 +804,24 @@ work owed. Two states are deliberately *not* settled: `closed`, because a
 person's reason must not be overwritten, and `awaiting_me`, because
 `reconcile` only advances records in that state and settling one would orphan
 its staged draft.
+
+**Every surface settles, and none of them is `reconcile`.** `settle_bookings`
+is *not* called from `Frontdoor::reconcile` — it takes a set of collided
+booking ids the store cannot know, so each of the three readers (the CLI's
+`reconcile`, the web list, the TUI modal) calls it after the outbox pass with
+the ledger's answer. Three call sites rather than one is a cost, paid so the
+request store never reaches across to `bookings.jsonl`: that ledger is the
+calendar's record and is absent wherever mail is not configured.
+
+**A booking whose slot collided is never settled.** The sweep re-verifies
+against live freebusy and, when the slot has gone since the gate sold it,
+writes a `conflict` line and creates nothing — no event, no invite — and never
+retries. That record stays in the queue with the collision written on it,
+because settling it is the worst outcome available here: it would leave
+`counts_as_open`, sit outside `WAITING_ON_OWNER` so the doctor never names it,
+fold under "nothing owed", and have `show` assert an invite that was never
+sent, while the visitor holds a confirmation page for a meeting that does not
+exist.
 
 **And a cancellation un-books what it withdraws.** `booked` is terminal, so
 the same walk joins each `_cancelled` record to the confirmation it cancels
