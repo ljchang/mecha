@@ -81,9 +81,31 @@ you asked for sends them. mecha ships with neither pointed anywhere by default.
 
 mecha never sells Google user data, never uses it for advertising, and never uses
 it to train a model. Beyond the destinations you configure yourself — the model
-provider, any search backend, any MCP server, and the Slack transport if you
-connect one — it is not shared with anyone. Every one of those is off until you
-turn it on, and each is named in your own configuration file.
+provider, any search backend, any MCP server, the Slack transport if you connect
+one, and the booking page described below if you publish one — it is not shared
+with anyone. Every one of those is off until you turn it on, and each is named in
+your own configuration file.
+
+### If you publish a booking page
+
+This one is different from the others, because it is the only place a **stranger**
+reads something derived from your data. If you publish a booking page, mecha
+computes free slots from your calendars' busy time and pushes them to that page.
+What is published is availability — when you are free, in the windows you chose —
+never event titles, attendees, or any other detail of what you are busy *with*.
+Take the page down and nothing further is published.
+
+## Other people's data
+
+Everything above is about *your* data. A booking page also collects data from the
+people who use it: the name, email address and purpose they type into the form,
+plus the slot they chose. That information is handled the same way as everything
+else here — it lands in a request file under `~/.mecha/` on your machine and in
+the calendar event created for the meeting, and it goes nowhere else.
+
+If you publish such a page, you are the one collecting that information and the
+one answerable for it. mecha gives visitors a link to cancel, which frees the
+slot and withdraws the meeting.
 
 ## Limited Use
 
@@ -100,7 +122,7 @@ default, because routing a tool is a policy decision rather than something to
 assume. Configured, it is the strongest guarantee here. Unconfigured, a send is
 a send.
 
-Three things send without passing through that queue even when it is configured,
+Four things send without passing through that queue even when it is configured,
 and all are worth knowing:
 
 - **Creating a calendar event with attendees notifies them immediately.** mecha
@@ -114,6 +136,9 @@ and all are worth knowing:
   events by a scheduled, deterministic path with no model and no review step.
   That is deliberate: you approved those slots when you published them, and a
   visitor who books one should not wait on you to find out whether it took.
+- **Meeting polls**, if you run one, mail each invitee their own link and one
+  reminder from your account on the same scheduled path, and book the winning
+  slot. Same reasoning, same absence of a review step.
 
 ## Retention and deletion
 
