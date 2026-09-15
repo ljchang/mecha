@@ -108,7 +108,11 @@
   // `state === 'booked'`, not "is this a booking": a booking somebody later
   // closed by hand with a reason is not filed under "nothing owed". The
   // terminal renderer gates the same sentence on the same state.
-  const settled = (r) => r.state === 'booked';
+  // `&& r.booking` is not reachable through the code paths that exist — only
+  // `settle_bookings` writes `booked`, and it requires a parseable booking —
+  // but a hand-edited or future-written record would take the whole page down
+  // on the dereference below rather than degrade. It costs nothing.
+  const settled = (r) => r.state === 'booked' && r.booking;
   const queue = $derived((rows ?? []).filter((r) => !settled(r)));
   const booked = $derived(
     (rows ?? [])

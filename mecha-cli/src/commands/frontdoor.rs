@@ -239,10 +239,19 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
     // Reading the slot out of a column of `_`-prefixed machinery is how a
     // confirmed meeting came to look like an unanswered question.
     let booking = record.booking();
+    // Whether `purpose` rendered in the header above. Filtering it out of the
+    // field list unconditionally made a non-string `purpose` — a value the
+    // form validated — render in neither place and vanish silently.
+    let mut shown_purpose = false;
     if let Some(booking) = &booking {
         let tz = owner_timezone();
         println!("\n── the meeting ──────────────────────────────────────────────");
-        println!("  when      {}", booking.local_span(tz));
+        let past = if booking.is_past(chrono::Utc::now()) {
+            "   (already happened)"
+        } else {
+            ""
+        };
+        println!("  when      {}{past}", booking.local_span(tz));
         if let Some(minutes) = booking.duration_minutes {
             println!("  length    {minutes} minutes");
         }
@@ -253,6 +262,7 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
         }
         if let Some(purpose) = record.values.get("purpose").and_then(|v| v.as_str()) {
             println!("  purpose   {purpose}");
+            shown_purpose = true;
         }
         if record.state == mecha_core::frontdoor::BOOKED {
             println!(
@@ -275,9 +285,6 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
             "_slot_end",
             "_duration_minutes",
             "_manage_url",
-            // Rendered in the header above as the meeting's purpose. Printing
-            // it twice is how the wall of fields grew in the first place.
-            "purpose",
         ]
     } else {
         &[]
@@ -286,6 +293,8 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
         .typed_values()
         .into_iter()
         .filter(|(name, _)| !machinery.contains(&name.as_str()))
+        // `purpose` is dropped only when the header actually printed it.
+        .filter(|(name, _)| !(shown_purpose && name == "purpose"))
         .collect();
     if !fields.is_empty() {
         println!("\nfields the form validated:");

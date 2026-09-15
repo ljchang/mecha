@@ -21,7 +21,7 @@ Type=oneshot
 # systemd gives a unit a minimal environment; both binaries live in cargo's
 # bin. Measured on mecha-triggers.service the hard way.
 Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/bin/sh -c 'mecha-mail freebusy --days 60 --json | factory-publish slots push book --policy %h/.mecha/instruments/book-policy.toml'
+ExecStart=-/bin/sh -c 'mecha-mail freebusy --days 60 --json | factory-publish slots push book --policy %h/.mecha/instruments/book-policy.toml'
 # The booking lifecycle sweep rides the same cadence: events for new
 # bookings, withdrawals for cancellations, and reminders — whose 1-hour
 # tier is what needs the fifteen-minute resolution (the front door's

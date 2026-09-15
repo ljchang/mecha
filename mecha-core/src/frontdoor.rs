@@ -568,9 +568,21 @@ impl Frontdoor {
             // Terminal states are left alone — including `closed`, because a
             // person who closed a booking with a reason has said something
             // this must not overwrite.
+            //
+            // `awaiting_me` is left alone for a different and sharper reason:
+            // it means a draft is staged against this record, and
+            // [`Frontdoor::reconcile`] only advances records that *are*
+            // `awaiting_me`. Settling one here would orphan its draft — still
+            // pending, still sendable, and now attached to a record nothing
+            // will ever reconcile. It resolves itself: when the person
+            // releases or rejects the draft, reconcile moves the record to
+            // `answered` or back to `extracted`, and the next pass settles it
+            // from there. This is reachable in exactly one place — the
+            // migration, where bookings triaged before this existed are
+            // sitting in `awaiting_me` with drafts against them.
             if matches!(
                 record.state.as_str(),
-                BOOKED | ANSWERED | CLOSED | NEEDS_INFO
+                BOOKED | ANSWERED | CLOSED | NEEDS_INFO | AWAITING_ME
             ) {
                 continue;
             }
@@ -1121,6 +1133,57 @@ mod tests {
 
         // Idempotent: a second pass moves nothing.
         assert!(stores.front.settle_bookings().unwrap().is_empty());
+    }
+
+    /// The migration case, and the one that orphans a draft. `reconcile`
+    /// only advances records that *are* `awaiting_me`, so settling one here
+    /// would leave its staged draft live, sendable, and attached to a record
+    /// nothing will ever reconcile.
+    #[test]
+    fn a_booking_whose_draft_is_still_pending_is_left_for_reconcile() {
+        let stores = Stores::new("settle-awaiting");
+        let mut record = booking_record();
+        record.state = AWAITING_ME.into();
+        record.outbox = vec!["20260914T180315-3d3c97c2".into()];
+        stores.front.write(&record).unwrap();
+
+        assert!(
+            stores.front.settle_bookings().unwrap().is_empty(),
+            "settling it would orphan the draft staged against it"
+        );
+        assert_eq!(stores.front.record(10).unwrap().state, AWAITING_ME);
+
+        // Once the draft is resolved and reconcile has moved it on, the next
+        // pass settles it from there.
+        let mut record = stores.front.record(10).unwrap();
+        record.state = EXTRACTED.into();
+        stores.front.write(&record).unwrap();
+        let moved = stores.front.settle_bookings().unwrap();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].to, BOOKED);
+    }
+
+    /// A meeting that has already happened says so, and an unreadable stamp
+    /// reads as *not* past — a meeting that might still be ahead is the safer
+    /// thing to keep showing.
+    #[test]
+    fn a_past_meeting_is_named_and_an_unreadable_one_is_not_guessed_at() {
+        let booking = booking_record().booking().unwrap();
+        let t = |s: &str| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        };
+        assert!(booking.is_past(t("2026-09-16T15:00:01Z")));
+        assert!(!booking.is_past(t("2026-09-16T14:59:59Z")));
+        assert!(!Booking {
+            booking_id: "b1".into(),
+            start: "whenever".into(),
+            end: "later".into(),
+            duration_minutes: None,
+            manage_url: None,
+        }
+        .is_past(t("2030-01-01T00:00:00Z")));
     }
 
     /// A person who closed a booking with a reason has said something, and a

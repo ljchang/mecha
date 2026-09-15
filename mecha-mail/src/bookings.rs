@@ -75,9 +75,22 @@ pub fn parse_record(record: &Value) -> Option<DrainedBooking> {
     if values.get("_cancelled").and_then(Value::as_bool) == Some(true) {
         return None;
     }
-    let booking_id = values.get("_booking_id")?.as_str()?.to_string();
-    let start = values.get("_slot_start")?.as_str()?.to_string();
-    let end = values.get("_slot_end")?.as_str()?.to_string();
+    // Trimmed and non-empty, matching `mecha_core::frontdoor::Record::booking`.
+    // The two sides must agree about which records are bookings, and an empty
+    // `_booking_id` used to be a booking here and an ordinary request there —
+    // the one disagreement a test pinning key *names* cannot catch, because it
+    // is about acceptance.
+    let required = |key: &str| {
+        values
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let booking_id = required("_booking_id")?;
+    let start = required("_slot_start")?;
+    let end = required("_slot_end")?;
     for stamp in [&start, &end] {
         chrono::DateTime::parse_from_rfc3339(stamp).ok()?;
     }
