@@ -126,8 +126,12 @@ holds:
   long an undrained row survives is set by that request type's retention policy,
   which you configure when you publish the type.
 
+If you publish documents or pages through it, those are there too — but you
+wrote those deliberately, and they are not derived from any account you
+connected.
+
 It never receives your mail, your calendar events, your documents, or any OAuth
-token — those stay between your machine and Google.
+token — those stay between your machine and the provider.
 
 This is the one part of mecha that somebody else can operate on your behalf, and
 whoever operates the instance you publish to can see what is on it. mecha-factory
@@ -190,16 +194,22 @@ and all are worth knowing:
 
 ## Retention and deletion
 
-Almost all of it is on your machine, so you control it directly:
+Most of it is on your machine, so you control it directly:
 
 - **Disconnect one mail/calendar account:** delete `~/.mecha/mail/<account>/`.
 - **Disconnect a documents account:** delete `~/.mecha/docs/<account>/`. This is
   a separate grant, so removing the mail one does not revoke it.
-- **Remove everything:** delete `~/.mecha/`. This also removes credentials from
-  older installs, which kept them in a per-provider file rather than per account.
+- **Revoke access from the provider's side:** for Google, visit
+  [myaccount.google.com/permissions](https://myaccount.google.com/permissions)
+  and remove the app. This invalidates the stored tokens immediately, whether or
+  not you have deleted them locally.
+- **Remove everything local:** delete `~/.mecha/`. This also catches credentials
+  from older installs, which kept them in a per-provider file rather than per
+  account.
 
-The exception is the public surface, if you publish one. What sits there is
-covered by its own steps:
+**Two things live outside `~/.mecha/`, and `rm` does not reach either.**
+
+*The public surface*, if you publish one:
 
 - **Collect what is queued:** draining brings submissions to your machine and
   clears them from the server. Undrained rows also age out under the retention
@@ -209,14 +219,16 @@ covered by its own steps:
 - **Your availability:** published slots are replaced on every refresh and stop
   being pushed once the page is gone.
 
-This is the one part of your data you cannot delete with `rm`, and it is also
-the part that holds other people's — worth knowing before you publish rather
-than after.
-- **Revoke access from Google's side:** visit
-  [myaccount.google.com/permissions](https://myaccount.google.com/permissions)
-  and remove the app. This invalidates the stored tokens immediately.
+This is also the part that holds other people's data — worth knowing before you
+publish rather than after.
 
-Uninstalling mecha removes the software; deleting `~/.mecha/` removes the data.
+*A connected knowledge graph*, if you connect one. mecha can distil what a
+session left behind into an episode and file it there as evidence. That graph
+keeps its own store, in its own place, and removing mecha does not empty it —
+so deleting it is a step of its own, wherever you put it.
+
+Uninstalling mecha removes the software. Removing the data means `~/.mecha/`
+plus whichever of those two apply to you.
 
 ## About this website
 
