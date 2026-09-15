@@ -155,11 +155,18 @@ fn reconcile(store: &Frontdoor) -> Result<()> {
 /// then real.
 pub(crate) fn swept_bookings() -> mecha_core::frontdoor::Swept {
     use mecha_core::frontdoor::Swept;
-    use std::collections::BTreeSet;
     let Ok(home) = mecha_core::work::mecha_home() else {
         return Swept::default();
     };
-    let Ok(text) = std::fs::read_to_string(home.join("mail").join("bookings.jsonl")) else {
+    read_swept(&home.join("mail").join("bookings.jsonl"))
+}
+
+/// [`swept_bookings`] over an explicit path, so the ledger contract is
+/// testable without a home directory.
+fn read_swept(path: &std::path::Path) -> mecha_core::frontdoor::Swept {
+    use mecha_core::frontdoor::Swept;
+    use std::collections::BTreeSet;
+    let Ok(text) = std::fs::read_to_string(path) else {
         return Swept::default();
     };
     let (mut conflicted, mut created) = (BTreeSet::new(), BTreeSet::new());
@@ -167,12 +174,20 @@ pub(crate) fn swept_bookings() -> mecha_core::frontdoor::Swept {
         let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
             continue; // a torn trailing line, as the ledger's own readers do
         };
-        let (Some(id), Some(action)) = (
-            entry.get("booking_id").and_then(|v| v.as_str()),
-            entry.get("action").and_then(|v| v.as_str()),
-        ) else {
+        let Some(id) = entry.get("booking_id").and_then(|v| v.as_str()) else {
             continue;
         };
+        // A line written before the `action` field existed is a *creation* —
+        // `LedgerEntry` defaults it that way and `mecha-mail`'s own test pins
+        // that. Requiring the field dropped those lines into neither set,
+        // which `settle_bookings` reads as "not swept yet" — and `handled()`
+        // already counts them, so no new line is ever written and they would
+        // never settle on any later pass. Fail-closed, and silently inapplicable
+        // to exactly the oldest bookings.
+        let action = entry
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("created");
         match action {
             "conflict" => {
                 conflicted.insert(id.to_string());
@@ -923,6 +938,45 @@ mod tests {
         assert!(triageable(&record));
         assert!(!extractable(&record, false), "already extracted");
         assert!(extractable(&record, true), "--force re-extracts it");
+    }
+
+    /// The **ledger** half of the crate-seam contract.
+    ///
+    /// `the_booking_keys_match_the_sweep` pins the *record* keys on the
+    /// `mecha-core` side; nothing pinned these. `booking_id`, `action`, and
+    /// the two action strings are read here and written by
+    /// `mecha-mail`'s sweep, across a seam with no crate dependency, so the
+    /// names are the whole contract — and a missing `action` is a creation,
+    /// which is `LedgerEntry`'s documented default and was silently dropping
+    /// the oldest bookings before this was pinned.
+    #[test]
+    fn the_ledger_keys_and_the_action_default_match_the_sweep() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("ledger-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("mail")).unwrap();
+        let path = dir.join("mail").join("bookings.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        // A line from before `action` existed, a conflict, and a creation.
+        writeln!(
+            f,
+            r#"{{"booking_id":"old1","event_id":"e","account":"a","seq":1,"created_at":"t"}}"#
+        )
+        .unwrap();
+        writeln!(f, r#"{{"booking_id":"c1","event_id":"","account":"","seq":2,"created_at":"t","action":"conflict"}}"#).unwrap();
+        writeln!(f, r#"{{"booking_id":"n1","event_id":"e","account":"a","seq":3,"created_at":"t","action":"created"}}"#).unwrap();
+        writeln!(f, "{{ torn").unwrap();
+        drop(f);
+
+        let swept = read_swept(&path);
+        assert!(
+            swept.created.contains("old1"),
+            "a line without `action` is a creation, as LedgerEntry defaults it"
+        );
+        assert!(swept.created.contains("n1"));
+        assert!(swept.conflicted.contains("c1"));
+        assert!(!swept.created.contains("c1"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A visitor's withdrawal is machinery with nothing to answer, and it

@@ -4411,7 +4411,18 @@ fn handle_frontdoor_key(app: &mut App, key: KeyEvent) -> Result<()> {
         // in drafts — which is where /outbox picks up.
         KeyCode::Char('t') => {
             if let Some(row) = modal.selected_row() {
-                if row.state != mecha_core::frontdoor::EXTRACTED {
+                // `inert` first: an inert record *in* `extracted` passes the
+                // state check and spawns a child that prints `nothing to
+                // triage`, exits 0, and leaves the watch announcing "still
+                // extracted after 30m". `x` and `n` got this gate and `t` did
+                // not, which is the third key in this modal to be hidden from
+                // the hint line while staying live.
+                if row.inert {
+                    modal.status = Some(format!(
+                        "{} is booking machinery — there is nothing to draft",
+                        row.seq
+                    ));
+                } else if row.state != mecha_core::frontdoor::EXTRACTED {
                     modal.status = Some(format!(
                         "{} is `{}` — triage runs on `extracted`",
                         row.seq, row.state

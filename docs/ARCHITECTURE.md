@@ -817,11 +817,16 @@ calendar's record and is absent wherever mail is not configured.
 against live freebusy and, when the slot has gone since the gate sold it,
 writes a `conflict` line and creates nothing — no event, no invite — and never
 retries. That record stays in the queue with the collision written on it,
-because settling it is the worst outcome available here: it would leave
-`counts_as_open`, sit outside `WAITING_ON_OWNER` so the doctor never names it,
-fold under "nothing owed", and have `show` assert an invite that was never
-sent, while the visitor holds a confirmation page for a meeting that does not
-exist.
+because settling it would leave `counts_as_open`, fold under "nothing owed",
+and have `show` assert an invite that was never sent — while the visitor holds
+a confirmation page for a meeting that does not exist.
+
+Note what staying in `drained` does **not** buy: `WAITING_ON_OWNER` is
+`[EXTRACTED, AWAITING_ME, TRIAGED]`, so the doctor's stale-request finding does
+not name a `drained` collision either. The benefit is that the record stays
+visible in `frontdoor list` and counted in the queue's depth — real, and
+narrower than "the doctor sees it". Making a collision *loud* is an open
+decision, not something this arrangement already achieves.
 
 **And a cancellation un-books what it withdraws.** `booked` is terminal, so
 the same walk joins each `_cancelled` record to the confirmation it cancels
