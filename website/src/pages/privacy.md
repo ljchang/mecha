@@ -38,11 +38,12 @@ never receives your mail, and it never holds an OAuth token.
   mecha at something that is not on your machine, which is the next two points.
 - **Every account is one you connected.** No mailbox, calendar, document store
   or Slack workspace is reached until you connect it, and each disconnects
-  separately. Everything you have connected lives under `~/.mecha/`, though not
-  all in one file: mail and calendar accounts in `mail/accounts.toml`, documents
-  as a directory each under `docs/`, Slack under `slack/`, and your model
-  provider, search backends and MCP servers in `config.toml`. The table below
-  says which is which.
+  separately. What mecha holds for each lives under `~/.mecha/`, though not all
+  in one file: mail and calendar accounts in `mail/accounts.toml`, documents as
+  a directory each under `docs/`, Slack under `slack/`, and your model provider,
+  search backends and MCP servers in `config.toml`. **A connected knowledge
+  graph is the exception** — it keeps its own store elsewhere, which matters
+  most when you come to delete things. The table below says which is which.
 - **Some things do leave, and each has its own section below.** A language model
   reads whatever you ask it about, and **the built-in default names a hosted
   provider** — so check `default_provider` rather than assume it is local. A
