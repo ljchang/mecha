@@ -89,7 +89,7 @@ no mail or calendar access at all. Tokens for both live at
 file, `0700` on the directory) and are never sent anywhere except back to the
 provider that issued them, to refresh themselves.
 
-#### Who gets told about a calendar change
+### Who gets told about a calendar change
 
 Creating, updating or deleting an event can mail every attendee, and the rules
 differ by provider. This is the one table to check before assuming a change is
@@ -125,13 +125,13 @@ own machine; nothing brokers it.
 | `Calendars.ReadWrite` | Read, create, update and delete calendar events, and read free/busy time. |
 | `offline_access` | Keep working without re-consenting every hour. This is the scope that yields a refresh token. |
 
-Two differences from Google worth knowing:
+One difference from Google worth knowing:
 
 - **Sign-in uses a device code** — mecha shows you a code, you enter it at
-  Microsoft. Some organisations block that flow under Conditional Access, or
-  require an administrator to approve the app before a member can consent at
-  all; where device code is blocked, the browser-and-loopback flow Google uses
-  is still available.
+  Microsoft. It is the only Microsoft flow mecha implements. Some organisations
+  block it under Conditional Access, or require an administrator to approve the
+  app before a member can consent at all; where either applies, connecting a
+  Microsoft account is something your administrator has to enable.
 
 From 31 December 2026 Microsoft moves changes to *sensitive* mail properties
 behind a further scope. mecha does not touch those properties, so the list above

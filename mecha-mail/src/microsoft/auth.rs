@@ -6,8 +6,17 @@
 //! redirect URI, so
 //! this reuses the approved registration without touching it — and it needs
 //! no port forwarding when you are working over SSH, which the loopback flow
-//! does. The tradeoff is that some tenants block device code by Conditional
-//! Access; [`super::auth`] keeps the loopback path available for that case.
+//! does. The tradeoff is real and has no fallback here: some tenants block
+//! device code under Conditional Access, and this crate implements no other
+//! Microsoft flow — there is no authorize endpoint, no PKCE and no listener
+//! anywhere under `microsoft/`. On such a tenant an administrator has to
+//! allow it.
+//!
+//! This paragraph used to say `[super::auth]` kept a loopback path available
+//! for that case. From inside `microsoft::auth`, `super::auth` resolves to
+//! *this module*, so the link said nothing and the sentence was false — and
+//! it was believed: it is where the privacy policy's claim that a blocked
+//! user could fall back to the browser flow came from.
 //!
 //! **No client secret, ever.** This Outlook flow is a public client:
 //! Entra binds the refresh credential to the auth method that minted it, so
