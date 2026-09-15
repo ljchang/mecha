@@ -778,14 +778,20 @@ impl Frontdoor {
             // triaged either — `is_settled_booking` still answers true, so no
             // model is spent drafting a reply to it. A person reads the note
             // and decides.
+            const COLLIDED: &str = "the slot collided with something already on your calendar";
             if swept.conflicted.contains(&booking.booking_id) {
-                if record.note.is_none() {
-                    record.note = Some(
-                        "the slot collided with something already on your calendar — no event \
-                         was created and no invite was sent, and the requester is holding a \
-                         confirmation page for a meeting that does not exist"
-                            .into(),
-                    );
+                // Sentence-containment, not `note.is_none()` — the withdrawal
+                // arm forty lines up rejects that guard for the same reason:
+                // reconcile's rejection reason survives into `extracted`, so a
+                // booking on its second draft always has a note, and that is
+                // exactly the migration population this change is for. They
+                // could collide and never say so.
+                if !record.note.as_deref().is_some_and(|n| n.contains(COLLIDED)) {
+                    record.note = Some(format!(
+                        "{COLLIDED} — no event was created and no invite was sent, and the \
+                         requester is holding a confirmation page for a meeting that does \
+                         not exist"
+                    ));
                     self.write(&record)?;
                 }
                 continue;
@@ -1426,6 +1432,26 @@ mod tests {
             manage_url: None,
         }
         .is_past(t("2030-01-01T00:00:00Z")));
+    }
+
+    /// A collided booking must still say so on a second pass, even though it
+    /// already carries a note from an earlier rejected draft. `note.is_none()`
+    /// silenced exactly the population this change exists to migrate.
+    #[test]
+    fn a_collision_is_recorded_even_over_a_stale_rejection_note() {
+        let stores = Stores::new("collide-over-note");
+        let mut record = booking_record();
+        record.note = Some("every draft rejected: wrong tone".into());
+        stores.front.write(&record).unwrap();
+
+        stores.front.settle_bookings(&swept_conflicting()).unwrap();
+        assert!(stores
+            .front
+            .record(10)
+            .unwrap()
+            .note
+            .unwrap()
+            .contains("collided"));
     }
 
     /// **Unknown is never clean.** A booking the sweep has not reached yet

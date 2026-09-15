@@ -840,12 +840,11 @@ fn next(store: &Frontdoor, limit: usize) -> Result<()> {
         .records()?
         .iter()
         .filter(|r| r.state == "extracted")
-        // The same second lock `triage` carries. `Triage`'s own doc says the
-        // agent is "told only what `next` would print", so a settled booking
-        // reaching `extracted` by a hand edit or a failed settle write must
-        // not print a brief here either — printing is not running, but this
-        // is the text a prompt is built from.
-        .filter(|r| !r.is_settled_booking())
+        // Both of `triage`'s record-shaped locks, not one. `Triage`'s own doc
+        // says the agent is "told only what `next` would print", so anything
+        // triage would refuse must not print a brief here either — printing
+        // is not running, but this is the text a prompt is built from.
+        .filter(|r| !r.is_settled_booking() && !is_withdrawal(r))
         .filter_map(|r| r.for_privileged_run())
         .take(limit)
         .collect();

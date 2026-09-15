@@ -4377,9 +4377,9 @@ fn handle_frontdoor_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 // survives being "fixed": `x` on a confirmed booking spawned
                 // a child that printed `nothing to extract`, exited 0, and
                 // left a watch to announce "still booked after 30m".
-                if row.settled {
+                if row.inert {
                     modal.status = Some(format!(
-                        "{} is a confirmed booking — nothing to extract",
+                        "{} is booking machinery — there is nothing to extract",
                         row.seq
                     ));
                 } else if !row.valid {
@@ -4444,9 +4444,9 @@ fn handle_frontdoor_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 // the record back inside `counts_as_open`, so a settled
                 // booking reappears as work owed and waits on a requester who
                 // has nothing left to answer.
-                if row.settled {
+                if row.inert {
                     modal.status = Some(format!(
-                        "{} is a confirmed booking — nobody is being waited on",
+                        "{} is booking machinery — nobody is being waited on",
                         row.seq
                     ));
                 } else {

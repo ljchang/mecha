@@ -93,6 +93,15 @@ pub async fn list(State(_state): St) -> Response {
                 // proved a stranger controls, and a booking row that cannot
                 // say who is coming is the card this change exists to fix.
                 "reply_to": r.reply_to,
+                // Whether the CLI's verbs will refuse this record — a
+                // different question from "is it `booked`", and the two
+                // disagree for a collided booking (permanently `drained`) and
+                // for anything inside the drain→sweep window. The page gates
+                // its **Extract** button on this, because gating it on the
+                // state left the button live on exactly those records, where
+                // the child prints `nothing to extract` and exits 0 and the
+                // page reports success for work that did not happen.
+                "inert": r.is_settled_booking() || r.cancellation().is_some(),
             })
         })
         .collect();

@@ -226,14 +226,19 @@
              the page reported success for a draft that was never coming.
              Proposing another time needs the decline path, which does not
              exist yet — a dead button is worse than an absent one. -->
-        {#if settled(reading.row)}
-          <!-- nothing to draft; Close… below is the real action -->
+        {#if reading.row.inert}
+          <!-- Nothing to draft *and* nothing to extract: the CLI verbs refuse
+               this record, so offering either is a button whose child exits 0
+               having done nothing. Gated on `inert` rather than on the state,
+               because a collided booking stays `drained` forever and would
+               otherwise keep its Extract button. Close… below is the real
+               action. -->
         {:else if ['drained', 'extraction_failed'].includes(reading.row.state)}
           <button class="abtn primary" disabled={busy} onclick={async () => { if (await act('extract', reading.row)) back(); }}>Extract</button>
         {:else}
           <button class="abtn primary" disabled={busy} onclick={async () => { if (await act('triage', reading.row)) back(); }}>Draft a reply…</button>
         {/if}
-        {#if !settled(reading.row)}
+        {#if !reading.row.inert}
           <button class="abtn" disabled={busy} onclick={() => prompt('needs-info', 'What is missing before this can proceed?', 'which dates they need')}>Park…</button>
         {/if}
         <button class="abtn" disabled={busy} onclick={() => prompt('close', 'Why? The reason is the record.', 'out of scope — not taking new students', true)}>Close…</button>

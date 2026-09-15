@@ -31,11 +31,20 @@ pub struct RequestRow {
     pub topic: String,
     /// "INVALID", "⚠ reads like instructions", or empty.
     pub flag: &'static str,
-    /// A confirmed booking: `x` and `t` do nothing to it, so the hint line
-    /// stops offering them. Same reasoning as the web card dropping its
-    /// "Reply anyway…" button — a key that exits 0 having done nothing is
-    /// worse than a key that was never advertised.
-    pub settled: bool,
+    /// Whether the CLI's own verbs will refuse this record.
+    ///
+    /// Deliberately **not** "is it `booked`". The two disagree for every
+    /// booking that is not `booked` — a collided one, which stays `drained`
+    /// forever, and any booking inside the drain→sweep window. Gating the keys
+    /// on the state left `x` live on exactly those, where the child prints
+    /// `nothing to extract`, exits 0, and `Watch::Request` then announces
+    /// "still drained after 30m". This mirrors what `extractable` and
+    /// `triageable` actually refuse.
+    ///
+    /// The web card keeps both questions because it has copy as well as
+    /// buttons; this modal renders the state in its own column, so the action
+    /// gate is the only one it needs.
+    pub inert: bool,
     pub valid: bool,
     /// The full detail view, prose included, prebuilt like the outbox rows.
     pub detail: Vec<Line<'static>>,
@@ -122,7 +131,7 @@ impl FrontdoorModal {
     /// Only `close` still means anything.
     fn actions_hint(&self) -> &'static str {
         match self.rows.get(self.selected) {
-            Some(row) if row.settled => "",
+            Some(row) if row.inert => "",
             _ => "x extract · t triage · n needs-info · ",
         }
     }
@@ -286,10 +295,7 @@ fn row(record: &Record, tz: Option<chrono_tz::Tz>) -> RequestRow {
         },
         flag,
         valid: record.valid,
-        // The state, not the policy predicate — a booking a person later
-        // closed by hand is not filed as needing nothing. The web card and
-        // `show` gate the same sentence on the same state.
-        settled: record.state == mecha_core::frontdoor::BOOKED,
+        inert: record.is_settled_booking() || record.cancellation().is_some(),
         detail: detail_lines(record),
     }
 }
