@@ -32,9 +32,10 @@ never receives your mail, and it never holds an OAuth token.
 
 ## In short
 
-- **The agent runs on your machine.** Your credentials, your mail, your calendar
-  and your documents stay there. Nothing about your installation or your use of
-  it is reported to anyone.
+- **The agent runs on your machine.** Your credentials never leave it, and
+  nothing about your installation or your use of it is reported to anyone. Your
+  mail, calendar and documents stay there too — except where you have pointed
+  mecha at something that is not on your machine, which is the next two points.
 - **Nothing is connected until you connect it.** Every integration below is
   optional and off by default, and each one names itself in your own
   configuration file.
