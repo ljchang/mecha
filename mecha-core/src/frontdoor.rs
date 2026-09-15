@@ -746,18 +746,29 @@ impl Frontdoor {
                             .to_string(),
                     ),
                     (None, Some(b)) if cancelled.contains(&b.booking_id) => {
-                        Some(if record.collided {
-                            // It never reached the calendar, so "no longer on
-                            // your calendar" would be true of the record and
-                            // false of the calendar.
-                            "the requester cancelled this booking; its slot had already \
-                             collided, so no event was ever created"
-                                .to_string()
-                        } else {
-                            "the requester cancelled this booking; it is no longer on your \
+                        Some(
+                            if !record.collided && !swept.created.contains(&b.booking_id) {
+                                // Cancelled inside the drain→sweep window, so no
+                                // event was ever made for it either. Transient,
+                                // but the same false assertion the collided branch
+                                // below exists to avoid — and `swept` is already
+                                // in hand, so there is no reason to guess.
+                                "the requester cancelled this booking before it reached your \
                              calendar"
-                                .to_string()
-                        })
+                                    .to_string()
+                            } else if record.collided {
+                                // It never reached the calendar, so "no longer on
+                                // your calendar" would be true of the record and
+                                // false of the calendar.
+                                "the requester cancelled this booking; its slot had already \
+                             collided, so no event was ever created"
+                                    .to_string()
+                            } else {
+                                "the requester cancelled this booking; it is no longer on your \
+                             calendar"
+                                    .to_string()
+                            },
+                        )
                     }
                     _ => None,
                 };

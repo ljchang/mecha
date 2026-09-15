@@ -131,7 +131,12 @@ impl FrontdoorModal {
     /// Only `close` still means anything.
     fn actions_hint(&self) -> &'static str {
         match self.rows.get(self.selected) {
-            Some(row) if row.inert => "",
+            // Booking machinery: none of the three mean anything.
+            Some(row) if row.inert && row.valid => "",
+            // Invalid: the two model-spending verbs refuse it, but parking it
+            // while you ask the requester to resend is exactly what a person
+            // does with one — so `n` stays.
+            Some(row) if !row.valid => "n needs-info · ",
             _ => "x extract · t triage · n needs-info · ",
         }
     }
@@ -492,6 +497,23 @@ mod tests {
             },
         }))
         .unwrap()
+    }
+
+    /// An invalid record can still be **parked**, which gating `n` on `inert`
+    /// took away: `inert` means "both model-spending verbs refuse this", and
+    /// that is true of an invalid record — which is exactly the kind a person
+    /// parks while asking the requester to resend it. A capability removed
+    /// reads like a dead key only until somebody needs it.
+    #[test]
+    fn an_invalid_record_keeps_needs_info_and_loses_only_the_model_verbs() {
+        let mut invalid = record(3, "drained");
+        invalid.valid = false;
+        let modal = FrontdoorModal::new(vec![row(&invalid, None)]);
+        let title = modal.title();
+        assert!(title.contains("n needs-info"), "still parkable: {title}");
+        assert!(!title.contains("x extract"), "but not extractable: {title}");
+        assert!(!title.contains("t triage"), "nor triageable: {title}");
+        assert!(title.contains("c close"));
     }
 
     /// The hint line stops offering keys that would do nothing.

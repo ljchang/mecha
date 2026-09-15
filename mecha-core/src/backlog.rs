@@ -249,11 +249,6 @@ impl Backlog {
             // deciding — two rows per cancellation, which would otherwise be
             // counted against the owner as abandoned requests.
             .filter(|r| r.booking().is_none() && r.cancellation().is_none())
-            // A booking or the withdrawal that cancels it is never a give-up.
-            // Nobody owed either an answer, and `settle_bookings` is the first
-            // thing in this codebase that writes `closed` with no human
-            // deciding — two rows per cancellation, which would otherwise be
-            // counted against the owner as abandoned requests.
             .filter(|r| {
                 !r.outbox
                     .iter()

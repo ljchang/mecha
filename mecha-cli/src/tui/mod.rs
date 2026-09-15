@@ -4377,14 +4377,17 @@ fn handle_frontdoor_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 // survives being "fixed": `x` on a confirmed booking spawned
                 // a child that printed `nothing to extract`, exited 0, and
                 // left a watch to announce "still booked after 30m".
-                if row.inert {
-                    modal.status = Some(format!(
-                        "{} is booking machinery — there is nothing to extract",
-                        row.seq
-                    ));
-                } else if !row.valid {
+                // `!valid` first: `inert` subsumes it, so testing `inert`
+                // above this made the branch unreachable and told the owner an
+                // ordinary invalid request "is booking machinery".
+                if !row.valid {
                     modal.status = Some(format!(
                         "{} is invalid — invalid records are never extracted",
+                        row.seq
+                    ));
+                } else if row.inert {
+                    modal.status = Some(format!(
+                        "{} is booking machinery — there is nothing to extract",
                         row.seq
                     ));
                 } else {
@@ -4417,7 +4420,9 @@ fn handle_frontdoor_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 // extracted after 30m". `x` and `n` got this gate and `t` did
                 // not, which is the third key in this modal to be hidden from
                 // the hint line while staying live.
-                if row.inert {
+                if !row.valid {
+                    modal.status = Some(format!("{} is invalid — it never reaches a run", row.seq));
+                } else if row.inert {
                     modal.status = Some(format!(
                         "{} is booking machinery — there is nothing to draft",
                         row.seq
@@ -4455,7 +4460,15 @@ fn handle_frontdoor_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 // the record back inside `counts_as_open`, so a settled
                 // booking reappears as work owed and waits on a requester who
                 // has nothing left to answer.
-                if row.inert {
+                // **Not `inert`.** That predicate answers "both model-spending
+                // verbs refuse this", which is true of an invalid record too —
+                // and an invalid record is exactly the kind a person parks
+                // while they ask the requester to resend it. Gating `n` on it
+                // removed a capability rather than a dead key. The question
+                // here is narrower: does this owe anybody an answer? For a
+                // valid record, `inert` means a settled booking or a
+                // withdrawal, and nothing else.
+                if row.inert && row.valid {
                     modal.status = Some(format!(
                         "{} is booking machinery — nobody is being waited on",
                         row.seq
