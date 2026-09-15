@@ -144,6 +144,10 @@ impl FrontdoorModal {
         match self.rows.get(self.selected) {
             // Booking machinery: none of the three mean anything.
             Some(row) if row.inert && row.valid => "",
+            // Already extracted: `x` would print `nothing to extract`. The key
+            // says so now, but a hint that offers it is still the last
+            // hint/key disagreement in this modal.
+            Some(row) if !row.extractable && row.valid => "t triage · n needs-info · ",
             // Invalid: the two model-spending verbs refuse it, but parking it
             // while you ask the requester to resend is exactly what a person
             // does with one — so `n` stays.

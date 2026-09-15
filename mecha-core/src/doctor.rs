@@ -1015,6 +1015,46 @@ fn check_frontdoor(
                 remedy: Some(list.clone()),
             });
         }
+        // A booking that never settled, whatever stopped it.
+        //
+        // The `collided` finding above covers the one failure the sweep
+        // *records*. Every other way a booking fails to reach a calendar
+        // writes no ledger line at all: the sweep bails before `append` when
+        // freebusy is short, returns early when the create errors, or simply
+        // is not running — and on a machine with no mail configured there is
+        // no sweep to begin with. Such a record is in neither `created` nor
+        // `conflicted`, so it never settles, stays `drained`, and `drained`
+        // is outside `WAITING_ON_OWNER` — which is what the stale-request
+        // finding below, the `request_closure` sensor and the Slack card all
+        // read. Before bookings were settled at all it reached `extracted`
+        // and was watched from there; this is what replaces that.
+        //
+        // Deliberately **store-local**: it asks how long the record has sat,
+        // not what `bookings.jsonl` says. That ledger is the calendar's
+        // record, absent wherever mail is unconfigured — which is one of the
+        // causes this has to catch.
+        if record.booking().is_some()
+            && record.valid
+            && !record.collided
+            && record.state == crate::frontdoor::DRAINED
+            && request_age(&record, now).is_some_and(|age| age > patience.after)
+        {
+            out.push(Finding {
+                component: "frontdoor".to_string(),
+                severity: Severity::Broken,
+                summary: format!("booking {} has not reached your calendar", record.seq),
+                detail: format!(
+                    "{} ({}) — received {}, and the sweep has still not created an event \
+                     for it. Check that `mecha-mail bookings` is running and that every \
+                     account is authenticated; the requester is holding a confirmation \
+                     page meanwhile.",
+                    record.seq,
+                    record.type_id,
+                    render_age(now, &record.created_at)
+                ),
+                remedy: Some(list.clone()),
+            });
+        }
         if record.state == crate::frontdoor::EXTRACTION_FAILED {
             out.push(Finding {
                 component: "frontdoor".to_string(),
@@ -2385,6 +2425,61 @@ mod tests {
     use crate::outbox::{OutboxItem, OutboxKind};
     use serde_json::json;
     use std::path::PathBuf;
+
+    /// A booking that never reached the calendar for a reason the sweep did
+    /// **not** record. Every failure other than a collision writes no ledger
+    /// line at all — a bail before `append`, an errored create, a sweep that
+    /// is not running, or a machine with no mail configured — so the record is
+    /// in neither `created` nor `conflicted`, never settles, and sits in
+    /// `drained`, which is outside `WAITING_ON_OWNER` and therefore outside
+    /// every other finding here.
+    #[test]
+    fn a_booking_stuck_unswept_is_named_once_it_is_older_than_patience() {
+        let dir = std::env::temp_dir().join(format!(
+            "doctor-unswept-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |seq: i64, body: serde_json::Value| {
+            std::fs::write(
+                dir.join(format!("{seq:010}-book.json")),
+                serde_json::to_string(&body).unwrap(),
+            )
+            .unwrap()
+        };
+        let booking = |seq: i64, state: &str, drained: &str| {
+            serde_json::json!({
+                "seq": seq, "type_id": "book", "state": state,
+                "created_at": drained, "drained_at": drained, "valid": true,
+                "values": {
+                    "_booking_id": format!("b{seq}"),
+                    "_slot_start": "2026-09-30T14:00:00Z",
+                    "_slot_end": "2026-09-30T15:00:00Z",
+                },
+            })
+        };
+
+        write(1, booking(1, "drained", "2026-09-10T00:00:00Z")); // long overdue
+        write(2, booking(2, "drained", "2026-09-16T00:00:00Z")); // just arrived
+        write(3, booking(3, "booked", "2026-09-10T00:00:00Z")); // settled fine
+
+        let found = check_frontdoor(&dir, utc("2026-09-16T01:00:00Z"), None);
+        let stuck: Vec<_> = found
+            .iter()
+            .filter(|f| f.summary.contains("has not reached your calendar"))
+            .collect();
+        assert_eq!(stuck.len(), 1, "only the overdue unswept one");
+        assert!(stuck[0].summary.contains("booking 1"));
+        assert_eq!(stuck[0].severity, Severity::Broken);
+        assert!(
+            stuck[0].detail.contains("mecha-mail bookings"),
+            "the remedy has to name what is not running"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The collided-booking finding, which is the only reader of
     /// `Record::collided` — and the flag's own doc says "the doctor keys on

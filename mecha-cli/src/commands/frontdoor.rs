@@ -1081,8 +1081,13 @@ mod tests {
     /// was found, and — fail-closed — nothing settled at all, silently.
     #[test]
     fn the_ledger_path_follows_the_mail_crates_rule_not_ours() {
-        // Serialised against the other env-reading test in this module by
-        // being the only one that touches these two variables.
+        // The hazard is not another test *setting* these — it is `set_var`
+        // racing a concurrent `env::var` in any other thread, which the
+        // harness does routinely. Left as-is rather than taken on a
+        // dependency: the window is the two lines below, and the alternative
+        // is threading a path parameter through `swept_bookings` purely to
+        // make a one-line rule testable. `read_swept` already takes a path,
+        // which is where the rest of the ledger contract is pinned.
         let restore = std::env::var("MECHA_MAIL_DIR").ok();
         std::env::set_var("MECHA_MAIL_DIR", "/tmp/somewhere-else");
         assert_eq!(

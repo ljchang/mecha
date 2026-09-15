@@ -152,8 +152,15 @@ pub struct Record {
     /// record to `extracted` and the doctor watched it from there; keeping it
     /// in `drained` silently took that away. The doctor keys on this.
     ///
-    /// Cleared if a later sweep does create the event, so a collision resolved
-    /// by hand stops being reported.
+    /// Cleared when the record leaves for `closed` — which is the only exit it
+    /// has. **Not by a later sweep**, despite what this used to claim:
+    /// `bookings::handled()` counts `conflict` alongside `created`, so the
+    /// sweep never revisits a collided booking and a `created` line can never
+    /// follow a `conflict` for the same id. The clear-on-`booked` branch is
+    /// kept as a defence rather than a path — if the sweep ever grows a
+    /// `--force`, it is already right — but nothing reaches it today, and the
+    /// test that appeared to cover it only did so by handing in a `Swept`
+    /// built by hand. `doctor.rs`'s remedy says `close`, which is the truth.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub collided: bool,
     /// Anything the other side wrote that this side does not model. Kept so a
@@ -869,6 +876,15 @@ impl Frontdoor {
             }
             let from = std::mem::replace(&mut record.state, BOOKED.to_string());
             // A collision resolved by hand stops being reported.
+            // And the collision note with it. `booked` writes the note only
+            // `if note.is_none()`, so a stale "no event was created" sentence
+            // would otherwise sit under `show`'s "confirmed at the gate and
+            // swept onto the calendar" — two claims about one record, both
+            // printed, one false. Unreachable today for the reason
+            // `Record::collided` gives; wrong the moment it is not.
+            if record.collided {
+                record.note = None;
+            }
             record.collided = false;
             // Only when there is nothing to lose: a note already on the record
             // is somebody's explanation of how it got here.
@@ -1541,7 +1557,7 @@ mod tests {
         stores.front.settle_bookings(&after_delete).unwrap();
         let note = stores.front.record(10).unwrap().note.unwrap();
         assert!(
-            note.contains("has been\n removed") || note.contains("has been removed"),
+            note.contains("has been removed"),
             "now it is gone, and the note may say so: {note}"
         );
     }

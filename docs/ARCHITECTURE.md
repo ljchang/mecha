@@ -828,8 +828,20 @@ a `drained` record — and before bookings were settled at all, the extract pass
 lifted a collision to `extracted`, where the doctor *did* watch it. So the
 record carries `collided`, a field rather than only a note, and `doctor.rs`
 names it the way it names `extraction_failed`: waiting on a human by design
-rather than by backlog. A later sweep that does create the event clears the
-flag, so a collision resolved by hand stops being reported.
+rather than by backlog. Closing it clears the flag, so a collision a person has
+decided stops being reported — and `close` is the only exit it has, because
+`bookings::handled()` counts `conflict` alongside `created` and the sweep never
+revisits one.
+
+**And the collision is only the failure the sweep *records*.** Every other way
+a booking fails to reach a calendar — a bail before the ledger append, an
+errored create, a sweep that is not running, a machine with no mail at all —
+writes no line, so the record is in neither `created` nor `conflicted`, never
+settles, and sits in `drained`, which is outside `WAITING_ON_OWNER` and so
+outside every finding that reads it. The doctor names such a record once it is
+older than the stale-request patience, asking only how long it has sat rather
+than what the ledger says: that ledger is absent wherever mail is unconfigured,
+which is one of the causes this has to catch.
 
 **And a cancellation un-books what it withdraws.** `booked` is terminal, so
 the same walk joins each `_cancelled` record to the confirmation it cancels
