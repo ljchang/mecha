@@ -46,6 +46,11 @@ trash**, which is recoverable.
 mecha asks for any of this only if you choose to connect an account. Connecting
 one is optional; mecha runs with no mail, calendar or document access at all.
 
+mecha also supports Microsoft accounts for mail and calendar. This policy names
+Google's scopes because it is the one Google reads, but everything below —
+where tokens live, who else can see your data, what sends without review, how
+to delete it — applies the same way to any account you connect.
+
 ## Where the data goes
 
 **It stays on your computer.** Specifically:
@@ -118,8 +123,8 @@ holds:
   about what you are busy with.
 - **Inbound submissions, until your machine collects them.** A booking or a form
   submission is queued there and stays queued until your mecha drains it. How
-  long an undrained row survives is set by the request type's own retention
-  policy; a type that sets none keeps its rows until they are drained.
+  long an undrained row survives is set by that request type's retention policy,
+  which you configure when you publish the type.
 
 It never receives your mail, your calendar events, your documents, or any OAuth
 token — those stay between your machine and Google.
@@ -132,9 +137,10 @@ is open source and can be self-hosted, in which case that person is you.
 
 Everything above is about *your* data. A booking page also collects data from the
 people who use it: the name, email address and purpose they type into the form,
-plus the slot they chose. That information is handled the same way as everything
-else here — it lands in a request file under `~/.mecha/` on your machine and in
-the calendar event created for the meeting, and it goes nowhere else.
+plus the slot they chose. That information is queued on the public
+surface until your machine collects it, and then lands in a request file under
+`~/.mecha/` and in the calendar event created for the meeting. Those three
+places are all of them.
 
 If you publish such a page, you are the one collecting that information and the
 one answerable for it. mecha gives visitors a link to cancel, which frees the
@@ -197,7 +203,8 @@ they are reading.
 The site runs no analytics and sets no cookies. It does load its typefaces from
 Google Fonts, which means opening any page here — including this one — sends your
 IP address and browser user-agent to Google, as loading any third-party asset
-does. There is nothing else.
+does. If you use the light/dark switch, your choice is remembered in your own
+browser's local storage and is never transmitted. That is everything.
 
 ## Children
 
