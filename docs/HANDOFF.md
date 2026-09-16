@@ -1567,7 +1567,7 @@ because the triage scopes widened, and both are recorded in each account's
 
 | Account | Provider | Grant | Expiry |
 |---|---|---|---|
-| `personal` | Google | `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` | 7 days from consent *while the project was in Testing* — superseded 2026-09-16, see below |
+| `personal` | Google | `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` | **still 7 days from consent** — the grant was minted in Testing and keeps its clock; publishing to production changed only what *future* consents get (see below) |
 | `dartmouth` | Outlook | `Mail.ReadWrite`, `Mail.Read`, `Mail.Send`, `Calendars.ReadWrite` | none — permanent |
 
 **(Superseded 2026-09-16 — see below. Kept as the history of the decision.)**
@@ -2437,7 +2437,8 @@ checkout was returned to `main` afterwards and is clean.
   run earlier that day failed one docker test and five subsequent runs did
   not. The cause is a five-second deadline in `sandbox::docker`'s `wait_for`
   that was measuring process-spawn latency on a loaded box, not a defect in
-  what it tests; PR #239 names it `HANG_GUARD` and raises it.
+  what it tests; PR #239 named it `HANG_GUARD` and raised it, and landed on
+  `main` 2026-09-16.
 
 ## What the measurements say
 
@@ -2498,7 +2499,7 @@ is recoverable without the checkout's cwd. Record:
 
 ## What to do next
 
-- **Two things build from the shared checkout's working tree with no branch
+- **Four things build from the shared checkout's working tree with no branch
   check, so a session that leaves `~/Github/mecha` on a branch makes them run
   the wrong code without looking wrong.** `bench/build-portable.sh`
   (`cd "$(dirname "$0")/.."`, called unconditionally by `bench/run.sh`)
