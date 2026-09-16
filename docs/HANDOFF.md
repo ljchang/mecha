@@ -1567,11 +1567,12 @@ because the triage scopes widened, and both are recorded in each account's
 
 | Account | Provider | Grant | Expiry |
 |---|---|---|---|
-| `personal` | Google | `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` | **7 days from consent — next ≈2026-08-25** |
+| `personal` | Google | `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` | 7 days from consent *while the project was in Testing* — superseded 2026-09-16, see below |
 | `dartmouth` | Outlook | `Mail.ReadWrite`, `Mail.Read`, `Mail.Send`, `Calendars.ReadWrite` | none — permanent |
 
+**(Superseded 2026-09-16 — see below. Kept as the history of the decision.)**
 The Google client (Cloud project **FlowMail**, the same registration the old
-app used) is in **Testing** publishing status with User type External, and
+app used) was in **Testing** publishing status with User type External, and
 Google expires a Testing app's refresh token exactly 7 days after consent —
 refreshing does not extend it. Moving to production would fix that but was
 understood to need verification plus a CASA security assessment (~$540/yr),
@@ -1579,22 +1580,21 @@ because `gmail.modify` is a restricted scope. **Decided 2026-08-18: stay in
 Testing, and revisit CASA once the main development features are done.**
 
 **Reopened 2026-09-15 by the owner on evidence that the premise was wrong,
-and settled 2026-09-16 in the owner's favour.** Google's own *OAuth app state overview* says an app may
-be published to production **without** completing verification: the result is
-a 100-user hard cap, no app name or logo on the consent screen, and an
-"unverified app" interstitial — but no seven-day expiry, because that expiry is
-tied to *Testing* status specifically and not to being unverified. CASA is the
-price of *verification*, which an app with one user does not need. If that
-reading holds, the 2026-08-18 decision was answering a question nobody had to
-ask.
+and settled 2026-09-16 in the owner's favour.** Google's own *OAuth app state
+overview* says an app may be published to production **without** completing
+verification: the result is a 100-user hard cap, no app name or logo on the
+consent screen, and an "unverified app" interstitial — but no seven-day
+expiry, because that expiry is tied to *Testing* status specifically and not
+to being unverified. CASA is the price of *verification*, which an app with
+one user does not need.
 
 **Settled 2026-09-16: it published.** The reading held. The FlowMail Cloud
 project is **In production** (user type External, OAuth user cap 5/100
 lifetime) and branding verification passed — the consent screen now renders
 the app name and logo — with **scope verification deliberately not
 submitted**. So the 2026-08-18 decision was answering a question nobody had
-to ask, and the branch below marked "bounced into scope verification" did not
-happen.
+to ask; the alternative outcome — bounced into scope verification, which
+would have made that decision right for the right reason — did not happen.
 
 Provenance, because the two halves were established differently. The console
 states — production, branding verified, the 5/100 cap, and the saved branding
@@ -1635,10 +1635,8 @@ never the banner. And a Google grant is per (user, client), not per scope, so
 anything added to the FlowMail client shares mail's fate in both directions —
 which is why the documents work took its own project rather than this one.
 
-Meanwhile
-`~/.mecha/mail/accounts.toml` declares `grant_lifetime_days = 7` on `personal`
-so `mecha doctor` warns two days out; that file is in no git repository, so a
-fresh clone will not have it.
+`~/.mecha/mail/accounts.toml` is in no git repository, so a fresh clone will
+not have it — including the `grant_lifetime_days = 7` line above.
 
 Dartmouth's Entra registration (also named FlowMail, client
 `bc6a1e19-…`) already had `Mail.ReadWrite` **Delegated** granted tenant-wide,
