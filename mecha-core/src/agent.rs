@@ -1337,6 +1337,44 @@ impl Agent {
         self.clock.now()
     }
 
+    /// Make sure the transcript states the current local date, folding a
+    /// fresh calendar reference in when it does not.
+    ///
+    /// **The decision is an equality check against the rendered block, not a
+    /// timer and not a field.** `date_context::render` is byte-identical for
+    /// every turn on one local day, so "has the transcript already been told
+    /// this" and "is the date still what it was" are the same question. No
+    /// refresh cadence to get wrong, no per-conversation state to forget to
+    /// reset on resume, and no way for the fold to be skipped because a
+    /// summary dropped the only copy — the walk covers every message, so a
+    /// cut re-acquires on the next call.
+    ///
+    /// Append-only survives it, which is what keeps the cache free: a folded
+    /// block stays in the position it was folded into, so every request is
+    /// still a byte prefix of the next. Re-rendering the reading into the
+    /// *same* trailing position each turn would instead change bytes the
+    /// previous request had already cached and pay for the tail every turn —
+    /// the trap this placement avoids rather than the cost it accepts.
+    ///
+    /// One visible consequence: on a conversation's first run this edits a
+    /// message the session has already written, so
+    /// `Session::record_transition` writes a `Record::Rewrite` rather than
+    /// appending a tail. That is the designed fallback — it compares before
+    /// to after instead of trusting a flag, exactly so a mutation added later
+    /// is caught without anyone remembering to declare it — and
+    /// `ARCHITECTURE.md §Timezones` says so out loud, because the record
+    /// shape changes for every session.
+    fn fold_calendar_reference(&self, messages: &mut Vec<Message>) {
+        let reference = crate::date_context::render(self.clock.now(), self.cfg.timezone());
+        if !messages.iter().any(|m| {
+            m.content
+                .iter()
+                .any(|b| matches!(b, Block::Text { text } if text == &reference))
+        }) {
+            append_user_text(messages, reference);
+        }
+    }
+
     /// The context a bare [`Agent::run`] will use.
     pub fn context(&self) -> &Arc<RunContext> {
         &self.cx
@@ -1832,46 +1870,11 @@ impl Agent {
                 return Ok(outcome);
             }
 
-            // What day it is, asked of the clock every turn and folded in
-            // whenever the answer has changed since the transcript last
-            // recorded it — including "never", on the first turn, and again
-            // when a compaction cuts the block away.
-            //
-            // **The decision is an equality check against the rendered block,
-            // not a timer and not a field.** `date_context::render` is
-            // byte-identical for every turn on one local day, so "has the
-            // transcript already been told this" and "is the date still what
-            // it was" are the same question, and there is no refresh cadence
-            // to get wrong, no per-conversation state to forget to reset on
-            // resume, and no way for the fold to be skipped because a summary
-            // dropped the only copy.
-            //
-            // Append-only survives it, which is what keeps the cache free: a
-            // folded block stays in the position it was folded into, so every
-            // request is still a byte prefix of the next. Re-rendering the
-            // reading into the *same* trailing position each turn would
-            // instead change bytes the previous request had already cached,
-            // and pay for the tail every turn — the trap this placement
-            // avoids rather than the cost it accepts. It sits ahead of the
-            // steering drain so a steer, when there is one, is still the last
-            // thing in the turn.
-            //
-            // One visible consequence: on a conversation's first run this
-            // edits a message the session has already written, so
-            // `Session::record_transition` writes a `Record::Rewrite` rather
-            // than appending a tail. That is the designed fallback — it
-            // compares before to after instead of trusting a flag, exactly so
-            // a mutation added later is caught without anyone remembering to
-            // declare it — and `ARCHITECTURE.md §Timezones` says so out loud
-            // because the record shape changes for every session.
-            let reference = crate::date_context::render(self.clock.now(), self.cfg.timezone());
-            if !messages.iter().any(|m| {
-                m.content
-                    .iter()
-                    .any(|b| matches!(b, Block::Text { text } if text == &reference))
-            }) {
-                append_user_text(messages, reference);
-            }
+            // What day it is (`fold_calendar_reference`). Here so a steer,
+            // when there is one, is still the last thing in the turn — and
+            // again below, after compaction, because a summary can cut this
+            // one away before the request goes out.
+            self.fold_calendar_reference(messages);
 
             // Anything the user typed while the previous turn was running.
             // This lands *inside* the message carrying the tool results, so
@@ -2232,6 +2235,26 @@ impl Agent {
             // rewrites `messages` between the two and the pair must describe
             // one request.
             let mut sent_bytes = crate::pressure::message_bytes(messages);
+            // Again, now that nothing else will rewrite history before the
+            // send. **The first call is not enough**, and the gap it leaves is
+            // the incident's own shape with a one-turn window: the fold runs
+            // at the top of the loop, `compact` runs below it, and
+            // `compact::rebuild` keeps `messages[0]` while dropping
+            // `messages[1..cut]` — so a reference folded when the day actually
+            // changed sits at some index the cut passes, gets dropped, and the
+            // head's older one is left as the *most recent* reference in the
+            // transcript, which is exactly what `GUIDANCE` tells the model to
+            // read the date from. `rebuild` now drops a reference from the
+            // head too, so after a summary there is none and this call puts
+            // the current one back.
+            //
+            // Idempotent, which is why it can sit in two places: the check is
+            // an equality against the rendered block, so a turn where nothing
+            // moved finds it already there and does nothing. One definition,
+            // called wherever the answer matters this turn — the
+            // `stopping_now` rule two hundred lines up.
+            self.fold_calendar_reference(messages);
+
             let mut request = CompletionRequest {
                 response_schema: None,
                 model: self.model.clone(),
@@ -5058,6 +5081,36 @@ mod tests {
         }
     }
 
+    /// Advances the clock on its **first** call only: the case is one
+    /// midnight crossed mid-run, not a day per turn.
+    struct CrossMidnightOnce(
+        Arc<crate::clock::TestClock>,
+        chrono::Duration,
+        std::sync::atomic::AtomicBool,
+    );
+
+    #[async_trait]
+    impl Tool for CrossMidnightOnce {
+        fn name(&self) -> &str {
+            "sleep"
+        }
+        fn description(&self) -> &str {
+            "Let time pass."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            if !self.2.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                self.0.advance(self.1);
+            }
+            Ok(ToolOutput::ok("time passed"))
+        }
+    }
+
     fn agent_on_a_clock(
         clock: &Arc<crate::clock::TestClock>,
         step: chrono::Duration,
@@ -5180,6 +5233,135 @@ mod tests {
             calendar_blocks(&seen[1])[0].contains("Monday, 14 September 2026"),
             "the same agent, one day later: {:?}",
             calendar_blocks(&seen[1])
+        );
+    }
+
+    /// **A summary must not leave the stale reference as the newest one.**
+    ///
+    /// The fold runs at the top of the loop, `compact` runs below it, and
+    /// `rebuild` keeps `messages[0]` while dropping `messages[1..cut]` — so
+    /// the reference folded when the day actually changed is exactly the one
+    /// a cut can reach, and the head's older one was left as the most recent
+    /// in the transcript. `GUIDANCE` tells the model to read the date from
+    /// the most recent one, so that is the original incident again, on the
+    /// turn a run is likeliest to be answering from a summary.
+    ///
+    /// Fails on either half alone: without the post-compaction fold the last
+    /// reference states the 13th, and without `rebuild` dropping the head's
+    /// the 13th is still in the request.
+    #[tokio::test]
+    async fn a_compaction_after_midnight_does_not_leave_yesterday_as_the_newest_date() {
+        let clock = Arc::new(crate::clock::TestClock::at("2026-09-14T02:37:12Z"));
+        // Eleven hours on the first call: 22:37 on the 13th becomes 09:37 on
+        // the 14th, in the owner's zone.
+        let mut turns: Vec<CompletionResponse> = (0..8)
+            .map(|i| {
+                assistant(
+                    vec![
+                        Block::text(format!("step {i}")),
+                        Block::ToolUse {
+                            id: format!("t{i}"),
+                            name: "sleep".into(),
+                            input: json!({}),
+                        },
+                    ],
+                    StopReason::ToolUse,
+                )
+            })
+            .collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+
+        let (mut agent, provider) = agent_with_tools(
+            turns,
+            vec![Arc::new(CrossMidnightOnce(
+                Arc::clone(&clock),
+                chrono::Duration::hours(11),
+                std::sync::atomic::AtomicBool::new(false),
+            ))],
+            PermissionMode::Allow,
+        );
+        agent.cfg.timezone = Some("America/New_York".into());
+        // Every scripted turn reports a large prompt, so this trips at once.
+        agent.cfg.compact_at_tokens = Some(1);
+        agent.cfg.compact_keep_recent = 2;
+        agent.cfg.max_turns = 6;
+        agent.cfg.force_final_answer = false;
+        agent.cfg.compact_validate = false;
+        let agent = agent.with_clock(Arc::clone(&clock) as Arc<dyn crate::clock::Clock>);
+
+        let mut convo = Conversation::user("what is on my calendar?");
+        agent.run(&mut convo, None).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        // The summariser's own requests carry no fold and are not the subject.
+        let turns_sent: Vec<&CompletionRequest> = seen
+            .iter()
+            .filter(|r| r.system.as_deref() != Some(crate::compact::SUMMARY_SYSTEM))
+            .collect();
+        assert!(
+            turns_sent.len() > 2,
+            "need turns after the crossing: {}",
+            turns_sent.len()
+        );
+        assert!(
+            crate::compact::orphaned_tool_results(&convo.messages).is_empty(),
+            "a compaction that orphans a result invalidates the rest of this"
+        );
+
+        // The first request predates the sleep, so it states the 13th.
+        let first = calendar_blocks(turns_sent[0]);
+        assert_eq!(first.len(), 1);
+        assert!(first[0].contains("today is Sunday, 13 September 2026"));
+
+        // Every request after the crossing states today as its *newest*
+        // reference, which is the contract `GUIDANCE` gives the model.
+        //
+        // Not "yesterday is absent": before a compaction rewrites the head,
+        // the block folded at 22:37 on the 13th is still in `messages[0]`,
+        // and it has to be. Removing it would rewrite bytes the previous
+        // request already cached — the trap the placement avoids. It stops
+        // being the *newest*, which is what matters, and goes away when a
+        // summary rebuilds the head.
+        for (i, req) in turns_sent.iter().enumerate().skip(1) {
+            let blocks = calendar_blocks(req);
+            assert!(!blocks.is_empty(), "request {i} states no date at all");
+            assert!(
+                blocks
+                    .last()
+                    .unwrap()
+                    .contains("today is Monday, 14 September 2026"),
+                "request {i}'s newest reference is not today: {:?}",
+                blocks.last()
+            );
+        }
+
+        // And once a summary has rebuilt the head, yesterday's is gone
+        // outright rather than merely outvoted — otherwise a session opened
+        // before midnight carries "today is Sunday" for the rest of its life.
+        assert!(
+            convo.messages[0].text().contains("compacted"),
+            "this case is only about compaction if one happened"
+        );
+        let surviving: Vec<String> = convo
+            .messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                Block::Text { text } if text.starts_with(crate::date_context::REFERENCE_STEM) => {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !surviving.iter().any(|b| b.contains("today is Sunday, 13")),
+            "the rebuilt head still hoards yesterday: {surviving:?}"
+        );
+        assert!(
+            surviving
+                .iter()
+                .any(|b| b.contains("today is Monday, 14 September 2026")),
+            "the live transcript must still state today: {surviving:?}"
         );
     }
 

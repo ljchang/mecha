@@ -290,10 +290,21 @@ pub fn rebuild(
     // ("each describes a different stretch"), and a long-lived session's
     // head grew by one block per compaction with nothing ever re-summarising
     // it — the audit of 2026-09-02 found the floor rising monotonically.
+    // And the calendar reference, for the same reason as the carried block:
+    // there is only ever one *current* date, and the head's copy is the
+    // oldest one in the conversation. Left in, a session opened before
+    // midnight kept "today is Sunday" in `messages[0]` for the rest of its
+    // life while the fresher reference — folded at some later index when the
+    // day actually changed — was dropped by the very cut that runs here, so
+    // the stale one became the most recent in the transcript. `Agent::
+    // fold_calendar_reference` runs again after this and puts the current one
+    // back, so dropping it here leaves no gap.
     head.content.retain(|block| match block {
         Block::Text { text } => {
             let t = text.trim_start();
-            !t.starts_with(CARRIED_HEADER) && !t.starts_with(SUMMARY_HEADER)
+            !t.starts_with(CARRIED_HEADER)
+                && !t.starts_with(SUMMARY_HEADER)
+                && !t.starts_with(crate::date_context::REFERENCE_STEM)
         }
         _ => true,
     });
