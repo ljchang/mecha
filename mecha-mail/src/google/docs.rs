@@ -10,19 +10,26 @@
 //! by reading a scope string rather than by reviewing every future diff.
 //! `docs/DOCS-RESEARCH.md` has the measurements behind each claim.
 //!
-//! Two flows, and the split is not cosmetic:
+//! **One flow, and it was designed as two.** The header used to describe a
+//! device-code path beside the picker, linking `device_code_flow` and
+//! `pick_flow` — neither of which exists, and one of which *cannot*: the
+//! measured block below ("Why there is no device-code flow here") records the
+//! `401 invalid_client` that killed it on 2026-08-18. The design outlived the
+//! measurement by seventy lines, and rustdoc did not complain because a
+//! dangling intra-doc link is a warning nobody reads. A sibling module's
+//! identical dangling link put a false capability claim into the published
+//! privacy policy, which is what sent somebody looking here.
 //!
-//! - [`device_code_flow`] mints the grant with **no redirect at all** —
-//!   `drive.file` is one of only six scopes Google's limited-input flow
-//!   permits. A headless box signs in over SSH with a code typed on a phone,
-//!   exactly as the Microsoft mail account already does. This covers the
-//!   common case completely, because **every document mecha creates is in
-//!   scope forever with no picking**.
-//! - [`pick_flow`] adopts a document that predates mecha, and structurally
-//!   *requires* a reachable loopback: the file ids come back on the redirect
-//!   (`picked_file_ids`), and a device flow has no redirect to carry them.
-//!   So this one needs a browser or an `ssh -L` tunnel, permanently, and no
-//!   amount of design removes that.
+//! What actually exists:
+//!
+//! - **The browser leg is unavoidable**, because one Desktop-app client has to
+//!   serve both `auth` and `pick` — see the measured block below for why two
+//!   client ids do not resolve it. `build_auth_url` mints the URL.
+//! - **The loopback need not be reachable**, which is the part that keeps a
+//!   headless box usable: `parse_redirect_url` takes the redirect the browser
+//!   already shows in its address bar, so an `ssh -L` tunnel is optional
+//!   rather than required. `wait_for_picker_redirect` is the listener for when
+//!   it *is* reachable.
 //!
 //! The credential is a [`crate::token::StoredCredentials`] like any other,
 //! but under **its own root** (`~/.mecha/docs/<account>/oauth.json`) rather
@@ -852,8 +859,8 @@ fn collect_text(content: &serde_json::Value) -> String {
 /// it. Returns the range unchanged whenever it already does.
 ///
 /// Google's `values.update` refuses a write that reaches past the range it
-/// was handed — *"Requested writing within range [Schedule!A1:H50], but
-/// tried writing to column [I]"* — and refuses **the whole write**, so one
+/// was handed — *"Requested writing within range \[Schedule!A1:H50\], but
+/// tried writing to column \[I\]"* — and refuses **the whole write**, so one
 /// header row a single cell too wide costs the other forty-three rows too.
 /// Counting columns into letters over a grid the model has just composed is
 /// exactly the arithmetic a model gets wrong, and it got it wrong twice on
