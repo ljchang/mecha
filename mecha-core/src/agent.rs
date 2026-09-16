@@ -1372,7 +1372,15 @@ impl Agent {
     /// shape changes for every session.
     fn fold_calendar_reference(&self, messages: &mut Vec<Message>) {
         let reference = crate::date_context::render(self.clock.now(), self.cfg.timezone());
-        if !messages.iter().any(|m| {
+        // User-role only. The question this equality stands in for is "has
+        // the *harness* said this", and only a user-role block can be the
+        // harness speaking here — a model that quotes the reference back
+        // verbatim (it is in the transcript, and `GUIDANCE` points at it)
+        // would otherwise satisfy the check and let a later turn skip the
+        // fold, leaving a model-authored string as the transcript's most
+        // recent calendar reference. Harmless while the bytes match, and the
+        // property is what is being protected, not the bytes.
+        if !messages.iter().filter(|m| m.role == Role::User).any(|m| {
             m.content
                 .iter()
                 .any(|b| matches!(b, Block::Text { text } if text == &reference))
@@ -2347,6 +2355,20 @@ impl Agent {
                     if *messages != pre_rewrite {
                         convo.rewritten.push(pre_rewrite);
                     }
+                    // The third site, for the reason the second one exists —
+                    // and the one this branch's own `rebuild` change made
+                    // reachable. The recovery compaction above runs
+                    // `rebuild`, which now strips the reference from the head;
+                    // the retained tail has none either when the conversation
+                    // never crossed a day, because nothing was ever folded
+                    // there. So the retry went out with **no** calendar
+                    // reference at all while `GUIDANCE` told the model the
+                    // most recent one in the transcript is the date — on the
+                    // turn a large-context run is likeliest to be answering a
+                    // calendar question. Ahead of the clone and the
+                    // measurement, so the request and `sent_bytes` describe
+                    // the same list.
+                    self.fold_calendar_reference(messages);
                     request.messages = messages.clone();
                     // The retry carries a different list; the anchor has to
                     // describe the one that was actually priced, or the next
@@ -5373,6 +5395,173 @@ mod tests {
                 .iter()
                 .any(|b| b.contains("today is Monday, 14 September 2026")),
             "the live transcript must still state today: {surviving:?}"
+        );
+    }
+
+    /// **The overflow-recovery arm re-sends the same turn, and must re-fold.**
+    ///
+    /// The half the between-turns compaction test cannot reach. Recovery
+    /// compacts and then re-issues the request inline rather than returning
+    /// to the top of the loop, so the fold there never runs — and since this
+    /// branch taught `rebuild` to strip the reference from the head, a
+    /// conversation that never crossed a day has none left anywhere. The
+    /// retry went out stating no date while `GUIDANCE` told the model to read
+    /// one from the transcript.
+    #[tokio::test]
+    async fn an_overflow_recovery_retry_still_states_the_date() {
+        let clock = Arc::new(crate::clock::TestClock::at("2026-09-16T13:21:33Z"));
+        let big = "x".repeat(4_000);
+        // Four tool rounds first: `worth_compacting` requires a cut past
+        // `MIN_DROPPED`, so a short transcript cannot compact at all and the
+        // case would pass without exercising anything.
+        let mut turns: Vec<Option<CompletionResponse>> = (1..=4)
+            .map(|i| {
+                Some(assistant(
+                    vec![Block::ToolUse {
+                        id: format!("t{i}"),
+                        name: "echo".into(),
+                        input: json!({"value": big.clone()}),
+                    }],
+                    StopReason::ToolUse,
+                ))
+            })
+            .collect();
+        // Then the overflow that sends the run into the recovery arm, the
+        // summariser it calls, and the retry.
+        turns.push(None);
+        turns.push(Some(assistant(
+            vec![Block::text("earlier turns")],
+            StopReason::EndTurn,
+        )));
+        turns.push(Some(assistant(
+            vec![Block::text("done")],
+            StopReason::EndTurn,
+        )));
+        let provider = Arc::new(OverflowScript {
+            turns: Mutex::new(turns),
+            seen: Mutex::new(Vec::new()),
+        });
+
+        struct Shared(Arc<OverflowScript>);
+        #[async_trait]
+        impl Provider for Shared {
+            fn id(&self) -> &str {
+                self.0.id()
+            }
+            fn default_model(&self) -> &str {
+                self.0.default_model()
+            }
+            async fn complete(
+                &self,
+                req: &CompletionRequest,
+                sink: Option<&StreamSink>,
+            ) -> Result<CompletionResponse> {
+                self.0.complete(req, sink).await
+            }
+        }
+
+        let mut registry = Registry::new();
+        registry.insert(Arc::new(EchoTool));
+        let mut cfg = AgentConfig {
+            timezone: Some("America/New_York".into()),
+            // 2, not 1: at 1 the target is `len - 1`, which splits a
+            // `tool_use` from its result, so `cut_point` finds nothing safe
+            // and the recovery compaction silently does nothing.
+            compact_keep_recent: 2,
+            compact_validate: false,
+            max_turns: 10,
+            ..AgentConfig::default()
+        };
+        cfg.force_final_answer = false;
+        let agent = Agent::new(
+            Box::new(Shared(Arc::clone(&provider))),
+            registry,
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+            ToolCtx {
+                workspace: std::env::temp_dir(),
+                shell_timeout: std::time::Duration::from_secs(1),
+                ..Default::default()
+            },
+            cfg,
+            None,
+        )
+        .unwrap()
+        .with_clock(Arc::clone(&clock) as Arc<dyn crate::clock::Clock>);
+
+        let mut convo = Conversation::user("what is on my calendar?");
+        agent.run(&mut convo, None).await.unwrap();
+
+        // Non-vacuous only if a summary actually landed: that is what proves
+        // `rebuild` ran and took the head's reference with it.
+        assert!(
+            convo.messages[0].text().contains("compacted"),
+            "this case is only about the recovery compaction if one happened: {:?}",
+            convo.messages[0].text()
+        );
+
+        let seen = provider.seen.lock().unwrap();
+        let retried = seen
+            .iter()
+            .rfind(|r| r.system.as_deref() != Some(crate::compact::SUMMARY_SYSTEM))
+            .expect("a request was retried");
+        let blocks = calendar_blocks(retried);
+        assert!(
+            !blocks.is_empty(),
+            "the retried request states no date at all"
+        );
+        assert!(
+            blocks
+                .last()
+                .unwrap()
+                .contains("today is Wednesday, 16 September 2026"),
+            "and it has to be today's: {:?}",
+            blocks.last()
+        );
+    }
+
+    /// Only the harness can satisfy "the harness has said this".
+    ///
+    /// The reference is in the transcript and `GUIDANCE` points the model at
+    /// it, so a model quoting it back verbatim used to satisfy the equality
+    /// and let the turn skip its fold — leaving a model-authored string as
+    /// the newest calendar reference.
+    #[tokio::test]
+    async fn a_reference_the_model_quoted_back_is_not_the_harness_stating_the_date() {
+        let clock = Arc::new(crate::clock::TestClock::at("2026-09-16T13:21:33Z"));
+        let quoted = crate::date_context::render(
+            crate::clock::Clock::now(&*clock),
+            Some(chrono_tz::America::New_York),
+        );
+        let (mut agent, provider) = agent_with_tools(
+            vec![assistant(vec![Block::text("ok")], StopReason::EndTurn)],
+            vec![Arc::new(EchoTool)],
+            PermissionMode::Allow,
+        );
+        agent.cfg.timezone = Some("America/New_York".into());
+        let agent = agent.with_clock(Arc::clone(&clock) as Arc<dyn crate::clock::Clock>);
+
+        let mut convo = Conversation::from(vec![
+            Message::user("what day is it?"),
+            Message::assistant(vec![Block::text(quoted)]),
+        ]);
+        agent.run(&mut convo, None).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        let from_harness = seen[0]
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .flat_map(|m| m.content.iter())
+            .filter(|b| {
+                matches!(b, Block::Text { text }
+                    if text.starts_with(crate::date_context::REFERENCE_STEM))
+            })
+            .count();
+        assert_eq!(
+            from_harness, 1,
+            "the harness has to state the date itself, whatever the model echoed"
         );
     }
 
