@@ -125,7 +125,13 @@ pub fn owner_turns(messages: &[Message]) -> Vec<String> {
 /// derived text into a user message are enumerated above and each has a
 /// sentinel. A fourth route would need this list extended, which is what the
 /// `a_compaction_summary_is_not_the_owner_speaking` test is anchored on.
-fn is_derived(text: &str) -> bool {
+///
+/// Public because titling is no longer the only caller: a front-end
+/// *rendering* a transcript asks the same question, and answering it by eye
+/// is how mecha's own calendar reference came to be displayed inside the
+/// owner's turn with no separator (`mecha sessions show`, the web chat's
+/// bubble) the day the loop started folding one.
+pub fn is_derived(text: &str) -> bool {
     text.starts_with(crate::compact::SUMMARY_HEADER)
         || text.starts_with(crate::compact::CARRIED_HEADER)
         || crate::agent::is_harness_voice(text)

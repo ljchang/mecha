@@ -55,6 +55,7 @@ pub mod cache_lens;
 pub mod candidate;
 pub mod capture;
 pub mod charter;
+pub mod clock;
 pub mod compact;
 pub mod config;
 pub mod counterfactual;

@@ -718,6 +718,14 @@ fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                 let mut text = String::new();
                 for block in &message.content {
                     match block {
+                        // The owner's bubble carries the owner's words. A
+                        // folded harness voice — the loop's calendar
+                        // reference, a nudge, a peer's delivered message —
+                        // is machinery, and showing it here reads as
+                        // something the owner typed; the voice preamble
+                        // stripped just below is the same call already made
+                        // once.
+                        Block::Text { text: t } if mecha_core::title::is_derived(t) => {}
                         Block::Text { text: t } => {
                             if !text.is_empty() {
                                 text.push('\n');
@@ -3106,6 +3114,37 @@ mod wire_tests {
             transcript_entries(&messages),
             vec![Entry::User {
                 text: "book the room".into()
+            }]
+        );
+    }
+
+    /// The loop folds a calendar reference into the owner's own message
+    /// (there is no legal slot for a separate user turn), so the page has to
+    /// know whose words are whose. It shipped showing mecha's clock reading
+    /// inside the owner's bubble.
+    #[test]
+    fn a_folded_calendar_reference_is_not_shown_as_the_owners_words() {
+        let messages = vec![Message {
+            harness: false,
+            planning: None,
+            tool_provenance: Default::default(),
+            role: Role::User,
+            content: vec![
+                Block::Text {
+                    text: "what's on today?".into(),
+                },
+                Block::Text {
+                    text: mecha_core::date_context::render(
+                        "2026-09-16T13:21:33Z".parse().unwrap(),
+                        Some(chrono_tz::America::New_York),
+                    ),
+                },
+            ],
+        }];
+        assert_eq!(
+            transcript_entries(&messages),
+            vec![Entry::User {
+                text: "what's on today?".into()
             }]
         );
     }
