@@ -1027,7 +1027,13 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
 /// a notice's stem swallow a correction that followed it, or let a
 /// correction's own words launder a nudge appended after.
 ///
-/// One definition because three readers have to *agree*, not merely each be
+/// Public for the same reason [`append_user_text`] is: a caller outside this
+/// module needs the question answered the same way. `probe::prepare_mismatch`
+/// gates an artifact recording on the task it was given, and compared whole
+/// `Message`s until the loop began folding a reference into the first one —
+/// which failed every new recording while blaming the fixture.
+///
+/// One definition because four readers have to *agree*, not merely each be
 /// reasonable. `learning::extract_interventions` mines this text, and
 /// `learning::locate_followup` and `counterfactual::locate_steer` then find
 /// the message it came from by comparing against it. The locators compared
@@ -1036,7 +1042,7 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
 /// new local day mined fine and located nowhere — surfacing as "could not
 /// locate the corrective turn", which switches validation off for exactly the
 /// day-boundary turns instead of grading them wrongly.
-pub(crate) fn owner_text(message: &Message) -> String {
+pub fn owner_text(message: &Message) -> String {
     if message.harness {
         return String::new();
     }
@@ -2230,11 +2236,6 @@ impl Agent {
             turns += 1;
             emit(&events, AgentEvent::TurnStart { turn: turns });
 
-            // The size of exactly what is about to go on the wire. Taken here
-            // rather than after the response, because the overflow arm below
-            // rewrites `messages` between the two and the pair must describe
-            // one request.
-            let mut sent_bytes = crate::pressure::message_bytes(messages);
             // Again, now that nothing else will rewrite history before the
             // send. **The first call is not enough**, and the gap it leaves is
             // the incident's own shape with a one-turn window: the fold runs
@@ -2254,7 +2255,17 @@ impl Agent {
             // called wherever the answer matters this turn — the
             // `stopping_now` rule two hundred lines up.
             self.fold_calendar_reference(messages);
+            // Ahead of `sent_bytes`, which the comment below calls "exactly
+            // what is about to go on the wire" — folding after it measured a
+            // transcript one block shorter than the one that gets priced, and
+            // `pressure.observe` would anchor its bytes→tokens ratio on the
+            // difference. Small, and free to get right.
 
+            // The size of exactly what is about to go on the wire. Taken here
+            // rather than after the response, because the overflow arm below
+            // rewrites `messages` between the two and the pair must describe
+            // one request.
+            let mut sent_bytes = crate::pressure::message_bytes(messages);
             let mut request = CompletionRequest {
                 response_schema: None,
                 model: self.model.clone(),
