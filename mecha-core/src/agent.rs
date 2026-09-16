@@ -993,6 +993,12 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         || text.contains(crate::mailbox::DELIVERY_STEM)
         || text.starts_with(crate::step::STEP_ESCALATION_STEM)
         || text.starts_with(crate::step::CHECK_FEEDBACK_STEM)
+        // The sixth voice. Folded every time the local date changes under a
+        // conversation, so a long-lived process states the current day rather
+        // than the one it booted on — and unregistered it would mine as the
+        // owner correcting mecha about the date, which is the one subject on
+        // which mecha is now instructed to defer to them.
+        || text.starts_with(crate::date_context::REFERENCE_STEM)
         // The step-escalation stem shipped 2026-08-28 (9c2424d); transcripts
         // recorded before it carry the same fully-templated nudge bodies
         // bare, and one such nudge was already mined as a steer and probed as
@@ -1250,6 +1256,13 @@ pub struct Agent {
     /// designed cost, not an anomaly. Demotes the cache lens's warning to
     /// info; the verdict itself is unchanged.
     cache_contended: bool,
+    /// What time it is, asked per turn rather than read once.
+    ///
+    /// The whole point of the indirection: one agent can outlive the date it
+    /// was built on — `mecha serve` holds a single `Arc<Agent>` for as long as
+    /// the daemon runs — so nothing here may cache a clock reading. See
+    /// [`crate::clock`] for the voice call this cost.
+    clock: Arc<dyn crate::clock::Clock>,
 }
 
 impl Agent {
@@ -1273,7 +1286,20 @@ impl Agent {
             pricing: None,
             context_window: None,
             cache_contended: false,
+            clock: Arc::new(crate::clock::SystemClock),
         })
+    }
+
+    /// Run against a clock other than the machine's — an experiment's fixture
+    /// instant, or a test that needs to cross midnight.
+    pub fn with_clock(mut self, clock: Arc<dyn crate::clock::Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// What this agent thinks the time is, now.
+    pub fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        self.clock.now()
     }
 
     /// The context a bare [`Agent::run`] will use.
@@ -1769,6 +1795,47 @@ impl Agent {
                     sensors_of(cx),
                 );
                 return Ok(outcome);
+            }
+
+            // What day it is, asked of the clock every turn and folded in
+            // whenever the answer has changed since the transcript last
+            // recorded it — including "never", on the first turn, and again
+            // when a compaction cuts the block away.
+            //
+            // **The decision is an equality check against the rendered block,
+            // not a timer and not a field.** `date_context::render` is
+            // byte-identical for every turn on one local day, so "has the
+            // transcript already been told this" and "is the date still what
+            // it was" are the same question, and there is no refresh cadence
+            // to get wrong, no per-conversation state to forget to reset on
+            // resume, and no way for the fold to be skipped because a summary
+            // dropped the only copy.
+            //
+            // Append-only survives it, which is what keeps the cache free: a
+            // folded block stays in the position it was folded into, so every
+            // request is still a byte prefix of the next. Re-rendering the
+            // reading into the *same* trailing position each turn would
+            // instead change bytes the previous request had already cached,
+            // and pay for the tail every turn — the trap this placement
+            // avoids rather than the cost it accepts. It sits ahead of the
+            // steering drain so a steer, when there is one, is still the last
+            // thing in the turn.
+            //
+            // One visible consequence: on a conversation's first run this
+            // edits a message the session has already written, so
+            // `Session::record_transition` writes a `Record::Rewrite` rather
+            // than appending a tail. That is the designed fallback — it
+            // compares before to after instead of trusting a flag, exactly so
+            // a mutation added later is caught without anyone remembering to
+            // declare it — and `ARCHITECTURE.md §Timezones` says so out loud
+            // because the record shape changes for every session.
+            let reference = crate::date_context::render(self.clock.now(), self.cfg.timezone());
+            if !messages.iter().any(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, Block::Text { text } if text == &reference))
+            }) {
+                append_user_text(messages, reference);
             }
 
             // Anything the user typed while the previous turn was running.
@@ -4915,6 +4982,187 @@ mod tests {
             "the nudge rides beside the tool results, not after them"
         );
         assert!(is_harness_voice(FINAL_ANSWER_NUDGE));
+    }
+
+    // --- the calendar reference ---
+
+    /// Every `Calendar reference…` block in a request, in order.
+    fn calendar_blocks(req: &CompletionRequest) -> Vec<String> {
+        req.messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                Block::Text { text } if text.starts_with(crate::date_context::REFERENCE_STEM) => {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Advances the clock when called — how time actually passes in a run.
+    struct SleepTool(Arc<crate::clock::TestClock>, chrono::Duration);
+
+    #[async_trait]
+    impl Tool for SleepTool {
+        fn name(&self) -> &str {
+            "sleep"
+        }
+        fn description(&self) -> &str {
+            "Let time pass."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            self.0.advance(self.1);
+            Ok(ToolOutput::ok("time passed"))
+        }
+    }
+
+    fn agent_on_a_clock(
+        clock: &Arc<crate::clock::TestClock>,
+        step: chrono::Duration,
+        turns: Vec<CompletionResponse>,
+    ) -> (Agent, Arc<ScriptedProvider>) {
+        let (mut agent, provider) = agent_with_tools(
+            turns,
+            vec![Arc::new(SleepTool(Arc::clone(clock), step))],
+            PermissionMode::Allow,
+        );
+        agent.cfg.timezone = Some("America/New_York".into());
+        (
+            agent.with_clock(Arc::clone(clock) as Arc<dyn crate::clock::Clock>),
+            provider,
+        )
+    }
+
+    fn sleep_then_answer() -> Vec<CompletionResponse> {
+        vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "sleep".into(),
+                    input: json!({}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text("done")], StopReason::EndTurn),
+        ]
+    }
+
+    /// **The midnight test, and the reason this machinery exists.**
+    ///
+    /// One agent outlives the day it was built on: `mecha serve` holds a
+    /// single `Arc<Agent>` for as long as the daemon runs. On 2026-09-14 a
+    /// voice call at 09:21 local was told it was Sunday the 13th by a process
+    /// started at 22:37 the night before, because the date was rendered once
+    /// into `Agent::system` and frozen there. Fails on that behaviour: the
+    /// agent here is built at 22:37 on the 13th and never rebuilt.
+    #[tokio::test]
+    async fn a_run_that_crosses_midnight_states_the_new_day_on_the_next_turn() {
+        let clock = Arc::new(crate::clock::TestClock::at("2026-09-14T02:37:12Z"));
+        let (agent, provider) =
+            agent_on_a_clock(&clock, chrono::Duration::hours(11), sleep_then_answer());
+
+        let mut convo = Conversation::from(vec![Message::user("what day is it?")]);
+        agent.run(&mut convo, None).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+
+        let first = calendar_blocks(&seen[0]);
+        assert_eq!(first.len(), 1, "one reference on the opening turn");
+        assert!(
+            first[0].contains("today is Sunday, 13 September 2026"),
+            "built at 22:37 EDT on the 13th: {}",
+            first[0]
+        );
+
+        // Eleven hours later it is the 14th, and the turn says so.
+        let second = calendar_blocks(&seen[1]);
+        assert_eq!(second.len(), 2, "the new day is folded in beside the old");
+        assert_eq!(
+            second[0], first[0],
+            "the earlier block is untouched — every request stays a byte              prefix of the next, which is what keeps the cache"
+        );
+        assert!(
+            second[1].contains("today is Monday, 14 September 2026"),
+            "the turn the owner was answered on: {}",
+            second[1]
+        );
+    }
+
+    /// The other half: within one local day nothing is re-folded, so the
+    /// eight-line reference is not re-sent on every turn of a long run.
+    #[tokio::test]
+    async fn a_run_inside_one_day_states_the_date_once() {
+        let clock = Arc::new(crate::clock::TestClock::at("2026-09-14T13:21:33Z"));
+        let (agent, provider) =
+            agent_on_a_clock(&clock, chrono::Duration::minutes(20), sleep_then_answer());
+
+        let mut convo = Conversation::from(vec![Message::user("what day is it?")]);
+        agent.run(&mut convo, None).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(calendar_blocks(&seen[0]).len(), 1);
+        assert_eq!(
+            calendar_blocks(&seen[1]).len(),
+            1,
+            "20 minutes later is the same day and needs no second reference"
+        );
+    }
+
+    /// A second run on the same long-lived agent — a new voice call on a
+    /// daemon that has been up since yesterday — gets today's date, because
+    /// a fresh `Conversation` has no reference in it to satisfy the check.
+    #[tokio::test]
+    async fn a_fresh_conversation_on_a_stale_daemon_gets_todays_date() {
+        let clock = Arc::new(crate::clock::TestClock::at("2026-09-14T02:37:12Z"));
+        let (agent, provider) = agent_on_a_clock(
+            &clock,
+            chrono::Duration::zero(),
+            vec![
+                assistant(vec![Block::text("ok")], StopReason::EndTurn),
+                assistant(vec![Block::text("ok")], StopReason::EndTurn),
+            ],
+        );
+
+        let mut first = Conversation::from(vec![Message::user("hello on Sunday night")]);
+        agent.run(&mut first, None).await.unwrap();
+
+        // The daemon keeps running; the owner calls back the next morning.
+        clock.set("2026-09-14T13:21:33Z".parse().unwrap());
+        let mut second = Conversation::from(vec![Message::user("what's on today?")]);
+        agent.run(&mut second, None).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        assert!(calendar_blocks(&seen[0])[0].contains("Sunday, 13 September 2026"));
+        assert!(
+            calendar_blocks(&seen[1])[0].contains("Monday, 14 September 2026"),
+            "the same agent, one day later: {:?}",
+            calendar_blocks(&seen[1])
+        );
+    }
+
+    /// The fold is mecha's own voice. Unregistered it would mine as the owner
+    /// correcting mecha about the date — and the date is now the one subject
+    /// mecha is instructed to concede, so the store would learn the inverse
+    /// of the rule.
+    #[test]
+    fn the_calendar_reference_is_recognised_as_a_harness_voice() {
+        let block = crate::date_context::render(
+            "2026-09-14T13:21:33Z".parse().unwrap(),
+            Some(chrono_tz::America::New_York),
+        );
+        assert!(is_harness_voice(&block));
+        assert!(
+            !is_harness_voice("Okay, but today is Monday, September 14th."),
+            "the owner's own correction is not a harness voice"
+        );
     }
 
     // --- hooks ---
