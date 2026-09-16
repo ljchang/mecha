@@ -1,0 +1,42 @@
+# The slot-refresh pipeline: a scheduled command, deliberately not a mecha
+# trigger. Triggers run prompts, and a model transcribing time intervals is a
+# model that can mistranscribe them — this path is deterministic end to end,
+# costs zero tokens, and works with no agent installed at all.
+#
+# Install: cp scripts/mecha-slots.{service,timer} ~/.config/systemd/user/
+#
+# The policy file is the `[availability]` vocabulary (SCHEDULING-DESIGN.md
+# §3.1); the instrument id must match what the box serves. Both halves fail
+# closed and loudly: an unreadable mailbox, a stale freebusy answer, or busy
+# data short of the horizon each stop the push rather than narrowing it,
+# because every failure that "degrades gracefully" here degrades into
+# offering strangers time the user does not have. The page keeps serving the
+# previous cache meanwhile, stale but honest, and says so.
+[Unit]
+Description=mecha slot refresh (freebusy → availability → box)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# systemd gives a unit a minimal environment; both binaries live in cargo's
+# bin. Measured on mecha-triggers.service the hard way.
+Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=-/bin/sh -c 'mecha-mail freebusy --days 60 --json | factory-publish slots push book --policy %h/.mecha/instruments/book-policy.toml'
+# The booking lifecycle sweep rides the same cadence: events for new
+# bookings, withdrawals for cancellations, and reminders — whose 1-hour
+# tier is what needs the two-minute resolution (the front door's
+# hourly tick alone could fire it late or not at all). Drain runs first
+# for the same reason: a confirmed booking's record must come home before
+# its invite can exist, and an invite that waits on the hourly front door
+# is a visitor wondering whether their booking took. `;` not `&&` — a
+# drain hiccup must not also skip the sweep of records already home. The
+# bookings leg names no account on purpose: it takes whatever
+# `mecha-mail accounts` calls the default, so the calendar a meeting lands
+# on follows the registry instead of a flag nobody can see. It used to say
+# `--account dartmouth`, which silently outvoted a registry default of
+# `personal` and put every stranger's meeting on a calendar its owner does
+# not open — the booking that started this was invisible for a day. The
+# polls leg still names one; that is a separate decision, not an oversight.
+# The `-` prefix: a failed slot push must not also skip the sweep, nor vice versa.
+ExecStart=-/bin/sh -c 'factory-publish drain; mecha-mail bookings; factory-publish polls sweep; mecha-mail polls --account dartmouth; mecha polls sweep'

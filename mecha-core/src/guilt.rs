@@ -77,8 +77,11 @@ const COUNT_HALF_AT: usize = 3;
 /// reads actually hold rather than by guessing.** `questions.rs` exists
 /// precisely because "the honest case is that nobody answers until
 /// morning" — an overnight-parked question is the mechanism working, not
-/// neglect. `read_frontdoor` (`backlog.rs`) counts every request with
-/// `state != CLOSED`, `backlog.rs`'s own canonical fixture ages one 8–9
+/// neglect. `read_frontdoor` (`backlog.rs`) counts every request that still
+/// counts as open (`state` neither `closed` nor `booked` — it was every
+/// non-`closed` request when this number was chosen, and a confirmed booking
+/// no longer counts, which lowers the depth this folds without weakening the
+/// argument below), `backlog.rs`'s own canonical fixture ages one 8–9
 /// days, and a `needs_info` request (parked waiting on the *requester*, not
 /// the owner) ages without bound while nothing is actually owed. At a
 /// one-day horizon, a single week-old parked question saturates `age` to

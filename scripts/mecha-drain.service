@@ -1,0 +1,38 @@
+# The always-on drain loop: long-poll the box's queue, turn confirmed
+# bookings into calendar events (and cancellations into withdrawals) the
+# moment they land. See scripts/drain-follow.sh for the whole design; the
+# one-sentence version is that home holds the connection open so nothing
+# ever has to dial home, and "instant" is a property of who waits, not of
+# who calls.
+#
+# The two-minute mecha-slots timer keeps running as the backstop: its
+# drain-and-sweep leg is idempotent beside this loop (the sweep takes a
+# flock), and a wedged loop degrades to exactly the pre-loop latency
+# instead of to silence.
+#
+# Install: install -m 0755 scripts/drain-follow.sh ~/.cargo/bin/mecha-drain-follow
+#          cp scripts/mecha-drain.service ~/.config/systemd/user/
+#          systemctl --user daemon-reload
+#          systemctl --user enable --now mecha-drain.service
+#          loginctl enable-linger "$USER"
+#
+# The script runs from ~/.cargo/bin like the binaries it drives, not from a
+# repo checkout: a shared checkout sits on whatever branch someone is working
+# on, and a unit that dangles when a branch moves is the automation-consumes-
+# installed-binaries trap wearing a path.
+[Unit]
+Description=mecha drain loop (long-poll the factory queue, sweep bookings)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# systemd gives a unit a minimal environment; the binaries live in cargo's
+# bin. Measured on mecha-triggers.service the hard way.
+Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=%h/.cargo/bin/mecha-drain-follow
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

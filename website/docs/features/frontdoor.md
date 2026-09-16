@@ -143,7 +143,8 @@ drained ──▶ extracted ──▶ triaged ──▶ awaiting_me ──▶ an
    │         └───── every draft rejected ──┘
    │
    ├──▶ extraction_failed     (at any point; routes to a human)
-   └──▶ needs_info            (parked until the requester answers)
+   ├──▶ needs_info            (parked until the requester answers)
+   └──▶ booked                (a confirmed booking; nothing was owed)
 
   any state ──▶ closed        (always with a reason)
 ```
@@ -151,6 +152,15 @@ drained ──▶ extracted ──▶ triaged ──▶ awaiting_me ──▶ an
 `triage` moves a request to `triaged`, and `awaiting_me` is where it sits while
 its drafts wait in the outbox. Releasing one gets `answered`; rejecting all of
 them gets `extracted` again, with the rejection reason attached.
+
+`booked` is where a confirmed booking goes, without passing through any of the
+rest. The gate only publishes slots your calendar says are free, the
+verification click confirms one, and a deterministic sweep with no model in it
+turns the record into a calendar event whose invite your provider sends — so the
+request arrives already answered. Settling it is what keeps a finished meeting
+out of the review queue, and out of the extraction and triage passes that would
+otherwise spend a model call drafting a reply to it. A cancellation closes both
+itself and the booking it withdraws.
 
 A record that did not validate against the manifest at drain time is never
 extracted and never reaches a run.

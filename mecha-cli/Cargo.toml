@@ -13,6 +13,10 @@ path = "src/main.rs"
 
 [dependencies]
 mecha-core = { path = "../mecha-core", version = "0.1.1" }
+# One call: resolving `~/.mecha/mail` the way `mecha-mail` does, to find the
+# bookings ledger. Already in the tree via mecha-core; direct here so the rule
+# can be copied exactly rather than approximated.
+dirs.workspace = true
 mecha-slack = { path = "../mecha-slack", version = "0.1.1" }
 
 anyhow.workspace = true

@@ -1604,6 +1604,7 @@ dependencies = [
  "chrono-tz",
  "clap",
  "crossterm",
+ "dirs",
  "futures",
  "httparse",
  "image",

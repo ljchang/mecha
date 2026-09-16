@@ -121,12 +121,136 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
 /// is absent would be worse than one that prints slightly stale states.
 fn reconcile(store: &Frontdoor) -> Result<()> {
     let Some(outbox) = mecha_core::outbox::OutboxStore::open_existing_default() else {
+        // No outbox is an ordinary machine. Bookings still settle: a confirmed
+        // meeting owes nobody a reply, so it must leave the queue whether or
+        // not a draft store exists to cross-check.
+        settle(store);
         return Ok(());
     };
     for moved in store.reconcile(&outbox)? {
         eprintln!("{:<5} {} → {}", moved.seq, moved.from, moved.to);
     }
+    settle(store);
     Ok(())
+}
+
+/// What the sweep has done, from the mail crate's ledger.
+///
+/// The sweep re-verifies against live freebusy and, when the slot has since
+/// been taken, writes a `conflict` line and creates nothing — no event, no
+/// invite — and never retries it. Those are the bookings a person still owes
+/// something, so [`Frontdoor::settle_bookings`] must not file them as
+/// confirmed.
+///
+/// Read here rather than in `mecha-core`: `bookings.jsonl` is the calendar's
+/// record, owned by a crate that has no `mecha-core` dependency and must not
+/// grow one, and the seam between them is a file at a known path — the same
+/// arrangement as the request store this reads *for*. Absent, unreadable or
+/// torn, the answer is an empty `Swept`, which settles nothing: no ledger
+/// means no sweep ran, so no booking reached a calendar and none may claim to
+/// have. Fail-closed, and the same answer on a machine with no mail at all.
+///
+/// A `created` line for the same booking wins over a `conflict` — the sweep
+/// would have to have been re-run by hand for both to exist, and the event is
+/// then real.
+pub(crate) fn swept_bookings() -> mecha_core::frontdoor::Swept {
+    use mecha_core::frontdoor::Swept;
+    let Some(dir) = mail_dir() else {
+        return Swept::default();
+    };
+    read_swept(&dir.join("bookings.jsonl"))
+}
+
+/// `~/.mecha/mail`, resolved **exactly as `mecha_mail::accounts::dir` does**.
+///
+/// Not `mecha_home().join("mail")`, which is what this used to be and which is
+/// wrong in both directions: the mail crate honours `$MECHA_MAIL_DIR` and
+/// ignores `$MECHA_HOME`, so with either variable set the two sides looked in
+/// different places, `swept_bookings()` found no ledger, and — being
+/// fail-closed — nothing settled at all, silently. A reader of somebody else's
+/// store has to use their rule for finding it, not its own.
+fn mail_dir() -> Option<std::path::PathBuf> {
+    if let Ok(dir) = std::env::var("MECHA_MAIL_DIR") {
+        return Some(std::path::PathBuf::from(dir));
+    }
+    Some(dirs::home_dir()?.join(".mecha").join("mail"))
+}
+
+/// [`swept_bookings`] over an explicit path, so the ledger contract is
+/// testable without a home directory.
+fn read_swept(path: &std::path::Path) -> mecha_core::frontdoor::Swept {
+    use mecha_core::frontdoor::Swept;
+    use std::collections::BTreeSet;
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Swept::default();
+    };
+    let (mut created, mut cancelled) = (BTreeSet::new(), BTreeSet::new());
+    for line in text.lines() {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue; // a torn trailing line, as the ledger's own readers do
+        };
+        // Every field `mecha_mail::bookings::entries()` requires, because it
+        // parses `LedgerEntry` and skips what does not fit. A reader that
+        // accepts lines the writer's own reader rejects would license the
+        // terminal `BOOKED` for a booking the sweep still considers unhandled
+        // — the looser-reader shape the rest of this change argues against.
+        let complete = ["booking_id", "event_id", "account", "seq", "created_at"]
+            .iter()
+            .all(|k| entry.get(*k).is_some());
+        let Some(id) = entry
+            .get("booking_id")
+            .and_then(|v| v.as_str())
+            .filter(|_| complete)
+        else {
+            continue;
+        };
+        // A line written before the `action` field existed is a *creation* —
+        // `LedgerEntry` defaults it that way and `mecha-mail`'s own test pins
+        // that. Requiring the field dropped those lines into neither set,
+        // which `settle_bookings` reads as "not swept yet" — and `handled()`
+        // already counts them, so no new line is ever written and they would
+        // never settle on any later pass. Fail-closed, and silently inapplicable
+        // to exactly the oldest bookings.
+        let action = entry
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("created");
+        match action {
+            "created" => {
+                created.insert(id.to_string());
+            }
+            // Written only after `delete_event_quiet` succeeds, so it means
+            // the event is really gone rather than that a withdrawal arrived.
+            "cancelled" => {
+                cancelled.insert(id.to_string());
+            }
+            _ => {}
+        }
+    }
+    Swept { created, cancelled }
+}
+
+/// Move confirmed bookings out of the queue. Best-effort, like the outbox
+/// reconciliation it follows and like the other two callers (the web warns,
+/// the TUI ignores) — a `?` here once stopped `frontdoor list` printing
+/// anything at all under a doc comment promising the opposite.
+///
+/// **After the outbox pass, not before.** A booking triaged before any of this
+/// existed sits in `awaiting_me`, which `settle_bookings` refuses to touch
+/// because only `reconcile` may advance it. Settling first therefore needed
+/// two invocations to migrate one record; settling second lets reconcile lift
+/// it to `extracted` and this settle it, in one pass. Nothing is lost by the
+/// order: reconcile only ever touches `awaiting_me`, which is exactly the
+/// state settling skips.
+fn settle(store: &Frontdoor) {
+    match store.settle_bookings(&swept_bookings()) {
+        Ok(moved) => {
+            for moved in moved {
+                eprintln!("{:<5} {} → {}", moved.seq, moved.from, moved.to);
+            }
+        }
+        Err(e) => eprintln!("could not settle bookings: {e:#}"),
+    }
 }
 
 fn mark(store: &Frontdoor, seq: i64, state: &str, note: Option<String>) -> Result<()> {
@@ -148,6 +272,7 @@ fn mark(store: &Frontdoor, seq: i64, state: &str, note: Option<String>) -> Resul
 
 fn list(store: &Frontdoor, state: Option<&str>) -> Result<()> {
     let records = store.records()?;
+    let tz = owner_timezone();
     let shown: Vec<&Record> = records
         .iter()
         .filter(|r| state.is_none_or(|s| r.state == s))
@@ -172,20 +297,107 @@ fn list(store: &Frontdoor, state: Option<&str>) -> Result<()> {
         } else {
             ""
         };
-        println!(
-            "{:<5} {:<14} {:<18} {}{}",
-            record.seq,
-            record.type_id,
-            record.state,
-            record
+        // A booking says when it is. That is the whole of what the row has to
+        // tell you, and it is never the extraction's topic — a settled
+        // booking is deliberately never extracted, so the topic column would
+        // be an em dash on every one of them.
+        let summary = match record.booking() {
+            Some(booking) => booking.local_span(tz),
+            None => record
                 .extraction
                 .as_ref()
                 .map(|e| e.topic.clone())
                 .unwrap_or_else(|| "—".into()),
-            flag
+        };
+        println!(
+            "{:<5} {:<14} {:<18} {}{}",
+            record.seq, record.type_id, record.state, summary, flag
         );
     }
     Ok(())
+}
+
+/// Whether `extract` should spend a quarantined model call on this record.
+///
+/// - **Invalid records never are**: one that did not validate against the
+///   manifest is not known to be the shape it claims.
+/// - **Nor are settled bookings.** Their prose is shown to a person by `show`
+///   and read by nothing else, so extracting one buys a model call and a topic
+///   line for a record no run will ever be handed.
+///
+/// Lifted out of the iterator chain so it can be asserted rather than read.
+pub(crate) fn extractable(record: &Record, force: bool) -> bool {
+    record.valid
+        && !record.is_settled_booking()
+        && !is_withdrawal(record)
+        && (force || record.extraction.is_none())
+}
+
+/// Whether **neither** model-spending verb will do anything with this record,
+/// so no surface should offer one.
+///
+/// Derived from the two predicates rather than restated beside them. The web
+/// payload used to spell out its own version — `is_settled_booking() ||
+/// cancellation().is_some()` — which reproduced two of `extractable`'s three
+/// conditions and dropped `record.valid`, leaving the **Extract** button live
+/// on an invalid record where the child refuses and the page reports success.
+/// A copy of a predicate is a copy that goes stale; this one cannot.
+///
+/// `force: true` on the extract side on purpose: a record that only
+/// `--force` would re-extract is not inert, it is already extracted.
+pub(crate) fn inert(record: &Record) -> bool {
+    !extractable(record, true) && !triageable(record)
+}
+
+/// A visitor's cancellation: machinery only, and nothing to answer.
+///
+/// `Record::booking()` refuses a `_cancelled` record on purpose, which makes
+/// `is_settled_booking()` answer *false* for one — so a freshly drained
+/// withdrawal passed both locks. `Extract` does not reconcile, so nothing has
+/// closed it by the time the quarantined pass selects: that is the live hole
+/// this closes. `Triage` *does* reconcile first, so the withdrawal is already
+/// `closed` before it selects — this is its second lock, held because
+/// `triageable` is also what `next` filters on, and because a guard that
+/// depends on another verb having run first is a guard one refactor from
+/// being gone.
+fn is_withdrawal(record: &Record) -> bool {
+    record.cancellation().is_some()
+}
+
+/// Whether `triage` may draft a reply for this record.
+///
+/// **Two locks, and they are different locks.** The first is a *state*:
+/// `reconcile` has already moved settled bookings to `booked`, so one should
+/// never be sitting in `extracted`. The second is a *fact about the record*,
+/// and it is what catches a booking that reached `extracted` by any route at
+/// all — an older store, a hand-edited state, a future allowlist changing its
+/// mind. `for_privileged_run` is the third and the oldest: it returns `None`
+/// for anything unextracted or invalid, so that rule lives in one place
+/// instead of being restated here.
+fn triageable(record: &Record) -> bool {
+    record.state == mecha_core::frontdoor::EXTRACTED
+        && !record.is_settled_booking()
+        && !is_withdrawal(record)
+        && record.for_privileged_run().is_some()
+}
+
+/// The owner's `[agent] timezone`, or `None` when config cannot be read.
+///
+/// `None` rather than a guess: a surface that renders a meeting in the wrong
+/// zone is worse than one that renders it in UTC and says so. The machine
+/// runs UTC and the model has no clock, which is why this is an IANA name in
+/// config and never an offset.
+fn owner_timezone() -> Option<chrono_tz::Tz> {
+    // `load_global`, not `load(&cwd)`: the project layer would let a cloned
+    // repo vote on the zone a stranger's booking renders in, and the same
+    // command would answer differently from two directories. The request
+    // store lives in `~/.mecha/`, so its zone is the global one — the same
+    // reasoning, and the same call, as the other readers of this setting
+    // for a `~/.mecha/` store (`commands/trigger.rs`, `tui/triggers.rs`).
+    mecha_core::config::Config::load_global()
+        .ok()?
+        .agent
+        .timezone()
 }
 
 fn show(store: &Frontdoor, seq: i64) -> Result<()> {
@@ -203,9 +415,81 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
         );
     }
 
-    println!("\nfields the form validated:");
-    for (name, value) in record.typed_values() {
-        println!("  {name:<22} {value}");
+    // A booking leads with the meeting, because that is what the record *is*.
+    // Reading the slot out of a column of `_`-prefixed machinery is how a
+    // confirmed meeting came to look like an unanswered question.
+    let booking = record.booking();
+    // Which keys the header actually printed, so the field list below drops
+    // exactly those and no others. Filtering the whole machinery set
+    // unconditionally while rendering each member conditionally is how a value
+    // the form validated renders in neither place and vanishes: `purpose` had
+    // that bug, and `_duration_minutes` and `_manage_url` had the same shape.
+    // One list, because two mechanisms for one job is how they drifted apart.
+    let mut shown: Vec<&str> = Vec::new();
+    // Parsed once. The header and the field list below both read it, and this
+    // used to build the map twice over the same record.
+    let typed = record.typed_values();
+    if let Some(booking) = &booking {
+        let tz = owner_timezone();
+        println!("\n── the meeting ──────────────────────────────────────────────");
+        let past = if booking.is_past(chrono::Utc::now()) {
+            "   (already happened)"
+        } else {
+            ""
+        };
+        println!("  when      {}{past}", booking.local_span(tz));
+        if let Some(minutes) = booking.duration_minutes {
+            println!("  length    {minutes} minutes");
+            shown.push("_duration_minutes");
+        }
+        // The requester's name is prose and stays below with the rest of it;
+        // what belongs here is what the form typed and the box verified.
+        if let Some(reply_to) = &record.reply_to {
+            println!("  with      {reply_to}  (verified by click)");
+        }
+        // `typed_values()`, not `values`: which fields are prose is the
+        // manifest's call, not this renderer's, and `show` is also what the
+        // web detail view prints. `purpose` is a validated select today, so
+        // this changes nothing — but reading the raw map is how a field that
+        // later becomes free text would print as prose in a header that
+        // claims to hold typed answers.
+        if let Some(purpose) = typed.get("purpose").and_then(|v| v.as_str()) {
+            println!("  purpose   {purpose}");
+            shown.push("purpose");
+        }
+        if record.state == mecha_core::frontdoor::BOOKED {
+            println!(
+                "\n  This was confirmed at the gate and swept onto the calendar — the\n\
+                 \x20 invite went from your own mailbox. Nothing here is waiting on you."
+            );
+        }
+        if let Some(url) = &booking.manage_url {
+            println!("\n  their cancel link: {url}");
+            shown.push("_manage_url");
+        }
+        println!("  booking id: {}", booking.booking_id);
+    }
+
+    // The machinery is rendered above for a booking, so printing it again
+    // under "fields" is the wall of underscores this replaced.
+    // `_booking_id` and the two stamps always render in the header above; the
+    // rest are dropped only when they actually did.
+    let machinery: Vec<&str> = if booking.is_some() {
+        let mut keys = vec!["_booking_id", "_slot_start", "_slot_end"];
+        keys.extend(shown.iter().copied());
+        keys
+    } else {
+        Vec::new()
+    };
+    let fields: Vec<(String, serde_json::Value)> = typed
+        .into_iter()
+        .filter(|(name, _)| !machinery.contains(&name.as_str()))
+        .collect();
+    if !fields.is_empty() {
+        println!("\nfields the form validated:");
+        for (name, value) in fields {
+            println!("  {name:<22} {value}");
+        }
     }
 
     match &record.extraction {
@@ -253,6 +537,14 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
         }
     }
 
+    // The note, wherever it came from: a person's close reason, a triage
+    // failure, or the sweep saying a booking was withdrawn. It was written by
+    // three code paths and printed by none of them — a record that explains
+    // itself only to whoever ran the command that set it.
+    if let Some(note) = &record.note {
+        println!("\nnote: {note}");
+    }
+
     let prose = record.prose();
     if !prose.is_empty() {
         println!("\n─── what they wrote ─────────────────────────────────────────");
@@ -288,10 +580,7 @@ async fn extract_all(
         .records()?
         .into_iter()
         .filter(|r| seq.is_none_or(|s| r.seq == s))
-        // An invalid record is never extracted: it did not validate against the
-        // manifest, so nothing about it is known to be the shape it claims.
-        .filter(|r| r.valid)
-        .filter(|r| force || r.extraction.is_none())
+        .filter(|r| extractable(r, force))
         .collect();
 
     if records.is_empty() {
@@ -383,11 +672,7 @@ async fn triage(
         .records()?
         .into_iter()
         .filter(|r| seq.is_none_or(|s| r.seq == s))
-        .filter(|r| r.state == fd::EXTRACTED)
-        // `for_privileged_run` is the gate, and it returns `None` for anything
-        // unextracted or invalid. Filtering on it here means the rule lives in
-        // one place instead of being restated as a condition.
-        .filter(|r| r.for_privileged_run().is_some())
+        .filter(triageable)
         .take(limit)
         .collect();
 
@@ -616,9 +901,229 @@ fn next(store: &Frontdoor, limit: usize) -> Result<()> {
         .records()?
         .iter()
         .filter(|r| r.state == "extracted")
+        // Both of `triage`'s record-shaped locks, not one. `Triage`'s own doc
+        // says the agent is "told only what `next` would print", so anything
+        // triage would refuse must not print a brief here either — printing
+        // is not running, but this is the text a prompt is built from.
+        .filter(|r| !r.is_settled_booking() && !is_withdrawal(r))
         .filter_map(|r| r.for_privileged_run())
         .take(limit)
         .collect();
     println!("{}", serde_json::to_string_pretty(&handed)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mecha_core::frontdoor::{Extraction, BOOKED, EXTRACTED};
+    use serde_json::json;
+
+    /// A record shaped like the drain's, carrying the booking machinery.
+    fn booking(state: &str) -> Record {
+        Record {
+            seq: 10,
+            type_id: "book".into(),
+            state: state.into(),
+            created_at: "2026-09-14T17:41:52Z".into(),
+            drained_at: "2026-09-14T17:48:43Z".into(),
+            valid: true,
+            invalid_reason: None,
+            values: serde_json::from_value(json!({
+                "_booking_id": "b1",
+                "_slot_start": "2026-09-16T14:00:00Z",
+                "_slot_end": "2026-09-16T15:00:00Z",
+                "purpose": "research",
+                "topic": "the difference engine",
+            }))
+            .unwrap(),
+            free_text: vec!["topic".into()],
+            reply_to: Some("ada@example.test".into()),
+            extraction: None,
+            extraction_error: None,
+            triage_session: None,
+            outbox: Vec::new(),
+            note: None,
+            attachments: Vec::new(),
+            rest: Default::default(),
+        }
+    }
+
+    /// The **second lock**, which is the claim this whole change rests on and
+    /// was previously asserted only by reading the source.
+    ///
+    /// `reconcile` moves settled bookings to `booked`, so the state filter
+    /// alone catches them in practice. This pins the other one: a booking
+    /// sitting in `extracted` *with* an extraction — reachable through an
+    /// older store, a hand-edited state, or a settle write that failed — is
+    /// still refused by both verbs. Delete either `!is_settled_booking()` and
+    /// this fails.
+    #[test]
+    fn a_settled_booking_in_extracted_is_refused_by_extract_and_triage() {
+        let mut record = booking(EXTRACTED);
+        record.extraction = Some(Extraction::default());
+
+        assert!(!extractable(&record, false), "extract must skip it");
+        assert!(
+            !extractable(&record, true),
+            "--force re-extracts, but never a booking"
+        );
+        assert!(!triageable(&record), "triage must skip it");
+        // And the brief it would otherwise have produced does exist, so the
+        // refusal is the filter's doing and not `for_privileged_run` declining.
+        assert!(record.for_privileged_run().is_some());
+    }
+
+    /// The ordinary request the front door was built for is unaffected.
+    #[test]
+    fn an_ordinary_extracted_request_is_still_triageable() {
+        let mut record = booking(EXTRACTED);
+        record.values.remove("_booking_id");
+        record.extraction = Some(Extraction::default());
+
+        assert!(triageable(&record));
+        assert!(!extractable(&record, false), "already extracted");
+        assert!(extractable(&record, true), "--force re-extracts it");
+    }
+
+    /// The **ledger** half of the crate-seam contract.
+    ///
+    /// `the_booking_keys_match_the_sweep` pins the *record* keys on the
+    /// `mecha-core` side; nothing pinned these. `booking_id`, `action`, and
+    /// the two action strings are read here and written by
+    /// `mecha-mail`'s sweep, across a seam with no crate dependency, so the
+    /// names are the whole contract — and a missing `action` is a creation,
+    /// which is `LedgerEntry`'s documented default and was silently dropping
+    /// the oldest bookings before this was pinned.
+    #[test]
+    fn the_ledger_keys_and_the_action_default_match_the_sweep() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!(
+            "ledger-keys-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        // Removed before the test rather than only after: a run that panicked
+        // last time then cleans itself up, which is what the request store's
+        // own fixtures do.
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("mail")).unwrap();
+        let path = dir.join("mail").join("bookings.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        // A line from before `action` existed, a conflict, and a creation.
+        writeln!(
+            f,
+            r#"{{"booking_id":"old1","event_id":"e","account":"a","seq":1,"created_at":"t"}}"#
+        )
+        .unwrap();
+        writeln!(f, r#"{{"booking_id":"c1","event_id":"","account":"","seq":2,"created_at":"t","action":"conflict"}}"#).unwrap();
+        writeln!(f, r#"{{"booking_id":"n1","event_id":"e","account":"a","seq":3,"created_at":"t","action":"created"}}"#).unwrap();
+        writeln!(f, "{{ torn").unwrap();
+        drop(f);
+
+        let swept = read_swept(&path);
+        assert!(
+            swept.created.contains("old1"),
+            "a line without `action` is a creation, as LedgerEntry defaults it"
+        );
+        assert!(swept.created.contains("n1"));
+        assert!(
+            !swept.created.contains("c1"),
+            "a conflict line is not a creation, so it licenses nothing"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `inert` has to mean "both verbs refuse", not "it is a booking". The web
+    /// payload used to reproduce two of `extractable`'s three conditions and
+    /// drop `record.valid`, so **Extract** stayed live on an invalid record —
+    /// the dead-button-reports-success failure `inert` exists to close.
+    #[test]
+    fn an_invalid_record_is_inert_even_though_it_is_not_a_booking() {
+        let mut record = booking(EXTRACTED);
+        record.values.remove("_booking_id");
+        record.extraction = Some(Extraction::default());
+        assert!(
+            !inert(&record),
+            "an ordinary extracted request is not inert"
+        );
+
+        record.valid = false;
+        assert!(!extractable(&record, true), "invalid is never extracted");
+        assert!(!triageable(&record), "nor triaged");
+        assert!(
+            inert(&record),
+            "so no surface should offer either — this is what was missing"
+        );
+    }
+
+    /// And the cases it was already covering stay covered, now by derivation.
+    #[test]
+    fn a_settled_booking_and_a_withdrawal_are_both_inert() {
+        assert!(inert(&booking(BOOKED)));
+        let mut withdrawal = booking(EXTRACTED);
+        withdrawal.values.insert("_cancelled".into(), json!(true));
+        assert!(inert(&withdrawal));
+    }
+
+    /// The ledger lives wherever `mecha-mail` put it, which is not where
+    /// `mecha_home()` would look. `accounts::dir()` honours `$MECHA_MAIL_DIR`
+    /// and ignores `$MECHA_HOME`; resolving it the other way meant that with
+    /// either variable set the two sides looked in different places, no ledger
+    /// was found, and — fail-closed — nothing settled at all, silently.
+    #[test]
+    fn the_ledger_path_follows_the_mail_crates_rule_not_ours() {
+        // The hazard is not another test *setting* these — it is `set_var`
+        // racing a concurrent `env::var` in any other thread, which the
+        // harness does routinely. Left as-is rather than taken on a
+        // dependency: the window is the two lines below, and the alternative
+        // is threading a path parameter through `swept_bookings` purely to
+        // make a one-line rule testable. `read_swept` already takes a path,
+        // which is where the rest of the ledger contract is pinned.
+        let restore = std::env::var("MECHA_MAIL_DIR").ok();
+        std::env::set_var("MECHA_MAIL_DIR", "/tmp/somewhere-else");
+        assert_eq!(
+            mail_dir().unwrap(),
+            std::path::PathBuf::from("/tmp/somewhere-else"),
+            "$MECHA_MAIL_DIR wins, as it does for the sweep"
+        );
+        std::env::remove_var("MECHA_MAIL_DIR");
+        let fallback = mail_dir().unwrap();
+        assert!(
+            fallback.ends_with(".mecha/mail"),
+            "and the fallback is ~/.mecha/mail, not $MECHA_HOME/mail: {}",
+            fallback.display()
+        );
+        if let Some(v) = restore {
+            std::env::set_var("MECHA_MAIL_DIR", v);
+        }
+    }
+
+    /// A visitor's withdrawal is machinery with nothing to answer, and it
+    /// slipped both locks: `Record::booking()` refuses a `_cancelled` record,
+    /// which makes `is_settled_booking()` answer *false* for it. `Extract` and
+    /// `Triage` do not reconcile, so nothing has closed it either — and
+    /// `frontdoor triage --seq N` is what the web button and the TUI `t` key
+    /// spawn.
+    #[test]
+    fn a_withdrawal_reaches_neither_the_extractor_nor_a_triage_run() {
+        let mut record = booking(EXTRACTED);
+        record.values.insert("_cancelled".into(), json!(true));
+        record.extraction = Some(Extraction::default());
+
+        assert!(
+            !record.is_settled_booking(),
+            "the settled-booking lock does not catch it, by design"
+        );
+        assert!(!extractable(&record, false), "and it is still refused");
+        assert!(!extractable(&record, true));
+        assert!(!triageable(&record));
+    }
+
+    /// `booked` is not `extracted`, so the first lock holds on its own too.
+    #[test]
+    fn a_booked_record_is_refused_by_the_state_lock_as_well() {
+        assert!(!triageable(&booking(BOOKED)));
+        assert!(!extractable(&booking(BOOKED), false));
+    }
 }

@@ -31,6 +31,28 @@ pub struct RequestRow {
     pub topic: String,
     /// "INVALID", "⚠ reads like instructions", or empty.
     pub flag: &'static str,
+    /// Whether the CLI's own verbs will refuse this record.
+    ///
+    /// Deliberately **not** "is it `booked`". The two disagree for every
+    /// booking that is not `booked` — a collided one, which stays `drained`
+    /// forever, and any booking inside the drain→sweep window. Gating the keys
+    /// on the state left `x` live on exactly those, where the child prints
+    /// `nothing to extract`, exits 0, and `Watch::Request` then announces
+    /// "still drained after 30m". This mirrors what `extractable` and
+    /// `triageable` actually refuse.
+    ///
+    /// The web card keeps both questions because it has copy as well as
+    /// buttons; this modal renders the state in its own column, so the action
+    /// gate is the only one it needs.
+    pub inert: bool,
+    /// Whether a plain `frontdoor extract` would do anything to this record.
+    ///
+    /// `inert` asks with `force: true` on purpose — "already extracted" is not
+    /// inert, it is done. But `x` spawns the *un*-forced verb, so an extracted
+    /// row passed every gate, the child printed `nothing to extract`, exited 0,
+    /// and the watch announced "still extracted after 30m". The last dead key
+    /// in this modal, and the same shape as the three before it.
+    pub extractable: bool,
     pub valid: bool,
     /// The full detail view, prose included, prebuilt like the outbox rows.
     pub detail: Vec<Line<'static>>,
@@ -111,12 +133,33 @@ impl FrontdoorModal {
         (self.selected + 1).saturating_sub(visible) as u16
     }
 
+    /// The verbs worth offering for the selected row. A settled booking is
+    /// answered already: `x` prints `nothing to extract` and `t` `nothing to
+    /// triage`, both exiting 0, and `n` parks a request nobody is waiting on.
+    /// Only `close` still means anything.
+    fn actions_hint(&self) -> &'static str {
+        match self.rows.get(self.selected) {
+            // Booking machinery: none of the three mean anything.
+            Some(row) if row.inert && row.valid => "",
+            // Already extracted: `x` would print `nothing to extract`. The key
+            // says so now, but a hint that offers it is still the last
+            // hint/key disagreement in this modal.
+            Some(row) if !row.extractable && row.valid => "t triage · n needs-info · ",
+            // Invalid: the two model-spending verbs refuse it, but parking it
+            // while you ask the requester to resend is exactly what a person
+            // does with one — so `n` stays.
+            Some(row) if !row.valid => "n needs-info · ",
+            _ => "x extract · t triage · n needs-info · ",
+        }
+    }
+
     pub fn title(&self) -> String {
         match &self.status {
             Some(s) => format!(" frontdoor · {s} "),
             None => format!(
-                " {} request(s) · enter detail · x extract · t triage · n needs-info · c close · esc ",
-                self.rows.len()
+                " {} request(s) · enter detail · {}c close · esc ",
+                self.rows.len(),
+                self.actions_hint()
             ),
         }
     }
@@ -195,8 +238,9 @@ impl FrontdoorModal {
                         .borders(Borders::ALL)
                         .border_style(Style::new().fg(Color::Cyan))
                         .title(format!(
-                            " request {} · ↑↓ scroll · x extract · t triage · n needs-info · c close · esc back ",
-                            row.seq
+                            " request {} · ↑↓ scroll · {}c close · esc back ",
+                            row.seq,
+                            self.actions_hint()
                         )),
                 ),
             area,
@@ -210,13 +254,36 @@ impl FrontdoorModal {
 /// only wanted to cross-check would be worse than a slightly stale one.
 pub fn load() -> anyhow::Result<Vec<RequestRow>> {
     let store = mecha_core::frontdoor::Frontdoor::open_default()?;
+    // Reconcile drafts and settle bookings before reading, in that order and
+    // for the reason `commands::frontdoor::settle` gives: a booking triaged
+    // before any of this existed sits in `awaiting_me`, which settling
+    // refuses to touch, so reconcile has to lift it out first or the
+    // migration takes two openings of this modal. Without settling at all a
+    // confirmed booking stays `drained` in this modal, `x` spawns an extract
+    // that prints `nothing to extract` and exits 0, and `Watch::Request` then
+    // warns "still drained after 30m" about a meeting that has been on the
+    // calendar the whole time. A store read is not a store reconciled.
     if let Some(outbox) = mecha_core::outbox::OutboxStore::open_existing_default() {
         let _ = store.reconcile(&outbox);
     }
-    Ok(store.records()?.iter().map(row).collect())
+    let _ = store.settle_bookings(&crate::commands::frontdoor::swept_bookings());
+    // The zone once, not once per row: `row` used to call `load_global()` for
+    // every booking it rendered, re-reading and re-parsing config each time.
+    let tz = owner_timezone();
+    Ok(store.records()?.iter().map(|r| row(r, tz)).collect())
 }
 
-fn row(record: &Record) -> RequestRow {
+/// The owner's `[agent] timezone`. `load_global`, not the project layer: the
+/// request store lives in `~/.mecha/`, so a checkout must not vote on the zone
+/// a stranger's booking renders in.
+fn owner_timezone() -> Option<chrono_tz::Tz> {
+    mecha_core::config::Config::load_global()
+        .ok()?
+        .agent
+        .timezone()
+}
+
+fn row(record: &Record, tz: Option<chrono_tz::Tz>) -> RequestRow {
     let flag = if !record.valid {
         "INVALID"
     } else if record
@@ -232,13 +299,21 @@ fn row(record: &Record) -> RequestRow {
         seq: record.seq,
         type_id: record.type_id.clone(),
         state: record.state.clone(),
-        topic: record
-            .extraction
-            .as_ref()
-            .map(|e| e.topic.clone())
-            .unwrap_or_else(|| "—".into()),
+        // A settled booking is never extracted, so its topic column would be
+        // an em dash on every row. It says when the meeting is instead, as
+        // `frontdoor list` does.
+        topic: match record.booking() {
+            Some(booking) => booking.local_span(tz),
+            None => record
+                .extraction
+                .as_ref()
+                .map(|e| e.topic.clone())
+                .unwrap_or_else(|| "—".into()),
+        },
         flag,
         valid: record.valid,
+        inert: crate::commands::frontdoor::inert(record),
+        extractable: crate::commands::frontdoor::extractable(record, false),
         detail: detail_lines(record),
     }
 }
@@ -418,9 +493,77 @@ mod tests {
         .unwrap()
     }
 
+    /// A record the CLI verbs will refuse, shaped like the drain's booking.
+    fn booked(seq: i64) -> Record {
+        serde_json::from_value(json!({
+            "seq": seq,
+            "type_id": "book",
+            "state": "booked",
+            "created_at": "2026-09-14T17:41:52Z",
+            "drained_at": "2026-09-14T17:48:43Z",
+            "valid": true,
+            "free_text": [],
+            "values": {
+                "_booking_id": "b1",
+                "_slot_start": "2026-09-16T14:00:00Z",
+                "_slot_end": "2026-09-16T15:00:00Z",
+            },
+        }))
+        .unwrap()
+    }
+
+    /// An invalid record can still be **parked**, which gating `n` on `inert`
+    /// took away: `inert` means "both model-spending verbs refuse this", and
+    /// that is true of an invalid record — which is exactly the kind a person
+    /// parks while asking the requester to resend it. A capability removed
+    /// reads like a dead key only until somebody needs it.
+    #[test]
+    fn an_invalid_record_keeps_needs_info_and_loses_only_the_model_verbs() {
+        let mut invalid = record(3, "drained");
+        invalid.valid = false;
+        let modal = FrontdoorModal::new(vec![row(&invalid, None)]);
+        let title = modal.title();
+        assert!(title.contains("n needs-info"), "still parkable: {title}");
+        assert!(!title.contains("x extract"), "but not extractable: {title}");
+        assert!(!title.contains("t triage"), "nor triageable: {title}");
+        assert!(title.contains("c close"));
+    }
+
+    /// The hint line stops offering keys that would do nothing.
+    ///
+    /// The web card got `frontdoor-span.mjs` and this modal had nothing, which
+    /// is the same one-of-two-surfaces gap that let `x`, `n` and then `t` each
+    /// stay live here after being hidden. The keys themselves are gated in
+    /// `tui/mod.rs`; this pins the half that tells a person they exist.
+    #[test]
+    fn a_settled_booking_is_offered_no_key_that_would_do_nothing() {
+        let modal = FrontdoorModal::new(vec![row(&booked(10), None)]);
+        let title = modal.title();
+        for absent in ["x extract", "t triage", "n needs-info"] {
+            assert!(
+                !title.contains(absent),
+                "`{absent}` does nothing to a confirmed booking: {title}"
+            );
+        }
+        assert!(title.contains("c close"), "close still means something");
+
+        // And the row carries the meeting rather than the em dash an
+        // unextracted record would otherwise leave in the topic column.
+        assert!(
+            modal.rows[0].topic.contains("Sep"),
+            "expected a date, got {:?}",
+            modal.rows[0].topic
+        );
+
+        // An ordinary request is unaffected — the gate is about the record,
+        // not about the modal.
+        let plain = FrontdoorModal::new(vec![row(&record(1, "drained"), None)]);
+        assert!(plain.title().contains("x extract"));
+    }
+
     #[test]
     fn the_title_names_the_keys_or_answers_the_last_action() {
-        let modal = FrontdoorModal::new(vec![row(&record(1, "drained"))]);
+        let modal = FrontdoorModal::new(vec![row(&record(1, "drained"), None)]);
         let title = modal.title();
         for key in [
             "enter",
@@ -443,8 +586,8 @@ mod tests {
     #[test]
     fn the_selection_wraps_and_an_empty_list_does_not_panic() {
         let mut modal = FrontdoorModal::new(vec![
-            row(&record(1, "drained")),
-            row(&record(2, "extracted")),
+            row(&record(1, "drained"), None),
+            row(&record(2, "extracted"), None),
         ]);
         modal.move_by(-1);
         assert_eq!(modal.selected, 1);
@@ -474,7 +617,7 @@ mod tests {
         let mut r = record(3, "drained");
         r.valid = false;
         r.invalid_reason = Some("unknown type".into());
-        let row = row(&r);
+        let row = row(&r, None);
         assert_eq!(row.flag, "INVALID");
         assert!(text(&row.detail).contains("INVALID: unknown type"));
     }
@@ -488,7 +631,7 @@ mod tests {
             reads_like_instructions: true,
             ..Default::default()
         });
-        let row = row(&r);
+        let row = row(&r, None);
         assert_eq!(row.flag, "⚠ reads like instructions");
         let body = text(&row.detail);
         assert!(body.contains("not a block"), "{body}");
@@ -518,7 +661,7 @@ mod tests {
     /// each new one is written by opening whichever sibling is nearest.
     #[test]
     fn a_tiny_terminal_shrinks_the_list_rather_than_panicking() {
-        let modal = FrontdoorModal::new(vec![row(&record(1, "drained"))]);
+        let modal = FrontdoorModal::new(vec![row(&record(1, "drained"), None)]);
         for height in 0..=6u16 {
             let mut terminal =
                 ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, height.max(1)))
