@@ -508,7 +508,8 @@ pub async fn drive_episode(
         tool_ctx.clone(),
         agent_cfg.clone(),
         Some(model.to_string()),
-    )?;
+    )?
+    .with_clock(mecha_core::clock::for_replay(recorded.clock));
     let cx = RunContext::new(tool_ctx, approver)
         .with_cancel(cancel)
         .with_compact_at(agent_cfg.compact_at_tokens);

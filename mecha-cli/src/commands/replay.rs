@@ -228,7 +228,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         agent_cfg,
         Some(model.clone()),
     )?
-    .with_pricing(provider_cfg.pricing());
+    .with_pricing(provider_cfg.pricing())
+    // The date the recorded run stood in, not today's: the loop folds a
+    // calendar reference per turn, and a replay that folds a different day
+    // than the recording diffs the calendar instead of the change under test.
+    .with_clock(mecha_core::clock::for_replay(recorded.clock));
 
     let cx = RunContext::new(tool_ctx, approver)
         .with_cancel(cancel)

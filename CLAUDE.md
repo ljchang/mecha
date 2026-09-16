@@ -164,6 +164,8 @@ boredom.rs   an approach that has stopped teaching the run anything, named
 appraisal.rs how a run went against what it was for: a signed error per
              channel, a valence summed from them, and a label derived from
              them and never self-reported by a model
+clock.rs     what time it is, asked per turn: a trait object, so nothing can
+             freeze a reading into a process that outlives the day
 cron.rs      five-field cron, resolved in an IANA zone (both DST directions)
 trigger.rs   scheduled prompts: the store, the ledger, and "is it due?"
 runmarker.rs "is a run in flight, and please stop it", as two files in a directory
