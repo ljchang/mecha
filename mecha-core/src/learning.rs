@@ -2728,66 +2728,52 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
                 }
             }
             Role::User => {
-                let mut steer_text = String::new();
+                // One definition, shared with the two locators that have to
+                // find this message again by comparing against what was
+                // mined here — see `agent::owner_text`.
+                let steer_text = crate::agent::owner_text(message);
                 let mut has_results = false;
+                // Only tool results are read here now: the owner's own text
+                // is `owner_text`'s job above, so the walk that remains has
+                // one shape to match.
                 for block in &message.content {
-                    match block {
-                        Block::ToolResult {
-                            tool_use_id,
-                            content,
-                            is_error,
-                        } => {
-                            has_results = true;
-                            if *is_error && !harness_calls.contains(tool_use_id.as_str()) {
-                                if let Some(reason) = content.strip_prefix("Denied by the user:") {
-                                    // The refused call is the focus
-                                    // (`Situation::focus` reads the last
-                                    // name), and with parallel calls in
-                                    // one message the last name is
-                                    // whichever the model listed last —
-                                    // deny the first of two and the
-                                    // lesson filed under the other (found
-                                    // on review). The result's id says
-                                    // which one it was.
-                                    let mut tools_before = names_before.clone();
-                                    if let Some((_, denied)) =
-                                        uses_before.iter().find(|(id, _)| id == tool_use_id)
-                                    {
-                                        tools_before.retain(|n| n != denied);
-                                        tools_before.push(denied.clone());
-                                    }
-                                    found.push((
-                                        msg_idx,
-                                        Intervention {
-                                            trigger: Trigger::Denial,
-                                            context: doing.clone(),
-                                            text: reason.trim().to_string(),
-                                            aftermath: String::new(),
-                                            at: msg_idx,
-                                            tools_before,
-                                            tools_after: Vec::new(),
-                                        },
-                                    ));
+                    if let Block::ToolResult {
+                        tool_use_id,
+                        content,
+                        is_error,
+                    } = block
+                    {
+                        has_results = true;
+                        if *is_error && !harness_calls.contains(tool_use_id.as_str()) {
+                            if let Some(reason) = content.strip_prefix("Denied by the user:") {
+                                // The refused call is the focus
+                                // (`Situation::focus` reads the last name),
+                                // and with parallel calls in one message the
+                                // last name is whichever the model listed
+                                // last — deny the first of two and the lesson
+                                // is filed under the other (found on review).
+                                // The result's id says which one it was.
+                                let mut tools_before = names_before.clone();
+                                if let Some((_, denied)) =
+                                    uses_before.iter().find(|(id, _)| id == tool_use_id)
+                                {
+                                    tools_before.retain(|n| n != denied);
+                                    tools_before.push(denied.clone());
                                 }
+                                found.push((
+                                    msg_idx,
+                                    Intervention {
+                                        trigger: Trigger::Denial,
+                                        context: doing.clone(),
+                                        text: reason.trim().to_string(),
+                                        aftermath: String::new(),
+                                        at: msg_idx,
+                                        tools_before,
+                                        tools_after: Vec::new(),
+                                    },
+                                ));
                             }
                         }
-                        // Filtered per block, not on the joined string: a
-                        // tool-results message routinely carries more than one
-                        // text block (a boredom notice appended beside the
-                        // results, a user's mid-turn steer folded in after,
-                        // `EMPTY_TURN_NUDGE` folded onto a followup) and
-                        // `is_harness_voice` is a whole-string match. Matching
-                        // the join would let a harness notice's stem swallow a
-                        // real correction that happened to follow it, or let a
-                        // real correction's own words launder a nudge appended
-                        // after — the bug this function exists to fix,
-                        // surviving in the shape it most commonly occurs in.
-                        Block::Text { text }
-                            if !message.harness && !crate::agent::is_harness_voice(text) =>
-                        {
-                            steer_text.push_str(text)
-                        }
-                        _ => {}
                     }
                 }
 
@@ -3076,7 +3062,7 @@ pub fn locate_followup(messages: &[Message], intervention_text: &str) -> Option<
                 .content
                 .iter()
                 .any(|b| matches!(b, Block::ToolResult { .. }))
-            && m.text().trim() == wanted
+            && crate::agent::owner_text(m).trim() == wanted
     })
 }
 
@@ -4715,6 +4701,37 @@ mod tests {
             ],
         }];
         assert_eq!(locate_followup(&steered, "skip the rest"), None);
+    }
+
+    /// Mining and locating have to read a message the same way.
+    ///
+    /// Fails on `m.text()`: a correction typed on the first turn of a new
+    /// local day carries the loop's calendar reference in the same message,
+    /// and `Message::text` joins with nothing — so the locator compared
+    /// "actually, use the other fileCalendar reference from the harness
+    /// clock: …" against the mined "actually, use the other file" and found
+    /// nothing, reporting the reflection unmeasurable rather than grading it
+    /// wrongly.
+    #[test]
+    fn a_followup_is_located_through_a_calendar_reference_folded_beside_it() {
+        let reference = crate::date_context::render(
+            "2026-09-16T13:21:33Z".parse().unwrap(),
+            Some(chrono_tz::America::New_York),
+        );
+        let messages = vec![Message {
+            harness: false,
+            planning: None,
+            tool_provenance: Default::default(),
+            role: Role::User,
+            content: vec![
+                Block::text("actually, use the other file"),
+                Block::text(reference),
+            ],
+        }];
+        assert_eq!(
+            locate_followup(&messages, "actually, use the other file"),
+            Some(0)
+        );
     }
 
     /// Selection is the point: a domain the run did not ask for contributes

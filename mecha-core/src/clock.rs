@@ -94,8 +94,9 @@ impl Clock for TestClock {
 
 /// The clock a replay of a recorded run should stand in.
 ///
-/// One definition, because three call sites replay a transcript — `mecha
-/// replay`, the validation probe, the harness probe — and a replay that
+/// One definition, because four call sites replay a transcript — `mecha
+/// replay`, the validation probe, the harness probe, and `mismatch::drive`'s
+/// artifact-task repeat — and a replay that
 /// stands in a different day than the run it is reproducing is measuring the
 /// difference between two Tuesdays rather than the change under test. The
 /// recorded reading is [`crate::session::RunConfig::clock`]; a record written
@@ -111,6 +112,19 @@ pub fn for_replay(recorded: Option<DateTime<Utc>>) -> Arc<dyn Clock> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Four replay sites share this, so what it answers for a recorded
+    /// reading and for its absence is the contract between them.
+    #[test]
+    fn a_replay_stands_in_the_recorded_reading_and_falls_back_to_now() {
+        let at: DateTime<Utc> = "2026-09-14T02:37:12Z".parse().unwrap();
+        assert_eq!(for_replay(Some(at)).now(), at);
+        // A record written before `RunConfig::clock` existed: today, said out
+        // loud rather than pretending to a date it never recorded.
+        let before = Utc::now();
+        let fallback = for_replay(None).now();
+        assert!(fallback >= before);
+    }
 
     #[test]
     fn a_fixed_clock_does_not_move_and_a_test_clock_does() {
