@@ -1524,8 +1524,13 @@ fn build_subagent(
     // different mechanisms — the channel rides on the context, the threshold
     // on the agent — and only one of them made the trip.
     .with_context_window(provider_cfg.context_window)
-    // Same clock as the parent, for the same reason the hooks are the
-    // parent's: a child is inside the parent's run, not beside it.
+    // A child is built while the parent's registry is still being assembled,
+    // so there is no parent yet to borrow a clock from — this is an
+    // equivalently configured one, which reads the same because `run_clock`
+    // is a pure function of the fixture file and the host clock. It matters
+    // for an experiment rather than for a normal run: `[fixtures] clock` has
+    // to reach the child, or a delegated turn dates itself from the host
+    // while its parent dates itself from the manifest.
     .with_clock(run_clock()?);
     // The parent's hooks apply to the child too, or delegating would be the
     // way around a pre_tool policy.

@@ -180,7 +180,7 @@ pub fn locate_steer(messages: &[Message], intervention_text: &str) -> Option<Pro
                 .content
                 .iter()
                 .any(|b| matches!(b, Block::ToolResult { .. }))
-            && msg.text().trim() == wanted
+            && crate::agent::owner_text(msg).trim() == wanted
     })?;
     // The steer arrived alongside results, so those calls were already
     // resolved by the time the model read it: they count as "before".
@@ -461,6 +461,38 @@ mod tests {
         assert!(locate_steer(&messages, "never said").is_none());
         // A followup turn is not a steer, even with matching text.
         assert!(locate_steer(&messages, "next task entirely").is_none());
+    }
+
+    /// The steer twin of `learning`'s followup case: a steer that arrives on
+    /// the turn a run crosses midnight rides beside the folded calendar
+    /// reference, and the locator has to see past it or the counterfactual
+    /// probe reports "could not locate the intervention" for exactly those
+    /// turns.
+    #[test]
+    fn a_steer_is_located_through_a_calendar_reference_folded_beside_it() {
+        let reference = crate::date_context::render(
+            "2026-09-16T13:21:33Z".parse().unwrap(),
+            Some(chrono_tz::America::New_York),
+        );
+        let messages = vec![
+            Message::user("summarize a.md and b.md"),
+            Message::assistant(vec![tool_use("t1", "fs_read", json!({}))]),
+            Message {
+                harness: false,
+                planning: None,
+                tool_provenance: Default::default(),
+                role: Role::User,
+                content: vec![
+                    result("t1", "ok", false),
+                    Block::text("only summarize b.md"),
+                    Block::text(reference),
+                ],
+            },
+        ];
+        let p = locate_steer(&messages, "only summarize b.md")
+            .expect("located past the calendar reference");
+        assert_eq!(p.message_index, 2);
+        assert_eq!(p.kind, ProbeKind::Steer);
     }
 
     #[test]

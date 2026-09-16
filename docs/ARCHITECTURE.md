@@ -4411,10 +4411,20 @@ Two consequences visible from outside the subsystem. `RunConfig::clock`
 records the reading, because it is no longer recoverable from `system_prompt`,
 and `clock::for_replay` pins a replay and both probes to it — per *run* rather
 than per session, since one `mecha serve` session held runs on either side of
-midnight. And the fold edits a message the session already wrote, so the first
-run of a conversation records a `Record::Rewrite` instead of an append;
-`record_transition` compares before to after rather than trusting a flag from
-the loop, so this was caught by construction rather than by noticing.
+midnight. And the fold edits a message the session already wrote, so the first run of a
+conversation — and the first run of every new local day in a long-lived one —
+records a `Record::Rewrite` instead of an append; `record_transition` compares
+before to after rather than trusting a flag from the loop, so this was caught
+by construction rather than by noticing.
+
+That record is not cosmetic. It carries the whole message list, so a
+multi-day `mecha serve` session accumulates a transcript copy per day, and
+`TaintTimeline::from_records` clears `taint_checkpoints` on one — so the next
+`Record::Taint` covers the whole rewritten head with the run's cumulative
+taint. It over-taints, never under, which is the fail-closed direction and
+already the norm after any compaction; the cost is that a clean early
+correction in a session that later reads a hostile page classifies untrusted
+and is structurally excluded from `mecha learn`.
 
 **The reference never outranks the owner.** `GUIDANCE` concedes the date to
 the user on sight. The wording it replaced — "do not attach a conflicting

@@ -1015,6 +1015,41 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         )
 }
 
+/// The owner's own words in one user message: text blocks, harness voices
+/// dropped, joined exactly as [`Message::text`] joins them.
+///
+/// **[`Message::text`] is the wrong reader for "what did the person say".**
+/// It joins every text block with nothing at all, and a user message
+/// routinely carries more than the person's words — a folded calendar
+/// reference, a boredom notice beside the tool results, a peer's delivered
+/// message, a nudge. Filtered per block rather than on the join, because
+/// [`is_harness_voice`] is a whole-string match: matching the join would let
+/// a notice's stem swallow a correction that followed it, or let a
+/// correction's own words launder a nudge appended after.
+///
+/// One definition because three readers have to *agree*, not merely each be
+/// reasonable. `learning::extract_interventions` mines this text, and
+/// `learning::locate_followup` and `counterfactual::locate_steer` then find
+/// the message it came from by comparing against it. The locators compared
+/// the unfiltered join until the loop began folding a calendar reference into
+/// the same message, at which point a correction typed on the first turn of a
+/// new local day mined fine and located nowhere — surfacing as "could not
+/// locate the corrective turn", which switches validation off for exactly the
+/// day-boundary turns instead of grading them wrongly.
+pub(crate) fn owner_text(message: &Message) -> String {
+    if message.harness {
+        return String::new();
+    }
+    message
+        .content
+        .iter()
+        .filter_map(|b| match b {
+            Block::Text { text } if !is_harness_voice(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Detects a run re-living the turns a compaction just summarised away.
 ///
 /// Dormant until a compaction arms it — repeated calls in ordinary work are

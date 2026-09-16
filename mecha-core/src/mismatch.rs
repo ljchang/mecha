@@ -391,7 +391,16 @@ pub async fn drive(
         (*cx.tools).clone(),
         cfg,
         Some(model.into()),
-    )?;
+    )?
+    // The date the recording stood in. This is the fourth replay-family
+    // site, and the only one that used to inherit the date *by accident*:
+    // `drive_arm` rebuilds the prompt from `prep.recorded_system`, which
+    // carried `date_context::render`'s output until the loop started folding
+    // it per turn. Without this an artifact case with a date-relative prompt
+    // or gold diverges on the calendar rather than on the change under test,
+    // which is what every other condition copied from `recorded` here exists
+    // to prevent.
+    .with_clock(crate::clock::for_replay(recorded.clock));
     let mut convo = Conversation::new();
     convo.goal_anchor = Some(case.goal.parse()?);
     convo
