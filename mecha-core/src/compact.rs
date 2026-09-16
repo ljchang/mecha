@@ -158,6 +158,31 @@ pub fn render_for_summary(messages: &[Message], max_result_chars: usize) -> Stri
         };
         for block in &message.content {
             match block {
+                // The calendar reference is not a turn and must not be
+                // labelled as one. Left in, it reached the summariser as
+                // `[user] … today is Sunday, 13 September …`, and
+                // `SUMMARY_INSTRUCTION` asks for "what you have established
+                // as fact, with the specific values" — a date is exactly that
+                // shape. Whatever came back landed in `messages[0]` as
+                // summary prose, where the head's `retain` has no stem to
+                // match and could never strip it: the block this function
+                // feeds is dropped from the head, and the paraphrase of it
+                // was not. Worse with the current `GUIDANCE`, which says a
+                // date the *user* states outranks the reference — so a
+                // summary carrying a `[user]`-attributed stale date could
+                // outrank the live fold by the rule meant to protect the
+                // owner. `render_for_distill` reuses this, so `mecha distill`
+                // was mining mecha's own clock as something the owner said.
+                //
+                // Scoped to this one stem rather than all of
+                // `is_harness_voice`: a peer's delivered message or a
+                // boredom notice *is* something that happened in the cut
+                // stretch, and whether a summary should carry those is a
+                // separate question from whether it should carry a clock.
+                Block::Text { text }
+                    if text
+                        .trim_start()
+                        .starts_with(crate::date_context::REFERENCE_STEM) => {}
                 Block::Text { text } if !text.trim().is_empty() => {
                     out.push_str(&format!("[{who}] {}\n", text.trim()));
                 }
@@ -290,10 +315,21 @@ pub fn rebuild(
     // ("each describes a different stretch"), and a long-lived session's
     // head grew by one block per compaction with nothing ever re-summarising
     // it — the audit of 2026-09-02 found the floor rising monotonically.
+    // And the calendar reference, for the same reason as the carried block:
+    // there is only ever one *current* date, and the head's copy is the
+    // oldest one in the conversation. Left in, a session opened before
+    // midnight kept "today is Sunday" in `messages[0]` for the rest of its
+    // life while the fresher reference — folded at some later index when the
+    // day actually changed — was dropped by the very cut that runs here, so
+    // the stale one became the most recent in the transcript. `Agent::
+    // fold_calendar_reference` runs again after this and puts the current one
+    // back, so dropping it here leaves no gap.
     head.content.retain(|block| match block {
         Block::Text { text } => {
             let t = text.trim_start();
-            !t.starts_with(CARRIED_HEADER) && !t.starts_with(SUMMARY_HEADER)
+            !t.starts_with(CARRIED_HEADER)
+                && !t.starts_with(SUMMARY_HEADER)
+                && !t.starts_with(crate::date_context::REFERENCE_STEM)
         }
         _ => true,
     });
@@ -686,6 +722,38 @@ pub fn orphaned_tool_results(messages: &[Message]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The reference is not a turn, so the summariser must not be shown one.
+    ///
+    /// It arrived as `[user] Calendar reference … today is Sunday, 13
+    /// September …`, and `SUMMARY_INSTRUCTION` asks for established facts
+    /// with specific values. A date the summariser copied landed in
+    /// `messages[0]` as prose, where the head's `retain` has no stem to match
+    /// and can never strip it — so the stale date outlived the block it came
+    /// from. `render_for_distill` reuses this, so `mecha distill` was mining
+    /// mecha's own clock as the owner's words too.
+    #[test]
+    fn the_summariser_is_not_shown_the_calendar_reference_as_an_owner_turn() {
+        let reference = crate::date_context::render(
+            "2026-09-14T02:37:12Z".parse().unwrap(),
+            Some(chrono_tz::America::New_York),
+        );
+        let mut task = Message::user("what is on my calendar?");
+        task.content.push(Block::text(reference));
+        let rendered = render_for_summary(
+            &[task, Message::assistant(vec![Block::text("checking")])],
+            2_000,
+        );
+        assert!(
+            rendered.contains("[user] what is on my calendar?"),
+            "the owner's turn must survive: {rendered}"
+        );
+        assert!(
+            !rendered.contains("13 September"),
+            "the clock reading must not reach the summariser as a turn: {rendered}"
+        );
+        assert!(!rendered.contains(crate::date_context::REFERENCE_STEM));
+    }
     use super::*;
 
     fn call(id: &str, path: &str) -> Message {

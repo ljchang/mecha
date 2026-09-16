@@ -307,19 +307,28 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             for message in &convo.messages {
                 match message.role {
                     Role::User => {
-                        // A user turn is either something the human typed or a
-                        // batch of tool results; they read very differently.
-                        let text = message.text();
-                        if !text.is_empty() {
-                            println!("› {text}\n");
-                        }
+                        // A user turn is one of three things and they read very
+                        // differently: something the human typed, a batch of
+                        // tool results, or one of the harness's own folded
+                        // voices — a calendar reference, a nudge, a peer's
+                        // delivered message. Rendered per block rather than
+                        // through `Message::text`, which joins with nothing and
+                        // so printed mecha's clock reading welded to the end of
+                        // the owner's question, under the owner's `›`.
                         for block in &message.content {
-                            if let Block::ToolResult {
-                                content, is_error, ..
-                            } = block
-                            {
-                                let marker = if *is_error { "✗" } else { "✓" };
-                                println!("  {marker} {}\n", first_line(content));
+                            match block {
+                                Block::Text { text } if text.trim().is_empty() => {}
+                                Block::Text { text } if mecha_core::title::is_derived(text) => {
+                                    println!("  ⟐ {}\n", first_line(text));
+                                }
+                                Block::Text { text } => println!("› {text}\n"),
+                                Block::ToolResult {
+                                    content, is_error, ..
+                                } => {
+                                    let marker = if *is_error { "✗" } else { "✓" };
+                                    println!("  {marker} {}\n", first_line(content));
+                                }
+                                _ => {}
                             }
                         }
                     }

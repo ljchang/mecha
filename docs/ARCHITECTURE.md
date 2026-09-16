@@ -4384,6 +4384,58 @@ value is worse than none, because the derived threshold trusts it.
 
 ## Timezones
 
+**The clock is asked per turn and never stored.** `Clock` is a trait object on
+the `Agent` (`clock.rs`), and the loop folds `date_context::render`'s reading
+into the outgoing user message whenever the local date it states has stopped
+being true. The decision is an equality check against the rendered block —
+identical bytes for every turn on one local day — so there is no refresh
+cadence to get wrong, no per-conversation field to forget to reset on resume,
+and a compaction that cuts the block away re-acquires it on the next turn. The
+reading rides in the last message block, which the moving `cache_control`
+breakpoint re-pays every request anyway, so freshness costs nothing and the
+tools→system prefix is untouched. `date_context::GUIDANCE` is the standing
+half and names no date.
+
+It used to be one string in the system prompt, rendered once by
+`prepare_tools` and frozen into `Agent::system`. Correct for a one-shot, wrong
+for a daemon: `mecha serve` holds one `Arc<Agent>` for its whole lifetime, and
+on 2026-09-14 a process started at 22:37 EDT on the 13th told a 09:21 voice
+call it was Sunday the 13th, queried the calendar for that day, and read
+yesterday's schedule back as today's. Corrected twice, the model reasoned *"I
+should trust the system"* — the stamp was the only clock it had. A session on
+2026-09-11 carried a date two days stale the same way; the trigger runner
+never did, because it builds an agent per run. A faster refresh would have
+been the same bug with a smaller window.
+
+Two consequences visible from outside the subsystem. `RunConfig::clock`
+records the reading, because it is no longer recoverable from `system_prompt`,
+and `clock::for_replay` pins a replay and both probes to it — per *run* rather
+than per session, since one `mecha serve` session held runs on either side of
+midnight. And the fold edits a message the session already wrote, so the first run of a
+conversation — and the first run of every new local day in a long-lived one —
+records a `Record::Rewrite` instead of an append; `record_transition` compares
+before to after rather than trusting a flag from the loop, so this was caught
+by construction rather than by noticing.
+
+That record is not cosmetic. It carries the whole message list, so a
+multi-day `mecha serve` session accumulates a transcript copy per day, and
+`TaintTimeline::from_records` clears `taint_checkpoints` on one — so the next
+`Record::Taint` covers the whole rewritten head with the run's cumulative
+taint. It over-taints, never under, which is the fail-closed direction and
+already the norm after any compaction; the cost is that a clean early
+correction in a session that later reads a hostile page classifies untrusted
+and is structurally excluded from `mecha learn`.
+
+**The reference never outranks the owner.** `GUIDANCE` concedes the date to
+the user on sight. The wording it replaced — "do not attach a conflicting
+weekday or relative label" — was aimed at a model inventing weekdays, and also
+told it to hold the reference against a contradicting human, which is exactly
+what it did. A folded reference is a harness voice (`is_harness_voice`,
+`title::is_derived`): the learning store must not mine it as the owner
+correcting mecha, and a front-end must not render it as the owner's words —
+`mecha sessions show` and the web chat bubble both did on the day the fold
+shipped, because `Message::text` joins blocks with nothing.
+
 `date_context::render` computes a local-date reference from yesterday through
 seven days ahead, alongside the timezone stamp. Calendar-day arithmetic happens
 after converting the instant to the owner's zone, so DST, year and leap-day
@@ -4396,8 +4448,9 @@ calendar facts now come from the harness and are available to the grounded judge
 names an RFC3339 instant for every explicitly scheduled task, in nondecreasing
 order, and is allowed only with fixture servers. `apply_clock` persists it before
 the run and principal; both fixture servers read `MECHA_FIXTURE_CLOCK`, and
-`setup` uses it only on a run carrying `ExperimentRef`. The recorded system prompt
-therefore preserves the date on replay. Audit timestamps and budgets retain wall
+`setup` uses it only on a run carrying `ExperimentRef`, where it becomes the
+agent's `FixedClock` — so an arm's every turn renders the fixture date, and
+`RunConfig::clock` preserves it on replay. Audit timestamps and budgets retain wall
 time. Clock and explicit judge identity enter the experiment condition hash;
 corrupt clock data is an error. The old “next-day” prompt advanced no clock and
 therefore measured a misleading date premise instead of next-day recall.
@@ -4406,8 +4459,8 @@ therefore measured a misleading date premise instead of next-day recall.
 `[agent] timezone` is an IANA name (`America/New_York`). The machine runs
 UTC and the model has no clock, so without it every "what's on Thursday" is
 answered four hours off — and wrongly in the worst way, since the times stay
-internally consistent and read as correct. It rides in the system prompt with
-today's date, and the mail servers get it as `MECHA_TZ` in their `[[mcp]]`
+internally consistent and read as correct. The zone is read per turn beside
+the date it renders, and the mail servers get it as `MECHA_TZ` in their `[[mcp]]`
 `env` so they render event times in it before the model ever sees them. An
 IANA name rather than an offset, because an offset is wrong twice a year.
 

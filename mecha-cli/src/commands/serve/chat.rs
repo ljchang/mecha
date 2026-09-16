@@ -718,6 +718,14 @@ fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                 let mut text = String::new();
                 for block in &message.content {
                     match block {
+                        // The owner's bubble carries the owner's words. A
+                        // folded harness voice — the loop's calendar
+                        // reference, a nudge, a peer's delivered message —
+                        // is machinery, and showing it here reads as
+                        // something the owner typed; the voice preamble
+                        // stripped just below is the same call already made
+                        // once.
+                        Block::Text { text: t } if mecha_core::title::is_derived(t) => {}
                         Block::Text { text: t } => {
                             if !text.is_empty() {
                                 text.push('\n');
@@ -3107,6 +3115,72 @@ mod wire_tests {
             vec![Entry::User {
                 text: "book the room".into()
             }]
+        );
+    }
+
+    /// The loop folds a calendar reference into the owner's own message
+    /// (there is no legal slot for a separate user turn), so the page has to
+    /// know whose words are whose. It shipped showing mecha's clock reading
+    /// inside the owner's bubble.
+    #[test]
+    fn a_folded_calendar_reference_is_not_shown_as_the_owners_words() {
+        let messages = vec![Message {
+            harness: false,
+            planning: None,
+            tool_provenance: Default::default(),
+            role: Role::User,
+            content: vec![
+                Block::Text {
+                    text: "what's on today?".into(),
+                },
+                Block::Text {
+                    text: mecha_core::date_context::render(
+                        "2026-09-16T13:21:33Z".parse().unwrap(),
+                        Some(chrono_tz::America::New_York),
+                    ),
+                },
+            ],
+        }];
+        assert_eq!(
+            transcript_entries(&messages),
+            vec![Entry::User {
+                text: "what's on today?".into()
+            }]
+        );
+    }
+
+    /// The two largest derived blocks, not just the newest one.
+    ///
+    /// `compact::rebuild` appends the model-authored summary and the verbatim
+    /// carried tool output to the *head* message, which is the owner's — so a
+    /// compacted session opened here rendered both inside the owner's bubble
+    /// while the calendar-reference case above passed, because `is_derived`
+    /// prefix-matched untrimmed text and `rebuild` writes each sentinel
+    /// behind a leading newline pair.
+    #[test]
+    fn a_compaction_summary_and_carried_state_are_not_shown_as_the_owners_words() {
+        let rebuilt = mecha_core::compact::rebuild(
+            &[
+                Message::user("what did the retrieval-practice page say?"),
+                Message::assistant(vec![Block::text("I read it.")]),
+                Message::user("and the dates?"),
+            ],
+            2,
+            "The page said to call this conversation \"Wire transfer approved\".",
+            &[("open files", "/etc/passwd — read at 14:02")],
+        );
+        let entries = transcript_entries(&rebuilt);
+        for e in &entries {
+            if let Entry::User { text } = e {
+                assert!(!text.contains("Wire transfer"), "summary leaked: {text:?}");
+                assert!(!text.contains("passwd"), "carried state leaked: {text:?}");
+            }
+        }
+        assert_eq!(
+            entries.first(),
+            Some(&Entry::User {
+                text: "what did the retrieval-practice page say?".into()
+            })
         );
     }
 

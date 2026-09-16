@@ -266,6 +266,22 @@ pub struct RunConfig {
     pub workspace: PathBuf,
     /// The resolved text, not the path it may have come from.
     pub system_prompt: Option<String>,
+    /// What the run's clock said when it started.
+    ///
+    /// **Recorded because it used to be readable off `system_prompt` and no
+    /// longer is.** The date was a line in the prompt until it turned out that
+    /// a prompt built once per process gives a daily value a daemon's
+    /// lifetime; the loop now folds a calendar reference per turn from
+    /// [`crate::clock`], so the prompt no longer names a day and a replay has
+    /// to be told which one to stand in. Per *run* rather than per session on
+    /// purpose: one `mecha serve` session held runs on either side of
+    /// midnight, which is the whole shape of the bug.
+    ///
+    /// `None` on anything recorded before this field, and those replay at
+    /// today's date rather than their own — a bounded fidelity limit on old
+    /// records, like `RecordedCall::batch` and `::external` before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock: Option<chrono::DateTime<chrono::Utc>>,
     /// Tool names in registry order — which is the order they are sent, and the
     /// front of the cached prefix. A tool added, removed or renamed between
     /// recording and replay changes what the model could have done.
@@ -463,6 +479,7 @@ impl Default for RunConfig {
             model: String::new(),
             workspace: PathBuf::new(),
             system_prompt: None,
+            clock: None,
             tools: Vec::new(),
             tools_hash: None,
             effort: None,
@@ -532,6 +549,7 @@ impl RunConfig {
             model: agent.model().to_string(),
             workspace: agent.ctx().workspace.clone(),
             system_prompt: agent.system().map(str::to_string),
+            clock: Some(agent.now()),
             tools: agent
                 .registry()
                 .iter()

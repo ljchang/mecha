@@ -209,6 +209,24 @@ pub async fn prepare_with_approver(
     build(tools, opts)
 }
 
+/// The clock every agent this process builds runs against.
+///
+/// One definition, called at both `Agent::new` sites. A subagent reading a
+/// different clock than its parent would date its own work differently inside
+/// one run, and an experiment's fixture instant has to reach the child or the
+/// arm is not the comparison its manifest describes — `[fixtures]` replaces
+/// the operator's world, and what day it is belongs to that world.
+fn run_clock() -> Result<Arc<dyn mecha_core::clock::Clock>> {
+    let fixture = mecha_core::experiment::fixture_now(
+        &mecha_core::work::mecha_home()?,
+        mecha_core::experiment::ExperimentRef::from_env().is_some(),
+    )?;
+    Ok(match fixture {
+        Some(at) => Arc::new(mecha_core::clock::FixedClock(at)),
+        None => Arc::new(mecha_core::clock::SystemClock),
+    })
+}
+
 fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     let denials = tools.denials.clone();
     let cfg = tools.config;
@@ -566,6 +584,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     )?
     .with_pricing(provider_cfg.pricing())
     .with_context_window(provider_cfg.context_window)
+    .with_clock(run_clock()?)
     // Read-only: what the run happened under, recorded beside what it did.
     // `eval` and the probes build their own per-case contexts and so stay
     // unsampled — see `Agent::with_homeostat`.
@@ -907,30 +926,26 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         });
         cfg.agent.system_prompt_file = None;
     }
-    // Today's date, because a model has no clock and every calendar or mail
-    // question is relative to one. Found by running it: asked for "the next
-    // three days" the model queried a window in January, six months stale,
-    // and the tool dutifully returned nothing wrong — just nothing useful.
+    // How to read a calendar reference, because a model has no clock and every
+    // calendar or mail question is relative to one. Found by running it: asked
+    // for "the next three days" the model queried a window in January, six
+    // months stale, and the tool dutifully returned nothing wrong — just
+    // nothing useful.
     //
-    // It goes before the learned rules so it stays adjacent to the user's own
-    // prompt, and it is the one part of the cached prefix that legitimately
-    // changes daily. `RunConfig` records it, so a replay reproduces the date
-    // the run actually saw rather than today's.
+    // **The standing instruction only: the reading itself is no longer here.**
+    // This block used to carry the date, which gave a value that changes daily
+    // the lifetime of a prompt that never changes — fine for a one-shot, and
+    // wrong for a daemon, which is what `mecha serve` is. It told a Monday
+    // morning voice call it was Sunday. `Agent::run_loop` now asks
+    // `Agent::now` per turn and folds the reading into the turn; see
+    // `mecha_core::clock` and `mecha_core::date_context`.
     {
         let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
-        // In the user's zone, not the machine's. A server runs in UTC, and
-        // answering "what's on Thursday" four hours off is wrong in the worst
-        // way — internally consistent, so it reads as correct.
-        let now = mecha_core::experiment::fixture_now(
-            &mecha_core::work::mecha_home()?,
-            mecha_core::experiment::ExperimentRef::from_env().is_some(),
-        )?
-        .unwrap_or_else(chrono::Utc::now);
-        let stamp = mecha_core::date_context::render(now, cfg.agent.timezone());
+        let guidance = mecha_core::date_context::GUIDANCE;
         cfg.agent.system_prompt = Some(if base.is_empty() {
-            stamp
+            guidance.to_string()
         } else {
-            format!("{base}\n\n{stamp}")
+            format!("{base}\n\n{guidance}")
         });
         cfg.agent.system_prompt_file = None;
     }
@@ -1508,7 +1523,15 @@ fn build_subagent(
     // loop that would never read the flag. The two halves are inherited by
     // different mechanisms — the channel rides on the context, the threshold
     // on the agent — and only one of them made the trip.
-    .with_context_window(provider_cfg.context_window);
+    .with_context_window(provider_cfg.context_window)
+    // A child is built while the parent's registry is still being assembled,
+    // so there is no parent yet to borrow a clock from — this is an
+    // equivalently configured one, which reads the same because `run_clock`
+    // is a pure function of the fixture file and the host clock. It matters
+    // for an experiment rather than for a normal run: `[fixtures] clock` has
+    // to reach the child, or a delegated turn dates itself from the host
+    // while its parent dates itself from the manifest.
+    .with_clock(run_clock()?);
     // The parent's hooks apply to the child too, or delegating would be the
     // way around a pre_tool policy.
     if let Some(hooks) = hooks {

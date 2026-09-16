@@ -765,11 +765,46 @@ pub fn grounding_evidence(
     let tools: Value = serde_json::from_str(&tool_evidence(messages)?)?;
     let context: Vec<_> = configs
         .iter()
-        .map(|c| serde_json::json!({"system_prompt": c.system_prompt, "available_tools": c.tools}))
+        .map(|c| {
+            serde_json::json!({
+                "system_prompt": c.system_prompt,
+                // The date, which `system_prompt` carried until the loop
+                // started folding a calendar reference per turn. Without it
+                // this function hands the judge the context it documents as
+                // required — "including its date and timezone" — minus the
+                // date, and `JUDGE_SYSTEM` tells the judge to use factual
+                // date context as evidence that is no longer there. A rubric
+                // over "what's on Thursday" then rejects a correctly derived
+                // answer as invented, which is the false rejection this
+                // function exists to prevent.
+                "clock": c.clock,
+                "available_tools": c.tools,
+            })
+        })
         .collect();
-    let text = serde_json::to_string(
-        &serde_json::json!({"recorded_run_context":context,"tool_evidence":tools}),
-    )?;
+    // And the reference the assistant actually read, verbatim — the zone and
+    // the weekday pairs live there rather than in `RunConfig`, and it is the
+    // evidence in the strongest sense: the bytes the answer was derived from.
+    // `tool_evidence` cannot supply it (it keeps only `ToolUse`/`ToolResult`).
+    let calendar: Vec<&str> = messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter_map(|b| match b {
+            crate::message::Block::Text { text }
+                if text
+                    .trim_start()
+                    .starts_with(crate::date_context::REFERENCE_STEM) =>
+            {
+                Some(text.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let text = serde_json::to_string(&serde_json::json!({
+        "recorded_run_context": context,
+        "calendar_reference": calendar,
+        "tool_evidence": tools,
+    }))?;
     anyhow::ensure!(
         text.len() <= 128 * 1024,
         "recorded grounding evidence exceeds 128 KiB"
@@ -1720,6 +1755,44 @@ mod grounding_tests {
         let evidence = grounding_evidence(&[], &[config]).unwrap();
         assert!(evidence.contains("user timezone is UTC"));
         assert!(grounding_evidence(&[], &[]).is_err());
+    }
+
+    /// The date is no longer in the system prompt, and this function's own
+    /// doc says the judge needs it — "tool evidence alone falsely rejects
+    /// contextual facts as invented", which is precisely what a rubric over
+    /// "what's on Thursday" would then do to a correctly derived answer.
+    ///
+    /// Both halves: `RunConfig::clock` for the instant, and the folded
+    /// reference verbatim, because the zone and the weekday pairs live there
+    /// rather than in the config, and `tool_evidence` keeps only
+    /// `ToolUse`/`ToolResult` so the text block reaches the judge no other
+    /// way.
+    #[test]
+    fn grounding_carries_the_date_now_that_the_system_prompt_does_not() {
+        let config = crate::session::RunConfig {
+            system_prompt: Some(crate::date_context::GUIDANCE.into()),
+            clock: Some("2026-09-16T13:21:33Z".parse().unwrap()),
+            ..Default::default()
+        };
+        let mut task = Message::user("what is on my calendar on Thursday?");
+        task.content
+            .push(crate::message::Block::text(crate::date_context::render(
+                "2026-09-16T13:21:33Z".parse().unwrap(),
+                Some(chrono_tz::America::New_York),
+            )));
+        let evidence = grounding_evidence(&[task], &[config]).unwrap();
+        assert!(
+            evidence.contains("2026-09-16"),
+            "the recorded reading must reach the judge: {evidence}"
+        );
+        assert!(
+            evidence.contains("America/New_York"),
+            "and the zone with it: {evidence}"
+        );
+        assert!(
+            evidence.contains("in 2 days = Friday 2026-09-18"),
+            "the weekday pairs are what a Thursday rubric is graded against"
+        );
     }
 
     #[tokio::test]

@@ -388,7 +388,28 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(req.messages.len());
-            let prompt = req.messages.last().map(|m| m.text()).unwrap_or_default();
+            // The owner's own words, not everything in the message. The loop
+            // folds a calendar reference into the first user message
+            // (`date_context::render`), so a fixture echoing `Message::text`
+            // answers with mecha's clock reading stuck to the prompt. Every
+            // production reader of owner text filters the same way —
+            // `replay::extract` and `title::is_derived` both go through
+            // `is_harness_voice`.
+            let prompt = req
+                .messages
+                .last()
+                .map(|m| {
+                    m.content
+                        .iter()
+                        .filter_map(|b| match b {
+                            Block::Text { text } if !crate::agent::is_harness_voice(text) => {
+                                Some(text.as_str())
+                            }
+                            _ => None,
+                        })
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
 
             // One item is allowed to blow up, so the "recorded, not fatal"
             // behaviour has something to record.

@@ -993,6 +993,12 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         || text.contains(crate::mailbox::DELIVERY_STEM)
         || text.starts_with(crate::step::STEP_ESCALATION_STEM)
         || text.starts_with(crate::step::CHECK_FEEDBACK_STEM)
+        // The sixth voice. Folded every time the local date changes under a
+        // conversation, so a long-lived process states the current day rather
+        // than the one it booted on — and unregistered it would mine as the
+        // owner correcting mecha about the date, which is the one subject on
+        // which mecha is now instructed to defer to them.
+        || text.starts_with(crate::date_context::REFERENCE_STEM)
         // The step-escalation stem shipped 2026-08-28 (9c2424d); transcripts
         // recorded before it carry the same fully-templated nudge bodies
         // bare, and one such nudge was already mined as a steer and probed as
@@ -1007,6 +1013,47 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
             "worth checking whether the remaining steps in the plan need to be broken \
              down differently",
         )
+}
+
+/// The owner's own words in one user message: text blocks, harness voices
+/// dropped, joined exactly as [`Message::text`] joins them.
+///
+/// **[`Message::text`] is the wrong reader for "what did the person say".**
+/// It joins every text block with nothing at all, and a user message
+/// routinely carries more than the person's words — a folded calendar
+/// reference, a boredom notice beside the tool results, a peer's delivered
+/// message, a nudge. Filtered per block rather than on the join, because
+/// [`is_harness_voice`] is a whole-string match: matching the join would let
+/// a notice's stem swallow a correction that followed it, or let a
+/// correction's own words launder a nudge appended after.
+///
+/// Public for the same reason [`append_user_text`] is: a caller outside this
+/// module needs the question answered the same way. `probe::prepare_mismatch`
+/// gates an artifact recording on the task it was given, and compared whole
+/// `Message`s until the loop began folding a reference into the first one —
+/// which failed every new recording while blaming the fixture.
+///
+/// One definition because four readers have to *agree*, not merely each be
+/// reasonable. `learning::extract_interventions` mines this text, and
+/// `learning::locate_followup` and `counterfactual::locate_steer` then find
+/// the message it came from by comparing against it. The locators compared
+/// the unfiltered join until the loop began folding a calendar reference into
+/// the same message, at which point a correction typed on the first turn of a
+/// new local day mined fine and located nowhere — surfacing as "could not
+/// locate the corrective turn", which switches validation off for exactly the
+/// day-boundary turns instead of grading them wrongly.
+pub fn owner_text(message: &Message) -> String {
+    if message.harness {
+        return String::new();
+    }
+    message
+        .content
+        .iter()
+        .filter_map(|b| match b {
+            Block::Text { text } if !is_harness_voice(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Detects a run re-living the turns a compaction just summarised away.
@@ -1250,6 +1297,13 @@ pub struct Agent {
     /// designed cost, not an anomaly. Demotes the cache lens's warning to
     /// info; the verdict itself is unchanged.
     cache_contended: bool,
+    /// What time it is, asked per turn rather than read once.
+    ///
+    /// The whole point of the indirection: one agent can outlive the date it
+    /// was built on — `mecha serve` holds a single `Arc<Agent>` for as long as
+    /// the daemon runs — so nothing here may cache a clock reading. See
+    /// [`crate::clock`] for the voice call this cost.
+    clock: Arc<dyn crate::clock::Clock>,
 }
 
 impl Agent {
@@ -1273,7 +1327,89 @@ impl Agent {
             pricing: None,
             context_window: None,
             cache_contended: false,
+            clock: Arc::new(crate::clock::SystemClock),
         })
+    }
+
+    /// Run against a clock other than the machine's — an experiment's fixture
+    /// instant, or a test that needs to cross midnight.
+    pub fn with_clock(mut self, clock: Arc<dyn crate::clock::Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// What this agent thinks the time is, now.
+    pub fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        self.clock.now()
+    }
+
+    /// Make sure the transcript states the current local date, folding a
+    /// fresh calendar reference in when it does not.
+    ///
+    /// **The decision is an equality check against the rendered block, not a
+    /// timer and not a field.** `date_context::render` is byte-identical for
+    /// every turn on one local day, so "has the transcript already been told
+    /// this" and "is the date still what it was" are the same question. No
+    /// refresh cadence to get wrong, no per-conversation state to forget to
+    /// reset on resume, and no way for the fold to be skipped because a
+    /// summary dropped the only copy — the walk covers every message, so a
+    /// cut re-acquires on the next call.
+    ///
+    /// Append-only survives it, which is what keeps the cache free: a folded
+    /// block stays in the position it was folded into, so every request is
+    /// still a byte prefix of the next. Re-rendering the reading into the
+    /// *same* trailing position each turn would instead change bytes the
+    /// previous request had already cached and pay for the tail every turn —
+    /// the trap this placement avoids rather than the cost it accepts.
+    ///
+    /// One visible consequence: on a conversation's first run this edits a
+    /// message the session has already written, so
+    /// `Session::record_transition` writes a `Record::Rewrite` rather than
+    /// appending a tail. That is the designed fallback — it compares before
+    /// to after instead of trusting a flag, exactly so a mutation added later
+    /// is caught without anyone remembering to declare it — and
+    /// `ARCHITECTURE.md §Timezones` says so out loud, because the record
+    /// shape changes for every session.
+    fn fold_calendar_reference(&self, messages: &mut Vec<Message>) {
+        // **Only for a role whose prompt explains what the block is.** The
+        // reading used to live in `cfg.agent.system_prompt`, so every role
+        // that *overwrites* that prompt — `gossip`'s asker, extractor,
+        // verifier and reader, `vet`, and any subagent, whose `child_cfg`
+        // takes the profile's prompt — never carried a date. An unconditional
+        // fold hands all of them eight lines of harness-authored calendar
+        // assertions with nothing saying what they are, and the extractor is
+        // the sharp case: a no-tools role whose whole job is returning a
+        // faithful list of claims from the text it was handed.
+        // `ARCHITECTURE.md §gossip` makes a reader's narrowness the reason
+        // its agreement means anything, and widening all of them at once is a
+        // decision, not a side effect.
+        //
+        // Keyed on `GUIDANCE` rather than a flag so the two cannot drift: the
+        // prompt that explains the reading is exactly what earns it, and a
+        // role that wants the date says so by carrying the block.
+        if !self
+            .system
+            .as_deref()
+            .is_some_and(|s| s.contains(crate::date_context::GUIDANCE))
+        {
+            return;
+        }
+        let reference = crate::date_context::render(self.clock.now(), self.cfg.timezone());
+        // User-role only. The question this equality stands in for is "has
+        // the *harness* said this", and only a user-role block can be the
+        // harness speaking here — a model that quotes the reference back
+        // verbatim (it is in the transcript, and `GUIDANCE` points at it)
+        // would otherwise satisfy the check and let a later turn skip the
+        // fold, leaving a model-authored string as the transcript's most
+        // recent calendar reference. Harmless while the bytes match, and the
+        // property is what is being protected, not the bytes.
+        if !messages.iter().filter(|m| m.role == Role::User).any(|m| {
+            m.content
+                .iter()
+                .any(|b| matches!(b, Block::Text { text } if text == &reference))
+        }) {
+            append_user_text(messages, reference);
+        }
     }
 
     /// The context a bare [`Agent::run`] will use.
@@ -1771,6 +1907,12 @@ impl Agent {
                 return Ok(outcome);
             }
 
+            // What day it is (`fold_calendar_reference`). Here so a steer,
+            // when there is one, is still the last thing in the turn — and
+            // again below, after compaction, because a summary can cut this
+            // one away before the request goes out.
+            self.fold_calendar_reference(messages);
+
             // Anything the user typed while the previous turn was running.
             // This lands *inside* the message carrying the tool results, so
             // the model is steered without the run being stopped and restarted.
@@ -2125,6 +2267,31 @@ impl Agent {
             turns += 1;
             emit(&events, AgentEvent::TurnStart { turn: turns });
 
+            // Again, now that nothing else will rewrite history before the
+            // send. **The first call is not enough**, and the gap it leaves is
+            // the incident's own shape with a one-turn window: the fold runs
+            // at the top of the loop, `compact` runs below it, and
+            // `compact::rebuild` keeps `messages[0]` while dropping
+            // `messages[1..cut]` — so a reference folded when the day actually
+            // changed sits at some index the cut passes, gets dropped, and the
+            // head's older one is left as the *most recent* reference in the
+            // transcript, which is exactly what `GUIDANCE` tells the model to
+            // read the date from. `rebuild` now drops a reference from the
+            // head too, so after a summary there is none and this call puts
+            // the current one back.
+            //
+            // Idempotent, which is why it can sit in two places: the check is
+            // an equality against the rendered block, so a turn where nothing
+            // moved finds it already there and does nothing. One definition,
+            // called wherever the answer matters this turn — the
+            // `stopping_now` rule two hundred lines up.
+            self.fold_calendar_reference(messages);
+            // Ahead of `sent_bytes`, which the comment below calls "exactly
+            // what is about to go on the wire" — folding after it measured a
+            // transcript one block shorter than the one that gets priced, and
+            // `pressure.observe` would anchor its bytes→tokens ratio on the
+            // difference. Small, and free to get right.
+
             // The size of exactly what is about to go on the wire. Taken here
             // rather than after the response, because the overflow arm below
             // rewrites `messages` between the two and the pair must describe
@@ -2211,6 +2378,20 @@ impl Agent {
                     if *messages != pre_rewrite {
                         convo.rewritten.push(pre_rewrite);
                     }
+                    // The third site, for the reason the second one exists —
+                    // and the one this branch's own `rebuild` change made
+                    // reachable. The recovery compaction above runs
+                    // `rebuild`, which now strips the reference from the head;
+                    // the retained tail has none either when the conversation
+                    // never crossed a day, because nothing was ever folded
+                    // there. So the retry went out with **no** calendar
+                    // reference at all while `GUIDANCE` told the model the
+                    // most recent one in the transcript is the date — on the
+                    // turn a large-context run is likeliest to be answering a
+                    // calendar question. Ahead of the clone and the
+                    // measurement, so the request and `sent_bytes` describe
+                    // the same list.
+                    self.fold_calendar_reference(messages);
                     request.messages = messages.clone();
                     // The retry carries a different list; the anchor has to
                     // describe the one that was actually priced, or the next
@@ -4915,6 +5096,557 @@ mod tests {
             "the nudge rides beside the tool results, not after them"
         );
         assert!(is_harness_voice(FINAL_ANSWER_NUDGE));
+    }
+
+    // --- the calendar reference ---
+
+    /// Every `Calendar reference…` block in a request, in order.
+    fn calendar_blocks(req: &CompletionRequest) -> Vec<String> {
+        req.messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                Block::Text { text } if text.starts_with(crate::date_context::REFERENCE_STEM) => {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Advances the clock when called — how time actually passes in a run.
+    struct SleepTool(Arc<crate::clock::TestClock>, chrono::Duration);
+
+    #[async_trait]
+    impl Tool for SleepTool {
+        fn name(&self) -> &str {
+            "sleep"
+        }
+        fn description(&self) -> &str {
+            "Let time pass."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            self.0.advance(self.1);
+            Ok(ToolOutput::ok("time passed"))
+        }
+    }
+
+    /// Advances the clock on its **first** call only: the case is one
+    /// midnight crossed mid-run, not a day per turn.
+    struct CrossMidnightOnce(
+        Arc<crate::clock::TestClock>,
+        chrono::Duration,
+        std::sync::atomic::AtomicBool,
+    );
+
+    #[async_trait]
+    impl Tool for CrossMidnightOnce {
+        fn name(&self) -> &str {
+            "sleep"
+        }
+        fn description(&self) -> &str {
+            "Let time pass."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            if !self.2.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                self.0.advance(self.1);
+            }
+            Ok(ToolOutput::ok("time passed"))
+        }
+    }
+
+    fn agent_on_a_clock(
+        clock: &Arc<crate::clock::TestClock>,
+        step: chrono::Duration,
+        turns: Vec<CompletionResponse>,
+    ) -> (Agent, Arc<ScriptedProvider>) {
+        let (mut agent, provider) = agent_with_tools(
+            turns,
+            vec![Arc::new(SleepTool(Arc::clone(clock), step))],
+            PermissionMode::Allow,
+        );
+        agent.cfg.timezone = Some("America/New_York".into());
+        agent.system = Some(crate::date_context::GUIDANCE.into());
+        (
+            agent.with_clock(Arc::clone(clock) as Arc<dyn crate::clock::Clock>),
+            provider,
+        )
+    }
+
+    fn sleep_then_answer() -> Vec<CompletionResponse> {
+        vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "sleep".into(),
+                    input: json!({}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text("done")], StopReason::EndTurn),
+        ]
+    }
+
+    /// **The midnight test, and the reason this machinery exists.**
+    ///
+    /// One agent outlives the day it was built on: `mecha serve` holds a
+    /// single `Arc<Agent>` for as long as the daemon runs. On 2026-09-14 a
+    /// voice call at 09:21 local was told it was Sunday the 13th by a process
+    /// started at 22:37 the night before, because the date was rendered once
+    /// into `Agent::system` and frozen there. Fails on that behaviour: the
+    /// agent here is built at 22:37 on the 13th and never rebuilt.
+    #[tokio::test]
+    async fn a_run_that_crosses_midnight_states_the_new_day_on_the_next_turn() {
+        let clock = Arc::new(crate::clock::TestClock::at("2026-09-14T02:37:12Z"));
+        let (agent, provider) =
+            agent_on_a_clock(&clock, chrono::Duration::hours(11), sleep_then_answer());
+
+        let mut convo = Conversation::from(vec![Message::user("what day is it?")]);
+        agent.run(&mut convo, None).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+
+        let first = calendar_blocks(&seen[0]);
+        assert_eq!(first.len(), 1, "one reference on the opening turn");
+        assert!(
+            first[0].contains("today is Sunday, 13 September 2026"),
+            "built at 22:37 EDT on the 13th: {}",
+            first[0]
+        );
+
+        // Eleven hours later it is the 14th, and the turn says so.
+        let second = calendar_blocks(&seen[1]);
+        assert_eq!(second.len(), 2, "the new day is folded in beside the old");
+        assert_eq!(
+            second[0], first[0],
+            "the earlier block is untouched — every request stays a byte              prefix of the next, which is what keeps the cache"
+        );
+        assert!(
+            second[1].contains("today is Monday, 14 September 2026"),
+            "the turn the owner was answered on: {}",
+            second[1]
+        );
+    }
+
+    /// The other half: within one local day nothing is re-folded, so the
+    /// eight-line reference is not re-sent on every turn of a long run.
+    #[tokio::test]
+    async fn a_run_inside_one_day_states_the_date_once() {
+        let clock = Arc::new(crate::clock::TestClock::at("2026-09-14T13:21:33Z"));
+        let (agent, provider) =
+            agent_on_a_clock(&clock, chrono::Duration::minutes(20), sleep_then_answer());
+
+        let mut convo = Conversation::from(vec![Message::user("what day is it?")]);
+        agent.run(&mut convo, None).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(calendar_blocks(&seen[0]).len(), 1);
+        assert_eq!(
+            calendar_blocks(&seen[1]).len(),
+            1,
+            "20 minutes later is the same day and needs no second reference"
+        );
+    }
+
+    /// A second run on the same long-lived agent — a new voice call on a
+    /// daemon that has been up since yesterday — gets today's date, because
+    /// a fresh `Conversation` has no reference in it to satisfy the check.
+    #[tokio::test]
+    async fn a_fresh_conversation_on_a_stale_daemon_gets_todays_date() {
+        let clock = Arc::new(crate::clock::TestClock::at("2026-09-14T02:37:12Z"));
+        let (agent, provider) = agent_on_a_clock(
+            &clock,
+            chrono::Duration::zero(),
+            vec![
+                assistant(vec![Block::text("ok")], StopReason::EndTurn),
+                assistant(vec![Block::text("ok")], StopReason::EndTurn),
+            ],
+        );
+
+        let mut first = Conversation::from(vec![Message::user("hello on Sunday night")]);
+        agent.run(&mut first, None).await.unwrap();
+
+        // The daemon keeps running; the owner calls back the next morning.
+        clock.set("2026-09-14T13:21:33Z".parse().unwrap());
+        let mut second = Conversation::from(vec![Message::user("what's on today?")]);
+        agent.run(&mut second, None).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        assert!(calendar_blocks(&seen[0])[0].contains("Sunday, 13 September 2026"));
+        assert!(
+            calendar_blocks(&seen[1])[0].contains("Monday, 14 September 2026"),
+            "the same agent, one day later: {:?}",
+            calendar_blocks(&seen[1])
+        );
+    }
+
+    /// **A summary must not leave the stale reference as the newest one.**
+    ///
+    /// The fold runs at the top of the loop, `compact` runs below it, and
+    /// `rebuild` keeps `messages[0]` while dropping `messages[1..cut]` — so
+    /// the reference folded when the day actually changed is exactly the one
+    /// a cut can reach, and the head's older one was left as the most recent
+    /// in the transcript. `GUIDANCE` tells the model to read the date from
+    /// the most recent one, so that is the original incident again, on the
+    /// turn a run is likeliest to be answering from a summary.
+    ///
+    /// Fails on either half alone: without the post-compaction fold the last
+    /// reference states the 13th, and without `rebuild` dropping the head's
+    /// the 13th is still in the request.
+    #[tokio::test]
+    async fn a_compaction_after_midnight_does_not_leave_yesterday_as_the_newest_date() {
+        let clock = Arc::new(crate::clock::TestClock::at("2026-09-14T02:37:12Z"));
+        // Eleven hours on the first call: 22:37 on the 13th becomes 09:37 on
+        // the 14th, in the owner's zone.
+        let mut turns: Vec<CompletionResponse> = (0..8)
+            .map(|i| {
+                assistant(
+                    vec![
+                        Block::text(format!("step {i}")),
+                        Block::ToolUse {
+                            id: format!("t{i}"),
+                            name: "sleep".into(),
+                            input: json!({}),
+                        },
+                    ],
+                    StopReason::ToolUse,
+                )
+            })
+            .collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+
+        let (mut agent, provider) = agent_with_tools(
+            turns,
+            vec![Arc::new(CrossMidnightOnce(
+                Arc::clone(&clock),
+                chrono::Duration::hours(11),
+                std::sync::atomic::AtomicBool::new(false),
+            ))],
+            PermissionMode::Allow,
+        );
+        agent.cfg.timezone = Some("America/New_York".into());
+        agent.system = Some(crate::date_context::GUIDANCE.into());
+        // Every scripted turn reports a large prompt, so this trips at once.
+        agent.cfg.compact_at_tokens = Some(1);
+        agent.cfg.compact_keep_recent = 2;
+        agent.cfg.max_turns = 6;
+        agent.cfg.force_final_answer = false;
+        agent.cfg.compact_validate = false;
+        let agent = agent.with_clock(Arc::clone(&clock) as Arc<dyn crate::clock::Clock>);
+
+        let mut convo = Conversation::user("what is on my calendar?");
+        agent.run(&mut convo, None).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        // The summariser's own requests carry no fold and are not the subject.
+        let turns_sent: Vec<&CompletionRequest> = seen
+            .iter()
+            .filter(|r| r.system.as_deref() != Some(crate::compact::SUMMARY_SYSTEM))
+            .collect();
+        assert!(
+            turns_sent.len() > 2,
+            "need turns after the crossing: {}",
+            turns_sent.len()
+        );
+        assert!(
+            crate::compact::orphaned_tool_results(&convo.messages).is_empty(),
+            "a compaction that orphans a result invalidates the rest of this"
+        );
+
+        // The first request predates the sleep, so it states the 13th.
+        let first = calendar_blocks(turns_sent[0]);
+        assert_eq!(first.len(), 1);
+        assert!(first[0].contains("today is Sunday, 13 September 2026"));
+
+        // Every request after the crossing states today as its *newest*
+        // reference, which is the contract `GUIDANCE` gives the model.
+        //
+        // Not "yesterday is absent": before a compaction rewrites the head,
+        // the block folded at 22:37 on the 13th is still in `messages[0]`,
+        // and it has to be. Removing it would rewrite bytes the previous
+        // request already cached — the trap the placement avoids. It stops
+        // being the *newest*, which is what matters, and goes away when a
+        // summary rebuilds the head.
+        for (i, req) in turns_sent.iter().enumerate().skip(1) {
+            let blocks = calendar_blocks(req);
+            assert!(!blocks.is_empty(), "request {i} states no date at all");
+            assert!(
+                blocks
+                    .last()
+                    .unwrap()
+                    .contains("today is Monday, 14 September 2026"),
+                "request {i}'s newest reference is not today: {:?}",
+                blocks.last()
+            );
+        }
+
+        // And once a summary has rebuilt the head, yesterday's is gone
+        // outright rather than merely outvoted — otherwise a session opened
+        // before midnight carries "today is Sunday" for the rest of its life.
+        assert!(
+            convo.messages[0].text().contains("compacted"),
+            "this case is only about compaction if one happened"
+        );
+        let surviving: Vec<String> = convo
+            .messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                Block::Text { text } if text.starts_with(crate::date_context::REFERENCE_STEM) => {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !surviving.iter().any(|b| b.contains("today is Sunday, 13")),
+            "the rebuilt head still hoards yesterday: {surviving:?}"
+        );
+        assert!(
+            surviving
+                .iter()
+                .any(|b| b.contains("today is Monday, 14 September 2026")),
+            "the live transcript must still state today: {surviving:?}"
+        );
+    }
+
+    /// **The overflow-recovery arm re-sends the same turn, and must re-fold.**
+    ///
+    /// The half the between-turns compaction test cannot reach. Recovery
+    /// compacts and then re-issues the request inline rather than returning
+    /// to the top of the loop, so the fold there never runs — and since this
+    /// branch taught `rebuild` to strip the reference from the head, a
+    /// conversation that never crossed a day has none left anywhere. The
+    /// retry went out stating no date while `GUIDANCE` told the model to read
+    /// one from the transcript.
+    #[tokio::test]
+    async fn an_overflow_recovery_retry_still_states_the_date() {
+        let clock = Arc::new(crate::clock::TestClock::at("2026-09-16T13:21:33Z"));
+        let big = "x".repeat(4_000);
+        // Four tool rounds first: `worth_compacting` requires a cut past
+        // `MIN_DROPPED`, so a short transcript cannot compact at all and the
+        // case would pass without exercising anything.
+        let mut turns: Vec<Option<CompletionResponse>> = (1..=4)
+            .map(|i| {
+                Some(assistant(
+                    vec![Block::ToolUse {
+                        id: format!("t{i}"),
+                        name: "echo".into(),
+                        input: json!({"value": big.clone()}),
+                    }],
+                    StopReason::ToolUse,
+                ))
+            })
+            .collect();
+        // Then the overflow that sends the run into the recovery arm, the
+        // summariser it calls, and the retry.
+        turns.push(None);
+        turns.push(Some(assistant(
+            vec![Block::text("earlier turns")],
+            StopReason::EndTurn,
+        )));
+        turns.push(Some(assistant(
+            vec![Block::text("done")],
+            StopReason::EndTurn,
+        )));
+        let provider = Arc::new(OverflowScript {
+            turns: Mutex::new(turns),
+            seen: Mutex::new(Vec::new()),
+        });
+
+        struct Shared(Arc<OverflowScript>);
+        #[async_trait]
+        impl Provider for Shared {
+            fn id(&self) -> &str {
+                self.0.id()
+            }
+            fn default_model(&self) -> &str {
+                self.0.default_model()
+            }
+            async fn complete(
+                &self,
+                req: &CompletionRequest,
+                sink: Option<&StreamSink>,
+            ) -> Result<CompletionResponse> {
+                self.0.complete(req, sink).await
+            }
+        }
+
+        let mut registry = Registry::new();
+        registry.insert(Arc::new(EchoTool));
+        let mut cfg = AgentConfig {
+            // What earns the fold; see `fold_calendar_reference`.
+            system_prompt: Some(crate::date_context::GUIDANCE.into()),
+            timezone: Some("America/New_York".into()),
+            // 2, not 1: at 1 the target is `len - 1`, which splits a
+            // `tool_use` from its result, so `cut_point` finds nothing safe
+            // and the recovery compaction silently does nothing.
+            compact_keep_recent: 2,
+            compact_validate: false,
+            max_turns: 10,
+            ..AgentConfig::default()
+        };
+        cfg.force_final_answer = false;
+        let agent = Agent::new(
+            Box::new(Shared(Arc::clone(&provider))),
+            registry,
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+            ToolCtx {
+                workspace: std::env::temp_dir(),
+                shell_timeout: std::time::Duration::from_secs(1),
+                ..Default::default()
+            },
+            cfg,
+            None,
+        )
+        .unwrap()
+        .with_clock(Arc::clone(&clock) as Arc<dyn crate::clock::Clock>);
+
+        let mut convo = Conversation::user("what is on my calendar?");
+        agent.run(&mut convo, None).await.unwrap();
+
+        // Non-vacuous only if a summary actually landed: that is what proves
+        // `rebuild` ran and took the head's reference with it.
+        assert!(
+            convo.messages[0].text().contains("compacted"),
+            "this case is only about the recovery compaction if one happened: {:?}",
+            convo.messages[0].text()
+        );
+
+        let seen = provider.seen.lock().unwrap();
+        let retried = seen
+            .iter()
+            .rfind(|r| r.system.as_deref() != Some(crate::compact::SUMMARY_SYSTEM))
+            .expect("a request was retried");
+        let blocks = calendar_blocks(retried);
+        assert!(
+            !blocks.is_empty(),
+            "the retried request states no date at all"
+        );
+        assert!(
+            blocks
+                .last()
+                .unwrap()
+                .contains("today is Wednesday, 16 September 2026"),
+            "and it has to be today's: {:?}",
+            blocks.last()
+        );
+    }
+
+    /// Only the harness can satisfy "the harness has said this".
+    ///
+    /// The reference is in the transcript and `GUIDANCE` points the model at
+    /// it, so a model quoting it back verbatim used to satisfy the equality
+    /// and let the turn skip its fold — leaving a model-authored string as
+    /// the newest calendar reference.
+    #[tokio::test]
+    async fn a_reference_the_model_quoted_back_is_not_the_harness_stating_the_date() {
+        let clock = Arc::new(crate::clock::TestClock::at("2026-09-16T13:21:33Z"));
+        let quoted = crate::date_context::render(
+            crate::clock::Clock::now(&*clock),
+            Some(chrono_tz::America::New_York),
+        );
+        let (mut agent, provider) = agent_with_tools(
+            vec![assistant(vec![Block::text("ok")], StopReason::EndTurn)],
+            vec![Arc::new(EchoTool)],
+            PermissionMode::Allow,
+        );
+        agent.cfg.timezone = Some("America/New_York".into());
+        agent.system = Some(crate::date_context::GUIDANCE.into());
+        let agent = agent.with_clock(Arc::clone(&clock) as Arc<dyn crate::clock::Clock>);
+
+        let mut convo = Conversation::from(vec![
+            Message::user("what day is it?"),
+            Message::assistant(vec![Block::text(quoted)]),
+        ]);
+        agent.run(&mut convo, None).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        let from_harness = seen[0]
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .flat_map(|m| m.content.iter())
+            .filter(|b| {
+                matches!(b, Block::Text { text }
+                    if text.starts_with(crate::date_context::REFERENCE_STEM))
+            })
+            .count();
+        assert_eq!(
+            from_harness, 1,
+            "the harness has to state the date itself, whatever the model echoed"
+        );
+    }
+
+    /// **A narrowed reader stays narrow.** `gossip`'s extractor, verifier,
+    /// asker and reader, `vet`, and every subagent overwrite the system
+    /// prompt with their own, so none of them ever carried a date. The fold
+    /// follows the guidance: a role whose prompt does not explain what a
+    /// calendar reference is does not get handed one.
+    ///
+    /// The extractor is why this matters — a no-tools role asked for a
+    /// faithful list of claims from the text it was given, whose text would
+    /// otherwise end in eight lines of harness-authored calendar assertions.
+    #[tokio::test]
+    async fn a_role_that_replaced_the_guidance_is_not_handed_a_calendar_reference() {
+        let clock = Arc::new(crate::clock::TestClock::at("2026-09-16T13:21:33Z"));
+        let (mut agent, provider) = agent_with_tools(
+            vec![assistant(vec![Block::text("[]")], StopReason::EndTurn)],
+            vec![],
+            PermissionMode::Allow,
+        );
+        agent.cfg.timezone = Some("America/New_York".into());
+        // What `gossip::extractor` does: its own frame, in place of the
+        // harness's.
+        agent.system = Some("Return every claim in the text, verbatim.".into());
+        let agent = agent.with_clock(Arc::clone(&clock) as Arc<dyn crate::clock::Clock>);
+
+        let mut convo = Conversation::user("a page about hippocampal replay");
+        agent.run(&mut convo, None).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        assert!(
+            calendar_blocks(&seen[0]).is_empty(),
+            "a role that never explained the reference must not be handed one: {:?}",
+            calendar_blocks(&seen[0])
+        );
+        assert_eq!(
+            convo.messages[0].content.len(),
+            1,
+            "and its transcript stays what it was given"
+        );
+    }
+
+    /// The fold is mecha's own voice. Unregistered it would mine as the owner
+    /// correcting mecha about the date — and the date is now the one subject
+    /// mecha is instructed to concede, so the store would learn the inverse
+    /// of the rule.
+    #[test]
+    fn the_calendar_reference_is_recognised_as_a_harness_voice() {
+        let block = crate::date_context::render(
+            "2026-09-14T13:21:33Z".parse().unwrap(),
+            Some(chrono_tz::America::New_York),
+        );
+        assert!(is_harness_voice(&block));
+        assert!(
+            !is_harness_voice("Okay, but today is Monday, September 14th."),
+            "the owner's own correction is not a harness voice"
+        );
     }
 
     // --- hooks ---
