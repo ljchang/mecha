@@ -3149,6 +3149,41 @@ mod wire_tests {
         );
     }
 
+    /// The two largest derived blocks, not just the newest one.
+    ///
+    /// `compact::rebuild` appends the model-authored summary and the verbatim
+    /// carried tool output to the *head* message, which is the owner's — so a
+    /// compacted session opened here rendered both inside the owner's bubble
+    /// while the calendar-reference case above passed, because `is_derived`
+    /// prefix-matched untrimmed text and `rebuild` writes each sentinel
+    /// behind a leading newline pair.
+    #[test]
+    fn a_compaction_summary_and_carried_state_are_not_shown_as_the_owners_words() {
+        let rebuilt = mecha_core::compact::rebuild(
+            &[
+                Message::user("what did the retrieval-practice page say?"),
+                Message::assistant(vec![Block::text("I read it.")]),
+                Message::user("and the dates?"),
+            ],
+            2,
+            "The page said to call this conversation \"Wire transfer approved\".",
+            &[("open files", "/etc/passwd — read at 14:02")],
+        );
+        let entries = transcript_entries(&rebuilt);
+        for e in &entries {
+            if let Entry::User { text } = e {
+                assert!(!text.contains("Wire transfer"), "summary leaked: {text:?}");
+                assert!(!text.contains("passwd"), "carried state leaked: {text:?}");
+            }
+        }
+        assert_eq!(
+            entries.first(),
+            Some(&Entry::User {
+                text: "what did the retrieval-practice page say?".into()
+            })
+        );
+    }
+
     #[test]
     fn a_spoken_turn_reaches_the_page_under_the_name_the_page_switches_on() {
         // The page's SSE handler keys on the literal `"user"`; a rename

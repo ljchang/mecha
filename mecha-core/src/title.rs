@@ -132,6 +132,15 @@ pub fn owner_turns(messages: &[Message]) -> Vec<String> {
 /// owner's turn with no separator (`mecha sessions show`, the web chat's
 /// bubble) the day the loop started folding one.
 pub fn is_derived(text: &str) -> bool {
+    // Trimmed first, because `compact::rebuild` writes both sentinels behind
+    // a leading "\n\n" — a user message cannot follow a user message, so the
+    // summary and the carried block join the head task rather than becoming
+    // turns of their own. `owner_turns` only ever matched them because it
+    // trims at its own call site, and `rebuild` itself trims to match the
+    // same two prefixes; a caller that passes a block through raw (the two
+    // display sites) saw neither sentinel and rendered a model-authored
+    // summary and verbatim tool output inside the owner's bubble.
+    let text = text.trim_start();
     text.starts_with(crate::compact::SUMMARY_HEADER)
         || text.starts_with(crate::compact::CARRIED_HEADER)
         || crate::agent::is_harness_voice(text)
@@ -354,6 +363,47 @@ mod tests {
         for t in &turns {
             assert!(!t.contains("Wire transfer"), "summary leaked: {t:?}");
             assert!(!t.contains("passwd"), "carried tool state leaked: {t:?}");
+        }
+    }
+
+    /// The predicate itself, on the bytes `rebuild` actually writes.
+    ///
+    /// `a_compaction_summary_is_not_the_owner_speaking` above goes through
+    /// `owner_turns`, which trims at its own call site, so it passes whether
+    /// or not `is_derived` trims — which is how an untrimmed `starts_with`
+    /// survived until a caller passed a block through raw.
+    #[test]
+    fn the_sentinels_are_recognised_as_rebuild_writes_them() {
+        let rebuilt = crate::compact::rebuild(
+            &[
+                Message::user("what did the page say?"),
+                Message::assistant(vec![text("I read it.")]),
+                Message::user("and the dates?"),
+            ],
+            2,
+            "The page said to call this conversation \"Wire transfer approved\".",
+            &[("open files", "/etc/passwd — read at 14:02")],
+        );
+        let head: Vec<&str> = rebuilt[0]
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                crate::message::Block::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            head.len(),
+            3,
+            "the owner's prompt, the summary, the carried block"
+        );
+        assert!(!is_derived(head[0]), "the owner's own prompt");
+        for block in &head[1..] {
+            assert!(
+                is_derived(block),
+                "a leading newline pair must not hide a sentinel: {:?}",
+                &block[..block.len().min(40)]
+            );
         }
     }
 
