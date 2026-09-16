@@ -357,14 +357,34 @@ esac
         (dir, command)
     }
 
+    /// How long these tests wait for the fake docker script to touch a file.
+    ///
+    /// **A hang guard, not a latency assertion.** What is under test here is
+    /// cancellation and cleanup semantics; the deadline exists so a genuinely
+    /// stuck future fails instead of hanging CI. At five seconds it was
+    /// measuring process-spawn latency instead, and failed intermittently on
+    /// a loaded machine — once inside a full-workspace run on 2026-09-16,
+    /// while passing in isolation and in five consecutive runs of the same
+    /// suite. A flake here reads exactly like a real cancellation bug, which
+    /// is the expensive part.
+    const HANG_GUARD: Duration = Duration::from_secs(60);
+
     async fn wait_for(path: &std::path::Path) {
-        tokio::time::timeout(Duration::from_secs(5), async {
+        // Named rather than `.unwrap()`: the panic that shipped said only
+        // `Err(Elapsed)`, so a failure reported which *test* was unhappy and
+        // nothing about which file never appeared.
+        tokio::time::timeout(HANG_GUARD, async {
             while !path.exists() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
-        .unwrap();
+        .unwrap_or_else(|_| {
+            panic!(
+                "waited {HANG_GUARD:?} for the fake docker script to create {}",
+                path.display()
+            )
+        });
     }
 
     #[tokio::test]
@@ -392,10 +412,15 @@ esac
         drop(runtime);
         drop(container);
         let start = Instant::now();
-        while !dir.join("removed").exists() && start.elapsed() < Duration::from_secs(5) {
+        // Same guard, same reason — this one is a blocking loop because the
+        // runtime it would have awaited on is deliberately gone.
+        while !dir.join("removed").exists() && start.elapsed() < HANG_GUARD {
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(dir.join("removed").exists());
+        assert!(
+            dir.join("removed").exists(),
+            "waited {HANG_GUARD:?} for cleanup to remove the container after the runtime was dropped"
+        );
         assert!(!dir.join("created").exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
