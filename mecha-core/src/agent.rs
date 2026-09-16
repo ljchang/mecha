@@ -1371,6 +1371,29 @@ impl Agent {
     /// `ARCHITECTURE.md §Timezones` says so out loud, because the record
     /// shape changes for every session.
     fn fold_calendar_reference(&self, messages: &mut Vec<Message>) {
+        // **Only for a role whose prompt explains what the block is.** The
+        // reading used to live in `cfg.agent.system_prompt`, so every role
+        // that *overwrites* that prompt — `gossip`'s asker, extractor,
+        // verifier and reader, `vet`, and any subagent, whose `child_cfg`
+        // takes the profile's prompt — never carried a date. An unconditional
+        // fold hands all of them eight lines of harness-authored calendar
+        // assertions with nothing saying what they are, and the extractor is
+        // the sharp case: a no-tools role whose whole job is returning a
+        // faithful list of claims from the text it was handed.
+        // `ARCHITECTURE.md §gossip` makes a reader's narrowness the reason
+        // its agreement means anything, and widening all of them at once is a
+        // decision, not a side effect.
+        //
+        // Keyed on `GUIDANCE` rather than a flag so the two cannot drift: the
+        // prompt that explains the reading is exactly what earns it, and a
+        // role that wants the date says so by carrying the block.
+        if !self
+            .system
+            .as_deref()
+            .is_some_and(|s| s.contains(crate::date_context::GUIDANCE))
+        {
+            return;
+        }
         let reference = crate::date_context::render(self.clock.now(), self.cfg.timezone());
         // User-role only. The question this equality stands in for is "has
         // the *harness* said this", and only a user-role block can be the
@@ -5155,6 +5178,7 @@ mod tests {
             PermissionMode::Allow,
         );
         agent.cfg.timezone = Some("America/New_York".into());
+        agent.system = Some(crate::date_context::GUIDANCE.into());
         (
             agent.with_clock(Arc::clone(clock) as Arc<dyn crate::clock::Clock>),
             provider,
@@ -5314,6 +5338,7 @@ mod tests {
             PermissionMode::Allow,
         );
         agent.cfg.timezone = Some("America/New_York".into());
+        agent.system = Some(crate::date_context::GUIDANCE.into());
         // Every scripted turn reports a large prompt, so this trips at once.
         agent.cfg.compact_at_tokens = Some(1);
         agent.cfg.compact_keep_recent = 2;
@@ -5463,6 +5488,8 @@ mod tests {
         let mut registry = Registry::new();
         registry.insert(Arc::new(EchoTool));
         let mut cfg = AgentConfig {
+            // What earns the fold; see `fold_calendar_reference`.
+            system_prompt: Some(crate::date_context::GUIDANCE.into()),
             timezone: Some("America/New_York".into()),
             // 2, not 1: at 1 the target is `len - 1`, which splits a
             // `tool_use` from its result, so `cut_point` finds nothing safe
@@ -5540,6 +5567,7 @@ mod tests {
             PermissionMode::Allow,
         );
         agent.cfg.timezone = Some("America/New_York".into());
+        agent.system = Some(crate::date_context::GUIDANCE.into());
         let agent = agent.with_clock(Arc::clone(&clock) as Arc<dyn crate::clock::Clock>);
 
         let mut convo = Conversation::from(vec![
@@ -5562,6 +5590,45 @@ mod tests {
         assert_eq!(
             from_harness, 1,
             "the harness has to state the date itself, whatever the model echoed"
+        );
+    }
+
+    /// **A narrowed reader stays narrow.** `gossip`'s extractor, verifier,
+    /// asker and reader, `vet`, and every subagent overwrite the system
+    /// prompt with their own, so none of them ever carried a date. The fold
+    /// follows the guidance: a role whose prompt does not explain what a
+    /// calendar reference is does not get handed one.
+    ///
+    /// The extractor is why this matters — a no-tools role asked for a
+    /// faithful list of claims from the text it was given, whose text would
+    /// otherwise end in eight lines of harness-authored calendar assertions.
+    #[tokio::test]
+    async fn a_role_that_replaced_the_guidance_is_not_handed_a_calendar_reference() {
+        let clock = Arc::new(crate::clock::TestClock::at("2026-09-16T13:21:33Z"));
+        let (mut agent, provider) = agent_with_tools(
+            vec![assistant(vec![Block::text("[]")], StopReason::EndTurn)],
+            vec![],
+            PermissionMode::Allow,
+        );
+        agent.cfg.timezone = Some("America/New_York".into());
+        // What `gossip::extractor` does: its own frame, in place of the
+        // harness's.
+        agent.system = Some("Return every claim in the text, verbatim.".into());
+        let agent = agent.with_clock(Arc::clone(&clock) as Arc<dyn crate::clock::Clock>);
+
+        let mut convo = Conversation::user("a page about hippocampal replay");
+        agent.run(&mut convo, None).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        assert!(
+            calendar_blocks(&seen[0]).is_empty(),
+            "a role that never explained the reference must not be handed one: {:?}",
+            calendar_blocks(&seen[0])
+        );
+        assert_eq!(
+            convo.messages[0].content.len(),
+            1,
+            "and its transcript stays what it was given"
         );
     }
 
