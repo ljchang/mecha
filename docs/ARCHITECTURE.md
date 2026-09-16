@@ -813,35 +813,16 @@ the ledger's answer. Three call sites rather than one is a cost, paid so the
 request store never reaches across to `bookings.jsonl`: that ledger is the
 calendar's record and is absent wherever mail is not configured.
 
-**A booking whose slot collided is never settled.** The sweep re-verifies
-against live freebusy and, when the slot has gone since the gate sold it,
-writes a `conflict` line and creates nothing — no event, no invite — and never
-retries. That record stays in the queue with the collision written on it,
-because settling it would leave `counts_as_open`, fold under "nothing owed",
-and have `show` assert an invite that was never sent — while the visitor holds
-a confirmation page for a meeting that does not exist.
-
-Staying in `drained` is not by itself enough, and assuming it was would have
-been a regression: `WAITING_ON_OWNER` is `[EXTRACTED, AWAITING_ME, TRIAGED]`,
-so neither the doctor nor the `request_closure` sensor nor the Slack card names
-a `drained` record — and before bookings were settled at all, the extract pass
-lifted a collision to `extracted`, where the doctor *did* watch it. So the
-record carries `collided`, a field rather than only a note, and `doctor.rs`
-names it the way it names `extraction_failed`: waiting on a human by design
-rather than by backlog. Closing it clears the flag, so a collision a person has
-decided stops being reported — and `close` is the only exit it has, because
-`bookings::handled()` counts `conflict` alongside `created` and the sweep never
-revisits one.
-
-**And the collision is only the failure the sweep *records*.** Every other way
-a booking fails to reach a calendar — a bail before the ledger append, an
-errored create, a sweep that is not running, a machine with no mail at all —
-writes no line, so the record is in neither `created` nor `conflicted`, never
-settles, and sits in `drained`, which is outside `WAITING_ON_OWNER` and so
-outside every finding that reads it. The doctor names such a record once it is
-older than the stale-request patience, asking only how long it has sat rather
-than what the ledger says: that ledger is absent wherever mail is unconfigured,
-which is one of the causes this has to catch.
+**A booking that never reaches the calendar is named by the doctor.** The
+sweep can fail four ways — the slot has gone since the gate sold it, freebusy
+is short of full coverage, the create errors, or the sweep is not running at
+all (including on a machine with no mail configured) — and only the first
+writes a ledger line. So the record is simply not in `created`: it never
+settles, and sits in `drained`, which is outside `WAITING_ON_OWNER` and
+therefore outside every other finding. The doctor names a valid booking still
+`drained` past the stale-request patience, asking how long it has sat rather
+than what `bookings.jsonl` says — that ledger is absent wherever mail is
+unconfigured, which is one of the four causes. One finding, all four.
 
 **And a cancellation un-books what it withdraws.** `booked` is terminal, so
 the same walk joins each `_cancelled` record to the confirmation it cancels

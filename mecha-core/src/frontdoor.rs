@@ -140,29 +140,6 @@ pub struct Record {
     /// `frontdoor show`, for a human.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<Attachment>,
-    /// Set when the sweep found this booking's slot already taken: no event
-    /// was created, no invite was sent, and its ledger will never retry.
-    ///
-    /// **A field rather than only a note, because something has to be able to
-    /// find these.** A collided booking is refused by `extractable` and
-    /// `triageable` (it is still a settled booking), so it never leaves
-    /// `drained` — and `drained` is outside `WAITING_ON_OWNER`, which is what
-    /// the doctor, the `request_closure` sensor and the Slack card all read.
-    /// Before bookings were settled at all, the extract pass lifted such a
-    /// record to `extracted` and the doctor watched it from there; keeping it
-    /// in `drained` silently took that away. The doctor keys on this.
-    ///
-    /// Cleared when the record leaves for `closed` — which is the only exit it
-    /// has. **Not by a later sweep**, despite what this used to claim:
-    /// `bookings::handled()` counts `conflict` alongside `created`, so the
-    /// sweep never revisits a collided booking and a `created` line can never
-    /// follow a `conflict` for the same id. The clear-on-`booked` branch is
-    /// kept as a defence rather than a path — if the sweep ever grows a
-    /// `--force`, it is already right — but nothing reaches it today, and the
-    /// test that appeared to cover it only did so by handing in a `Swept`
-    /// built by hand. `doctor.rs`'s remedy says `close`, which is the truth.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub collided: bool,
     /// Anything the other side wrote that this side does not model. Kept so a
     /// round-trip through here never drops a field.
     #[serde(flatten)]
@@ -315,12 +292,12 @@ impl Record {
 /// What the calendar sweep has actually done, as the front door needs to know it.
 ///
 /// **Positive evidence, not an absence.** The first version of this passed only
-/// the collided ids, which made "the sweep has not looked at this yet" and "the
-/// sweep created the event" the same answer — so a booking drained seconds
-/// earlier settled as though its invite had gone out, and because [`BOOKED`] is
-/// terminal the `conflict` line written moments later never un-booked it. The
-/// mis-filing was permanent, outside `counts_as_open`, invisible to the doctor,
-/// and `show` asserted an invite that never existed. Unknown is never clean.
+/// an *absence* — "the sweep has not looked at this yet" and "the sweep created
+/// the event" were the same answer, so a booking drained seconds earlier
+/// settled as though its invite had gone out. Because [`BOOKED`] is terminal
+/// the mis-filing was permanent: outside `counts_as_open`, invisible to the
+/// doctor, with `show` asserting an invite that never existed. Unknown is
+/// never clean.
 ///
 /// So `created` is what licenses settling and nothing else does. A booking in
 /// neither set is simply not swept yet: it stays in the queue, silently, and
@@ -331,10 +308,6 @@ pub struct Swept {
     /// licenses [`BOOKED`], because it is the only thing that makes "swept
     /// onto the calendar" true.
     pub created: std::collections::BTreeSet<String>,
-    /// Booking ids whose slot had gone by the time the sweep re-verified it:
-    /// no event, no invite, and its ledger never retries. A person is owed
-    /// these, so they stay in the queue and say why.
-    pub conflicted: std::collections::BTreeSet<String>,
     /// Booking ids whose calendar event the sweep has actually **deleted**.
     ///
     /// The mail crate appends this line only after the delete succeeds, so it
@@ -771,13 +744,10 @@ impl Frontdoor {
                         // assertion `created` exists to prevent, reached from
                         // the other direction.
                         let created = swept.created.contains(&b.booking_id);
-                        Some(if record.collided && !created {
-                            "the requester cancelled this booking; its slot had already \
-                             collided, so no event was ever created"
-                                .to_string()
-                        } else if !created {
-                            // Cancelled inside the drain→sweep window: nothing
-                            // was ever made for it.
+                        Some(if !created {
+                            // Never created — either the slot was gone by the
+                            // time the sweep re-verified it, or the visitor
+                            // cancelled inside the drain→sweep window.
                             "the requester cancelled this booking before it reached your \
                              calendar"
                                 .to_string()
@@ -799,14 +769,6 @@ impl Frontdoor {
                 };
                 if let Some(note) = note {
                     let from = std::mem::replace(&mut record.state, CLOSED.to_string());
-                    // Cleared here too, not only on the `booked` transition: a
-                    // closed record is decided, and a doctor finding that
-                    // keeps naming it after the decision is one people learn
-                    // to skip. (`closed` and `booked` are the only two exits
-                    // a collided booking has today — `n` and `Park…` both
-                    // refuse it — so this is the complete set until a decline
-                    // path adds another.)
-                    record.collided = false;
                     record.note = Some(note);
                     self.write(&record)?;
                     moved.push(Transition {
@@ -843,31 +805,6 @@ impl Frontdoor {
             let Some(booking) = record.booking().filter(|_| record.is_settled_booking()) else {
                 continue;
             };
-            // A collided booking stays exactly where it is, visible, with the
-            // collision written down. Not settled, and deliberately not
-            // triaged either — `is_settled_booking` still answers true, so no
-            // model is spent drafting a reply to it. A person reads the note
-            // and decides.
-            const COLLIDED: &str = "the slot collided with something already on your calendar";
-            if swept.conflicted.contains(&booking.booking_id) {
-                // Sentence-containment, not `note.is_none()` — the withdrawal
-                // arm forty lines up rejects that guard for the same reason:
-                // reconcile's rejection reason survives into `extracted`, so a
-                // booking on its second draft always has a note, and that is
-                // exactly the migration population this change is for. They
-                // could collide and never say so.
-                if !record.collided || !record.note.as_deref().is_some_and(|n| n.contains(COLLIDED))
-                {
-                    record.collided = true;
-                    record.note = Some(format!(
-                        "{COLLIDED} — no event was created and no invite was sent, and the \
-                         requester is holding a confirmation page for a meeting that does \
-                         not exist"
-                    ));
-                    self.write(&record)?;
-                }
-                continue;
-            }
             // Not swept yet. `booked` says the event exists and the invite
             // went out; without a `created` line that is a guess, and a wrong
             // one is unrecoverable because `booked` is terminal. It waits.
@@ -876,16 +813,6 @@ impl Frontdoor {
             }
             let from = std::mem::replace(&mut record.state, BOOKED.to_string());
             // A collision resolved by hand stops being reported.
-            // And the collision note with it. `booked` writes the note only
-            // `if note.is_none()`, so a stale "no event was created" sentence
-            // would otherwise sit under `show`'s "confirmed at the gate and
-            // swept onto the calendar" — two claims about one record, both
-            // printed, one false. Unreachable today for the reason
-            // `Record::collided` gives; wrong the moment it is not.
-            if record.collided {
-                record.note = None;
-            }
-            record.collided = false;
             // Only when there is nothing to lose: a note already on the record
             // is somebody's explanation of how it got here.
             if record.note.is_none() {
@@ -1272,7 +1199,6 @@ mod tests {
             outbox: Vec::new(),
             note: None,
             attachments: Vec::new(),
-            collided: false,
             rest: Map::new(),
         }
     }
@@ -1315,18 +1241,6 @@ mod tests {
         created.extend(extra.iter().map(|s| s.to_string()));
         Swept {
             created,
-            conflicted: Default::default(),
-            cancelled: Default::default(),
-        }
-    }
-
-    /// The same booking, but the sweep found its slot taken.
-    fn swept_conflicting() -> Swept {
-        Swept {
-            created: Default::default(),
-            conflicted: ["2f6d21b33b6273fe41d4bf22b9bce655".to_string()]
-                .into_iter()
-                .collect(),
             cancelled: Default::default(),
         }
     }
@@ -1562,75 +1476,6 @@ mod tests {
         );
     }
 
-    /// A collision a person closes is decided, so the doctor stops naming it.
-    /// The flag used to clear only on the `booked` transition, which a
-    /// collided record cannot reach until somebody fixes the calendar.
-    #[test]
-    fn closing_a_collided_booking_clears_the_flag_the_doctor_reads() {
-        let stores = Stores::new("collide-closed");
-        stores.front.write(&booking_record()).unwrap();
-        stores.front.settle_bookings(&swept_conflicting()).unwrap();
-        assert!(stores.front.record(10).unwrap().collided);
-
-        // The visitor gives the slot back; the withdrawal closes both.
-        let mut withdrawal = booking_record();
-        withdrawal.seq = 11;
-        withdrawal.values.insert("_cancelled".into(), json!(true));
-        stores.front.write(&withdrawal).unwrap();
-        stores.front.settle_bookings(&swept_conflicting()).unwrap();
-
-        let after = stores.front.record(10).unwrap();
-        assert_eq!(after.state, CLOSED);
-        assert!(!after.collided, "decided, so it stops being a finding");
-        assert!(
-            after.note.unwrap().contains("no event was ever created"),
-            "and the note says what is true of a collided booking"
-        );
-    }
-
-    /// A collision has to be findable by something other than prose: the
-    /// record never leaves `drained`, and `drained` is outside
-    /// `WAITING_ON_OWNER`, so no state the doctor watches describes it.
-    #[test]
-    fn a_collision_is_marked_on_the_record_and_cleared_when_it_resolves() {
-        let stores = Stores::new("collide-flag");
-        stores.front.write(&booking_record()).unwrap();
-
-        stores.front.settle_bookings(&swept_conflicting()).unwrap();
-        assert!(
-            stores.front.record(10).unwrap().collided,
-            "the doctor keys on this, not on the note's wording"
-        );
-
-        // Resolved by hand: a later sweep creates the event, and the record
-        // stops being reported.
-        let moved = stores.front.settle_bookings(&swept(&[])).unwrap();
-        assert_eq!(moved.len(), 1);
-        let after = stores.front.record(10).unwrap();
-        assert_eq!(after.state, BOOKED);
-        assert!(!after.collided);
-    }
-
-    /// A collided booking must still say so on a second pass, even though it
-    /// already carries a note from an earlier rejected draft. `note.is_none()`
-    /// silenced exactly the population this change exists to migrate.
-    #[test]
-    fn a_collision_is_recorded_even_over_a_stale_rejection_note() {
-        let stores = Stores::new("collide-over-note");
-        let mut record = booking_record();
-        record.note = Some("every draft rejected: wrong tone".into());
-        stores.front.write(&record).unwrap();
-
-        stores.front.settle_bookings(&swept_conflicting()).unwrap();
-        assert!(stores
-            .front
-            .record(10)
-            .unwrap()
-            .note
-            .unwrap()
-            .contains("collided"));
-    }
-
     /// **Unknown is never clean.** A booking the sweep has not reached yet
     /// looks exactly like a collided one from the ledger's silence, and
     /// settling on that silence is unrecoverable: `booked` is terminal, so the
@@ -1655,48 +1500,6 @@ mod tests {
         assert!(after.note.is_none(), "and says nothing it does not know");
 
         // Once the sweep records the event, the next pass settles it.
-        let moved = stores.front.settle_bookings(&swept(&[])).unwrap();
-        assert_eq!(moved.len(), 1);
-        assert_eq!(moved[0].to, BOOKED);
-    }
-
-    /// The worst thing this module could do: file a booking that never
-    /// reached the calendar as one that did.
-    ///
-    /// The sweep writes a `conflict` line when the slot has been taken since
-    /// the gate sold it, creates no event and sends no invite, and never
-    /// retries. Settling that record would drop it out of `counts_as_open`,
-    /// hide it from the doctor, fold it under "nothing owed", and have `show`
-    /// assert the invite went from the owner's own mailbox — for a visitor
-    /// holding a confirmation page and no meeting.
-    #[test]
-    fn a_booking_whose_slot_collided_stays_in_the_queue_and_says_why() {
-        let stores = Stores::new("conflict");
-        stores.front.write(&booking_record()).unwrap();
-        assert!(
-            stores
-                .front
-                .settle_bookings(&swept_conflicting())
-                .unwrap()
-                .is_empty(),
-            "a collided booking must not be settled"
-        );
-        let after = stores.front.record(10).unwrap();
-        assert_eq!(after.state, DRAINED, "it stays where a person will see it");
-        assert!(
-            after.note.unwrap().contains("no event"),
-            "and says what went wrong"
-        );
-
-        // Idempotent, and the note is written once.
-        assert!(stores
-            .front
-            .settle_bookings(&swept_conflicting())
-            .unwrap()
-            .is_empty());
-
-        // The same record with no conflict recorded settles as usual — so the
-        // refusal above is the ledger's doing, not something about the record.
         let moved = stores.front.settle_bookings(&swept(&[])).unwrap();
         assert_eq!(moved.len(), 1);
         assert_eq!(moved[0].to, BOOKED);

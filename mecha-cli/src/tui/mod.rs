@@ -4476,24 +4476,10 @@ fn handle_frontdoor_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 // valid record, `inert` means a settled booking or a
                 // withdrawal, and nothing else.
                 if row.inert && row.valid {
-                    // A *collided* booking is the one shape where "nobody is
-                    // being waited on" is false: the doctor reports it
-                    // `Broken` and says the requester is holding a
-                    // confirmation page for a meeting that does not exist.
-                    // Refusing `n` is still right — `close` is the action the
-                    // doctor names — but the sentence has to match.
-                    modal.status = Some(if row.collided {
-                        format!(
-                            "{} collided and never reached your calendar — the requester is \
-                             waiting on you, but this is a `close`, not a park",
-                            row.seq
-                        )
-                    } else {
-                        format!(
-                            "{} is booking machinery — nobody is being waited on",
-                            row.seq
-                        )
-                    });
+                    modal.status = Some(format!(
+                        "{} is booking machinery — nobody is being waited on",
+                        row.seq
+                    ));
                 } else {
                     modal.input = Some(frontdoor::NoteInput {
                         seq: row.seq,

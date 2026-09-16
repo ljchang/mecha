@@ -184,8 +184,7 @@ fn read_swept(path: &std::path::Path) -> mecha_core::frontdoor::Swept {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Swept::default();
     };
-    let (mut conflicted, mut created, mut cancelled) =
-        (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+    let (mut created, mut cancelled) = (BTreeSet::new(), BTreeSet::new());
     for line in text.lines() {
         let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
             continue; // a torn trailing line, as the ledger's own readers do
@@ -217,9 +216,6 @@ fn read_swept(path: &std::path::Path) -> mecha_core::frontdoor::Swept {
             .and_then(|v| v.as_str())
             .unwrap_or("created");
         match action {
-            "conflict" => {
-                conflicted.insert(id.to_string());
-            }
             "created" => {
                 created.insert(id.to_string());
             }
@@ -231,12 +227,7 @@ fn read_swept(path: &std::path::Path) -> mecha_core::frontdoor::Swept {
             _ => {}
         }
     }
-    conflicted.retain(|id| !created.contains(id));
-    Swept {
-        created,
-        conflicted,
-        cancelled,
-    }
+    Swept { created, cancelled }
 }
 
 /// Move confirmed bookings out of the queue. Best-effort, like the outbox
@@ -954,7 +945,6 @@ mod tests {
             outbox: Vec::new(),
             note: None,
             attachments: Vec::new(),
-            collided: false,
             rest: Default::default(),
         }
     }
@@ -1037,8 +1027,10 @@ mod tests {
             "a line without `action` is a creation, as LedgerEntry defaults it"
         );
         assert!(swept.created.contains("n1"));
-        assert!(swept.conflicted.contains("c1"));
-        assert!(!swept.created.contains("c1"));
+        assert!(
+            !swept.created.contains("c1"),
+            "a conflict line is not a creation, so it licenses nothing"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

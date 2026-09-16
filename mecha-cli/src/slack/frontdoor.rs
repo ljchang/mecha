@@ -221,7 +221,6 @@ mod tests {
             outbox: Vec::new(),
             note: None,
             attachments: Vec::new(),
-            collided: false,
             rest: Map::new(),
         }
     }

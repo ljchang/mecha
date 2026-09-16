@@ -989,37 +989,10 @@ fn check_frontdoor(
             ));
             continue;
         };
-        // A booking whose slot was gone by the time the sweep re-verified it.
-        // No event, no invite, and its ledger never retries — while the
-        // visitor holds a confirmation page for a meeting that does not
-        // exist. It is refused by extract and triage (it is still a booking),
-        // so it never leaves `drained` and no *state* the rest of this
-        // function watches will ever describe it. Named here for the same
-        // reason `extraction_failed` is: it waits on a human by design rather
-        // than by backlog, and nothing else will ever say so.
-        if record.collided && record.state != crate::frontdoor::CLOSED {
-            out.push(Finding {
-                component: "frontdoor".to_string(),
-                severity: Severity::Broken,
-                summary: format!(
-                    "booking {} collided and never reached your calendar",
-                    record.seq
-                ),
-                detail: format!(
-                    "{} ({}) — the slot was taken before the sweep could create the event, \
-                     so no invite was sent and the requester is holding a confirmation page \
-                     for a meeting that does not exist. Offer them another time, then close \
-                     the request.",
-                    record.seq, record.type_id
-                ),
-                remedy: Some(list.clone()),
-            });
-        }
         // A booking that never settled, whatever stopped it.
         //
-        // The `collided` finding above covers the one failure the sweep
-        // *records*. Every other way a booking fails to reach a calendar
-        // writes no ledger line at all: the sweep bails before `append` when
+        // Every way a booking fails to reach a calendar looks the same from
+        // here, which is the point: the sweep bails before `append` when
         // freebusy is short, returns early when the create errors, or simply
         // is not running — and on a machine with no mail configured there is
         // no sweep to begin with. Such a record is in neither `created` nor
@@ -1035,7 +1008,6 @@ fn check_frontdoor(
         // causes this has to catch.
         if record.booking().is_some()
             && record.valid
-            && !record.collided
             && record.state == crate::frontdoor::DRAINED
             && request_age(&record, now).is_some_and(|age| age > patience.after)
         {
@@ -2476,74 +2448,6 @@ mod tests {
         assert!(
             stuck[0].detail.contains("mecha-mail bookings"),
             "the remedy has to name what is not running"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The collided-booking finding, which is the only reader of
-    /// `Record::collided` — and the flag's own doc says "the doctor keys on
-    /// this". A collision never leaves `drained`, and `drained` is outside
-    /// `WAITING_ON_OWNER`, so if this finding stopped firing nothing else
-    /// would mention the record at all.
-    #[test]
-    fn a_collided_booking_is_named_and_a_settled_one_is_not() {
-        let dir = std::env::temp_dir().join(format!(
-            "doctor-collided-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        // Removed first rather than after: the neighbouring stores do the
-        // same, so a run that panicked last time cleans itself up.
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let write = |seq: i64, body: serde_json::Value| {
-            std::fs::write(
-                dir.join(format!("{seq:010}-book.json")),
-                serde_json::to_string(&body).unwrap(),
-            )
-            .unwrap();
-        };
-        let base = |seq: i64| {
-            json!({
-                "seq": seq, "type_id": "book", "created_at": "2026-09-16T00:00:00Z",
-                "drained_at": "2026-09-16T00:00:00Z", "valid": true,
-                "values": {"_booking_id": format!("b{seq}")}
-            })
-        };
-
-        let mut collided = base(1);
-        collided["state"] = json!("drained");
-        collided["collided"] = json!(true);
-        write(1, collided);
-
-        let mut settled = base(2);
-        settled["state"] = json!("booked");
-        write(2, settled);
-
-        let found = check_frontdoor(&dir, utc("2026-09-16T01:00:00Z"), None);
-        let collisions: Vec<_> = found
-            .iter()
-            .filter(|f| f.summary.contains("collided"))
-            .collect();
-        assert_eq!(collisions.len(), 1, "one finding, for the collided one");
-        assert!(collisions[0].summary.contains("booking 1"));
-        assert_eq!(collisions[0].severity, Severity::Broken);
-        assert!(
-            collisions[0].detail.contains("no invite was sent"),
-            "the detail has to say what the requester is holding"
-        );
-
-        // A collision a later sweep resolved stops being reported: the flag is
-        // cleared, and a person who closed it by hand is not nagged either.
-        let mut resolved = base(1);
-        resolved["state"] = json!("closed");
-        resolved["collided"] = json!(true);
-        write(1, resolved);
-        let after = check_frontdoor(&dir, utc("2026-09-16T01:00:00Z"), None);
-        assert!(
-            !after.iter().any(|f| f.summary.contains("collided")),
-            "a closed collision is somebody's decision, not an open finding"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
