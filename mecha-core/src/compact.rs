@@ -174,16 +174,40 @@ pub fn render_for_summary(messages: &[Message], max_result_chars: usize) -> Stri
                 // owner. `render_for_distill` reuses this, so `mecha distill`
                 // was mining mecha's own clock as something the owner said.
                 //
-                // Scoped to this one stem rather than all of
-                // `is_harness_voice`: a peer's delivered message or a
-                // boredom notice *is* something that happened in the cut
-                // stretch, and whether a summary should carry those is a
-                // separate question from whether it should carry a clock.
+                // Dropped outright rather than relabelled, unlike the other
+                // harness voices below: a clock reading is not an event in
+                // the stretch being summarised, and the whole hazard is a
+                // summariser copying the date out of it.
                 Block::Text { text }
                     if text
                         .trim_start()
                         .starts_with(crate::date_context::REFERENCE_STEM) => {}
                 Block::Text { text } if !text.trim().is_empty() => {
+                    // **The harness's own voice is labelled as the harness,
+                    // not as the owner.** A peer's delivered message, a
+                    // boredom notice, a plan-step nudge and the two turn
+                    // nudges all ride in `Role::User` messages
+                    // (`agent::append_user_text`), so labelling by role alone
+                    // told the summariser the owner had said them — and the
+                    // summary lands in `messages[0]`, where it outlives every
+                    // turn it describes. `render_for_distill` reuses this, so
+                    // the same misattribution reached `mecha distill` and
+                    // from there the knowledge graph as something the owner
+                    // said.
+                    //
+                    // Relabelled rather than dropped, because each of these
+                    // *is* something that happened in the stretch and a
+                    // summary that loses "a peer sent you this" loses a fact.
+                    // Role-scoped for the reason
+                    // `Agent::fold_calendar_reference` is: only a user-role
+                    // block can be the harness speaking here, and a model
+                    // echoing a nudge back is the model's own words.
+                    let who = if message.role == Role::User && crate::agent::is_harness_voice(text)
+                    {
+                        "harness"
+                    } else {
+                        who
+                    };
                     out.push_str(&format!("[{who}] {}\n", text.trim()));
                 }
                 Block::ToolUse { name, input, .. } => {
@@ -722,6 +746,49 @@ pub fn orphaned_tool_results(messages: &[Message]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A peer's message is an event; it is not the owner speaking.
+    ///
+    /// Every harness voice rides in a `Role::User` message
+    /// (`agent::append_user_text`), so labelling by role alone told the
+    /// summariser the owner had said them — and the summary lands in
+    /// `messages[0]`, outliving every turn it describes. `render_for_distill`
+    /// reuses this, so the same misattribution reached the knowledge graph as
+    /// something the owner said.
+    #[test]
+    fn a_harness_voice_is_summarised_as_the_harness_and_not_as_the_owner() {
+        // Shaped as `mailbox::render_delivery` writes one — the stem is what
+        // `is_harness_voice` matches, and the assertion below keeps this
+        // fixture honest if that ever changes.
+        let delivered = format!(
+            "[Message m1 from `peer` {}]\nthe deploy finished",
+            crate::mailbox::DELIVERY_STEM
+        );
+        assert!(
+            crate::agent::is_harness_voice(&delivered),
+            "fixture must actually be a registered harness voice"
+        );
+        let mut turn = Message::user("carry on with the merge");
+        turn.content.push(Block::text(delivered));
+
+        let rendered = render_for_summary(&[turn], 2_000);
+        assert!(
+            rendered.contains("[user] carry on with the merge"),
+            "the owner's own words stay the owner's: {rendered}"
+        );
+        assert!(
+            rendered.contains("[harness]"),
+            "the delivery must be attributed to the harness: {rendered}"
+        );
+        // The event survives — relabelled, not dropped.
+        assert!(rendered.contains("the deploy finished"), "{rendered}");
+        for line in rendered.lines().filter(|l| l.contains("deploy finished")) {
+            assert!(
+                !line.starts_with("[user]"),
+                "a peer's message must not read as the owner's: {line}"
+            );
+        }
+    }
 
     /// The reference is not a turn, so the summariser must not be shown one.
     ///
