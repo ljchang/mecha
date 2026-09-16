@@ -401,8 +401,16 @@ fn prepare_mismatch(sessions_dir: &Path, r: &Reflexion) -> Result<Result<ProbePr
             .messages
             .first()
             .ok_or_else(|| anyhow::anyhow!("missing task prompt"))?;
+        // The owner's task, not the whole message. A whole-`Message`
+        // equality against `Message::user(&case.prompt)` compares `content`
+        // block for block, and the loop folds a calendar reference into the
+        // first user message of a fresh conversation — so every recording
+        // made by the current loop failed this gate, reporting "recorded task
+        // differs from fixture" about a fixture that matched perfectly. Same
+        // correction the two intervention locators took.
         anyhow::ensure!(
-            first == &mecha_core::message::Message::user(&case.prompt),
+            first.role == mecha_core::message::Role::User
+                && mecha_core::agent::owner_text(first).trim() == case.prompt.trim(),
             "recorded task differs from fixture"
         );
         mecha_core::mismatch::validate_recording(&recorded)?;
@@ -720,6 +728,19 @@ mod mismatch_tests {
         artifact: bool,
         criterion: bool,
     ) -> (mecha_core::mismatch::Workspace, Reflexion) {
+        fixture_folded(clean, artifact, criterion, false)
+    }
+
+    /// `folded`: record the task turn the way the current loop leaves it —
+    /// the owner's prompt plus the calendar reference the loop folds in,
+    /// arriving as the `Record::Rewrite` that `record_transition` writes when
+    /// a run edits a message the session already recorded.
+    fn fixture_folded(
+        clean: Option<bool>,
+        artifact: bool,
+        criterion: bool,
+        folded: bool,
+    ) -> (mecha_core::mismatch::Workspace, Reflexion) {
         let root = mecha_core::mismatch::Workspace::new().unwrap();
         let mut case:mecha_core::mismatch::ArtifactCase=serde_json::from_value(serde_json::json!({"prompt":"write answer.json","goal":"task:x","files":{},"artifacts":{"answer.json":{"ok":true}}})).unwrap();
         if criterion {
@@ -765,6 +786,20 @@ mod mismatch_tests {
         session
             .append(&Record::Message(Message::user("write answer.json")))
             .unwrap();
+        if folded {
+            let mut first = Message::user("write answer.json");
+            first.content.push(mecha_core::message::Block::text(
+                mecha_core::date_context::render(
+                    chrono::Utc::now(),
+                    Some(chrono_tz::America::New_York),
+                ),
+            ));
+            session
+                .append(&Record::Rewrite {
+                    messages: vec![first],
+                })
+                .unwrap();
+        }
         let step = criterion_step.unwrap_or(StepFeedback {
             criterion: None,
             completion_batch: None,
@@ -816,6 +851,24 @@ mod mismatch_tests {
             assert!(prepare_probe(root.path(), &r).unwrap().is_err());
         }
     }
+    /// The gate compared whole `Message`s, so a recording made by the
+    /// current loop — whose task turn carries the folded calendar reference
+    /// beside the prompt — failed it while reporting "recorded task differs
+    /// from fixture" about a fixture that matched exactly. Artifact
+    /// validation would have been permanently unavailable for everything
+    /// recorded from here on, which is worse than degraded: it reads as the
+    /// owner having written the case wrong.
+    #[test]
+    fn a_folded_calendar_reference_is_not_a_different_task() {
+        let (root, r) = fixture_folded(Some(true), true, false, true);
+        let prep = prepare_probe(root.path(), &r).unwrap();
+        assert!(
+            prep.is_ok(),
+            "the folded task turn must still match its fixture: {:?}",
+            prep.err()
+        );
+    }
+
     #[test]
     fn owner_criterion_failure_requires_its_recorded_clean_contract() {
         for clean in [Some(true), Some(false), None] {
