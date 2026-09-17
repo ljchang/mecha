@@ -14,6 +14,38 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-17 — the third leg of the trifecta is a class, not a bit: who picks
+the recipient is what the interlock was always about.** The complaint was that
+reading mail ended web search for the rest of a conversation, and the
+frustration was right even though its premise was not — a search query is
+outbound, the payload fits in `?q=`. What `external_send` could not say is
+**who receives it**, which is the question an exfiltration attack actually
+turns on: the attacker has to read the bytes back, and that needs the attacker
+to choose the recipient. `WebSearch::input_schema` is `query`, `limit`, `depth`
+and no destination field. The duty cycle was the other half: `McpTool` declares
+`private_data: true` unconditionally (no annotation can say otherwise) and the
+operator's config forces `untrusted_input` on graph, mail and docs, so a single
+`kg_search` armed **both** legs in one call, and taint never disarms. #241
+(`14f35c91`) replaces the field with `Egress` — `None < Blind < Chosen`,
+`union` a max, so an override still only ever widens — and splits the two
+controls that already existed: the interlock fires on `Chosen`,
+`block_sends_after_private` on both, which is the division `config.rs` had
+described in its own doc comment (*"an ordinary privacy leak rather than an
+attack"*) while `web_search` paid under both. `Blind` is earned in code by a
+schema with no destination and has deliberately no TOML spelling;
+`SearchBackend::egress(depth)` defaults to `Chosen`, so searxng and tavily are
+blind at both depths while **exa is blind at quick and not at deep** —
+`deep-reasoning` is agentic research that fetches pages the query steers it
+towards. An armed conversation degrades to `SearchChain::search_blind` rather
+than losing the tool, and `Subagent::new` taking the max of its children's
+classes makes a search-only research child delegable again, reopening the route
+`config.rs` recommended and the 2026-09-02 taint-inheritance fix had closed.
+Measured rather than argued (§6b of `docs/EGRESS-DESIGN.md`): session
+`20260917T035905-f0ebc369` on the local model records taint
+`{private: true, untrusted: true}` after one `kg_search`, then `web_search`
+executing, served `(via searxng)`, answered in one call with no retry.
+Installed and the five long-running units restarted the same day.
+
 **2026-09-16 — a clock reading is not a standing instruction: the date is
 asked per turn and folded into the turn.** On 2026-09-14 a 09:21 voice call
 was told it was Sunday the 13th, queried the calendar for that day, and read
@@ -7811,6 +7843,22 @@ and is what finally exercised the path.)
   that only sometimes trips it is worse than one that always does: the failure
   correlates with the work being worth doing, which is exactly when nobody is
   watching. Found by an automated review, not by running it.
+- **A fix to a refusal message is a change to a subsystem, and its other
+  callers have to be re-checked like any other.** #241 spent four of its six
+  review passes fixing defects its *previous* pass had introduced, all in the
+  refusal/remedy layer and all the same shape. `WebSearch::denial_remedy` was
+  written against the interlock and `agent.rs` appends it to the leak branch
+  too, so it told an operator to add a backend that would not help; the fix
+  passed a `DenialCause`, and then picked the first risk that matched rather
+  than the *binding* one, so the both-fire case got the wrong remedy again;
+  suppressing the blind-route hint under the leak guard left the same hint's
+  remedy forty lines below unguarded. Each fix was correct about the mechanism
+  being changed and silent about who else read it. The general lesson: when a
+  guard's *message* is the thing you are repairing, enumerate every branch that
+  renders it before you change one — the message is a function of which control
+  fired, and there is usually more than one. A corollary the same arc paid for:
+  a refusal that names an exit must check the exit is open under *every* active
+  control, or it manufactures the dead end it exists to prevent.
 - **Check-then-act across a human is a race, not a formality.** `outbox send`
   holds the store lock across execution so two sends cannot both pass the
   pending check. `outbox review` checked pending, printed the draft, and then
