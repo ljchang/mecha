@@ -277,9 +277,13 @@ load-bearing.** `voice-uplink-transform.js` is the buffered uplink's tap
 loads it declares the channel in its offer; a dist rsynced without it is
 a 404 the page turns into an RTP fallback — heard, but with #226's
 behaviour on a stall rather than #231's, and nothing in the repo to say
-why. Check it the way the bundle is checked: `curl -s -o /dev/null -w
-'%{http_code} %{content_type}\n' -H 'Tailscale-User-Login: <owner>'
-http://127.0.0.1:63242/voice-uplink-transform.js` → `200 text/javascript`.
+why. Check it through the door the phone uses, the way the bundle is
+checked: `curl -s -o /dev/null -w '%{http_code} %{content_type}\n'
+https://YOUR-HOST.YOUR-TAILNET.ts.net:8443/voice-uplink-transform.js` →
+`200 text/javascript`. Not the loopback origin: `tailscale serve` proxies
+`:443` and `:8443` to `127.0.0.1:63242`, so probing 63242 with a
+hand-supplied `Tailscale-User-Login` tests the app and skips the door —
+and the 404 this check exists to catch is one the phone gets.
 
 When a header probe echoes a value back (`If-Modified-Since` from a
 `Last-Modified` you just grepped), strip carriage returns first —
