@@ -2421,15 +2421,15 @@ grant is seven days and refreshing does not extend it, so it was due to end
 **Superseded by a later consent.** `granted_at` in that account's
 `oauth.json` reads 2026-09-15T17:13:06Z, so the live grant is the one minted
 that day and it lapses 2026-09-22 17:13Z, not the 21st. `mecha doctor` first
-warns at **17:13Z on the 20th**, not at the start of it:
-`doctor::check_grant_age` rounds the hours remaining *up* to whole days and
-warns once that reaches `GRANT_WARN_WITHIN_DAYS`, so the threshold is exactly
-48 h before expiry rather than a calendar boundary — a run on the morning of
-the 20th saying nothing is correct, not broken. Neither date above was
-reached. It was still minted while
-the project was in Testing, so it keeps the seven-day clock whatever the
-app's status is now — the publish on 2026-09-16 changed only what *future*
-consents get (`HISTORY.md`, 2026-09-16).
+warns at **16:13Z on the 20th**, not at the start of it:
+`doctor::check_grant_age` truncates the hours remaining and *then* rounds
+that up to whole days before comparing against `GRANT_WARN_WITHIN_DAYS`, so
+the threshold falls just under 49 h before expiry rather than on a calendar
+boundary — a run earlier that day saying nothing is correct, not broken.
+Neither date above was reached. It was still minted while the project was in
+Testing, so it keeps the seven-day clock whatever the app's status is now —
+the publish on 2026-09-16 changed only what *future* consents get
+(`HISTORY.md`, 2026-09-16).
 
 **2026-09-16, 19:44Z, mecha-7b: #238 (the clock, asked per turn) merged at
 `42c359f1` and deployed.** `~/.cargo/bin/mecha` reinstalled from mecha `main`

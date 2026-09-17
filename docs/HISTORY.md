@@ -6160,8 +6160,9 @@ matters is the general shape.
 **A recognizer's contract includes the shape of the clip, not just its
 words.** The late lane handed Parakeet-TDT five seconds of clear speech
 with a second of silence inside it and got nothing back; the same words
-without the gap transcribed. Measured on one clip start at 4.5 s (text),
-4.9–6.0 s (nothing), 7.0 s (only the words *after* the gap): the model
+without the gap transcribed. Measured on the same five seconds cut to
+lengths of 4.5 s (text), 4.9–6.0 s (nothing) and 7.0 s (only the words
+*after* the gap): the model
 drops what precedes a silence it is given as one input. The live lane never
 sees this because VAD segments end at silence; any new path into the same
 recognizer must segment as the live one does *before* comparing results,
