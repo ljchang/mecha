@@ -514,8 +514,12 @@ pub struct ToolCtx {
     /// subagents running in parallel are otherwise indistinguishable to a
     /// renderer.
     pub call_id: Option<String>,
-    /// The conversation's taint as of this turn, stamped per dispatch when a
-    /// mailbox is attached. The conservative pre-gate value — it includes
+    /// The conversation's taint as of this turn, stamped per dispatch —
+    /// unconditionally, by `Agent::run_in`'s dispatch loop. (It was once
+    /// conditional on a mailbox being attached; that `else` arm is long gone,
+    /// and the sentence saying otherwise survived until this field became
+    /// load-bearing for a security decision — `WebSearch::call` reads it to
+    /// decide whether to narrow itself.) The conservative pre-gate value — it includes
     /// what the *batch* can return, so a read and a `message_send` in one
     /// turn cannot stamp a clean label on the outgoing message. `None` means
     /// nobody stamped it, and a consumer must fail closed (treat it as fully

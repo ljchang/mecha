@@ -749,11 +749,37 @@ impl Tool for WebSearch {
         //
         // `"ask"` deliberately does not: a blind call raises no escalation
         // (`injection_risk` is false for it), so there is no human yes to
-        // widen on, and quietly running the full chain would be a narrowing
-        // nobody was asked about. Degrading is the answer `ask` gets, and it
-        // is the better one — search keeps working with no modal at all.
+        // widen on, and quietly running the full chain would be a widening
+        // nobody asked for. Degrading is the answer `ask` gets — search keeps
+        // working with no modal at all. It is not free: an `ask` operator
+        // used to get a prompt and, on approval, a full-depth search, and now
+        // gets a quiet quick one. `EGRESS-DESIGN.md` §6 item 5 records that
+        // rather than counting it purely as a gain.
+        // `has_blind_backend()` is the third term, and it is what keeps this
+        // in agreement with `capabilities()` *by construction*: the tool
+        // declares `Blind` exactly when a blind route exists, so degrading
+        // exactly when one exists makes `search_blind`'s `bail!` unreachable
+        // from here rather than latently reachable.
+        //
+        // Without it, the `"ask"` reasoning above quietly stopped holding in
+        // the one branch `capabilities()` added for the other case. With no
+        // blind backend the tool declares `Chosen`, so `injection_risk` *is*
+        // true, an escalation *is* raised, and a human *does* say yes — and
+        // that yes landed on `bail!("… none is configured")` while the full
+        // chain would have answered. `ask` was strictly worse than `block`,
+        // which hands back `denial_remedy(Injection)` naming SearXNG. Latent
+        // today (every shipped backend is blind at quick depth), and exactly
+        // the path the `Chosen` trait default exists to light up for the next
+        // one. Found by review, 2026-09-17.
+        //
+        // Reaching `call` with no blind route means the ordinary gate already
+        // let this through — approved under `ask`, waived under `allow`, or
+        // the conversation is not armed — so the full chain is the right
+        // answer in all three.
         let waived = ctx.security.trifecta == crate::config::TrifectaPolicy::Allow;
-        let armed = !waived && ctx.taint.is_none_or(|t| t.trifecta_armed());
+        let armed = !waived
+            && self.chain.has_blind_backend()
+            && ctx.taint.is_none_or(|t| t.trifecta_armed());
 
         let response = match if armed {
             self.chain.search_blind(query, limit).await
@@ -1013,25 +1039,50 @@ mod tests {
         assert!(chosen_seen.lock().unwrap().is_empty());
     }
 
-    /// Armed with no blind backend configured is an error the model can read,
-    /// not a panic and not a silent empty — and the interlock has already
-    /// refused the call by then anyway, because `capabilities` declared the
-    /// conservative class. Both halves matter: the declaration is what stops
-    /// the call, and this is what happens if anything ever reaches past it.
+    /// With no blind backend the *declaration* is what stops an armed call —
+    /// `capabilities()` is `Chosen`, so the interlock refuses it under
+    /// `block` with a remedy naming SearXNG. Reaching `call` at all therefore
+    /// means the gate let it through, and the honest answer then is the full
+    /// chain rather than a refusal the caller has already overridden.
+    ///
+    /// This test used to assert the opposite, and was wrong for a reason
+    /// worth keeping: it read `search_blind`'s `bail!` as a safety net when
+    /// it was really an unreachable-by-construction precondition that the
+    /// two-term `armed` had quietly made reachable.
     #[tokio::test]
-    async fn armed_with_no_blind_backend_is_a_readable_refusal() {
-        let (chosen, _) = classed("paid", Egress::Chosen);
+    async fn no_blind_backend_means_the_declaration_gates_it_and_call_answers() {
+        let (chosen, chosen_seen) = classed("paid", Egress::Chosen);
         let tool = WebSearch::new(Arc::new(SearchChain::new(vec![chosen])));
-        let armed = Taint {
-            private: true,
-            untrusted: true,
-        };
+
+        assert_eq!(
+            tool.capabilities().egress,
+            Egress::Chosen,
+            "the gate is the declaration, and it is the conservative one"
+        );
+
         let out = tool
-            .call(json!({"query": "x"}), &ctx_with(Some(armed)))
+            .call(
+                json!({"query": "x"}),
+                &ctx_with(Some(Taint {
+                    private: true,
+                    untrusted: true,
+                })),
+            )
             .await
             .unwrap();
-        assert!(out.is_error);
-        assert!(out.content.contains("none is configured"));
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(*chosen_seen.lock().unwrap(), vec![Depth::Quick]);
+    }
+
+    /// `search_blind` is `pub`, so its precondition is still defended for a
+    /// caller that is not `WebSearch::call` — it errors readably rather than
+    /// returning a silent empty, which would read as "the web has nothing".
+    #[tokio::test]
+    async fn search_blind_still_refuses_readably_when_called_with_no_blind_entry() {
+        let (chosen, _) = classed("paid", Egress::Chosen);
+        let chain = SearchChain::new(vec![chosen]);
+        let err = chain.search_blind("x", 5).await.unwrap_err().to_string();
+        assert!(err.contains("none is configured"), "{err}");
     }
 
     /// `trifecta = "allow"` is the operator's written waiver of the injection
@@ -1106,6 +1157,36 @@ mod tests {
             None,
             "adding a blind backend does not lift the leak guard, so do not say it does"
         );
+    }
+
+    /// A `Chosen`-only chain declares `Chosen`, so under `ask` the interlock
+    /// escalates and a human can say yes — and that yes must answer, not
+    /// error. Before this, `call` degraded anyway and hit `search_blind`'s
+    /// `bail!`, making `ask` strictly worse than `block`, which at least
+    /// hands back a remedy naming SearXNG. Fails on the two-term `armed`.
+    #[tokio::test]
+    async fn an_approved_call_on_a_chosen_only_chain_answers_rather_than_erroring() {
+        let (chosen, chosen_seen) = classed("paid", Egress::Chosen);
+        let tool = WebSearch::new(Arc::new(SearchChain::new(vec![chosen])));
+
+        let mut ctx = ctx_with(Some(Taint {
+            private: true,
+            untrusted: true,
+        }));
+        ctx.security.trifecta = crate::config::TrifectaPolicy::Ask;
+
+        let out = tool
+            .call(json!({"query": "tide times", "depth": "deep"}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(
+            !out.is_error,
+            "the human's yes must not become an error: {}",
+            out.content
+        );
+        assert_eq!(*chosen_seen.lock().unwrap(), vec![Depth::Deep]);
+        assert!(!out.content.contains("destination your config fixes"));
     }
 
     /// The invariant `WebSearch::capabilities` rests on, in the half that
