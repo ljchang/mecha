@@ -2381,14 +2381,17 @@ checkout was returned to `main` afterwards and is clean.
 
   **Verification on the merged tree, 2026-09-16:** `MECHA_TEST_REQUIRE_BACKENDS=1
   cargo test` → **2,723 passed, zero failed, three ignored** (1,582 core,
-  834 CLI, 151 mail library, 75 Slack, 22 first-run, 13 MCP, 12 anticipation,
-  9 sandbox-backend, 8 appraisal-fixture, 6 fixture-server, 5 serve-lifecycle,
-  3 run-lifecycle, 1 mail binary, 1 doctest), with formatting and all-targets
-  Clippy clean. **The per-suite figures are a hand transcription and sum to
-  2,722, one short of the runner's own total**; no `tests.log` was archived
-  for this run, so which line is short was not recovered. Compare totals
-  against this baseline rather than per-suite counts — and for a real delta
-  diff `cargo test -- --list`, since a count difference is a commit
+  834 CLI, 151 mail library, 75 Slack, 22 first-run, 13 MCP, 12 core
+  anticipation, 1 CLI anticipation, 9 sandbox-backend, 8 appraisal-fixture,
+  6 fixture-server, 5 serve-lifecycle, 3 run-lifecycle, 1 mail binary,
+  1 doctest), with formatting and all-targets Clippy clean. **There are two
+  `tests/anticipation.rs` suites, one per crate**, so a run labelled by file
+  path prints two identically-named rows; collapsing them is how an earlier
+  form of this line summed to 2,722 against its own headline. The split is
+  structural rather than remembered — `grep -cE '#\[test\]|#\[tokio::test\]'`
+  gives 12 and 1, and `git diff --quiet 42c359f1 origin/main --` on both files
+  is silent, so they are byte-identical to the tree measured here. For a real
+  delta diff `cargo test -- --list`, since a count difference is a commit
   difference. Docker is usable on this box, so the sandbox tests really
   ran rather than skipping — which is the reason to set that variable at all.
   **One caveat recorded rather than smoothed over:** a single full-workspace
