@@ -14,6 +14,87 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-16 — a clock reading is not a standing instruction: the date is
+asked per turn and folded into the turn.** On 2026-09-14 a 09:21 voice call
+was told it was Sunday the 13th, queried the calendar for that day, and read
+yesterday's schedule back as today's; corrected twice, the model's own
+thinking was *"the user is insisting today is Monday, September 14th, which
+contradicts my system prompt. I should trust the system."* `prepare_tools`
+rendered `date_context::render` once and `Agent::new` froze it into
+`Agent::system` — correct for a one-shot and wrong for a daemon, and
+`mecha serve` holds one `Arc<Agent>` for its whole lifetime, that process
+having started at 22:37 EDT the night before. Session
+`20260911T130932-abcde902` carried a date two days stale the same way; the
+trigger runner never did, because it builds an agent per run, which is the
+control that isolated process lifetime as the cause. #238 (`42c359f1`) makes
+the clock a trait object beside `Provider`, `Tool` and `Approver` —
+`clock.rs`'s `SystemClock`, `FixedClock` for an experiment's fixture instant,
+and `TestClock` a test can advance — and `Agent::fold_calendar_reference`
+folds the reading into the outgoing user message whenever the local date it
+states has stopped being true. **The decision is an equality check against the
+rendered block**, byte-identical for every turn on one local day, so there is
+no refresh cadence to get wrong, no per-conversation field to reset on resume,
+and a cut that drops the block re-acquires it on the next call. It rides in
+the block the moving `cache_control` breakpoint re-pays every request anyway,
+and the system prompt stopped changing daily — which ends every long-lived
+process re-paying its whole prefix at midnight. `date_context::GUIDANCE` keeps
+the standing half, names no date, and concedes the date to *the person in the
+conversation* while excluding documents, web pages, email and tool results,
+because `Role::User` carries all of those. The fold is gated on the agent's
+prompt carrying `GUIDANCE`, so `gossip`'s readers, `vet` and every subagent —
+all of which overwrite the system prompt and never had a date — keep the
+surface they had. **Six review passes found twelve defects, all but the last
+two in readers rather than in the fold**: code that had come to depend on the
+date living in the prompt. `mismatch::drive` was an unclocked fourth replay site
+(`RunConfig::clock` now records the reading, `clock::for_replay` pins all
+four); `learning::locate_followup` and `counterfactual::locate_steer` compared
+`Message::text()` against text mined per block, so a correction typed on the
+first turn of a new local day mined fine and located nowhere
+(`agent::owner_text` is now the one definition all three read through);
+`title::is_derived` prefix-matched untrimmed text while `compact::rebuild`
+writes both sentinels behind a leading newline pair, so a compacted session
+rendered its summary and verbatim carried tool output inside the owner's
+bubble; a summary could cut the fresh reference away and leave the head's
+older one as the newest; `probe::prepare_mismatch` gated on whole-`Message`
+equality and failed every new recording while blaming the fixture;
+`render_for_summary` labelled the reference `[user]`;
+`eval::grounding_evidence` read the date off a prompt that no longer names
+one, so the judge lost the context it is told to use as evidence; the
+overflow-recovery arm re-sent inline without re-folding, reachable *only*
+because `rebuild` had just been taught to strip the head's copy; and the
+fold's own walk counted a model's echo as the harness speaking. The last two
+were consequences of fixes made earlier in the same review, which is the
+argument for running the loop to a clean pass rather than stopping when the
+list looks handled. Deployed the same afternoon — installed from `main`, the
+four long-lived units restarted at 19:44Z, and the voice facade answered
+"Wednesday, September 16th, 2026" against a host clock of 15:45 EDT.
+**Session files change shape**: the first run of a conversation, and the first
+run of each new local day, records a `Record::Rewrite` rather than appending,
+because the fold edits a message the session already wrote; that record
+carries the whole message list and clears `taint_checkpoints`, which
+over-taints rather than under. What it left is in HANDOFF — the tool-boundary
+half, and PR #239.
+
+**2026-09-16 — the OAuth client published, and the seven-day re-consent ended
+for every grant issued after it.** `FlowMail`, the Google Cloud project behind
+the `personal` mail and calendar account, had sat in **Testing** since
+2026-08-18 on the understanding that production needed verification plus a
+CASA security assessment (~$540/yr), because `gmail.modify` is a restricted
+scope. The premise was wrong, and the owner reopened it on 2026-09-15 against
+Google's own *OAuth app state overview*: an app may publish to production
+**without** verification, paying a 100-user lifetime cap and an "unverified
+app" interstitial — but not the seven-day refresh-token expiry, which is tied
+to *Testing* status specifically rather than to being unverified. It
+published. The project is In production (External, 5/100) with **scope
+verification deliberately not submitted**, and branding verification passed
+the same day, once `mecha-factory.ai` was verified in Google Search Console as
+a Domain property — one apex TXT row, typed by hand because that zone's DNS
+has no API. What this does *not* settle is in HANDOFF: the seven-day clock
+belongs to the grant rather than the app, so the `personal` grant minted
+2026-09-15 keeps its own expiry and still owes a re-consent. The console
+states were observed by `mecha-41` and are not verifiable from a shell; the
+DNS row and the three branding URLs were re-checked independently.
+
 **2026-09-13 — a gap in the audio is not silence: the voice call holds the
 turn across a stall and says so, and the owner asked for the sound.** Two
 calls from a moving car on 2026-09-12 reached the model as six fragments —
@@ -7677,6 +7758,41 @@ and is what finally exercised the path.)
 
 ### Review process
 
+- **Twelve defects in six review passes, all but the last two in readers
+  rather than in the change itself.** #238 moved the date out of the system
+  prompt, and almost every finding was a *reader* that had silently come to
+  depend on it being there: a prompt
+  equality gate (`probe::prepare_mismatch`), a summariser's input
+  (`compact::render_for_summary`), an eval judge's evidence
+  (`eval::grounding_evidence`), two intervention locators
+  (`learning::locate_followup`, `counterfactual::locate_steer`), a replay
+  site nobody had listed (`mismatch::drive`). The general lesson:
+  **removing a value from a shared slot breaks every reader that was quietly
+  reading it, and `grep` finds the ones that name it, not the ones that
+  inherited it** — the system prompt was not only carrying the date, it was
+  carrying it *to exactly the set of roles that had one*, so overwriting it
+  was how a narrowed role (gossip's readers, `vet`, every subagent) opted
+  out. Deleting the value deleted the opt-out mechanism with it. Two of the
+  last four findings were consequences of fixes made earlier in the same
+  review, which is the argument for running the loop to a clean pass rather
+  than stopping when the list looks handled. And one finding was a prompt
+  rewrite made for usability that widened what the model would accept a date
+  *from*: the wording it replaced was bad for the owner and load-bearing
+  against content, because `Role::User` is a message role and not a party.
+- **A fixture that exercises nothing passes the assertion anyway.** Twice in
+  one review. A test written to prove the overflow-recovery arm re-folds the
+  date compacted nothing at all — five messages, and `worth_compacting`
+  requires a cut past `MIN_DROPPED` — so it asserted the calendar and drove
+  none of the code; `compact_keep_recent = 1` then bit the same way, because
+  the target is `len - 1`, which splits a `tool_use` from its result and
+  leaves `cut_point` nothing safe. Earlier in the same review,
+  `a_compaction_summary_is_not_the_owner_speaking` had been green for years
+  over an untrimmed `starts_with` bug, because it reads through
+  `owner_turns`, which trims at its own call site. The lesson: **a green test
+  over a fixture that did nothing is indistinguishable from a green test over
+  one that worked.** Assert the precondition the case depends on — that a
+  summary actually landed, that the predicate was called on the bytes the
+  writer really produces — or the test is measuring its own fixture.
 - **Eight defects in ten review passes, every one in the half of a
   protocol the tests never drove.** #226's pause machinery has two sides
   that talk — the page's `Pauses` and the worker's `LinkWatch` — and the
@@ -7959,6 +8075,42 @@ check the timestamp before re-running anything.**
 
 
 ### Environment
+
+**Two verification tracks behind one word, and clearing the cheap one routes
+you onto the expensive one.** Google's console calls both "verification".
+*Brand* verification proves you own the domain in the app's home-page URL —
+one DNS TXT row, free, and it governs only whether your name and logo render.
+*Scope* verification proves you handle other people's data safely, and for a
+restricted scope like `gmail.modify` it carries a CASA assessment at
+~$540/yr, annual, which resets on any scope change. Fixing the branding
+failure lands you on the scope-verification submit page, one button from a
+weeks-long paid review the app did not need; the same banner had already
+appeared once, on 2026-08-18, on a project with no sensitive or restricted
+scopes at all (`docs/DOCS-RESEARCH.md` §6.2). Two lessons, and the second is
+the one that cost the hour: **when one word names two processes with
+different prices, read the artifact that distinguishes them rather than the
+banner that merges them** — here the Verification Center's two cards, never
+the banner above them. And **an error message names the state, not the
+place**: the branding failure is raised in the Cloud console, but nothing
+fixes it there, because domain ownership lives in Search Console, a different
+product the error never mentions.
+
+**A value with a daily lifetime, rendered once into a process that runs for
+days.** The date was computed by `prepare_tools` and frozen into
+`Agent::system`, which is exactly right for `mecha run` and wrong for
+`mecha serve`, which holds one `Arc<Agent>` until someone restarts it. A
+daemon started at 22:37 EDT told a 09:21 voice call the next morning it was
+still yesterday, queried the calendar for that day, and read the wrong
+schedule back — internally consistent, so it read as correct. The comment
+above the code had already conceded the hazard ("the one part of the cached
+prefix that legitimately changes daily") under an unstated assumption that a
+process lives less than a day. The general lesson: **a refresh cadence is a
+property nobody maintains.** When a fact's lifetime is shorter than its
+holder's, do not schedule a refresh — move the fact to a place the protocol
+already re-pays, so freshness is structural and staleness has nowhere to
+live. The corollary for diagnosis: the control that isolates it is the
+surface that *does* get it right (here the trigger runner, which builds an
+agent per run), not the one that is wrong.
 
 **An executable path can be right while its bytes belong to another tree.**
 During the 2026-09-08 lifecycle checks, integration tests launched Cargo's

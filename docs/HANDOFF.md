@@ -1567,57 +1567,29 @@ because the triage scopes widened, and both are recorded in each account's
 
 | Account | Provider | Grant | Expiry |
 |---|---|---|---|
-| `personal` | Google | `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` | **7 days from consent — next ≈2026-08-25** |
+| `personal` | Google | `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` | **still 7 days from consent** — last consent 2026-09-15 (`granted_at` in that account's `oauth.json`), so this grant lapses ≈2026-09-22; it was minted in Testing and keeps its clock, and publishing to production changed only what *future* consents get (see below) |
 | `dartmouth` | Outlook | `Mail.ReadWrite`, `Mail.Read`, `Mail.Send`, `Calendars.ReadWrite` | none — permanent |
 
-The Google client (Cloud project **FlowMail**, the same registration the old
-app used) is in **Testing** publishing status with User type External, and
-Google expires a Testing app's refresh token exactly 7 days after consent —
-refreshing does not extend it. Moving to production would fix that but was
-understood to need verification plus a CASA security assessment (~$540/yr),
-because `gmail.modify` is a restricted scope. **Decided 2026-08-18: stay in
-Testing, and revisit CASA once the main development features are done.**
+**Open: `personal` still owes a re-consent.** The seven-day clock is a
+property of the grant, not of the app. That account's token was minted on
+2026-09-15, while the project was still in Testing, so it keeps its own
+expiry and lapses ≈2026-09-22 whatever the app's status is now — publishing
+changed only what *future* consents get. `~/.mecha/mail/accounts.toml`
+deliberately keeps `grant_lifetime_days = 7` on it so `mecha doctor` goes on
+warning two days out. **That line comes out when a grant is *observed*
+surviving past day eight** — deleted rather than raised to a large number, so
+its absence is the claim and no one has to trust a figure nobody measured.
 
-**Reopened 2026-09-15, by the owner, on evidence that the premise was wrong —
-and not yet settled.** Google's own *OAuth app state overview* says an app may
-be published to production **without** completing verification: the result is
-a 100-user hard cap, no app name or logo on the consent screen, and an
-"unverified app" interstitial — but no seven-day expiry, because that expiry is
-tied to *Testing* status specifically and not to being unverified. CASA is the
-price of *verification*, which an app with one user does not need. If that
-reading holds, the 2026-08-18 decision was answering a question nobody had to
-ask.
+Everything else here is settled and has left. The publish is in
+[`HISTORY.md`](HISTORY.md)'s 2026-09-16 prose — In production, branding
+verified, scope verification deliberately not submitted, with the console
+states attributed to the session that observed them. The hazard that cost the
+time — two verification tracks behind one word, and the cheap one routing onto
+the expensive one — is under its *Traps already hit → Environment*. Only the
+re-consent is open, so only the re-consent is here.
 
-It is **not confirmed**, and the distinction matters: the publish attempt has
-not been made. It was blocked on something else entirely — Branding requires a
-homepage URL and a privacy policy URL on a registered authorized domain, and
-the site had neither. PR #234 adds `/privacy` and `/terms` so that the button
-can be reached at all. The empirical test is what happens on the click:
-
-- **Publishes** → the premise above was wrong, the seven-day re-consent ends,
-  and this note should record the reversal as settled.
-- **Bounced into scope verification** → the 2026-08-18 decision was right for
-  the right reason, and Testing stands until CASA is worth paying for.
-
-Ask the artifact, not the banner: `HANDOFF.md` already records that the
-Verification Center's banner misdescribes this. The two cards there, and the
-outcome of the click, are the evidence.
-
-Two things to carry into that revisit, both measured on 2026-08-18 by the
-parallel documents work (`docs/DOCS-RESEARCH.md` §6.2): the console
-distinguishes **brand verification** from **scope verification** and only the
-second is the expensive one — a banner reading "your app requires
-verification" appeared on a project with no sensitive or restricted scopes at
-all and turned out to be branding, which blocks nothing and must not be
-answered by submitting for review. Check the Verification Center's two cards,
-never the banner. And a Google grant is per (user, client), not per scope, so
-anything added to the FlowMail client shares mail's fate in both directions —
-which is why the documents work took its own project rather than this one.
-
-Meanwhile
-`~/.mecha/mail/accounts.toml` declares `grant_lifetime_days = 7` on `personal`
-so `mecha doctor` warns two days out; that file is in no git repository, so a
-fresh clone will not have it.
+`~/.mecha/mail/accounts.toml` is in no git repository, so a fresh clone will
+not have it — including the `grant_lifetime_days = 7` line above.
 
 Dartmouth's Entra registration (also named FlowMail, client
 `bc6a1e19-…`) already had `Mail.ReadWrite` **Delegated** granted tenant-wide,
@@ -2383,6 +2355,52 @@ stale-process sweep over `/proc/*/exe` found nothing on the previous
 inode. Benchmark binary, factory client and droplet untouched — nothing
 in the range reaches them. Three live Remote Control sessions were told.
 
+**2026-09-16, 19:44Z, mecha-7b: #238 (the clock, asked per turn) merged at
+`42c359f1` and deployed.** `~/.cargo/bin/mecha` reinstalled from mecha `main`
+at `42c359f1`, probed in **both** directions because a one-sided probe cannot
+tell a failed install from a current one: `strings ~/.cargo/bin/mecha | grep
+-c 'the person you are talking to'` printed 4 (0 before — the wording is one
+#238 added) and `grep -c 'If the user says the date is something other'`
+printed 0 (3 before — the wording #238 removed). Confirmed independently by
+`mecha-41` on the same box. `mecha-mail`, the graph binaries, `web/dist`, the
+benchmark binary, the factory client and the droplet are all untouched:
+`scripts/`, `web/` and `bench/` are byte-identical across the range, and
+`mecha-mail` does not link `mecha-core`. Restarted `mecha-slack`,
+`mecha-triggers`, `mecha-drain` and `mecha-serve` at 19:44:19Z, each logging
+its own startup line in a journal window opened at the restart; **`mecha-
+voice-worker` and `mecha-parakeet` deliberately not restarted**, since they
+run `scripts/voice/*.py` from the tree and nothing there moved (parakeet's
+restart costs a model load and voice is deaf until it finishes). The live
+check was the surface that failed: the voice facade answered "Wednesday,
+September 16th, 2026" against a host clock of 15:45 EDT. The stale-process
+sweep over `/proc/*/exe` found the four units on the current inode and **one
+process on the previous one — a `mecha tui` on pts/5 (pid 1360371, started
+18:05, launched from a tailnet login), which is the owner's own terminal**;
+reported, not killed, and `mecha-41` confirmed it is not its own. The shared
+checkout was returned to `main` afterwards and is clean.
+
+  **Verification on the merged tree, 2026-09-16:** `MECHA_TEST_REQUIRE_BACKENDS=1
+  cargo test` → **2,723 passed, zero failed, three ignored** (1,582 core,
+  834 CLI, 151 mail library, 75 Slack, 22 first-run, 13 MCP, 12 core
+  anticipation, 1 CLI anticipation, 9 sandbox-backend, 8 appraisal-fixture,
+  6 fixture-server, 5 serve-lifecycle, 3 run-lifecycle, 1 mail binary,
+  1 doctest), with formatting and all-targets Clippy clean. **There are two
+  `tests/anticipation.rs` suites, one per crate**, so a run labelled by file
+  path prints two identically-named rows; collapsing them is how an earlier
+  form of this line summed to 2,722 against its own headline. The split is
+  structural rather than remembered — `grep -cE '#\[test\]|#\[tokio::test\]'`
+  gives 12 and 1, and `git diff --quiet 42c359f1 origin/main --` on both files
+  is silent, so they are byte-identical to the tree measured here. For a real
+  delta diff `cargo test -- --list`, since a count difference is a commit
+  difference. Docker is usable on this box, so the sandbox tests really
+  ran rather than skipping — which is the reason to set that variable at all.
+  **One caveat recorded rather than smoothed over:** a single full-workspace
+  run earlier that day failed one docker test and five subsequent runs did
+  not. The cause is a five-second deadline in `sandbox::docker`'s `wait_for`
+  that was measuring process-spawn latency on a loaded box, not a defect in
+  what it tests; PR #239 named it `HANG_GUARD` and raised it, and landed on
+  `main` 2026-09-16.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -2442,25 +2460,28 @@ is recoverable without the checkout's cwd. Record:
 
 ## What to do next
 
-- **The shared checkout `~/Github/mecha` is on `feat/appraisal-goal-feedback`,
-  not `main` (2026-09-11).** This supersedes the 2026-09-04 bullet below, which
-  says it is on `main` and clean. Two things build from that working tree with
-  no branch check, so both would run the wrong code without looking wrong:
-  `bench/build-portable.sh` (`cd "$(dirname "$0")/.."`, called unconditionally
-  by `bench/run.sh`) would overwrite `target-musl/release/mecha` with a fresh
-  build of the branch and label the scorecard current, and
-  `mecha-voice-worker.service` has `WorkingDirectory=/home/ljchang/Github/mecha`
-  and runs `scripts/voice/worker.py` from it on every restart. The voice half is
-  latent today — `scripts/voice/` is byte-identical between `4dd2fb1c` and
-  `origin/main` — and stops being latent the moment either diverges.
+- **Four things build from the shared checkout's working tree with no branch
+  check, so a session that leaves `~/Github/mecha` on a branch makes them run
+  the wrong code without looking wrong.** `bench/build-portable.sh`
+  (`cd "$(dirname "$0")/.."`, called unconditionally by `bench/run.sh`)
+  overwrites `target-musl/release/mecha` with a build of whatever is checked
+  out and labels the scorecard current; `mecha-voice-worker.service` has
+  `WorkingDirectory=/home/ljchang/Github/mecha` and runs
+  `scripts/voice/worker.py` from it on every restart, and `mecha-parakeet`
+  runs `scripts/voice/parakeet_server.py` the same way. `llama-local`'s
+  `ExecStart` is `scripts/start-moe-mtp.sh` from that tree too. **Check the
+  branch before restarting any of them, and prove `scripts/` unchanged across
+  a move** (`git diff --quiet <a> <b> -- scripts`, not a hash — a peer
+  re-checking with `sha256sum` reads a different number for the same bytes).
+  The update skill's step 2 carries the recipe.
 
-  `HEAD` (`4dd2fb1c`) is an ancestor of `origin/main`, so the switch is a
-  fast-forward. What blocks it: 19 files are uncommitted there, and two hold
-  content that exists in no commit anywhere —
-  `website/docs/features/appraisal.md` (the `commitment`, `embarrassment` and
-  `guilt` rows) and `website/docs/reference/cli.md` (the `--image` flags and the
-  outbox `approve`/`reconcile` verbs), both last written 2026-09-08/09. Preserve
-  those before switching; they are not any current session's.
+  The 2026-09-11 form of this bullet is resolved and was checked rather than
+  assumed on 2026-09-16: the checkout is on `main` and clean, and the two
+  files it said existed in no commit anywhere are both tracked and were
+  committed on 2026-09-09 — `website/docs/features/appraisal.md` at
+  `6aeac2ca` (still holding the `embarrassment` rows) and
+  `website/docs/reference/cli.md` at `50a61c17` (still holding `--image`).
+  Nothing needs preserving before a switch today.
 
 - **Machine state as of 2026-09-04 10:04, verified surface by surface
   (mecha-26).** `main` is `188b823`; the shared checkout `~/Github/mecha` is
@@ -4194,6 +4215,33 @@ is true now:
   Decide from ledger data, not preemptively.
 
 ### Cheap, and worth doing first
+
+- **The tool-boundary half of the clock arc — the part that makes the *next*
+  wrong date a caught one instead of a believed one.** #238 (`42c359f1`)
+  fixed the harness's own staleness: the reading is asked per turn and
+  cannot go stale. What it did not do is make a wrong date *discoverable*.
+  On 2026-09-14 the first thing the run did was call
+  `mail__calendar_list_events` with `time_min: 2026-09-13T00:00:00-04:00`,
+  and the calendar answered that window faithfully — so the tool confirmed
+  the wrong premise instead of contradicting it. Two pieces, either useful
+  alone:
+
+  1. **Resolve relative terms at the tool boundary.** Let the time-scoped
+     mail and calendar tools accept `today` / `tomorrow` / `this week` and
+     resolve them inside the tool, where the clock is real, so a stale
+     window becomes *inexpressible* rather than merely unlikely. Note the
+     tension with `capture.rs`, which deliberately detects and never
+     resolves a spoken "when" — the distinction is that a capture is the
+     owner's words being recorded, and a query is the harness asking a
+     service a question.
+  2. **Stamp every time-scoped tool result with its own "as of".** Then a
+     wrong premise is contradicted by data on the first call. This is the
+     "check the envelope before the content" shape, and it is the half that
+     would have caught the incident within one tool call rather than two
+     owner corrections.
+
+  Both are `mecha-mail`'s surface, not `mecha-core`'s, which is why they
+  were deliberately left out of #238 rather than folded in.
 
 - **Rule on the `ask_user` decline wording** (measured 2026-08-30,
   deliberately unadopted — the source is restored to control). A/B, 5 runs x

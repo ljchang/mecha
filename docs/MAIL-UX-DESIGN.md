@@ -53,6 +53,9 @@ them.
    2026-08-19. See §1.)*
 5. **The store is an index, not a mailbox copy.**
 6. **Google stays in Testing**; CASA revisited after the main features land.
+   *(Superseded 2026-09-16: the client published to **In production** without
+   verification and without CASA — the seven-day expiry was the only thing
+   that decision was buying against. See `HISTORY.md`, 2026-09-16.)*
 
 ---
 
