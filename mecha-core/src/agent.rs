@@ -3910,6 +3910,17 @@ impl Agent {
                             // discovering it, and the operator learns the
                             // advice is noise.
                             //
+                            // `leak_guard_armed` is belt-and-braces rather
+                            // than load-bearing, and saying so is the point:
+                            // inside this arm `injection_risk` holds, so the
+                            // tool is `Chosen`, so `can_send()` is true, so
+                            // `leak_risk == leak_guard_armed` — and the arm's
+                            // own `!leak_risk` already implies it false. Kept
+                            // because it states the intent locally and
+                            // survives a change to the arm condition; noted
+                            // because a reader should not mistake it for the
+                            // thing doing the work.
+                            //
                             // `blind_senders` covers the surface restriction.
                             // `is_withheld` is the other way a name is
                             // registered and undispatchable — `escapes`
@@ -6230,8 +6241,15 @@ mod tests {
     /// to a tool that would refuse it, with `denial_remedy(Leak)` correctly
     /// returning nothing: a dead end reached *by taking the exit*, which is
     /// the incident `denial_remedy` exists to prevent, reintroduced one level
-    /// up in the refusal text. Found by review on 2026-09-17. Fails on the
-    /// unconditional hint.
+    /// up in the refusal text. Found by review on 2026-09-17.
+    ///
+    /// **What this now measures, precisely:** the leak-guard case takes the
+    /// *other* refusal branch entirely, so this pins that the branch chosen
+    /// when both controls fire names no blind route. It does not discriminate
+    /// the `leak_guard_armed` term inside the injection branch — that term is
+    /// unreachable there (see its comment) and deleting it would leave this
+    /// test passing. Said out loud because a docstring claiming a
+    /// discrimination it does not make is worse than no docstring.
     #[tokio::test]
     async fn the_armed_refusal_names_no_blind_route_the_leak_guard_has_closed() {
         let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));

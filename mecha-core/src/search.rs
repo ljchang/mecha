@@ -127,8 +127,10 @@ impl SearchBackend for Exa {
 
     /// Blind at quick depth, not at deep.
     ///
-    /// `Depth::Quick` sends `"type": "auto"` — an index query, which is search
-    /// terms and nothing else. `Depth::Deep` sends `"type": "deep-reasoning"`,
+    /// `Depth::Quick` sends `"type": "auto"` with `livecrawl: "never"` — an
+    /// index query, and an explicit refusal to fetch anything not already
+    /// indexed. Both halves matter: the type keeps it a lookup, and the
+    /// `livecrawl` says so in a parameter rather than by omission. `Depth::Deep` sends `"type": "deep-reasoning"`,
     /// documented as multi-step agentic research that *fetches pages chosen
     /// during the research*; the query steers that choice, so a query naming a
     /// host is a query that may cause a request to it. That is a destination
@@ -154,7 +156,16 @@ impl SearchBackend for Exa {
             },
             // Text extracts, capped: enough to judge relevance without pulling
             // whole pages into context.
-            "contents": {"text": {"maxCharacters": 1200}},
+            //
+            // `livecrawl: "never"` is what makes `egress(Quick) == Blind` a
+            // property of this file rather than of Exa's defaults. Asking for
+            // page contents is what raises the question at all — omitting the
+            // parameter would hand "does a query cause a fetch" to a default
+            // the vendor can change with nothing here changing and no diff to
+            // review, which is the absence-as-mitigation this PR's own
+            // `Chosen` trait default exists to refuse. Named in review,
+            // 2026-09-17.
+            "contents": {"text": {"maxCharacters": 1200}, "livecrawl": "never"},
         });
 
         let resp = self

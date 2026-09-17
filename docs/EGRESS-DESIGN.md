@@ -353,8 +353,19 @@ the ones the author happened to think of:
 3. **Vendor drift.** If Tavily adds query-URL dereference, the `Blind`
    classification silently becomes wrong. Mitigations: the classification lives
    per-backend in code with a comment naming the exact property relied on; the
-   trait default is `Chosen`; and mecha never sends `livecrawl` /
-   `maxAgeHours` / `include_raw_content`.
+   trait default is `Chosen`; and the Exa request now sends
+   `livecrawl: "never"` explicitly rather than omitting it.
+
+   That last change came out of review, and the reasoning generalises: an
+   *omitted* parameter is not a mitigation, it is a delegation. It hands the
+   property to a default the vendor can change with nothing in this repo
+   changing and no diff to review — which is exactly what the `Chosen` trait
+   default exists to refuse one level up. Honest caveat: Exa documents
+   `livecrawl` as deprecated in favour of `maxAgeHours`, so "never" is an
+   explicit signal rather than a proven prohibition; what it buys is that the
+   classification now rests on a parameter a reader can see in the file.
+   `maxAgeHours` is still omitted, and `include_raw_content` is Tavily's — the
+   same argument applies the day either is added.
 4. **Under `trifecta = "allow"` the declared class describes the declaration,
    not the run.** D5's waiver lets an armed conversation reach the full chain,
    Exa's `deep-reasoning` included, while `capabilities()` still says `Blind`.
