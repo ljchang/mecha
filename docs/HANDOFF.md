@@ -2384,7 +2384,12 @@ checkout was returned to `main` afterwards and is clean.
   834 CLI, 151 mail library, 75 Slack, 22 first-run, 13 MCP, 12 anticipation,
   9 sandbox-backend, 8 appraisal-fixture, 6 fixture-server, 5 serve-lifecycle,
   3 run-lifecycle, 1 mail binary, 1 doctest), with formatting and all-targets
-  Clippy clean. Docker is usable on this box, so the sandbox tests really
+  Clippy clean. **The per-suite figures are a hand transcription and sum to
+  2,722, one short of the runner's own total**; no `tests.log` was archived
+  for this run, so which line is short was not recovered. Compare totals
+  against this baseline rather than per-suite counts — and for a real delta
+  diff `cargo test -- --list`, since a count difference is a commit
+  difference. Docker is usable on this box, so the sandbox tests really
   ran rather than skipping — which is the reason to set that variable at all.
   **One caveat recorded rather than smoothed over:** a single full-workspace
   run earlier that day failed one docker test and five subsequent runs did
