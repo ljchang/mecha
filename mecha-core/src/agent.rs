@@ -3841,10 +3841,15 @@ impl Agent {
             // whose destination is fixed by operator config and absent from
             // the tool's input schema — still carries private data to a third
             // party, which is the leak guard's threat, not the interlock's.
+            //
+            // The leak guard's *conversation* half, named once because two
+            // places need it and they must not drift: `leak_risk` here, and
+            // the refusal text below, which must not advertise a blind route
+            // this guard closes.
+            let leak_guard_armed =
+                cx.tools.security.block_sends_after_private && turn_taint.private;
             let injection_risk = turn_taint.trifecta_armed() && caps.egress == Egress::Chosen;
-            let leak_risk = cx.tools.security.block_sends_after_private
-                && turn_taint.private
-                && caps.can_send();
+            let leak_risk = leak_guard_armed && caps.can_send();
 
             // A routed call skips the interlock: staging sends nothing — the
             // draft lands in a local file, and release requires the user to
@@ -3884,18 +3889,33 @@ impl Agent {
                             // teach the reader that reading the web is over.
                             // Asked of the registry as a class, so the loop
                             // still never learns which tools exist.
-                            // `is_withheld` as well as the registry's own
-                            // restriction: `escapes` filters on both for the
-                            // same reason, and dispatch just above is
+                            // Three ways a named route can be closed, and
+                            // all three have to be checked here, because a
+                            // refusal that names a closed exit is worse than
+                            // one that names none: the model spends a call
+                            // discovering it, and the operator learns the
+                            // advice is noise.
+                            //
+                            // `blind_senders` covers the surface restriction.
+                            // `is_withheld` is the other way a name is
+                            // registered and undispatchable — `escapes`
+                            // filters on both, and dispatch just above is
                             // `available(name).filter(|_| !cx.is_withheld(name))`.
-                            // Naming a withheld tool as the way out buys the
-                            // model one `Blocked by policy` and no route.
-                            let blind: Vec<&str> = self
-                                .registry
-                                .blind_senders()
-                                .into_iter()
-                                .filter(|n| !cx.is_withheld(n))
-                                .collect();
+                            // And `leak_guard_armed` is the third: that guard
+                            // refuses `Blind` as well, so when it is on there
+                            // is no blind route to name at all. Missing it put
+                            // `denial_remedy`'s own incident — a dead end
+                            // reached *by taking the exit* — back into the
+                            // refusal text one level up.
+                            let blind: Vec<&str> = if leak_guard_armed {
+                                Vec::new()
+                            } else {
+                                self.registry
+                                    .blind_senders()
+                                    .into_iter()
+                                    .filter(|n| !cx.is_withheld(n))
+                                    .collect()
+                            };
                             if !blind.is_empty() {
                                 let names: Vec<String> =
                                     blind.iter().map(|n| format!("`{n}`")).collect();
@@ -6183,6 +6203,60 @@ mod tests {
         agent.ctx_mut().security.trifecta = TrifectaPolicy::Block;
         let mut convo = Conversation::from(vec![Message::user("read it")]);
         assert_eq!(agent.run(&mut convo, None).await.unwrap().blocked_sends, 0);
+    }
+
+    /// ...and says nothing when the leak guard has closed that exit too.
+    ///
+    /// `blind_senders` knows about reachability, not about policy, and
+    /// `leak_risk` fires on `can_send()` — which includes `Blind`. So with
+    /// `block_sends_after_private` on, naming the blind route sent the model
+    /// to a tool that would refuse it, with `denial_remedy(Leak)` correctly
+    /// returning nothing: a dead end reached *by taking the exit*, which is
+    /// the incident `denial_remedy` exists to prevent, reintroduced one level
+    /// up in the refusal text. Found by review on 2026-09-17. Fails on the
+    /// unconditional hint.
+    #[tokio::test]
+    async fn the_armed_refusal_names_no_blind_route_the_leak_guard_has_closed() {
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (mut agent, _) = agent_with(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "c".into(),
+                        name: "send".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("stopped")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+        agent.registry.insert(Arc::new(SendTool)); // panics if it ever runs
+        agent.registry.insert(Arc::new(BlindSend(ran)));
+        agent.ctx_mut().security.trifecta = TrifectaPolicy::Block;
+        agent.ctx_mut().security.block_sends_after_private = true;
+
+        let mut convo = Conversation::resumed(
+            vec![Message::user("send it")],
+            Taint {
+                private: true,
+                untrusted: true,
+            },
+        );
+        agent.run(&mut convo, None).await.unwrap();
+        let refusal = match &convo.messages[2].content[0] {
+            Block::ToolResult { content, .. } => content.clone(),
+            other => panic!("expected the interlock's refusal, got {other:?}"),
+        };
+        assert!(
+            !refusal.contains("`web_search`"),
+            "the leak guard refuses Blind too, so there is no route to name: {refusal}"
+        );
+        assert!(
+            !refusal.contains("do not choose where they send"),
+            "{refusal}"
+        );
     }
 
     /// A refusal that names no exit teaches the operator to set

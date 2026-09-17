@@ -171,9 +171,12 @@ impl ToolsModal {
         }
         match row.caps.egress {
             Egress::None => {}
+            // "rather than", not "never": `trifecta = "allow"` waives the
+            // narrowing, and a line promising "never" would be false in
+            // exactly the configuration an operator chose deliberately.
             Egress::Blind => declared.push(
-                "can transmit data outside the user's control, but only to a \
-                       destination your config fixes — never one the model names",
+                "can transmit data outside the user's control, but to a \
+                       destination your config fixes rather than one the model names",
             ),
             Egress::Chosen => declared.push("can transmit data outside the user's control"),
         }

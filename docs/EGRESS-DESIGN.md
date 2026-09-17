@@ -243,7 +243,9 @@ While clean, the full chain is reachable and could serve a `Chosen`-class
 call — but no control keys off the distinction in that state: the interlock
 requires `trifecta_armed()`, and the leak guard treats both classes
 identically. So the declaration is never read in a state where it would be
-wrong. Both halves are asserted —
+wrong — and the same holds under `trifecta = "allow"`, which lets an armed
+run reach the full chain while the declaration still says `Blind`. No control
+reads it there either; §6 item 4 records what does. Both halves are asserted —
 `search::tests::the_declared_class_tracks_whether_a_blind_route_exists` and
 `agent::tests::a_clean_conversation_does_not_consult_the_egress_class` — and
 D3's table is the thing that must not change without revisiting this.
@@ -334,9 +336,11 @@ This is a risk *reduction*, not an elimination. Three things it does not close:
 1. **Bandwidth.** A blind query is a low-bandwidth channel, but calls compose:
    a 4 KB email leaks through ~70 sixty-byte queries. Nothing here bounds that.
    A per-conversation blind-egress byte budget is the obvious phase 2 and is
-   deliberately not in this pass — and note that nothing *measures* blind-egress
-   volume today either, so phase 2 starts by building the baseline it would
-   need to pick a budget, rather than by picking one.
+   deliberately not in this pass. And the baseline is not merely unmeasured
+   but **unmeasurable today**: nothing records blind-egress volume per
+   conversation, so phase 2 starts by landing a `RunStats` counter — cheap
+   while this is fresh — and picks a budget from what that shows, rather than
+   from a guess.
 2. **The backend is still a third party.** SearXNG forwards `q` to the upstream
    engines in its `settings.yml`, so `search.rs`'s claim that the query *"never
    leaves your network"* is over-generous and is corrected in this change. What
@@ -348,11 +352,42 @@ This is a risk *reduction*, not an elimination. Three things it does not close:
    per-backend in code with a comment naming the exact property relied on; the
    trait default is `Chosen`; and mecha never sends `livecrawl` /
    `maxAgeHours` / `include_raw_content`.
+4. **Under `trifecta = "allow"` the declared class describes the declaration,
+   not the run.** D5's waiver lets an armed conversation reach the full chain,
+   Exa's `deep-reasoning` included, while `capabilities()` still says `Blind`.
+   No *control* reads the class in that state (§D6), so nothing is unsafe —
+   but `mecha tools --json` and the TUI tool list do, so an operator who has
+   waived the interlock is reading a description of the class rather than a
+   promise about the next call. Flagged in review, 2026-09-17; the alternative
+   was dropping the waiver, which costs more than it buys (§D5).
 
 Against those: the status quo's failure mode is an operator setting
 `trifecta = "allow"`, which waives the interlock for `http_fetch`, `mail_send`,
 Slack and an unconfined `shell` simultaneously. Losing the bounded channel to
 keep the unbounded ones is the trade this document refuses.
+
+## 6b. Measured, not asserted
+
+Run against the real stack on 2026-09-17 (`MECHA_SESSION_KIND=test`, local
+qwen3.6-35b-a3b on :8080, the operator's own `[[search]]` chain), because
+CLAUDE.md's rule is that a `ScriptedProvider` is structurally blind to the
+thing it was written from — and this project's expensive bugs came from
+exactly that gap.
+
+One run: `kg_search`, then `web_search`. From the session transcript
+(`20260917T035905-f0ebc369`):
+
+- the recorded taint is `{private: true, untrusted: true}` — the graph armed
+  **both legs in one call**, which is §1's claim, now observed
+- `web_search` executed rather than being refused, which is the whole change
+- it was served `(via searxng)` — the blind backend — with the narrowing
+  sentence appended, so the degradation path is what actually ran, not the
+  full chain
+- **the model called `web_search` once and reported the answer.** That is the
+  specific thing the appended sentence exists to buy: a silently shallower
+  result reads as a broken tool, and a model told its tools are broken
+  rewords and retries — eight times in one recorded run, which is why
+  `SearchChain` separates an empty answer from a failure at all.
 
 ## 7. Deliberately not in scope
 
