@@ -223,15 +223,23 @@ impl Subagent {
         // URL" — the hole that used to be here, with the refusal text
         // recommending the route. A child with only readers stays a
         // non-sink, and the shaped vouch is untouched.
-        let child_can_send = agent
+        // Max over the children rather than "any", so the *class* carries
+        // too: a child whose only sender is blind (`web_search`, whose input
+        // schema names no destination) derives `Blind` and stays delegable
+        // from an armed parent, while one holding `http_fetch` derives
+        // `Chosen` and does not. That is what makes a search-only research
+        // profile work again — see `docs/EGRESS-DESIGN.md` §D5.
+        let child_egress = agent
             .registry()
             .iter()
-            .any(|t| t.capabilities().external_send);
+            .map(|t| t.capabilities().egress)
+            .max()
+            .unwrap_or_default();
 
         let capabilities = Capabilities {
             untrusted_input: child_reads_untrusted,
             private_data: child_reads_private,
-            external_send: child_can_send,
+            egress: child_egress,
             ..Capabilities::default()
         };
 
@@ -491,6 +499,7 @@ mod tests {
     use crate::config::{AgentConfig, PermissionMode};
     use crate::message::{CompletionRequest, CompletionResponse};
     use crate::provider::{Provider, StreamSink};
+    use crate::tool::Egress;
     use crate::tool::{ModeApprover, Registry};
 
     #[test]
@@ -589,7 +598,7 @@ mod tests {
         assert!(caps.private_data, "the private leg must survive the return");
         assert!(!caps.untrusted_input);
         assert!(
-            !caps.external_send,
+            !caps.can_send(),
             "a child of one private reader holds nothing that can send"
         );
     }
@@ -605,9 +614,42 @@ mod tests {
             .capabilities();
         assert!(caps.untrusted_input);
         assert!(!caps.private_data);
-        assert!(
-            caps.external_send,
+        assert_eq!(
+            caps.egress,
+            Egress::Chosen,
             "a child that can send makes the delegation a sink"
+        );
+    }
+
+    /// The class carries too, and it is what makes a research delegate work
+    /// again. A child whose only sender is blind — `web_search`, whose input
+    /// schema names no destination — is delegable from an armed parent,
+    /// because the task string it carries can only reach the backends the
+    /// operator configured. Add one `Chosen` tool and the whole delegation is
+    /// `Chosen`, which is the `http_fetch`-shaped child the 2026-09-02 fix
+    /// closed and this must not reopen.
+    #[test]
+    fn a_blind_only_child_stays_blind_and_one_chosen_tool_taints_the_lot() {
+        let blind = child_with(&[Capabilities::default().untrusted().sends_blind()]);
+        assert_eq!(
+            Subagent::new(SubagentProfile::default(), blind)
+                .unwrap()
+                .capabilities()
+                .egress,
+            Egress::Blind
+        );
+
+        let mixed = child_with(&[
+            Capabilities::default().untrusted().sends_blind(),
+            Capabilities::default().untrusted().sends(),
+        ]);
+        assert_eq!(
+            Subagent::new(SubagentProfile::default(), mixed)
+                .unwrap()
+                .capabilities()
+                .egress,
+            Egress::Chosen,
+            "max over the children, not a vote"
         );
     }
 
@@ -619,12 +661,10 @@ mod tests {
             Capabilities::default().untrusted(),
             Capabilities::default().private(),
         ]);
-        assert!(
-            !Subagent::new(SubagentProfile::default(), child)
-                .unwrap()
-                .capabilities()
-                .external_send
-        );
+        assert!(!Subagent::new(SubagentProfile::default(), child)
+            .unwrap()
+            .capabilities()
+            .can_send());
     }
 
     /// A tool that remembers whether it ran.

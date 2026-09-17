@@ -99,11 +99,67 @@ pub struct Capabilities {
     /// Returns content a third party can influence — a web page, an email body,
     /// a calendar invite title. Treat everything it returns as hostile.
     pub untrusted_input: bool,
-    /// Can transmit data outside the user's control. Note that a plain HTTP GET
-    /// qualifies: the secret goes in the query string.
-    pub external_send: bool,
+    /// Whether data can leave, and — the part a single bool could not say —
+    /// whether the *model* gets to choose who receives it. See [`Egress`].
+    pub egress: Egress,
     /// May destroy or overwrite data.
     pub destructive: bool,
+}
+
+/// How far outside the user's control a tool's payload can travel, and who
+/// picks the destination.
+///
+/// A plain HTTP GET transmits: the secret goes in the query string. That much
+/// a bool could say. What it could not say is the question an exfiltration
+/// attack actually turns on — **can the party who wrote the injected text read
+/// the bytes back?** That needs the attacker to choose the recipient, and some
+/// tools do not let anyone choose: `web_search` has `query`, `limit` and
+/// `depth` in its input schema and no destination field at all, so the query
+/// goes to the backends in `[[search]]` and nowhere else.
+///
+/// The two are different threats with different owners, and mecha already had
+/// two controls for them (`docs/EGRESS-DESIGN.md` §3). The trifecta interlock
+/// stops an injection *directing* a send, so it fires on [`Chosen`] only. The
+/// leak guard (`block_sends_after_private`) stops private data reaching a third
+/// party at all, so it fires on [`Blind`] too.
+///
+/// Ordered, and [`Capabilities::union`] takes the max: an override may only
+/// ever widen, and [`Chosen`] is the top.
+///
+/// [`Chosen`]: Egress::Chosen
+/// [`Blind`]: Egress::Blind
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Egress {
+    /// Nothing leaves.
+    #[default]
+    None,
+    /// The payload is model-authored; the recipient is fixed by operator
+    /// config and appears nowhere in the tool's input schema. An injection can
+    /// fill this channel but cannot choose who reads it, so reading the bytes
+    /// back means colluding with or compromising a party the operator picked.
+    ///
+    /// Earned in code, by a tool whose input schema has no destination —
+    /// never by configuration. An operator declaring a third-party server's
+    /// sends "blind" would be narrowing on the strength of a claim nothing
+    /// enforces, which is the exemption `CapabilityOverride` exists to refuse.
+    Blind,
+    /// The model names the recipient: `http_fetch`'s `url`, `mail_send`'s
+    /// `to`, a Slack channel, an unconfined `shell` that can `curl` anywhere.
+    /// A complete channel — payload and read-back in one call.
+    Chosen,
+}
+
+impl Egress {
+    /// The name `mecha tools --json` prints. A closed set written to a surface
+    /// other programs read, so it is a wire format: add a variant and this
+    /// match is what forces you to name it.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Egress::None => "none",
+            Egress::Blind => "blind",
+            Egress::Chosen => "chosen",
+        }
+    }
 }
 
 impl Capabilities {
@@ -115,9 +171,24 @@ impl Capabilities {
         self.untrusted_input = true;
         self
     }
+    /// Declares [`Egress::Chosen`] — the conservative class, and what every
+    /// caller of this builder has always meant.
     pub fn sends(mut self) -> Self {
-        self.external_send = true;
+        self.egress = Egress::Chosen;
         self
+    }
+    /// Declares [`Egress::Blind`]. Only for a tool whose input schema contains
+    /// no destination; see [`Egress::Blind`] for what that buys and why it
+    /// cannot be configured.
+    pub fn sends_blind(mut self) -> Self {
+        self.egress = Egress::Blind;
+        self
+    }
+    /// Can data leave at all, by any route? The question the *routing* and
+    /// warning surfaces ask, as distinct from the two security controls, which
+    /// each key off a specific [`Egress`] class.
+    pub fn can_send(&self) -> bool {
+        self.egress != Egress::None
     }
     pub fn destructive(mut self) -> Self {
         self.destructive = true;
@@ -137,7 +208,8 @@ impl Capabilities {
         Capabilities {
             private_data: self.private_data || other.private_data,
             untrusted_input: self.untrusted_input || other.untrusted_input,
-            external_send: self.external_send || other.external_send,
+            // Max over `None < Blind < Chosen`, which is "or" one axis over.
+            egress: self.egress.max(other.egress),
             destructive: self.destructive || other.destructive,
         }
     }
@@ -1326,6 +1398,31 @@ impl Registry {
         self.tools.values()
     }
 
+    /// Reachable tools that can send, but only where the *operator* fixed the
+    /// destination — the [`Egress::Blind`] class the interlock leaves open.
+    ///
+    /// Exists so a refusal can name the route that still works. The loop asks
+    /// for a class and learns nothing about which tools it is talking to,
+    /// which is the same division of labour as [`Tool::denial_remedy`] — and
+    /// the reason it matters is the same one: a refusal that names no exit
+    /// teaches the operator to set `trifecta = "allow"`, waiving the interlock
+    /// over `http_fetch`, `mail_send`, Slack and an unconfined `shell` at
+    /// once. Honours the surface restriction, because advertising a withheld
+    /// tool is a dead end wearing an exit's clothes.
+    pub fn blind_senders(&self) -> Vec<&str> {
+        let restriction = self.surface_restriction();
+        self.tools
+            .values()
+            .filter(|t| t.capabilities().egress == Egress::Blind)
+            .map(|t| t.name())
+            .filter(|n| {
+                restriction
+                    .as_ref()
+                    .is_none_or(|allowed| allowed.contains(*n))
+            })
+            .collect()
+    }
+
     /// The tools that exist to send: they can reach outside and they are not
     /// reads — `mail_send`, a Slack post, a calendar invite, and a calendar
     /// *cancellation*, which emails every attendee and is destructive as well.
@@ -1344,7 +1441,7 @@ impl Registry {
     pub fn senders(&self) -> Vec<&str> {
         self.tools
             .values()
-            .filter(|t| t.capabilities().external_send && !t.read_only())
+            .filter(|t| t.capabilities().can_send() && !t.read_only())
             .map(|t| t.name())
             .collect()
     }
@@ -1904,6 +2001,43 @@ mod cap_tests {
             "still registered — `get` is a lookup, `available` is the gate"
         );
         assert!(!r.available_names().contains(&"b"));
+    }
+    /// The direction that keeps `CapabilityOverride` honest. A config
+    /// override may widen and never narrow, and with a three-value axis
+    /// "widen" is a max, not an or — so a server declared `Chosen` cannot be
+    /// talked down to `Blind` by anything it is unioned with.
+    #[test]
+    fn union_takes_the_wider_egress_class() {
+        let blind = Capabilities::default().sends_blind();
+        let chosen = Capabilities::default().sends();
+        let quiet = Capabilities::default();
+
+        assert_eq!(blind.union(chosen).egress, Egress::Chosen);
+        assert_eq!(
+            chosen.union(blind).egress,
+            Egress::Chosen,
+            "and it commutes"
+        );
+        assert_eq!(quiet.union(blind).egress, Egress::Blind);
+        assert_eq!(blind.union(quiet).egress, Egress::Blind);
+        assert_eq!(quiet.union(quiet).egress, Egress::None);
+    }
+
+    /// The `[mcp.capabilities]` TOML key is unchanged and still means the
+    /// conservative class: a remote tool's input schema is the server's to
+    /// write, so nothing local can prove it holds no destination. There is
+    /// deliberately no spelling that produces `Blind`.
+    #[test]
+    fn a_forced_send_override_is_the_conservative_class() {
+        let forced: Capabilities = crate::config::CapabilityOverride {
+            external_send: true,
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(forced.egress, Egress::Chosen);
+
+        let none: Capabilities = crate::config::CapabilityOverride::default().into();
+        assert_eq!(none.egress, Egress::None);
     }
 
     #[test]

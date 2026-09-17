@@ -7,7 +7,7 @@
 
 use crate::config::McpServerConfig;
 use crate::sandbox::{Backend, DockerContainer, Sandbox};
-use crate::tool::{Capabilities, Tool, ToolCtx, ToolOutput};
+use crate::tool::{Capabilities, Egress, Tool, ToolCtx, ToolOutput};
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -406,7 +406,15 @@ impl McpClient {
                     capabilities: Capabilities {
                         private_data: true,
                         untrusted_input: hint("openWorldHint"),
-                        external_send: hint("openWorldHint"),
+                        // `Chosen`, not `Blind`: a remote tool's input schema
+                        // is the server's to write, so nothing here can prove
+                        // it holds no destination. Blind is earned in code by
+                        // a tool this repo can read — see `Egress::Blind`.
+                        egress: if hint("openWorldHint") {
+                            Egress::Chosen
+                        } else {
+                            Egress::None
+                        },
                         destructive: hint("destructiveHint"),
                     }
                     .union(self.forced),

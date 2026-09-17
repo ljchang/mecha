@@ -25,7 +25,7 @@
 use crate::agent::{Agent, Conversation, RunContext, ToolCallTrace};
 use crate::message::Message;
 use crate::replay::{diff, Divergence, RecordedCall, Trajectory};
-use crate::tool::{Capabilities, Registry, Tool, ToolCtx, ToolOutput};
+use crate::tool::{Capabilities, Egress, Registry, Tool, ToolCtx, ToolOutput};
 use anyhow::{bail, Result};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -159,7 +159,7 @@ impl Tool for SpecTool {
         Capabilities {
             private_data: true,
             untrusted_input: true,
-            external_send: true,
+            egress: Egress::Chosen,
             destructive: true,
         }
     }
@@ -324,7 +324,7 @@ impl Tool for ReplayTool {
         match self.mode {
             OnDivergence::Live => caps,
             OnDivergence::Stop | OnDivergence::Error => Capabilities {
-                external_send: false,
+                egress: Egress::None,
                 ..caps
             },
         }
@@ -1303,7 +1303,7 @@ mod tests {
             fn capabilities(&self) -> Capabilities {
                 Capabilities {
                     private_data: true,
-                    external_send: true,
+                    egress: Egress::Chosen,
                     ..Default::default()
                 }
             }
@@ -1330,12 +1330,12 @@ mod tests {
 
         for mode in [OnDivergence::Stop, OnDivergence::Error] {
             let caps = caps_under(mode);
-            assert!(!caps.external_send, "a replayed send sends nothing");
+            assert!(!caps.can_send(), "a replayed send sends nothing");
             assert!(caps.private_data, "private data must not narrow");
         }
         // Under Live the tool genuinely runs, and the interlock deserves the
         // truth about it.
-        assert!(caps_under(OnDivergence::Live).external_send);
+        assert_eq!(caps_under(OnDivergence::Live).egress, Egress::Chosen);
     }
 
     /// The skip this closes: a recorded tool nothing today can construct — a
@@ -1381,7 +1381,7 @@ mod tests {
         // Conservative on the taint axes, narrowed on the send axis.
         assert!(tool.capabilities().private_data, "unknown is never clean");
         assert!(
-            !tool.capabilities().external_send,
+            !tool.capabilities().can_send(),
             "a replayed call sends nothing"
         );
         // And answered from the recording, never executed.

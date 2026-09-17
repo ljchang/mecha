@@ -58,8 +58,12 @@ impl TerminalApprover {
     /// allows this call only.
     async fn ask(&self, tool: &dyn Tool, input: &Value, why: Option<&str>) -> Decision {
         let name = tool.name().to_string();
-        let summary = summarize(&name, input);
         let forced = why.is_some();
+        let summary = if forced {
+            summarize_forced(&name, input)
+        } else {
+            summarize(&name, input)
+        };
         let preface = why.map(|w| format!("  {w}\n")).unwrap_or_default();
         let choices = if forced {
             "[y]es / [n]o / [q]uit"
@@ -104,12 +108,41 @@ impl TerminalApprover {
 /// A one-line gist of what the call will do. The full arguments are available
 /// with `--verbose`; this is what someone reads before deciding.
 pub fn summarize(tool: &str, input: &Value) -> String {
+    summarize_to(tool, input, GIST)
+}
+
+/// The same summary, sized for a prompt a person is being asked to *inspect*.
+///
+/// An escalation or a `prompt` rule is not "do you recognise this call"; it is
+/// the interlock or the operator asking someone to look at what would happen.
+/// For a send, what they are looking for is a payload — and a payload is
+/// exactly the thing that does not fit in a gist. `web_search`'s query had no
+/// arm below at all until 2026-09-17, so an escalated search rendered as
+/// compact JSON cut at 100 characters: everything an exfiltration attempt
+/// would put past that was invisible to the only party who could have caught
+/// it. A prompt that hides the evidence is a consent ritual, not a check.
+pub fn summarize_forced(tool: &str, input: &Value) -> String {
+    summarize_to(tool, input, INSPECT)
+}
+
+/// What fits on the line beside a tool name.
+const GIST: usize = 100;
+/// What a person needs to judge a payload. Long enough to read a query or a
+/// command in full; still bounded, because an unbounded paste scrolls the
+/// question itself off the screen.
+const INSPECT: usize = 400;
+
+fn summarize_to(tool: &str, input: &Value, max: usize) -> String {
     let field = |key: &str| input.get(key).and_then(Value::as_str);
 
     let text = match tool {
         "shell" => field("command").map(str::to_string),
         "fs_write" | "fs_edit" | "fs_read" | "fs_list" => field("path").map(str::to_string),
         "http_fetch" => field("url").map(str::to_string),
+        // The payload is the query, and the query is the whole channel: see
+        // `Egress::Blind`. Rendering it as `{"query":"…","limit":8}` buried
+        // the one field that matters behind the two that do not.
+        "web_search" => field("query").map(str::to_string),
         _ => None,
     }
     .unwrap_or_else(|| {
@@ -118,9 +151,45 @@ pub fn summarize(tool: &str, input: &Value) -> String {
     });
 
     let flat = text.replace('\n', " ");
-    if flat.chars().count() > 100 {
-        format!("{}…", flat.chars().take(100).collect::<String>())
+    if flat.chars().count() > max {
+        format!("{}…", flat.chars().take(max).collect::<String>())
     } else {
         flat
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The hole this closes: `web_search` had no arm, so an escalated search
+    /// rendered as `{"query":"…","limit":8}` and was then cut at 100
+    /// characters. An escalation exists so a person can spot an exfiltration
+    /// payload; everything past that cut was invisible to the only party who
+    /// could have caught it. Fails on the old behaviour twice — on the field
+    /// picked, and on the length.
+    #[test]
+    fn an_escalated_search_shows_the_whole_query() {
+        let payload = "x".repeat(300);
+        let input = json!({"query": payload, "limit": 8});
+
+        let gist = summarize("web_search", &input);
+        assert!(gist.starts_with("xxx"), "the query, not the JSON: {gist}");
+        assert!(gist.chars().count() <= 101, "a gist stays a gist");
+
+        let forced = summarize_forced("web_search", &input);
+        assert!(
+            forced.chars().filter(|c| *c == 'x').count() > 100,
+            "a person asked to inspect a payload must be shown the payload"
+        );
+    }
+
+    /// And the bound is still a bound: an unbounded paste scrolls the
+    /// question itself off the screen.
+    #[test]
+    fn the_inspecting_summary_is_still_capped() {
+        let input = json!({"command": "y".repeat(5_000)});
+        assert!(summarize_forced("shell", &input).chars().count() <= INSPECT + 1);
     }
 }

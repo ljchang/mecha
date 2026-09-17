@@ -128,6 +128,13 @@ shell_timeout_secs = 120
 #   block     refuse the send (default)
 #   ask       escalate to a human
 #   allow     permit it (only when the "untrusted" source is actually trusted)
+#
+# "A way to send" means a destination the MODEL can name: http_fetch's url,
+# mail_send's to, a Slack channel, an unconfined shell. web_search is not one
+# — its input schema has no destination field, so the query reaches the
+# [[search]] backends below and nobody else, and an injection that fills it
+# has no way to read it back. Searching therefore keeps working in a
+# conversation that holds mail, calendar or graph data. See docs/TRIFECTA.md.
 trifecta = "block"
 
 # Refuse HTTP to loopback, private, link-local, and CGNAT addresses. Without
@@ -142,12 +149,18 @@ mark_untrusted_output = true
 
 # Block EVERY outbound call once private data is in context, injection or not.
 # A different control from `trifecta`: that one stops an injection driving
-# exfiltration, this one stops private data leaving at all. Off by default —
-# it breaks "read my notes, then look something up", and capability separation
-# (search in a subagent with no filesystem access) is usually the better fix.
+# exfiltration, this one stops private data leaving at all — web_search
+# included, which `trifecta` deliberately leaves alone. Turn it on when no
+# private data may reach a third party even at your own request. Off by
+# default: it breaks "read my notes, then look something up".
 # block_sends_after_private = false
 
 # Search backends, in preference order; the chain falls through on failure.
+# A conversation holding private data and third-party content is served only
+# by backends whose destination your config fixes and whose query is search
+# terms and nothing else — searxng and tavily at any depth, exa at quick
+# depth (its deep mode is agentic research that fetches pages the query can
+# steer it towards). Configure at least one, or web_search is refused there.
 # [[search]]
 # kind = "searxng"                    # self-hosted: no key, no quota
 # base_url = "http://127.0.0.1:8888"

@@ -7,7 +7,7 @@
 //! all of that for every tool made /tools unreadable at exactly the tool
 //! counts where it matters.
 
-use mecha_core::tool::Capabilities;
+use mecha_core::tool::{Capabilities, Egress};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
@@ -29,8 +29,13 @@ impl ToolRow {
         if self.outbox {
             parts.push("outbox");
         }
-        if self.caps.external_send {
-            parts.push("sends");
+        // Two badges, because they mean different things to a reader
+        // deciding whether a session is safe: "sends" is a destination the
+        // model names, "sends(fixed)" one only your config names.
+        match self.caps.egress {
+            Egress::None => {}
+            Egress::Blind => parts.push("sends(fixed)"),
+            Egress::Chosen => parts.push("sends"),
         }
         if self.caps.untrusted_input {
             parts.push("untrusted");
@@ -164,8 +169,13 @@ impl ToolsModal {
         if row.caps.untrusted_input {
             declared.push("returns content a third party can influence");
         }
-        if row.caps.external_send {
-            declared.push("can transmit data outside the user's control");
+        match row.caps.egress {
+            Egress::None => {}
+            Egress::Blind => declared.push(
+                "can transmit data outside the user's control, but only to a \
+                       destination your config fixes — never one the model names",
+            ),
+            Egress::Chosen => declared.push("can transmit data outside the user's control"),
         }
         if row.caps.destructive {
             declared.push("may destroy or overwrite data");
@@ -364,7 +374,7 @@ mod tests {
             ..row(
                 "email_send",
                 Capabilities {
-                    external_send: true,
+                    egress: Egress::Chosen,
                     ..Capabilities::default()
                 },
             )

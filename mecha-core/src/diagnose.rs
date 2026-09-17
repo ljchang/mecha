@@ -583,10 +583,14 @@ pub const GUARDED_SECTIONS: [&str; 4] = ["security", "sandbox", "outbox", "capab
 /// are every field of `SecurityConfig`, and none collides with a key elsewhere
 /// in the config — which is what makes matching them bare safe rather than
 /// merely convenient.
-pub const GUARDED_KEYS: [&str; 10] = [
+pub const GUARDED_KEYS: [&str; 11] = [
     "private_data",
     "untrusted_input",
+    // Both spellings. `external_send` is still the TOML key on
+    // `[mcp.capabilities]`; `egress` is what the capability is called in code
+    // and in `mecha tools --json`, and a proposer may reach for either.
     "external_send",
+    "egress",
     "destructive",
     "trifecta",
     "block_private_ips",

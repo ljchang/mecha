@@ -425,7 +425,7 @@ async fn the_mail_fixture_records_every_send_and_delivers_nothing() {
     let (_client, tools) = connect(&cfg, &dir).await;
     let send = tool_named(&tools, "mail__mail_send");
     assert!(
-        send.capabilities().external_send,
+        send.capabilities().can_send(),
         "openWorldHint makes a send a sink"
     );
     let search = tool_named(&tools, "mail__mail_search");
