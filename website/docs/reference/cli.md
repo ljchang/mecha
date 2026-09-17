@@ -332,7 +332,11 @@ warning when a profile holds all three legs of the trifecta.
 
 ```bash
 mecha tools
+# Anything that can send at all:
 mecha tools --json | jq '.[] | select(.capabilities.external_send)'
+# Only the ones the trifecta interlock refuses — where the model picks the
+# recipient. `blind` senders such as `web_search` are not among them.
+mecha tools --json | jq '.[] | select(.capabilities.egress == "chosen")'
 mecha tools --schema --no-mcp
 ```
 

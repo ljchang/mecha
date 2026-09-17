@@ -223,7 +223,7 @@ mod tests {
         let caps = ShowFileTool::new(25).capabilities();
         assert!(caps.private_data, "it reads workspace bytes");
         assert!(
-            !caps.external_send,
+            !caps.can_send(),
             "it reaches the owner's own DM and nobody else — marking it a send \
              sink would stop a tainted session showing the user its own chart"
         );

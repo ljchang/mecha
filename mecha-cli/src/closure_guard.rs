@@ -50,7 +50,7 @@
 //! stronger "every closure crosses a human" holds only where the approver or
 //! the withholding does, and is their claim, not this wrapper's.
 
-use mecha_core::tool::{Capabilities, CarriedState, Tool, ToolCtx, ToolOutput};
+use mecha_core::tool::{Capabilities, CarriedState, DenialCause, Tool, ToolCtx, ToolOutput};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -178,8 +178,8 @@ impl Tool for ClosedStatusGuard {
     fn carried_state(&self, ctx: &ToolCtx) -> Option<CarriedState> {
         self.inner.carried_state(ctx)
     }
-    fn denial_remedy(&self) -> Option<String> {
-        self.inner.denial_remedy()
+    fn denial_remedy(&self, cause: DenialCause) -> Option<String> {
+        self.inner.denial_remedy(cause)
     }
     fn fixed_workspace(&self) -> Option<PathBuf> {
         self.inner.fixed_workspace()

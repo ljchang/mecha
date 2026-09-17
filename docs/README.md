@@ -19,7 +19,8 @@ belonged in three other places.
 | `MAIL-CORPUS-RESEARCH.md` | What a year of the user's own mail measured. **Gitignored** for the same reason as `OPERATIONS.md`: no correspondence, but aggregates of one mailbox are still its owner's. The decisions it produced are in `MAIL-UX-DESIGN.md` without the figures | past | once |
 | [`HANDOFF.md`](HANDOFF.md) | Current state and **only the open work** | present | **only with open work — completed items leave** |
 | [`HISTORY.md`](HISTORY.md) | What shipped and when; what was learned the hard way | past | append-only |
-| [`TRIFECTA.md`](TRIFECTA.md) | The four ways a session assembles the lethal trifecta, which mechanism owns each, and every opt-in switch with its cost. Read before loosening anything | present | rarely |
+| [`TRIFECTA.md`](TRIFECTA.md) | The ways a session assembles the lethal trifecta, which mechanism owns each, and every opt-in switch with its cost. Read before loosening anything | present | rarely |
+| [`EGRESS-DESIGN.md`](EGRESS-DESIGN.md) | Why the third leg is a class rather than a bool, and which control owns each class. `TRIFECTA.md` channel 2b is its map entry | present | once |
 | [`LLAMA-SERVER.md`](LLAMA-SERVER.md) | The local model server: slot geometry, the KV arithmetic, the measured `-np` table, and what each flag cost to learn | present | with the server |
 | `*-RESEARCH.md` | One question, researched once, with evidence and a date | past | one per question |
 | `*-DESIGN.md` | One thing, designed before it is built — the decisions, and what is deliberately not in scope | present, then past | one per thing |
@@ -76,6 +77,7 @@ something shipped.
 |---|---|
 | [`ASSISTANT-FOLLOW-THROUGH-DESIGN.md`](ASSISTANT-FOLLOW-THROUGH-DESIGN.md) | Durable delegated work, delivery recovery, verification, commitments and the daily assistant view |
 | [`BRANCHING-DESIGN.md`](BRANCHING-DESIGN.md) | Branching a conversation, and why the TUI batch deliberately left it out |
+| [`EGRESS-DESIGN.md`](EGRESS-DESIGN.md) | Why the send axis is a class (`None < Blind < Chosen`) rather than a bool, which of the two security controls owns each class, and what a blind send does not close. Read §6 before treating `Blind` as safety rather than risk reduction |
 | [`EXPERIMENT-DESIGN.md`](EXPERIMENT-DESIGN.md) | The instrument that states, from artifacts alone, what differed between two runs and what it cost. §5 depends on `BRANCHING-DESIGN.md`; issue #60 holds the communication policy question. Part II (§13–§21): ablation as a closed lever set, the lifetime trial for cross-session subsystems, the principal simulator, and the datasets for grading the appraisal system |
 | [`FACTORY-DOCS-DESIGN.md`](FACTORY-DOCS-DESIGN.md) | The published documentation site and what belongs on it |
 | [`GOAL-SYSTEM-DESIGN.md`](GOAL-SYSTEM-DESIGN.md) | What a run is *for*, the signed error signal that follows, and its three consumers. Read §7 before letting a disposition stand in for a structural check |

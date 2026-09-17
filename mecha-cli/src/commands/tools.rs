@@ -53,7 +53,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     "capabilities": {
                         "private_data": caps.private_data,
                         "untrusted_input": caps.untrusted_input,
-                        "external_send": caps.external_send,
+                        // Kept, and kept meaning "can data leave at all",
+                        // so a consumer reading this field still reads the
+                        // truth. `egress` beside it is the part the bool
+                        // could not say: who picks the recipient.
+                        "external_send": caps.can_send(),
+                        "egress": caps.egress.as_str(),
                         "destructive": caps.destructive,
                     },
                     "input_schema": t.input_schema(),
@@ -170,11 +175,17 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 .iter()
                 .filter_map(|t| registry.get(t))
                 .any(|t| t.capabilities().untrusted_input);
+            // `Chosen` rather than "can send at all": a profile whose only
+            // sender is blind holds no route an injection can *direct*, which
+            // is what this warning is about. It is still a leak path, and
+            // `block_sends_after_private` is the control that owns that — so
+            // warning here would contradict the design rather than reinforce
+            // it (`docs/EGRESS-DESIGN.md` §D3).
             let can_send = profile
                 .tools
                 .iter()
                 .filter_map(|t| registry.get(t))
-                .any(|t| t.capabilities().external_send);
+                .any(|t| t.capabilities().egress == mecha_core::tool::Egress::Chosen);
             let has_private = profile
                 .tools
                 .iter()

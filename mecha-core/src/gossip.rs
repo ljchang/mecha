@@ -55,7 +55,7 @@
 
 use crate::agent::{Agent, Conversation, RunContext};
 use crate::mcp::McpClient;
-use crate::tool::{Capabilities, Tool, ToolCtx, ToolOutput};
+use crate::tool::{Capabilities, Egress, Tool, ToolCtx, ToolOutput};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -131,7 +131,7 @@ impl LensedSearch {
             // Episode bodies are third-party text — a calendar invite title
             // or a Slack message is written by someone else.
             untrusted_input: true,
-            external_send: false,
+            egress: Egress::None,
             destructive: false,
         }
     }
@@ -303,7 +303,7 @@ impl Tool for GraphTool {
         Capabilities {
             private_data: true,
             untrusted_input: true,
-            external_send: false,
+            egress: Egress::None,
             destructive: false,
         }
     }
@@ -2065,7 +2065,7 @@ mod tests {
         let caps = LensedSearch::lens_capabilities();
         assert!(caps.private_data && caps.untrusted_input);
         assert!(
-            !caps.external_send,
+            !caps.can_send(),
             "a gossip reader with a way to send is the leak the interlock exists for"
         );
         assert!(!caps.destructive);

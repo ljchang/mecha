@@ -580,13 +580,24 @@ pub const GUARDED_SECTIONS: [&str; 4] = ["security", "sandbox", "outbox", "capab
 ///
 /// A proposer writing `trifecta=allow` rather than `security.trifecta=allow`
 /// has proposed the same change, and the prefix is the model's to omit. These
-/// are every field of `SecurityConfig`, and none collides with a key elsewhere
-/// in the config — which is what makes matching them bare safe rather than
-/// merely convenient.
-pub const GUARDED_KEYS: [&str; 10] = [
+/// are every field of `SecurityConfig` **plus the capability names**, and none
+/// collides with a key elsewhere in the config — which is what makes matching
+/// them bare safe rather than merely convenient.
+///
+/// `egress` is the one entry that is not a setting at all: it is the
+/// capability `external_send` became, and a proposer may reach for either
+/// spelling. Guarding a name that names no setting costs nothing — the list
+/// only ever sends a change to a human — while missing one waives the gate,
+/// so over-matching is the safe direction here and the sentence above should
+/// not be read as a completeness claim about `SecurityConfig`.
+pub const GUARDED_KEYS: [&str; 11] = [
     "private_data",
     "untrusted_input",
+    // Both spellings. `external_send` is still the TOML key on
+    // `[mcp.capabilities]`; `egress` is what the capability is called in code
+    // and in `mecha tools --json`, and a proposer may reach for either.
     "external_send",
+    "egress",
     "destructive",
     "trifecta",
     "block_private_ips",

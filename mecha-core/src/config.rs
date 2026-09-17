@@ -807,10 +807,17 @@ impl Default for SecurityConfig {
             allowed_domains: Vec::new(),
             blocked_domains: Vec::new(),
             mark_untrusted_output: true,
-            // Off by default: it breaks common, legitimate workflows, and the
-            // right answer for most people is capability separation (put
-            // search in a subagent with no filesystem access) rather than a
-            // blanket ban.
+            // Off by default: it breaks common, legitimate workflows, and
+            // the default posture defends the injection path, not deliberate
+            // egress.
+            //
+            // This used to recommend capability separation — "put search in a
+            // subagent with no filesystem access" — which stopped being true
+            // on 2026-09-02, when `Subagent::new` began deriving egress from
+            // the child's tools, making a research child a sink and refusing
+            // it from an armed parent. Under `Egress` it is true again for a
+            // child whose only sender is blind, and the route it describes
+            // is TRIFECTA.md channel 2's to teach rather than this comment's.
             block_sends_after_private: false,
         }
     }
@@ -844,7 +851,15 @@ impl From<CapabilityOverride> for crate::tool::Capabilities {
         crate::tool::Capabilities {
             private_data: o.private_data,
             untrusted_input: o.untrusted_input,
-            external_send: o.external_send,
+            // The TOML key stays `external_send` and means the conservative
+            // class. `Chosen` is the top of the lattice, so a forcing override
+            // still only ever widens — and there is deliberately no spelling
+            // for `Blind`, which would be a narrowing nothing enforces.
+            egress: if o.external_send {
+                crate::tool::Egress::Chosen
+            } else {
+                crate::tool::Egress::None
+            },
             destructive: o.destructive,
         }
     }
