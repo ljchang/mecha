@@ -331,7 +331,10 @@ After:
 
 ## 6. Residual risk, stated plainly
 
-This is a risk *reduction*, not an elimination. Three things it does not close:
+This is a risk *reduction*, not an elimination. What it does not close — and
+deliberately no count, because items 4 to 6 were added by reviewers after the
+first three were written, and a lead-in with a number is how a reader stops at
+the ones the author happened to think of:
 
 1. **Bandwidth.** A blind query is a low-bandwidth channel, but calls compose:
    a 4 KB email leaks through ~70 sixty-byte queries. Nothing here bounds that.
