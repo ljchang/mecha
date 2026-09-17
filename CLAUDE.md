@@ -281,7 +281,7 @@ from anywhere:
 
 ## Security model
 
-**The full trifecta map lives in `docs/TRIFECTA.md`** — the four ways a
+**The full trifecta map lives in `docs/TRIFECTA.md`** — the ways a
 session assembles private data + untrusted content + a way out, which
 mechanism owns each, and every opt-in switch with its cost. Read it before
 loosening anything; the answer to a refusal is almost never

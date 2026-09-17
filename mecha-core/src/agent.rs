@@ -8,7 +8,7 @@
 use crate::config::{AgentConfig, TrifectaPolicy};
 use crate::message::*;
 use crate::provider::{Provider, StreamEvent};
-use crate::tool::{Approver, Decision, Egress, Registry, ToolCtx, ToolOutput};
+use crate::tool::{Approver, Decision, DenialCause, Egress, Registry, ToolCtx, ToolOutput};
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::VecDeque;
@@ -3910,8 +3910,11 @@ impl Agent {
                             format!(
                                 "`{name}` sends data outside this machine, and this \
                                  conversation contains private data. This session is \
-                                 configured to keep private data local. Answer from what you \
-                                 already have, or ask the user to run the lookup separately."
+                                 configured to keep private data local \
+                                 (`[security] block_sends_after_private`), which refuses \
+                                 every send and not only the ones an injection could \
+                                 direct. Answer from what you already have, or ask the user \
+                                 to run the lookup separately."
                             )
                         };
                         // The delegate route above covers fetching; the tool's
@@ -3924,7 +3927,15 @@ impl Agent {
                         // section) went unmentioned. The remedy is addressed
                         // to the user — the model relays it and cannot act on
                         // it, since config edits are not among its tools.
-                        let reason = match tool.denial_remedy() {
+                        // The cause, not just the fact: a remedy phrased
+                        // against the interlock is false when the leak guard
+                        // is what fired. See `DenialCause`.
+                        let cause = if injection_risk {
+                            DenialCause::Injection
+                        } else {
+                            DenialCause::Leak
+                        };
+                        let reason = match tool.denial_remedy(cause) {
                             Some(remedy) => format!("{reason} {remedy}"),
                             None => reason,
                         };
@@ -6189,6 +6200,84 @@ mod tests {
         );
     }
 
+    /// Which control fired decides which remedy is true, so the loop has to
+    /// say. A remedy phrased against the interlock and printed on a
+    /// leak-guard refusal sends the operator to a fix that does not apply —
+    /// and for `web_search` to one that makes the next refusal carry no
+    /// remedy at all. Fails on the argument-less `denial_remedy`, which could
+    /// only ever return one of the two.
+    #[tokio::test]
+    async fn the_refusal_asks_for_the_remedy_that_matches_the_control() {
+        struct TwoRemedies;
+        #[async_trait]
+        impl Tool for TwoRemedies {
+            fn name(&self) -> &str {
+                "send"
+            }
+            fn description(&self) -> &str {
+                "send"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn capabilities(&self) -> crate::tool::Capabilities {
+                crate::tool::Capabilities::default().sends()
+            }
+            fn denial_remedy(&self, cause: crate::tool::DenialCause) -> Option<String> {
+                Some(match cause {
+                    crate::tool::DenialCause::Injection => "REMEDY-FOR-INJECTION".into(),
+                    crate::tool::DenialCause::Leak => "REMEDY-FOR-LEAK".into(),
+                })
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                panic!("refused calls do not execute");
+            }
+        }
+
+        // Armed: the interlock fires, and gets the interlock's remedy.
+        let armed = armed_send_refusal(vec![Arc::new(TwoRemedies)]).await;
+        assert!(armed.contains("REMEDY-FOR-INJECTION"), "{armed}");
+        assert!(!armed.contains("REMEDY-FOR-LEAK"), "{armed}");
+
+        // Private only, leak guard on: the other control fires, and the
+        // refusal must not carry advice written for the one that did not.
+        let (mut agent, _) = agent_with(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "c".into(),
+                        name: "send".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("stopped")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+        agent.registry.insert(Arc::new(TwoRemedies));
+        agent.ctx_mut().security.trifecta = TrifectaPolicy::Block;
+        agent.ctx_mut().security.block_sends_after_private = true;
+        let mut convo = Conversation::resumed(
+            vec![Message::user("send it")],
+            Taint {
+                private: true,
+                untrusted: false,
+            },
+        );
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(outcome.blocked_sends, 1);
+        let leak = match &convo.messages[2].content[0] {
+            Block::ToolResult { content, .. } => content.clone(),
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        assert!(leak.contains("REMEDY-FOR-LEAK"), "{leak}");
+        assert!(!leak.contains("REMEDY-FOR-INJECTION"), "{leak}");
+        // And it names the setting that fired, which TRIFECTA.md's closing
+        // line promises a refusal does.
+        assert!(leak.contains("block_sends_after_private"), "{leak}");
+    }
+
     /// The measured dead end this guards against: `shell` denials advised
     /// delegating to subagents, none of which had a shell, while the actual
     /// fix — one `[sandbox]` config section — went unmentioned. A tool that
@@ -6211,7 +6300,7 @@ mod tests {
             fn capabilities(&self) -> crate::tool::Capabilities {
                 crate::tool::Capabilities::default().sends()
             }
-            fn denial_remedy(&self) -> Option<String> {
+            fn denial_remedy(&self, _cause: crate::tool::DenialCause) -> Option<String> {
                 Some("Confining this tool in `[sandbox]` ends this class of refusal.".into())
             }
             async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {

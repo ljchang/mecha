@@ -49,7 +49,9 @@ The division that matters is **local versus outbound**. `bundle_render`,
 `notebook_render` and `type_check` do their work on your machine and touch
 nothing; `bundle_fetch`, `bundle_list` and `bundle_status` read your own
 records. Everything in the right-hand column carries `openWorldHint`, which in
-mecha sets **both** `untrusted_input` and `external_send` — so those are
+mecha sets **both** `untrusted_input` and `chosen` egress (a remote schema is
+the server's to write, so nothing local can prove it holds no destination) —
+so those are
 [trifecta](/docs/features/security) sinks, and the ones that change what the
 world can see go through [the outbox](/docs/features/outbox) exactly as a send
 does. See [the onboarding guide](/docs/factory/onboarding) for the routing to

@@ -303,7 +303,7 @@ command through the real backend at startup and fails with instructions rather t
 degrading to unconfined execution.
 
 `network = false` is the single most valuable setting here — with no way off the
-machine, a confined `shell` stops being an `external_send` sink and the trifecta
+machine, a confined `shell` drops to `none` egress and the trifecta
 interlock relaxes rather than tightens. `private_data` stays true regardless, because
 a confined shell still reads the workspace.
 
@@ -505,7 +505,7 @@ while `shell` still has no way off the machine.
 |---|---|---|---|
 | `private_data` | bool | `false` | Force `private_data` on every tool this server exposes. |
 | `untrusted_input` | bool | `false` | Force `untrusted_input`. |
-| `external_send` | bool | `false` | Force `external_send`. |
+| `external_send` | bool | `false` | Force egress, at the conservative `chosen` class. There is deliberately no spelling that grants `blind` — see [Security](/docs/features/security). |
 | `destructive` | bool | `false` | Force `destructive`. |
 
 These only ever **widen**. There is deliberately no way to switch a capability off:
@@ -566,10 +566,21 @@ a SearXNG instance whose engines are all suspended or CAPTCHA'd, which returns
 an empty page with HTTP 200 and would otherwise be indistinguishable from a
 genuinely empty web.
 
-`web_search` declares both `untrusted_input` and `external_send`: results are
-attacker-influenceable, and the query itself is an exfiltration channel because the
-payload fits in `?q=`. That holds for a self-hosted SearXNG too, since it forwards
-upstream.
+`web_search` declares `untrusted_input` and **blind** egress: results are
+attacker-influenceable, and the query itself leaves the machine because the
+payload fits in `?q=` — including with a self-hosted SearXNG, which forwards
+upstream. What it cannot do is *choose where*, since its input schema has no
+destination field, so the trifecta interlock leaves it alone while
+`block_sends_after_private` still refuses it.
+
+Blind is per backend **and per depth**, and the default for an unclassified
+backend is the conservative class. `searxng` and `tavily` are blind at both
+depths; `exa` is blind at `quick` and not at `deep`, because `deep-reasoning`
+is agentic research that fetches pages the query can steer it towards. A
+conversation holding private data *and* third-party content is served only by
+the blind backends, at quick depth — so **configure at least one blind backend
+or web search stops working there**, and the refusal will say so. Setting
+`trifecta = "allow"` waives that narrowing along with the interlock.
 
 ## Triggers are not configurable here
 
