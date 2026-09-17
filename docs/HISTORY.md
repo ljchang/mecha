@@ -89,9 +89,8 @@ than to being unverified. It published. The project is In production
 (External, 5/100) with **scope verification deliberately not submitted**,
 and branding verification passed the same day, once `mecha-factory.ai` was
 verified in Google Search Console as a Domain property — one apex TXT row,
-typed by hand because that zone's DNS has no API. Branding also requires a
-home page, a privacy policy and a terms-of-service URL on that authorized
-domain — the three URLs above — which is what `website/src/pages/privacy.md`
+typed by hand because that zone's DNS has no API. Branding also requires a home page, a privacy policy and a terms-of-service
+URL on that authorized domain, which is what `website/src/pages/privacy.md`
 and `terms.md` are for (#234): a consent-screen prerequisite rather than
 marketing pages, and pruning them as unused would break the consent screen
 with nothing to say why. What this does *not* settle is in HANDOFF: the
