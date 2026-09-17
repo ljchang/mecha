@@ -789,11 +789,17 @@ impl Tool for WebSearch {
             Ok(r) => r,
             // `from_outside`, like the results: a backend's error carries what
             // the backend said, which is a third party's text.
-            Err(e) => return Ok(ToolOutput::err(format!("{e:#}")).from_outside()),
+            Err(e) => {
+                return Ok(ToolOutput::err(format!("{e:#}{}", narrowing_note(armed))).from_outside())
+            }
         };
 
         if response.results.is_empty() && response.answer.is_none() {
-            return Ok(ToolOutput::ok(format!("no results for {query:?}")).from_outside());
+            return Ok(ToolOutput::ok(format!(
+                "no results for {query:?}{}",
+                narrowing_note(armed)
+            ))
+            .from_outside());
         }
 
         let mut out = String::new();
@@ -812,20 +818,31 @@ impl Tool for WebSearch {
             out.push('\n');
         }
         out.push_str(&format!("(via {})", response.backend));
-        // Say why, or a model that asked for a deep search and got a shallow
-        // one has to guess — and the guess models make is that the tool is
-        // broken, which is the eight-retries failure the empty-vs-error split
-        // above exists to prevent.
-        if armed {
-            out.push_str(
-                " — this conversation holds private data and third-party content, so the \
-                 search was served only by backends whose destination your config fixes, \
-                 at quick depth. Nothing else about it changed.",
-            );
-        }
+        out.push_str(narrowing_note(armed));
 
         // Everything above was written by strangers.
         Ok(ToolOutput::ok(out).from_outside())
+    }
+}
+
+/// What an armed run is told about its own narrowing — on **every** exit,
+/// which is the whole point of hoisting it out of one of them.
+///
+/// It first rode only on the success path, and the two outcomes a cut chain is
+/// *most likely* to produce said nothing: an empty answer read as "the web has
+/// nothing" when the full chain might have answered, and a failing sole
+/// backend read as "the tool is broken" rather than "your chain was cut to one
+/// entry". Those are the opposite findings the empty-vs-error split in
+/// [`SearchChain::run`] exists to keep apart, collapsed again one layer up —
+/// and "a model told its tools are broken rewords and retries, eight times in
+/// one recorded run" is the measured cost. Found by review, 2026-09-17.
+fn narrowing_note(armed: bool) -> &'static str {
+    if armed {
+        " — this conversation holds private data and third-party content, so the search \
+         was served only by backends whose destination your config fixes, at quick depth. \
+         Nothing else about it changed, and a fuller chain might answer differently."
+    } else {
+        ""
     }
 }
 
@@ -995,6 +1012,87 @@ mod tests {
             out.content.contains("destination your config fixes"),
             "a silently shallower search reads as a broken tool, and models retry broken tools"
         );
+    }
+
+    /// The two outcomes a cut chain is most likely to produce, and the ones
+    /// that said nothing about the cut until review caught it on 2026-09-17.
+    ///
+    /// An empty blind result must not read as "the web has nothing" — those
+    /// are the opposite findings `SearchChain::run`'s empty-vs-error split
+    /// exists to keep apart — and a failing sole backend must not read as
+    /// "the tool is broken", which is the eight-retries failure. Fails on the
+    /// success-path-only notice.
+    #[tokio::test]
+    async fn an_empty_or_failing_blind_search_still_says_it_was_narrowed() {
+        struct Quiet {
+            fail: bool,
+        }
+        #[async_trait]
+        impl SearchBackend for Quiet {
+            fn id(&self) -> &str {
+                "searxng"
+            }
+            fn egress(&self, _d: Depth) -> Egress {
+                Egress::Blind
+            }
+            async fn search(&self, _q: &str, _l: usize, _d: Depth) -> Result<SearchResponse> {
+                if self.fail {
+                    bail!("quota exhausted");
+                }
+                Ok(SearchResponse {
+                    backend: "searxng".into(),
+                    ..Default::default()
+                })
+            }
+        }
+
+        let armed = Taint {
+            private: true,
+            untrusted: true,
+        };
+
+        // Answered, with nothing. Not the same as the web being empty.
+        let empty = WebSearch::new(Arc::new(SearchChain::new(vec![Box::new(Quiet {
+            fail: false,
+        })])));
+        let out = empty
+            .call(json!({"query": "tide times"}), &ctx_with(Some(armed)))
+            .await
+            .unwrap();
+        assert!(out.content.contains("no results"), "{}", out.content);
+        assert!(
+            out.content.contains("destination your config fixes"),
+            "an empty narrowed search must not read as an empty web: {}",
+            out.content
+        );
+
+        // Did not answer at all. Not the same as the tool being broken.
+        let broken = WebSearch::new(Arc::new(SearchChain::new(vec![Box::new(Quiet {
+            fail: true,
+        })])));
+        let out = broken
+            .call(json!({"query": "tide times"}), &ctx_with(Some(armed)))
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(
+            out.content.contains("destination your config fixes"),
+            "a failing sole backend must not read as a broken tool: {}",
+            out.content
+        );
+
+        // And a clean conversation says none of it on any path.
+        let clean = WebSearch::new(Arc::new(SearchChain::new(vec![Box::new(Quiet {
+            fail: false,
+        })])));
+        let out = clean
+            .call(
+                json!({"query": "tide times"}),
+                &ctx_with(Some(Taint::default())),
+            )
+            .await
+            .unwrap();
+        assert!(!out.content.contains("destination your config fixes"));
     }
 
     /// Clean, nothing is narrowed: the full chain at the depth asked for.

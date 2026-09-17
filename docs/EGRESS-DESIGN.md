@@ -369,6 +369,21 @@ This is a risk *reduction*, not an elimination. Three things it does not close:
    works beats a prompt), but an operator who chose `ask` specifically to
    *see* armed sends now sees fewer of them. `trifecta = "allow"` restores
    the full chain; there is no setting that restores the prompt.
+6. **`Blind` acquired a config-integrity precondition it did not have
+   before.** "The recipient set is fixed by the operator" is true only while
+   `[[search]] base_url` is. Previously an armed `web_search` was simply
+   refused, so the config did not matter; now an attacker who can *write the
+   config* — an injection reaching an unconfined `shell` in a conversation
+   that is untrusted-but-not-yet-private — could append a `[[search]]` block
+   pointing at a host they control, and the next armed session would send
+   blind queries to it.
+
+   Not a reason to hold the design: that same attacker can `curl` directly, so
+   this is subsumed by the standing rule that an unsandboxed `shell` must not
+   meet untrusted input (`TRIFECTA.md` channel 1, and `[sandbox]` is its
+   owner). Recorded because a document that enumerates residuals this
+   carefully should not quietly gain an unstated precondition. Raised in
+   review, 2026-09-17.
 
 Against those: the status quo's failure mode is an operator setting
 `trifecta = "allow"`, which waives the interlock for `http_fetch`, `mail_send`,
