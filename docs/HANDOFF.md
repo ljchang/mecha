@@ -1567,7 +1567,7 @@ because the triage scopes widened, and both are recorded in each account's
 
 | Account | Provider | Grant | Expiry |
 |---|---|---|---|
-| `personal` | Google | `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` | **still 7 days from consent** — the grant was minted in Testing and keeps its clock; publishing to production changed only what *future* consents get (see below) |
+| `personal` | Google | `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` | **still 7 days from consent** — last consent 2026-09-15 (`granted_at` in that account's `oauth.json`), so this grant lapses ≈2026-09-22; it was minted in Testing and keeps its clock, and publishing to production changed only what *future* consents get (see below) |
 | `dartmouth` | Outlook | `Mail.ReadWrite`, `Mail.Read`, `Mail.Send`, `Calendars.ReadWrite` | none — permanent |
 
 **(Superseded 2026-09-16 — see below. Kept as the history of the decision.)**
@@ -1624,8 +1624,8 @@ is restricted, so that path carries CASA (~$540/yr, annual, and it resets on
 any scope change). `DOCS-RESEARCH.md` §6.2's two-track split held exactly as
 recorded, and the proximity of the two buttons is the hazard.
 
-Two things to carry into that revisit, both measured on 2026-08-18 by the
-parallel documents work (`docs/DOCS-RESEARCH.md` §6.2): the console
+Two things to carry into any future CASA revisit, both measured on 2026-08-18
+by the parallel documents work (`docs/DOCS-RESEARCH.md` §6.2): the console
 distinguishes **brand verification** from **scope verification** and only the
 second is the expensive one — a banner reading "your app requires
 verification" appeared on a project with no sensitive or restricted scopes at

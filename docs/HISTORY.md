@@ -43,9 +43,9 @@ conversation* while excluding documents, web pages, email and tool results,
 because `Role::User` carries all of those. The fold is gated on the agent's
 prompt carrying `GUIDANCE`, so `gossip`'s readers, `vet` and every subagent —
 all of which overwrite the system prompt and never had a date — keep the
-surface they had. **Six review passes found twelve defects, ten of them in
-readers rather than in the fold**: code that had come to depend on the date
-living in the prompt. `mismatch::drive` was an unclocked fourth replay site
+surface they had. **Six review passes found twelve defects, all but the last
+two in readers rather than in the fold**: code that had come to depend on the
+date living in the prompt. `mismatch::drive` was an unclocked fourth replay site
 (`RunConfig::clock` now records the reading, `clock::for_replay` pins all
 four); `learning::locate_followup` and `counterfactual::locate_steer` compared
 `Message::text()` against text mined per block, so a correction typed on the
@@ -7738,10 +7738,10 @@ and is what finally exercised the path.)
 
 ### Review process
 
-- **Twelve defects in six review passes, ten of them in readers rather than
-  in the change itself.** #238 moved the date out of the system prompt, and
-  ten of the twelve findings were *readers* that had silently come to depend
-  on it being there: a prompt
+- **Twelve defects in six review passes, all but the last two in readers
+  rather than in the change itself.** #238 moved the date out of the system
+  prompt, and almost every finding was a *reader* that had silently come to
+  depend on it being there: a prompt
   equality gate (`probe::prepare_mismatch`), a summariser's input
   (`compact::render_for_summary`), an eval judge's evidence
   (`eval::grounding_evidence`), two intervention locators
