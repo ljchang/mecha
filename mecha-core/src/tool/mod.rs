@@ -215,6 +215,32 @@ impl Capabilities {
     }
 }
 
+/// Which control refused a call, handed to [`Tool::denial_remedy`].
+///
+/// A remedy answers "how do I stop *this control* refusing *this call*", and
+/// the two controls have different answers — so a remedy written for one and
+/// printed by the other is not merely unhelpful, it is false. The measured
+/// case, found in review on 2026-09-17: `WebSearch`'s remedy said adding a
+/// SearXNG backend "keeps search working in conversations that hold private
+/// data", which is true of the interlock and backwards for the leak guard,
+/// where `Blind` is refused too. An operator following it reached a second
+/// refusal that carried no remedy at all — a dead end arrived at by taking
+/// the exit, which is the one outcome this whole mechanism exists to prevent.
+///
+/// So the cause is passed and the tool decides, which is the same division of
+/// labour as the remedy itself: the loop knows which control fired and cannot
+/// know what would fix it; the tool knows what would fix it and cannot know
+/// which control fired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DenialCause {
+    /// The trifecta interlock: private data and third-party content are both
+    /// present, and this tool's egress is [`Egress::Chosen`].
+    Injection,
+    /// The leak guard (`block_sends_after_private`): private data is present
+    /// and this tool can send at all, [`Egress::Blind`] included.
+    Leak,
+}
+
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
@@ -289,7 +315,8 @@ pub trait Tool: Send + Sync {
     /// instruction the model could act on itself — "enable X in config.toml"
     /// is for hands on a keyboard, and a model that tried to do it would find
     /// config edits are not among its tools.
-    fn denial_remedy(&self) -> Option<String> {
+    fn denial_remedy(&self, cause: DenialCause) -> Option<String> {
+        let _ = cause;
         None
     }
 

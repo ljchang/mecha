@@ -187,7 +187,21 @@ residual named in §6 covers the case where a vendor adds the behaviour later.
 - armed, or `ctx.taint == None` → `SearchChain::search_blind`: the entries
   whose `egress(Depth::Quick)` is `Blind`, run at **`Depth::Quick`**, and the
   result says a deep search was narrowed and why
-- clean → `SearchChain::search`: the full chain, at the depth asked for
+- clean, **or `trifecta = "allow"`** → `SearchChain::search`: the full chain,
+  at the depth asked for
+
+The waiver reaches the tool and not only the interlock, because the switch
+table calls `allow` "waives the injection interlock entirely" and a narrowing
+the operator cannot switch off would make that false — it would remove deep
+search from the one operator who had explicitly opted out, with no setting
+able to restore it. Caught in review, 2026-09-17; the first cut read
+`ctx.taint` alone.
+
+`"ask"` deliberately does **not** waive it. A blind call sets
+`injection_risk == false`, so it raises no escalation, so there is no human
+yes to widen on — and quietly running the full chain would be a widening
+nobody was asked about. `ask` gets the degradation, which is also the better
+outcome: search works and no modal appears.
 
 An earlier draft had `WebSearch` *hold* two chains. It does not, and cannot
 cheaply: `ChainEntry` owns its `Box<dyn SearchBackend>`, so a second chain
@@ -236,13 +250,28 @@ D3's table is the thing that must not change without revisiting this.
 
 ### D7 — the refusal names its exit
 
-**Decision: `WebSearch::denial_remedy()` returns, for the empty-blind-chain
+**Decision: `Tool::denial_remedy` takes a `DenialCause` (`Injection` |
+`Leak`), and `WebSearch` answers only the first — for the empty-blind-chain
 case, one sentence pointing at `[[search]] kind = "searxng"`.**
 
 This is the `denial_remedy` contract from `tool/mod.rs`: the loop sees a class
 and cannot know which condition set it; only the tool knows. The measured
 failure it exists to prevent is a refusal that dead-ends its operator into
 `trifecta = "allow"`.
+
+The cause has to be passed because **the two controls have different true
+answers, and `agent.rs` appends the remedy to whichever branch fired.** Caught
+in review, 2026-09-17: with `block_sends_after_private = true` and a
+chosen-only chain, the leak branch printed *"add a backend whose destination
+your config fixes and search keeps working in conversations that hold private
+data"* — backwards, because the leak guard refuses `Blind` too. An operator
+following it added SearXNG, `capabilities()` flipped to `Blind`, and the next
+refusal carried no remedy at all: a dead end reached **by taking the exit**,
+which is the one outcome this mechanism exists to prevent. `WebSearch` now
+returns `None` for `Leak`, where the refusal's own text is the honest answer
+and names `block_sends_after_private` by key. `shell` returns the same string
+for both causes, correctly — confinement drops its egress to `None`, so it
+stops both controls firing.
 
 ### D8 — an escalation must show the whole payload
 

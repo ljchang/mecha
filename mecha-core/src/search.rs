@@ -31,7 +31,7 @@
 //! armed conversation is served only by the blind backends, at quick depth —
 //! [`SearchChain::search_blind`].
 
-use crate::tool::{Capabilities, Egress, Tool, ToolCtx, ToolOutput};
+use crate::tool::{Capabilities, DenialCause, Egress, Tool, ToolCtx, ToolOutput};
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -698,17 +698,23 @@ impl Tool for WebSearch {
         }
     }
 
-    fn denial_remedy(&self) -> Option<String> {
-        // Only one condition can set the conservative class here, and unlike
-        // `shell` there is nothing to say in the other case — a blind chain is
-        // never refused by the interlock at all.
-        (!self.chain.has_blind_backend()).then(|| {
-            "Web search is refused here only because every configured backend is one \
-             the model could point somewhere. Add a backend whose destination your \
-             config fixes — `[[search]]` with `kind = \"searxng\"` — and search keeps \
-             working in conversations that hold private data."
-                .into()
-        })
+    fn denial_remedy(&self, cause: DenialCause) -> Option<String> {
+        match cause {
+            // Adding a blind backend is the answer to the interlock and only
+            // to the interlock. Under the leak guard it is worse than silence:
+            // the operator adds SearXNG, `capabilities()` flips to `Blind`,
+            // and the leak guard refuses `Blind` too — a second refusal
+            // reached by following the exit. The honest answer there is the
+            // refusal's own text, which names the setting that fired.
+            DenialCause::Leak => None,
+            DenialCause::Injection => (!self.chain.has_blind_backend()).then(|| {
+                "Web search is refused here only because every configured backend is one \
+                 the model could point somewhere. Add a backend whose destination your \
+                 config fixes — `[[search]]` with `kind = \"searxng\"` — and search keeps \
+                 working in conversations that hold private data."
+                    .into()
+            }),
+        }
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
@@ -725,7 +731,21 @@ impl Tool for WebSearch {
         // subagent's context, or any run wired outside the loop, must not pass
         // as a clean sender by omission. The cost of being wrong here is a
         // quick searxng search instead of a deep exa one.
-        let armed = ctx.taint.is_none_or(|t| t.trifecta_armed());
+        //
+        // `trifecta = "allow"` is the operator's written waiver of the
+        // injection interlock, and the switch table calls it "waives the
+        // injection interlock entirely". Narrowing anyway would make that
+        // false and would silently remove deep search from an operator who
+        // had explicitly opted out — a capability lost with no configuration
+        // able to restore it. So the waiver reaches here too.
+        //
+        // `"ask"` deliberately does not: a blind call raises no escalation
+        // (`injection_risk` is false for it), so there is no human yes to
+        // widen on, and quietly running the full chain would be a narrowing
+        // nobody was asked about. Degrading is the answer `ask` gets, and it
+        // is the better one — search keeps working with no modal at all.
+        let waived = ctx.security.trifecta == crate::config::TrifectaPolicy::Allow;
+        let armed = !waived && ctx.taint.is_none_or(|t| t.trifecta_armed());
 
         let response = match if armed {
             self.chain.search_blind(query, limit).await
@@ -838,6 +858,12 @@ mod tests {
         }
     }
 
+    fn ctx_waived(taint: Option<Taint>) -> ToolCtx {
+        let mut ctx = ctx_with(taint);
+        ctx.security.trifecta = crate::config::TrifectaPolicy::Allow;
+        ctx
+    }
+
     /// The three shipped backends, classified by what each does with the
     /// query text — the only property `Egress::Blind` ever claimed.
     #[test]
@@ -891,7 +917,9 @@ mod tests {
         let tool = WebSearch::new(Arc::new(chain));
         assert_eq!(tool.capabilities().egress, Egress::Chosen);
         assert!(
-            tool.denial_remedy().unwrap().contains("searxng"),
+            tool.denial_remedy(DenialCause::Injection)
+                .unwrap()
+                .contains("searxng"),
             "a refusal that names no exit teaches the operator to weaken policy"
         );
     }
@@ -998,6 +1026,80 @@ mod tests {
         assert!(out.content.contains("none is configured"));
     }
 
+    /// `trifecta = "allow"` is the operator's written waiver of the injection
+    /// interlock, and the switch table calls it exactly that. Narrowing anyway
+    /// would remove deep search from the one operator who had opted out, with
+    /// no setting able to put it back. Found by review on 2026-09-17; fails on
+    /// the first cut of this feature, which read `ctx.taint` alone.
+    #[tokio::test]
+    async fn an_explicit_waiver_reaches_the_whole_chain_while_armed() {
+        let (chosen, chosen_seen) = classed("paid", Egress::Chosen);
+        let (blind, blind_seen) = classed("searxng", Egress::Blind);
+        let tool = WebSearch::new(Arc::new(SearchChain::new(vec![chosen, blind])));
+
+        let armed = Taint {
+            private: true,
+            untrusted: true,
+        };
+        let out = tool
+            .call(
+                json!({"query": "tide times", "depth": "deep"}),
+                &ctx_waived(Some(armed)),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            *chosen_seen.lock().unwrap(),
+            vec![Depth::Deep],
+            "the waiver reaches the tool, not only the interlock"
+        );
+        assert!(blind_seen.lock().unwrap().is_empty());
+        assert!(!out.content.contains("destination your config fixes"));
+    }
+
+    /// And `"ask"` is not a waiver: a blind call raises no escalation, so
+    /// there is no human yes to widen on. It keeps the degradation, which is
+    /// the better answer anyway — search works and nobody sees a modal.
+    #[tokio::test]
+    async fn ask_is_not_a_waiver_and_still_degrades() {
+        let (chosen, chosen_seen) = classed("paid", Egress::Chosen);
+        let (blind, _) = classed("searxng", Egress::Blind);
+        let tool = WebSearch::new(Arc::new(SearchChain::new(vec![chosen, blind])));
+
+        let mut ctx = ctx_with(Some(Taint {
+            private: true,
+            untrusted: true,
+        }));
+        ctx.security.trifecta = crate::config::TrifectaPolicy::Ask;
+
+        let out = tool.call(json!({"query": "x"}), &ctx).await.unwrap();
+        assert!(chosen_seen.lock().unwrap().is_empty());
+        assert!(out.content.contains("via searxng"));
+    }
+
+    /// The remedy answers the interlock and only the interlock. Printed on a
+    /// leak-guard refusal it is false in every clause — the guard refuses
+    /// `Blind` too, so an operator who adds SearXNG reaches a *second*
+    /// refusal, this time with no remedy at all, having followed the exit.
+    /// Found by review on 2026-09-17; fails on the argument-less signature.
+    #[test]
+    fn the_leak_guard_gets_no_remedy_from_this_tool() {
+        let (only_chosen, _) = classed("paid", Egress::Chosen);
+        let bare = WebSearch::new(Arc::new(SearchChain::new(vec![only_chosen])));
+
+        assert!(
+            bare.denial_remedy(DenialCause::Injection)
+                .is_some_and(|r| r.contains("searxng")),
+            "the interlock's refusal still names its exit"
+        );
+        assert_eq!(
+            bare.denial_remedy(DenialCause::Leak),
+            None,
+            "adding a blind backend does not lift the leak guard, so do not say it does"
+        );
+    }
+
     /// The invariant `WebSearch::capabilities` rests on, in the half that
     /// lives here: while armed, `call` reaches only blind backends, so the
     /// `Blind` declaration is true in the one state any control reads it. The
@@ -1011,7 +1113,7 @@ mod tests {
         let mixed = WebSearch::new(Arc::new(SearchChain::new(vec![chosen, blind])));
         assert_eq!(mixed.capabilities().egress, Egress::Blind);
         assert!(
-            mixed.denial_remedy().is_none(),
+            mixed.denial_remedy(DenialCause::Injection).is_none(),
             "nothing to remedy: it is not refused"
         );
 

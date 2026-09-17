@@ -97,8 +97,20 @@ fn capabilities(&self) -> Capabilities {
 |---|---|
 | `private_data` | Returns data the user considers private. |
 | `untrusted_input` | Returns content a third party can influence — a page, an email body, a calendar invite title. |
-| `external_send` | Can transmit data outside the user's control. A plain HTTP GET qualifies: the payload fits in the query string. |
+| `egress` | Whether data can leave, **and who picks the destination**: `none`, `blind`, or `chosen`. See below — a plain HTTP GET qualifies as egress, because the payload fits in the query string. |
 | `destructive` | May destroy or overwrite data. |
+
+The `egress` classes, ordered `none < blind < chosen`:
+
+| Class | Meaning | Examples |
+|---|---|---|
+| `none` | Nothing leaves. | `fs_read`, a confined `shell` |
+| `blind` | The payload is model-authored, but the **recipient is fixed by your config** and appears nowhere in the tool's input schema. An injection can fill the channel and still has nobody to read it back. | `web_search` — its schema is `query`, `limit`, `depth`, with no destination field |
+| `chosen` | **The model names the recipient.** Payload and read-back in one call. | `http_fetch` (`url`), `mail_send` (`to`), a Slack post, an unconfined `shell` |
+
+Blind is earned in code, by a tool whose schema has no destination — there is
+deliberately **no configuration that grants it**, because an operator vouching
+for a third-party server's destination would be a narrowing nothing enforces.
 
 What the built-ins declare:
 
@@ -106,8 +118,9 @@ What the built-ins declare:
 |---|---|
 | `fs_read`, `fs_list` | `private_data` |
 | `fs_write`, `fs_edit` | `destructive` |
-| `http_fetch` | `untrusted_input` + `external_send` |
-| `shell` | `private_data` + `destructive`, and `external_send` unless a sandbox has taken the network away |
+| `http_fetch` | `untrusted_input` + `chosen` egress |
+| `web_search` | `untrusted_input` + `blind` egress (`chosen` if no blind backend is configured) |
+| `shell` | `private_data` + `destructive`, and `chosen` egress unless a sandbox has taken the network away |
 
 MCP tools declare theirs from the server's annotations, and config can force
 extra flags on a server with `[[mcp]] capabilities`. That override is a
@@ -133,10 +146,20 @@ pub struct Taint {
 }
 ```
 
-The third is a property of the tool about to run. Once both legs are set, any
-tool declaring `external_send` is refused before it executes, and the model is
-told why in enough detail to pick another approach — summarise for the user,
-or start a fresh session that touches only one of the two.
+The third is a property of the tool about to run — and specifically of its
+egress **class**, because the attack needs the attacker to pick the recipient.
+Once both legs are set, any tool whose egress is **`chosen`** is refused before
+it executes, and the model is told why in enough detail to pick another
+approach — summarise for the user, start a fresh session that touches only one
+of the two, or use a route whose destination it does not choose.
+
+A **`blind`** tool is not refused here. `web_search` keeps working in a
+conversation holding your mail, because the query reaches the `[[search]]`
+backends you configured and nowhere else; an armed conversation is served by
+the blind ones only, at quick depth, and the result says so. If you want no
+private data reaching a third party at all — attack or not, your own request
+or not — that is a different control, `block_sends_after_private`, and it
+refuses `blind` and `chosen` alike.
 
 The refusal is counted on the run outcome as `blocked_sends`, which is what
 `mecha eval`'s `expect.blocked_sends` grades.
@@ -251,16 +274,22 @@ that does not depend on the model cooperating.
 `http_fetch` reports `read_only() == true`, so it skips the approval gate and
 runs in parallel with other reads. It touches none of your data.
 
-It also declares `external_send`, because **a GET is an exfiltration
-channel**: the secret goes in the query string. Read-only is a statement about
-your data; `external_send` is a statement about where bytes can go. `mecha`
-keeps them separate so a tool can be honest about both.
+It also declares **`chosen`** egress, because **a GET is an exfiltration
+channel** and the model picks the host: the secret goes in the query string
+and the attacker's server reads it out of an access log. Read-only is a
+statement about your data; egress is a statement about where bytes can go and
+who decides. `mecha` keeps them separate so a tool can be honest about both.
 
-`web_search` is the same shape for the same reason — results are
-attacker-influenceable, and the query itself is a payload that fits in `?q=`.
-Mail reads are the instructive contrast: a mail body is other people's words,
-so reads are `untrusted_input`, but a search query travels only to the
-provider that already custodies the mailbox, so they are not `external_send`.
+`web_search` is the instructive near-miss. Its results are
+attacker-influenceable and its query is a payload that fits in `?q=`, so it
+is genuinely egress — but its input schema has **no destination field**, so
+the payload goes to the `[[search]]` backends you configured and an injection
+cannot redirect it. That is `blind` egress: the trifecta interlock leaves it
+alone and `block_sends_after_private` still refuses it.
+
+Mail reads are the other contrast: a mail body is other people's words, so
+reads are `untrusted_input`, but a search query travels only to the provider
+that already custodies the mailbox, so they are not egress at all.
 
 Alongside the capability model, `http_fetch` refuses loopback, private,
 link-local (including the `169.254.169.254` metadata endpoint) and CGNAT
@@ -293,8 +322,8 @@ and teach people to switch the interlock off.
 
 The mitigation is not a label. It is the [sandbox](/docs/features/sandbox):
 confine the command, take away the network, and `shell` stops being a way out
-— at which point it stops declaring `external_send`, because something is
-enforcing that claim.
+— at which point its egress drops to `none`, because something is enforcing
+that claim.
 
 :::danger
 Do not give an unsandboxed `shell` to an agent that processes untrusted input.
