@@ -150,9 +150,8 @@ seam and the late lane, and the design records each with its reason. What
 the fakes could not find, the live runs did: a burst outruns pipecat's
 VAD→STT loop; Parakeet-TDT discards what precedes a silence gap inside a
 clip; a transcript-only turn waits out a 15 s timeout; aiortc counts RTP
-packets only on consumption. Deployed ~16:30 EDT (20:30 UTC) — `web/dist`
-with a new
-file at its root, `mecha-serve` and `mecha-voice-worker` restarted.
+packets only on consumption. Deployed ~16:30 EDT (20:30 UTC) — `web/dist` with a new file at its root,
+`mecha-serve` and `mecha-voice-worker` restarted.
 
 **2026-09-13 — a gap in the audio is not silence: the voice call holds the
 turn across a stall and says so, and the owner asked for the sound.** Two
