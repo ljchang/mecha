@@ -1575,9 +1575,9 @@ specific to this machine:
   export. A placeholder above the real key meant `grep -m1` silently found the
   placeholder and produced a `401 invalid x-api-key` that looked like a bad key.
 
-**Mail OAuth grants, re-consented 2026-08-18** (both were re-issued that day
-because the triage scopes widened, and both are recorded in each account's
-`oauth.json` under `granted_scopes`):
+**Mail OAuth grants** (both were re-issued on 2026-08-18 because the triage
+scopes widened, and both are recorded in each account's `oauth.json` under
+`granted_scopes`):
 
 | Account | Provider | Grant | Expiry |
 |---|---|---|---|
@@ -2381,12 +2381,19 @@ restart; the stale-inode sweep found nothing; `mecha-voice-worker` and
 The `VOICE_BLOCK` grew two sentences, so the first spoken turn after this
 re-paid the cached prefix once.
 
-**2026-09-14 ~16:30 UTC — #231 deployed.** No Rust. `web/dist` rebuilt from
+**2026-09-14 ~16:30 EDT (20:30 UTC) — #231 deployed.** The stamp was local
+and labelled UTC: `2b4a89fa` was committed at 19:57 UTC, so a 16:30 *UTC*
+deploy would predate the commit it installed — while the #228 entry above is
+genuine UTC, two stamps in one list wearing the same label in different
+zones. No Rust. `web/dist` rebuilt from
 the clean `main` checkout at `2b4a89fa` and rsynced to `~/.mecha/web/dist`
 (bundle `index-Dmo9OFNn.js`; `deployed-local` absent before and after, so
 main is what is deployed). **`voice-uplink-transform.js` is a new file at
-`dist` root** — `web/public/` lands there — and the `:63242` door returns
-it as `text/javascript` (200, 1958 B) behind the owner header; a dist
+`dist` root** — `web/public/` lands there — and `127.0.0.1:63242` returned
+it as `text/javascript` (200, 1958 B) behind a hand-supplied owner header;
+that is the origin, not the door the phone arrives through (`tailscale serve`
+proxies `:443` and `:8443` to it), so it evidences the file shipped and not
+that the door serves it; a dist
 without it is a page that declares the channel, gets a 404 from its
 worker, and falls back to RTP (the update skill's step 1b now says so).
 `mecha-serve` and `mecha-voice-worker` restarted, both on their own
@@ -2407,10 +2414,17 @@ since every recording since carries a blob.
 **2026-09-14 ~20:30 UTC — the `personal` Google account re-authenticated
 by the owner** (`mecha-mail auth personal --provider google`); `mecha
 doctor` went from five findings to four with the `mail` section gone. The
-grant is seven days and refreshing does not extend it, so it ends
-2026-09-21 and the doctor warns again from the 19th
+grant is seven days and refreshing does not extend it, so it ended
+2026-09-21 and the doctor warned again from the 19th
 (`GRANT_WARN_WITHIN_DAYS = 2`); the re-auth is a terminal-only flow —
 `--paste` from an ssh session — and never a button.
+
+**Superseded by a later consent.** `granted_at` in that account's
+`oauth.json` reads 2026-09-15T17:13:06Z, so the live grant is the one minted
+that day and it lapses ≈2026-09-22, not the 21st. It was still minted while
+the project was in Testing, so it keeps the seven-day clock whatever the
+app's status is now — the publish on 2026-09-16 changed only what *future*
+consents get (`HISTORY.md`, 2026-09-16).
 
 **2026-09-16, 19:44Z, mecha-7b: #238 (the clock, asked per turn) merged at
 `42c359f1` and deployed.** `~/.cargo/bin/mecha` reinstalled from mecha `main`

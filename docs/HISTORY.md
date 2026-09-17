@@ -89,9 +89,13 @@ published. The project is In production (External, 5/100) with **scope
 verification deliberately not submitted**, and branding verification passed
 the same day, once `mecha-factory.ai` was verified in Google Search Console as
 a Domain property — one apex TXT row, typed by hand because that zone's DNS
-has no API. What this does *not* settle is in HANDOFF: the seven-day clock
-belongs to the grant rather than the app, so the `personal` grant minted
-2026-09-15 keeps its own expiry and still owes a re-consent. The console
+has no API. Branding also requires a home-page URL and a privacy-policy URL
+on that authorized domain, which is what `website/src/pages/privacy.md` and
+`terms.md` are for (#234): a consent-screen prerequisite rather than
+marketing pages, and pruning them as unused would break the consent screen
+with nothing to say why. What this does *not* settle is in HANDOFF: the
+seven-day clock belongs to the grant rather than the app, so the `personal`
+grant minted 2026-09-15 keeps its own expiry and still owes a re-consent. The console
 states were observed by `mecha-41` and are not verifiable from a shell; the
 DNS row and the three branding URLs were re-checked independently.
 
@@ -146,7 +150,8 @@ seam and the late lane, and the design records each with its reason. What
 the fakes could not find, the live runs did: a burst outruns pipecat's
 VAD→STT loop; Parakeet-TDT discards what precedes a silence gap inside a
 clip; a transcript-only turn waits out a 15 s timeout; aiortc counts RTP
-packets only on consumption. Deployed ~16:30 UTC — `web/dist` with a new
+packets only on consumption. Deployed ~16:30 EDT (20:30 UTC) — `web/dist`
+with a new
 file at its root, `mecha-serve` and `mecha-voice-worker` restarted.
 
 **2026-09-13 — a gap in the audio is not silence: the voice call holds the
