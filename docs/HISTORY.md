@@ -75,6 +75,26 @@ carries the whole message list and clears `taint_checkpoints`, which
 over-taints rather than under. What it left is in HANDOFF — the tool-boundary
 half, and PR #239.
 
+**2026-09-16 — the OAuth client published, and the seven-day re-consent ended
+for every grant issued after it.** `FlowMail`, the Google Cloud project behind
+the `personal` mail and calendar account, had sat in **Testing** since
+2026-08-18 on the understanding that production needed verification plus a
+CASA security assessment (~$540/yr), because `gmail.modify` is a restricted
+scope. The premise was wrong, and the owner reopened it on 2026-09-15 against
+Google's own *OAuth app state overview*: an app may publish to production
+**without** verification, paying a 100-user lifetime cap and an "unverified
+app" interstitial — but not the seven-day refresh-token expiry, which is tied
+to *Testing* status specifically rather than to being unverified. It
+published. The project is In production (External, 5/100) with **scope
+verification deliberately not submitted**, and branding verification passed
+the same day, once `mecha-factory.ai` was verified in Google Search Console as
+a Domain property — one apex TXT row, typed by hand because that zone's DNS
+has no API. What this does *not* settle is in HANDOFF: the seven-day clock
+belongs to the grant rather than the app, so the `personal` grant minted
+2026-09-15 keeps its own expiry and still owes a re-consent. The console
+states were observed by `mecha-41` and are not verifiable from a shell; the
+DNS row and the three branding URLs were re-checked independently.
+
 **2026-09-13 — a gap in the audio is not silence: the voice call holds the
 turn across a stall and says so, and the owner asked for the sound.** Two
 calls from a moving car on 2026-09-12 reached the model as six fragments —
@@ -8055,6 +8075,25 @@ check the timestamp before re-running anything.**
 
 
 ### Environment
+
+**Two verification tracks behind one word, and clearing the cheap one routes
+you onto the expensive one.** Google's console calls both "verification".
+*Brand* verification proves you own the domain in the app's home-page URL —
+one DNS TXT row, free, and it governs only whether your name and logo render.
+*Scope* verification proves you handle other people's data safely, and for a
+restricted scope like `gmail.modify` it carries a CASA assessment at
+~$540/yr, annual, which resets on any scope change. Fixing the branding
+failure lands you on the scope-verification submit page, one button from a
+weeks-long paid review the app did not need; the same banner had already
+appeared once, on 2026-08-18, on a project with no sensitive or restricted
+scopes at all (`docs/DOCS-RESEARCH.md` §6.2). Two lessons, and the second is
+the one that cost the hour: **when one word names two processes with
+different prices, read the artifact that distinguishes them rather than the
+banner that merges them** — here the Verification Center's two cards, never
+the banner above them. And **an error message names the state, not the
+place**: the branding failure is raised in the Cloud console, but nothing
+fixes it there, because domain ownership lives in Search Console, a different
+product the error never mentions.
 
 **A value with a daily lifetime, rendered once into a process that runs for
 days.** The date was computed by `prepare_tools` and frozen into

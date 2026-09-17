@@ -1570,70 +1570,23 @@ because the triage scopes widened, and both are recorded in each account's
 | `personal` | Google | `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` | **still 7 days from consent** — last consent 2026-09-15 (`granted_at` in that account's `oauth.json`), so this grant lapses ≈2026-09-22; it was minted in Testing and keeps its clock, and publishing to production changed only what *future* consents get (see below) |
 | `dartmouth` | Outlook | `Mail.ReadWrite`, `Mail.Read`, `Mail.Send`, `Calendars.ReadWrite` | none — permanent |
 
-**(Superseded 2026-09-16 — see below. Kept as the history of the decision.)**
-The Google client (Cloud project **FlowMail**, the same registration the old
-app used) was in **Testing** publishing status with User type External, and
-Google expires a Testing app's refresh token exactly 7 days after consent —
-refreshing does not extend it. Moving to production would fix that but was
-understood to need verification plus a CASA security assessment (~$540/yr),
-because `gmail.modify` is a restricted scope. **Decided 2026-08-18: stay in
-Testing, and revisit CASA once the main development features are done.**
+**Open: `personal` still owes a re-consent.** The seven-day clock is a
+property of the grant, not of the app. That account's token was minted on
+2026-09-15, while the project was still in Testing, so it keeps its own
+expiry and lapses ≈2026-09-22 whatever the app's status is now — publishing
+changed only what *future* consents get. `~/.mecha/mail/accounts.toml`
+deliberately keeps `grant_lifetime_days = 7` on it so `mecha doctor` goes on
+warning two days out. **That line comes out when a grant is *observed*
+surviving past day eight** — deleted rather than raised to a large number, so
+its absence is the claim and no one has to trust a figure nobody measured.
 
-**Reopened 2026-09-15 by the owner on evidence that the premise was wrong,
-and settled 2026-09-16 in the owner's favour.** Google's own *OAuth app state
-overview* says an app may be published to production **without** completing
-verification: the result is a 100-user hard cap, no app name or logo on the
-consent screen, and an "unverified app" interstitial — but no seven-day
-expiry, because that expiry is tied to *Testing* status specifically and not
-to being unverified. CASA is the price of *verification*, which an app with
-one user does not need.
-
-**Settled 2026-09-16: it published.** The reading held. The FlowMail Cloud
-project is **In production** (user type External, OAuth user cap 5/100
-lifetime) and branding verification passed — the consent screen now renders
-the app name and logo — with **scope verification deliberately not
-submitted**. So the 2026-08-18 decision was answering a question nobody had
-to ask; the alternative outcome — bounced into scope verification, which
-would have made that decision right for the right reason — did not happen.
-
-Provenance, because the two halves were established differently. The console
-states — production, branding verified, the 5/100 cap, and the saved branding
-fields (home `https://docs.mecha-factory.ai/`, privacy `/privacy`, terms
-`/terms`, authorized domain `mecha-factory.ai`) — were observed in the console
-by `mecha-41` on 2026-09-16 and are **not independently verifiable from a
-shell**. What *was* re-checked here on the same day: the domain is verified in
-Search Console as a Domain property via a single apex TXT row, and
-`dig +short TXT mecha-factory.ai` returns exactly one
-`google-site-verification` row from both `8.8.8.8` and `1.1.1.1`; all three
-branding URLs return 200.
-
-**What this does *not* settle, and the distinction is the whole point: the
-seven-day clock is a property of the grant, not of the app.** The `personal`
-account's refresh token was minted while the project was in Testing and still
-carries its original expiry; publishing to production changes what *future*
-consents get, not what an existing grant became. So **`personal` still owes a
-re-consent**, and `~/.mecha/mail/accounts.toml` deliberately keeps
-`grant_lifetime_days = 7` on it so `mecha doctor` goes on warning two days
-out. That line comes out when a grant is *observed* surviving past day eight —
-deleted rather than raised to a large number, so its absence is the claim and
-no one has to trust a figure nobody measured.
-
-One trap to carry forward: fixing branding routes you straight onto the
-*scope* verification submit page, which is the expensive track — `gmail.modify`
-is restricted, so that path carries CASA (~$540/yr, annual, and it resets on
-any scope change). `DOCS-RESEARCH.md` §6.2's two-track split held exactly as
-recorded, and the proximity of the two buttons is the hazard.
-
-Two things to carry into any future CASA revisit, both measured on 2026-08-18
-by the parallel documents work (`docs/DOCS-RESEARCH.md` §6.2): the console
-distinguishes **brand verification** from **scope verification** and only the
-second is the expensive one — a banner reading "your app requires
-verification" appeared on a project with no sensitive or restricted scopes at
-all and turned out to be branding, which blocks nothing and must not be
-answered by submitting for review. Check the Verification Center's two cards,
-never the banner. And a Google grant is per (user, client), not per scope, so
-anything added to the FlowMail client shares mail's fate in both directions —
-which is why the documents work took its own project rather than this one.
+Everything else here is settled and has left. The publish is in
+[`HISTORY.md`](HISTORY.md)'s 2026-09-16 prose — In production, branding
+verified, scope verification deliberately not submitted, with the console
+states attributed to the session that observed them. The hazard that cost the
+time — two verification tracks behind one word, and the cheap one routing onto
+the expensive one — is under its *Traps already hit → Environment*. Only the
+re-consent is open, so only the re-consent is here.
 
 `~/.mecha/mail/accounts.toml` is in no git repository, so a fresh clone will
 not have it — including the `grant_lifetime_days = 7` line above.
