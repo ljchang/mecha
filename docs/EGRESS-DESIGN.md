@@ -360,6 +360,15 @@ This is a risk *reduction*, not an elimination. Three things it does not close:
    waived the interlock is reading a description of the class rather than a
    promise about the next call. Flagged in review, 2026-09-17; the alternative
    was dropping the waiver, which costs more than it buys (§D5).
+5. **`trifecta = "ask"` operators lose something real, and it is a behaviour
+   change rather than only a gain.** Before this, an armed `web_search` raised
+   a modal and, on approval, searched the full chain at the depth asked for.
+   Now it raises no modal — a blind call sets `injection_risk == false` — and
+   quietly returns a quick-depth blind result. The appended sentence explains
+   the narrowing to the model, and §D5 argues the trade is right (search that
+   works beats a prompt), but an operator who chose `ask` specifically to
+   *see* armed sends now sees fewer of them. `trifecta = "allow"` restores
+   the full chain; there is no setting that restores the prompt.
 
 Against those: the status quo's failure mode is an operator setting
 `trifecta = "allow"`, which waives the interlock for `http_fetch`, `mail_send`,
