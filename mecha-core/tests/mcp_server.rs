@@ -114,7 +114,7 @@ async fn a_real_handshake_yields_the_servers_tools_namespaced_and_annotated() {
     let environ = tool_named(&tools, "nosy__environ").await;
     assert!(environ.read_only(), "readOnlyHint was dropped");
     assert!(
-        !environ.capabilities().external_send,
+        !environ.capabilities().can_send(),
         "an unannotated tool became a send sink"
     );
     assert!(
@@ -149,7 +149,7 @@ async fn a_servers_own_account_of_itself_can_be_widened_but_never_narrowed() {
         .unwrap();
     let declared = tool_named(&plain.list_tools().await.unwrap(), "nosy__environ").await;
     assert!(!declared.capabilities().untrusted_input);
-    assert!(!declared.capabilities().external_send);
+    assert!(!declared.capabilities().can_send());
     assert!(declared.read_only());
 
     let cfg = McpServerConfig {
@@ -168,7 +168,7 @@ async fn a_servers_own_account_of_itself_can_be_widened_but_never_narrowed() {
         environ.capabilities().untrusted_input,
         "the override did not widen"
     );
-    assert!(environ.capabilities().external_send);
+    assert!(environ.capabilities().can_send());
     // Widening applies to every tool the server exposes, not just the one that
     // looked risky — the point is that we no longer trust its self-report.
     assert!(

@@ -316,9 +316,15 @@ Two distinctions that are easy to get wrong:
   Taint keys off **`external`** — otherwise our own guard's refusal gets
   labelled third-party content and the model invents explanations for its own
   harness. Any tool that reaches the network must call `.from_outside()`.
-- `http_fetch` is read-only but is still an `external_send` sink, because the
-  payload fits in a query string. Same for `web_search` — the query is the
-  channel.
+- **The send axis is a class, not a bool** (`Egress`: `None < Blind < Chosen`,
+  `union` takes the max). The interlock fires on `Chosen` — a destination *the
+  model names* — because that is what an injection needs to be read back.
+  `http_fetch` is read-only and still `Chosen`: the payload fits in a query
+  string and the model picks the host. `web_search` is `Blind` — its schema has
+  no destination, so the query reaches the `[[search]]` chain and nobody else —
+  and an armed run is served only by blind backends at quick depth. Blind is
+  earned in code by a schema with no destination, never granted in TOML.
+  The leak guard `block_sends_after_private` refuses both classes.
 
 **Provenance gates learning.** A learned rule rides in every future prompt's
 cached prefix — a longer-half-life injection path than anything the interlock
