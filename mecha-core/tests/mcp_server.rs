@@ -12,6 +12,7 @@ mod support;
 use mecha_core::config::{CapabilityOverride, McpServerConfig};
 use mecha_core::mcp::McpClient;
 use mecha_core::sandbox::{Backend, Sandbox, SandboxConfig};
+use mecha_core::tool::Egress;
 use mecha_core::tool::{Tool, ToolCtx};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -168,7 +169,10 @@ async fn a_servers_own_account_of_itself_can_be_widened_but_never_narrowed() {
         environ.capabilities().untrusted_input,
         "the override did not widen"
     );
-    assert!(environ.capabilities().can_send());
+    // The class, not just the bool: what the design promises is that no TOML
+    // key can produce `Blind`, so a forced send must land on the conservative
+    // class. Asserting `can_send()` would still pass if one ever did.
+    assert_eq!(environ.capabilities().egress, Egress::Chosen);
     // Widening applies to every tool the server exposes, not just the one that
     // looked risky — the point is that we no longer trust its self-report.
     assert!(

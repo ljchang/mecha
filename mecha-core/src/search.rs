@@ -678,13 +678,21 @@ impl Tool for WebSearch {
     /// interlock refuses with [`denial_remedy`](Tool::denial_remedy) naming
     /// the fix.
     ///
-    /// **The invariant this rests on, because it is not locally obvious:** the
-    /// `Blind`/`Chosen` distinction is only ever consulted while the
-    /// conversation is armed, and while armed [`call`](Tool::call) reaches
-    /// only the blind backends. While *clean* the full chain is reachable and
-    /// Exa's deep mode is not blind — but no control keys off the distinction
-    /// in that state: the interlock requires `trifecta_armed()`, and the leak
-    /// guard treats both classes alike. Change either of those (the table in
+    /// **The invariant this rests on, because it is not locally obvious:** no
+    /// *control* consults the `Blind`/`Chosen` distinction in any state where
+    /// [`call`](Tool::call) could reach a non-blind backend. There are two
+    /// such states and both are covered — while the conversation is clean the
+    /// full chain is reachable, and under `trifecta = "allow"` it is reachable
+    /// while armed — because the interlock requires `trifecta_armed()` *and*
+    /// is waived by `allow`, while the leak guard treats both classes alike.
+    ///
+    /// What does read the class in those states is *reader-facing*:
+    /// `mecha tools --json` prints `"egress": "blind"` and the TUI tool list
+    /// says `sends(fixed)`. Under `allow` that describes the declaration
+    /// rather than the run, which is why the TUI gloss says what the class
+    /// means and not what the tool will unconditionally do, and why
+    /// `EGRESS-DESIGN.md` §6 lists it as a residual. Flagged in review,
+    /// 2026-09-17. Change either of those (the table in
     /// `docs/EGRESS-DESIGN.md` §D3) and this declaration must be revisited.
     /// Guarded from both sides:
     /// `the_declared_class_tracks_whether_a_blind_route_exists` below, and
