@@ -298,9 +298,11 @@ learning store) is the silently-degrading-sandbox pattern — which is exactly
 where `mecha chat` from `$HOME` used to put it.
 
 **The trifecta interlock.** Tools declare `Capabilities` (`private_data`,
-`untrusted_input`, `external_send`, `destructive`); the loop tracks which
-have entered the conversation and refuses any `external_send` tool once both
-private and untrusted are present. It sits *ahead* of the approver on
+`untrusted_input`, `egress`, `destructive`); the loop tracks which have
+entered the conversation and refuses any **`Egress::Chosen`** tool — one
+whose recipient the *model* names — once both private and untrusted are
+present. A `Blind` sender is not refused here; see the send-axis bullet
+below, and `docs/EGRESS-DESIGN.md`. It sits *ahead* of the approver on
 purpose — a human clicking "yes" is what an injection is trying to engineer.
 Taint is a property of the **conversation**, not one run: it lives on
 `agent::Conversation` beside the messages and the session file records it,
@@ -337,7 +339,9 @@ untrusted.
 configured sandbox that doesn't work **stops the run** (`Sandbox::preflight`) —
 silent fallback to unconfined execution is worse than no sandbox, because
 confined `shell` declares narrower capabilities and the interlock believes
-it. Only `external_send` narrows when confined; `private_data` stays, or
+it. Only the egress axis narrows when confined (`Chosen` → `None`, never to
+`Blind` — confinement removes the route rather than fixing its destination);
+`private_data` stays, or
 `shell: cat secrets` would be cheaper than `fs_read`. MCP servers get the
 same treatment plus an **environment allowlist** — `connect` clears the
 environment first, because `Command::envs()` inherits, which is how a
