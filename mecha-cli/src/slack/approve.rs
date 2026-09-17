@@ -202,7 +202,7 @@ impl Approver for SlackApprover {
         }
         self.ask(
             tool,
-            format!("{why} {}", summarise(tool.name(), input)),
+            format!("{why} {}", summarise_forced(tool.name(), input)),
             true,
         )
         .await
@@ -221,7 +221,7 @@ impl Approver for SlackApprover {
         }
         self.ask(
             tool,
-            format!("{why} {}", summarise(tool.name(), input)),
+            format!("{why} {}", summarise_forced(tool.name(), input)),
             true,
         )
         .await
@@ -304,12 +304,40 @@ impl SlackApprover {
 
 /// One line a person can act on from a phone, without the full arguments.
 fn summarise(tool: &str, input: &Value) -> String {
+    summarise_to(tool, input, GIST)
+}
+
+/// The same summary, sized for a card a person is being asked to *inspect*.
+///
+/// An escalation or a `prompt` rule is not "do you recognise this call"; it is
+/// the interlock or the operator asking someone to look at what would happen,
+/// and for a send what they are looking for is a payload. Slack is the surface
+/// where that matters most, because the reviewer is on a phone and least able
+/// to go read the session record — and it was the surface with no `query` arm
+/// at all, so an escalated `web_search` rendered as the bare word
+/// `web_search`. Found by review on 2026-09-17, beside the same gap in the
+/// terminal's `summarize`.
+fn summarise_forced(tool: &str, input: &Value) -> String {
+    summarise_to(tool, input, INSPECT)
+}
+
+/// What fits on a card beside a tool name.
+const GIST: usize = 160;
+/// What a person needs to judge a payload, still bounded — an unbounded paste
+/// pushes the Approve and Reject buttons off a phone screen.
+const INSPECT: usize = 400;
+
+fn summarise_to(tool: &str, input: &Value, max: usize) -> String {
     let detail = input
         .get("command")
         .or_else(|| input.get("path"))
         .or_else(|| input.get("url"))
+        // The query is the whole channel for a blind sender — see
+        // `mecha_core::tool::Egress::Blind`. Last, so a tool carrying both a
+        // url and a query still shows the url.
+        .or_else(|| input.get("query"))
         .and_then(Value::as_str)
-        .map(|s| s.chars().take(160).collect::<String>());
+        .map(|s| s.chars().take(max).collect::<String>());
     match detail {
         Some(d) => format!("{tool}: {d}"),
         None => tool.to_string(),
@@ -646,6 +674,49 @@ mod tests {
         );
         assert_eq!(summarise("todo", &json!({})), "todo");
         let long = summarise("shell", &json!({"command": "x".repeat(500)}));
-        assert!(long.chars().count() <= 160 + "shell: ".len());
+        assert!(long.chars().count() <= GIST + "shell: ".len());
+    }
+
+    /// The gap review found: no `query` arm on any surface meant an escalated
+    /// `web_search` reached a Slack card as the bare word `web_search`, with
+    /// the payload — the whole channel, for a blind sender — nowhere on it.
+    /// Strictly worse than the terminal's truncated JSON, on the surface where
+    /// the reviewer can least go and look. Fails on the old behaviour twice:
+    /// on the field, and on the length.
+    #[test]
+    fn an_escalated_search_card_shows_the_query() {
+        let payload = "x".repeat(300);
+        let input = json!({"query": payload, "limit": 8});
+
+        assert_eq!(
+            summarise("todo", &json!({})),
+            "todo",
+            "a tool with no payload still renders as its name"
+        );
+
+        let gist = summarise("web_search", &input);
+        assert!(gist.starts_with("web_search: xxx"), "{gist}");
+
+        let forced = summarise_forced("web_search", &input);
+        assert!(
+            forced.chars().filter(|c| *c == 'x').count() > GIST,
+            "a person asked to inspect a payload must be shown the payload"
+        );
+        assert!(
+            forced.chars().count() <= INSPECT + "web_search: ".len(),
+            "still bounded: the buttons have to stay on screen"
+        );
+    }
+
+    /// A url and a query together still render the url — the destination is
+    /// what a reviewer judges first, and only a tool with no destination
+    /// falls through to its query.
+    #[test]
+    fn a_destination_outranks_a_query_in_the_summary() {
+        let both = json!({"url": "https://example.com/x", "query": "ignored"});
+        assert_eq!(
+            summarise("http_fetch", &both),
+            "http_fetch: https://example.com/x"
+        );
     }
 }

@@ -13,7 +13,7 @@ touches it. `shell` cannot work that way. The jail cannot see inside
 `curl` it out.
 
 The capability model has always said as much — `shell` declares
-`private_data`, `external_send` and `destructive` — but saying it is not
+`private_data`, `destructive`, and `chosen` egress — but saying it is not
 enforcing it. `sandbox.rs` is the enforcement.
 
 ## Configuration
@@ -46,8 +46,8 @@ Landlock confines **files**: workspace writable, system read-only, your home
 directory denied wholesale. It cannot close the network — TCP is denied on
 6.7+ kernels as defense in depth, but UDP is unrestrictable at any ABI, and
 `echo x > /dev/udp/host/port` works in bash alone. So a landlocked `shell`
-**never earns the trifecta interlock's relaxation**: it stays an
-`external_send` sink whatever `network` is set to, and the denial message
+**never earns the trifecta interlock's relaxation**: its egress stays
+`chosen` whatever `network` is set to, and the denial message
 says so rather than pointing at a setting that would not help. Its preflight
 proves the denial, not just the apply: it plants a file in your real home
 and requires the confined read to *fail* — "confined" with nothing denied is
@@ -115,13 +115,16 @@ misconfiguration is a clear message at launch instead of a confusing tool
 error twenty turns in. If the sandbox cannot be built at call time either, the
 call is refused with "Nothing was executed" rather than falling through.
 
-### 2. Only `external_send` narrows; `private_data` stays true
+### 2. Only egress narrows; `private_data` stays true
 
 ```rust
 Capabilities {
     private_data: true,
     untrusted_input: false,
-    external_send: self.sandbox.can_reach_network(),
+    // Confinement removes the route rather than narrowing its class: an
+    // unconfined shell can `curl` any host the model names, which is the
+    // complete channel.
+    egress: if self.sandbox.can_reach_network() { Egress::Chosen } else { Egress::None },
     destructive: true,
 }
 ```

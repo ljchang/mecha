@@ -81,14 +81,23 @@ Four axes, three of which are the lethal trifecta:
 pub struct Capabilities {
     pub private_data: bool,      // returns data the user considers private
     pub untrusted_input: bool,   // returns content a third party can influence
-    pub external_send: bool,     // can transmit data outside the user's control
+    pub egress: Egress,          // whether data leaves — and who picks where
     pub destructive: bool,       // may destroy or overwrite data
+}
+
+pub enum Egress {
+    None,    // nothing leaves
+    Blind,   // it leaves, but only to a destination your config fixed
+    Chosen,  // the model names the recipient: a url, a `to`, a channel
 }
 ```
 
 The loop tracks which of these have entered the conversation and refuses any
-`external_send` tool once both private and untrusted are present. Full
-treatment in [Security](/docs/features/security).
+**`Egress::Chosen`** tool once both private and untrusted are present — an
+injection can only be *directed* somewhere the attacker picks. A `Blind` tool
+such as `web_search` is left alone by that interlock and refused by
+`block_sends_after_private` instead. Full treatment in
+[Security](/docs/features/security).
 
 `Capabilities::union` is the only combining operation, and it only ever widens.
 Letting config *narrow* a tool's declared capabilities would disarm the
@@ -114,15 +123,18 @@ functions.
 
 Two of these look wrong until you read the reasoning.
 
-**`http_fetch` is `read_only` but is still an `external_send` sink.** It is
+**`http_fetch` is `read_only` but is still a `chosen`-egress sink.** It is
 read-only with respect to *your* data — it touches nothing on disk — but a GET
-is an exfiltration channel, because the payload fits in the query string.
+is an exfiltration channel, because the payload fits in the query string and
+the `url` argument lets the model pick who reads it. `web_search` is the
+contrast that makes the class worth having: same payload problem, no
+destination argument, so it is `blind`.
 
 **`shell` is not marked as an untrusted *source*.** Taint tracking cannot see
 inside a command, so labelling it untrusted would arm the interlock on every
 `ls`. The mitigation is the sandbox, not a label. What confinement *does*
-narrow is `external_send`: with no network there is no way out, so a confined
-shell stops being a trifecta sink. `private_data` stays true regardless — a
+narrow is egress: with no network there is no way out, so a confined shell
+drops to `Egress::None` and stops being a trifecta sink. `private_data` stays true regardless — a
 confined shell still reads the workspace, and `fs_read` reads the same files
 under the same label. Narrowing it would mean `shell: cat secrets` sets no
 taint where `fs_read: secrets` does, making the cheapest route around the
@@ -363,7 +375,10 @@ Details that cost something to get right:
 Capabilities {
     private_data: true,
     untrusted_input: hint("openWorldHint"),
-    external_send: hint("openWorldHint"),
+    // `Chosen`, never `Blind`: a remote tool's input schema is the
+    // server's to write, so nothing local can prove it holds no
+    // destination.
+    egress: if hint("openWorldHint") { Egress::Chosen } else { Egress::None },
     destructive: hint("destructiveHint"),
 }.union(self.forced)
 ```

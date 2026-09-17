@@ -14,11 +14,24 @@
 //!
 //! Search results are the single largest indirect prompt-injection surface an
 //! agent has, and the search *query itself* is an exfiltration channel — the
-//! payload fits in `?q=`. So the tool declares both `untrusted_input` and
-//! `external_send`, and its output is marked `from_outside`. The trifecta
-//! interlock does the rest.
+//! payload fits in `?q=`. So the tool declares `untrusted_input`, marks its
+//! output `from_outside`, and declares egress.
+//!
+//! But **which** egress, and that is the whole of `docs/EGRESS-DESIGN.md`.
+//! [`WebSearch::input_schema`] has three properties — `query`, `limit`,
+//! `depth` — and no destination field. The model fills the channel; it cannot
+//! choose who reads it, because the recipients are whatever `[[search]]` names.
+//! That is [`Egress::Blind`], and the trifecta interlock (which exists to stop
+//! an injection *directing* a send) leaves it alone, while the leak guard
+//! `block_sends_after_private` (which exists to stop private data reaching a
+//! third party at all) still refuses it.
+//!
+//! Blind is earned per backend and per depth, never assumed: see
+//! [`SearchBackend::egress`], whose default is the conservative class. An
+//! armed conversation is served only by the blind backends, at quick depth —
+//! [`SearchChain::search_blind`].
 
-use crate::tool::{Capabilities, Tool, ToolCtx, ToolOutput};
+use crate::tool::{Capabilities, DenialCause, Egress, Tool, ToolCtx, ToolOutput};
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -59,6 +72,27 @@ pub enum Depth {
 pub trait SearchBackend: Send + Sync {
     fn id(&self) -> &str;
     async fn search(&self, query: &str, limit: usize, depth: Depth) -> Result<SearchResponse>;
+
+    /// Who receives this backend's query at this depth — see [`Egress`].
+    ///
+    /// [`Egress::Blind`] is the claim that the backend treats the query as
+    /// *search terms* and nothing else: it will not dereference a URL written
+    /// into the query, and it will not fetch a page the query names. Then an
+    /// injection can fill the channel and still has no way to read it back,
+    /// because the recipients are the ones `[[search]]` names.
+    ///
+    /// **The default is [`Egress::Chosen`], and it is load-bearing.** A
+    /// backend added later is not blind until somebody reads its API and says
+    /// so in a diff — the same fail-closed shape as unknown taint. The three
+    /// classifications this repo ships were made on 2026-09-17 against vendor
+    /// documentation, which is weaker evidence than a test and is recorded as
+    /// such in the design document; what protects against a vendor adding the
+    /// behaviour later is this default plus the fact that mecha never sends
+    /// `livecrawl`, `maxAgeHours` or `include_raw_content`.
+    fn egress(&self, depth: Depth) -> Egress {
+        let _ = depth;
+        Egress::Chosen
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -91,6 +125,23 @@ impl SearchBackend for Exa {
         "exa"
     }
 
+    /// Blind at quick depth, not at deep.
+    ///
+    /// `Depth::Quick` sends `"type": "auto"` with `livecrawl: "never"` — an
+    /// index query, and an explicit refusal to fetch anything not already
+    /// indexed. Both halves matter: the type keeps it a lookup, and the
+    /// `livecrawl` says so in a parameter rather than by omission. `Depth::Deep` sends `"type": "deep-reasoning"`,
+    /// documented as multi-step agentic research that *fetches pages chosen
+    /// during the research*; the query steers that choice, so a query naming a
+    /// host is a query that may cause a request to it. That is a destination
+    /// the model picked, which is exactly what `Blind` promises it cannot.
+    fn egress(&self, depth: Depth) -> Egress {
+        match depth {
+            Depth::Quick => Egress::Blind,
+            Depth::Deep => Egress::Chosen,
+        }
+    }
+
     async fn search(&self, query: &str, limit: usize, depth: Depth) -> Result<SearchResponse> {
         // Exa's base price covers 10 results and bills extra beyond that, so
         // don't quietly exceed it.
@@ -105,7 +156,16 @@ impl SearchBackend for Exa {
             },
             // Text extracts, capped: enough to judge relevance without pulling
             // whole pages into context.
-            "contents": {"text": {"maxCharacters": 1200}},
+            //
+            // `livecrawl: "never"` is what makes `egress(Quick) == Blind` a
+            // property of this file rather than of Exa's defaults. Asking for
+            // page contents is what raises the question at all — omitting the
+            // parameter would hand "does a query cause a fetch" to a default
+            // the vendor can change with nothing here changing and no diff to
+            // review, which is the absence-as-mitigation this PR's own
+            // `Chosen` trait default exists to refuse. Named in review,
+            // 2026-09-17.
+            "contents": {"text": {"maxCharacters": 1200}, "livecrawl": "never"},
         });
 
         let resp = self
@@ -181,6 +241,15 @@ impl SearchBackend for Tavily {
         "tavily"
     }
 
+    /// Blind at both depths. `search_depth` selects how hard Tavily ranks and
+    /// how much of each source it extracts, not whether it follows the query
+    /// somewhere: crawling lives in a separate Crawl API, which takes a base
+    /// URL and which mecha does not call. The documented `/search` parameter
+    /// surface has no query-driven fetch.
+    fn egress(&self, _depth: Depth) -> Egress {
+        Egress::Blind
+    }
+
     async fn search(&self, query: &str, limit: usize, depth: Depth) -> Result<SearchResponse> {
         let body = json!({
             "query": query,
@@ -242,9 +311,16 @@ impl SearchBackend for Tavily {
 // SearXNG — a self-hosted metasearch instance
 // --------------------------------------------------------------------------
 
-/// Talks to a SearXNG instance's JSON API. No key, no quota, and the query
-/// never leaves your network — which for an agent that also reads private data
-/// is the only way to stop the *query* being the leak.
+/// Talks to a SearXNG instance's JSON API. No key and no quota — and the
+/// property that matters for an agent that also reads private data: **you
+/// choose the recipients, and no text the model writes can change them.**
+///
+/// An earlier comment here claimed the query "never leaves your network".
+/// That is over-generous and was corrected on 2026-09-17: a self-hosted
+/// instance forwards `q` to whichever upstream engines its `settings.yml`
+/// enables, so the query does reach them. The weaker claim is the true one and
+/// is all [`Egress::Blind`] ever needed. Anyone who wants the stronger
+/// property wants `block_sends_after_private = true`.
 pub struct Searxng {
     http: reqwest::Client,
     base_url: String,
@@ -265,6 +341,13 @@ impl Searxng {
 impl SearchBackend for Searxng {
     fn id(&self) -> &str {
         "searxng"
+    }
+
+    /// Blind at both depths: `q` goes to the engines named in the instance's
+    /// own `settings.yml` and nowhere else, and there is no path by which a
+    /// URL written into the query becomes a request to it.
+    fn egress(&self, _depth: Depth) -> Egress {
+        Egress::Blind
     }
 
     async fn search(&self, query: &str, limit: usize, _depth: Depth) -> Result<SearchResponse> {
@@ -429,6 +512,27 @@ impl SearchChain {
         self.entries.iter().map(|e| e.backend.id()).collect()
     }
 
+    /// The backends whose destination the model cannot choose, in config
+    /// order. Quick depth, because that is the only depth
+    /// [`search_blind`](Self::search_blind) runs at — a backend blind at quick
+    /// and chosen at deep (Exa) belongs here, and is served quick.
+    fn blind_entries(&self) -> Vec<&ChainEntry> {
+        self.entries
+            .iter()
+            .filter(|e| e.backend.egress(Depth::Quick) == Egress::Blind)
+            .collect()
+    }
+
+    /// Is there any backend an armed conversation could still be served by?
+    ///
+    /// What [`WebSearch::capabilities`] declares turns on this: with none, the
+    /// tool has no blind path at all and must declare the conservative class
+    /// so the interlock refuses it with a remedy, rather than promising a
+    /// route that does not exist.
+    pub fn has_blind_backend(&self) -> bool {
+        !self.blind_entries().is_empty()
+    }
+
     /// The order this depth should try backends in. A stable partition, so
     /// config order still decides everything within each group — the only
     /// thing depth moves is which group goes first.
@@ -445,6 +549,41 @@ impl SearchChain {
     }
 
     pub async fn search(&self, query: &str, limit: usize, depth: Depth) -> Result<SearchResponse> {
+        self.run(self.order_for(depth), query, limit, depth).await
+    }
+
+    /// Search using only the backends whose destination the *operator* fixed.
+    ///
+    /// What an armed conversation gets. Forced to [`Depth::Quick`] because
+    /// that is the depth [`blind_entries`](Self::blind_entries) classified —
+    /// Exa's deep mode is agentic research that fetches pages the query can
+    /// steer it towards, which is not blind whatever the backend is blind at
+    /// otherwise.
+    ///
+    /// Degrading beats refusing, and the reason is measured: on 2026-08-21
+    /// every general engine behind the local SearXNG refused this box's IP,
+    /// which is why paid backends are in the chain at all. "Delete your paid
+    /// backends to keep searching while armed" would trade one refusal for
+    /// another.
+    pub async fn search_blind(&self, query: &str, limit: usize) -> Result<SearchResponse> {
+        let order = self.blind_entries();
+        if order.is_empty() {
+            bail!(
+                "this conversation holds both private data and third-party content, so \
+                 search is served only by backends whose destination is fixed by your \
+                 config — and none is configured"
+            );
+        }
+        self.run(order, query, limit, Depth::Quick).await
+    }
+
+    async fn run(
+        &self,
+        order: Vec<&ChainEntry>,
+        query: &str,
+        limit: usize,
+        depth: Depth,
+    ) -> Result<SearchResponse> {
         let mut failures = Vec::new();
         // A backend that answered, even with nothing, is the difference
         // between "the web does not have this" and "the search is broken",
@@ -457,7 +596,7 @@ impl SearchChain {
         // around.
         let mut empty_from: Option<String> = None;
 
-        for entry in self.order_for(depth) {
+        for entry in order {
             let backend = &entry.backend;
             match backend.search(query, limit, depth).await {
                 // A backend that answers with nothing is not an error, but it
@@ -542,11 +681,62 @@ impl Tool for WebSearch {
         true
     }
 
+    /// [`Egress::Blind`] — the input schema above has no destination field,
+    /// so the query reaches whatever `[[search]]` names and nothing else.
+    ///
+    /// Except with no blind backend configured, where there is no armed path
+    /// at all and the honest declaration is the conservative one, so the
+    /// interlock refuses with [`denial_remedy`](Tool::denial_remedy) naming
+    /// the fix.
+    ///
+    /// **The invariant this rests on, because it is not locally obvious:** no
+    /// *control* consults the `Blind`/`Chosen` distinction in any state where
+    /// [`call`](Tool::call) could reach a non-blind backend. There are two
+    /// such states and both are covered — while the conversation is clean the
+    /// full chain is reachable, and under `trifecta = "allow"` it is reachable
+    /// while armed — because the interlock requires `trifecta_armed()` *and*
+    /// is waived by `allow`, while the leak guard treats both classes alike.
+    ///
+    /// What does read the class in those states is *reader-facing*:
+    /// `mecha tools --json` prints `"egress": "blind"` and the TUI tool list
+    /// says `sends(fixed)`. Under `allow` that describes the declaration
+    /// rather than the run, which is why the TUI gloss says what the class
+    /// means and not what the tool will unconditionally do, and why
+    /// `EGRESS-DESIGN.md` §6 lists it as a residual. Flagged in review,
+    /// 2026-09-17. Change either of those (the table in
+    /// `docs/EGRESS-DESIGN.md` §D3) and this declaration must be revisited.
+    /// Guarded from both sides:
+    /// `the_declared_class_tracks_whether_a_blind_route_exists` below, and
+    /// `agent::tests::a_clean_conversation_does_not_consult_the_egress_class`.
     fn capabilities(&self) -> Capabilities {
-        Capabilities::default().untrusted().sends()
+        let caps = Capabilities::default().untrusted();
+        if self.chain.has_blind_backend() {
+            caps.sends_blind()
+        } else {
+            caps.sends()
+        }
     }
 
-    async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+    fn denial_remedy(&self, cause: DenialCause) -> Option<String> {
+        match cause {
+            // Adding a blind backend is the answer to the interlock and only
+            // to the interlock. Under the leak guard it is worse than silence:
+            // the operator adds SearXNG, `capabilities()` flips to `Blind`,
+            // and the leak guard refuses `Blind` too — a second refusal
+            // reached by following the exit. The honest answer there is the
+            // refusal's own text, which names the setting that fired.
+            DenialCause::Leak => None,
+            DenialCause::Injection => (!self.chain.has_blind_backend()).then(|| {
+                "Web search is refused here only because every configured backend is one \
+                 the model could point somewhere. Add a backend whose destination your \
+                 config fixes — `[[search]]` with `kind = \"searxng\"` — and search keeps \
+                 working in conversations that hold private data."
+                    .into()
+            }),
+        }
+    }
+
+    async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let Some(query) = input.get("query").and_then(Value::as_str) else {
             return Ok(ToolOutput::err("missing required string argument `query`"));
         };
@@ -556,15 +746,71 @@ impl Tool for WebSearch {
             _ => Depth::Quick,
         };
 
-        let response = match self.chain.search(query, limit, depth).await {
+        // Fail closed on `None`, per `ToolCtx::taint`'s own contract: a
+        // subagent's context, or any run wired outside the loop, must not pass
+        // as a clean sender by omission. The cost of being wrong here is a
+        // quick searxng search instead of a deep exa one.
+        //
+        // `trifecta = "allow"` is the operator's written waiver of the
+        // injection interlock, and the switch table calls it "waives the
+        // injection interlock entirely". Narrowing anyway would make that
+        // false and would silently remove deep search from an operator who
+        // had explicitly opted out — a capability lost with no configuration
+        // able to restore it. So the waiver reaches here too.
+        //
+        // `"ask"` deliberately does not: a blind call raises no escalation
+        // (`injection_risk` is false for it), so there is no human yes to
+        // widen on, and quietly running the full chain would be a widening
+        // nobody asked for. Degrading is the answer `ask` gets — search keeps
+        // working with no modal at all. It is not free: an `ask` operator
+        // used to get a prompt and, on approval, a full-depth search, and now
+        // gets a quiet quick one. `EGRESS-DESIGN.md` §6 item 5 records that
+        // rather than counting it purely as a gain.
+        // `has_blind_backend()` is the third term, and it is what keeps this
+        // in agreement with `capabilities()` *by construction*: the tool
+        // declares `Blind` exactly when a blind route exists, so degrading
+        // exactly when one exists makes `search_blind`'s `bail!` unreachable
+        // from here rather than latently reachable.
+        //
+        // Without it, the `"ask"` reasoning above quietly stopped holding in
+        // the one branch `capabilities()` added for the other case. With no
+        // blind backend the tool declares `Chosen`, so `injection_risk` *is*
+        // true, an escalation *is* raised, and a human *does* say yes — and
+        // that yes landed on `bail!("… none is configured")` while the full
+        // chain would have answered. `ask` was strictly worse than `block`,
+        // which hands back `denial_remedy(Injection)` naming SearXNG. Latent
+        // today (every shipped backend is blind at quick depth), and exactly
+        // the path the `Chosen` trait default exists to light up for the next
+        // one. Found by review, 2026-09-17.
+        //
+        // Reaching `call` with no blind route means the ordinary gate already
+        // let this through — approved under `ask`, waived under `allow`, or
+        // the conversation is not armed — so the full chain is the right
+        // answer in all three.
+        let waived = ctx.security.trifecta == crate::config::TrifectaPolicy::Allow;
+        let armed = !waived
+            && self.chain.has_blind_backend()
+            && ctx.taint.is_none_or(|t| t.trifecta_armed());
+
+        let response = match if armed {
+            self.chain.search_blind(query, limit).await
+        } else {
+            self.chain.search(query, limit, depth).await
+        } {
             Ok(r) => r,
             // `from_outside`, like the results: a backend's error carries what
             // the backend said, which is a third party's text.
-            Err(e) => return Ok(ToolOutput::err(format!("{e:#}")).from_outside()),
+            Err(e) => {
+                return Ok(ToolOutput::err(format!("{e:#}{}", narrowing_note(armed))).from_outside())
+            }
         };
 
         if response.results.is_empty() && response.answer.is_none() {
-            return Ok(ToolOutput::ok(format!("no results for {query:?}")).from_outside());
+            return Ok(ToolOutput::ok(format!(
+                "no results for {query:?}{}",
+                narrowing_note(armed)
+            ))
+            .from_outside());
         }
 
         let mut out = String::new();
@@ -583,16 +829,496 @@ impl Tool for WebSearch {
             out.push('\n');
         }
         out.push_str(&format!("(via {})", response.backend));
+        out.push_str(narrowing_note(armed));
 
         // Everything above was written by strangers.
         Ok(ToolOutput::ok(out).from_outside())
     }
 }
 
+/// What an armed run is told about its own narrowing — on **every** exit,
+/// which is the whole point of hoisting it out of one of them.
+///
+/// It first rode only on the success path, and the two outcomes a cut chain is
+/// *most likely* to produce said nothing: an empty answer read as "the web has
+/// nothing" when the full chain might have answered, and a failing sole
+/// backend read as "the tool is broken" rather than "your chain was cut to one
+/// entry". Those are the opposite findings the empty-vs-error split in
+/// [`SearchChain::run`] exists to keep apart, collapsed again one layer up —
+/// and "a model told its tools are broken rewords and retries, eight times in
+/// one recorded run" is the measured cost. Found by review, 2026-09-17.
+fn narrowing_note(armed: bool) -> &'static str {
+    if armed {
+        " — this conversation holds private data and third-party content, so the search \
+         was served only by backends whose destination your config fixes, at quick depth. \
+         Nothing else about it changed, and a fuller chain might answer differently."
+    } else {
+        ""
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::Taint;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    // ----------------------------------------------------------------
+    // Egress classes — `docs/EGRESS-DESIGN.md`
+    // ----------------------------------------------------------------
+
+    /// A backend that answers, remembers the depth it was asked for, and
+    /// declares whatever class the test needs.
+    struct Classed {
+        id: &'static str,
+        egress: Egress,
+        seen: Arc<std::sync::Mutex<Vec<Depth>>>,
+    }
+
+    #[async_trait]
+    impl SearchBackend for Classed {
+        fn id(&self) -> &str {
+            self.id
+        }
+        fn egress(&self, _depth: Depth) -> Egress {
+            self.egress
+        }
+        async fn search(&self, _q: &str, _l: usize, depth: Depth) -> Result<SearchResponse> {
+            self.seen.lock().unwrap().push(depth);
+            Ok(SearchResponse {
+                results: vec![SearchResult {
+                    title: "A page".into(),
+                    url: "https://example.com".into(),
+                    snippet: "words".into(),
+                    published: None,
+                    score: None,
+                }],
+                answer: None,
+                backend: self.id.into(),
+            })
+        }
+    }
+
+    fn classed(
+        id: &'static str,
+        egress: Egress,
+    ) -> (Box<dyn SearchBackend>, Arc<std::sync::Mutex<Vec<Depth>>>) {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        (
+            Box::new(Classed {
+                id,
+                egress,
+                seen: Arc::clone(&seen),
+            }),
+            seen,
+        )
+    }
+
+    fn ctx_with(taint: Option<Taint>) -> ToolCtx {
+        ToolCtx {
+            taint,
+            ..ToolCtx::default()
+        }
+    }
+
+    fn ctx_waived(taint: Option<Taint>) -> ToolCtx {
+        let mut ctx = ctx_with(taint);
+        ctx.security.trifecta = crate::config::TrifectaPolicy::Allow;
+        ctx
+    }
+
+    /// The three shipped backends, classified by what each does with the
+    /// query text — the only property `Egress::Blind` ever claimed.
+    #[test]
+    fn the_shipped_backends_are_classified_by_what_they_do_with_the_query() {
+        let exa = Exa::new("k".into(), None).unwrap();
+        assert_eq!(
+            exa.egress(Depth::Quick),
+            Egress::Blind,
+            "`type: auto` is an index query"
+        );
+        assert_eq!(
+            exa.egress(Depth::Deep),
+            Egress::Chosen,
+            "`deep-reasoning` is agentic research that fetches pages the query can steer it to"
+        );
+
+        let tavily = Tavily::new("k".into(), None).unwrap();
+        assert_eq!(tavily.egress(Depth::Quick), Egress::Blind);
+        assert_eq!(
+            tavily.egress(Depth::Deep),
+            Egress::Blind,
+            "`advanced` ranks and extracts harder; crawling is a different API mecha never calls"
+        );
+
+        let searxng = Searxng::new("http://127.0.0.1:8888".into()).unwrap();
+        assert_eq!(searxng.egress(Depth::Quick), Egress::Blind);
+        assert_eq!(searxng.egress(Depth::Deep), Egress::Blind);
+    }
+
+    /// Fails on a trait default of `Blind`: a backend added later must not
+    /// inherit a promise nobody made for it. Unknown is never clean.
+    #[test]
+    fn an_unclassified_backend_is_not_blind_and_never_serves_an_armed_run() {
+        struct Newcomer;
+        #[async_trait]
+        impl SearchBackend for Newcomer {
+            fn id(&self) -> &str {
+                "newcomer"
+            }
+            async fn search(&self, _q: &str, _l: usize, _d: Depth) -> Result<SearchResponse> {
+                unreachable!("an armed run must never reach an unclassified backend")
+            }
+        }
+        assert_eq!(Newcomer.egress(Depth::Quick), Egress::Chosen);
+
+        let chain = SearchChain::new(vec![Box::new(Newcomer)]);
+        assert!(!chain.has_blind_backend());
+        // And the tool over it declares the conservative class, so the
+        // interlock refuses it rather than the tool promising a route it
+        // does not have.
+        let tool = WebSearch::new(Arc::new(chain));
+        assert_eq!(tool.capabilities().egress, Egress::Chosen);
+        assert!(
+            tool.denial_remedy(DenialCause::Injection)
+                .unwrap()
+                .contains("searxng"),
+            "a refusal that names no exit teaches the operator to weaken policy"
+        );
+    }
+
+    /// The whole point. An armed conversation still searches — on the
+    /// backends whose destination the operator fixed, and only those.
+    #[tokio::test]
+    async fn an_armed_conversation_is_served_only_by_blind_backends() {
+        let (chosen, chosen_seen) = classed("paid", Egress::Chosen);
+        let (blind, blind_seen) = classed("searxng", Egress::Blind);
+        // Chosen first in config order, so reaching the blind one cannot be
+        // an accident of ordering.
+        let tool = WebSearch::new(Arc::new(SearchChain::new(vec![chosen, blind])));
+
+        let armed = Taint {
+            private: true,
+            untrusted: true,
+        };
+        let out = tool
+            .call(
+                json!({"query": "tide times", "depth": "deep"}),
+                &ctx_with(Some(armed)),
+            )
+            .await
+            .unwrap();
+
+        assert!(!out.is_error);
+        assert!(out.content.contains("via searxng"));
+        assert!(
+            chosen_seen.lock().unwrap().is_empty(),
+            "a backend the model could point somewhere must not see an armed query"
+        );
+        assert_eq!(
+            *blind_seen.lock().unwrap(),
+            vec![Depth::Quick],
+            "deep is forced down to the depth the classification was made at"
+        );
+        assert!(
+            out.content.contains("destination your config fixes"),
+            "a silently shallower search reads as a broken tool, and models retry broken tools"
+        );
+    }
+
+    /// The two outcomes a cut chain is most likely to produce, and the ones
+    /// that said nothing about the cut until review caught it on 2026-09-17.
+    ///
+    /// An empty blind result must not read as "the web has nothing" — those
+    /// are the opposite findings `SearchChain::run`'s empty-vs-error split
+    /// exists to keep apart — and a failing sole backend must not read as
+    /// "the tool is broken", which is the eight-retries failure. Fails on the
+    /// success-path-only notice.
+    #[tokio::test]
+    async fn an_empty_or_failing_blind_search_still_says_it_was_narrowed() {
+        struct Quiet {
+            fail: bool,
+        }
+        #[async_trait]
+        impl SearchBackend for Quiet {
+            fn id(&self) -> &str {
+                "searxng"
+            }
+            fn egress(&self, _d: Depth) -> Egress {
+                Egress::Blind
+            }
+            async fn search(&self, _q: &str, _l: usize, _d: Depth) -> Result<SearchResponse> {
+                if self.fail {
+                    bail!("quota exhausted");
+                }
+                Ok(SearchResponse {
+                    backend: "searxng".into(),
+                    ..Default::default()
+                })
+            }
+        }
+
+        let armed = Taint {
+            private: true,
+            untrusted: true,
+        };
+
+        // Answered, with nothing. Not the same as the web being empty.
+        let empty = WebSearch::new(Arc::new(SearchChain::new(vec![Box::new(Quiet {
+            fail: false,
+        })])));
+        let out = empty
+            .call(json!({"query": "tide times"}), &ctx_with(Some(armed)))
+            .await
+            .unwrap();
+        assert!(out.content.contains("no results"), "{}", out.content);
+        assert!(
+            out.content.contains("destination your config fixes"),
+            "an empty narrowed search must not read as an empty web: {}",
+            out.content
+        );
+
+        // Did not answer at all. Not the same as the tool being broken.
+        let broken = WebSearch::new(Arc::new(SearchChain::new(vec![Box::new(Quiet {
+            fail: true,
+        })])));
+        let out = broken
+            .call(json!({"query": "tide times"}), &ctx_with(Some(armed)))
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(
+            out.content.contains("destination your config fixes"),
+            "a failing sole backend must not read as a broken tool: {}",
+            out.content
+        );
+
+        // And a clean conversation says none of it on any path.
+        let clean = WebSearch::new(Arc::new(SearchChain::new(vec![Box::new(Quiet {
+            fail: false,
+        })])));
+        let out = clean
+            .call(
+                json!({"query": "tide times"}),
+                &ctx_with(Some(Taint::default())),
+            )
+            .await
+            .unwrap();
+        assert!(!out.content.contains("destination your config fixes"));
+    }
+
+    /// Clean, nothing is narrowed: the full chain at the depth asked for.
+    #[tokio::test]
+    async fn a_clean_conversation_keeps_the_whole_chain_and_the_depth_it_asked_for() {
+        let (chosen, chosen_seen) = classed("paid", Egress::Chosen);
+        let (blind, blind_seen) = classed("searxng", Egress::Blind);
+        let tool = WebSearch::new(Arc::new(SearchChain::new(vec![chosen, blind])));
+
+        let out = tool
+            .call(
+                json!({"query": "tide times", "depth": "deep"}),
+                &ctx_with(Some(Taint::default())),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(*chosen_seen.lock().unwrap(), vec![Depth::Deep]);
+        assert!(
+            blind_seen.lock().unwrap().is_empty(),
+            "the first backend answered"
+        );
+        assert!(!out.content.contains("destination your config fixes"));
+    }
+
+    /// `ToolCtx::taint`'s own contract, honoured here: nobody stamped it, so
+    /// it is fully tainted. A subagent's context and any run wired outside
+    /// the loop must not pass as clean by omission — the cost of being wrong
+    /// this way is a quick search instead of a deep one.
+    #[tokio::test]
+    async fn an_unstamped_taint_is_treated_as_armed() {
+        let (chosen, chosen_seen) = classed("paid", Egress::Chosen);
+        let (blind, _) = classed("searxng", Egress::Blind);
+        let tool = WebSearch::new(Arc::new(SearchChain::new(vec![chosen, blind])));
+
+        let out = tool
+            .call(json!({"query": "tide times"}), &ctx_with(None))
+            .await
+            .unwrap();
+
+        assert!(out.content.contains("via searxng"));
+        assert!(chosen_seen.lock().unwrap().is_empty());
+    }
+
+    /// With no blind backend the *declaration* is what stops an armed call —
+    /// `capabilities()` is `Chosen`, so the interlock refuses it under
+    /// `block` with a remedy naming SearXNG. Reaching `call` at all therefore
+    /// means the gate let it through, and the honest answer then is the full
+    /// chain rather than a refusal the caller has already overridden.
+    ///
+    /// This test used to assert the opposite, and was wrong for a reason
+    /// worth keeping: it read `search_blind`'s `bail!` as a safety net when
+    /// it was really an unreachable-by-construction precondition that the
+    /// two-term `armed` had quietly made reachable.
+    #[tokio::test]
+    async fn no_blind_backend_means_the_declaration_gates_it_and_call_answers() {
+        let (chosen, chosen_seen) = classed("paid", Egress::Chosen);
+        let tool = WebSearch::new(Arc::new(SearchChain::new(vec![chosen])));
+
+        assert_eq!(
+            tool.capabilities().egress,
+            Egress::Chosen,
+            "the gate is the declaration, and it is the conservative one"
+        );
+
+        let out = tool
+            .call(
+                json!({"query": "x"}),
+                &ctx_with(Some(Taint {
+                    private: true,
+                    untrusted: true,
+                })),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(*chosen_seen.lock().unwrap(), vec![Depth::Quick]);
+    }
+
+    /// `search_blind` is `pub`, so its precondition is still defended for a
+    /// caller that is not `WebSearch::call` — it errors readably rather than
+    /// returning a silent empty, which would read as "the web has nothing".
+    #[tokio::test]
+    async fn search_blind_still_refuses_readably_when_called_with_no_blind_entry() {
+        let (chosen, _) = classed("paid", Egress::Chosen);
+        let chain = SearchChain::new(vec![chosen]);
+        let err = chain.search_blind("x", 5).await.unwrap_err().to_string();
+        assert!(err.contains("none is configured"), "{err}");
+    }
+
+    /// `trifecta = "allow"` is the operator's written waiver of the injection
+    /// interlock, and the switch table calls it exactly that. Narrowing anyway
+    /// would remove deep search from the one operator who had opted out, with
+    /// no setting able to put it back. Found by review on 2026-09-17; fails on
+    /// the first cut of this feature, which read `ctx.taint` alone.
+    #[tokio::test]
+    async fn an_explicit_waiver_reaches_the_whole_chain_while_armed() {
+        let (chosen, chosen_seen) = classed("paid", Egress::Chosen);
+        let (blind, blind_seen) = classed("searxng", Egress::Blind);
+        let tool = WebSearch::new(Arc::new(SearchChain::new(vec![chosen, blind])));
+
+        let armed = Taint {
+            private: true,
+            untrusted: true,
+        };
+        let out = tool
+            .call(
+                json!({"query": "tide times", "depth": "deep"}),
+                &ctx_waived(Some(armed)),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            *chosen_seen.lock().unwrap(),
+            vec![Depth::Deep],
+            "the waiver reaches the tool, not only the interlock"
+        );
+        assert!(blind_seen.lock().unwrap().is_empty());
+        assert!(!out.content.contains("destination your config fixes"));
+    }
+
+    /// And `"ask"` is not a waiver: a blind call raises no escalation, so
+    /// there is no human yes to widen on. It keeps the degradation, which is
+    /// the better answer anyway — search works and nobody sees a modal.
+    #[tokio::test]
+    async fn ask_is_not_a_waiver_and_still_degrades() {
+        let (chosen, chosen_seen) = classed("paid", Egress::Chosen);
+        let (blind, _) = classed("searxng", Egress::Blind);
+        let tool = WebSearch::new(Arc::new(SearchChain::new(vec![chosen, blind])));
+
+        let mut ctx = ctx_with(Some(Taint {
+            private: true,
+            untrusted: true,
+        }));
+        ctx.security.trifecta = crate::config::TrifectaPolicy::Ask;
+
+        let out = tool.call(json!({"query": "x"}), &ctx).await.unwrap();
+        assert!(chosen_seen.lock().unwrap().is_empty());
+        assert!(out.content.contains("via searxng"));
+    }
+
+    /// The remedy answers the interlock and only the interlock. Printed on a
+    /// leak-guard refusal it is false in every clause — the guard refuses
+    /// `Blind` too, so an operator who adds SearXNG reaches a *second*
+    /// refusal, this time with no remedy at all, having followed the exit.
+    /// Found by review on 2026-09-17; fails on the argument-less signature.
+    #[test]
+    fn the_leak_guard_gets_no_remedy_from_this_tool() {
+        let (only_chosen, _) = classed("paid", Egress::Chosen);
+        let bare = WebSearch::new(Arc::new(SearchChain::new(vec![only_chosen])));
+
+        assert!(
+            bare.denial_remedy(DenialCause::Injection)
+                .is_some_and(|r| r.contains("searxng")),
+            "the interlock's refusal still names its exit"
+        );
+        assert_eq!(
+            bare.denial_remedy(DenialCause::Leak),
+            None,
+            "adding a blind backend does not lift the leak guard, so do not say it does"
+        );
+    }
+
+    /// A `Chosen`-only chain declares `Chosen`, so under `ask` the interlock
+    /// escalates and a human can say yes — and that yes must answer, not
+    /// error. Before this, `call` degraded anyway and hit `search_blind`'s
+    /// `bail!`, making `ask` strictly worse than `block`, which at least
+    /// hands back a remedy naming SearXNG. Fails on the two-term `armed`.
+    #[tokio::test]
+    async fn an_approved_call_on_a_chosen_only_chain_answers_rather_than_erroring() {
+        let (chosen, chosen_seen) = classed("paid", Egress::Chosen);
+        let tool = WebSearch::new(Arc::new(SearchChain::new(vec![chosen])));
+
+        let mut ctx = ctx_with(Some(Taint {
+            private: true,
+            untrusted: true,
+        }));
+        ctx.security.trifecta = crate::config::TrifectaPolicy::Ask;
+
+        let out = tool
+            .call(json!({"query": "tide times", "depth": "deep"}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(
+            !out.is_error,
+            "the human's yes must not become an error: {}",
+            out.content
+        );
+        assert_eq!(*chosen_seen.lock().unwrap(), vec![Depth::Deep]);
+        assert!(!out.content.contains("destination your config fixes"));
+    }
+
+    /// The invariant `WebSearch::capabilities` rests on, in the half that
+    /// lives here: while armed, `call` reaches only blind backends, so the
+    /// `Blind` declaration is true in the one state any control reads it. The
+    /// other half — that nothing consults the class while clean — is
+    /// `agent::tests::a_clean_conversation_does_not_consult_the_egress_class`.
+    #[test]
+    fn the_declared_class_tracks_whether_a_blind_route_exists() {
+        let (chosen, _) = classed("paid", Egress::Chosen);
+        let (blind, _) = classed("searxng", Egress::Blind);
+
+        let mixed = WebSearch::new(Arc::new(SearchChain::new(vec![chosen, blind])));
+        assert_eq!(mixed.capabilities().egress, Egress::Blind);
+        assert!(
+            mixed.denial_remedy(DenialCause::Injection).is_none(),
+            "nothing to remedy: it is not refused"
+        );
+
+        let (only_chosen, _) = classed("paid", Egress::Chosen);
+        let bare = WebSearch::new(Arc::new(SearchChain::new(vec![only_chosen])));
+        assert_eq!(bare.capabilities().egress, Egress::Chosen);
+    }
 
     struct Stub {
         id: &'static str,
@@ -863,8 +1589,12 @@ mod tests {
         let (backend, _) = stub("exa", Behaviour::One);
         let tool = WebSearch::new(Arc::new(SearchChain::new(vec![backend])));
 
+        // A clean conversation, so the whole chain is in play. An unstamped
+        // `ToolCtx::default()` would be read as armed — see
+        // `an_unstamped_taint_is_treated_as_armed` — and this test is about
+        // what the *results* are marked with, not about the chain.
         let out = tool
-            .call(json!({"query": "rust"}), &ToolCtx::default())
+            .call(json!({"query": "rust"}), &ctx_with(Some(Taint::default())))
             .await
             .unwrap();
         assert!(
@@ -877,9 +1607,18 @@ mod tests {
 
     #[test]
     fn the_search_tool_declares_both_trifecta_legs_it_touches() {
-        let tool = WebSearch::new(Arc::new(SearchChain::new(Vec::new())));
+        let (blind, _) = classed("searxng", Egress::Blind);
+        let tool = WebSearch::new(Arc::new(SearchChain::new(vec![blind])));
         let caps = tool.capabilities();
         assert!(caps.untrusted_input, "results are attacker-influenced");
-        assert!(caps.external_send, "the query itself leaves the machine");
+        assert_eq!(
+            caps.egress,
+            Egress::Blind,
+            "the query leaves the machine, but only to the backends config names"
+        );
+        // The empty chain is the degenerate case and takes the conservative
+        // class with everything else that has no blind route.
+        let bare = WebSearch::new(Arc::new(SearchChain::new(Vec::new())));
+        assert_eq!(bare.capabilities().egress, Egress::Chosen);
     }
 }

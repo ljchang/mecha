@@ -4,7 +4,7 @@
 //! [`ToolCtx::resolve`] before it reaches the filesystem. Shell commands are
 //! likewise untrusted: they run under the approval gate, not around it.
 
-use super::{Capabilities, Tool, ToolCtx, ToolOutput};
+use super::{Capabilities, DenialCause, Egress, Tool, ToolCtx, ToolOutput};
 use crate::sandbox::Sandbox;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -466,7 +466,14 @@ impl Tool for Shell {
         Capabilities {
             private_data: true,
             untrusted_input: false,
-            external_send: self.sandbox.can_reach_network(),
+            // `Chosen`: an unconfined shell can `curl` any host the model
+            // names, which is the complete channel. Confinement removes the
+            // route entirely rather than narrowing its class.
+            egress: if self.sandbox.can_reach_network() {
+                Egress::Chosen
+            } else {
+                Egress::None
+            },
             destructive: true,
         }
     }
@@ -476,7 +483,11 @@ impl Tool for Shell {
     // produce the same capability bit with different one-line fixes. Confined
     // without a network the bit is off, the interlock never fires on this
     // tool, and there is rightly nothing to say.
-    fn denial_remedy(&self) -> Option<String> {
+    fn denial_remedy(&self, _cause: DenialCause) -> Option<String> {
+        // The same answer to both controls, and deliberately so: confinement
+        // removes the route rather than narrowing its class, so `can_send()`
+        // goes false and the leak guard stops firing along with the interlock.
+        // `web_search` is the tool where the two answers differ.
         if !self.sandbox.is_enabled() {
             Some(
                 "The durable fix is confinement, not looser policy: add `[sandbox]` \
@@ -982,33 +993,38 @@ mod tests {
     #[test]
     fn confining_the_shell_closes_the_send_route_and_nothing_else() {
         let loose = shell_with(Backend::None, false).capabilities();
-        assert!(loose.private_data && loose.external_send && loose.destructive);
+        assert!(loose.private_data && loose.destructive);
+        assert_eq!(
+            loose.egress,
+            Egress::Chosen,
+            "an unconfined shell can curl any host the model names"
+        );
 
         // The one thing the sandbox earns: with no network, a command cannot
         // carry anything off the machine, so it is no longer a trifecta sink.
         let confined = shell_with(Backend::Bwrap, false).capabilities();
-        assert!(!confined.external_send, "no network means no way out");
+        assert!(!confined.can_send(), "no network means no way out");
         assert!(confined.destructive, "it can still destroy the workspace");
 
         // Confined *with* a network is a way out again.
-        assert!(
-            shell_with(Backend::Bwrap, true)
-                .capabilities()
-                .external_send
-        );
+        assert!(shell_with(Backend::Bwrap, true).capabilities().can_send());
     }
 
     #[test]
     fn the_remedy_names_the_condition_that_set_the_bit() {
         // Unconfined: the fix is enabling the sandbox, and the remedy must
         // say so concretely enough to act on — section and the flag.
-        let r = shell_with(Backend::None, false).denial_remedy().unwrap();
+        let r = shell_with(Backend::None, false)
+            .denial_remedy(DenialCause::Injection)
+            .unwrap();
         assert!(r.contains("[sandbox]") && r.contains("network = false"));
 
         // Confined but sharing the host network: the sandbox is already on,
         // so advising the operator to enable it would be the same class of
         // dead-end advice this method exists to end. Only the flag.
-        let r = shell_with(Backend::Bwrap, true).denial_remedy().unwrap();
+        let r = shell_with(Backend::Bwrap, true)
+            .denial_remedy(DenialCause::Injection)
+            .unwrap();
         assert!(r.contains("network = false"));
         assert!(
             !r.contains("kind ="),
@@ -1018,7 +1034,9 @@ mod tests {
         // Confined without a network: external_send is off, the interlock
         // never fires on this tool, and a remedy here would be advice for a
         // refusal that cannot happen.
-        assert!(shell_with(Backend::Docker, false).denial_remedy().is_none());
+        assert!(shell_with(Backend::Docker, false)
+            .denial_remedy(DenialCause::Injection)
+            .is_none());
     }
 
     #[test]

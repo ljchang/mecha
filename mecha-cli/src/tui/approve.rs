@@ -65,7 +65,12 @@ impl Approver for TuiApprover {
     /// asking a person about *this* call, and a standing yes for the tool is
     /// not that. The reason rides in the summary the modal shows.
     async fn escalate(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
-        let summary = format!("{why} {}", crate::approve::summarize(tool.name(), input));
+        // `summarize_forced`: an escalation exists so a person can look at the
+        // payload, and the gist-sized cut hid it. See its doc comment.
+        let summary = format!(
+            "{why} {}",
+            crate::approve::summarize_forced(tool.name(), input)
+        );
         self.ask(tool, summary, true).await
     }
 
@@ -73,7 +78,10 @@ impl Approver for TuiApprover {
     /// operator asking that a person see *this* call, whatever standing yes
     /// the tool has collected. The ruling's sentence rides in the summary.
     async fn consult(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
-        let summary = format!("{why} {}", crate::approve::summarize(tool.name(), input));
+        let summary = format!(
+            "{why} {}",
+            crate::approve::summarize_forced(tool.name(), input)
+        );
         self.ask(tool, summary, true).await
     }
 

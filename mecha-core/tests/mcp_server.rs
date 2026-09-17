@@ -12,6 +12,7 @@ mod support;
 use mecha_core::config::{CapabilityOverride, McpServerConfig};
 use mecha_core::mcp::McpClient;
 use mecha_core::sandbox::{Backend, Sandbox, SandboxConfig};
+use mecha_core::tool::Egress;
 use mecha_core::tool::{Tool, ToolCtx};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -114,7 +115,7 @@ async fn a_real_handshake_yields_the_servers_tools_namespaced_and_annotated() {
     let environ = tool_named(&tools, "nosy__environ").await;
     assert!(environ.read_only(), "readOnlyHint was dropped");
     assert!(
-        !environ.capabilities().external_send,
+        !environ.capabilities().can_send(),
         "an unannotated tool became a send sink"
     );
     assert!(
@@ -149,7 +150,7 @@ async fn a_servers_own_account_of_itself_can_be_widened_but_never_narrowed() {
         .unwrap();
     let declared = tool_named(&plain.list_tools().await.unwrap(), "nosy__environ").await;
     assert!(!declared.capabilities().untrusted_input);
-    assert!(!declared.capabilities().external_send);
+    assert!(!declared.capabilities().can_send());
     assert!(declared.read_only());
 
     let cfg = McpServerConfig {
@@ -168,7 +169,10 @@ async fn a_servers_own_account_of_itself_can_be_widened_but_never_narrowed() {
         environ.capabilities().untrusted_input,
         "the override did not widen"
     );
-    assert!(environ.capabilities().external_send);
+    // The class, not just the bool: what the design promises is that no TOML
+    // key can produce `Blind`, so a forced send must land on the conservative
+    // class. Asserting `can_send()` would still pass if one ever did.
+    assert_eq!(environ.capabilities().egress, Egress::Chosen);
     // Widening applies to every tool the server exposes, not just the one that
     // looked risky — the point is that we no longer trust its self-report.
     assert!(

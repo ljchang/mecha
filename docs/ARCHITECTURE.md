@@ -884,10 +884,30 @@ are — the landscape moves and no provider is right for every query.
 
 Search results are the single largest indirect prompt-injection surface an agent
 has, *and* the query itself is an exfiltration channel, because the payload fits
-in `?q=`. So the tool declares both `untrusted_input` and `external_send` and
-marks its output `from_outside` — the same pair as `http_fetch`, for the same
-two reasons. A backend that synthesizes an answer gets no more trust than its
+in `?q=`. So the tool declares `untrusted_input` and marks its output
+`from_outside`. A backend that synthesizes an answer gets no more trust than its
 snippets: it was written from the same pages.
+
+**Where it differs from `http_fetch` is the egress class.** `WebSearch`'s input
+schema is `query`, `limit`, `depth` — no destination field — so the query
+reaches the `[[search]]` chain and nowhere else. That is `Egress::Blind`, the
+trifecta interlock fires on `Egress::Chosen` only, and the leak guard
+`block_sends_after_private` still refuses both. So reading mail no longer ends
+web search for the rest of a conversation, which it did until 2026-09-17.
+`docs/EGRESS-DESIGN.md` is the argument and `TRIFECTA.md` channel 2b the map
+entry.
+
+Blind is earned per backend *and per depth*, never assumed:
+`SearchBackend::egress(depth)` defaults to `Chosen`, so a backend added later is
+not blind until someone reads its API and says so in a diff. searxng and tavily
+are blind at both depths; **exa is blind at quick and not at deep**, because
+`deep-reasoning` is agentic research that fetches pages the query can steer it
+towards, which is a destination the model picked. An armed conversation is
+served by the blind backends at quick depth only (`SearchChain::search_blind`)
+and the result says so — a silently shallower answer reads as a broken tool,
+and models retry broken tools. With no blind backend configured there is no
+armed path, so the tool declares `Chosen` and its `denial_remedy` names
+`kind = "searxng"`.
 
 ## mecha-mail
 
