@@ -2414,15 +2414,19 @@ since every recording since carries a blob.
 by the owner** (`mecha-mail auth personal --provider google`); `mecha
 doctor` went from five findings to four with the `mail` section gone. The
 grant is seven days and refreshing does not extend it, so it was due to end
-2026-09-21 with the doctor warning again from the 19th
-(`GRANT_WARN_WITHIN_DAYS = 2`); the re-auth is a terminal-only flow —
+2026-09-21, with `mecha doctor` warning again two days ahead
+(`GRANT_WARN_WITHIN_DAYS`); the re-auth is a terminal-only flow —
 `--paste` from an ssh session — and never a button.
 
 **Superseded by a later consent.** `granted_at` in that account's
 `oauth.json` reads 2026-09-15T17:13:06Z, so the live grant is the one minted
-that day and it lapses ≈2026-09-22 17:13Z, not the 21st, so `mecha doctor`
-warns from the 20th rather than the 19th (`left > GRANT_WARN_WITHIN_DAYS`,
-`doctor.rs:433`, with the constant at 2). Neither date above was reached. It was still minted while
+that day and it lapses 2026-09-22 17:13Z, not the 21st. `mecha doctor` first
+warns at **17:13Z on the 20th**, not at the start of it:
+`doctor::check_grant_age` rounds the hours remaining *up* to whole days and
+warns once that reaches `GRANT_WARN_WITHIN_DAYS`, so the threshold is exactly
+48 h before expiry rather than a calendar boundary — a run on the morning of
+the 20th saying nothing is correct, not broken. Neither date above was
+reached. It was still minted while
 the project was in Testing, so it keeps the seven-day clock whatever the
 app's status is now — the publish on 2026-09-16 changed only what *future*
 consents get (`HISTORY.md`, 2026-09-16).
