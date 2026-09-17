@@ -3859,7 +3859,21 @@ impl Agent {
             if !routed && (injection_risk || leak_risk) {
                 match cx.tools.security.trifecta {
                     TrifectaPolicy::Block => {
-                        let reason = if injection_risk {
+                        // **The binding control explains, and remedies.**
+                        // The two risks are not exclusive: with the leak guard
+                        // on, an armed conversation and a `Chosen` tool, both
+                        // fire. The leak guard is then the broader one — it
+                        // refuses regardless of class — so it is what will
+                        // still be refusing after the operator acts on
+                        // anything the interlock said. Leading with the
+                        // interlock there sends them to a fix that changes
+                        // nothing: "start a fresh session that touches only
+                        // one of the two" is refused too, and for `web_search`
+                        // "add a blind backend" lands on a second refusal
+                        // carrying no remedy at all. That is `DenialCause`'s
+                        // own incident, and the hint forty lines up already
+                        // guards against it; this is the half that did not.
+                        let reason = if !leak_risk {
                             let mut reason = format!(
                                 "`{name}` can send data outside this machine, and this \
                                  conversation already contains both private data and \
@@ -3950,10 +3964,10 @@ impl Agent {
                         // The cause, not just the fact: a remedy phrased
                         // against the interlock is false when the leak guard
                         // is what fired. See `DenialCause`.
-                        let cause = if injection_risk {
-                            DenialCause::Injection
-                        } else {
+                        let cause = if leak_risk {
                             DenialCause::Leak
+                        } else {
+                            DenialCause::Injection
                         };
                         let reason = match tool.denial_remedy(cause) {
                             Some(remedy) => format!("{reason} {remedy}"),
@@ -3992,7 +4006,10 @@ impl Agent {
                     // already `allow` to set it to `block` tightens the wrong
                     // knob and leaves the actual refusal in place.
                     TrifectaPolicy::Ask => {
-                        escalation = Some(if injection_risk {
+                        // Same rule as the refusal above: name the control a
+                        // person actually has to decide about, which when
+                        // both fire is the broader one.
+                        escalation = Some(if !leak_risk {
                             format!(
                                 "This conversation holds both private data and third-party \
                                  content, and `{name}` can send data outside this machine \
@@ -6350,6 +6367,89 @@ mod tests {
         // And it names the setting that fired, which TRIFECTA.md's closing
         // line promises a refusal does.
         assert!(leak.contains("block_sends_after_private"), "{leak}");
+    }
+
+    /// And when **both** fire, the broader one explains and remedies.
+    ///
+    /// The two risks are not exclusive — leak guard on, armed conversation,
+    /// `Chosen` tool — and the leak guard refuses regardless of class, so it
+    /// is what will still be refusing after the operator acts on anything the
+    /// interlock said. Leading with the interlock there sends them to a fix
+    /// that changes nothing, which for `web_search` means a second refusal
+    /// carrying no remedy at all: `DenialCause`'s own incident, reached by
+    /// taking the exit. Fails on picking the first risk that matched.
+    #[tokio::test]
+    async fn when_both_controls_fire_the_broader_one_explains_and_remedies() {
+        struct TwoRemedies;
+        #[async_trait]
+        impl Tool for TwoRemedies {
+            fn name(&self) -> &str {
+                "send"
+            }
+            fn description(&self) -> &str {
+                "send"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn capabilities(&self) -> crate::tool::Capabilities {
+                crate::tool::Capabilities::default().sends()
+            }
+            fn denial_remedy(&self, cause: crate::tool::DenialCause) -> Option<String> {
+                Some(match cause {
+                    crate::tool::DenialCause::Injection => "REMEDY-FOR-INJECTION".into(),
+                    crate::tool::DenialCause::Leak => "REMEDY-FOR-LEAK".into(),
+                })
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                panic!("refused calls do not execute");
+            }
+        }
+
+        let (mut agent, _) = agent_with(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "c".into(),
+                        name: "send".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("stopped")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+        agent.registry.insert(Arc::new(TwoRemedies));
+        agent.ctx_mut().security.trifecta = TrifectaPolicy::Block;
+        agent.ctx_mut().security.block_sends_after_private = true;
+
+        // Both legs armed *and* the leak guard on: both risks are true.
+        let mut convo = Conversation::resumed(
+            vec![Message::user("send it")],
+            Taint {
+                private: true,
+                untrusted: true,
+            },
+        );
+        agent.run(&mut convo, None).await.unwrap();
+        let refusal = match &convo.messages[2].content[0] {
+            Block::ToolResult { content, .. } => content.clone(),
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+
+        assert!(
+            refusal.contains("REMEDY-FOR-LEAK"),
+            "the binding control is the one that will still refuse: {refusal}"
+        );
+        assert!(!refusal.contains("REMEDY-FOR-INJECTION"), "{refusal}");
+        assert!(
+            refusal.contains("block_sends_after_private"),
+            "and the text names it: {refusal}"
+        );
+        // The interlock's advice would be wrong here: a fresh session holding
+        // only private data is refused by the leak guard too.
+        assert!(!refusal.contains("fresh session"), "{refusal}");
     }
 
     /// The measured dead end this guards against: `shell` denials advised
