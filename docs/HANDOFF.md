@@ -22,6 +22,20 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-14 — two voice arcs merged and deployed; the next drive is the
+measurement.** #228 (`d4b56e00`): the spoken outbox confirmation takes a
+*composed* answer ("go ahead and send it"), re-asks a dropped question once,
+and tells the model it will ask aloud — `docs/VOICE-APPROVAL-RESEARCH.md`
+is the incident (the first real spoken yes fell through on 2026-09-13) and
+what is still unbuilt. #231 (`2b4a89fa`): speech is buffered on the phone
+and delivered over the data channel, so a stall delays the owner's words
+instead of losing them — `docs/VOICE-LINK-DESIGN.md`, built the day it was
+designed, with three mechanisms changed on contact with the code and seven
+review passes' findings recorded in it. Both deployed the same day (the
+dated machine state below); the voice section under *What to do next*
+holds what each left open. Workspace: 2,670 passed, 0 failed, 3 ignored
+(2026-09-14, without required backends).
+
 **2026-09-10 — controlled gossip pilot complete; no default change or deployment.**
 The native real-MCP comparison finished all 16 exchanges over four synthetic cases
 and two seeds, with unchanged frozen inputs and server settings. Peer dialogue
@@ -1561,9 +1575,9 @@ specific to this machine:
   export. A placeholder above the real key meant `grep -m1` silently found the
   placeholder and produced a `401 invalid x-api-key` that looked like a bad key.
 
-**Mail OAuth grants, re-consented 2026-08-18** (both were re-issued that day
-because the triage scopes widened, and both are recorded in each account's
-`oauth.json` under `granted_scopes`):
+**Mail OAuth grants** (both were re-issued on 2026-08-18 because the triage
+scopes widened, and both are recorded in each account's `oauth.json` under
+`granted_scopes`):
 
 | Account | Provider | Grant | Expiry |
 |---|---|---|---|
@@ -2355,6 +2369,73 @@ stale-process sweep over `/proc/*/exe` found nothing on the previous
 inode. Benchmark binary, factory client and droplet untouched — nothing
 in the range reaches them. Three live Remote Control sessions were told.
 
+**2026-09-14 02:37 UTC — #228 installed and live.** `cargo install --path
+mecha-cli` and `--path mecha-mail` (it links `mecha-core`, which changed);
+verified by a literal the diff added, not by mtime or version (`0.1.20`
+before and after): `strings ~/.cargo/bin/mecha | grep -c 'The user will be
+asked aloud whether to send it'` counted 0 before and printed 2 after.
+`mecha-serve`, `mecha-slack`, `mecha-triggers`, `mecha-drain` restarted and
+confirmed by their own startup lines from a journal window opened at the
+restart; the stale-inode sweep found nothing; `mecha-voice-worker` and
+`mecha-parakeet` deliberately not restarted (nothing they run changed).
+The `VOICE_BLOCK` grew two sentences, so the first spoken turn after this
+re-paid the cached prefix once.
+
+**2026-09-14 ~16:30 EDT (20:30 UTC) — #231 deployed.** The stamp was local
+and labelled UTC: `2b4a89fa` was committed at 19:57 UTC, so a 16:30 *UTC*
+deploy would predate the commit it installed — while the #228 entry above is
+genuine UTC, two stamps in one list wearing the same label in different
+zones. No Rust. `web/dist` rebuilt from the clean `main` checkout at
+`2b4a89fa` and rsynced to `~/.mecha/web/dist` (bundle `index-Dmo9OFNn.js`;
+`deployed-local` absent before and after, so main is what is deployed).
+**`voice-uplink-transform.js` is a new file at `dist` root** — `web/public/`
+lands there — and `127.0.0.1:63242` returned it as `text/javascript` (200,
+1958 B) behind a hand-supplied owner header; that is the origin, not the
+door the phone arrives through (`tailscale serve` proxies `:443` and `:8443`
+to it), so it evidences the file shipped and not that the door serves it; a
+dist without it is a page that never declares the channel at all:
+`attachUplinkTap` waits `UPLINK_READY_MS` for the worker's first `{ready:
+true}` — proof it ran, since a 404 arrives asynchronously — and returns
+false on the timeout, so the offer carries no `uplink` key and the call
+takes RTP. The worker's six-second `deaf_verdict` watch is therefore never
+involved either; the symptom is a working call with #226's behaviour on a
+stall and nothing in the offer to say why (the update skill's step 1b now
+says so). `mecha-serve` and `mecha-voice-worker` restarted, both on their
+own startup lines; the worker runs `scripts/voice/worker.py` from the `main`
+tree, last touched by `2b4a89fa`.
+
+**2026-09-14 — three reflections dropped, in the learning store, not in
+git.** `~/.mecha/learning/reflections.jsonl`: `20260804T191638-3e9f7f1a`
+(23 `google__*` tools), `20260808T211210-622e7d34` and
+`20260813T184519-9a44012b` (5 `pkg__kg_*` tools) — sessions that predate
+`tools_hash`, so no surface blob to rebuild from, permanently unmeasurable
+after #223 widened detection, and all three `provenance Untrusted ·
+learnable no`. Dropped with reasons in the 2026-08-30 form; 10 of 57
+reflections are dropped. The nightly's "3 reflection(s) cite a tool this
+machine no longer offers" line ends with this; the population is closed,
+since every recording since carries a blob.
+
+**2026-09-14 ~20:30 UTC — the `personal` Google account re-authenticated
+by the owner** (`mecha-mail auth personal --provider google`); `mecha
+doctor` went from five findings to four with the `mail` section gone. The
+grant is seven days and refreshing does not extend it, so it was due to end
+2026-09-21, with `mecha doctor` warning again two days ahead
+(`GRANT_WARN_WITHIN_DAYS`); the re-auth is a terminal-only flow —
+`--paste` from an ssh session — and never a button.
+
+**Superseded by a later consent.** `granted_at` in that account's
+`oauth.json` reads 2026-09-15T17:13:06Z, so the live grant is the one minted
+that day and it lapses 2026-09-22 17:13Z, not the 21st. `mecha doctor` first
+warns at **16:13Z on the 20th**, not at the start of it:
+`doctor::check_grant_age` truncates the hours remaining and *then* rounds
+that up to whole days before comparing against `GRANT_WARN_WITHIN_DAYS`, so
+the threshold falls just under 49 h before expiry rather than on a calendar
+boundary — a run earlier that day saying nothing is correct, not broken.
+Neither date above has arrived yet, as of 2026-09-17. It was still minted
+while the project was in Testing, so it keeps the seven-day clock whatever
+the app's status is now — the publish on 2026-09-16 changed only what
+*future* consents get (`HISTORY.md`, 2026-09-16).
+
 **2026-09-16, 19:44Z, mecha-7b: #238 (the clock, asked per turn) merged at
 `42c359f1` and deployed.** `~/.cargo/bin/mecha` reinstalled from mecha `main`
 at `42c359f1`, probed in **both** directions because a one-sided probe cannot
@@ -2946,6 +3027,63 @@ Everything here is verified in source, re-checked 2026-08-25 (the voice
 block below, 2026-09-13); the arcs' own docs (`REMOTE-SURFACE-DESIGN.md`,
 `VOICE-RESEARCH.md` §7) hold the shipped half.
 
+**Approving by voice, and hearing every word — 2026-09-14.** Two arcs
+shipped and are deployed; each has a document that is its authority, and
+neither is restated here.
+
+- **#228 — the spoken yes.** `VOICE-APPROVAL-RESEARCH.md` §4.1–4.3 and
+  §4.6 are built: `review_policy::segment` (a closed lexicon, tiled with
+  five connectives, residue means no answer, a tiling ending on a joiner
+  is a sentence cut short), `Confirmations::carry_unanswered` (a dropped
+  question is asked again once, then settled), `ToolCtx::review_hint`
+  (the staged-draft result says "asked aloud" on a spoken turn — messages
+  only; a publish is reviewed on a screen everywhere), and two sentences
+  in `VOICE_BLOCK`. **Open, in the doc's own order:** §4.4 supersession
+  (yesterday's orphaned lab-calendar draft, `20260913T193636`, is still
+  pending in the outbox), §4.5 the offer's length (~48 s of speech before
+  the listener could answer), §4.7 the confirmation path's own log lines
+  are `info` under a `warn` service, and §5 — staging as the voice
+  approver for non-routed tools, behind an explicit config list — which
+  is the answer to the mode-chip item below. **Owner's rulings (§8):**
+  which one-word affirmations, if any (`fine`, `agreed` clear the
+  echo-tail test; `right`/`correct` do not); whether `shell` is on §5's
+  list; the taint line's always-on wording.
+- **#231 — the reliable uplink.** `VOICE-LINK-DESIGN.md` §1–§4 are built
+  (`UplinkRing`/`ringFor`, `shouldPump`, `behindVerdict`, `wireBacklogMs`
+  in `voice-core.js`; `voice-uplink-transform.js` at `dist` root;
+  `UplinkTransport`/`UplinkInput`/`UplinkAudio`, `deaf_verdict`,
+  `late_segments`, `lane_for`, `LinkWatch.note_uplink`/`forget_backlog`
+  in `worker.py`). Measured with `scripts/voice/test_call.py --uplink`
+  (`--stall-at/--stall-secs`, `--deaf`, `--reconnect-at/--reconnect-gap`):
+  a 6 s stall mid-sentence delivers every word in one turn; a 125 s block
+  delivers the backlog as one late turn the model runs on within a
+  millisecond; a channel declared and never fed falls back to RTP at six
+  seconds; a dropped connection's eight seconds arrive on the new
+  pipeline as one late turn. **Open:** §5 the downlink mirror (TTS over
+  the channel, the page reporting what it *played* — which also grounds
+  the echo window and the playback constant the timing layer has waited
+  on since 2026-09-03); §8's numbers (`BACKLOG_TALK_SECS` 120 in
+  `worker.py`; the ring's 300 s, which §8 calls `RING_BUFFER_SECS` and the
+  code spells `UPLINK_RING_MS`) are guesses until a drive; two minors from
+  the seventh review pass — sample `live_from_ms` at `ring.restart()` rather
+  than `dc.onopen`, and evict `rings` entries (a third, an off-by-one in
+  `late_segments`, did not survive the handoff review's read of the code:
+  a gap of exactly `LATE_GAP_SECS` splits, as the docstring says); and a stall
+  longer than `USER_TURN_STOP_TIMEOUT` (15 s) still ends the pre-stall
+  segment as its own turn — the hold reaches every strategy but not the
+  aggregator's own timeout, and that is #226's known limit, not #231's.
+  **The next drive is the measurement:** the worker journal now carries
+  `uplink:` lines, `uplink watch:` ticks (RTP arriving · channel alive ·
+  since last batch) and `late turn` entries; the transcript should be
+  whole, and *words lost* should be zero unless the page died (`mic`
+  pause) or the ring overflowed (a named drop). Confirm on the phone that
+  a missing `voice-uplink-transform.js` (a 404) falls back to RTP —
+  the one branch nothing here can reach.
+- **Seen on the 2026-09-14 morning call, unverified:** the morning
+  briefing opened *"Today is Sunday, September 13th"* on Monday the 14th
+  and the owner corrected it. Whether the brief was Sunday's file read
+  back or the model's own clock, nobody has looked.
+
 **Voice while driving — 2026-09-13.** #226 shipped and is deployed: a
 pause/resume sound and label when the link stops carrying audio
 (`linkVerdict`, `Pauses`, `serverPauseExpired` in `voice-core.js`), the
@@ -3040,7 +3178,10 @@ the mechanism and every decision. What it left standing:
   interlock is ahead of the approver, sends still stage, and taint
   accumulates across both doors. Still worth revisiting: a label true of
   one door and not the other is the shape this project usually refuses,
-  and if voice ever grows spoken approvals, that flag is what they replace.
+  and if voice ever grows spoken approvals, that flag is what they replace
+  — `VOICE-APPROVAL-RESEARCH.md` §5 is the design for that (staging as the
+  voice approver, behind an explicit list), decided against building until
+  the fourth door had released a draft for real; as of 2026-09-14 it has.
 - **The owner's first-day feedback backlog is `REMOTE-SURFACE-DESIGN.md`
   §12** — chat model switching, a plain mail inbox + compose, notes/tasks
   voice capture and listings, the task→agent handoff (the big one), Home

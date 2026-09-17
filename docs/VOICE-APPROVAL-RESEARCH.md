@@ -3,11 +3,12 @@
 Researched 2026-09-13. The question: **why can't the owner review and approve
 inline during a call, and what would make it work?**
 
-**Status.** §4.1, §4.2, §4.3 and §4.6 built 2026-09-14 on
-`voice/spoken-approval` (`review_policy::segment`,
-`Confirmations::carry_unanswered`, `ToolCtx::review_hint`,
-`voice::SPOKEN_REVIEW_HINT`, two sentences in `VOICE_BLOCK`). §4.4, §4.5,
-§4.7 and §5 are not built.
+**Status.** §4.1, §4.2, §4.3 and §4.6 built 2026-09-14
+(`review_policy::segment`, `Confirmations::carry_unanswered`,
+`ToolCtx::review_hint`, `voice::SPOKEN_REVIEW_HINT`, two sentences in
+`VOICE_BLOCK`), merged as #228 (`d4b56e00`) after nine review passes and
+installed the same day (HISTORY, 2026-09-14). §4.4, §4.5, §4.7 and §5 are
+not built; §8 awaits the owner.
 
 The short answer is that there are two different things behind "approve", and
 the one the owner actually hit today is the one that already exists and
