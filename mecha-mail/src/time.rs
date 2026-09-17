@@ -104,8 +104,12 @@ pub fn resolve_bound(raw: &str, tz: Option<Tz>, now: DateTime<Utc>, bound: Bound
                 // `now` is an instant, not a day, so it needs no zone to be
                 // correct — but it is still refused without one, so the whole
                 // relative vocabulary behaves alike rather than one term
-                // working and its neighbours not.
-                Some(_) => Resolved::At(now.to_rfc3339()),
+                // working and its neighbours not. Rendered in the zone for
+                // the same reason the day bounds are: the window is echoed
+                // back for a reader to check, and one term answering in UTC
+                // while its neighbours answer local is the inconsistency that
+                // makes a stamp hard to read at a glance.
+                Some(tz) => Resolved::At(now.with_timezone(&tz).to_rfc3339()),
                 None => Resolved::NeedsZone,
             };
         }
@@ -146,10 +150,15 @@ pub fn resolve_bound(raw: &str, tz: Option<Tz>, now: DateTime<Utc>, bound: Bound
 /// for an end — so an ambiguous hour is inside the window rather than half
 /// outside it, and a window never silently loses an event that happened.
 ///
-/// When the wall time does not exist at all, the clock is walked forward by
-/// the hour until it does (bounded, and a transition is at most a couple of
-/// hours). That is the honest reading: a day whose midnight was skipped
-/// starts at the first moment it actually had.
+/// When the wall time does not exist at all, the clock is walked *into* the
+/// day until it does — forward from a start, backward from an end (bounded; a
+/// transition is at most a couple of hours). Walking one direction for both
+/// was the shape defect a review caught: at `hour + step` an end bound of
+/// 23:59:59 asks for hour 24, `and_hms_opt` returns `None`, the loop breaks
+/// immediately and the end falls to the noon fallback — *earlier* than the
+/// start, so a widening fallback produced an inverted window that silently
+/// answers nothing. Unreachable with any zone in the database, and fixed
+/// anyway, because "widen, never narrow" is the property being relied on.
 fn local_instant(
     tz: Tz,
     day: chrono::NaiveDate,
@@ -159,7 +168,13 @@ fn local_instant(
     bound: Bound,
 ) -> DateTime<Tz> {
     for step in 0..4 {
-        let Some(naive) = day.and_hms_opt(hour + step, min, sec) else {
+        // Into the day from whichever edge this is, so neither bound can
+        // cross the other.
+        let walked = match bound {
+            Bound::Start => hour.checked_add(step),
+            Bound::End => hour.checked_sub(step),
+        };
+        let Some(naive) = walked.and_then(|h| day.and_hms_opt(h, min, sec)) else {
             break;
         };
         let mapped = tz.from_local_datetime(&naive);
@@ -183,13 +198,39 @@ fn local_instant(
 }
 
 /// `+3d` / `-1d` / `3d`, and nothing cleverer.
+///
+/// **Bounded, because the two chrono calls downstream panic rather than
+/// return.** `Duration::days` is `expect(try_days(n), …)` and
+/// `NaiveDate + TimeDelta` is `checked_add_signed(…).expect(…)`, so
+/// `+999999999d` aborted the *process*: `mcp::serve` awaits `provider.call`
+/// inline with no `catch_unwind` anywhere in this crate, so the unwind leaves
+/// `main` and the run loses mail and calendar for the rest of the session —
+/// from a model-supplied string, which under this repo's threat model is
+/// reachable from untrusted content steering a calendar query. Reproduced
+/// before fixing: `NaiveDate + TimeDelta overflowed`.
+///
+/// Anything sillier than a couple of centuries is a typo, and falls through
+/// as [`Resolved::Passthrough`] to the provider's own parse error — the same
+/// place `this week` lands, which keeps the three-outcome shape intact rather
+/// than inventing a fourth for "accepted, then crashed".
 fn parse_day_offset(term: &str) -> Option<i64> {
     let rest = term.strip_suffix('d')?;
     if rest.is_empty() {
         return None;
     }
-    rest.parse::<i64>().ok()
+    let n = rest.parse::<i64>().ok()?;
+    // Range containment, not `n.abs() <= MAX`: `i64::MIN.abs()` panics, so
+    // the obvious spelling of this guard reintroduces the same class of bug
+    // one level down — caught by the test below feeding it
+    // `-9223372036854775808d`.
+    (-MAX_OFFSET_DAYS..=MAX_OFFSET_DAYS)
+        .contains(&n)
+        .then_some(n)
 }
+
+/// Roughly 274 years either way — past any window a calendar query means and
+/// far inside `NaiveDate`'s range, so the arithmetic cannot reach its panic.
+const MAX_OFFSET_DAYS: i64 = 100_000;
 
 /// What a time-scoped answer was resolved against, for its own record.
 ///
@@ -297,7 +338,10 @@ mod tests {
         let Resolved::At(n) = resolve_bound("now", eastern(), now, Bound::Start) else {
             panic!("`now` should resolve")
         };
-        assert_eq!(n, now.to_rfc3339());
+        // The same instant, rendered in the configured zone like every other
+        // term — see `the_whole_vocabulary_answers_in_the_configured_zone`.
+        assert_eq!(at(&n), now);
+        assert!(n.ends_with("-04:00"), "{n}");
 
         // An RFC 3339 window is what every caller sent before this existed
         // and must still reach the provider untouched.
@@ -365,6 +409,77 @@ mod tests {
             panic!()
         };
         assert_eq!((at(&end) - at(&start)).num_hours(), 24);
+    }
+
+    /// **A term the parser accepted and then crashed on.** `+999999999d`
+    /// panicked with `NaiveDate + TimeDelta overflowed`, and `mcp::serve`
+    /// awaits `provider.call` inline with no `catch_unwind` in the crate, so
+    /// the unwind left `main` and the session lost mail *and* calendar. The
+    /// input is a model-supplied string. Panics today without the clamp.
+    #[test]
+    fn an_absurd_day_offset_falls_through_instead_of_killing_the_server() {
+        let now = at("2026-09-17T11:15:00Z");
+        for absurd in [
+            "+999999999d",
+            "-999999999d",
+            "9223372036854775807d",
+            "-9223372036854775808d",
+        ] {
+            for bound in [Bound::Start, Bound::End] {
+                assert_eq!(
+                    resolve_bound(absurd, eastern(), now, bound),
+                    Resolved::Passthrough,
+                    "`{absurd}` must fall through, not panic"
+                );
+            }
+        }
+        // And the bound itself is where the line sits, not an arbitrary cliff.
+        let Resolved::At(ok) = resolve_bound("100000d", eastern(), now, Bound::Start) else {
+            panic!("the largest accepted offset still resolves")
+        };
+        assert!(ok.starts_with("2300-"), "{ok}");
+        assert_eq!(
+            resolve_bound("100001d", eastern(), now, Bound::Start),
+            Resolved::Passthrough
+        );
+    }
+
+    /// Every term answers in one format, so a window is readable at a glance.
+    /// `now` rendered in UTC while its neighbours rendered local.
+    #[test]
+    fn the_whole_vocabulary_answers_in_the_configured_zone() {
+        let now = at("2026-09-17T11:15:00Z");
+        for term in ["now", "today", "tomorrow", "+2d"] {
+            let Resolved::At(got) = resolve_bound(term, eastern(), now, Bound::Start) else {
+                panic!("`{term}` should resolve")
+            };
+            assert!(
+                got.ends_with("-04:00"),
+                "`{term}` answered {got}, not in the configured zone"
+            );
+        }
+    }
+
+    /// The fallback must widen at both ends. Walking one direction for both
+    /// sent an end bound to the noon fallback — earlier than its own start,
+    /// an inverted window that answers nothing rather than everything.
+    #[test]
+    fn a_bound_never_crosses_its_partner() {
+        let now = at("2026-09-17T11:15:00Z");
+        for tz in [eastern(), Some("Australia/Lord_Howe".parse().unwrap())] {
+            for term in ["today", "tomorrow", "yesterday"] {
+                let (Resolved::At(start), Resolved::At(end)) = (
+                    resolve_bound(term, tz, now, Bound::Start),
+                    resolve_bound(term, tz, now, Bound::End),
+                ) else {
+                    panic!("`{term}` should resolve")
+                };
+                assert!(
+                    at(&end) > at(&start),
+                    "{term} in {tz:?}: end {end} is not after start {start}"
+                );
+            }
+        }
     }
 
     /// The stamp names the instant *and* the zone it was read in, because

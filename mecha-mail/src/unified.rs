@@ -1534,7 +1534,10 @@ impl MailTools {
                 // clock it was resolved against.
                 let stamp = window_note(&time_min, &time_max, now, tz);
                 if events.is_empty() {
-                    let body = format!("no events between {time_min} and {time_max}\n{stamp}");
+                    // The window once, not twice: this line used to name it
+                    // itself, and `stamp` now says the same thing plus the
+                    // clock.
+                    let body = format!("no events in this window.\n{stamp}");
                     return Some((with_notes(body, &failures), false));
                 }
                 finish_events(&mut events, tz);
