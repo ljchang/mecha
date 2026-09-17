@@ -2393,11 +2393,16 @@ lands there — and `127.0.0.1:63242` returned it as `text/javascript` (200,
 1958 B) behind a hand-supplied owner header; that is the origin, not the
 door the phone arrives through (`tailscale serve` proxies `:443` and `:8443`
 to it), so it evidences the file shipped and not that the door serves it; a
-dist without it is a page that declares the channel, gets a 404 from its
-worker, and falls back to RTP (the update skill's step 1b now says so).
-`mecha-serve` and `mecha-voice-worker` restarted, both on their own startup
-lines; the worker runs `scripts/voice/worker.py` from the `main` tree, last
-touched by `2b4a89fa`.
+dist without it is a page that never declares the channel at all:
+`attachUplinkTap` waits `UPLINK_READY_MS` for the worker's first `{ready:
+true}` — proof it ran, since a 404 arrives asynchronously — and returns
+false on the timeout, so the offer carries no `uplink` key and the call
+takes RTP. The worker's six-second `deaf_verdict` watch is therefore never
+involved either; the symptom is a working call with #226's behaviour on a
+stall and nothing in the offer to say why (the update skill's step 1b now
+says so). `mecha-serve` and `mecha-voice-worker` restarted, both on their
+own startup lines; the worker runs `scripts/voice/worker.py` from the `main`
+tree, last touched by `2b4a89fa`.
 
 **2026-09-14 — three reflections dropped, in the learning store, not in
 git.** `~/.mecha/learning/reflections.jsonl`: `20260804T191638-3e9f7f1a`
@@ -2426,10 +2431,10 @@ warns at **16:13Z on the 20th**, not at the start of it:
 that up to whole days before comparing against `GRANT_WARN_WITHIN_DAYS`, so
 the threshold falls just under 49 h before expiry rather than on a calendar
 boundary — a run earlier that day saying nothing is correct, not broken.
-Neither date above was reached. It was still minted while the project was in
-Testing, so it keeps the seven-day clock whatever the app's status is now —
-the publish on 2026-09-16 changed only what *future* consents get
-(`HISTORY.md`, 2026-09-16).
+Neither date above has arrived yet, as of 2026-09-17. It was still minted
+while the project was in Testing, so it keeps the seven-day clock whatever
+the app's status is now — the publish on 2026-09-16 changed only what
+*future* consents get (`HISTORY.md`, 2026-09-16).
 
 **2026-09-16, 19:44Z, mecha-7b: #238 (the clock, asked per turn) merged at
 `42c359f1` and deployed.** `~/.cargo/bin/mecha` reinstalled from mecha `main`

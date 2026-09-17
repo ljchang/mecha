@@ -75,29 +75,31 @@ carries the whole message list and clears `taint_checkpoints`, which
 over-taints rather than under. What it left is in HANDOFF — the tool-boundary
 half, and PR #239.
 
-**2026-09-16 — the OAuth client published, and the seven-day re-consent ended
-for every grant issued after it.** `FlowMail`, the Google Cloud project behind
-the `personal` mail and calendar account, had sat in **Testing** since
-2026-08-18 on the understanding that production needed verification plus a
-CASA security assessment (~$540/yr), because `gmail.modify` is a restricted
-scope. The premise was wrong, and the owner reopened it on 2026-09-15 against
-Google's own *OAuth app state overview*: an app may publish to production
-**without** verification, paying a 100-user lifetime cap and an "unverified
-app" interstitial — but not the seven-day refresh-token expiry, which is tied
-to *Testing* status specifically rather than to being unverified. It
-published. The project is In production (External, 5/100) with **scope
-verification deliberately not submitted**, and branding verification passed
-the same day, once `mecha-factory.ai` was verified in Google Search Console as
-a Domain property — one apex TXT row, typed by hand because that zone's DNS
-has no API. Branding also requires a home-page URL and a privacy-policy URL
-on that authorized domain, which is what `website/src/pages/privacy.md` and
-`terms.md` are for (#234): a consent-screen prerequisite rather than
+**2026-09-16 — the OAuth client published, and the seven-day re-consent
+ended for every grant issued after it.** `FlowMail`, the Google Cloud
+project behind the `personal` mail and calendar account, had sat in
+**Testing** since 2026-08-18 on the understanding that production needed
+verification plus a CASA security assessment (~$540/yr), because
+`gmail.modify` is a restricted scope. The premise was wrong, and the owner
+reopened it on 2026-09-15 against Google's own *OAuth app state overview*:
+an app may publish to production **without** verification, paying a 100-user
+lifetime cap and an "unverified app" interstitial — but not the seven-day
+refresh-token expiry, which is tied to *Testing* status specifically rather
+than to being unverified. It published. The project is In production
+(External, 5/100) with **scope verification deliberately not submitted**,
+and branding verification passed the same day, once `mecha-factory.ai` was
+verified in Google Search Console as a Domain property — one apex TXT row,
+typed by hand because that zone's DNS has no API. Branding also requires a
+home page, a privacy policy and a terms-of-service URL on that authorized
+domain — the three URLs above — which is what `website/src/pages/privacy.md`
+and `terms.md` are for (#234): a consent-screen prerequisite rather than
 marketing pages, and pruning them as unused would break the consent screen
 with nothing to say why. What this does *not* settle is in HANDOFF: the
 seven-day clock belongs to the grant rather than the app, so the `personal`
-grant minted 2026-09-15 keeps its own expiry and still owes a re-consent. The console
-states were observed by `mecha-41` and are not verifiable from a shell; the
-DNS row and the three branding URLs were re-checked independently.
+grant minted 2026-09-15 keeps its own expiry and still owes a re-consent.
+The console states were observed by `mecha-41` and are not verifiable from a
+shell; the DNS row and the three branding URLs were re-checked
+independently.
 
 **2026-09-14 — the owner can say yes by voice, and a bad link delays the
 owner's words instead of losing them.** Two arcs, one day, both measured
