@@ -3884,7 +3884,18 @@ impl Agent {
                             // teach the reader that reading the web is over.
                             // Asked of the registry as a class, so the loop
                             // still never learns which tools exist.
-                            let blind = self.registry.blind_senders();
+                            // `is_withheld` as well as the registry's own
+                            // restriction: `escapes` filters on both for the
+                            // same reason, and dispatch just above is
+                            // `available(name).filter(|_| !cx.is_withheld(name))`.
+                            // Naming a withheld tool as the way out buys the
+                            // model one `Blocked by policy` and no route.
+                            let blind: Vec<&str> = self
+                                .registry
+                                .blind_senders()
+                                .into_iter()
+                                .filter(|n| !cx.is_withheld(n))
+                                .collect();
                             if !blind.is_empty() {
                                 let names: Vec<String> =
                                     blind.iter().map(|n| format!("`{n}`")).collect();

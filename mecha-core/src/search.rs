@@ -686,7 +686,9 @@ impl Tool for WebSearch {
     /// in that state: the interlock requires `trifecta_armed()`, and the leak
     /// guard treats both classes alike. Change either of those (the table in
     /// `docs/EGRESS-DESIGN.md` §D3) and this declaration must be revisited.
-    /// `declared_class_is_only_consulted_while_armed` is the guard.
+    /// Guarded from both sides:
+    /// `the_declared_class_tracks_whether_a_blind_route_exists` below, and
+    /// `agent::tests::a_clean_conversation_does_not_consult_the_egress_class`.
     fn capabilities(&self) -> Capabilities {
         let caps = Capabilities::default().untrusted();
         if self.chain.has_blind_backend() {
@@ -1000,7 +1002,7 @@ mod tests {
     /// lives here: while armed, `call` reaches only blind backends, so the
     /// `Blind` declaration is true in the one state any control reads it. The
     /// other half — that nothing consults the class while clean — is
-    /// `agent.rs`'s `a_clean_conversation_does_not_consult_the_egress_class`.
+    /// `agent::tests::a_clean_conversation_does_not_consult_the_egress_class`.
     #[test]
     fn the_declared_class_tracks_whether_a_blind_route_exists() {
         let (chosen, _) = classed("paid", Egress::Chosen);

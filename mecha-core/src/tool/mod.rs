@@ -1407,8 +1407,15 @@ impl Registry {
     /// the reason it matters is the same one: a refusal that names no exit
     /// teaches the operator to set `trifecta = "allow"`, waiving the interlock
     /// over `http_fetch`, `mail_send`, Slack and an unconfined `shell` at
-    /// once. Honours the surface restriction, because advertising a withheld
-    /// tool is a dead end wearing an exit's clothes.
+    /// once.
+    ///
+    /// Honours the surface restriction — advertising an unreachable tool is a
+    /// dead end wearing an exit's clothes. **That is only half of "reachable",
+    /// though:** `RunContext::withheld` is the other way a name can be
+    /// registered and still undispatchable, and a registry cannot see it. So
+    /// the caller filters on that too, exactly as `Agent::escapes` does with
+    /// `available_names`, which keeps the two spellings of reachable in
+    /// agreement.
     pub fn blind_senders(&self) -> Vec<&str> {
         let restriction = self.surface_restriction();
         self.tools

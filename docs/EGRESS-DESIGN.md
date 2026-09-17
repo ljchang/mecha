@@ -182,12 +182,20 @@ residual named in §6 covers the case where a vendor adds the behaviour later.
 
 ### D5 — an armed conversation degrades the chain instead of losing the tool
 
-**Decision: `WebSearch` holds two chains — the full one, and the blind-class
-one — and picks by `ctx.taint`.**
+**Decision: one chain with two entry points, picked by `ctx.taint`.**
 
-- armed, or `ctx.taint == None` → **blind chain, `Depth::Quick` forced**, and
-  the result says a deep search was narrowed and why
-- clean → full chain, depth as asked
+- armed, or `ctx.taint == None` → `SearchChain::search_blind`: the entries
+  whose `egress(Depth::Quick)` is `Blind`, run at **`Depth::Quick`**, and the
+  result says a deep search was narrowed and why
+- clean → `SearchChain::search`: the full chain, at the depth asked for
+
+An earlier draft had `WebSearch` *hold* two chains. It does not, and cannot
+cheaply: `ChainEntry` owns its `Box<dyn SearchBackend>`, so a second chain
+would mean either duplicating the backends or reference-counting every entry
+to buy nothing. `blind_entries()` filters the one chain per call instead, and
+both entry points run the same `run()` — so the fall-through behaviour an
+armed search gets is the behaviour the ordinary path already had, rather than
+a second copy of it that can drift.
 
 `ToolCtx.taint` already exists and is stamped unconditionally per dispatch
 (`agent.rs`, the `executed` block: `taint: Some(turn_taint)`), with a
@@ -221,8 +229,10 @@ While clean, the full chain is reachable and could serve a `Chosen`-class
 call — but no control keys off the distinction in that state: the interlock
 requires `trifecta_armed()`, and the leak guard treats both classes
 identically. So the declaration is never read in a state where it would be
-wrong. A test asserts both halves, and D3's table is the thing that must not
-change without revisiting this.
+wrong. Both halves are asserted —
+`search::tests::the_declared_class_tracks_whether_a_blind_route_exists` and
+`agent::tests::a_clean_conversation_does_not_consult_the_egress_class` — and
+D3's table is the thing that must not change without revisiting this.
 
 ### D7 — the refusal names its exit
 
@@ -295,7 +305,9 @@ This is a risk *reduction*, not an elimination. Three things it does not close:
 1. **Bandwidth.** A blind query is a low-bandwidth channel, but calls compose:
    a 4 KB email leaks through ~70 sixty-byte queries. Nothing here bounds that.
    A per-conversation blind-egress byte budget is the obvious phase 2 and is
-   deliberately not in this pass.
+   deliberately not in this pass — and note that nothing *measures* blind-egress
+   volume today either, so phase 2 starts by building the baseline it would
+   need to pick a budget, rather than by picking one.
 2. **The backend is still a third party.** SearXNG forwards `q` to the upstream
    engines in its `settings.yml`, so `search.rs`'s claim that the query *"never
    leaves your network"* is over-generous and is corrected in this change. What
@@ -315,9 +327,17 @@ keep the unbounded ones is the trade this document refuses.
 
 ## 7. Deliberately not in scope
 
-- **A per-call `Tool::egress_for(input, ctx)`.** D5 gets the same effect by
-  holding two chains, which cannot be forgotten by a future backend author the
-  way an overridden method can.
+- **A per-call `Tool::egress_for(input, ctx)` on the `Tool` trait.** D5 gets
+  the same effect one layer down, without every tool in the system growing a
+  method that only one of them would ever override.
+
+  Note what is and is not load-bearing here, because the first draft of this
+  section got it wrong. `SearchBackend::egress` *is* an overridden method and
+  a future backend author can indeed neglect it — what makes that safe is not
+  the call shape but **the trait default being `Chosen`**: neglecting it
+  yields a backend excluded from every blind chain, which costs availability
+  and not safety. The failure direction is the survivable one by construction,
+  which is the only property worth claiming.
 - **Making MCP `private_data` conditional.** Unconditional is the only
   fail-closed reading of an annotation set that cannot express it.
 - **Relaxing `shell`.** Channel 1 already has an owner — `[sandbox]` with
