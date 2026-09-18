@@ -258,15 +258,19 @@ impl Record {
     }
 
     /// The extractor's dates, split by whether each is a literal span of the
-    /// prose: `(grounded, ungrounded)`.
+    /// prose: `(grounded, ungrounded)`, the ungrounded each with the reason
+    /// it was refused.
     ///
     /// The prompt asks for dates "as written in the text" and says "invent
     /// nothing"; this is where that is checked rather than trusted. A
     /// grounded date is returned as the span itself (the model's wrapping
     /// quotes stripped); an ungrounded one is returned exactly as the
     /// extractor wrote it, because a human is about to read it as a
-    /// finding. Empty on both sides when nothing was extracted.
-    pub fn dates_by_grounding(&self) -> (Vec<String>, Vec<String>) {
+    /// finding — and the reason travels with it, because "not in the text"
+    /// and "in the text but too short to be a date" are different findings,
+    /// and a label that says the first about the second is wrong (found on
+    /// review). Empty on both sides when nothing was extracted.
+    pub fn dates_by_grounding(&self) -> (Vec<String>, Vec<(String, crate::grounding::Refusal)>) {
         let Some(extraction) = &self.extraction else {
             return (Vec::new(), Vec::new());
         };
@@ -281,17 +285,32 @@ impl Record {
             };
             match crate::grounding::admit(&claim, &packet, Self::DATE_MIN_CHARS) {
                 Ok(_) => grounded.push(date.trim().trim_matches('"').to_string()),
-                Err(_) => ungrounded.push(date.clone()),
+                Err(reason) => ungrounded.push((date.clone(), reason)),
             }
         }
         (grounded, ungrounded)
     }
 
-    /// The dates the extractor reported that are not in the text as
-    /// written. A finding a human sees in `frontdoor show`; never a block,
-    /// and never handed to a privileged run.
-    pub fn ungrounded_dates(&self) -> Vec<String> {
+    /// The dates the extractor reported that the brief did not hand over,
+    /// each with why. A finding a human sees in `frontdoor show`; never a
+    /// block, and never handed to a privileged run.
+    pub fn ungrounded_dates(&self) -> Vec<(String, crate::grounding::Refusal)> {
         self.dates_by_grounding().1
+    }
+
+    /// One phrase per reason, shared by `show` and the TUI so the two
+    /// surfaces cannot drift into telling a person different things about
+    /// the same date. Exhaustive on purpose: a new `Refusal` is a compile
+    /// error here, not a silent label.
+    pub fn date_finding(reason: crate::grounding::Refusal) -> &'static str {
+        use crate::grounding::Refusal;
+        match reason {
+            Refusal::QuoteNotInReferent => "not in the text as written",
+            Refusal::QuoteTooShort => "in the text, but shorter than a date anyone wrote",
+            // The claim is the date itself and the referent is fixed, so
+            // neither can arise from this caller.
+            Refusal::EmptyStatement | Refusal::NoSuchReferent => "not grounded",
+        }
     }
 
     /// Everything a run with tools may be told about this request.
@@ -1301,7 +1320,20 @@ mod tests {
             .map(|v| v.as_str().expect("a string"))
             .collect();
         assert_eq!(dates, ["next Tuesday", "the 14th"]);
-        assert_eq!(record.ungrounded_dates(), ["2027-01-01", "14"]);
+        // Each refusal with its reason: "14" *is* in the text, and a label
+        // saying otherwise would be wrong.
+        use crate::grounding::Refusal;
+        assert_eq!(
+            record.ungrounded_dates(),
+            [
+                ("2027-01-01".to_string(), Refusal::QuoteNotInReferent),
+                ("14".to_string(), Refusal::QuoteTooShort),
+            ]
+        );
+        assert_eq!(
+            Record::date_finding(Refusal::QuoteTooShort),
+            "in the text, but shorter than a date anyone wrote"
+        );
     }
 
     /// Nothing extracted means nothing to ground, on either side.

@@ -772,7 +772,11 @@ checks rather than trusts it.** The prompt says "as written" and "invent
 nothing"; `Record::for_privileged_run` hands over only the `dates_mentioned`
 that `grounding::admit` dereferences into the record's own `prose()` — the
 same text the extractor was shown — and `Record::ungrounded_dates` is the rest,
-rendered as a label in `show` and the TUI beside `reads_like_instructions`.
+each with the `Refusal` it drew, rendered as a label in `show` and the TUI
+beside `reads_like_instructions` through one `Record::date_finding` phrase per
+reason, because "not in the text" and "in the text but too short to be a date"
+are different findings and a label that says the first about the second is
+wrong.
 A finding, never a block: an invented date is a reason to read the record, not
 to withhold it. Every surface downstream of the brief inherits the rule for
 free — the Slack card is built from `for_privileged_run` and its fixture had to
