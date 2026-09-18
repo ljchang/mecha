@@ -1423,7 +1423,14 @@ async fn eval(
                     "proposed": v.proposed.as_str(),
                     "request_type": v.request_type,
                     "deadline": v.deadline,
-                    "deadline_refused": v.deadline_refused,
+                    // The typed halves only. `quote` is a model-copied span
+                    // of real mail, and this file is documented below as
+                    // carrying no prose; the rate by reason is the whole
+                    // measurement and `reason` answers it (found on review).
+                    "deadline_refused": v.deadline_refused.as_ref().map(|d| json!({
+                        "deadline": d.deadline,
+                        "reason": d.reason,
+                    })),
                     "escalates": mecha_core::mail_triage::needs_body(&v),
                 }));
                 graded.push(Graded {

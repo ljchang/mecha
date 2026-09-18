@@ -1200,7 +1200,9 @@ named in HANDOFF rather than papered over here.
 harness checks them rather than trusts them.** The prompt asks for
 `deadline_quote` — the exact words, copied verbatim — and `ground_deadline`
 runs in `classify_with` against the subject and body the model was shown,
-through `grounding::admit` with a four-character floor. It has to run there:
+through `grounding::admit` with a four-character floor and a 120-character
+ceiling applied first — a date is never long, and a date followed by whatever
+the sender wrote next is a literal span too. It has to run there:
 the triage store keeps no body, so unlike the front door's dates this cannot
 be checked later at the brief — it is checked at classification or never. A
 deadline whose words are missing, absent from the message, or too short is
