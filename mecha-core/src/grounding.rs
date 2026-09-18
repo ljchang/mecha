@@ -460,6 +460,25 @@ mod tests {
         assert!(admit(&claim, &packet(), 4).is_ok());
     }
 
+    /// A floor of zero would admit any statement citing a real id, because
+    /// every text contains the empty string. Twin of the zero window; fails
+    /// with the guard clause removed.
+    #[test]
+    fn a_zero_floor_admits_nothing() {
+        let empty = Claim {
+            statement: "It slipped",
+            id: "ep1",
+            quote: "",
+        };
+        assert_eq!(admit(&empty, &packet(), 0), Err(Refusal::QuoteTooShort));
+        let real = Claim {
+            quote: "the launch slipped to Thursday",
+            ..empty
+        };
+        assert_eq!(admit(&real, &packet(), 0), Err(Refusal::QuoteTooShort));
+        assert!(admit(&real, &packet(), 1).is_ok());
+    }
+
     // ── Carry-over ──────────────────────────────────────────────────────
 
     #[test]

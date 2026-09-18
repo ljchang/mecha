@@ -388,13 +388,24 @@ fn detail_lines(record: &Record) -> Vec<Line<'static>> {
             ));
             let ungrounded = record.ungrounded_dates();
             if !ungrounded.is_empty() {
-                // A finding, not a gate — see the CLI's `show` for the wording.
+                // A finding, not a gate. The phrase per reason comes from the
+                // record, so this and `show` cannot drift apart.
                 body.push(Line::styled(
-                    format!("⚠ not in the text as written: {}", ungrounded.join(", ")),
+                    "⚠ dates the extractor reported that the triage run was not handed:"
+                        .to_string(),
                     white,
                 ));
+                for (date, reason) in &ungrounded {
+                    body.push(Line::styled(
+                        format!(
+                            "    {date} — {}",
+                            mecha_core::frontdoor::Record::date_finding(*reason)
+                        ),
+                        white,
+                    ));
+                }
                 body.push(Line::styled(
-                    "  the triage run is not handed these; a label, not a block".to_string(),
+                    "  a label on this record, not a block".to_string(),
                     white,
                 ));
             }

@@ -502,14 +502,17 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
             let ungrounded = record.ungrounded_dates();
             if !ungrounded.is_empty() {
                 // A finding, not a gate: the extractor was asked for dates as
-                // written, these are not in the text, and the triage run was
-                // not handed them. The person reading this can see the prose.
-                println!(
-                    "  ⚠ not in the text as written: {}\n\
-                     \x20   The extractor was asked for dates as written; these are not, and\n\
-                     \x20   the triage run is not handed them. A label on this record, not a block.",
-                    ungrounded.join(", ")
-                );
+                // written, the brief did not hand these over, and the person
+                // reading this can see the prose. One phrase per reason, from
+                // the record, so this and the TUI say the same thing.
+                println!("  ⚠ dates the extractor reported that the triage run was not handed:");
+                for (date, reason) in &ungrounded {
+                    println!(
+                        "      {date} — {}",
+                        mecha_core::frontdoor::Record::date_finding(*reason)
+                    );
+                }
+                println!("\x20   A label on this record, not a block.");
             }
             println!("\n  reading: {}", e.reading);
             if e.reads_like_instructions {
