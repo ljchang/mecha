@@ -7,8 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.21] - 2026-09-18
+
 ### Added
 
+- `grounding` — what a run actually received, and whether a claim about it
+  dereferences. `calls` lists every tool call once with the result the model
+  read, first seen wins, and a result compaction has written a `[stale:`
+  marker over is never evidence; `admit` dereferences a `{statement, id,
+  quote}` claim into a packet by literal containment and names what was
+  missing when it refuses; `carries_over` is the inverse, refusing text that
+  reproduces a run of words from what was read. Gossip's citation check, the
+  outbox's "what is this draft answering" join and the diagnostician's
+  carry-over refusal now share it. Not a tool: nothing enters the registry.
+  (#244)
+- The front door hands a triage run only the `dates_mentioned` that are in
+  the stranger's prose as written, between a three- and a 48-character
+  bound; the rest are shown to a person in `frontdoor show` and the TUI with
+  the reason each was refused — a finding, never a block. The Slack request
+  card inherits the rule because it is built from the same brief. (#245)
+- The mail classifier is asked for `deadline_quote` — the words a deadline
+  comes from, copied verbatim — and a deadline whose words are not in the
+  message is dropped at classification and recorded as
+  `deadline_refused`, with its reason. `mail list`, `mail show`, the sweep
+  line and `mail task` say "dropped", never "found none"; an owner's
+  `--deadline` correction settles the refusal either way. (#246)
+- `web_search` stays usable in a conversation that has touched mail, the
+  calendar or the graph: the send axis is now a class — `None < Blind <
+  Chosen` — and the interlock fires on `Chosen`, a destination the model
+  names. A search backend is `Blind` only where its API has no destination
+  field (searxng and tavily at both depths, exa at quick), earned in code and
+  never granted in TOML; an armed conversation is served by the blind
+  backends at quick depth and the result says so. (#241)
+- The clock is asked per turn rather than frozen into the system prompt, so
+  a daemon's runs carry today's date. (#238)
+- A confirmed booking is not a request: it settles as `booked`, never
+  reaches a model, and the request view shows the meeting. A cancellation
+  un-books what it withdraws. (c3ebcd98)
+- A privacy policy and terms of service, one section per integration, with
+  revocation steps per provider — what Google gates publishing the OAuth
+  app on, and the reason a Testing-mode refresh token expired every seven
+  days. (20318b7f, 6cf31150)
+- A spoken yes to an outbox offer is composed from the accepted phrases,
+  carried to the outbox, and never sent to the CLI as words. (#228)
 - Voice calls sound a pause when the link stops carrying audio and a resume
   when it does again, and the worker holds every pending end-of-turn across
   the gap instead of ending the turn on the words before it (`LinkWatch`,
@@ -20,6 +61,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whenever the worker's event loop stops for half a second — the unnamed
   first-turn stall every call since 2026-08-25 has shown.
 
+### Changed
+
+- A peer session's delivered message, a boredom notice and a plan-step nudge
+  are labelled as the harness's voice in compaction summaries and in what
+  `mecha distill` sends to the graph, not as the owner speaking. (#239)
+
 ### Fixed
 
 - `mecha serve` logs a voice offer the runner refused or could not be reached
@@ -27,6 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   record anywhere before.
 - `parakeet_server.py` answers 400 to a WAV with no samples instead of
   crashing the request.
+- A staged draft's "what it answers" view stops at the staging call even
+  when that call's own result errored, so a read made after the draft is
+  never offered as what it was written from. (#244)
 
 ## [0.1.20] - 2026-09-11
 
@@ -3503,7 +3553,8 @@ under Added; later releases will record only what changed.
   benchmarks, the TUI survey, and a branching design recorded as a deliberate
   non-implementation.
 
-[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.20...HEAD
+[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.21...HEAD
+[0.1.21]: https://github.com/ljchang/mecha/releases/tag/v0.1.21
 [0.1.20]: https://github.com/ljchang/mecha/releases/tag/v0.1.20
 [0.1.19]: https://github.com/ljchang/mecha/releases/tag/v0.1.19
 [0.1.18]: https://github.com/ljchang/mecha/releases/tag/v0.1.18
