@@ -2948,11 +2948,14 @@ budget or consume its prose.
 `grounding.rs` is the primitive four modules had each built by hand — gossip's
 citation check, `outbox_source`'s "what is this draft answering" join, the
 diagnostician's `carries_over`, and the mismatch pointers — and the hard-won
-part of each was the walk, never the containment test. `received` returns
-every non-error result a run was shown, in call order, once per id; `admit`
-dereferences a `Claim { statement, id, quote }` into a packet of `Referent`s
-by literal containment; `carries_over` is the inverse, refusing text that
-reproduces a run of words from what was read.
+part of each was the walk, never the containment test. `calls` returns every
+call a run issued, in issue order, once per id, each with the non-error,
+non-stale result the model read if one survived; `admit` dereferences a
+`Claim { statement, id, quote }` into a packet of `Referent`s by literal
+containment; `carries_over` is the inverse, refusing text that reproduces a
+run of words from what was read. The first three callers moved onto it;
+`mismatch` did not and need not — its pointers are owner-authored and resolve
+through `Value::pointer` against a record, which needs no walk.
 
 The decisions that carry it, each a bug if undone:
 
@@ -2977,9 +2980,16 @@ The decisions that carry it, each a bug if undone:
   and the 8-word window is the diagnostician's, each set against its own
   false positives; the module takes them as parameters and suggests none. A
   window of zero matches nothing rather than panicking in `windows(0)`.
-- **Harness calls are received.** What came back was shown to the model
-  regardless of who asked; `Received::harness` is carried so a caller grading
-  model *choices* can drop them, as `replay::extract` does for its own reason.
+- **Every call is listed, with or without a result.** A caller walking to a
+  terminator — the outbox's staging call — must find it whether or not its
+  own result survived; a break conditional on the result is a break that
+  stops being there. `Call::result` is `None` for no result, an error, or a
+  stale marker, and the caller decides what that means (found on review).
+- **Harness calls are listed and marked.** What came back was shown to the
+  model regardless of who asked; `Call::harness` is carried so a caller
+  grading model *choices* can drop them. Gossip does, as `replay::extract`
+  did before it — widening a reader's evidence to plan checks was never
+  measured.
 
 ### Harness rumination
 

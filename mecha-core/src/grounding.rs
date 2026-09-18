@@ -24,11 +24,12 @@
 //!   [`crate::replay::extract`] does, returns the marker as the call's
 //!   output, and a claim can then cite it.
 //!
-//! [`received`] holds both lines: the first result under an id wins, and a
+//! [`calls`] holds both lines: the first result under an id wins, and a
 //! result carrying the marker is skipped rather than recorded. A stale read
 //! therefore cannot ground a claim from either list. Errors are skipped for
 //! the reason the eviction pass gives — a failed call describes nothing
-//! about its target.
+//! about its target. The call itself is still listed, with no result: a
+//! caller walking to a terminator must find it either way.
 //!
 //! ## Not a tool
 //!
@@ -49,25 +50,31 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// One tool result the run was shown, as the model first saw it.
+/// One call the run issued, with the result the model read — if one survived.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Received<'a> {
+pub struct Call<'a> {
     pub id: &'a str,
     pub name: &'a str,
     pub input: &'a Value,
-    pub content: &'a str,
+    /// `None` when nothing usable came back: no result, an error, or only a
+    /// stale marker. The call is still listed, because a caller walking to a
+    /// terminator (the outbox's staging call) must find it whether or not
+    /// its own result survived — a break that is conditional on the result
+    /// is a break that stops being there (found on review).
+    pub result: Option<&'a str>,
     /// The call was the harness's, not the model's ([`Message::harness`]).
-    /// Still received: what came back was shown to the model regardless of
-    /// who asked. Exposed so a caller grading model *choices* can drop it.
+    /// Still listed: what came back was shown to the model regardless of
+    /// who asked. Exposed so a caller grading model *choices* can drop it,
+    /// as `replay::extract` does.
     pub harness: bool,
 }
 
-/// Every non-error, non-stale result the run received, in the order the
-/// calls were issued, once per `tool_use_id`.
+/// Every call the run issued, in issue order, once per `tool_use_id`, each
+/// with the non-error, non-stale result the model read if one survived.
 ///
 /// Works on a live message list and on the `messages_ever` union alike; the
 /// module doc says why each needs a different half of the rule.
-pub fn received(messages: &[Message]) -> Vec<Received<'_>> {
+pub fn calls(messages: &[Message]) -> Vec<Call<'_>> {
     // Results first: a `tool_result` lands in the message *after* the
     // `tool_use` that asked for it, so a single forward pass cannot pair
     // them. First seen wins, and a stale marker never occupies the slot.
@@ -100,15 +107,13 @@ pub fn received(messages: &[Message]) -> Vec<Received<'_>> {
             if !seen.insert(id) {
                 continue;
             }
-            if let Some(content) = results.get(id) {
-                out.push(Received {
-                    id,
-                    name,
-                    input,
-                    content,
-                    harness: message.harness,
-                });
-            }
+            out.push(Call {
+                id,
+                name,
+                input,
+                result: results.get(id).copied(),
+                harness: message.harness,
+            });
         }
     }
     out
@@ -167,7 +172,7 @@ pub enum Refusal {
 /// Dereference a claim into a packet.
 ///
 /// Admission is by literal containment: the cited id must name an item in
-/// `packet`, and the quote — trimmed, with a surrounding pair of straight
+/// `packet`, and the quote — trimmed, with any leading and trailing straight
 /// quotes removed, because models wrap spans in them however firmly they
 /// are asked not to — must appear verbatim in that item's text and be at
 /// least `min_quote_chars` long. The floor is the caller's, set against its
@@ -265,16 +270,19 @@ mod tests {
 
     /// The live-list half of the trap. After compaction the original is
     /// gone and only the marker is left under the id; a walk that pairs by
-    /// id returns the marker as the call's output. Fails on that behaviour.
+    /// id returns the marker as the call's output. Fails on that behaviour:
+    /// here the call is listed and has no result.
     #[test]
-    fn a_stale_result_on_a_live_list_is_not_received() {
+    fn a_stale_result_on_a_live_list_leaves_the_call_without_one() {
         let live = vec![call("t1", "fs_read"), result("t1", &stale())];
-        assert!(received(&live).is_empty());
+        let got = calls(&live);
+        assert_eq!(got.len(), 1, "the call is still listed");
+        assert_eq!(got[0].result, None);
 
         // Not vacuous: the walk this replaces does hand the marker back.
-        let calls = crate::replay::extract(&live).calls;
-        assert_eq!(calls.len(), 1);
-        assert!(calls[0].output.starts_with(SUPERSEDED_MARKER));
+        let old = crate::replay::extract(&live).calls;
+        assert_eq!(old.len(), 1);
+        assert!(old[0].output.starts_with(SUPERSEDED_MARKER));
     }
 
     /// The `messages_ever` half. A thinning rewrite reissued the call and
@@ -288,18 +296,29 @@ mod tests {
             call("t1", "fs_read"),
             result("t1", &stale()),
         ];
-        let got = received(&ever);
+        let got = calls(&ever);
         assert_eq!(got.len(), 1, "one call, once");
-        assert_eq!(got[0].content, "alpha beta gamma");
+        assert_eq!(got[0].result, Some("alpha beta gamma"));
 
         // Not vacuous: the pairing walk emits the call twice, stale second.
-        let calls = crate::replay::extract(&ever).calls;
-        assert_eq!(calls.len(), 2);
-        assert!(calls[1].output.starts_with(SUPERSEDED_MARKER));
+        let old = crate::replay::extract(&ever).calls;
+        assert_eq!(old.len(), 2);
+        assert!(old[1].output.starts_with(SUPERSEDED_MARKER));
+    }
+
+    /// A call nothing answered is still a call — the outbox breaks its walk
+    /// on the staging call whether or not that call's result survived.
+    #[test]
+    fn a_call_with_no_result_is_listed_with_none() {
+        let messages = [call("t1", "mail_reply")];
+        let got = calls(&messages);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].name, "mail_reply");
+        assert_eq!(got[0].result, None);
     }
 
     #[test]
-    fn an_error_result_is_not_received() {
+    fn an_error_leaves_the_call_without_a_result() {
         let messages = vec![
             call("t1", "fs_read"),
             Message::tool_results(vec![Block::ToolResult {
@@ -308,13 +327,15 @@ mod tests {
                 is_error: true,
             }]),
         ];
-        assert!(received(&messages).is_empty());
+        let got = calls(&messages);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].result, None);
     }
 
     #[test]
-    fn a_result_with_no_call_is_not_received() {
+    fn a_result_with_no_call_is_not_listed() {
         // Cannot cite what nothing asked for.
-        assert!(received(&[result("orphan", "text")]).is_empty());
+        assert!(calls(&[result("orphan", "text")]).is_empty());
     }
 
     #[test]
@@ -325,22 +346,23 @@ mod tests {
             result("t2", "second"),
             result("t1", "first"),
         ];
-        let got = received(&messages);
+        let got = calls(&messages);
         let ids: Vec<&str> = got.iter().map(|r| r.id).collect();
         assert_eq!(ids, ["t1", "t2"]);
-        assert_eq!(got[0].content, "first");
+        assert_eq!(got[0].result, Some("first"));
         assert_eq!(got[0].input["path"], "notes.md");
         assert_eq!(got[1].name, "shell");
     }
 
     #[test]
-    fn a_harness_call_is_received_and_marked() {
+    fn a_harness_call_is_listed_and_marked() {
         let mut check = call("c1", "shell");
         check.harness = true;
         let messages = vec![check, result("c1", "ok")];
-        let got = received(&messages);
+        let got = calls(&messages);
         assert_eq!(got.len(), 1);
         assert!(got[0].harness);
+        assert_eq!(got[0].result, Some("ok"));
     }
 
     // ── Admission ───────────────────────────────────────────────────────
