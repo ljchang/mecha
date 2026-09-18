@@ -620,13 +620,21 @@ fn list(all: bool, aged: bool, aged_hours: i64, surface: bool, as_json: bool) ->
                     v.one_line
                 );
                 println!(
-                    "      {} · {} · proposed: {}{}",
+                    "      {} · {} · proposed: {}{}{}",
                     r.thread_id,
                     r.from,
                     v.proposed.as_str(),
                     v.deadline
                         .as_deref()
                         .map(|d| format!(" · due {d}"))
+                        .unwrap_or_default(),
+                    // A deadline the harness dropped because the classifier
+                    // could not point at the words it came from. Shown here,
+                    // to the person, because the task this thread proposes
+                    // will have no date unless they supply one.
+                    v.deadline_refused
+                        .as_ref()
+                        .map(|d| format!(" · dropped due {} ({})", d.deadline, d.reason.label()))
                         .unwrap_or_default()
                 );
             }
@@ -776,6 +784,28 @@ async fn show(global: &GlobalOpts, thread_id: &str, account: Option<&str>) -> Re
             }
             if let Some(rt) = &v.request_type {
                 println!("looks like a `{rt}` request arriving as email");
+            }
+            if let Some(d) = &v.deadline {
+                println!(
+                    "due:       {d}{}",
+                    v.deadline_quote
+                        .as_deref()
+                        .map(|q| format!(" — from \"{q}\""))
+                        .unwrap_or_default()
+                );
+            }
+            if let Some(d) = &v.deadline_refused {
+                // The sender's words, shown to the person and to nothing
+                // else — the same rule as `reasoning` below.
+                println!(
+                    "dropped:   due {} — {}{}",
+                    d.deadline,
+                    d.reason.label(),
+                    d.quote
+                        .as_deref()
+                        .map(|q| format!(" (it cited \"{q}\")"))
+                        .unwrap_or_default()
+                );
             }
             // The classifier's own words are shown here and nowhere a run can
             // reach — the whole reason `for_privileged_run` withholds them.
@@ -1189,13 +1219,19 @@ fn record(t: &ThreadInput, verdict: Option<Verdict>, error: Option<String>) -> R
 
 fn print_line(t: &ThreadInput, v: &Verdict, escalated_from: Option<&str>) {
     println!(
-        "  {:<7} {:<8} {} — {}{}",
+        "  {:<7} {:<8} {} — {}{}{}",
         v.urgency.as_str(),
         v.bucket.as_str(),
         t.from,
         v.one_line,
         escalated_from
             .map(|b| format!("  [was {b} on the snippet]"))
+            .unwrap_or_default(),
+        // A deadline the harness dropped, and why — the sweep is where the
+        // unmeasured rate of honest quotes first becomes visible.
+        v.deadline_refused
+            .as_ref()
+            .map(|d| format!("  [dropped due {} — {}]", d.deadline, d.reason.label()))
             .unwrap_or_default()
     );
 }
@@ -1387,6 +1423,14 @@ async fn eval(
                     "proposed": v.proposed.as_str(),
                     "request_type": v.request_type,
                     "deadline": v.deadline,
+                    // The typed halves only. `quote` is a model-copied span
+                    // of real mail, and this file is documented below as
+                    // carrying no prose; the rate by reason is the whole
+                    // measurement and `reason` answers it (found on review).
+                    "deadline_refused": v.deadline_refused.as_ref().map(|d| json!({
+                        "deadline": d.deadline,
+                        "reason": d.reason,
+                    })),
                     "escalates": mecha_core::mail_triage::needs_body(&v),
                 }));
                 graded.push(Graded {
@@ -2011,7 +2055,23 @@ async fn task(
                 "flag"
             }
         ),
-        None => println!("  no due date — the classifier found none and none was given"),
+        // Opposite findings, kept apart: "the classifier found none" and
+        // "the classifier found one and the harness dropped it" call for
+        // different things from the person reading this — and this is the
+        // surface where they would type the date (found on review).
+        None => match rec
+            .verdict
+            .as_ref()
+            .and_then(|v| v.deadline_refused.as_ref())
+        {
+            Some(d) => println!(
+                "  no due date — the classifier gave {} but it was dropped: {}.\n  \
+                 Pass --due to set one; `mecha mail show` has the thread.",
+                d.deadline,
+                d.reason.label()
+            ),
+            None => println!("  no due date — the classifier found none and none was given"),
+        },
     }
     println!("  context {context}");
     // Still printed, but no longer the only record of it: the task carries
