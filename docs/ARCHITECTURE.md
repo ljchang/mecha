@@ -1196,6 +1196,29 @@ door's own rule is that a paraphrase of an injection is the injection
 rearranged. The name has to reach the run, so this is not fixable by
 withholding; it is a question about what capture should default to, and it is
 named in HANDOFF rather than papered over here.
+**A deadline the classifier reports must cite the words it came from, and the
+harness checks them rather than trusts them.** The prompt asks for
+`deadline_quote` — the exact words, copied verbatim — and `ground_deadline`
+runs in `classify_with` against the subject and body the model was shown,
+through `grounding::admit` with a four-character floor and a 120-character
+ceiling applied first — a date is never long, and a date followed by whatever
+the sender wrote next is a literal span too. It has to run there:
+the triage store keeps no body, so unlike the front door's dates this cannot
+be checked later at the brief — it is checked at classification or never. A
+deadline whose words are missing, absent from the message, or too short is
+dropped and recorded as `Verdict::deadline_refused` (the date, the words, and
+a closed-enum reason that loads as `Unknown` when unrecognised), written by
+the harness after parsing so nothing the model emits there survives. It is a
+finding, not a failure: the verdict stands, `mail list` shows what was
+dropped and why, and a person types the date `mail task` would otherwise
+have carried. An owner's correction is not subject to the check and clears the
+refusal — the owner's word needs no words from the message behind it.
+`deadline_quote` and `deadline_refused` are the sender's words and never
+cross `for_privileged_run` — measured by `the_privileged_view_carries_no_prose`,
+not asserted. Two things make an *honest* deadline drop, and the
+`QuoteNotInMessage` count cannot tell them apart: the model paraphrasing, and
+a quote that spans a hard line-wrap in the body, since `admit` is literal.
+Read the first real sweep's refusals before tuning the floor or the prompt.
 **Registered names, resolved off the registry after every narrowing** — this
 box registers the graph tools bare and mail as `mail__mail_get_thread`, so a
 bare name in the seed would be a call the run cannot dispatch, which is the
