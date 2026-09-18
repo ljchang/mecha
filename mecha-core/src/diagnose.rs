@@ -790,29 +790,11 @@ pub const CARRY_OVER_WORDS: usize = 8;
 /// Deliberately checked against what the diagnostician *read*, not against a
 /// blocklist of phrasings — there is no list of what an injection looks like,
 /// and there does not need to be.
+///
+/// The check itself is `grounding::carries_over`; the window is this
+/// module's, for the reason [`CARRY_OVER_WORDS`] gives.
 pub fn carries_over(proposal: &str, sources: &[&str]) -> Option<String> {
-    let words = |s: &str| -> Vec<String> {
-        s.split_whitespace()
-            .map(|w| {
-                w.trim_matches(|c: char| !c.is_alphanumeric())
-                    .to_lowercase()
-            })
-            .filter(|w| !w.is_empty())
-            .collect()
-    };
-    let needle = words(proposal);
-    if needle.len() < CARRY_OVER_WORDS {
-        return None;
-    }
-    let haystacks: Vec<Vec<String>> = sources.iter().map(|s| words(s)).collect();
-    for window in needle.windows(CARRY_OVER_WORDS) {
-        for hay in &haystacks {
-            if hay.windows(CARRY_OVER_WORDS).any(|w| w == window) {
-                return Some(window.join(" "));
-            }
-        }
-    }
-    None
+    crate::grounding::carries_over(proposal, sources, CARRY_OVER_WORDS)
 }
 
 #[cfg(test)]
