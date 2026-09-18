@@ -828,6 +828,20 @@ pub struct GossipEvidence {
     pub text: String,
 }
 
+impl crate::grounding::Referent for GossipEvidence {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn text(&self) -> &str {
+        &self.text
+    }
+}
+
+/// Below this a quote matches by accident — a name, a date — and the check
+/// certifies coincidence. Gossip's floor, set against its own answers;
+/// `grounding::admit` takes it as a parameter and suggests none.
+const MIN_QUOTE_CHARS: usize = 12;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroundedClaim {
     pub statement: String,
@@ -842,16 +856,26 @@ pub struct GroundedClaim {
 /// Parse the actual result packets, not citations invented in an answer.
 /// Envelopes may precede JSON. Only episode items inside the reader's source
 /// lens are eligible, and all carried evidence remains untrusted/private.
+///
+/// The walk is `grounding::calls`, which already drops errors and any
+/// result compaction has written a stale marker over; what is left here is
+/// gossip's own packet format and its lens. Harness-issued calls are
+/// skipped, as `replay::extract` skipped them before this walk replaced
+/// it: a reader's evidence is what *it* retrieved, and widening that was
+/// never measured (found on review).
 fn evidence_from(messages: &[crate::message::Message], vantage: &Vantage) -> Vec<GossipEvidence> {
     let mut out = Vec::new();
-    for call in crate::replay::extract(messages).calls {
-        if call.name != "kg_search" || call.is_error {
+    for call in crate::grounding::calls(messages) {
+        if call.name != "kg_search" || call.harness {
             continue;
         }
-        let Some(start) = call.output.find('{') else {
+        let Some(content) = call.result else {
             continue;
         };
-        let Some(Ok(body)) = serde_json::Deserializer::from_str(&call.output[start..])
+        let Some(start) = content.find('{') else {
+            continue;
+        };
+        let Some(Ok(body)) = serde_json::Deserializer::from_str(&content[start..])
             .into_iter::<Value>()
             .next()
         else {
@@ -887,6 +911,9 @@ fn evidence_from(messages: &[crate::message::Message], vantage: &Vantage) -> Vec
 
 /// Citation existence is structural; whether the quote entails the claim is
 /// still the auditor's job. A citation is never itself a supported verdict.
+///
+/// The dereference is `grounding::admit`; this is the `CLAIM | EPISODE |
+/// QUOTE` line format over it, which is gossip's wire format and stays here.
 fn grounded_claims(
     answer: &str,
     packet: &[GossipEvidence],
@@ -902,18 +929,18 @@ fn grounded_claims(
                 .strip_prefix("CLAIM: ")?;
             let (statement, rest) = line.split_once(" | EPISODE: ")?;
             let (id, quote) = rest.split_once(" | QUOTE: ")?;
-            let quote = quote.trim().trim_matches('"');
-            let ev = packet.iter().find(|e| e.id == id.trim())?;
-            if statement.trim().is_empty() || quote.chars().count() < 12 || !ev.text.contains(quote)
-            {
-                return None;
-            }
+            let claim = crate::grounding::Claim {
+                statement,
+                id,
+                quote,
+            };
+            let ev = crate::grounding::admit(&claim, packet, MIN_QUOTE_CHARS).ok()?;
             Some(GroundedClaim {
                 statement: statement.trim().into(),
                 episode_id: ev.id.clone(),
                 source: ev.source.clone(),
                 occurred_at: ev.occurred_at.clone(),
-                quote: quote.into(),
+                quote: quote.trim().trim_matches('"').into(),
                 round,
                 reader: reader.into(),
             })

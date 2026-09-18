@@ -2943,6 +2943,54 @@ a claim into whether another model can make it sound plausible. Entity-targeted
 queue work can share selection with exploration without having to pay its model
 budget or consume its prose.
 
+### Grounding
+
+`grounding.rs` is the primitive four modules had each built by hand — gossip's
+citation check, `outbox_source`'s "what is this draft answering" join, the
+diagnostician's `carries_over`, and the mismatch pointers — and the hard-won
+part of each was the walk, never the containment test. `calls` returns every
+call a run issued, in issue order, once per id, each with the non-error,
+non-stale result the model read if one survived; `admit` dereferences a
+`Claim { statement, id, quote }` into a packet of `Referent`s by literal
+containment; `carries_over` is the inverse, refusing text that reproduces a
+run of words from what was read. The first three callers moved onto it;
+`mismatch` did not and need not — its pointers are owner-authored and resolve
+through `Value::pointer` against a record, which needs no walk.
+
+The decisions that carry it, each a bug if undone:
+
+- **First seen wins, and a stale marker never occupies the slot.**
+  `evict_superseded_results` rewrites a result in place under its own
+  `tool_use_id`, so one id names two contents. `messages_ever` carries both
+  in first-seen order and the first is what the model read; a live
+  `Conversation` after compaction carries only the `[stale:` marker.
+  `replay::extract` pairs by id and stops, so it returns the marker as the
+  call's output — gossip escaped only because its JSON parser looks for a
+  brace and the marker has none. The outbox learned the first half by handing
+  a reviewer the marker as "the message you are answering"; the module holds
+  both halves so a plain-text referent gets the same protection.
+- **Not a tool.** Nothing here enters the `Registry`. A check the model may
+  decline to call is not a check — `step::CheckRequest` is dispatched by the
+  loop and gossip's commit-then-reveal is Rust for the same reason.
+- **A citation is not entailment.** `admit` proves a referent exists and a
+  quote is in it. Whether the quote supports the statement is a judgement
+  the module never makes; the gossip pilot's wrong-person claims with valid
+  quotes are the standing example.
+- **Thresholds are the caller's.** The 12-character quote floor is gossip's
+  and the 8-word window is the diagnostician's, each set against its own
+  false positives; the module takes them as parameters and suggests none. A
+  window of zero matches nothing rather than panicking in `windows(0)`.
+- **Every call is listed, with or without a result.** A caller walking to a
+  terminator — the outbox's staging call — must find it whether or not its
+  own result survived; a break conditional on the result is a break that
+  stops being there. `Call::result` is `None` for no result, an error, or a
+  stale marker, and the caller decides what that means (found on review).
+- **Harness calls are listed and marked.** What came back was shown to the
+  model regardless of who asked; `Call::harness` is carried so a caller
+  grading model *choices* can drop them. Gossip does, as `replay::extract`
+  did before it — widening a reader's evidence to plan checks was never
+  measured.
+
 ### Harness rumination
 
 `mecha harness ruminate` (`commands/harness.rs`, nightly from `ruminate.sh`)

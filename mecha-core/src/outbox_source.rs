@@ -52,7 +52,6 @@
 use crate::message::{Block, Message, Role};
 use crate::outbox::{provider_ids, OutboxItem};
 use crate::session::Session;
-use std::collections::BTreeMap;
 use std::path::Path;
 
 /// How many source reads a draft may show.
@@ -253,62 +252,40 @@ pub fn from_messages(item: &OutboxItem, messages: &[Message]) -> Vec<SourceRead>
         return Vec::new();
     }
 
-    // Results first: a `tool_result` arrives in the message *after* the
-    // `tool_use` that asked for it, so a single forward pass cannot pair them.
-    //
-    // **First seen wins, and that is the whole correctness of it.**
-    // [`Session::messages_ever`] unions the states a `Rewrite` replaced back
-    // in, in first-seen order, and
-    // [`evict_superseded_results`](crate::compact::evict_superseded_results)
-    // rewrites a result's *content in place under the same `tool_use_id`*. So
-    // one id legitimately maps to two contents here: the thread the model read,
-    // and — from the post-compaction state — `[superseded: a later … call
-    // covered the same target]`. Taking the last would hand the reviewer that
-    // marker as the message they are answering, which is this module's own
-    // failure mode wearing compaction's clothes. The original is the earlier
-    // one because the run appended it before anything rewrote it.
-    let mut results: BTreeMap<&str, &str> = BTreeMap::new();
-    for message in messages {
-        for block in &message.content {
-            if let Block::ToolResult {
-                tool_use_id,
-                content,
-                is_error,
-            } = block
-            {
-                // A failed call says nothing about the thread; showing its
-                // error as "what you are replying to" is worse than showing
-                // nothing, which is what the absence already communicates.
-                if !is_error {
-                    results
-                        .entry(tool_use_id.as_str())
-                        .or_insert(content.as_str());
-                }
-            }
-        }
-    }
-
+    // The walk is `grounding::calls`, and it was this module's lesson
+    // first: **first seen wins**. [`Session::messages_ever`] unions the
+    // states a `Rewrite` replaced back in, and compaction rewrites a result's
+    // content in place under the same `tool_use_id`, so one id maps to two
+    // contents — the thread the model read, and the `[stale:` marker written
+    // over it. Taking the last would hand the reviewer that marker as the
+    // message they are answering, which is this module's own failure mode
+    // wearing compaction's clothes. Errors are dropped there too: a failed
+    // call says nothing about the thread, and showing its error as "what
+    // you are replying to" is worse than the absence. One call is one read,
+    // however many times a rewrite reissued the same `tool_use`.
     let mut found = Vec::new();
-    let mut reported: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-    for block in messages
-        .iter()
-        .filter(|m| m.role == Role::Assistant)
-        .flat_map(|m| &m.content)
+    for crate::grounding::Call {
+        id,
+        name,
+        input,
+        result,
+        ..
+    } in crate::grounding::calls(messages)
     {
-        let Block::ToolUse { id, name, input } = block else {
-            continue;
-        };
         // The staging call. Everything after it is what the run did *with* the
         // draft, not what it drafted from, and the call itself joins to its own
         // arguments — so this is where the walk ends. The walk once ran past
         // the staging call because a pinned default made the draft unequal
         // to its own recorded input, and the draft joined to itself on its
         // own `thread_id` — which is this break's entire purpose; see
-        // `is_staging_call` for the id-then-content rule.
+        // `is_staging_call` for the id-then-content rule. Checked before the
+        // result, on purpose: the break is on the *call*, and a staging call
+        // whose own result errored must still end the walk (found on review,
+        // when the walk was briefly fed only calls with a surviving result).
         if is_staging_call(item, id, name, input) {
             break;
         }
-        let Some(content) = results.get(id.as_str()) else {
+        let Some(content) = result else {
             continue;
         };
         // Asked first, and it wins outright when it matches: key *and* value
@@ -338,15 +315,8 @@ pub fn from_messages(item: &OutboxItem, messages: &[Message]) -> Vec<SourceRead>
             }
             (Join::Returned, returned)
         };
-        // One call is one read. The union can hand back the same `tool_use`
-        // twice when a rewrite changed the assistant message around it —
-        // thinning shortened a sibling block, say — and the same thread shown
-        // twice reads as two messages to answer rather than one.
-        if !reported.insert(id.as_str()) {
-            continue;
-        }
         found.push(SourceRead {
-            tool: name.clone(),
+            tool: name.to_string(),
             keys,
             join,
             text: clip(unwrap_untrusted(content)),
@@ -823,6 +793,32 @@ mod tests {
             }]),
         ];
         assert!(from_messages(&item, &messages).is_empty());
+    }
+
+    /// The walk ends at the staging call even when that call's own result is
+    /// missing or errored: the break is on the *call*, not on what came back.
+    /// Found on review of the grounding refactor, whose first walk yielded
+    /// only calls with a surviving result — so a staging call whose staging
+    /// failed no longer ended the walk, and a read made *after* the draft
+    /// was offered as what it was written from.
+    #[test]
+    fn the_walk_ends_at_a_staging_call_whose_result_did_not_survive() {
+        let args = json!({"thread_id": "T1", "body_markdown": "Dear Alan,"});
+        let item = draft_of("mail__mail_reply", args.clone());
+        let messages = vec![
+            call("s", "mail__mail_reply", args),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "s".into(),
+                content: "staging failed".into(),
+                is_error: true,
+            }]),
+            call("b", "mail__mail_get_thread", json!({"thread_id": "T1"})),
+            result("b", "a read made after the draft, not before it"),
+        ];
+        assert!(
+            from_messages(&item, &messages).is_empty(),
+            "a read after the staging call was offered as the original"
+        );
     }
 
     #[test]
