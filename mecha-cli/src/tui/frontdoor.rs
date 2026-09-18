@@ -382,10 +382,35 @@ fn detail_lines(record: &Record) -> Vec<Line<'static>> {
                 format!("institution      {}", e.institution),
                 white,
             ));
+            // What the brief hands over, under a header that says so; the
+            // rest is the finding below.
+            let (grounded, ungrounded) = record.dates_by_grounding();
             body.push(Line::styled(
-                format!("dates_mentioned  {}", e.dates_mentioned.join(", ")),
+                format!("dates_mentioned  {}", grounded.join(", ")),
                 white,
             ));
+            if !ungrounded.is_empty() {
+                // A finding, not a gate. The phrase per reason comes from the
+                // record, so this and `show` cannot drift apart.
+                body.push(Line::styled(
+                    "⚠ dates the extractor reported that the triage run was not handed:"
+                        .to_string(),
+                    white,
+                ));
+                for (date, reason) in &ungrounded {
+                    body.push(Line::styled(
+                        format!(
+                            "    {date} — {}",
+                            mecha_core::frontdoor::Record::date_finding(*reason)
+                        ),
+                        white,
+                    ));
+                }
+                body.push(Line::styled(
+                    "  a label on this record, not a block".to_string(),
+                    white,
+                ));
+            }
             body.push(Line::raw(""));
             for line in format!("reading: {}", e.reading).lines() {
                 body.push(Line::styled(line.to_string(), white));

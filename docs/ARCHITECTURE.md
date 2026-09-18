@@ -767,6 +767,29 @@ is prose, and prose is where an instruction can hide. So the shape is CaMeL's
 dual-LLM split, at a size where it is cheap: free text goes to an extractor with
 no tools and no history, and only its typed output reaches a run with tools.
 
+**A date the extractor reports must be in the text as written, and the brief
+checks rather than trusts it.** The prompt says "as written" and "invent
+nothing"; `Record::for_privileged_run` hands over only the `dates_mentioned`
+that `grounding::admit` dereferences into the record's own `prose()` — the
+same text the extractor was shown — and `Record::ungrounded_dates` is the rest,
+each with the `Refusal` it drew, rendered as a label in `show` and the TUI
+beside `reads_like_instructions` through one `Record::date_finding` phrase per
+reason, because "not in the text" and "in the text but too short to be a date"
+are different findings and a label that says the first about the second is
+wrong. **Containment is an anti-fabrication check, not an anti-injection
+one** — an instruction copied verbatim is a literal span of the prose too, and
+would satisfy the check perfectly — so `DATE_MAX_CHARS` refuses anything
+longer than a date anyone wrote *before* the check can certify it. The floor
+is about coincidence; the ceiling is about what the field may carry. Expect
+the label to be noisier than "the extractor invented something": an honest
+normalisation ("Tues 14th" for "Tuesday 14th") lands in the same bucket as a
+fabrication, and if the label is mostly honest paraphrase it will stop being
+read — watch it on the first real requests.
+A finding, never a block: an invented date is a reason to read the record, not
+to withhold it. Every surface downstream of the brief inherits the rule for
+free — the Slack card is built from `for_privileged_run` and its fixture had to
+start actually saying "next Tuesday" for the card to carry it.
+
 The verbs split along that line. **`list` and `show` are for you** — `show`
 prints the prose, because a person reading a stranger's request in a terminal is
 the safe context; you cannot be prompt-injected into sending your own calendar
@@ -2955,7 +2978,11 @@ non-stale result the model read if one survived; `admit` dereferences a
 containment; `carries_over` is the inverse, refusing text that reproduces a
 run of words from what was read. The first three callers moved onto it;
 `mismatch` did not and need not — its pointers are owner-authored and resolve
-through `Value::pointer` against a record, which needs no walk.
+through `Value::pointer` against a record, which needs no walk. The front door
+is the first caller that was never a hand-rolled copy: `Record::for_privileged_run`
+hands over only the `dates_mentioned` that `admit` dereferences into the
+record's own prose (§The front door), using the packet half of the module with
+no walk at all.
 
 The decisions that carry it, each a bug if undone:
 

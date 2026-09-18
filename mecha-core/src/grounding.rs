@@ -167,6 +167,14 @@ pub enum Refusal {
     QuoteTooShort,
     /// The referent exists and the quote is not a literal span of it.
     QuoteNotInReferent,
+    /// Above a ceiling the caller applied. [`admit`] has no ceiling of its
+    /// own — a floor is about coincidence, a ceiling is about what a field
+    /// may *carry*, and only the caller knows the field — so this is the
+    /// variant a caller returns from its own length check, kept here so the
+    /// finding has one home. Containment is an anti-fabrication check, not
+    /// an anti-injection one: an instruction copied verbatim is a literal
+    /// span too, and a ceiling is what keeps the check from certifying it.
+    QuoteTooLong,
 }
 
 /// Dereference a claim into a packet.
@@ -194,7 +202,12 @@ pub fn admit<'e, R: Referent>(
         .find(|e| e.id() == id)
         .ok_or(Refusal::NoSuchReferent)?;
     let quote = claim.quote.trim().trim_matches('"');
-    if quote.chars().count() < min_quote_chars {
+    // A floor of zero would pass an empty quote, and every text contains
+    // the empty string — so any statement citing a real id would be
+    // admitted. The same shape as `carries_over`'s zero window (found on
+    // review): the caller's parameter must not be able to switch the check
+    // off by accident.
+    if min_quote_chars == 0 || quote.chars().count() < min_quote_chars {
         return Err(Refusal::QuoteTooShort);
     }
     if !referent.text().contains(quote) {
@@ -453,6 +466,25 @@ mod tests {
         };
         assert_eq!(admit(&claim, &packet(), 12), Err(Refusal::QuoteTooShort));
         assert!(admit(&claim, &packet(), 4).is_ok());
+    }
+
+    /// A floor of zero would admit any statement citing a real id, because
+    /// every text contains the empty string. Twin of the zero window; fails
+    /// with the guard clause removed.
+    #[test]
+    fn a_zero_floor_admits_nothing() {
+        let empty = Claim {
+            statement: "It slipped",
+            id: "ep1",
+            quote: "",
+        };
+        assert_eq!(admit(&empty, &packet(), 0), Err(Refusal::QuoteTooShort));
+        let real = Claim {
+            quote: "the launch slipped to Thursday",
+            ..empty
+        };
+        assert_eq!(admit(&real, &packet(), 0), Err(Refusal::QuoteTooShort));
+        assert!(admit(&real, &packet(), 1).is_ok());
     }
 
     // ── Carry-over ──────────────────────────────────────────────────────
