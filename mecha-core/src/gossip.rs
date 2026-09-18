@@ -857,19 +857,25 @@ pub struct GroundedClaim {
 /// Envelopes may precede JSON. Only episode items inside the reader's source
 /// lens are eligible, and all carried evidence remains untrusted/private.
 ///
-/// The walk is `grounding::received`, which already drops errors and any
+/// The walk is `grounding::calls`, which already drops errors and any
 /// result compaction has written a stale marker over; what is left here is
-/// gossip's own packet format and its lens.
+/// gossip's own packet format and its lens. Harness-issued calls are
+/// skipped, as `replay::extract` skipped them before this walk replaced
+/// it: a reader's evidence is what *it* retrieved, and widening that was
+/// never measured (found on review).
 fn evidence_from(messages: &[crate::message::Message], vantage: &Vantage) -> Vec<GossipEvidence> {
     let mut out = Vec::new();
-    for call in crate::grounding::received(messages) {
-        if call.name != "kg_search" {
+    for call in crate::grounding::calls(messages) {
+        if call.name != "kg_search" || call.harness {
             continue;
         }
-        let Some(start) = call.content.find('{') else {
+        let Some(content) = call.result else {
             continue;
         };
-        let Some(Ok(body)) = serde_json::Deserializer::from_str(&call.content[start..])
+        let Some(start) = content.find('{') else {
+            continue;
+        };
+        let Some(Ok(body)) = serde_json::Deserializer::from_str(&content[start..])
             .into_iter::<Value>()
             .next()
         else {

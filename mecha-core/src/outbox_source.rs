@@ -252,7 +252,7 @@ pub fn from_messages(item: &OutboxItem, messages: &[Message]) -> Vec<SourceRead>
         return Vec::new();
     }
 
-    // The walk is `grounding::received`, and it was this module's lesson
+    // The walk is `grounding::calls`, and it was this module's lesson
     // first: **first seen wins**. [`Session::messages_ever`] unions the
     // states a `Rewrite` replaced back in, and compaction rewrites a result's
     // content in place under the same `tool_use_id`, so one id maps to two
@@ -264,13 +264,13 @@ pub fn from_messages(item: &OutboxItem, messages: &[Message]) -> Vec<SourceRead>
     // you are replying to" is worse than the absence. One call is one read,
     // however many times a rewrite reissued the same `tool_use`.
     let mut found = Vec::new();
-    for crate::grounding::Received {
+    for crate::grounding::Call {
         id,
         name,
         input,
-        content,
+        result,
         ..
-    } in crate::grounding::received(messages)
+    } in crate::grounding::calls(messages)
     {
         // The staging call. Everything after it is what the run did *with* the
         // draft, not what it drafted from, and the call itself joins to its own
@@ -278,10 +278,16 @@ pub fn from_messages(item: &OutboxItem, messages: &[Message]) -> Vec<SourceRead>
         // the staging call because a pinned default made the draft unequal
         // to its own recorded input, and the draft joined to itself on its
         // own `thread_id` — which is this break's entire purpose; see
-        // `is_staging_call` for the id-then-content rule.
+        // `is_staging_call` for the id-then-content rule. Checked before the
+        // result, on purpose: the break is on the *call*, and a staging call
+        // whose own result errored must still end the walk (found on review,
+        // when the walk was briefly fed only calls with a surviving result).
         if is_staging_call(item, id, name, input) {
             break;
         }
+        let Some(content) = result else {
+            continue;
+        };
         // Asked first, and it wins outright when it matches: key *and* value
         // is the stronger claim, and a call that asked for the id is a call
         // that meant this exact thing.
@@ -787,6 +793,32 @@ mod tests {
             }]),
         ];
         assert!(from_messages(&item, &messages).is_empty());
+    }
+
+    /// The walk ends at the staging call even when that call's own result is
+    /// missing or errored: the break is on the *call*, not on what came back.
+    /// Found on review of the grounding refactor, whose first walk yielded
+    /// only calls with a surviving result — so a staging call whose staging
+    /// failed no longer ended the walk, and a read made *after* the draft
+    /// was offered as what it was written from.
+    #[test]
+    fn the_walk_ends_at_a_staging_call_whose_result_did_not_survive() {
+        let args = json!({"thread_id": "T1", "body_markdown": "Dear Alan,"});
+        let item = draft_of("mail__mail_reply", args.clone());
+        let messages = vec![
+            call("s", "mail__mail_reply", args),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "s".into(),
+                content: "staging failed".into(),
+                is_error: true,
+            }]),
+            call("b", "mail__mail_get_thread", json!({"thread_id": "T1"})),
+            result("b", "a read made after the draft, not before it"),
+        ];
+        assert!(
+            from_messages(&item, &messages).is_empty(),
+            "a read after the staging call was offered as the original"
+        );
     }
 
     #[test]
