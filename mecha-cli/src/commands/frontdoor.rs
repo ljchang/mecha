@@ -499,6 +499,18 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
             println!("  urgency_claimed        {}", e.urgency_claimed);
             println!("  institution            {}", e.institution);
             println!("  dates_mentioned        {}", e.dates_mentioned.join(", "));
+            let ungrounded = record.ungrounded_dates();
+            if !ungrounded.is_empty() {
+                // A finding, not a gate: the extractor was asked for dates as
+                // written, these are not in the text, and the triage run was
+                // not handed them. The person reading this can see the prose.
+                println!(
+                    "  ⚠ not in the text as written: {}\n\
+                     \x20   The extractor was asked for dates as written; these are not, and\n\
+                     \x20   the triage run is not handed them. A label on this record, not a block.",
+                    ungrounded.join(", ")
+                );
+            }
             println!("\n  reading: {}", e.reading);
             if e.reads_like_instructions {
                 // A label, never a gate. It is shown loudly because a person is

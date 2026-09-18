@@ -194,7 +194,12 @@ pub fn admit<'e, R: Referent>(
         .find(|e| e.id() == id)
         .ok_or(Refusal::NoSuchReferent)?;
     let quote = claim.quote.trim().trim_matches('"');
-    if quote.chars().count() < min_quote_chars {
+    // A floor of zero would pass an empty quote, and every text contains
+    // the empty string — so any statement citing a real id would be
+    // admitted. The same shape as `carries_over`'s zero window (found on
+    // review): the caller's parameter must not be able to switch the check
+    // off by accident.
+    if min_quote_chars == 0 || quote.chars().count() < min_quote_chars {
         return Err(Refusal::QuoteTooShort);
     }
     if !referent.text().contains(quote) {
