@@ -281,11 +281,22 @@ N is never disclosed.
 ## What this means for mecha
 
 **The good news is that mecha's strongest verifier is already the right
-shape.** `expect.verify` satisfies all four criteria: it *executes* a command
-rather than judging, in a *staged private workspace* the run does not control,
-and it **hashes the test file first** so a model that edits tests until they
-pass fails. That last property is precisely the tamper resistance METR measured
-o3 defeating 30.4% of the time. The fixture generator's "each kata must fail as
+shape.** `expect.verify` satisfies three of the four criteria: it *executes* a
+command rather than judging, in a *staged private workspace*, and it grades an
+exit code, which is a cheap no. Its tamper resistance is that the command is
+**owner-authored in the case file**, out of the model's reach, and
+`EvalCase::validate` refuses a `verify` case that is not sandboxed — so it
+cannot assert against the shared fixture.
+
+⚠️ **Corrected 2026-09-18.** An earlier draft of this paragraph claimed
+`expect.verify` "hashes the test file first". It does not, and nothing else
+here does either: `grep -rln "Sha256\|sha2::" mecha-core/src` returns no files.
+The command is out of reach, but whatever it *asserts against* lives in the
+model's own workspace, so a case whose verify command runs tests the model can
+edit is tamper-*exposed* in exactly the way METR measured o3 defeating on 30.4%
+of RE-Bench runs. `mismatch.rs` is the module that actually holds the line —
+gold stays in the run record, outside the workspace. Treat that as the pattern
+to copy, not this one. The fixture generator's "each kata must fail as
 shipped *and* be solvable by a reference fix" is the same discipline applied to
 the benchmark itself — which is the exact defect UTBoost found in 40.9% of
 SWE-bench Lite entries.
@@ -315,6 +326,185 @@ that is the deterministic half and it is worth more than the judged half.
    positive planning result and is cheap to try.
 6. **pass^k, not pass@1**, for anything claiming reliability.
 7. Taint-survives-compaction is externally validated; do not weaken it.
+
+---
+
+## Second pass, 2026-09-18: what the other harnesses ship
+
+Prompted by "other harnesses have a verifier — what are they doing?". The
+first pass surveyed the literature; this one surveys the products, and the
+two answers do not conflict once the question the verifier is asked is
+separated from the verifier itself.
+
+### The survey
+
+📰 **Claude Code** has five hook *handler* types — `command`, `http`,
+`mcp_tool`, `prompt` (single-turn model evaluation), `agent` (a subagent with
+Read/Grep/Glob, marked experimental) — across 30-odd lifecycle events. The
+one that matters here is **`Stop`**: it fires when the model finishes
+responding, receives the last assistant message and the transcript path, and
+**exit code 2 prevents the turn from ending**. `PostToolUse` explicitly
+cannot block, because the tool already ran.
+
+📰 **Claude Science** is the actor–critic: a reviewer agent *"inspects the
+outputs, flagging incorrect citations, untraceable numbers, and figures that
+don't match their underlying code."* The page is explicit that the emphasis
+is **reproducibility rather than re-execution** — every figure carries *"the
+exact code and environment that produced it, a plain-language description of
+how it was created, and the full message history."*
+
+📰 **Long-running Claude** (the Boltzmann solver) is the opposite pole and
+agrees with the first pass exactly: an external **test oracle** (CLASS C as
+reference implementation), a `CHANGELOG.md` recording failed approaches and
+why, and a Ralph loop whose exit condition is a *number* — "until the success
+criterion of 0.1% accuracy across the entire parameter range is achieved".
+
+🔮 **Codex** is the light version, and the 2026 community consensus states
+the rule the first pass derived: self-checking is *"the first line, not the
+final verdict."*
+
+### The distinction that reconciles the survey with the literature
+
+**A critic is refuted as a judge of quality and sound as a resolver of
+references.** The AUROC 0.54–0.65 result is for the open question *"did this
+succeed?"*, where the judge's own competence bounds the answer. Claude
+Science's reviewer is never asked that. It is asked whether a number appears
+in the source it cites and whether a figure matches the code that claims to
+have produced it — questions with a **referent**, whose failure mode is a
+missing referent rather than a bad opinion.
+
+**The provenance is the mechanism; the reviewer only walks it.** Attaching
+code, environment and message history to every artifact is what converts the
+unanswerable question into the checkable one. Note where that lands for us:
+CLAUDE.md's *Reporting rules* — never state a number you did not measure —
+is the same property, enforced by prompting rather than by structure, and the
+three miscounts of 2026-09-05 are what prompting costs.
+
+### Against a lone adversarial verifier
+
+**Adversarial framing is safe as a debate and unsafe as a single critic**,
+and the first pass already contains both halves. ✅ Khan: two advocates 76%,
+one consultant 54%, naive 48% — and as the *single* consultant's
+persuasiveness rises, judge accuracy **falls**. 📄 Stechly is the specific
+refutation of an adversary on a completion gate: "evil feedback" — telling
+GPT-4 that a *correct* edge is wrong — produces a **94% "fix" rate,
+identical to real first-error feedback.** The model edits whatever it is
+pointed at without discriminating, so a critic tuned to point at more things
+buys false positives at full price. 📄 And an imperfect verifier's FPR is a
+compute-independent ceiling: resampling does not lower it.
+
+So: **no judgement-based adversary on a completion gate.** Two structures
+survive — an adversarial *pair* whose independence is structural, and an
+adversary whose claims are *resolvable against a referent*.
+
+### What is already built, and where it stops
+
+- `step::CheckRequest` is the frozen declared check: the plan step names a
+  tool and input, the **loop** dispatches it, and `MAX_CHECKS_PER_RUN` is 16.
+  The forge direction is the safe one — the module's own note is that a model
+  emitting `step.check` as a `tool_use` lands as `unknown`, which
+  `Outcome::of` reads as `Failed`, so *"it can manufacture a failed check
+  against itself, never a passing one."* `appraise` reads `CheckFailed`
+  before the last-attempt readings, which is how a run whose final call
+  succeeded while its claim did not still gets caught. **Reachable only from
+  `todo.rs`** — a run that never plans cannot declare a check.
+- `anticipation::assess` is prospective regret, and deliberately **not a
+  minimisation**: a pure function from `Evidence` to a *set* of concerns plus
+  one of four `Response`s, with `uncertainty` as a bool because "no
+  probabilistic confidence is invented from an unverified claim". `Kind::Regret`
+  is pushed only when `unverified && affordable == Some(true)` — regret means
+  *there was a named check you could afford and did not run*, which is an
+  unexercised option rather than a feeling. `outbox.rs` re-derives the
+  assessment and asserts equality rather than trusting the stored label.
+  **Wired to the send path only**; steps do not populate `Evidence`.
+- `gossip::reader` is the sound adversarial pair, built for the graph:
+  commit-then-reveal enforced structurally, one `LensedSearch` tool per child
+  with its sources nailed shut and removed from the schema, so *"a child
+  cannot widen its own lens to see what its partner sees, which would collapse
+  the two witnesses into one."* The design note names why this is Rust and not
+  a prompt: a parent told not to show B what A said *can simply not comply,
+  and nothing would notice.*
+- `hooks::Event` has exactly three variants — `PreTool`, `PostTool`,
+  `SessionEnd`. Only `PreTool` can deny. `session_end` runs after the fact and
+  logs a warning on failure. **There is no gate that can refuse to let a run
+  end**, which is the `Stop` capability every surveyed harness has and we do
+  not.
+
+### Implications, ordered
+
+8. **A blocking end-of-run gate is the missing mechanism**, and implication 2
+   already depends on one: a convergence test that is a command's exit code
+   needs somewhere to run and something to refuse. `session_end` is the wrong
+   event because it cannot say no.
+9. **Make the reporting rule structural before making it adversarial.** A
+   tool result that carried its command and exit status as fields would let a
+   non-model checker flag figures in a final message that trace to nothing —
+   the *untraceable numbers* check, with no judge in it.
+10. **If an adversarial verifier is built, build the pair, not the critic** —
+    `gossip`'s lens is the pattern, and the task-completion analogue of
+    independent sources is independent *evidence channels* (one reader sees
+    only the transcript, the other only the workspace diff).
+11. **Widen `CheckRequest` past `todo.rs`** and let step boundaries populate
+    `anticipation::Evidence`, so `Response::Verify` fires where the check
+    machinery can act on it. Both halves exist and do not meet.
+
+### Scope, 2026-09-18: the grounding primitive is hand-rolled four times
+
+Surveyed by reading every `parse_*` boundary in `mecha-core/src` and every
+caller of `replay::extract`. **The same primitive — build the set of what
+the run actually received, then test a model's claim against it by literal
+containment — exists in four places, in two polarities, and none of them
+shares a line.**
+
+| Instance | Polarity | Source set | Referent | Compaction-aware |
+|---|---|---|---|---|
+| `gossip::evidence_from` + `grounded_claims` | admit if it cites | `replay::extract`, `kg_search` results only | episode id + quote ≥ 12 chars, literal substring | **no** |
+| `outbox_source::from_messages` | join | raw `Block::ToolResult` walk | `tool_use_id` / provider id | **yes** — first seen wins |
+| `diagnose::carries_over` | *reject* if it quotes | what the diagnostician read | 8-word window | n/a |
+| `mismatch` criterion pointers | resolve | owner record | JSON pointer | n/a |
+
+**The general module must inherit `outbox_source`'s compaction rule, and
+`gossip` does not have it.** `evict_superseded_results` rewrites a result's
+content in place under the same `tool_use_id`, so one id maps to two
+contents: the thing the model read, and `[superseded: …]`. `outbox_source`
+takes the first seen for that reason; `replay::extract` has no such rule
+(no `superseded`, `or_insert` or `messages_ever` in the file). Harmless in
+gossip today because its conversations are fresh and short; a wrong-evidence
+bug the day the walk is pointed at a long run.
+
+**Where the primitive is missing and a prompt does the job instead:**
+
+- `frontdoor::Extraction::dates_mentioned` — the prompt says *"as written in
+  the text"* and the schema requires the field; `parse_extraction` only
+  deserialises. Nothing checks a date is a substring of the submitted prose.
+- `mail_triage::Verdict::deadline` — format-checked (`YYYY-MM-DD`) and never
+  checked against the thread. A normalised date will not appear literally, so
+  grounding it needs a `quote` span on the schema first.
+- `compact::parse_omissions` — a judged check on free prose; the hard case,
+  noted and not scoped.
+- `distill::Correction::wrong` — a claim about the session, unchecked; the
+  graph's review queue is the downstream guardrail, so lowest.
+
+**Shape.** A `grounding` module with `Evidence { id, source, text }`
+(`occurred_at` is graph-specific and stays with the caller), a transcript
+walk that takes the caller's packet parser and owns first-seen-wins and
+error exclusion, an `admit` that partitions claims into grounded and
+ungrounded, and `carries_over` moved across with its window as a parameter.
+Not a tool: nothing enters the `Registry`. Each caller's thresholds (12
+chars, 8 words, 25 items, 4000 chars) stay per-caller, because each was set
+against its own failure and none was measured for the others.
+
+**What stays put.** Gossip's `CLAIM | EPISODE | QUOTE` line format and lens
+filter are its wire format. `outbox_source`'s `Join::Asked` ranking and
+`MIN_RETURNED_ID_CHARS` are a join, not an admission. The exchange itself is
+untouched — its open namesake defect (above) is the reason.
+
+**Order.** (1) module + gossip as the first caller, a pure refactor with
+`cargo test -- --list` diffed to zero; (2) `frontdoor` dates as the first new
+caller, a *finding* on the record rather than a block; (3) `outbox_source`
+consumes the shared walk, which is how the compaction rule lands in the
+module; (4) the triage `quote` span. Invariants go in `ARCHITECTURE.md`'s
+own section, per CLAUDE.md.
 
 ---
 

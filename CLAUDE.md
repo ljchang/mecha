@@ -190,6 +190,8 @@ counterfactual.rs  did the rules change the answer at the recorded moment?
 distill.rs   session → episode, staged to the knowledge graph over MCP
 gossip.rs    two readers over independent *sources*, asking each other questions:
              the contradiction a template and two filtered retrievals cannot find
+grounding.rs what a run actually received, and whether a claim dereferences
+             into it: first seen wins, stale is never evidence, never a tool
 session.rs   append-only JSONL transcripts; a rewrite record when compaction edits history,
              and a `RunStats` outcome record per run — how it went, beside what it said
 runlog.rs    the run-quality corpus: every recorded outcome, read back across sessions
