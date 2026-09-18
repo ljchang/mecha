@@ -776,7 +776,15 @@ each with the `Refusal` it drew, rendered as a label in `show` and the TUI
 beside `reads_like_instructions` through one `Record::date_finding` phrase per
 reason, because "not in the text" and "in the text but too short to be a date"
 are different findings and a label that says the first about the second is
-wrong.
+wrong. **Containment is an anti-fabrication check, not an anti-injection
+one** — an instruction copied verbatim is a literal span of the prose too, and
+would satisfy the check perfectly — so `DATE_MAX_CHARS` refuses anything
+longer than a date anyone wrote *before* the check can certify it. The floor
+is about coincidence; the ceiling is about what the field may carry. Expect
+the label to be noisier than "the extractor invented something": an honest
+normalisation ("Tues 14th" for "Tuesday 14th") lands in the same bucket as a
+fabrication, and if the label is mostly honest paraphrase it will stop being
+read — watch it on the first real requests.
 A finding, never a block: an invented date is a reason to read the record, not
 to withhold it. Every surface downstream of the brief inherits the rule for
 free — the Slack card is built from `for_privileged_run` and its fixture had to

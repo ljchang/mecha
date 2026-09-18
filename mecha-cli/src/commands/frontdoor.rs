@@ -498,8 +498,11 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
             println!("  topic                  {}", e.topic);
             println!("  urgency_claimed        {}", e.urgency_claimed);
             println!("  institution            {}", e.institution);
-            println!("  dates_mentioned        {}", e.dates_mentioned.join(", "));
-            let ungrounded = record.ungrounded_dates();
+            // The header says "what a triage run is allowed to see", so this
+            // line prints what the brief hands over, not the extractor's raw
+            // list — the rest is the finding below (found on review).
+            let (grounded, ungrounded) = record.dates_by_grounding();
+            println!("  dates_mentioned        {}", grounded.join(", "));
             if !ungrounded.is_empty() {
                 // A finding, not a gate: the extractor was asked for dates as
                 // written, the brief did not hand these over, and the person

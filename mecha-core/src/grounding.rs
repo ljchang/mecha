@@ -167,6 +167,14 @@ pub enum Refusal {
     QuoteTooShort,
     /// The referent exists and the quote is not a literal span of it.
     QuoteNotInReferent,
+    /// Above a ceiling the caller applied. [`admit`] has no ceiling of its
+    /// own — a floor is about coincidence, a ceiling is about what a field
+    /// may *carry*, and only the caller knows the field — so this is the
+    /// variant a caller returns from its own length check, kept here so the
+    /// finding has one home. Containment is an anti-fabrication check, not
+    /// an anti-injection one: an instruction copied verbatim is a literal
+    /// span too, and a ceiling is what keeps the check from certifying it.
+    QuoteTooLong,
 }
 
 /// Dereference a claim into a packet.
