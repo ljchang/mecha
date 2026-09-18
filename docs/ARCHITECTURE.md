@@ -1212,7 +1212,11 @@ dropped and why, and a person types the date `mail task` would otherwise
 have carried. An owner's correction is not subject to the check and clears the
 refusal — the owner's word needs no words from the message behind it.
 `deadline_quote` and `deadline_refused` are the sender's words and never
-cross `for_privileged_run`.
+cross `for_privileged_run` — measured by `the_privileged_view_carries_no_prose`,
+not asserted. Two things make an *honest* deadline drop, and the
+`QuoteNotInMessage` count cannot tell them apart: the model paraphrasing, and
+a quote that spans a hard line-wrap in the body, since `admit` is literal.
+Read the first real sweep's refusals before tuning the floor or the prompt.
 **Registered names, resolved off the registry after every narrowing** — this
 box registers the graph tools bare and mail as `mail__mail_get_thread`, so a
 bare name in the seed would be a call the run cannot dispatch, which is the
