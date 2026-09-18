@@ -620,13 +620,21 @@ fn list(all: bool, aged: bool, aged_hours: i64, surface: bool, as_json: bool) ->
                     v.one_line
                 );
                 println!(
-                    "      {} · {} · proposed: {}{}",
+                    "      {} · {} · proposed: {}{}{}",
                     r.thread_id,
                     r.from,
                     v.proposed.as_str(),
                     v.deadline
                         .as_deref()
                         .map(|d| format!(" · due {d}"))
+                        .unwrap_or_default(),
+                    // A deadline the harness dropped because the classifier
+                    // could not point at the words it came from. Shown here,
+                    // to the person, because the task this thread proposes
+                    // will have no date unless they supply one.
+                    v.deadline_refused
+                        .as_ref()
+                        .map(|d| format!(" · dropped due {} ({})", d.deadline, d.reason.label()))
                         .unwrap_or_default()
                 );
             }
@@ -1387,6 +1395,7 @@ async fn eval(
                     "proposed": v.proposed.as_str(),
                     "request_type": v.request_type,
                     "deadline": v.deadline,
+                    "deadline_refused": v.deadline_refused,
                     "escalates": mecha_core::mail_triage::needs_body(&v),
                 }));
                 graded.push(Graded {
