@@ -382,11 +382,13 @@ fn detail_lines(record: &Record) -> Vec<Line<'static>> {
                 format!("institution      {}", e.institution),
                 white,
             ));
+            // What the brief hands over, under a header that says so; the
+            // rest is the finding below.
+            let (grounded, ungrounded) = record.dates_by_grounding();
             body.push(Line::styled(
-                format!("dates_mentioned  {}", e.dates_mentioned.join(", ")),
+                format!("dates_mentioned  {}", grounded.join(", ")),
                 white,
             ));
-            let ungrounded = record.ungrounded_dates();
             if !ungrounded.is_empty() {
                 // A finding, not a gate. The phrase per reason comes from the
                 // record, so this and `show` cannot drift apart.
