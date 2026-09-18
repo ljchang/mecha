@@ -767,6 +767,12 @@ mod tests {
             // What `messages_ever` unions in from the post-compaction state:
             // the call message is identical and dedups away; only the
             // rewritten result survives as a second record.
+            //
+            // Deliberately *not* the real `SUPERSEDED_MARKER`. With it, the
+            // walk would drop this result on the stale-skip alone and the
+            // test would pass without first-seen-wins — which is the rule it
+            // is named for. The old literal is the one thing that isolates
+            // it (kept on review; do not "fix" it into the constant).
             result(
                 "a",
                 "[superseded: a later mail__mail_get_thread call covered the same target…]",

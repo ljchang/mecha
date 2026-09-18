@@ -498,7 +498,25 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
             println!("  topic                  {}", e.topic);
             println!("  urgency_claimed        {}", e.urgency_claimed);
             println!("  institution            {}", e.institution);
-            println!("  dates_mentioned        {}", e.dates_mentioned.join(", "));
+            // The header says "what a triage run is allowed to see", so this
+            // line prints what the brief hands over, not the extractor's raw
+            // list — the rest is the finding below (found on review).
+            let (grounded, ungrounded) = record.dates_by_grounding();
+            println!("  dates_mentioned        {}", grounded.join(", "));
+            if !ungrounded.is_empty() {
+                // A finding, not a gate: the extractor was asked for dates as
+                // written, the brief did not hand these over, and the person
+                // reading this can see the prose. One phrase per reason, from
+                // the record, so this and the TUI say the same thing.
+                println!("  ⚠ dates the extractor reported that the triage run was not handed:");
+                for (date, reason) in &ungrounded {
+                    println!(
+                        "      {date} — {}",
+                        mecha_core::frontdoor::Record::date_finding(*reason)
+                    );
+                }
+                println!("\x20   A label on this record, not a block.");
+            }
             println!("\n  reading: {}", e.reading);
             if e.reads_like_instructions {
                 // A label, never a gate. It is shown loudly because a person is
