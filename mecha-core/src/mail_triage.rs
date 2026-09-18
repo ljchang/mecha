@@ -198,6 +198,58 @@ pub struct Verdict {
     /// than being promoted into a manifest that does not exist.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_type: Option<String>,
+    /// The words in the message the deadline comes from, copied verbatim by
+    /// the classifier. **Prose — the sender's — a human's to read, never a
+    /// privileged run's.** Checked by [`ground_deadline`] rather than
+    /// trusted: a deadline whose words are not in the message is dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_quote: Option<String>,
+    /// A deadline the harness dropped, with why. Written by
+    /// [`ground_deadline`] after parsing and never by the model — whatever
+    /// the classifier put here is overwritten. **Prose inside; a human's.**
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_refused: Option<DeadlineRefused>,
+}
+
+/// Why a deadline the classifier reported was not kept.
+///
+/// Written to the record, so a closed enum on the wire: an unknown variant
+/// loads as `Unknown` rather than failing the record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeadlineRefusal {
+    /// The classifier gave a date and no words it came from.
+    NoQuote,
+    /// The words it gave are not in the message as written.
+    QuoteNotInMessage,
+    /// The words it gave are too short to be a date anyone wrote.
+    QuoteTooShort,
+    #[serde(other)]
+    Unknown,
+}
+
+impl DeadlineRefusal {
+    /// One phrase per reason, for every surface that shows a dropped
+    /// deadline, so none of them drifts into saying something different.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NoQuote => "no words from the message given for it",
+            Self::QuoteNotInMessage => "the words given for it are not in the message",
+            Self::QuoteTooShort => "the words given for it are too short to be a date",
+            Self::Unknown => "dropped for a reason this build does not know",
+        }
+    }
+}
+
+/// A deadline the classifier reported and the harness did not keep: what it
+/// said, the words it cited (the sender's, so prose), and why. **A human's
+/// to read, never a privileged run's.**
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeadlineRefused {
+    pub deadline: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
+    pub reason: DeadlineRefusal,
 }
 
 /// How much of a thread the second pass is allowed to read.
@@ -370,6 +422,8 @@ pub fn prefilter(t: &ThreadInput, bulk: bool) -> Option<(Verdict, PrefilterRule)
             proposed: Proposed::Archive,
             deadline: None,
             request_type: None,
+            deadline_quote: None,
+            deadline_refused: None,
         },
         rule,
     ))
@@ -663,9 +717,69 @@ pub fn apply_correction(v: &mut Verdict, c: &Correcting, at: &str) -> Vec<Correc
         let shown = |x: &Option<String>| x.clone().unwrap_or_else(|| "none".into());
         if note("deadline", shown(&v.deadline), shown(d)) {
             v.deadline = d.clone();
+            // The owner's word supersedes the harness's refusal: a deadline
+            // set by hand needs no words from the message behind it, and a
+            // "dropped" label beside a date the owner chose would be wrong.
+            v.deadline_refused = None;
         }
     }
     out
+}
+
+/// The shortest span a deadline can be quoted from — "9/25", "Fri.".
+pub const DEADLINE_QUOTE_MIN_CHARS: usize = 4;
+
+/// Keep the classifier's deadline only if the words it cites are in the
+/// message as written; otherwise drop it and say why.
+///
+/// Runs after parsing, against exactly the text the classifier was shown —
+/// subject and body — so the referent is what the model read, not what the
+/// thread holds today. The store keeps no body, which is why this cannot be
+/// checked later at the brief the way the front door checks its dates: it is
+/// checked here or never. Whatever the model wrote into `deadline_refused`
+/// is overwritten; that field is the harness's. An owner's correction is not
+/// subject to this — see [`apply_correction`].
+///
+/// A dropped deadline is a finding, not a failure: the verdict stands, the
+/// task it would have dated is still proposed, and `mecha mail list` shows
+/// what was dropped and why. The cost of a wrong date on a task is a task
+/// due when nothing is; the cost of a missing one is a person reading the
+/// label and typing it.
+pub fn ground_deadline(v: &mut Verdict, thread: &ThreadInput) {
+    let Some(deadline) = v.deadline.take() else {
+        v.deadline_quote = None;
+        v.deadline_refused = None;
+        return;
+    };
+    let referent = [crate::grounding::Evidence {
+        id: "message".into(),
+        source: "thread".into(),
+        text: format!("{}\n{}", thread.subject, thread.body),
+    }];
+    let reason = match v.deadline_quote.as_deref().map(str::trim) {
+        None | Some("") => DeadlineRefusal::NoQuote,
+        Some(quote) => {
+            let claim = crate::grounding::Claim {
+                statement: &deadline,
+                id: "message",
+                quote,
+            };
+            match crate::grounding::admit(&claim, &referent, DEADLINE_QUOTE_MIN_CHARS) {
+                Ok(_) => {
+                    v.deadline = Some(deadline);
+                    v.deadline_refused = None;
+                    return;
+                }
+                Err(crate::grounding::Refusal::QuoteTooShort) => DeadlineRefusal::QuoteTooShort,
+                Err(_) => DeadlineRefusal::QuoteNotInMessage,
+            }
+        }
+    };
+    v.deadline_refused = Some(DeadlineRefused {
+        deadline,
+        quote: v.deadline_quote.take(),
+        reason,
+    });
 }
 
 /// One thread, as the classifier left it.
@@ -918,6 +1032,9 @@ impl Record {
             "urgency": v.map(|v| v.urgency.as_str()),
             "proposed": v.map(|v| v.proposed.as_str()),
             "tags": v.map(|v| v.tags.clone()).unwrap_or_default(),
+            // Only a deadline whose words `ground_deadline` found in the
+            // message. `deadline_quote` and `deadline_refused` are the
+            // sender's words and stay behind with the prose.
             "deadline": v.and_then(|v| v.deadline.clone()),
             "request_type": v.and_then(|v| v.request_type.clone()),
         })
@@ -1134,6 +1251,8 @@ mod tests {
                 proposed: Proposed::Reply,
                 deadline: Some("2026-08-20".into()),
                 request_type: None,
+                deadline_quote: None,
+                deadline_refused: None,
             }),
             error: None,
             classified_at: "2026-08-18T09:05:00Z".into(),
@@ -1296,6 +1415,141 @@ mod tests {
         }
     }
 
+    // ── A deadline must cite its words ──────────────────────────────────
+
+    fn thread_saying(subject: &str, body: &str) -> ThreadInput {
+        ThreadInput {
+            thread_id: "t1".into(),
+            account: "work".into(),
+            from: "ada@example.org".into(),
+            from_name: "Ada Lovelace".into(),
+            subject: subject.into(),
+            date: "2026-09-18T00:00:00Z".into(),
+            body: body.into(),
+        }
+    }
+
+    /// Through `parse_verdict`, because that is the path a live reply takes.
+    fn dated(deadline: &str, quote: &str) -> Verdict {
+        parse_verdict(&format!(
+            r#"{{"reasoning":"r","bucket":"respond","urgency":"week","one_line":"x",
+                "tags":[],"proposed":"task","deadline":{deadline},
+                "deadline_quote":{quote},"request_type":null}}"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_deadline_whose_words_are_in_the_message_is_kept() {
+        let mut v = dated(r#""2026-09-25""#, r#""by Friday the 25th""#);
+        ground_deadline(
+            &mut v,
+            &thread_saying("Draft", "Could you send it by Friday the 25th?"),
+        );
+        assert_eq!(v.deadline.as_deref(), Some("2026-09-25"));
+        assert_eq!(v.deadline_quote.as_deref(), Some("by Friday the 25th"));
+        assert_eq!(v.deadline_refused, None);
+    }
+
+    /// Fails on the old path, which kept every well-formed date.
+    #[test]
+    fn a_deadline_without_its_words_is_dropped_and_recorded() {
+        let mut v = dated(r#""2026-09-25""#, "null");
+        ground_deadline(&mut v, &thread_saying("Draft", "Whenever you can."));
+        assert_eq!(v.deadline, None);
+        assert_eq!(
+            v.deadline_refused,
+            Some(DeadlineRefused {
+                deadline: "2026-09-25".into(),
+                quote: None,
+                reason: DeadlineRefusal::NoQuote,
+            })
+        );
+    }
+
+    #[test]
+    fn a_deadline_whose_words_are_not_in_the_message_is_dropped() {
+        let mut v = dated(r#""2026-09-28""#, r#""by Monday""#);
+        ground_deadline(
+            &mut v,
+            &thread_saying("Draft", "Could you send it by Friday the 25th?"),
+        );
+        assert_eq!(v.deadline, None);
+        let refused = v.deadline_refused.expect("recorded");
+        assert_eq!(refused.reason, DeadlineRefusal::QuoteNotInMessage);
+        // The words the classifier gave travel with the finding, exactly as
+        // written, because a person is about to read them.
+        assert_eq!(refused.quote.as_deref(), Some("by Monday"));
+        assert_eq!(v.deadline_quote, None);
+    }
+
+    #[test]
+    fn the_subject_is_part_of_the_message() {
+        let mut v = dated(r#""2026-09-25""#, r#""Due 9/25""#);
+        ground_deadline(&mut v, &thread_saying("Due 9/25", "See subject."));
+        assert_eq!(v.deadline.as_deref(), Some("2026-09-25"));
+    }
+
+    #[test]
+    fn words_too_short_to_be_a_date_are_refused_as_such() {
+        let mut v = dated(r#""2026-09-25""#, r#""25""#);
+        ground_deadline(&mut v, &thread_saying("Draft", "by the 25th"));
+        assert_eq!(v.deadline, None);
+        assert_eq!(
+            v.deadline_refused.map(|r| r.reason),
+            Some(DeadlineRefusal::QuoteTooShort)
+        );
+    }
+
+    #[test]
+    fn no_deadline_means_no_quote_and_no_refusal() {
+        let mut v = dated("null", r#""by Friday""#);
+        ground_deadline(&mut v, &thread_saying("Draft", "by Friday"));
+        assert_eq!(v.deadline, None);
+        assert_eq!(v.deadline_quote, None);
+        assert_eq!(v.deadline_refused, None);
+    }
+
+    #[test]
+    fn an_owner_correction_supersedes_a_refusal() {
+        let mut v = dated(r#""2026-09-25""#, "null");
+        ground_deadline(&mut v, &thread_saying("Draft", "Whenever."));
+        assert!(v.deadline_refused.is_some());
+        let made = apply_correction(
+            &mut v,
+            &Correcting {
+                deadline: Some(Some("2026-09-30".into())),
+                ..Default::default()
+            },
+            "now",
+        );
+        assert_eq!(made.len(), 1);
+        assert_eq!(v.deadline.as_deref(), Some("2026-09-30"));
+        assert_eq!(v.deadline_refused, None);
+    }
+
+    #[test]
+    fn the_prompt_and_the_schema_ask_for_the_words() {
+        let prompt = classifier_prompt(&thread_saying("s", "b"), "2026-09-18");
+        assert!(prompt.contains("deadline_quote"));
+        assert!(prompt.contains("copied verbatim"));
+        let schema = verdict_schema();
+        assert!(schema["properties"]["deadline_quote"].is_object());
+        assert!(schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == "deadline_quote"));
+    }
+
+    /// The reason is written to the record, so a variant this build does not
+    /// know must load rather than fail the row.
+    #[test]
+    fn an_unknown_refusal_reason_loads_as_unknown() {
+        let r: DeadlineRefusal = serde_json::from_str(r#""something_newer""#).unwrap();
+        assert_eq!(r, DeadlineRefusal::Unknown);
+    }
+
     #[test]
     fn a_reply_with_prose_around_the_json_still_parses_and_garbage_does_not() {
         let reply = concat!(
@@ -1363,6 +1617,8 @@ mod tests {
             proposed: Proposed::None,
             deadline: None,
             request_type: request_type.map(str::to_string),
+            deadline_quote: None,
+            deadline_refused: None,
         }
     }
 
@@ -1603,6 +1859,8 @@ mod tests {
             proposed: Proposed::None,
             deadline: None,
             request_type: rt.map(str::to_string),
+            deadline_quote: None,
+            deadline_refused: None,
         }
     }
 
@@ -2793,6 +3051,9 @@ fn classifier_prompt_with(t: &ThreadInput, today: &str, few_shot: &str, rules: &
          needs to reach somebody else, such as a receipt going to the finance \
          office), `none`.\n\
          - deadline: YYYY-MM-DD if the thread implies one, else null.\n\
+         - deadline_quote: the exact words in the message the deadline comes \
+         from, copied verbatim, else null. They are checked against the \
+         message, and a deadline whose words are not there is dropped.\n\
          - request_type: if this is really one of these standard requests \
          arriving as an email, name it: {types}. Otherwise null. Do not invent \
          a type that is not on that list. Naming one is worth doing whether or \
@@ -2811,7 +3072,7 @@ fn classifier_prompt_with(t: &ThreadInput, today: &str, few_shot: &str, rules: &
          Reply with one JSON object and nothing else. Reason first:\n\
          {{\"reasoning\": \"<why>\", \"bucket\": \"...\", \"urgency\": \"...\", \
          \"one_line\": \"...\", \"tags\": [...], \"proposed\": \"...\", \
-         \"deadline\": null, \"request_type\": null}}\n\
+         \"deadline\": null, \"deadline_quote\": null, \"request_type\": null}}\n\
          \n\
          {rules}\
          {few_shot}\
@@ -2954,7 +3215,12 @@ pub async fn classify_with(
         let text = response.message.text();
 
         match parse_verdict(&text) {
-            Ok(v) => return Ok(v),
+            Ok(mut v) => {
+                // The one check that needs the text the model was shown, so
+                // it lives here and not in `parse_verdict`.
+                ground_deadline(&mut v, thread);
+                return Ok(v);
+            }
             Err(_) if truncated && text.trim().is_empty() => {
                 last_error = format!(
                     "the model hit the {} token budget before writing any answer \
@@ -2991,6 +3257,7 @@ fn verdict_schema() -> serde_json::Value {
         "urgency":{"type":"string","enum":["now","today","week","none"]}, "one_line":{"type":"string"},
         "tags":{"type":"array","items":{"type":"string","enum":TAGS}},
         "proposed":{"type":"string","enum":["reply","archive","spam","schedule","task","forward","none"]},
-        "deadline":{"type":["string","null"]}, "request_type":{"type":["string","null"],"enum":request_types}},
-        "required":["reasoning","bucket","urgency","one_line","tags","proposed","deadline","request_type"]})
+        "deadline":{"type":["string","null"]}, "deadline_quote":{"type":["string","null"]},
+        "request_type":{"type":["string","null"],"enum":request_types}},
+        "required":["reasoning","bucket","urgency","one_line","tags","proposed","deadline","deadline_quote","request_type"]})
 }
