@@ -14,6 +14,75 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-18 — a claim cites what the run received: one walk for what a run
+was shown, and three surfaces that check the model's words instead of
+trusting them.** Prompted by "other harnesses have a verifier — what are they
+doing?". The literature pass (`docs/VERIFICATION-RESEARCH.md`, 2026-08-04)
+had already refuted self-critique as a completion gate; the harness survey
+added as its second pass found the half that survives: Claude Science's
+reviewer is never asked "is this good?" — it is asked whether a cited number
+appears in its source and whether a figure matches the code that claims to
+have produced it, questions with a *referent*, and the provenance is the
+mechanism. Reading for what mecha already had turned up the same primitive
+hand-rolled four times (gossip's `grounded_claims`, `outbox_source`'s "what
+is this draft answering" join, `diagnose::carries_over`, the mismatch
+pointers) and one trap: `evict_superseded_results` rewrites a result *in
+place under its own `tool_use_id`*, so one id names two contents, and
+`replay::extract` hands the `[stale:` marker back as a call's output — gossip
+escaped only because its JSON parser looks for a brace and the marker has
+none, while `outbox_source` had learned first-seen-wins by handing a reviewer
+the marker as "the message you are answering". #244 (`569d4952`):
+`grounding.rs` — `calls` lists every call once with `result: Option`, first
+seen wins, a stale marker never occupies the slot; `admit` dereferences a
+`{statement, id, quote}` claim into a packet by literal containment and names
+what was missing; `carries_over` is the inverse polarity, moved from
+`diagnose`; the three callers moved onto it with their own thresholds as
+parameters, and nothing enters the registry, because a check the model may
+decline to call is not a check. #245 (`d6fc8268`): `frontdoor::Record::for_privileged_run`
+— the function the front door names as "the boundary of the quarantine, and
+the reason it is a function" — hands over only the `dates_mentioned` that
+`admit` grounds in the record's own `prose()`, floor 3 (`"3/5"`, `"May"`)
+and ceiling 48, because containment is an anti-fabrication check and an
+instruction copied verbatim is a literal span too; `Record::ungrounded_dates`
+carries each refusal's reason to `show` and the TUI through one
+`Record::date_finding` phrase per reason, a finding and never a block. The
+Slack request card is built from the same brief, so it inherited the rule
+without knowing — its fixture had to start actually saying "next Tuesday",
+and the same test now asserts an invented date never reaches a card. #246
+(`ddd302f4`): the mail classifier is asked for `deadline_quote`, the words a
+deadline comes from copied verbatim; `ground_deadline` runs inside
+`classify_with` against the subject and body the model was shown on both
+passes — the triage store keeps no body, so it is checked there or never —
+with floor 4 and ceiling 120; a deadline whose words are missing, absent, too
+short or too long is dropped and recorded as `Verdict::deadline_refused`, a
+closed enum with `#[serde(other)] Unknown` for the wire, written by the
+harness after parsing on every path so nothing the model emits there
+survives; `mail list`, `mail show`, the sweep line and `mail task` say
+"dropped", never "found none", because those are opposite findings; an
+owner's `--deadline` correction settles the refusal whether it overrides or
+agrees, reaches the store either way, and a changed date sheds the
+classifier's words. `deadline_quote` and `deadline_refused` never cross
+`for_privileged_run`, measured by `the_privileged_view_carries_no_prose`
+planting both. Eight review passes across the three PRs; every real defect
+was at a seam rather than in the check (*Review process*, below). Released as
+**v0.1.21** (`a5275980`, "a claim cites what the run received") and deployed
+the same evening — HANDOFF's dated machine state has each surface. **Left
+deliberately unmeasured, and named as the thing to read first:** how often
+the local model quotes verbatim rather than paraphrasing, which is how often
+an honest deadline or date is dropped; both labels exist so the first real
+sweep shows the rate, and a hard line-wrap is a second cause the
+`QuoteNotInMessage` count cannot tell from a paraphrase. Also corrected in
+passing: `VERIFICATION-RESEARCH.md` had claimed `expect.verify` hashes the
+test file — nothing in `mecha-core` does (no `sha2` import); its tamper
+resistance is that the command is owner-authored and the case must be
+sandboxed, and `mismatch.rs` is the module that actually keeps gold outside
+the workspace. The gossip *exchange* was left alone on purpose: the
+2026-09-10 pilot found wrong-person claims with valid quotes and no extra
+coverage for its cost, and generalising an unvalidated mechanism is the wrong
+move — what generalised was its admission filter, which was the part of the
+pilot that worked (four explicit no-evidence answers instead of four
+fabrications).
+
 **2026-09-17 — the third leg of the trifecta is a class, not a bit: who picks
 the recipient is what the interlock was always about.** The complaint was that
 reading mail ended web search for the rest of a conversation, and the
@@ -7906,6 +7975,25 @@ and is what finally exercised the path.)
   rewrite made for usability that widened what the model would accept a date
   *from*: the wording it replaced was bad for the owner and load-bearing
   against content, because `Role::User` is a message role and not a party.
+- **A fix verified one layer below the store that short-circuits on "nothing
+  changed".** #246's `--deadline none` clear was added to `apply_correction`
+  and tested there, green — and `Store::correct` returned before `put`
+  whenever no correction was recorded, which is by design the agreeing case,
+  so the owner settled a finding on a copy the early return dropped and
+  `mail list` showed the label on every run after. The unit test could not
+  see the layer with the bug; the reviewer found it by reading the store.
+  The general lesson: **when a change's whole point is a mutation the layer
+  above does not count as a change, the test belongs at the layer that
+  persists** — put a record in the store, correct it, reload it, and make
+  the test fail on the early return. One PR earlier (#244) the same shape
+  wore different clothes: a walk that yielded only calls with a surviving
+  result made the outbox's staging-call `break` conditional on that call's
+  own result, and *a break that is conditional on the thing it guards is a
+  break that stops being there* — list every call, and let the caller decide
+  what a missing result means. Eight passes over three PRs found nothing in
+  the containment check itself; every defect was a seam — a reason collapsed
+  into a label, a surface still saying "found none", a mutation that never
+  reached disk. The primitive is the easy part.
 - **A fixture that exercises nothing passes the assertion anyway.** Twice in
   one review. A test written to prove the overflow-recovery arm re-folds the
   date compacted nothing at all — five messages, and `worth_compacting`
