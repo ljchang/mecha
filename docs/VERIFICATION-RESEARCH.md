@@ -1,5 +1,16 @@
 # Planning, verification, and long-horizon loops: what holds up
 
+> **Addendum, 2026-09-18: the scope in the second pass was built, and
+> released as v0.1.21.** `grounding.rs` (#244), front-door dates grounded at
+> `Record::for_privileged_run` (#245), and the mail classifier's
+> `deadline_quote` checked in `classify_with` (#246) — see `HISTORY.md`,
+> 2026-09-18. Of the second pass's implications: 8 (a blocking end-of-run
+> gate) and 9 (the reporting rule made structural) remain unbuilt, and 10 (an
+> adversarial *pair* rather than a critic) is deliberately not started while
+> the gossip exchange's namesake defect is open. The 2026-09-18 scope section
+> below is the record of what was decided; `HANDOFF.md`'s mail section names
+> what #246 leaves open, starting with the one thing nobody has measured.
+
 Research pass, 2026-08-04, prompted by the question "what verification loops do
 we have, and would ralph loops help long-horizon jobs?"
 
