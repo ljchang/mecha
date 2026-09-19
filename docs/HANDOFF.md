@@ -22,6 +22,32 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-18 — the grounding arc merged and released as v0.1.21; what is left
+is a measurement and a ruling.** #244 (`569d4952`) is `grounding.rs`: one walk
+for what a run actually received (first seen wins; compaction's `[stale:`
+marker is never evidence; every call listed with `result: Option`) and a
+dereference (`admit`) that names what it refuses; gossip's citation check, the
+outbox's source join and the diagnostician's carry-over refusal now share it,
+and nothing enters the registry — a check the model may decline to call is not
+a check. #245 (`d6fc8268`) hands a triage run only the front-door dates that
+are literally in the stranger's prose, floor 3 / ceiling 48, the rest shown to
+a person with the reason each was refused; the Slack card inherited the rule
+because it is built from the same brief. #246 (`ddd302f4`) asks the mail
+classifier for the words a deadline comes from, drops a deadline whose words
+are not in the message at classification (the store keeps no body), records
+`deadline_refused` with a closed-enum reason, and says "dropped" — never
+"found none" — in `mail list`, `show`, the sweep and `mail task`. Eight review
+passes across the three; the defects were at seams, not in the check
+(HISTORY, *Review process*). `docs/VERIFICATION-RESEARCH.md`'s second pass is
+the survey that led here. Released as `a5275980` and deployed the same
+evening (dated machine state below) — **except `mecha-voice-worker`**, which
+waits on the owner switching the shared checkout off PR #243's branch (worker
+bytes measured identical to `main`). **Unmeasured, and deciding whether either
+new label is ever read:** how often the local model quotes verbatim rather
+than paraphrasing; the mail section under *What to do next* says what to read
+first. Workspace: 2,781 passed, 0 failed, 3 ignored (2026-09-18, without
+required backends); eval 36 cases / 15 tags.
+
 **2026-09-14 — two voice arcs merged and deployed; the next drive is the
 measurement.** #228 (`d4b56e00`): the spoken outbox confirmation takes a
 *composed* answer ("go ahead and send it"), re-asks a dropped question once,
@@ -362,9 +388,10 @@ audit confirms graceful serve shutdown, awaited MCP teardown and typed/steered
 input broadcasts are implemented on main, with evidence in `HISTORY.md`.
 
 Public at **github.com/ljchang/mecha**, MIT licensed. The latest published
-release is **v0.1.19**, published and installed 2026-09-09 from `ef283174`.
-The dated v0.1.18 installation record above describes the previous update;
-the current deployment is the v0.1.19 entry at the top of this document.
+release is **v0.1.21**, published and installed 2026-09-18 from `a5275980`
+(v0.1.20 was `eab6773f`, 2026-09-11). The dated v0.1.19 installation record
+above describes an earlier update; the current deployment is the 2026-09-18
+entry under *Machine state, dated* below.
 
 **Reading the earlier orientation below:** these entries describe their dated
 work sessions. Their release, installation, service and test-count statements
@@ -2482,6 +2509,51 @@ checkout was returned to `main` afterwards and is clean.
   what it tests; PR #239 named it `HANG_GUARD` and raised it, and landed on
   `main` 2026-09-16.
 
+**2026-09-18, ~19:45–19:55Z, mecha-5a: the grounding arc (#244 `569d4952`,
+#245 `d6fc8268`, #246 `ddd302f4`) released as v0.1.21 (`a5275980`) and
+deployed.** The release is a bump commit straight on `main` — `Cargo.toml`,
+`Cargo.lock` (8 lines), `CHANGELOG.md` with the `[0.1.21]` section written
+for every arc since v0.1.20 and both link definitions — and an annotated tag
+with the same subject; the workflow's own gates were run here first (fmt,
+`RUSTFLAGS=-D warnings` clippy, `cargo test --workspace` **2,781 passed, zero
+failed, three ignored**, web 12/12). Workflow run `35387610882`: `crates` and
+`github-release` both `success`; crates.io answers 0.1.21 for `mecha-core`,
+`mecha-cli`, `mecha-mail`, `mecha-slack`; the GitHub release published
+19:50:40Z. **Installed**: `cargo install --path mecha-cli` and `mecha-mail`
+from the release commit in a detached worktree, each confirmed by cargo's own
+*Replaced package … v0.1.20 with … v0.1.21* line; `mecha --version` 0.1.21;
+probed by literals the range added — `strings ~/.cargo/bin/mecha | grep -c
+'the words given for it are too long to be a date'` → 4 (#246) and `grep -c
+'longer than a date anyone wrote'` → 1 (#245); not probed before the install,
+so read as present, not as a delta. **Restarted** `mecha-slack`,
+`mecha-triggers`, `mecha-drain`, `mecha-serve` at 19:51:49Z, each verified by
+its own startup line in a journal window opened at the restart (slack
+"Connected to cosanlab as mecha. 1 owner(s), 16 thread(s)", triggers "1
+trigger(s), 1 enabled · ticking every minute", serve both doors; drain execs
+the `mecha-drain-follow` wrapper around `factory-publish`, active, 0
+restarts) and every `mecha` process on the new inode. **Untouched, each
+checked rather than assumed**: web dist (built from `main` → `index-CJis576y.js`,
+already the served bundle; `voice-uplink-transform.js` 1958 bytes both
+sides); graph (repo `main` = installed `940c806`, `cargo build --release`
+found nothing to rebuild — **not fetched**, a worktree-isolated session cannot
+run git in that repo); factory client 0.2.9 = droplet `factory 0.2.9`, active,
+read-only; sandbox and host cargo both 1.97.1; stale-process sweep over
+`/proc/*/exe` found none. **Benchmark binary rebuilt**: `detached@a5275980`
+(clean, no suffix), sha `cc4876fb…`, reports `mecha 0.1.21`, statically
+linked, installed with its `.source` at the shared checkout's
+`target-musl/release/`. **`mecha-voice-worker` deliberately not restarted**:
+the shared checkout is on `mail/resolve-time-at-the-tool-boundary` — PR
+#243's branch, open — read from `.git/HEAD` as a file, and the switch is the
+owner's (the 2026-09-03 recipe above; this worktree was detached so its
+"no linked worktree on `main`" check passes). `git diff --quiet origin/main
+origin/mail/resolve-time-at-the-tool-boundary -- scripts/voice/worker.py
+scripts/voice/parakeet_server.py scripts/start-moe-mtp.sh` is silent, so the
+running worker and the one a restart would launch are the same bytes; nothing
+is urgent, and the restart still belongs after the switch. The graph MCP
+children under `mecha serve` and `mecha slack` respawned with them; two under
+Claude sessions still hold the previous — unchanged — `mecha-graph-mcp`
+inode, theirs to restart.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -4384,6 +4456,28 @@ is true now:
   Both are `mecha-mail`'s surface, not `mecha-core`'s, which is why they
   were deliberately left out of #238 rather than folded in.
 
+- **The grounding arc's owed minors** — the last review pass of #245 and of
+  #246, none at the fix-and-push bar, each verified against the tree before
+  being left: `tui/mail.rs`'s meta-prefix list does not know `mail show`'s
+  new `due:` / `dropped:` header lines, so the one line that prints a
+  sender-authored span renders in body style; the ⚠ block in
+  `tui/frontdoor.rs` pushes a `Line` without `.lines()`, so a `QuoteTooLong`
+  entry carrying a newline renders a control glyph; `grounding::admit`'s
+  rustdoc does not state its zero-floor case (the body comment and
+  `carries_over`'s doc do); `Refusal::QuoteTooLong`'s doc closes by
+  overstating what a 48-character ceiling buys — `dates_mentioned` has no
+  count cap, so it is a 48×N verbatim channel, strictly narrower than
+  before and not closed; the over-long span is stored unbounded in
+  `DeadlineRefused.quote` when the reason is `QuoteTooLong` (the variant
+  itself is fieldless — `DeadlineRefused` and `DeadlineRefusal` differ by
+  one letter throughout this subsystem) and printed whole by `mail show`; `mecha
+  mail correct --deadline none` prints "nothing changed" after it has
+  settled a refusal, because `Store::correct` returns `Ok(Some(vec![]))`
+  whether or not it wrote; and `gossip.rs`'s `set_cache_contended` comment
+  still justifies itself with `-np 1`, which `scripts/start-moe-mtp.sh`
+  replaced with `-np 4` on 2026-08-20 (the call is still right, the reason
+  written down is not).
+
 - **Rule on the `ask_user` decline wording** (measured 2026-08-30,
   deliberately unadopted — the source is restored to control). A/B, 5 runs x
   3 ambiguity cases per arm: dropping "If the task can be done without it,
@@ -4467,13 +4561,25 @@ is true now:
   filtering: no `seccomp` anywhere in `mecha-core/src/`. Also note this box
   stays on docker for `shell` anyway — docker's `network = false` earns the
   interlock relaxation that Landlock, honestly, cannot.
-- **Automatic in-run convergence remains open.** `Workflow::check_evidence`
+- **Automatic in-run convergence remains open — and the sound half of
+  "verification" shipped as something else.** `Workflow::check_evidence`
   and `WorkflowStore::verify` now check explicit artifact content and confirmed
   delivery; Today rereads evidence and owner closure verifies again. These are
   workflow checks outside the agent loop. Declared `TodoItem::check` commands
   now execute on step completion through the normal tool policy and sandbox
-  path in `Agent::run`; failed checks reopen the step. What remains open is
-  a general task-level postcondition that gates acceptance of a model stop.
+  path in `Agent::run`; failed checks reopen the step. Since 2026-09-18
+  `grounding` (HISTORY, same date) checks a model's *claims* referentially —
+  does the cited span exist in what the run received — at the front door and
+  in mail triage, which is the half of the literature that survives
+  (`docs/VERIFICATION-RESEARCH.md`, second pass): a critic is refuted as a
+  judge of quality and sound as a resolver of references. What remains open
+  is a general task-level postcondition that gates acceptance of a model
+  stop: `hooks::Event` is `PreTool | PostTool | SessionEnd` and only
+  `pre_tool` can deny, so **nothing can refuse to let a run end** — the
+  `Stop`-with-exit-2 every surveyed harness has. If a ralph-style loop is
+  ever built, that gate is where its convergence test (a command's exit code,
+  never a judge) has to live, and `step::CheckRequest` is reachable only from
+  `todo.rs`, so a run that never plans cannot declare a check.
   `ArtifactCase::criterion_feedback` observes a bound fixture after the run;
   it does not turn final completion into an enforced convergence loop.
 
@@ -4601,6 +4707,41 @@ commits that name them by number (`3547cb1` … `a34a1c2`). The arc is in
 
 `mecha mail score` (`commands/mail.rs:488`) grades the *live* store, which is a
 different question from `eval`'s corpus and is deliberately a separate verb.
+
+**What #246 (2026-09-18) leaves open**, beside the deadline check it added
+(`ground_deadline`, `Verdict::deadline_quote`, `Verdict::deadline_refused` —
+HISTORY, same date):
+
+1. **A ruling that is the owner's**: whether `Record::for_privileged_run`
+   should carry a typed "a deadline was claimed and dropped" — `reason` only,
+   no date and no words — instead of plain `null`. As merged, a triage run
+   reads "no due date" on precisely the threads that had one; the reason is a
+   closed harness-authored enum, which is the argument that let the eval
+   artefact carry it, but the choice widens what crosses the boundary and was
+   deliberately not made from a review pass.
+2. **`needs_body` does not escalate on a `QuoteNotInMessage` refusal**,
+   though a snippet-first pass may refuse a quote the full body contains.
+   Worth adding once the rate below is known, not before.
+3. The web mail *list* shows no refusal: `serve/mail.rs`'s `Row` carries
+   `deadline` and nothing about a dropped one, so a dropped deadline reads
+   as no deadline — item 1's shape, one surface over. Both *thread* views
+   already show it, because `serve/mail.rs::read` and the TUI's
+   `spawn_mail_read` each render `mecha mail show`, which prints `dropped:`
+   (found on review: an earlier draft of this item named both thread views
+   as the gap, which would have sent a session to build a display that
+   exists).
+4. **The unmeasured rate that decides whether the label is ever read**: how
+   often the local model quotes verbatim rather than paraphrasing is how
+   often an *honest* deadline is dropped, and a label that mostly fires on
+   honest cases stops being read — the failure `reads_like_instructions` was
+   designed around. Read the first real sweep's `dropped due` lines
+   (`MECHA_SESSION_KIND=test`) before touching `DEADLINE_QUOTE_MIN_CHARS` or
+   the prompt. A second cause looks identical in the `QuoteNotInMessage`
+   count — a quote spanning a hard line-wrap, since `admit` is literal — and
+   the cheap discriminator is a second `admit` against the body with
+   whitespace collapsed, counted separately: a quote that matches only after
+   collapsing is a wrap, not a paraphrase. Tuning a floor against a conflated
+   counter is how it gets set for the wrong mechanism.
 
 **Two decisions recorded rather than left open**: tags are mecha's own and never
 provider labels, and no mail parser belongs in mecha — the graph already ingests
