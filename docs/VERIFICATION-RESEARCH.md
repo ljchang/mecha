@@ -5,9 +5,11 @@
 > `Record::for_privileged_run` (#245), and the mail classifier's
 > `deadline_quote` checked in `classify_with` (#246) — see `HISTORY.md`,
 > 2026-09-18. Of the second pass's implications: 8 (a blocking end-of-run
-> gate) and 9 (the reporting rule made structural) remain unbuilt, and 10 (an
-> adversarial *pair* rather than a critic) is deliberately not started while
-> the gossip exchange's namesake defect is open. The 2026-09-18 scope section
+> gate), 9 (the reporting rule made structural) and 11 (`CheckRequest`
+> reachable from somewhere other than `todo.rs`, so a run that never plans
+> can declare a check) remain unbuilt, and 10 (an adversarial *pair* rather
+> than a critic) is deliberately not started while the gossip exchange's
+> namesake defect is open. The 2026-09-18 scope section
 > below is the record of what was decided; `HANDOFF.md`'s mail section names
 > what #246 leaves open, starting with the one thing nobody has measured.
 

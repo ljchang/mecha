@@ -4720,8 +4720,14 @@ HISTORY, same date):
 2. **`needs_body` does not escalate on a `QuoteNotInMessage` refusal**,
    though a snippet-first pass may refuse a quote the full body contains.
    Worth adding once the rate below is known, not before.
-3. The web mail surface (`serve/mail.rs`) and the TUI mail modal read
-   `for_privileged_run`'s JSON and show no refusal.
+3. The web mail *list* shows no refusal: `serve/mail.rs`'s `Row` carries
+   `deadline` and nothing about a dropped one, so a dropped deadline reads
+   as no deadline — item 1's shape, one surface over. Both *thread* views
+   already show it, because `serve/mail.rs::read` and the TUI's
+   `spawn_mail_read` each render `mecha mail show`, which prints `dropped:`
+   (found on review: an earlier draft of this item named both thread views
+   as the gap, which would have sent a session to build a display that
+   exists).
 4. **The unmeasured rate that decides whether the label is ever read**: how
    often the local model quotes verbatim rather than paraphrasing is how
    often an *honest* deadline is dropped, and a label that mostly fires on
