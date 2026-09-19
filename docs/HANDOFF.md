@@ -4467,8 +4467,10 @@ is true now:
   `carries_over`'s doc do); `Refusal::QuoteTooLong`'s doc closes by
   overstating what a 48-character ceiling buys — `dates_mentioned` has no
   count cap, so it is a 48×N verbatim channel, strictly narrower than
-  before and not closed; the over-long span is stored unbounded on
-  `DeadlineRefusal::QuoteTooLong` and printed whole by `mail show`; `mecha
+  before and not closed; the over-long span is stored unbounded in
+  `DeadlineRefused.quote` when the reason is `QuoteTooLong` (the variant
+  itself is fieldless — `DeadlineRefused` and `DeadlineRefusal` differ by
+  one letter throughout this subsystem) and printed whole by `mail show`; `mecha
   mail correct --deadline none` prints "nothing changed" after it has
   settled a refusal, because `Store::correct` returns `Ok(Some(vec![]))`
   whether or not it wrote; and `gossip.rs`'s `set_cache_contended` comment
