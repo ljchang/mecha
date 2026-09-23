@@ -1859,7 +1859,7 @@ impl Arm {
         }
         Ok(Lever::ALL
             .into_iter()
-            .filter(|l| on.contains(l) && config_switch(*l))
+            .filter(|l| on.contains(l) && config_switch(*l).is_some())
             .collect())
     }
 
@@ -1883,22 +1883,23 @@ impl Arm {
     }
 }
 
-/// Whether a lever's off position can live in the operator's config, so
-/// that turning it on is an act rather than an absence of a flag. The same
-/// set `child_invocation` writes into the trial home's config.
-fn config_switch(lever: Lever) -> bool {
-    // Exhaustive rather than `matches!`: a new lever must be classified
-    // here or the build fails. Defaulting to "not forced" is the defect
-    // `resolve_forced_on` exists for, recurring.
+/// The config field a lever's off position can live in, when it has one:
+/// turning such a lever on is an act (the operator's `false` must be
+/// overwritten), not the absence of a flag. The one list `resolve_forced_on`
+/// filters by and `child_invocation` writes through, so the two cannot
+/// disagree — and exhaustive, so a new lever fails the build until it is
+/// classified. Defaulting to "not forced" is the defect `resolve_forced_on`
+/// exists for, recurring.
+fn config_switch(lever: Lever) -> Option<fn(&mut crate::config::Config) -> &mut bool> {
     match lever {
-        Lever::StepChecks
-        | Lever::GoalGuidance
-        | Lever::StepEscalation
-        | Lever::Boredom
-        | Lever::CompactValidate
-        | Lever::PredictiveCompaction
-        | Lever::CarriedState
-        | Lever::Messages => true,
+        Lever::StepChecks => Some(|c| &mut c.agent.step_checks),
+        Lever::GoalGuidance => Some(|c| &mut c.agent.goal_guidance),
+        Lever::StepEscalation => Some(|c| &mut c.agent.step_escalation),
+        Lever::Boredom => Some(|c| &mut c.agent.boredom),
+        Lever::CompactValidate => Some(|c| &mut c.agent.compact_validate),
+        Lever::PredictiveCompaction => Some(|c| &mut c.agent.predictive_compaction),
+        Lever::CarriedState => Some(|c| &mut c.agent.carried_state),
+        Lever::Messages => Some(|c| &mut c.messages.enabled),
         Lever::Mcp
         | Lever::LearnedRules
         | Lever::Hooks
@@ -1907,7 +1908,7 @@ fn config_switch(lever: Lever) -> bool {
         | Lever::Skills
         | Lever::Charter
         | Lever::CompactTool
-        | Lever::ApprovalRules => false,
+        | Lever::ApprovalRules => None,
     }
 }
 
@@ -2052,8 +2053,12 @@ pub fn condition_hash_world(
         canonical.push_str(&names.join(","));
     }
     // A switch forced on against the operator's config is a condition the
-    // off-list cannot show. Appended only when there is one, so every
-    // earlier hash keeps its value.
+    // off-list cannot show. Appended only when there is one, so a row with
+    // no forced switch keeps its earlier hash. A row naming `step_checks`
+    // or `goal_guidance` on was already forced before the term existed and
+    // rehashes with nothing changed in what it runs; a resumed experiment
+    // keys rows on trial id (`Store::plan`), so its finished rows keep the
+    // old value beside new ones.
     if !forced_on.is_empty() {
         canonical.push_str("|forced_on=");
         canonical.push_str(
@@ -2866,16 +2871,8 @@ pub fn child_invocation(
     // switches still inherit. Every config switch, not a hand-picked two:
     // `step_escalation` named on once ran as the control.
     for lever in arm.resolve_forced_on()? {
-        match lever {
-            Lever::StepChecks => config.agent.step_checks = true,
-            Lever::GoalGuidance => config.agent.goal_guidance = true,
-            Lever::StepEscalation => config.agent.step_escalation = true,
-            Lever::Boredom => config.agent.boredom = true,
-            Lever::CompactValidate => config.agent.compact_validate = true,
-            Lever::PredictiveCompaction => config.agent.predictive_compaction = true,
-            Lever::CarriedState => config.agent.carried_state = true,
-            Lever::Messages => config.messages.enabled = true,
-            other => unreachable!("{} is not a config switch", other.as_str()),
+        if let Some(field) = config_switch(lever) {
+            *field(&mut config) = true;
         }
     }
     let mut flags = Vec::new();
