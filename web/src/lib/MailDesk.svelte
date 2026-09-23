@@ -132,8 +132,15 @@
       const now = Date.now();
       for (const [k, d] of done) {
         // The queue load says nothing about plain-inbox threads, which the
-        // store may never have seen; `loadInbox` owns those.
-        if (d.inbox) continue;
+        // store may never have seen — `loadInbox` owns whether they are gone.
+        // The grace window is still enforced here, because `loadInbox` only
+        // runs while that lane is open, and an entry nobody prunes hides its
+        // row in every lane for good (a thread parked from the inbox moves
+        // to Parked, and `mail recent` keeps listing it).
+        if (d.inbox) {
+          if (now - d.at > DONE_GRACE_MS) done.delete(k);
+          continue;
+        }
         const r = byKey.get(k);
         if (!r || r.state !== d.state || now - d.at > DONE_GRACE_MS) done.delete(k);
       }
