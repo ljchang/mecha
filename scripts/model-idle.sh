@@ -33,10 +33,12 @@
 # or unreadable `nvidia-smi` does NOT decline: a box without a usable GPU
 # query should still sort its mail, as the nightly's own check fails open.
 #
-# **Two skips are believed transient, and are only allowed to stay so.** A
-# timeout and a 503 ("loading model") are what a busy or restarting server
-# looks like — and also what a server that can never finish loading, or a
-# black-holed port, looks like forever. Persistence is what tells them
+# **Three skips are believed transient, and are only allowed to stay so.**
+# A timeout, a 503 ("loading model") and a refused connection are what a
+# busy or restarting server looks like — the port is closed for a moment
+# while it restarts, then answers 503 while it loads — and also what a server
+# that is gone, can never finish loading, or sits behind a black-holed port
+# looks like forever. Persistence is what tells them
 # apart, so consecutive skips of that kind are counted in a state file, and
 # after MECHA_IDLE_STUCK_MAX of them in a row (default 9: three hours of
 # ticks) the check fails instead. Any answer that proves the server alive —
@@ -55,7 +57,12 @@ stuck_skip() {
     n="$(cat "$STUCK_FILE" 2>/dev/null)"
     [ "$n" -eq "$n" ] 2>/dev/null || n=0
     n=$((n + 1))
-    mkdir -p "$(dirname "$STUCK_FILE")" && printf '%s\n' "$n" >"$STUCK_FILE"
+    # A count that cannot be kept can never escalate, which would turn "loud
+    # after three hours" into "quiet forever" — so that is a failure too.
+    if ! { mkdir -p "$(dirname "$STUCK_FILE")" && printf '%s\n' "$n" >"$STUCK_FILE"; } 2>/dev/null; then
+        echo "model-idle: $1, and the skip count cannot be saved to $STUCK_FILE — failing so mecha doctor sees it"
+        exit 255
+    fi
     if [ "$n" -ge "$STUCK_MAX" ]; then
         echo "model-idle: $1 for $n ticks in a row — failing so mecha doctor sees it"
         exit 255
@@ -71,16 +78,20 @@ reply="$(curl -s -m 5 -w '\n%{http_code}' "$SLOTS_URL")"
 rc=$?
 code="${reply##*$'\n'}"
 slots="${reply%$'\n'*}"
-# "Not now" — skip, and the next tick asks again:
+# "Not now" — skip, counted, and the next tick asks again:
 #   curl 28, a timeout: something is listening but too busy to answer in 5 s
 #     (a long prefill does that), which is the busiest the model gets;
-#   HTTP 503: llama-server is still loading the model, which it does after
-#     every restart — failing here would leave a false alarm in `mecha doctor`
-#     each time the server is bounced.
-# Anything else — refused, reset, 501 (`--no-slots`), any other status — is a
-# server that is not there to ask, and fails loudly as above.
+#   curl 7, refused: nothing is bound to the port, which is what a restart
+#     looks like before the server has opened it;
+#   HTTP 503: llama-server is still loading the model after a restart.
+# Failing on any of these would leave a false alarm in `mecha doctor` each
+# time the server is bounced; the count makes a lasting one loud.
+# Anything else — a reset, 501 (`--no-slots`), any other status — is a server
+# that is there and answering wrongly, and fails at once.
 if [ "$rc" -eq 28 ]; then
     stuck_skip "$SLOTS_URL too busy to answer"
+elif [ "$rc" -eq 7 ]; then
+    stuck_skip "nothing listening at $SLOTS_URL"
 elif [ "$rc" -ne 0 ]; then
     echo "model-idle: no answer from $SLOTS_URL (curl $rc) — failing so mecha doctor sees it"
     exit 255

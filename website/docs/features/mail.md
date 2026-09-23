@@ -588,12 +588,14 @@ and loses only a promotion there would be nothing behind.
 Two timers, one sweep. `scripts/mecha-mail-classify.{service,timer}` sweeps at
 05:30 UTC as the after-hours catch-up;
 `scripts/mecha-mail-classify-day.{service,timer}` sweeps every 20 minutes
-through the working day (07:30–21:50 in the owner's zone), so a thread is
-sorted within about half an hour of arriving:
+through the working day (07:30–21:50), so a thread is sorted within about half
+an hour of arriving. The daytime timer names its zone (`America/New_York`) so
+the window follows daylight saving; set the zone on its two `OnCalendar=` lines
+to your own before installing:
 
 ```bash
 cp scripts/mecha-mail-classify.{service,timer} ~/.config/systemd/user/
-install -m 755 scripts/model-idle.sh ~/.local/bin/mecha-model-idle
+install -D -m 755 scripts/model-idle.sh ~/.local/bin/mecha-model-idle
 cp scripts/mecha-mail-classify-day.{service,timer} ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now mecha-mail-classify.timer mecha-mail-classify-day.timer
