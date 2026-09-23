@@ -1,0 +1,42 @@
+# The default experiment environment (mecha-core/src/trial_env.rs): the world
+# a trial home is built from when a manifest names no [environment]. It is a
+# synthetic lab: Ada Okafor's, the cast of eval/fixtures/home, with no real
+# person in it.
+#
+# This file is the *harness*. Machine facts (providers, sandbox, security,
+# approval rules, search) come from the operator's own config and may not
+# appear here; `mecha exp` refuses the file if they do. Relative paths are
+# resolved against the checkout `mecha exp` runs from.
+
+[agent]
+system_prompt_file = "prompts/agent.md"
+max_turns = 12
+# Above the local server's --reasoning-budget (4096), or a reply is empty.
+max_tokens = 8192
+timezone = "America/New_York"
+
+# The real knowledge graph server, every tool, on this trial's own database:
+# `${STORE}` is <trial home>/stores/graph, built once per experiment from
+# stores/graph/ (its own config.toml) and stores/graph.calls.jsonl. Never the
+# operator's graph, and never the operator's graph config.
+[[mcp]]
+name = "graph"
+command = "mecha-graph-mcp"
+prefix_tools = false
+env = { MECHA_GRAPH_DB = "${STORE}/graph.db", MECHA_GRAPH_CONFIG = "${STORE}/config.toml" }
+[mcp.capabilities]
+untrusted_input = true
+
+# Mail and calendar: the fixture server, since a real account has no private
+# copy. Every send is a line in its sent.jsonl and nothing is delivered; the
+# outbox stages the two sends as drafts, as on the operator's machine.
+[[mcp]]
+name = "mail"
+command = "python3"
+args = ["eval/fixtures/mail_server.py"]
+env = { MECHA_FIXTURE_DIR = "${STORE}" }
+[mcp.capabilities]
+untrusted_input = true
+
+[outbox]
+tools = ["mail__mail_send", "mail__mail_reply"]

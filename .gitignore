@@ -8,6 +8,9 @@
 /.mecha/
 *.jsonl
 !eval/*.jsonl
+# An experiment environment's server seed (stores/<name>.calls.jsonl) is
+# authored data, like a case file.
+!eval/envs/**/*.jsonl
 jobs/
 
 # Credentials. Nothing here has ever been committed and nothing should be: the
