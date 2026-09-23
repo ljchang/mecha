@@ -593,14 +593,15 @@ async fn drive_single(
         .find(|c| c.id == trial.task)
         .expect("planned from these cases");
     let arm = &manifest.arms[&trial.arm];
-    let outcome = async {
-        let seed_from = manifest
-            .environment
-            .dir(&std::env::current_dir().context("cannot determine the working directory")?);
-        let home = store.arm_home(&trial.arm, &seed_from)?;
-        run_one(store, manifest, mecha, real, arm, case, &home, &mut trial).await
-    }
-    .await;
+    // The arm's home is the environment's, not the row's: a home refused or
+    // unwritable is the driver's error — start no more, drain, and leave
+    // this row pending for a later `run` — never a terminal `failed` that
+    // would drop the cell from the design (found on review).
+    let seed_from = manifest
+        .environment
+        .dir(&std::env::current_dir().context("cannot determine the working directory")?);
+    let home = store.arm_home(&trial.arm, &seed_from)?;
+    let outcome = run_one(store, manifest, mecha, real, arm, case, &home, &mut trial).await;
     if let Err(e) = outcome {
         trial.status = TrialStatus::Failed;
         trial.error = Some(format!("{e:#}"));

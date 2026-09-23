@@ -227,10 +227,11 @@ pub fn refuse_operator_home(dir: &Path, real: &Path) -> Result<()> {
             dir.display()
         )
     })?;
-    // A home that cannot be canonicalized (not created yet) still has a
-    // lexical form, and is compared by it: a guard that cannot resolve its
-    // other operand must not wave everything through (found on review).
-    let real = real.canonicalize().unwrap_or_else(|_| lexical(real));
+    // A home not created yet is resolved as far as it exists: absolute,
+    // its nearest existing ancestor canonical, the rest appended. Compared
+    // as written it waved everything through when relative, and missed a
+    // symlinked ancestor (macOS's /var → /private/var) (found on review).
+    let real = resolve_existing_prefix(real)?;
     anyhow::ensure!(
         !env.starts_with(&real) && !real.starts_with(&env),
         "the experiment environment {} is, contains or lies inside your mecha home {} — an \
@@ -241,19 +242,45 @@ pub fn refuse_operator_home(dir: &Path, real: &Path) -> Result<()> {
     Ok(())
 }
 
-/// `.` and `..` resolved by hand, for a path that may not exist.
-fn lexical(p: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for c in p.components() {
+/// A path in the form `canonicalize` would give, for a path that may not
+/// exist yet: made absolute, `.`/`..` resolved, the longest existing prefix
+/// canonicalized (through any symlink) and the remainder appended.
+fn resolve_existing_prefix(p: &Path) -> Result<PathBuf> {
+    let absolute = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("cannot determine the working directory")?
+            .join(p)
+    };
+    let mut lexical = PathBuf::new();
+    for c in absolute.components() {
         match c {
             std::path::Component::ParentDir => {
-                out.pop();
+                lexical.pop();
             }
             std::path::Component::CurDir => {}
-            other => out.push(other.as_os_str()),
+            other => lexical.push(other.as_os_str()),
         }
     }
-    out
+    let mut existing = lexical.as_path();
+    let mut rest = Vec::new();
+    loop {
+        if let Ok(canonical) = existing.canonicalize() {
+            let mut out = canonical;
+            for part in rest.iter().rev() {
+                out.push(part);
+            }
+            return Ok(out);
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                existing = parent;
+            }
+            _ => return Ok(lexical),
+        }
+    }
 }
 
 fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()> {
@@ -636,6 +663,21 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
         assert!(refuse_operator_home(&tmp.path().join("home"), &unborn).is_ok());
         std::fs::create_dir_all(tmp.path().join("fresh")).unwrap();
         assert!(refuse_operator_home(&tmp.path().join("fresh"), &unborn).is_err());
+        // Through a symlinked ancestor, as macOS's temp directory is.
+        let linked = tmp.path().join("linked");
+        std::os::unix::fs::symlink(tmp.path().join("fresh"), &linked).unwrap();
+        assert!(refuse_operator_home(&tmp.path().join("fresh"), &linked.join(".mecha")).is_err());
+    }
+
+    /// A relative path that does not exist yet resolves against the working
+    /// directory, and a missing tail keeps its components.
+    #[test]
+    fn a_missing_path_resolves_as_far_as_it_exists() {
+        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        assert_eq!(
+            resolve_existing_prefix(Path::new("no-such-dir/x/../y")).unwrap(),
+            cwd.join("no-such-dir/y")
+        );
     }
 
     /// A server's name is a store directory and a `remove_dir_all` target:
