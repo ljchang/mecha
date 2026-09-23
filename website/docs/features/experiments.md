@@ -17,8 +17,9 @@ its own A/B flags are two-arm manifests waiting to be written as such.
 
 ## Quickstart
 
-Two arms, one task, one seed: your harness as it stands against the same
-harness without its learned rules. Run it from the checkout root, since
+Two arms, one task, one seed: the harness as the default
+[environment](#environments) configures it, against the same harness without
+learned rules. Nothing a trial does reaches your own graph, mail or rules. Run it from the checkout root, since
 relative paths in a manifest resolve against the directory you run `mecha exp`
 from.
 
@@ -194,8 +195,83 @@ arm moves that knob, because the arm is the treatment.
 **Stage levers** apply to [lifetimes](#lifetimes) only: `reflect`, `learn`,
 `validate`, `retire`, `ruminate`, `sensors_in_brief`, named in `stages_off`.
 
-**The world** is the manifest's `[fixtures]` and `[tasks]` rather than any
-one arm's. It is the same for every arm, and it is part of the hash too.
+**The world** is the manifest's [environment](#environments), `[fixtures]`
+and `[tasks]` rather than any one arm's. It is the same for every arm, and it
+is part of the hash too.
+
+## Environments
+
+A trial never runs in your home. Its home is built from an **environment**:
+a directory holding the harness configuration, the charter, the learning
+store and each server's starting data. A manifest names one, and with no
+`[environment]` table it runs in the repository's `eval/envs/default`.
+
+```toml
+[environment]
+dir = "eval/envs/my-lab"      # relative to the checkout
+live_servers = []             # your own [[mcp]] servers a trial may reach, by name
+```
+
+The directory's layout:
+
+| Path | What it is |
+|---|---|
+| `config.toml` | The harness: `[agent]`, `[tools]`, `[[mcp]]`, `[[hook]]`, `[outbox]`, skills, subagents. |
+| `charter.toml` | The charter each home starts with. |
+| `skills/`, `learning/` | The skills and learning store (rules, reflections) each home starts with. |
+| `stores/<server>/` | A server's starting files, copied into its store. |
+| `stores/<server>.calls.jsonl` | Calls replayed into the server's store, in order, once per experiment. |
+
+**Machine facts come from your config, never from an environment.** An
+environment's `config.toml` may not set `default_provider`, `[providers]`,
+`[sandbox]`, `[security]`, `[[rule]]`, `[approval]` or `[[search]]`, and
+`mecha exp` refuses the file if it does. Those tables describe this machine
+and your standing rules, so an environment cannot lift a `forbid` any more
+than an arm can.
+
+**Servers get their own data.** A server in the environment's config that
+writes `${STORE}` in an `env` value or an argument gets a store directory
+under the trial home, and `${STORE}` becomes its path. The default
+environment runs the real knowledge graph server this way, with every tool
+available, on the trial's own database:
+
+```toml
+[[mcp]]
+name = "graph"
+command = "mecha-graph-mcp"
+prefix_tools = false
+env = { MECHA_GRAPH_DB = "${STORE}/graph.db", MECHA_GRAPH_CONFIG = "${STORE}/config.toml" }
+```
+
+`mecha exp run` builds each store once per experiment, before the first
+trial. It copies `stores/<server>/`, then replays `stores/<server>.calls.jsonl`
+line by line. A line is either a call through the server's own tools,
+`{"tool": "kg_upsert", "arguments": {…}}`, or a command,
+`{"run": ["mecha-graph", "embed"]}`, which runs with the server's environment.
+Any call answered with an error, and any command that fails, stops the build
+rather than seeding part of a world. A `single` trial starts from the built
+store every time. A lifetime keeps what its tasks wrote.
+
+The graph's own `config.toml` (`stores/graph/config.toml` in the default
+environment) names the embedding model and its dimension, and nothing else.
+It has to match the embedding server this machine runs (`curl -s
+localhost:8081/props`), or search cannot run against the trial's graph.
+
+**The default environment** is a small synthetic lab, with Ada Okafor's
+fictional cast: a charter, a seeded knowledge graph (people, projects, a task
+board), and the fixture mail and calendar server with its outbox route. It
+turns off no feature, and it contains no real person. Copy it to start your
+own.
+
+**Your live servers are opt-in.** `live_servers = ["graph"]` would hand a
+trial your real graph, reads and writes. The names are part of the condition
+hash, so a live-world row never pairs with a sandboxed one. Leave the list
+empty unless the question is about your real world.
+
+The whole environment directory is part of every row's condition hash, by
+content. Editing a file between two runs makes a new condition, and its
+stores are built fresh beside the old ones. `[fixtures]` servers, when a
+manifest names any, replace the environment's servers entirely.
 
 ## Running
 
@@ -209,15 +285,15 @@ mecha exp export boredom > out.json
 
 Every trial is its own `mecha` process, started with `MECHA_HOME` pointing at
 its arm's home under the experiment directory and with the staged workspace
-as its working directory. That home's `config.toml` *is* the arm: your whole
-config with every inline provider key scrubbed (the environment variable the
-key names still reaches the child), your sandbox, security and approval rules
-intact, and the arm's switches and knobs applied — so nothing about an arm is
-ambient, and your `forbid` list still stands. Your learning store, skills and
-charter are copied into the arm's home once, when it is first created, so a
-`full` arm runs the harness as your machine has it; nothing is ever copied
-back. The child gets a clean environment with only what it needs, the runner
-refuses a home that is, or contains, your real one.
+as its working directory. That home's `config.toml` *is* the arm: the
+environment's harness, your machine facts (providers with every inline key
+scrubbed, since the environment variable the key names still reaches the
+child; your sandbox, security and approval rules), and the arm's switches
+and knobs applied. So nothing about an arm is ambient, and your `forbid`
+list still stands. The home's learning store, skills and charter come from
+the environment once, when the home is first created, and nothing is ever
+copied back. The child gets a clean environment with only what it needs, and
+the runner refuses a home that is, or contains, your real one.
 
 A trial's session is marked `experiment`. In your real store that kind is
 hidden from every readout, like a smoke test; in the trial home it is admitted,
@@ -364,8 +440,8 @@ and refusals come from the policy file it is given.
 
 Two of the principal's verbs reach a server — `outbox approve` executes the
 routed tool for real, and `tasks set` writes the board, which lives in the
-knowledge graph over MCP. A `full` arm carries your live servers into the
-trial home, so without more a release would send from your account and a
+knowledge graph over MCP. An environment can open your live servers
+(`live_servers`), and then a release would send from your account and a
 closure would close a real task. The driver therefore permits those two
 verbs **only under a manifest that names fixture servers**, and vets a
 release against the draft it names: the draft's tool must be a fixture

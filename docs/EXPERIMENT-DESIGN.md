@@ -1204,3 +1204,65 @@ and `security(pre, post)` on the persisted environment, which is the task
 source's `grade`. Cast rule: AgentDojo's cast is fictional by
 construction (Emma Johnson at Blue Sparrow Tech), so it passes the
 no-real-people rule as it is.
+
+---
+
+## 22. Environments — ruled and built 2026-09-23
+
+**The incident.** Trial homes were copies of the operator's: the config
+with keys scrubbed, and `learning/`, `skills/` and `charter.toml` copied from
+the real home. So every `[[mcp]]` server and `[[hook]]` rode in. A
+`session_end` hook ran `mecha distill` in each trial home against the home's
+`graph` server, which was the owner's live graph, and eleven synthetic
+sessions from a development smoke test landed there as episodes (redacted and
+tombstoned the same day). Any manifest without `[fixtures]` had the same
+shape, and a trial's model could also have written to the live graph
+through its own tools.
+
+**What the owner asked for.** Experiments keep the harness's full
+functionality, database reads and writes included, unless a lever turns
+something off. But they get **their own configuration, charter and graph
+database**, separate from the owner's.
+
+**The shape (`trial_env.rs`).** A manifest names an environment directory
+(`[environment] dir`), which holds the harness `config.toml`, `charter.toml`,
+`skills/`, `learning/` and `stores/`. A server that writes `${STORE}` gets
+its own store under the home, built once per experiment by copying
+`stores/<name>/` and replaying `stores/<name>.calls.jsonl` (tool calls and
+`run` commands) through the real server. Operator servers are opt-in by name
+(`live_servers`). The directory's content and the live names are a hash term.
+
+**Rulings, 2026-09-23** — each was the recommended option. Don't re-ask them.
+
+1. **A graph starts from the environment**: built by replaying the
+   environment's calls into a fresh database. It is not empty, and it is
+   not a snapshot of the owner's 291 MB graph. It is reproducible, and no
+   private data is copied.
+2. **With no `[environment]`, a manifest runs in a shipped default**
+   (`eval/envs/default`): a synthetic lab on `eval/fixtures/home`'s cast,
+   with the real graph server on its own database, the fixture mail server
+   and an outbox route. It is neither the owner's home with servers
+   removed, nor a refusal.
+3. **Config is the environment's plus the machine's facts.** Providers,
+   sandbox, security, approval rules and search come from the operator's
+   file, and an environment naming one is refused. The alternatives were
+   fully self-contained (every environment restating the model server) and
+   layered over the operator's (whatever the environment forgets to
+   override leaks in, which is how the incident happened).
+
+**Found building it.** A fresh `mecha-graph` database declares 768-dim
+vector tables, and only `mecha-graph embed` resizes them to the embedder's
+width. The graph also reads `$HOME/.mecha-graph/config.toml` unless
+`MECHA_GRAPH_CONFIG` says otherwise, and that file holds the owner's source
+tokens. So the default environment gives the graph server its own config
+(embedding settings only) and ends its seed with `{"run": ["mecha-graph",
+"embed"]}`. Without both, search against a trial graph failed on a
+dimension mismatch. `scripts/executable-validation.py` relied on homes
+seeding `learning/` from `MECHA_HOME`. It now writes its own environment
+(frozen `[agent]`, `[tools]` and rules; no servers, hooks or route) and
+points its manifest there.
+
+**Still open.** The principal's server verbs (`outbox approve`, `tasks
+set`) are still permitted only under `[fixtures]`. With an environment
+store, `tasks set` would write the trial's graph, so the gate could widen
+to "no live server is named". Nothing has widened it yet.

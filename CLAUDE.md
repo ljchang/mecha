@@ -210,6 +210,9 @@ eval.rs      case types, graders, the LLM judge
 experiment.rs a designed comparison over a chosen set of runs: the manifest
              written before the run, one trial per arm × task × seed, an
              isolated home per arm, and the gate over arm sets
+trial_env.rs the world a trial home is built from: the environment's harness,
+             charter and server stores, with the operator's machine facts —
+             never the operator's servers or hooks
 config.rs    layered TOML config
 onboarding.rs what a new install still needs, and the one command that fixes each;
              never writes down a number the user merely believes

@@ -4026,19 +4026,36 @@ comparison over a chosen set**, with the design written before the run.
   `appraisal_fixture` compares every other config field and flag.
 - **Isolation is the whole store** (D12). Every trial runs as a child
   `mecha run` with `MECHA_HOME` pointing at its arm's home under the
-  experiment directory, whose `config.toml` *is* the arm: the operator's
-  whole config with every inline provider key scrubbed (the variable
-  `api_key_env` names passes through), the trial's seed on the default
-  provider, and the arm's `[agent]` switches and knobs applied; the
-  CLI-only levers ride as `--no-*` flags. **The machine's posture
-  travels** — sandbox, security, the approval `[[rule]]`s, `[mcp]`,
-  `[[hook]]`, `[outbox]` — because an arm varies the closed set and nothing
-  else, and the first cut dropped the rules while running `--yes`, which
-  is the silently-degrading-guard shape the `approval_rules` refusal
-  exists to prevent (found on review). The stores a lever left on reads —
-  `learning/`, `skills/`, `charter.toml` — are seeded once into the arm's
-  home from the real one when it is first created, never written back, so
-  `full` means the harness as this machine had it. **Every store path
+  experiment directory, whose `config.toml` *is* the arm: the
+  **environment's** harness (`trial_env`), the operator's machine facts
+  with every inline provider key scrubbed (the variable `api_key_env`
+  names passes through), the trial's seed on the default provider, and
+  the arm's `[agent]` switches and knobs applied; the CLI-only levers ride
+  as `--no-*` flags. **The machine's posture travels, the operator's world
+  does not.** Sandbox, security, the approval `[[rule]]`s, `[approval]`,
+  providers and search come from the operator's file, and an environment
+  that names one is refused (`trial_env::MACHINE_TABLES`), because the
+  first cut dropped the rules while running `--yes` — the
+  silently-degrading-guard shape the `approval_rules` refusal exists to
+  prevent (found on review). `[[mcp]]`, `[[hook]]` and `[outbox]` come from
+  the environment and **never from the operator's file**. Until
+  2026-09-23 they did: trial homes copied the operator's config, a
+  `session_end` hook ran `mecha distill` inside each one, and the home's
+  `graph` server was the owner's live graph, so eleven synthetic sessions
+  landed in it before anyone noticed. An operator server now reaches a
+  trial only by name in `[environment] live_servers`, a term of the hash.
+  An environment server that writes `${STORE}` gets its own store under the
+  home, built once per experiment from `stores/<name>/` and
+  `stores/<name>.calls.jsonl` and copied in (every trial for a `single`,
+  once for a lifetime); the default environment runs the real
+  `mecha-graph-mcp` that way, on its own database *and its own graph
+  config*, since the graph otherwise reads `~/.mecha-graph/config.toml`,
+  which holds the owner's source tokens. The stores a lever left on reads —
+  `learning/`, `skills/`, `charter.toml` — are seeded once into the home
+  from the environment directory, never from the real home and never
+  written back. The environment directory's whole content is a term of
+  every row's hash (`Environment::digest`), and a manifest with no
+  `[environment]` runs in `eval/envs/default`. **Every store path
   in the rendered config is the home's**: an operator's `[outbox] dir`,
   skills or messages directory is cleared, or a trial's drafts would
   stage into the real outbox (found on review). The child's
