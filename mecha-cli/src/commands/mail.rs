@@ -744,6 +744,10 @@ async fn calendars(global: &GlobalOpts, account: Option<&str>, as_json: bool) ->
         Some(Ok(accounts)) => {
             for a in &accounts {
                 println!("{}", a["account"].as_str().unwrap_or(""));
+                if let Some(err) = a["error"].as_str() {
+                    println!("  could not be read: {err}");
+                    continue;
+                }
                 for c in a["calendars"].as_array().into_iter().flatten() {
                     let writable = c["can_edit"].as_bool().unwrap_or_else(|| {
                         matches!(c["access_role"].as_str(), Some("owner" | "writer"))
