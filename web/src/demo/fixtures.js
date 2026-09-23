@@ -225,41 +225,34 @@ export const mail = [
 ];
 
 export const mailInbox = [
+  // `mecha mail recent --json`'s rows, which `/api/mail/inbox` passes through:
+  // the plain inbox, untriaged, so no verdict fields.
   {
     thread_id: 'thr-8812',
     account: 'work',
-    from: 'Tomas Lindqvist',
+    from: 'Tomas Lindqvist <editor@jac.example.org>',
     subject: 'Review request — manuscript JAC-2291',
-    summary: 'Journal of Applied Cognition · 14:02',
-    needs_me: true,
-    urgency: 'soon',
-    state: 'triaged',
-    tags: [],
-    deadline: null,
+    snippet: 'Would you be willing to review the attached manuscript…',
+    date: '2026-08-28T14:02:00Z',
+    unread: true,
   },
   {
     thread_id: 'thr-8811',
     account: 'personal',
-    from: 'Fairhaven Library',
+    from: 'Fairhaven Library <holds@fairhaven-library.example.org>',
     subject: 'Your hold is ready for collection',
-    summary: 'Today · 13:41',
-    needs_me: false,
-    urgency: null,
-    state: 'triaged',
-    tags: [],
-    deadline: null,
+    snippet: 'A book you reserved is at the front desk until Friday.',
+    date: '2026-08-28T13:41:00Z',
+    unread: false,
   },
   {
     thread_id: 'thr-8809',
     account: 'work',
-    from: 'Hollis Barnett',
+    from: 'Hollis Barnett <hbarnett@fairhaven.example.edu>',
     subject: 'Ostrander Prize nominations close Monday',
-    summary: 'Today · 11:20',
-    needs_me: true,
-    urgency: 'soon',
-    state: 'triaged',
-    tags: [],
-    deadline: null,
+    snippet: 'One nomination letter per faculty member, by Monday.',
+    date: '2026-08-28T11:20:00Z',
+    unread: true,
   },
 ];
 

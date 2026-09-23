@@ -144,6 +144,7 @@ const row = (id) => ({ account: 'acct', thread_id: id });
   timers.fireAll();
   await settle();
   t('a sweep commits at most three at a time', peak === 3 && p.committingCount === 10);
+  t('a row stays hidden while its commit is in flight', ['0', '1', '2'].every((id) => p.hiddenKeys().has(keyOf(row(id)))));
   while (release.length) {
     release.shift()();
     await settle();
@@ -161,6 +162,43 @@ const row = (id) => ({ account: 'acct', thread_id: id });
   p.flush();
   await settle();
   t('flush commits every held action without waiting', sent.sort().join() === '1,2' && timers.pending() === 0);
+}
+
+{
+  // pagehide: everything starts at once, but only for that drain — a page
+  // restored from the back/forward cache keeps its bound.
+  const timers = fakeTimers();
+  let inFlight = 0;
+  let peak = 0;
+  const release = [];
+  const p = new PendingActions({
+    concurrency: 3,
+    timers,
+    commit: () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      return new Promise((r) => release.push(() => (inFlight--, r())));
+    },
+  });
+  p.add(Array.from({ length: 6 }, (_, i) => ({ row: row(`a${i}`), verb: 'archive' })), 'before');
+  p.flush({ now: true });
+  await settle();
+  t('flush on pagehide starts everything at once', peak === 6);
+  while (release.length) {
+    release.shift()();
+    await settle();
+    await settle();
+  }
+  peak = 0;
+  p.add(Array.from({ length: 6 }, (_, i) => ({ row: row(`b${i}`), verb: 'archive' })), 'after');
+  timers.fireAll();
+  await settle();
+  t('and the bound is back for the next batch', peak === 3);
+  while (release.length) {
+    release.shift()();
+    await settle();
+    await settle();
+  }
 }
 
 {

@@ -135,7 +135,7 @@ export class PendingActions {
     this.concurrency = concurrency;
     this.timers = timers;
     this.entries = []; // { id, items, timer, label }
-    this.inFlight = 0;
+    this.flight = new Set(); // items whose commit is outstanding
     this.queue = []; // items waiting for a commit slot
     this.nextId = 1;
   }
@@ -145,6 +145,9 @@ export class PendingActions {
     const keys = new Set();
     for (const e of this.entries) for (const it of e.items) keys.add(keyOf(it.row));
     for (const it of this.queue) keys.add(keyOf(it.row));
+    // In flight too: a commit is a CLI child that takes seconds, and a row
+    // that reappeared meanwhile could be acted on twice.
+    for (const it of this.flight) keys.add(keyOf(it.row));
     return keys;
   }
 
@@ -153,7 +156,7 @@ export class PendingActions {
   }
 
   get committingCount() {
-    return this.queue.length + this.inFlight;
+    return this.queue.length + this.flight.size;
   }
 
   /** Hold `items` as one undoable entry; returns its id. */
@@ -176,35 +179,39 @@ export class PendingActions {
 
   /**
    * Commit every held entry now — leaving the view must not drop them.
-   * `now` lifts the concurrency bound too: on `pagehide` there is no later
-   * turn in which a queued item would get its slot.
+   * `now` starts everything queued at once, because on `pagehide` there is no
+   * later turn in which a queued item would get its slot. It lifts the bound
+   * for this one drain only: `pagehide` also fires entering the back/forward
+   * cache, and a restored page must not keep an unbounded sweep.
    */
   flush({ now = false } = {}) {
-    if (now) this.concurrency = Infinity;
     for (const e of [...this.entries]) {
       this.timers.clearTimeout(e.timer);
-      this.release(e.id);
+      this.release(e.id, false);
     }
+    this.pump(now ? Infinity : this.concurrency);
+    this.onChange();
   }
 
-  release(id) {
+  release(id, start = true) {
     const i = this.entries.findIndex((e) => e.id === id);
     if (i < 0) return;
     const [entry] = this.entries.splice(i, 1);
     this.queue.push(...entry.items);
+    if (!start) return;
     this.pump();
     this.onChange();
   }
 
-  pump() {
-    while (this.inFlight < this.concurrency && this.queue.length) {
+  pump(limit = this.concurrency) {
+    while (this.flight.size < limit && this.queue.length) {
       const item = this.queue.shift();
-      this.inFlight++;
+      this.flight.add(item);
       Promise.resolve()
         .then(() => this.commitOne(item))
         .catch((err) => this.onFail(item, err))
         .finally(() => {
-          this.inFlight--;
+          this.flight.delete(item);
           this.pump();
           this.onChange();
         });
