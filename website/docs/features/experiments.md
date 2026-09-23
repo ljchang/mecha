@@ -323,9 +323,36 @@ trials        = pairs per arm × number of arms
 ```
 
 Six tasks × two seeds gives twelve pairs. With a control and three treatments
-that is 48 trials. Trials run **one at a time**, each a full child run, so
-use `--dry-run` to count them and `--limit N` to spread a large design across
-sittings. `run` resumes, and never reruns a finished trial.
+that is 48 trials, each a full child run. Use `--dry-run` to count them and
+`--limit N` to spread a large design across sittings. `run` resumes, and
+never reruns a finished trial.
+
+### Running trials in parallel
+
+`mecha exp run <name> --jobs N` keeps up to N trials in flight (`single`
+designs only). Two rules shape it:
+
+- **Never two trials of one arm at once.** Each trial resets its arm's home
+  (config, server stores, clock) before it starts, so two of one arm would run
+  in each other's world. With two arms, `--jobs 3` therefore runs two at a
+  time. Arms interleave rather than running in blocks.
+- **Each trial holds one of the background model seats** (three, one fewer
+  than the server's slots, so your own turn never queues). When none is free,
+  the run waits and says who holds them. `--jobs 1`, the default, takes no
+  seat, like any run you are watching from a terminal.
+
+Every row records the `jobs` it ran under. Concurrent requests share the
+server, so time and queue wait change with it, and a pinned seed only
+replays exactly when nothing else is in the batch.
+
+Expect a modest speed-up, not an N-fold one. The server's throughput stops
+growing at its slot count, and short, prompt-heavy trials barely gain at
+all. One measurement on this machine (idle server, one sample each):
+
+| Tasks | `--jobs 1` | `--jobs 3` |
+|---|---|---|
+| 12 two-to-three-turn lookups, 3 arms | 31–32 s | 24–32 s |
+| 16 file-correction tasks, 2 arms (two in flight) | 207 s | 154 s (1.34×) |
 
 Each treatment arm is judged against the control only, on its own predicted
 metric. Tasks with more room to differ make better pairs: a task every arm
@@ -623,8 +650,9 @@ These are the limits of the instrument today. Design with them in mind;
 [`EXPERIMENT-DESIGN.md`](https://github.com/ljchang/mecha/blob/main/docs/EXPERIMENT-DESIGN.md)
 holds the plans for each one.
 
-- **Trials run sequentially.** A large design costs its full wall-clock time,
-  even on a server with free slots.
+- **Lifetimes run one at a time.** `--jobs` covers `single` designs only. A
+  lifetime's stages must not compete with its tasks for the model, and
+  running lifetimes side by side needs that rule restated first.
 - **Four knobs.** There is no arm field for the system prompt, the tool list,
   the sandbox or the security settings. A variation outside the lever set and
   the four knobs is a separate experiment with a different base config, and

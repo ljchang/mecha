@@ -373,6 +373,13 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool, jobs: u32) -> Resu
         todo.len(),
         limit.map(|l| format!(" (limit {l})")).unwrap_or_default()
     );
+    // The world every home is rendered from (`trial_env`): the
+    // environment's harness with this machine's facts. From here on `real`
+    // is that, never the operator's file — whose servers and hooks, copied
+    // into trial homes, once wrote trials into the owner's live graph.
+    // Loaded before the dry-run returns, so a plan check refuses a bad
+    // environment rather than the real run (found on review).
+    let real = manifest.environment.base_config(&loaded, &base)?;
     if dry_run {
         if manifest.kind == TrialKind::Lifetime {
             let s = &manifest.schedule;
@@ -395,11 +402,6 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool, jobs: u32) -> Resu
         }
         return Ok(());
     }
-    // The world every home is rendered from (`trial_env`): the
-    // environment's harness with this machine's facts. From here on `real`
-    // is that, never the operator's file — whose servers and hooks, copied
-    // into trial homes, once wrote trials into the owner's live graph.
-    let real = manifest.environment.base_config(&loaded, &base)?;
     if manifest.fixtures.is_empty() {
         let digest = manifest.environment.digest(&base)?;
         mecha_core::trial_env::build_stores(
@@ -474,7 +476,7 @@ async fn run_single_trials(
     loop {
         let mut seat_short = false;
         while inflight.len() < jobs as usize {
-            let Some(at) = pending.iter().position(|t| !busy.contains(&t.arm)) else {
+            let Some(at) = next_startable(&pending, &busy) else {
                 break;
             };
             let held = match &permits {
@@ -545,6 +547,16 @@ async fn run_single_trials(
         Some(e) => Err(e),
         None => Ok(ran),
     }
+}
+
+/// The first pending row, in plan order, whose arm has nothing in flight:
+/// the scheduler's one decision, kept pure so it is tested apart from the
+/// children it starts.
+fn next_startable(
+    pending: &std::collections::VecDeque<&Trial>,
+    busy: &std::collections::BTreeSet<String>,
+) -> Option<usize> {
+    pending.iter().position(|t| !busy.contains(&t.arm))
 }
 
 /// One `single` row, start to saved: a failure of the run is the row's
@@ -2399,6 +2411,51 @@ fn export(name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Never two of one arm: a row whose arm is busy waits, and the next
+    /// arm's row starts in its place — which interleaves the arms.
+    #[test]
+    fn the_scheduler_starts_the_first_row_of_a_free_arm() {
+        let row = |arm: &str, task: &str| -> Trial {
+            serde_json::from_value(serde_json::json!({
+                "id": format!("{arm}__{task}"),
+                "arm": arm,
+                "task": task,
+                "repetition": 1,
+                "condition_hash": "h",
+                "status": "pending",
+            }))
+            .unwrap()
+        };
+        let (a1, a2, b1) = (row("a", "t1"), row("a", "t2"), row("b", "t1"));
+        let pending: std::collections::VecDeque<&Trial> = [&a1, &a2, &b1].into_iter().collect();
+        let mut busy = std::collections::BTreeSet::new();
+        assert_eq!(next_startable(&pending, &busy), Some(0));
+        busy.insert("a".to_string());
+        assert_eq!(
+            next_startable(&pending, &busy),
+            Some(2),
+            "a's second row waits"
+        );
+        busy.insert("b".to_string());
+        assert_eq!(next_startable(&pending, &busy), None, "every arm busy");
+    }
+
+    /// `--jobs 0` would start nothing and wait forever; it is a parse error.
+    #[test]
+    fn jobs_is_at_least_one() {
+        use clap::Parser;
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            cmd: Cmd,
+        }
+        assert!(Cli::try_parse_from(["t", "run", "x", "--jobs", "0"]).is_err());
+        let ok = Cli::try_parse_from(["t", "run", "x", "--jobs", "3"]).unwrap();
+        assert!(matches!(ok.cmd, Cmd::Run { jobs: 3, .. }));
+        let default = Cli::try_parse_from(["t", "run", "x"]).unwrap();
+        assert!(matches!(default.cmd, Cmd::Run { jobs: 1, .. }));
+    }
+
     use super::*;
 
     /// A position whose home could not be rendered leaves the principal's

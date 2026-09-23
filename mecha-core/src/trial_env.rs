@@ -106,6 +106,7 @@ impl Environment {
     /// arguments — are resolved against the checkout.
     pub fn base_config(&self, real: &Config, base: &Path) -> Result<Config> {
         let dir = self.dir(base);
+        refuse_operator_home(&dir, &crate::work::mecha_home()?)?;
         let path = dir.join("config.toml");
         let text = std::fs::read_to_string(&path).with_context(|| {
             format!(
@@ -211,6 +212,32 @@ impl Environment {
         bytes.extend_from_slice(format!("live={}", live.join(",")).as_bytes());
         Ok(crate::experiment::fnv64(&bytes))
     }
+}
+
+/// An environment is authored data, never a part of the operator's home:
+/// refused if it is the real mecha home, contains it, or lies inside it.
+/// Canonical rather than lexical, unlike `refuse_unsafe_home`: an
+/// environment must already exist, so a symlink can be seen through. Until
+/// this check, `dir = "~/.mecha"` was stopped only because the operator's
+/// config happens to name a machine table (found on review).
+pub fn refuse_operator_home(dir: &Path, real: &Path) -> Result<()> {
+    let env = dir.canonicalize().with_context(|| {
+        format!(
+            "the experiment environment {} does not exist",
+            dir.display()
+        )
+    })?;
+    let Ok(real) = real.canonicalize() else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        !env.starts_with(&real) && !real.starts_with(&env),
+        "the experiment environment {} is, contains or lies inside your mecha home {} — an \
+         environment is authored data, never your home",
+        env.display(),
+        real.display()
+    );
+    Ok(())
 }
 
 fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()> {
@@ -356,7 +383,8 @@ async fn build_one(
                     // it is refused rather than run unconfined.
                     anyhow::ensure!(
                         !server.sandbox,
-                        "{}:{}: `run` steps execute unconfined, and `{}` is configured with                          `sandbox = true` — seed it through its tools instead",
+                        "{}:{}: `run` steps execute unconfined, and `{}` is configured with \
+                         `sandbox = true` — seed it through its tools instead",
                         calls.display(),
                         n + 1,
                         server.name
@@ -569,6 +597,24 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
             let err = env.base_config(&operator(), tmp.path()).unwrap_err();
             assert!(format!("{err:#}").contains("checkout"), "{body}: {err:#}");
         }
+    }
+
+    /// An environment that is, contains or sits inside the real home is
+    /// refused, through a symlink too; a sibling is fine.
+    #[test]
+    fn an_environment_is_never_the_operators_home() {
+        let tmp = Scratch::new();
+        let real = tmp.path().join("home/.mecha");
+        std::fs::create_dir_all(real.join("envs/inside")).unwrap();
+        let sibling = tmp.path().join("checkout/eval/envs/x");
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::os::unix::fs::symlink(&real, tmp.path().join("alias")).unwrap();
+        assert!(refuse_operator_home(&real, &real).is_err());
+        assert!(refuse_operator_home(&tmp.path().join("home"), &real).is_err());
+        assert!(refuse_operator_home(&real.join("envs/inside"), &real).is_err());
+        assert!(refuse_operator_home(&tmp.path().join("alias"), &real).is_err());
+        refuse_operator_home(&sibling, &real).unwrap();
+        assert!(refuse_operator_home(&tmp.path().join("missing"), &real).is_err());
     }
 
     /// A server's name is a store directory and a `remove_dir_all` target:

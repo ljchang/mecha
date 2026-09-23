@@ -4024,6 +4024,18 @@ comparison over a chosen set**, with the design written before the run.
   when there is one. Unspecified settings still inherit the operator's
   config. Test materialized configurations, not just lever lists;
   `appraisal_fixture` compares every other config field and flag.
+- **`exp run --jobs N` never runs two trials of one arm at once.** A
+  `single` trial re-renders its arm's home (config, server stores, clock)
+  before its child starts, so two of one arm would each run in the other's
+  world; the scheduler takes rows in plan order, skipping a busy arm. Above
+  one job every trial holds a `permit.rs` background seat and the driver
+  waits for one (it holds no one else's queue, so waiting is its to do);
+  one job is an attended run and takes none. A row records `jobs`, because
+  concurrency moves wall clock and breaks exact seed replay. A save that
+  fails stops new starts but drains the trials in flight, since dropping
+  their futures orphans children whose rows read `running`. Lifetimes
+  refuse `--jobs` above 1 until §18's stage-versus-task seat rule is
+  restated for lifetimes side by side.
 - **Isolation is the whole store** (D12). Every trial runs as a child
   `mecha run` with `MECHA_HOME` pointing at its arm's home under the
   experiment directory, whose `config.toml` *is* the arm: the
