@@ -143,7 +143,9 @@
   // they start: keep the list current without a manual refresh.
   $effect(() => {
     const every = setInterval(() => {
-      if (!document.hidden) load();
+      if (document.hidden) return;
+      load();
+      if (lane === 'inbox') loadInbox();
     }, 60 * 1000);
     return () => clearInterval(every);
   });
@@ -282,7 +284,12 @@
   let readQueue = [];
   let reading = 0;
   function want(row) {
-    if (!row || reads.has(keyOf(row))) return;
+    if (!row) return;
+    // A failed read is retried the next time the cursor asks: the read is a
+    // CLI child reaching the provider, and one OAuth refresh or MCP startup
+    // hiccup must not pin "could not read" on a thread for the session.
+    const prev = reads.get(keyOf(row));
+    if (prev && prev.status !== 'error') return;
     reads.set(keyOf(row), { status: 'loading', text: '' });
     readQueue.push(row);
     pumpReads();
@@ -299,9 +306,11 @@
           const text = await res.text();
           reads.set(keyOf(row), res.ok ? { status: 'ok', text } : { status: 'error', text: text.trim() });
           // Insertion order is age: drop the oldest finished reads past the cap.
+          // Never the thread under the cursor, which would sit on "reading…".
+          const keep = cur ? keyOf(cur) : null;
           for (const [k, v] of reads) {
             if (reads.size <= MAX_READS) break;
-            if (v.status !== 'loading') reads.delete(k);
+            if (v.status !== 'loading' && k !== keep) reads.delete(k);
           }
         })
         .catch((e) => reads.set(keyOf(row), { status: 'error', text: String(e?.message ?? e) }))
