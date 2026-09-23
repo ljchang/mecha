@@ -233,8 +233,17 @@ export function whenLabel(args, zone = eventZone(args)) {
   const s = args?.start_time;
   if (!s) return '';
   if (args?.all_day || DATE_ONLY.test(s)) {
-    const d = new Date(`${s.slice(0, 10)}T12:00:00Z`);
-    return `${d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' })} · all day`;
+    const day = (iso) => new Date(`${iso}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
+    // The end is exclusive: the last day is the one before it. A span of
+    // more than one day must say so — the card is the reviewable object.
+    const e = (args?.end_time ?? '').slice(0, 10);
+    if (DATE_ONLY.test(e)) {
+      const last = new Date(`${e}T00:00:00Z`);
+      last.setUTCDate(last.getUTCDate() - 1);
+      const lastIso = last.toISOString().slice(0, 10);
+      if (lastIso > s.slice(0, 10)) return `${day(s.slice(0, 10))} – ${day(lastIso)} · all day`;
+    }
+    return `${day(s.slice(0, 10))} · all day`;
   }
   const a = Date.parse(s);
   const b = Date.parse(args?.end_time ?? '');

@@ -108,6 +108,9 @@ const staged = {
 // ---- display ----
 t('whenLabel names the day and both times', /Wed, Sep 30 · 3:30\sPM – 5:00\sPM\sEDT/.test(whenLabel(staged, NY)));
 t('whenLabel says all day', whenLabel({ start_time: '2026-10-05', all_day: true }).endsWith('all day'));
+// Found on review: a three-day block rendered as one day.
+t('a multi-day all-day event shows its span', /Oct 5 – .*Oct 7 · all day/.test(whenLabel({ start_time: '2026-10-05', end_time: '2026-10-08', all_day: true })));
+t('a one-day all-day event shows one day', !whenLabel({ start_time: '2026-10-05', end_time: '2026-10-06', all_day: true }).includes('–'));
 t('attendees accept a comma string', attendeesOf({ attendees: 'a@x.edu, b@x.edu' }).length === 2);
 t('attendees accept objects', attendeesOf({ attendees: [{ email: 'a@x.edu' }] })[0] === 'a@x.edu');
 
