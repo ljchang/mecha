@@ -796,12 +796,13 @@ pub async fn edit(
                 .into_response()
         }
     };
+    // The id is not in the name: it arrives percent-decoded from the URL, and
+    // `%2e%2e%2f` would walk out of the temp dir before the CLI ever checked
+    // it. A per-call counter keeps two concurrent edits apart instead.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir();
-    let path = dir.join(format!(
-        "mecha-web-edit-{}-{}.{ext}",
-        id,
-        std::process::id()
-    ));
+    let path = dir.join(format!("mecha-web-edit-{}-{seq}.{ext}", std::process::id()));
     if let Err(e) = std::fs::write(&path, &content) {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response();
     }

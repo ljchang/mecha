@@ -224,6 +224,12 @@ export function whenLabel(args, zone = eventZone(args)) {
   return sameDay ? `${day} · ${t(a, false)} – ${t(b, true)}` : `${day} ${t(a, false)} → ${new Date(b).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: zone })} ${t(b, true)}`;
 }
 
+/** The arguments the event card renders itself; any other is listed beside it. */
+export const EVENT_CARD_KEYS = [
+  'title', 'start_time', 'end_time', 'timezone', 'all_day', 'account',
+  'location', 'attendees', 'description', 'calendar_id',
+];
+
 /** The mail headers worth a row each, in reading order. */
 export const MAIL_HEADERS = ['to', 'cc', 'bcc', 'subject', 'account'];
 
