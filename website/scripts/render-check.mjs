@@ -189,6 +189,43 @@ for (const route of ROUTES) {
   await context.close();
 }
 
+// Every check above runs at phone width, where App.svelte mounts Mail.svelte.
+// A desktop reader of the docs gets MailDesk.svelte instead, so load it at a
+// desk's width and drive the keys the page is built around: the list and the
+// open thread draw, Enter takes a row off the list, and z brings it back.
+{
+  const context = await browser.newContext({viewport: {width: 1440, height: 900}});
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  page.on('console', (m) => {
+    if (m.type() === 'error') errors.push(m.text());
+  });
+  try {
+    await page.goto(`${base}#mail`, {waitUntil: 'networkidle'});
+    await page.waitForSelector('.desk .row', {timeout: 5000});
+    await page.waitForSelector('.reader article', {timeout: 5000});
+    const before = await page.locator('.desk .row').count();
+    await page.keyboard.press('j');
+    await page.keyboard.press('Enter');
+    const held = await page.locator('.desk .row').count();
+    await page.keyboard.press('z');
+    const undone = await page.locator('.desk .row').count();
+    for (const [what, ok] of [
+      ['a list of threads', before > 0],
+      ['Enter taking the row off the list', held === before - 1],
+      ['z bringing it back', undone === before],
+    ]) {
+      if (!ok) failures.push(`mail desk: ${what} did not happen`);
+    }
+  } catch (error) {
+    failures.push(`mail desk: ${String(error.message).split('\n')[0]}`);
+  }
+  if (errors.length) failures.push(`mail desk: ${errors[0].split('\n')[0]}`);
+  checked += 1;
+  await context.close();
+}
+
 // Chat creation is a POST, before either transcript GET or EventSource.
 // Delay the opening response, leave the view, then simulate a server restart:
 // this measures cancellation and reconnects in the actual compiled component.
