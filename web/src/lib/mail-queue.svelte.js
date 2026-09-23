@@ -27,18 +27,17 @@
 import { onDestroy } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { apiFetch as fetch } from './api.js';
-import { laneOf, keyOf, PendingActions, DRAFTING, splitSender } from './mail-desk.js';
-
-export { DRAFTING };
+import { laneOf, keyOf, PendingActions, DRAFTING, splitSender, verbWorksOn } from './mail-desk.js';
 
 export const HOLD_MS = 5000;
 // Drafting verbs (`DRAFTING`, mail-desk.js) answer at once and run detached,
 // so the commit bound does not bound them: each is a whole agent run on the
 // local model. One gesture may start at most this many.
-export const MAX_DRAFTS = 5;
+const MAX_DRAFTS = 5;
 // Full thread text kept for re-reading; the oldest are dropped past this.
 const MAX_READS = 60;
 const DONE_GRACE_MS = 3 * 60 * 1000;
+export const UNSEEN = 'Only archive and spam work on a thread the classifier has not seen yet';
 
 export const VERB_PAST = {
   archive: 'Archived',
@@ -110,6 +109,12 @@ export class MailQueue {
     for (const r of this.openRows) c[laneOf(r)] = (c[laneOf(r)] ?? 0) + 1;
     return c;
   });
+  /** Threads the triage store holds; the rest are plain-inbox strangers. */
+  storeKeys = $derived(new Set((this.rows ?? []).map(keyOf)));
+  /** Whether `verb` can act on every row in `rows` (see `LENIENT`). */
+  canAct(verb, rows) {
+    return rows.every((r) => verbWorksOn(verb, r, this.storeKeys));
+  }
   /** Plain-inbox rows not hidden. */
   inboxRows = $derived((this.inbox ?? []).filter((r) => !this.hidden.has(keyOf(r))));
 
@@ -215,9 +220,16 @@ export class MailQueue {
    */
   hold(items, label, undoHint) {
     if (!items.length) return false;
+    // A plain-inbox thread the classifier has never seen takes archive and
+    // spam only (`LENIENT`); the rest would fail five seconds from now, after
+    // the row had gone. Refuse now and say why, instead.
+    if (items.some((it) => !verbWorksOn(it.verb, it.row, this.storeKeys))) {
+      this.say(UNSEEN);
+      return false;
+    }
     const drafts = items.filter((it) => DRAFTING.has(it.verb)).length;
     if (drafts > MAX_DRAFTS) {
-      this.say(`That would start ${drafts} drafting runs at once — choose ${MAX_DRAFTS} or fewer`);
+      this.say(`That would start ${drafts} drafting runs at once — choose ${MAX_DRAFTS} threads or fewer`);
       return false;
     }
     // A retry clears the old failure, or the row would stay on screen while
