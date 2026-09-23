@@ -63,10 +63,19 @@ const staged = {
   const f = eventFields(staged);
   t('fields read the wall time in the event zone', f.date === '2026-09-30' && f.start === '15:30' && f.end === '17:00');
   t('attendees read as a list', f.attendees === 'organiser@example.edu');
-  const { args } = eventArgs(staged, f);
-  t('an untouched form round-trips the times', args.start_time === staged.start_time && args.end_time === staged.end_time);
+  const { args } = eventArgs(staged, inclusiveEnd(f));
+  // Found on review: an untouched Save must be no edit at all — a pinned
+  // `calendar_id: "primary"` dropped made every save `edited()`, which the
+  // writing miner learns from.
+  t('an untouched form is the original, byte for byte', JSON.stringify(args) === JSON.stringify(staged));
   t('a key the form does not show survives', args.send_updates === 'none');
-  t('primary is the default, not a sent value', !('calendar_id' in args));
+  {
+    const zulu = { title: 'Standup', start_time: '2026-09-30T13:00:00Z', end_time: '2026-09-30T13:15:00Z', calendar_id: 'primary' };
+    const untouched = eventArgs(zulu, inclusiveEnd(eventFields(zulu))).args;
+    t('a Z-spelled stamp and a pinned default survive an untouched save', JSON.stringify(untouched) === JSON.stringify(zulu));
+    const retitled = eventArgs(zulu, { ...inclusiveEnd(eventFields(zulu)), title: 'Stand-up' }).args;
+    t('changing the title changes only the title', retitled.title === 'Stand-up' && retitled.start_time === zulu.start_time && retitled.calendar_id === 'primary' && !('timezone' in retitled) && !('all_day' in retitled));
+  }
 
   const moved = eventArgs(staged, { ...f, date: '2026-12-02', endDate: '2026-12-02' }).args;
   t('moving into winter takes winter\'s offset', moved.start_time === '2026-12-02T15:30:00-05:00');
@@ -89,7 +98,8 @@ const staged = {
   const allDay = { title: 'Retreat', start_time: '2026-10-05', end_time: '2026-10-07', all_day: true };
   const f = inclusiveEnd(eventFields(allDay));
   t('an all-day event reads its last day inclusively', f.allDay && f.date === '2026-10-05' && f.endDate === '2026-10-06');
-  const { args } = eventArgs(allDay, f);
+  t('an untouched all-day save is the original', JSON.stringify(eventArgs(allDay, f).args) === JSON.stringify(allDay));
+  const { args } = eventArgs(allDay, { ...f, title: 'Offsite' });
   t('and writes the exclusive end back', args.start_time === '2026-10-05' && args.end_time === '2026-10-07');
   const one = eventArgs(allDay, { ...f, endDate: '2026-10-05' }).args;
   t('a one-day event ends the next day', one.end_time === '2026-10-06');

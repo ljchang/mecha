@@ -68,10 +68,18 @@ export function shortUrl(href, max = 60) {
 
 const PUNCT = /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/;
 
+// How far a link's text and destination may run. Beyond these the brackets
+// are text: a scan from every `[` to the end of a stranger's body is
+// quadratic, and a body of `[` characters would freeze the reading tab
+// (found on review). A safelinks-wrapped destination runs to ~600 characters.
+const MAX_TEXT = 1000;
+const MAX_DEST = 4000;
+
 /** Find the `)` closing a link destination that opens at `start`. */
 function closeParen(s, start) {
   let depth = 0;
-  for (let i = start; i < s.length; i++) {
+  const stop = Math.min(s.length, start + MAX_DEST);
+  for (let i = start; i < stop; i++) {
     const c = s[i];
     if (c === '\\') { i++; continue; }
     if (c === '(') depth++;
@@ -86,7 +94,8 @@ function closeParen(s, start) {
 /** Find the `]` closing link text that opens at `start`, allowing nesting. */
 function closeBracket(s, start) {
   let depth = 0;
-  for (let i = start; i < s.length; i++) {
+  const stop = Math.min(s.length, start + MAX_TEXT);
+  for (let i = start; i < stop; i++) {
     const c = s[i];
     if (c === '\\') { i++; continue; }
     if (c === '[') depth++;
@@ -111,6 +120,14 @@ function trimUrl(u) {
 }
 
 const MAX_DEPTH = 6;
+
+// Link text that reads as an address — with a scheme, `www.`, a bare
+// `host.tld/path`, or an email address. Such text is replaced by the real
+// destination, because a reader takes it as the destination: the words
+// `mail.dartmouth.edu/login` over `https://evil.example/login` is the phish
+// the unwrapping rule exists against, and a phone has no hover to catch it.
+const URLISH = /^\s*<?(?:[a-z][a-z0-9+.-]*:\/\/\S+|www\.\S+|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?:[/:?#]\S*)?)>?\s*$/i;
+const EMAILISH = /^\s*(?:mailto:)?[^\s@]+@[^\s@]+\.[a-z]{2,}\s*$/i;
 
 /**
  * Inline spans: `{t:'text', v}`, `{t:'strong'|'em', c}`, `{t:'code', v}`,
@@ -176,7 +193,7 @@ export function parseInline(s, depth = 0, inLink = false) {
           // Text that is itself a URL shows where the link really goes: the
           // words and the destination can disagree, and the destination is
           // the one that matters.
-          const urlish = /^\s*<?(https?:\/\/|www\.)\S+\s*$/i.test(words);
+          const urlish = URLISH.test(words) || EMAILISH.test(words);
           if (href) push({ t: 'link', href, c: inner.length && !urlish ? inner : [{ t: 'text', v: shortUrl(href) }] });
           else {
             flush();
@@ -222,6 +239,8 @@ export function parseInline(s, depth = 0, inLink = false) {
         let end = s.indexOf(mark, open + 1);
         // Skip a closer that is really the start of a longer run (`***`).
         while (end > 0 && !dbl && s[end + 1] === c) end = s.indexOf(mark, end + 2);
+        // A closer past MAX_TEXT does not close: emphasis is a phrase.
+        if (end > open + MAX_TEXT) end = -1;
         const closesOk = end > open && !/\s/.test(s[end - 1]) && s.slice(open, end).indexOf('\n\n') < 0
           && !(c === '_' && /\w/.test(s[end + mark.length] ?? ''));
         if (closesOk) {
