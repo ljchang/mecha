@@ -1202,14 +1202,11 @@ async fn classify(
             Err(e) => {
                 failed += 1;
                 eprintln!("  ! {} — {e:#}", thread.thread_id);
-                let mut r = record(&thread, None, Some(format!("{e:#}")));
-                // Pace retries by the thread's own failures, not an outage's
-                // (`Record::carry_failure`, `mail_triage::retry_after`).
-                r.carry_failure(
+                failed_record(
+                    &thread,
                     store.get(&thread.account, &thread.thread_id).as_ref(),
-                    mecha_core::mail_triage::failure_is_outage(&e),
-                );
-                r
+                    &e,
+                )
             }
         };
         store.put(&rec)?;
@@ -1302,6 +1299,17 @@ fn row_to_input(row: &Value) -> ThreadInput {
         // measurable once this store has rows in it.
         body: s("snippet"),
     }
+}
+
+/// The record a failed classification writes: the error, and the retry
+/// pacing carried forward from the thread's previous record — its own
+/// failures advance it, an outage's do not (`Record::carry_failure`,
+/// `mail_triage::retry_after`). A function so the wiring is testable: drop
+/// the carry and the backoff is decorative, with nothing else to say so.
+fn failed_record(t: &ThreadInput, prev: Option<&Record>, e: &anyhow::Error) -> Record {
+    let mut r = record(t, None, Some(format!("{e:#}")));
+    r.carry_failure(prev, mecha_core::mail_triage::failure_is_outage(e));
+    r
 }
 
 fn record(t: &ThreadInput, verdict: Option<Verdict>, error: Option<String>) -> Record {
@@ -2562,8 +2570,41 @@ fn draft_prompt(
 
 #[cfg(test)]
 mod classify_exit_tests {
-    use super::{parse_recent, run_accomplished_nothing};
+    use super::{failed_record, parse_recent, run_accomplished_nothing};
+    use mecha_core::mail_triage::{ThreadInput, FAILED};
+    use mecha_core::provider::retry::ProviderError;
     use serde_json::Value;
+
+    /// The wiring, not just the rule: a failed classification carries the
+    /// thread's pacing forward, so its own failures back off and an outage's
+    /// do not. Without this the core tests all pass while the backoff does
+    /// nothing, since `attempts` would stay 0 and every failure be due.
+    #[test]
+    fn a_failure_record_carries_the_backoff_and_an_outage_does_not_advance_it() {
+        let thread = ThreadInput {
+            thread_id: "t".into(),
+            account: "a".into(),
+            from: "x@example.edu".into(),
+            from_name: String::new(),
+            subject: "s".into(),
+            date: "2026-09-23T09:00:00Z".into(),
+            body: String::new(),
+        };
+        let bad_verdict = anyhow::anyhow!("classification failed after a retry: no JSON object");
+        let outage =
+            anyhow::Error::new(ProviderError::Transport).context("local: connection refused");
+
+        let first = failed_record(&thread, None, &bad_verdict);
+        assert_eq!((first.state.as_str(), first.attempts), (FAILED, 1));
+        let second = failed_record(&thread, Some(&first), &bad_verdict);
+        assert_eq!(second.attempts, 2, "the thread's own failures back off");
+        let during_outage = failed_record(&thread, Some(&second), &outage);
+        assert_eq!(
+            (during_outage.attempts, during_outage.classified_at.as_str()),
+            (2, second.classified_at.as_str()),
+            "an outage keeps the count and the clock"
+        );
+    }
 
     /// 2026-08-19: the nightly classified 0 of 16 and systemd logged SUCCESS,
     /// because the command returned `Ok(())` whatever happened. Every check
