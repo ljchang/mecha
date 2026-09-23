@@ -108,6 +108,36 @@ export function sweepGroups(rows, verb) {
   );
 }
 
+/**
+ * Verbs whose every thread is a whole agent run: they answer at once and run
+ * detached, so the commit bound does not bound them.
+ */
+export const DRAFTING = new Set(['reply', 'schedule', 'forward']);
+
+/**
+ * The sweep groups that are ticked. `marks` holds the groups the owner has
+ * toggled, and what a mark means depends on the verb:
+ *
+ * - archive and task sweeps are the bulk the sweep exists for, so every group
+ *   is in unless marked out;
+ * - drafting sweeps start empty and a group is in only if marked in, so a
+ *   group that appears later (a new sender, on the minute's reload) is *not*
+ *   ticked. Each ticked thread is an agent run the owner must have chosen.
+ */
+export function tickedGroups(groups, verb, marks) {
+  const optIn = DRAFTING.has(verb);
+  return groups.filter((g) => (optIn ? marks.has(g.key) : !marks.has(g.key)));
+}
+
+/**
+ * `mail recent` gives a sender as `Name <address>`; the store's rows keep the
+ * two apart. Split one into `{ name, address }` so both read the same.
+ */
+export function splitSender(from) {
+  const m = /^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/.exec(from ?? '');
+  return m ? { name: m[1].trim(), address: m[2].trim() } : { name: '', address: (from ?? '').trim() };
+}
+
 /** "3m", "2h", "5d", "6w" — compact enough for a list column. */
 export function ageOf(date, now = Date.now()) {
   const t = Date.parse(date ?? '');
