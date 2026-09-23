@@ -22,7 +22,14 @@
 # unit does not depend on which branch a checkout happens to have out). It
 # skips the run — not a failure, just "not now" — when any local-model slot
 # is busy (the owner is chatting, or an agent run is working) or the GPU is
-# above 30% (research work). The next tick asks again. `Nice=` lowers the driver's own CPU weight; the model's GPU time is
+# above 30% (research work). The next tick asks again. A model server that
+# does not answer at all *fails* the unit instead, so `mecha doctor` notices.
+#
+# It takes no `permit.rs` seat, and the nightly does not either: the idle
+# check is a point check at the door, stricter than a permit there (any busy
+# slot declines) and holding nothing afterwards. Taking a permit around the
+# model-calling half of `classify` would be the durable form; that is a
+# Rust change, not this unit's. `Nice=` lowers the driver's own CPU weight; the model's GPU time is
 # bounded by the idle check, since niceness does not reach the model server.
 #
 # Everything else is the nightly unit's reasoning, unchanged — see
@@ -41,4 +48,9 @@ ExecCondition=%h/.local/bin/mecha-model-idle
 ExecStartPre=/bin/mkdir -p %h/.mecha/work/mail-classify
 ExecStart=%h/.cargo/bin/mecha --workspace %h/.mecha/work/mail-classify mail classify --limit 25
 Nice=10
-TimeoutStartSec=15min
+# A catch-up tick (the first after install, or 07:20 carrying the hours since
+# the nightly) can hold dozens of threads at ~30 s each; the first live run
+# classified 38. Records are written per thread, so a timeout loses nothing,
+# but it would read as a failure — 30 minutes covers the catch-up, and a
+# still-running sweep simply makes the next ticks skip.
+TimeoutStartSec=30min
