@@ -119,6 +119,9 @@
       const byKey = new Map(fresh.map((r) => [keyOf(r), r]));
       const now = Date.now();
       for (const [k, d] of done) {
+        // The queue load says nothing about plain-inbox threads, which the
+        // store may never have seen; `loadInbox` owns those.
+        if (d.inbox) continue;
         const r = byKey.get(k);
         if (!r || r.state !== d.state || now - d.at > DONE_GRACE_MS) done.delete(k);
       }
@@ -147,7 +150,21 @@
       // every other verb works on them, since a verb only needs the thread.
       const list = Array.isArray(data) ? data : [];
       inboxNote = Array.isArray(data) ? null : (data.note ?? null);
-      inbox = list.map((m) => ({
+      // `mail recent` lists messages, not threads, and every verb acts on a
+      // thread: keep one row per thread, the newest message, so a thread
+      // with two messages in the inbox is one row and one key.
+      const seen = new Set();
+      const threads = [];
+      for (const m of [...list].sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''))) {
+        const k = `${m.account}\u0000${m.thread_id}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        threads.push(m);
+      }
+      // A fresh inbox is the truth for what was acted on from it.
+      for (const [k, d] of done) if (d.inbox) done.delete(k);
+      inbox = threads.map((m) => ({
+        fromInbox: true,
         thread_id: m.thread_id,
         account: m.account,
         from: m.from,
@@ -177,7 +194,7 @@
     const text = await res.text();
     if (!res.ok) throw new Error(text.trim() || `HTTP ${res.status}`);
     failed.delete(keyOf(row));
-    done.set(keyOf(row), { state: row.state, at: Date.now() });
+    done.set(keyOf(row), { state: row.state, at: Date.now(), inbox: !!row.fromInbox });
   }
 
   // Reload once everything held has gone out, so the list shows what the
@@ -240,17 +257,16 @@
       .some((f) => (f ?? '').toLowerCase().includes(q));
   };
 
-  const visible = $derived.by(() => {
-    const base =
-      lane === 'inbox'
-        ? (inbox ?? []).filter((r) => !hidden.has(keyOf(r)))
-        : sortRows(openRows.filter((r) => laneOf(r) === lane));
-    return base.filter(matches);
-  });
+  const laneRows = $derived(
+    lane === 'inbox' ? (inbox ?? []).filter((r) => !hidden.has(keyOf(r))) : openRows.filter((r) => laneOf(r) === lane),
+  );
+  const visible = $derived((lane === 'inbox' ? laneRows : sortRows(laneRows)).filter(matches));
 
   const at = $derived(Math.max(0, Math.min(cursor, visible.length - 1)));
   const cur = $derived(visible[at] ?? null);
-  const targets = $derived(selected.size ? visible.filter((r) => selected.has(keyOf(r))) : cur ? [cur] : []);
+  // The selection, not what the filter currently shows: typing into `/` after
+  // selecting must not quietly narrow what "applies to all" applies to.
+  const targets = $derived(selected.size ? laneRows.filter((r) => selected.has(keyOf(r))) : cur ? [cur] : []);
   const curRead = $derived(cur ? reads.get(keyOf(cur)) : null);
   const parsed = $derived(curRead?.status === 'ok' ? parseThread(curRead.text) : null);
 
@@ -584,7 +600,7 @@
       </span>
     {/if}
     <button class="ghost" onclick={() => (composing = true)}>Compose <kbd>c</kbd></button>
-    <button class="ghost" onclick={load}>Refresh</button>
+    <button class="ghost" onclick={() => (lane === 'inbox' ? loadInbox() : load())}>Refresh</button>
   </header>
 
   {#if error}<div class="warn">{error}</div>{/if}
