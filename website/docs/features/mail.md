@@ -608,7 +608,9 @@ is for a **local** model: it asks the llama-server named by
 `MECHA_SLOTS_URL` in the service (`http://127.0.0.1:8080/slots` as shipped —
 set it to your `[providers.local] base_url` plus `/slots`). With a hosted
 provider there is no local server to ask; remove the service's
-`ExecCondition=` line instead, or every tick will fail. A quiet
+`ExecCondition=` line instead — left in, it reads a refused connection as a
+restarting server, so the sweep skips silently for about three hours and then
+fails every tick. A quiet
 tick costs one mailbox listing and no model call, since the sweep only
 classifies threads it has not seen.
 
