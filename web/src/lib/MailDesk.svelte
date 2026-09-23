@@ -78,7 +78,15 @@
   let gPrefix = 0; // timestamp of a bare `g`, for `g s`
 
   const selected = new SvelteSet();
-  const done = new SvelteSet(); // committed this session; hidden until reload shows them gone
+  // Committed this session: key -> { state, at }, the store state the row had
+  // when it was acted on. The row stays hidden only while a fresh load still
+  // reports that old state; once the store has moved it (archived away, or
+  // into Parked / In the outbox), the new row is the truth and shows where it
+  // now belongs. A drafting run is detached, so "ok" only means it started:
+  // if the store still shows the old state after DONE_GRACE_MS, the row comes
+  // back rather than vanishing with nothing on screen to say why.
+  const done = new SvelteMap();
+  const DONE_GRACE_MS = 3 * 60 * 1000;
   const failed = new SvelteMap(); // key -> why the server refused
   const reads = new SvelteMap(); // key -> { status: 'loading' | 'ok' | 'error', text }
 
@@ -107,12 +115,28 @@
     try {
       const res = await fetch('/api/mail');
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).trim()}`);
-      rows = await res.json();
+      const fresh = await res.json();
+      const byKey = new Map(fresh.map((r) => [keyOf(r), r]));
+      const now = Date.now();
+      for (const [k, d] of done) {
+        const r = byKey.get(k);
+        if (!r || r.state !== d.state || now - d.at > DONE_GRACE_MS) done.delete(k);
+      }
+      rows = fresh;
       error = null;
     } catch (e) {
       error = String(e?.message ?? e);
     }
   }
+
+  // New mail is classified in the background, and drafts land minutes after
+  // they start: keep the list current without a manual refresh.
+  $effect(() => {
+    const every = setInterval(() => {
+      if (!document.hidden) load();
+    }, 60 * 1000);
+    return () => clearInterval(every);
+  });
 
   async function loadInbox() {
     try {
@@ -153,18 +177,23 @@
     const text = await res.text();
     if (!res.ok) throw new Error(text.trim() || `HTTP ${res.status}`);
     failed.delete(keyOf(row));
-    done.add(keyOf(row));
+    done.set(keyOf(row), { state: row.state, at: Date.now() });
   }
 
   // Reload once everything held has gone out, so the list shows what the
   // store now says (and any mail classified meanwhile) without a manual step.
+  // On the busy → idle edge only: `load` itself prunes `done`, so a
+  // condition on `done` here would re-arm this after every load.
   let reloadTimer;
+  let wasBusy = false;
   $effect(() => {
     pendingTick;
-    if (pending.pendingCount === 0 && pending.committingCount === 0 && done.size > 0) {
+    const busy = pending.pendingCount + pending.committingCount > 0;
+    if (wasBusy && !busy) {
       clearTimeout(reloadTimer);
       reloadTimer = setTimeout(load, 1500);
     }
+    wasBusy = busy;
   });
 
   const flushNow = () => pending.flush({ now: true });
@@ -189,7 +218,7 @@
   const hidden = $derived.by(() => {
     pendingTick;
     const keys = pending.hiddenKeys();
-    for (const k of done) keys.add(k);
+    for (const k of done.keys()) keys.add(k);
     return keys;
   });
 
@@ -260,13 +289,12 @@
     const ahead = [visible[at + 1], visible[at + 2]];
     // Depends on the cursor only; the cache writes below must not re-run it.
     untrack(() => {
-      // The thread under the cursor jumps the queue; the next two follow it.
-      const k = keyOf(here);
-      if (!reads.has(k)) {
-        reads.set(k, { status: 'loading', text: '' });
-        readQueue.unshift(here);
-        pumpReads();
-      }
+      // Read-ahead is a fixed cost: whatever was queued for rows the cursor
+      // has already passed is dropped (the two in flight finish), so holding
+      // `j` down a long lane never leaves hundreds of reads behind it.
+      for (const r of readQueue) reads.delete(keyOf(r));
+      readQueue = [];
+      want(here);
       ahead.forEach(want);
     });
   });
@@ -463,6 +491,18 @@
     }
     if (composing) {
       if (e.key === 'Escape') composing = false;
+      return;
+    }
+    // The reply/park bar is open but lost focus (a click in the reader):
+    // keys must not act on the thread underneath it.
+    if (asking) {
+      if (e.key === 'Escape') {
+        asking = null;
+        e.preventDefault();
+      } else if (e.key === 'Enter') {
+        askEl?.focus();
+        e.preventDefault();
+      }
       return;
     }
     if (help) {
