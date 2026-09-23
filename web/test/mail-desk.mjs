@@ -18,6 +18,7 @@ import {
   PendingActions,
   tickedGroups,
   splitSender,
+  verbWorksOn,
 } from '../src/lib/mail-desk.js';
 
 let pass = 0;
@@ -93,6 +94,17 @@ t('a nameless sender shows its address', groups.find((g) => g.key === 'cal@x.com
   t('an archive sweep does not tick a group that arrived after it opened', tickedGroups([g('a'), g('new')], 'archive', new Set(), shown).map((x) => x.key).join() === 'a');
   t('but marking that group ticks it', tickedGroups([g('a'), g('new')], 'archive', new Set(['new']), shown).map((x) => x.key).join() === 'a,new');
   t('and marking a shown group unticks it', tickedGroups([g('a'), g('new')], 'archive', new Set(['a']), shown).length === 0);
+}
+
+// ---- verbs on a thread the store has never seen ----
+{
+  const known = { account: 'a', thread_id: 'known' };
+  const stranger = { account: 'a', thread_id: 'new' };
+  const store = new Set([keyOf(known)]);
+  t('archive works on a thread the store has never seen', verbWorksOn('archive', stranger, store));
+  t('so does spam', verbWorksOn('spam', stranger, store));
+  t('task, dismiss, park and the drafts do not', ['task', 'dismiss', 'needs-info', 'reply', 'schedule', 'forward'].every((v) => !verbWorksOn(v, stranger, store)));
+  t('every verb works on a thread the store holds', ['task', 'dismiss', 'reply'].every((v) => verbWorksOn(v, known, store)));
 }
 
 // ---- senders ----

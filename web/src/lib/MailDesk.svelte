@@ -14,6 +14,7 @@
     ageOf,
     PendingActions,
     DRAFTING,
+    verbWorksOn,
     tickedGroups,
     splitSender,
   } from './mail-desk.js';
@@ -272,6 +273,9 @@
   const heldCount = $derived((pendingTick, pending.pendingCount));
   const sendingCount = $derived((pendingTick, pending.committingCount));
 
+  // Threads the triage store holds; the rest are plain-inbox strangers.
+  const storeKeys = $derived(new Set((rows ?? []).map(keyOf)));
+
   const openRows = $derived((rows ?? []).filter((r) => laneOf(r) && !hidden.has(keyOf(r))));
 
   const laneCounts = $derived.by(() => {
@@ -370,9 +374,16 @@
   /** Hold one keystroke's actions; false when it was refused. */
   function hold(items, label) {
     if (!items.length) return false;
+    // A plain-inbox thread the classifier has never seen takes archive and
+    // spam only (`LENIENT`); the rest would fail five seconds from now, after
+    // the row had gone. Refuse now and say why, instead.
+    if (items.some((it) => !verbWorksOn(it.verb, it.row, storeKeys))) {
+      say('Only archive and spam work on a thread the classifier has not seen yet');
+      return false;
+    }
     const drafts = items.filter((it) => DRAFTING.has(it.verb)).length;
     if (drafts > MAX_DRAFTS) {
-      say(`That would start ${drafts} drafting runs at once — tick ${MAX_DRAFTS} or fewer`);
+      say(`That would start ${drafts} drafting runs at once — choose ${MAX_DRAFTS} threads or fewer`);
       return false;
     }
     // A retry clears the old failure, or the row would stay on screen while
@@ -425,6 +436,12 @@
 
   function ask(verb, label, placeholder, { wantTo = false, required = false } = {}) {
     if (!targets.length) return;
+    // Before the owner writes a steer, not after: none of the asking verbs
+    // works on a thread the store has never seen.
+    if (targets.some((r) => !verbWorksOn(verb, r, storeKeys))) {
+      say('Only archive and spam work on a thread the classifier has not seen yet');
+      return;
+    }
     if (targets.length > 1 && (wantTo || verb === 'needs-info')) {
       say('That one works on a single thread');
       return;
@@ -913,11 +930,11 @@
         <div><div class="kicker">Decide</div>
           <p><kbd>⏎</kbd> accept the suggestion</p>
           <p><kbd>e</kbd> archive · <kbd>d</kbd> dismiss</p>
-          <p><kbd>p</kbd> park until someone replies</p></div>
+          <p><kbd>p</kbd> park until someone replies</p>
+          <p><kbd>t</kbd> make a task on the board</p></div>
         <div><div class="kicker">Draft (to the outbox)</div>
           <p><kbd>r</kbd> reply · <kbd>s</kbd> schedule</p>
-          <p><kbd>f</kbd> forward · <kbd>t</kbd> task</p>
-          <p><kbd>c</kbd> compose new</p></div>
+          <p><kbd>f</kbd> forward · <kbd>c</kbd> compose new</p></div>
         <div><div class="kicker">Batch and recover</div>
           <p><kbd>x</kbd> select · <kbd>⇧↓</kbd> <kbd>J</kbd> <kbd>K</kbd> extend</p>
           <p><kbd>z</kbd> undo (within {HOLD_MS / 1000}s)</p>
