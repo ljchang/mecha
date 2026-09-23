@@ -20,7 +20,7 @@
 
   // Mail triage at a desk: lanes, a dense list and the open thread side by
   // side, driven from the keyboard. The phone keeps Mail.svelte; App.svelte
-  // picks between them at the rail's 900px breakpoint.
+  // picks between them at 1200px (see the comment there).
   //
   // Same contract as the phone: the list is a store read, the reader is
   // `mecha mail show`'s text, every action is a `mecha mail …` verb through
@@ -498,12 +498,23 @@
     Object.fromEntries(SWEEP_VERBS.map((v) => [v, sweepRows.filter((r) => r.proposed === v).length])),
   );
   let sweepSeen = $state(new Set()); // groups on screen when the sweep opened, for `tickedGroups`
+  let sweepSeenRows = $state(new Set()); // and the threads, so a late arrival cannot join a ticked group
   let sweepBodyEl = $state(null);
   const ticked = $derived(new Set(tickedGroups(groups, sweepVerb, sweepMarks, sweepSeen).map((g) => g.key)));
-  const checkedRows = $derived(groups.filter((g) => ticked.has(g.key)).flatMap((g) => g.rows));
+  // Only threads that were there when the sweep opened: the minute's reload
+  // can add one to a sender group already ticked, and the owner read the
+  // screen, not the reload — the count under the button must not move.
+  const checkedRows = $derived(
+    groups.filter((g) => ticked.has(g.key)).flatMap((g) => g.rows).filter((r) => sweepSeenRows.has(keyOf(r))),
+  );
   const sweepAt = $derived(Math.max(0, Math.min(sweepCursor, groups.length - 1)));
 
   function openSweep() {
+    // The reply/park bar and the spam confirm render only in the list, while
+    // the keymap tests them first: left open, `!` would mark spam from inside
+    // the sweep with the confirm off screen.
+    asking = null;
+    confirmSpam = null;
     mode = 'sweep';
     sweepOpen.clear();
     setSweepVerb(sweepVerb);
@@ -517,6 +528,7 @@
     sweepCursor = 0;
     sweepMarks.clear();
     sweepSeen = new Set(sweepGroups(sweepRows, v).map((g) => g.key));
+    sweepSeenRows = new Set(sweepRows.map(keyOf));
   }
 
   // Keep the sweep's cursor group in view, as the list keeps its row.
