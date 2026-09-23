@@ -374,7 +374,8 @@ export function parseBlocks(text, depth = 0) {
     while (
       i < lines.length &&
       lines[i].trim() !== '' &&
-      !(para.length && (HR.test(lines[i]) || HEADING.test(lines[i]) || QUOTE.test(lines[i]) || FENCE.test(lines[i])))
+      !(para.length && (HR.test(lines[i]) || HEADING.test(lines[i]) || QUOTE.test(lines[i]) || FENCE.test(lines[i])
+        || BULLET.test(lines[i]) || ORDERED.test(lines[i])))
     ) {
       para.push(lines[i++]);
     }

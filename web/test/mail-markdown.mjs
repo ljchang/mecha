@@ -126,6 +126,10 @@ t('an angle autolink is a link', parseInline('<https://example.org>')[0]?.t === 
   t('…and the tail is not part of the link', nodes.some((n) => n.t === 'link' && n.href === 'https://a.example/x'));
   t('a URL keeps the paren it opened', parseInline('(see https://en.example.org/wiki/Foo_(bar))').some((n) => n.t === 'link' && n.href === 'https://en.example.org/wiki/Foo_(bar)'));
 }
+{
+  const blocks = parseBlocks('Please bring the following items to the retreat on Saturday morning:\n- a laptop\n- a charger');
+  t('a list right under a long line is still a list', blocks.length === 2 && blocks[1].type === 'ul' && blocks[1].items.length === 2);
+}
 t('empty text is no blocks', parseBlocks('').length === 0 && parseBlocks(null).length === 0);
 {
   // Pathological nesting must not recurse without bound.
