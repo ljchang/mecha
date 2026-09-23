@@ -611,7 +611,7 @@ fn list(all: bool, aged: bool, aged_hours: i64, surface: bool, as_json: bool) ->
                 r.account,
                 "",
                 match (r.attempts, r.next_retry()) {
-                    (0 | 1, _) => String::new(),
+                    (0, _) => String::new(),
                     (n, Some(due)) if due > chrono::Utc::now() => format!(
                         " ({n} times; next try in {}h)",
                         (due - chrono::Utc::now()).num_hours().max(1)
@@ -1098,6 +1098,10 @@ async fn classify(
     let get_thread = find_tool(&prepared.registry, "mail_get_thread");
     let (mut ok, mut failed, mut escalated) = (0u32, 0u32, 0u32);
     let mut prefiltered = 0u32;
+    // Failures are written after the sweep, not as they happen: whether a
+    // failure counts against its thread can depend on the whole sweep
+    // (`sweep_was_outage`).
+    let mut failures: Vec<(ThreadInput, Option<Record>, anyhow::Error)> = Vec::new();
     for row in todo {
         let mut thread = row_to_input(row);
 
@@ -1202,14 +1206,16 @@ async fn classify(
             Err(e) => {
                 failed += 1;
                 eprintln!("  ! {} — {e:#}", thread.thread_id);
-                failed_record(
-                    &thread,
-                    store.get(&thread.account, &thread.thread_id).as_ref(),
-                    &e,
-                )
+                let prev = store.get(&thread.account, &thread.thread_id);
+                failures.push((thread, prev, e));
+                continue;
             }
         };
         store.put(&rec)?;
+    }
+    let sweep_outage = sweep_was_outage(ok, failures.len());
+    for (thread, prev, e) in &failures {
+        store.put(&failed_record(thread, prev.as_ref(), e, sweep_outage))?;
     }
     // The pre-filtered count is reported rather than folded into `ok`,
     // because "how much is the cheap rule taking" is the question that decides
@@ -1306,10 +1312,32 @@ fn row_to_input(row: &Value) -> ThreadInput {
 /// failures advance it, an outage's do not (`Record::carry_failure`,
 /// `mail_triage::retry_after`). A function so the wiring is testable: drop
 /// the carry and the backoff is decorative, with nothing else to say so.
-fn failed_record(t: &ThreadInput, prev: Option<&Record>, e: &anyhow::Error) -> Record {
+fn failed_record(
+    t: &ThreadInput,
+    prev: Option<&Record>,
+    e: &anyhow::Error,
+    sweep_outage: bool,
+) -> Record {
     let mut r = record(t, None, Some(format!("{e:#}")));
-    r.carry_failure(prev, mecha_core::mail_triage::failure_is_outage(e));
+    r.carry_failure(
+        prev,
+        sweep_outage || mecha_core::mail_triage::failure_is_outage(e),
+    );
     r
+}
+
+/// Whether a sweep's failures were the server's, whatever their error type:
+/// the model classified nothing and more than one thread failed.
+///
+/// `failure_is_outage` reads the error, and a server-wide failure need not
+/// carry a `ProviderError` — llama-server answering HTTP 200 with empty
+/// content when `--reasoning-budget` eats `max_tokens` fails every thread
+/// through a plain error. Counting that against each thread would walk the
+/// whole mailbox up the backoff after one bad server flag. A single failure
+/// on a sweep with nothing else to do still counts: that is the stuck thread
+/// on a quiet tick, which the backoff exists to pace.
+fn sweep_was_outage(ok: u32, failures: usize) -> bool {
+    ok == 0 && failures >= 2
 }
 
 fn record(t: &ThreadInput, verdict: Option<Verdict>, error: Option<String>) -> Record {
@@ -2570,7 +2598,7 @@ fn draft_prompt(
 
 #[cfg(test)]
 mod classify_exit_tests {
-    use super::{failed_record, parse_recent, run_accomplished_nothing};
+    use super::{failed_record, parse_recent, run_accomplished_nothing, sweep_was_outage};
     use mecha_core::mail_triage::{ThreadInput, FAILED};
     use mecha_core::provider::retry::ProviderError;
     use serde_json::Value;
@@ -2594,16 +2622,35 @@ mod classify_exit_tests {
         let outage =
             anyhow::Error::new(ProviderError::Transport).context("local: connection refused");
 
-        let first = failed_record(&thread, None, &bad_verdict);
+        let first = failed_record(&thread, None, &bad_verdict, false);
         assert_eq!((first.state.as_str(), first.attempts), (FAILED, 1));
-        let second = failed_record(&thread, Some(&first), &bad_verdict);
+        let second = failed_record(&thread, Some(&first), &bad_verdict, false);
         assert_eq!(second.attempts, 2, "the thread's own failures back off");
-        let during_outage = failed_record(&thread, Some(&second), &outage);
+        let during_outage = failed_record(&thread, Some(&second), &outage, false);
         assert_eq!(
             (during_outage.attempts, during_outage.classified_at.as_str()),
             (2, second.classified_at.as_str()),
             "an outage keeps the count and the clock"
         );
+        // A server-wide failure that carries no provider error (the empty
+        // reply a reasoning budget produces) is caught at the sweep.
+        let sweep_wide = failed_record(&thread, Some(&second), &bad_verdict, true);
+        assert_eq!(
+            sweep_wide.attempts, 2,
+            "a sweep that was an outage does not count"
+        );
+    }
+
+    /// Nothing classified and several failures is the server's; one failure
+    /// alone is the stuck thread the backoff paces; any success means the
+    /// failures that remain were the threads' own.
+    #[test]
+    fn a_sweep_that_classified_nothing_and_failed_several_was_an_outage() {
+        assert!(sweep_was_outage(0, 25), "every thread failed alike");
+        assert!(sweep_was_outage(0, 2));
+        assert!(!sweep_was_outage(0, 1), "the stuck thread on a quiet tick");
+        assert!(!sweep_was_outage(5, 3), "the model worked for others");
+        assert!(!sweep_was_outage(0, 0));
     }
 
     /// 2026-08-19: the nightly classified 0 of 16 and systemd logged SUCCESS,
