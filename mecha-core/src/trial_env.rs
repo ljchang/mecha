@@ -227,9 +227,10 @@ pub fn refuse_operator_home(dir: &Path, real: &Path) -> Result<()> {
             dir.display()
         )
     })?;
-    let Ok(real) = real.canonicalize() else {
-        return Ok(());
-    };
+    // A home that cannot be canonicalized (not created yet) still has a
+    // lexical form, and is compared by it: a guard that cannot resolve its
+    // other operand must not wave everything through (found on review).
+    let real = real.canonicalize().unwrap_or_else(|_| lexical(real));
     anyhow::ensure!(
         !env.starts_with(&real) && !real.starts_with(&env),
         "the experiment environment {} is, contains or lies inside your mecha home {} — an \
@@ -238,6 +239,21 @@ pub fn refuse_operator_home(dir: &Path, real: &Path) -> Result<()> {
         real.display()
     );
     Ok(())
+}
+
+/// `.` and `..` resolved by hand, for a path that may not exist.
+fn lexical(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()> {
@@ -615,6 +631,11 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
         assert!(refuse_operator_home(&tmp.path().join("alias"), &real).is_err());
         refuse_operator_home(&sibling, &real).unwrap();
         assert!(refuse_operator_home(&tmp.path().join("missing"), &real).is_err());
+        // A home not created yet is compared lexically, not waved through.
+        let unborn = tmp.path().join("fresh/.mecha");
+        assert!(refuse_operator_home(&tmp.path().join("home"), &unborn).is_ok());
+        std::fs::create_dir_all(tmp.path().join("fresh")).unwrap();
+        assert!(refuse_operator_home(&tmp.path().join("fresh"), &unborn).is_err());
     }
 
     /// A server's name is a store directory and a `remove_dir_all` target:

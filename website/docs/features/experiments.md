@@ -327,6 +327,10 @@ that is 48 trials, each a full child run. Use `--dry-run` to count them and
 `--limit N` to spread a large design across sittings. `run` resumes, and
 never reruns a finished trial.
 
+Each treatment arm is judged against the control only, on its own predicted
+metric. Tasks with more room to differ make better pairs: a task every arm
+passes in two turns ties every time and teaches the gate nothing.
+
 ### Running trials in parallel
 
 `mecha exp run <name> --jobs N` keeps up to N trials in flight (`single`
@@ -342,8 +346,15 @@ designs only). Two rules shape it:
   three at once, and fewer while other background runs hold seats.
   `--jobs 1`, the default, takes no seat, like any run you are watching from
   a terminal.
+- **While it holds the seats, your other background work waits.** A
+  detached `mecha tasks work` and an unattended `mecha questions answer`
+  refuse to start when every seat is taken, and they name the experiment's
+  trials as the holders. Scheduled triggers take no seat and still run.
+  A long design at `--jobs 3` can hold all three for hours; `--jobs 2`
+  leaves one free.
 
-Every row records the `jobs` it ran under. Concurrent requests share the
+Every row records the `--jobs` limit it ran under. That's an upper bound:
+the seats and the one-trial-per-arm rule can hold it lower. Concurrent requests share the
 server, so time and queue wait change with it, and a pinned seed only
 replays exactly when nothing else is in the batch.
 
@@ -355,10 +366,6 @@ all. One measurement on this machine (idle server, one sample each):
 |---|---|---|
 | 12 two-to-three-turn lookups, 3 arms | 31–32 s | 24–32 s |
 | 16 file-correction tasks, 2 arms (two in flight) | 207 s | 154 s (1.34×) |
-
-Each treatment arm is judged against the control only, on its own predicted
-metric. Tasks with more room to differ make better pairs: a task every arm
-passes in two turns ties every time and teaches the gate nothing.
 
 ## Lifetimes
 
