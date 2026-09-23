@@ -922,6 +922,17 @@ fn is_zero(n: &u32) -> bool {
     *n == 0
 }
 
+/// Whether a classification failure is the provider's rather than the
+/// thread's: a transport failure, a server error, overload or a rate limit
+/// (`ProviderError::transient`, the same line failover draws). Those fail
+/// every thread alike, so they must not pace any one of them (see
+/// [`retry_after`]). Anything else — a refusal, a verdict that will not
+/// parse, a request the provider rejects — is the thread's.
+pub fn failure_is_outage(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<crate::provider::retry::ProviderError>()
+        .is_some_and(crate::provider::retry::ProviderError::transient)
+}
+
 /// How long a thread that has failed `attempts` times in a row waits before
 /// the next sweep tries it again: an hour after the first failure, doubling,
 /// never more than a day.
@@ -930,10 +941,17 @@ fn is_zero(n: &u32) -> bool {
 /// [`TriageStore::needs_classifying`] exists to prevent: on 2026-08-19 the
 /// model server was down for a night and 17 threads failed, and a sweep that
 /// gave up on them would have buried a manuscript review invitation for good.
-/// A backoff keeps retrying — an outage recovers within the hour — while a
-/// thread that fails for a reason that does not go away (a body that trips the
-/// provider, a verdict that will not parse) is tried about once a day instead
-/// of on every sweep. That matters since the daytime sweep: every 20 minutes,
+/// A backoff keeps retrying, while a thread that fails for a reason that does
+/// not go away (a verdict that will not parse, a refusal, a request the
+/// provider rejects) is tried about once a day instead of on every sweep.
+///
+/// **Only the thread's own failures count** ([`failure_is_outage`]). A dead
+/// or overloaded model server fails every thread at once and says nothing
+/// about any of them, so it neither advances the count nor restarts the clock:
+/// through an outage a fresh thread is retried every sweep as before, and is
+/// caught up within a sweep of the server coming back. Counting outages would
+/// have pushed every thread in a day-long outage onto the long waits, stale
+/// until the next morning — the incident this backoff exists to avoid. That matters since the daytime sweep: every 20 minutes,
 /// one such thread called the model 43 times a day and, on the quiet ticks
 /// where it was the only work, failed the unit (`run_accomplished_nothing`),
 /// which kept `mecha doctor` red and drowned the alarms that mean something.
@@ -976,23 +994,44 @@ pub const PARKED_FOR: &str = "parked_for";
 pub const SURFACED_AT: &str = "surfaced_at";
 
 impl Record {
-    /// Whether a sweep at `now` should try this record again: a `failed`
-    /// record whose [`retry_after`] wait has passed since its last attempt.
-    ///
-    /// A failure with no attempt count (written before the count existed) or
-    /// an unreadable timestamp is due at once — unknown is never clean, and
+    /// When a `failed` record is next due: [`retry_after`] its attempt count,
+    /// from its last counted attempt. `None` means due at once — a failure
+    /// with no count (written before the count existed, or failed only by
+    /// outages) or an unreadable timestamp. Unknown is never clean, and
     /// "retry" is the side that cannot bury a thread.
-    pub fn retry_due(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
-        if self.state != FAILED {
-            return false;
-        }
+    pub fn next_retry(&self) -> Option<chrono::DateTime<chrono::Utc>> {
         if self.attempts == 0 {
-            return true;
+            return None;
         }
-        match chrono::DateTime::parse_from_rfc3339(&self.classified_at) {
-            Ok(at) => now >= at.with_timezone(&chrono::Utc) + retry_after(self.attempts),
-            Err(_) => true,
+        chrono::DateTime::parse_from_rfc3339(&self.classified_at)
+            .ok()
+            .map(|at| at.with_timezone(&chrono::Utc) + retry_after(self.attempts))
+    }
+
+    /// Carry a new failure's pacing forward from the thread's previous record.
+    ///
+    /// The thread's own consecutive failures advance the count; a success in
+    /// between (any non-`failed` previous record) starts it over. An outage
+    /// ([`failure_is_outage`]) is not the thread's failure: it keeps the
+    /// previous count *and* its clock, so it neither pushes the thread onto a
+    /// longer wait nor restarts the one it was on — and a thread that has
+    /// only ever failed by outage stays at 0, due every sweep.
+    pub fn carry_failure(&mut self, prev: Option<&Record>, outage: bool) {
+        let prev = prev.filter(|p| p.state == FAILED);
+        if outage {
+            if let Some(p) = prev.filter(|p| p.attempts > 0) {
+                self.attempts = p.attempts;
+                self.classified_at = p.classified_at.clone();
+            }
+        } else {
+            self.attempts = prev.map_or(0, |p| p.attempts) + 1;
         }
+    }
+
+    /// Whether a sweep at `now` should try this record again: a `failed`
+    /// record whose [`Self::next_retry`] has come.
+    pub fn retry_due(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        self.state == FAILED && self.next_retry().is_none_or(|due| now >= due)
     }
 
     /// The verdict **as the classifier produced it**, with the user's
@@ -2198,6 +2237,63 @@ mod tests {
         );
         r.state = CLASSIFIED.into();
         assert!(!r.retry_due(now), "only failures are retried");
+    }
+
+    /// Only the thread's own failures pace it. An outage fails every thread
+    /// and says nothing about any of them; counting it pushed a day-long
+    /// outage's threads onto the long waits, stale until the next morning.
+    #[test]
+    fn an_outage_does_not_advance_the_count_or_restart_the_clock() {
+        let failure = |attempts: u32, at: &str| {
+            let mut r = rec("a", "t", Bucket::Ignore);
+            r.state = FAILED.into();
+            r.attempts = attempts;
+            r.classified_at = at.into();
+            r
+        };
+        let fresh = || failure(0, "2026-09-23T18:00:00Z");
+
+        // The thread's own failures count up, and a success starts over.
+        let mut r = fresh();
+        r.carry_failure(Some(&failure(2, "2026-09-23T10:00:00Z")), false);
+        assert_eq!(r.attempts, 3);
+        let mut r = fresh();
+        r.carry_failure(Some(&rec("a", "t", Bucket::Ignore)), false);
+        assert_eq!(r.attempts, 1, "a success in between starts the count over");
+
+        // Outage: the count and the clock stay where the thread's own
+        // failures left them.
+        let mut r = fresh();
+        r.carry_failure(Some(&failure(2, "2026-09-23T10:00:00Z")), true);
+        assert_eq!(
+            (r.attempts, r.classified_at.as_str()),
+            (2, "2026-09-23T10:00:00Z")
+        );
+        // A thread that has only ever failed by outage stays due every sweep.
+        let mut r = fresh();
+        r.carry_failure(Some(&failure(0, "2026-09-23T17:40:00Z")), true);
+        assert_eq!(r.attempts, 0);
+        assert!(r.retry_due(chrono::Utc::now()));
+        let mut r = fresh();
+        r.carry_failure(None, true);
+        assert_eq!(r.attempts, 0);
+    }
+
+    /// The outage/thread line is the provider's own `transient`, found through
+    /// the context the provider wraps it in.
+    #[test]
+    fn a_transport_or_server_failure_is_an_outage_and_a_bad_verdict_is_not() {
+        use crate::provider::retry::ProviderError;
+        let wrapped = |e: ProviderError| anyhow::Error::new(e).context("local: connection refused");
+        assert!(failure_is_outage(&wrapped(ProviderError::Transport)));
+        assert!(failure_is_outage(&wrapped(ProviderError::ServerError)));
+        assert!(failure_is_outage(&wrapped(ProviderError::Overloaded)));
+        assert!(!failure_is_outage(&wrapped(ProviderError::Invalid(
+            "bad".into()
+        ))));
+        assert!(!failure_is_outage(&anyhow::anyhow!(
+            "classification failed after a retry: no JSON object"
+        )));
     }
 
     /// A failed classification must be retried; anything else must not.

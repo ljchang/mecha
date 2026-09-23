@@ -32,12 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- A mail thread whose classification fails is retried on a backoff — an
-  hour after the first failure, doubling, at most a day apart — rather than
-  on every sweep. An outage still recovers within the hour; a thread that
-  always fails costs one model call a day instead of one per daytime tick,
-  and no longer keeps the daytime unit failed. `mecha mail list` shows the
-  count and the next retry; `classify --force` still retries at once.
+- A mail thread whose classification fails for a reason of its own (a
+  verdict that will not parse, a refusal, a rejected request) is retried on
+  a backoff — an hour after the first failure, doubling, at most a day
+  apart — rather than on every sweep, so it costs one model call a day
+  instead of one per daytime tick and no longer keeps the daytime unit
+  failed. A provider outage (transport, server error, overload) is not
+  counted: those threads are retried every sweep as before and caught up as
+  soon as the server is back. `mecha mail list` shows the count and when the
+  next retry is due; `classify --force` still retries at once.
 
 ### Fixed
 
