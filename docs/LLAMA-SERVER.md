@@ -153,7 +153,10 @@ whatever placement decision is made at load is never revisited.
 - **`/slots` is read by a scheduled job.** `scripts/model-idle.sh` (the
   daytime mail sweep's `ExecCondition=`) asks `GET /slots` whether any slot
   is processing before it lets background work onto the model. llama-server
-  serves it by default; a flag change that disables it (`--no-slots`), or a
+  serves it by default (`llama-server --help`, the build installed here on
+  2026-09-23: `--slots, --no-slots … (default: enabled)` — re-check after an
+  upgrade, and pass `--slots` in the start script if that default ever
+  flips); a flag change that disables it (`--no-slots`), or a
   release that reshapes the slot JSON (renames `is_processing`), makes that
   unit fail, not skip — deliberately, so `mecha doctor` says so instead of
   the sweep going quiet.
