@@ -30,6 +30,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   doctor` sees it — when the model server does not answer, answers with a
   slot list it cannot read, or has been stuck loading for three hours.
 
+### Changed
+
+- A mail thread whose classification fails is retried on a backoff — an
+  hour after the first failure, doubling, at most a day apart — rather than
+  on every sweep. An outage still recovers within the hour; a thread that
+  always fails costs one model call a day instead of one per daytime tick,
+  and no longer keeps the daytime unit failed. `mecha mail list` shows the
+  count and the next retry; `classify --force` still retries at once.
+
 ### Fixed
 
 - The mail desk's batch keys work with the selecting modifier still held.
