@@ -5,6 +5,7 @@
   import { parseThread } from './mail-thread.js';
   import { LANES, laneOf, sortRows, acceptVerb, keyOf, senderOf, sweepGroups, ageOf, tickedGroups } from './mail-desk.js';
   import { MailQueue, HOLD_MS, VERB_PAST, VERB_LABEL, UNSEEN } from './mail-queue.svelte.js';
+  import MailBody from './MailBody.svelte';
 
   // Mail triage at a desk: lanes, a dense list and the open thread side by
   // side, driven from the keyboard. The phone keeps Mail.svelte; App.svelte
@@ -51,6 +52,8 @@
   let gPrefix = 0; // timestamp of a bare `g`, for `g s`
 
   const selected = new SvelteSet();
+  // Where a shift-click range starts: the last row clicked without shift.
+  let anchor = $state(null);
 
   // The queue, its timing and its reads are shared with the phone page
   // (mail-queue.svelte.js); this file is the desk's layout and keymap.
@@ -72,12 +75,6 @@
   let sweepCursor = $state(0);
   const sweepMarks = new SvelteSet(); // groups toggled; what that means is `tickedGroups`'s
   const sweepOpen = new SvelteSet();
-
-
-
-
-
-
 
   onDestroy(() => clearTimeout(toastTimer));
 
@@ -105,6 +102,19 @@
   // The selection, not what the filter currently shows: typing into `/` after
   // selecting must not quietly narrow what "applies to all" applies to.
   const targets = $derived(selected.size ? laneRows.filter((r) => selected.has(keyOf(r))) : cur ? [cur] : []);
+  // The reader shows the selection, not the cursor thread, whenever the two
+  // differ: an action applies to what is selected, so that is what must be
+  // on screen when the owner presses a key.
+  const bulk = $derived(selected.size > 1 || (selected.size === 1 && !(cur && selected.has(keyOf(cur)))));
+  const allSelected = $derived(visible.length > 0 && visible.every((r) => selected.has(keyOf(r))));
+  const bulkAccept = $derived.by(() => {
+    const c = {};
+    for (const r of targets) {
+      const v = acceptVerb(r);
+      if (v && v !== 'spam') c[v] = (c[v] ?? 0) + 1;
+    }
+    return c;
+  });
   const curRead = $derived(cur ? reads.get(keyOf(cur)) : null);
   const parsed = $derived(curRead?.status === 'ok' ? parseThread(curRead.text) : null);
 
@@ -214,9 +224,54 @@
     if (extend && visible[cursor]) selected.add(keyOf(visible[cursor]));
   }
 
+  /**
+   * A click on a row, the way every mail client reads one: plain opens it and
+   * drops the selection, ⌘/Ctrl toggles it into the selection (with the open
+   * thread, so the first ⌘-click makes two), and Shift selects the range from
+   * the last plain or ⌘ click.
+   */
+  function clickRow(e, i) {
+    const row = visible[i];
+    if (!row) return;
+    const k = keyOf(row);
+    if (e.shiftKey) {
+      const from = anchor ?? at;
+      const [a, b] = from < i ? [from, i] : [i, from];
+      for (let j = a; j <= b; j++) if (visible[j]) selected.add(keyOf(visible[j]));
+    } else if (e.metaKey || e.ctrlKey) {
+      if (!selected.size && cur && i !== at) selected.add(keyOf(cur));
+      selected.has(k) ? selected.delete(k) : selected.add(k);
+      anchor = i;
+    } else {
+      selected.clear();
+      anchor = i;
+    }
+    cursor = i;
+  }
+
+  function toggleRow(e, i) {
+    e.stopPropagation();
+    const row = visible[i];
+    if (!row) return;
+    const k = keyOf(row);
+    if (e.shiftKey && anchor !== null) {
+      const [a, b] = anchor < i ? [anchor, i] : [i, anchor];
+      for (let j = a; j <= b; j++) if (visible[j]) selected.add(keyOf(visible[j]));
+    } else {
+      selected.has(k) ? selected.delete(k) : selected.add(k);
+      anchor = i;
+    }
+  }
+
+  function selectAll() {
+    if (allSelected) selected.clear();
+    else for (const r of visible) selected.add(keyOf(r));
+  }
+
   function pickLane(id) {
     lane = id;
     cursor = 0;
+    anchor = null;
     selected.clear();
     if (id === 'inbox' && inbox === null) loadInbox();
   }
@@ -323,9 +378,17 @@
   }
 
   function onKey(e) {
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
     const t = e.target;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) {
+    const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+    // ⌘A / Ctrl-A selects the lane rather than the page's text — the one
+    // modified key the desk takes, and only outside a text field.
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'a' && !typing && mode === 'list' && !composing && !asking && !help) {
+      selectAll();
+      e.preventDefault();
+      return;
+    }
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (typing) {
       if (e.key === 'Escape') {
         if (asking) asking = null;
         else if (composing) composing = false;
@@ -394,7 +457,9 @@
       case 'd': run('dismiss'); break;
       case 't': run('task'); break;
       case 'r': ask('reply', 'Steer the reply (optional) — Enter to draft', 'decline politely; ask for the deadline'); break;
-      case 's': ask('schedule', 'Steer the invite (optional) — Enter to draft', 'propose Thursday afternoon'); break;
+      case 's': run('schedule'); break;
+      case 'S': ask('schedule', 'Add to calendar — anything to change? Enter to draft', 'invite Priya too; make it 30 minutes'); break;
+      case 'A': selectAll(); break;
       case 'f': ask('forward', 'Forward to, and a covering line', 'FYI — the one I mentioned', { wantTo: true }); break;
       case 'p': ask('needs-info', 'What are you waiting for?', 'their dates, before I can book', { required: true }); break;
       case '!': askSpam(); break;
@@ -405,7 +470,7 @@
       case 'c': composing = true; break;
       case 'g': gPrefix = Date.now(); break;
       case ' ': break; // the list scrolls itself with the cursor; not the page
-      case 'Escape': selected.clear(); search = ''; break;
+      case 'Escape': selected.clear(); anchor = null; search = ''; break;
       default:
         if (byKey) { pickLane(byKey.id); break; }
         return;
@@ -419,7 +484,9 @@
   });
 
   const urgencyClass = (u) => (u === 'now' || u === 'today' || u === 'week' ? `u-${u}` : '');
-  const sweepVerbLabel = { archive: 'Archive', reply: 'Draft replies', task: 'Make tasks', schedule: 'Draft invites' };
+  const sweepVerbLabel = { archive: 'Archive', reply: 'Draft replies', task: 'Make tasks', schedule: 'Add to calendar' };
+  // The list's proposal chip: shorter than the button's label.
+  const CHIP = { schedule: 'calendar', reply: 'reply' };
 </script>
 
 <div class="desk">
@@ -463,10 +530,27 @@
 
       <section class="list" aria-label="Threads">
         <div class="listhead">
-          <strong>{lane === 'inbox' ? INBOX.label : LANES.find((l) => l.id === lane)?.label}</strong>
-          <span class="n">{visible.length}{search ? ' matching' : ''}</span>
-          <span class="grow"></span>
-          {#if selected.size}<span class="selnote">{selected.size} selected · actions apply to all · Esc clears</span>{/if}
+          <button
+            class="check all"
+            class:on={allSelected}
+            class:some={selected.size > 0 && !allSelected}
+            disabled={!visible.length}
+            onclick={selectAll}
+            aria-label={allSelected ? 'Clear the selection' : 'Select every thread in this lane'}
+            title={allSelected ? 'Clear the selection' : 'Select all (⌘A)'}
+          ></button>
+          {#if selected.size}
+            <strong>{selected.size} selected</strong>
+            <span class="grow"></span>
+            <button class="ghost small" onclick={() => run('archive')}>Archive</button>
+            {#if lane !== 'inbox'}<button class="ghost small" onclick={() => run('dismiss')}>Dismiss</button>{/if}
+            <button class="ghost small" onclick={() => { selected.clear(); anchor = null; }}>Clear <kbd>esc</kbd></button>
+          {:else}
+            <strong>{lane === 'inbox' ? INBOX.label : LANES.find((l) => l.id === lane)?.label}</strong>
+            <span class="n">{visible.length}{search ? ' matching' : ''}</span>
+            <span class="grow"></span>
+            {#if visible.length > 1}<button class="linkish selall" onclick={selectAll}>Select all {visible.length}</button>{/if}
+          {/if}
         </div>
         <div class="rows" bind:this={listEl}>
           {#if rows === null && lane !== 'inbox'}
@@ -481,9 +565,22 @@
                 class:cur={i === at}
                 class:sel={selected.has(k)}
                 data-cursor={i === at}
-                onclick={() => (cursor = i)}
+                onmousedown={(e) => { if (e.shiftKey) e.preventDefault(); }}
+                onclick={(e) => clickRow(e, i)}
               >
                 <span class="urg {urgencyClass(r.urgency)}"></span>
+                <!-- A span, not an input: a control inside a button is not
+                     valid HTML. The row's own click handles ⌘ and Shift. -->
+                <span
+                  class="check"
+                  class:on={selected.has(k)}
+                  role="checkbox"
+                  aria-checked={selected.has(k)}
+                  aria-label="Select"
+                  tabindex="-1"
+                  onclick={(e) => toggleRow(e, i)}
+                  onkeydown={() => {}}
+                ></span>
                 <span class="rowbody">
                   <span class="line1">
                     <span class="from">{senderOf(r)}</span>
@@ -497,7 +594,7 @@
                   <span class="line3">
                     <span class="summary">{r.subject && r.summary !== r.subject ? r.summary : ''}</span>
                     {#if r.proposed && r.proposed !== 'none'}
-                      <span class="prop p-{r.proposed}">{i === at ? '⏎ ' : ''}{(VERB_LABEL[r.proposed] ?? r.proposed).toLowerCase()}</span>
+                      <span class="prop p-{r.proposed}">{i === at && !bulk ? '⏎ ' : ''}{(CHIP[r.proposed] ?? VERB_LABEL[r.proposed] ?? r.proposed).toLowerCase()}</span>
                     {/if}
                   </span>
                 </span>
@@ -512,7 +609,43 @@
       </section>
 
       <section class="reader" aria-label="Thread">
-        {#if cur}
+        {#if bulk}
+          <div class="readscroll">
+            <div class="kicker">Selection</div>
+            <h1>{targets.length} thread{targets.length === 1 ? '' : 's'} selected</h1>
+            <p class="bulknote">
+              From {new Set(targets.map((r) => r.from)).size} sender{new Set(targets.map((r) => r.from)).size === 1 ? '' : 's'}.
+              Every action below applies to all of them at once, and one <kbd>z</kbd> brings the whole batch back within {HOLD_MS / 1000} seconds.
+            </p>
+            <div class="bulkgrid">
+              <button class="bulkbtn primary" onclick={() => run('archive')}>
+                <span class="bl">Archive {targets.length}</span><span class="bs">Out of the inbox, nobody notified</span><kbd>e</kbd>
+              </button>
+              <button class="bulkbtn" disabled={!Object.keys(bulkAccept).length} onclick={accept}>
+                <span class="bl">Accept suggestions</span>
+                <span class="bs">{Object.keys(bulkAccept).length ? Object.entries(bulkAccept).map(([v, n]) => `${n} ${(CHIP[v] ?? VERB_LABEL[v]).toLowerCase()}`).join(' · ') : 'None of these has one'}</span><kbd>⏎</kbd>
+              </button>
+              {#if lane !== 'inbox'}
+                <button class="bulkbtn" onclick={() => run('dismiss')}><span class="bl">Dismiss {targets.length}</span><span class="bs">Leave them in the inbox, off this list</span><kbd>d</kbd></button>
+                <button class="bulkbtn" onclick={() => run('task')}><span class="bl">Make {targets.length} tasks</span><span class="bs">One board task per thread</span><kbd>t</kbd></button>
+              {/if}
+            </div>
+            <div class="bulklist">
+              {#each targets as r (keyOf(r))}
+                <div class="bulkrow">
+                  <span class="from">{senderOf(r)}</span>
+                  <span class="grow subj">{r.subject || r.summary}</span>
+                  <span class="age">{ageOf(r.date)}</span>
+                  <button class="linkish" aria-label="Remove from the selection" onclick={() => selected.delete(keyOf(r))}>✕</button>
+                </div>
+              {/each}
+            </div>
+          </div>
+          <div class="actions">
+            <span class="grow selnote">{targets.length} selected · <kbd>⌘</kbd>-click to add or remove · <kbd>⇧</kbd>-click for a range</span>
+            <button onclick={() => { selected.clear(); anchor = null; }}><kbd>esc</kbd>Clear selection</button>
+          </div>
+        {:else if cur}
           <div class="readscroll">
             <h1>{cur.subject || cur.summary}</h1>
             <div class="meta">
@@ -545,7 +678,7 @@
                 <article>
                   <div class="msgmeta">{m.meta}</div>
                   {#if m.subject && m.subject !== cur.subject}<div class="msgsubj">{m.subject}</div>{/if}
-                  <p>{m.body}</p>
+                  <MailBody text={m.body} />
                 </article>
               {/each}
             {:else}
@@ -577,7 +710,7 @@
               <button onclick={() => run('archive')}><kbd>e</kbd>Archive</button>
               <button onclick={() => ask('reply', 'Steer the reply (optional) — Enter to draft', 'decline politely; ask for the deadline')}><kbd>r</kbd>Reply</button>
               <button onclick={() => run('task')}><kbd>t</kbd>Task</button>
-              <button onclick={() => ask('schedule', 'Steer the invite (optional) — Enter to draft', 'propose Thursday afternoon')}><kbd>s</kbd>Schedule</button>
+              <button onclick={() => run('schedule')} title="Drafts an event on your calendar from the thread's date and time; ⇧S to add instructions"><kbd>s</kbd>Add to calendar</button>
               <button onclick={() => ask('forward', 'Forward to, and a covering line', 'FYI — the one I mentioned', { wantTo: true })}><kbd>f</kbd>Forward</button>
               <button onclick={() => ask('needs-info', 'What are you waiting for?', 'their dates, before I can book', { required: true })}><kbd>p</kbd>Park</button>
               <button onclick={() => run('dismiss')}><kbd>d</kbd>Dismiss</button>
@@ -636,7 +769,7 @@
     {#if mode === 'list'}
       <span><kbd>↑↓</kbd><kbd>j</kbd><kbd>k</kbd> move</span>
       <span><kbd>⏎</kbd> accept</span>
-      <span><kbd>x</kbd> select · <kbd>⇧↓</kbd> extend</span>
+      <span><kbd>x</kbd> select · <kbd>⇧↓</kbd> extend · <kbd>⌘A</kbd> all</span>
       <span><kbd>z</kbd> undo</span>
       <button class="linkish" onclick={() => (help = true)}><kbd>?</kbd> all keys</button>
     {:else}
@@ -666,10 +799,12 @@
           <p><kbd>p</kbd> park until someone replies</p>
           <p><kbd>t</kbd> make a task on the board</p></div>
         <div><div class="kicker">Draft (to the outbox)</div>
-          <p><kbd>r</kbd> reply · <kbd>s</kbd> schedule</p>
+          <p><kbd>r</kbd> reply · <kbd>s</kbd> add to calendar</p>
+          <p><kbd>⇧S</kbd> add to calendar, with instructions</p>
           <p><kbd>f</kbd> forward · <kbd>c</kbd> compose new</p></div>
         <div><div class="kicker">Batch and recover</div>
           <p><kbd>x</kbd> select · <kbd>⇧↓</kbd> <kbd>J</kbd> <kbd>K</kbd> extend</p>
+          <p><kbd>⌘A</kbd> <kbd>A</kbd> select the lane · <kbd>⌘</kbd>/<kbd>⇧</kbd>-click</p>
           <p><kbd>z</kbd> undo (within {HOLD_MS / 1000}s)</p>
           <p><kbd>!</kbd> spam — confirms first</p></div>
       </div>
@@ -754,8 +889,18 @@
   .list { width: 520px; flex-shrink: 0; display: flex; flex-direction: column; border-right: 1px solid #2a2a38; min-height: 0; }
   .listhead { height: 44px; flex-shrink: 0; box-sizing: border-box; padding: 0 16px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #2a2a38; font-size: 14px; }
   .selnote { font-size: 12px; color: var(--accent-400); }
+  .selall { font-size: 12px; }
+  .selall:hover { color: var(--accent-300); }
+  .check { width: 14px; height: 14px; flex-shrink: 0; box-sizing: border-box; border: 1.5px solid #4a4a5c; border-radius: 4px; background: none; padding: 0; position: relative; align-self: flex-start; margin-top: 2px; opacity: 0.35; transition: opacity 0.1s; }
+  .row:hover .check, .rows:has(.check.on) .check, .check.on, .check.all { opacity: 1; }
+  .check.on { background: var(--accent-500); border-color: var(--accent-500); }
+  .check.on::after { content: ''; position: absolute; left: 3.5px; top: 0.5px; width: 3px; height: 7px; border: solid var(--void); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+  .check.some { border-color: var(--accent-500); }
+  .check.some::after { content: ''; position: absolute; left: 2px; right: 2px; top: 4.5px; height: 2px; background: var(--accent-500); }
+  .check.all { align-self: center; margin: 0; cursor: pointer; }
+  .check.all:disabled { opacity: 0.3; }
   .rows { flex: 1; min-height: 0; overflow-y: auto; }
-  .row { width: 100%; display: flex; gap: 12px; align-items: stretch; box-sizing: border-box; padding: 11px 16px 11px 0; border: 0; border-bottom: 1px solid #1f2130; background: none; text-align: left; }
+  .row { width: 100%; display: flex; gap: 10px; user-select: none; align-items: stretch; box-sizing: border-box; padding: 11px 16px 11px 0; border: 0; border-bottom: 1px solid #1f2130; background: none; text-align: left; }
   .row:hover { background: #181a27; }
   .row.cur { background: var(--surface); box-shadow: inset 0 0 0 1px var(--accent-500); }
   .row.sel { background: #221f38; }
@@ -787,7 +932,21 @@
   article { display: flex; flex-direction: column; gap: 6px; padding-bottom: 16px; border-bottom: 1px solid #2a2a38; }
   .msgmeta { font-size: 12px; color: var(--text-muted); }
   .msgsubj { font-size: 13px; font-weight: 600; }
-  article p { margin: 0; font-size: 14px; line-height: 1.6; color: #d6d6de; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .bulknote { margin: 0; font-size: 13px; line-height: 1.55; color: var(--text-muted); }
+  .bulkgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+  .bulkbtn { display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto auto; gap: 2px 10px; align-items: center; text-align: left; padding: 12px 14px; border: 1px solid #2a2a38; border-radius: var(--radius); background: var(--surface); }
+  .bulkbtn:hover:not(:disabled) { border-color: var(--accent-700); }
+  .bulkbtn .bl { font-size: 14px; font-weight: 600; }
+  .bulkbtn .bs { grid-column: 1; font-size: 12px; color: var(--text-muted); }
+  .bulkbtn kbd { grid-column: 2; grid-row: 1 / span 2; }
+  .bulkbtn.primary { background: var(--accent-500); color: var(--void); border-color: var(--accent-500); }
+  .bulkbtn.primary .bs { color: rgba(18, 20, 31, 0.7); }
+  .bulkbtn.primary:hover { background: var(--accent-400); }
+  .bulklist { border: 1px solid #2a2a38; border-radius: var(--radius); overflow: hidden; }
+  .bulkrow { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid #1f2130; font-size: 13px; }
+  .bulkrow:last-child { border-bottom: 0; }
+  .bulkrow .from { width: 180px; flex-shrink: 0; }
+  .bulkrow .subj { color: #c9c9d3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .raw { margin: 0; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; color: #d6d6de; }
   .actions, .askbar { flex-shrink: 0; box-sizing: border-box; padding: 12px 20px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; border-top: 1px solid #2a2a38; background: var(--bg); }
   .actions button { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border: 1px solid #2a2a38; border-radius: var(--radius-chip); background: var(--surface); font-size: 13px; }

@@ -266,6 +266,19 @@ export const mailInbox = [
   },
 ];
 
+// Every account's calendars, as `mecha mail calendars --json` gives them.
+export const mailCalendars = [
+  { account: 'work', calendars: [
+    { id: 'owner@work.example.edu', name: 'Calendar', is_primary: true, can_edit: true },
+    { id: 'lab-shared', name: 'Lab — shared', is_primary: false, can_edit: true },
+    { id: 'holidays', name: 'US Holidays', is_primary: false, can_edit: false },
+  ] },
+  { account: 'personal', calendars: [
+    { id: 'owner@personal.example.org', name: 'Personal', is_primary: true, access_role: 'owner' },
+    { id: 'family', name: 'Family', is_primary: false, access_role: 'writer' },
+  ] },
+];
+
 export const mailRead = {
   'thr-8812': {
     subject: 'Review request — manuscript JAC-2291',
@@ -277,7 +290,10 @@ applied retrieval practice", for the Journal of Applied Cognition? It runs to
 about 9,000 words.
 
 I would need to know by Friday whether you can take it on. If you can, the
-review itself would be due three weeks after that.
+review itself would be due **three weeks** after that.
+
+- Manuscript: [JAC-2291 on the submission site](https://nam12.safelinks.protection.outlook.com/?url=https%3A%2F%2Fsubmit.jac.example.org%2Fms%2FJAC-2291&data=05%7C02&reserved=0)
+- Reviewer guidelines: https://jac.example.org/reviewers
 
 With thanks,
 Tomas Lindqvist
@@ -317,15 +333,17 @@ const draftNomination = {
 
 const draftHold = {
   id: 'ob-4419',
-  tool: 'mail__calendar_create',
-  kind: 'call',
-  label: 'Calendar',
+  tool: 'mail__calendar_create_event',
+  kind: 'message',
+  label: 'Calendar event',
   headline: 'Seminar — Cape Town (hold)',
-  snippet: 'account: personal · duration: 90 minutes',
+  snippet: 'location: Department of Psychology, seminar room 2',
   status: 'pending',
   created_at: '2026-08-29T07:42:03Z',
-  tainted: false,
+  tainted: true,
   edited: false,
+  account: 'personal',
+  start_time: '2026-11-12T15:00:00+02:00',
 };
 
 export const outbox = {
@@ -441,29 +459,38 @@ Priya joined the group in 2024 and has since led the replication effort that bec
   },
   'ob-4419': {
     id: 'ob-4419',
-    tool: 'mail__calendar_create',
-    label: 'Calendar',
+    tool: 'mail__calendar_create_event',
+    label: 'Calendar event',
     headline: 'Seminar — Cape Town (hold)',
-    kind: 'call',
+    kind: 'message',
     status: 'pending',
     created_at: '2026-08-29T07:42:03Z',
-    summary: 'calendar_create',
+    summary: 'calendar_create_event',
     taint: { private: true, untrusted: true, armed: true },
-    headers: [
-      ['title', 'Seminar — Cape Town (hold)'],
-      ['starts', 'Thursday 12 November, 15:00 SAST'],
-      ['ends', 'Thursday 12 November, 16:30 SAST'],
-    ],
+    headers: [['title', 'Seminar — Cape Town (hold)']],
     body: null,
     other: [
+      ['start_time', '2026-11-12T15:00:00+02:00'],
+      ['end_time', '2026-11-12T16:30:00+02:00'],
       ['account', 'personal'],
       ['location', 'Department of Psychology, seminar room 2'],
+      ['attendees', 'host@uct.example.org'],
     ],
     edited: false,
     // A staged call that has already failed once, with the reason on the card
     // rather than two fields away in the store.
     error: null,
-    args: { account: 'personal' },
+    // The attendee is the thing to catch: an invitation goes to the host.
+    args: {
+      title: 'Seminar — Cape Town (hold)',
+      start_time: '2026-11-12T15:00:00+02:00',
+      end_time: '2026-11-12T16:30:00+02:00',
+      timezone: 'Africa/Johannesburg',
+      account: 'personal',
+      location: 'Department of Psychology, seminar room 2',
+      attendees: ['host@uct.example.org'],
+      description: '**Talk:** spacing effects in applied retrieval practice. Slides due to the host a week before — see [the programme](https://uct.example.org/seminars/2026).',
+    },
     session_id: '20260829T074002-a91c',
     sources: [],
   },

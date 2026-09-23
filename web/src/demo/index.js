@@ -75,6 +75,7 @@ export const ROUTES = [
 
   ['GET', /^\/api\/mail$/, () => fx.mail],
   ['GET', /^\/api\/mail\/inbox$/, () => fx.mailInbox],
+  ['GET', /^\/api\/mail\/calendars$/, () => fx.mailCalendars],
   [
     'GET',
     /^\/api\/mail\/read$/,

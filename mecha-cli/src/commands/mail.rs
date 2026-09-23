@@ -103,6 +103,16 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// The calendars in every account (or one), with write access noted —
+    /// `calendar_list`'s own rows. What the outbox's event editor offers as
+    /// "which calendar", so the choice is the provider's list rather than a
+    /// guessed id. `--json` passes the rows through.
+    Calendars {
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Write a NEW email. **Stages into the outbox, never sends** — the
     /// same review path as every model-drafted send, because the queue is
     /// the one place outbound mail waits regardless of who wrote it.
@@ -380,6 +390,7 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         } => list(all, aged, aged_hours, surface, json),
         Cmd::Show { thread_id, account } => show(global, &thread_id, account.as_deref()).await,
         Cmd::Recent { account, max, json } => recent(global, account.as_deref(), max, json).await,
+        Cmd::Calendars { account, json } => calendars(global, account.as_deref(), json).await,
         Cmd::Compose {
             to,
             subject,
@@ -694,6 +705,78 @@ async fn recent(global: &GlobalOpts, account: Option<&str>, max: u32, as_json: b
         Err(_) => println!("{}", out.content),
     }
     Ok(())
+}
+
+/// The calendars, through the same `calendar_list` tool the model uses.
+async fn calendars(global: &GlobalOpts, account: Option<&str>, as_json: bool) -> Result<()> {
+    let prepared = setup::prepare_tools(global, false).await?;
+    let Some(tool) = find_tool(&prepared.registry, "calendar_list") else {
+        bail!("no mail server in this configuration — is `[[mcp]]` for mecha-mail enabled?");
+    };
+    let mut input = json!({});
+    if let Some(a) = account {
+        input["account"] = json!(a);
+    }
+    let ctx = tool_ctx(&prepared);
+    let out = tool.call(input, &ctx).await?;
+    if out.is_error {
+        bail!("{}", out.content);
+    }
+    // A partial answer carries a note after the JSON (one account failed);
+    // the JSON is the part a page can use, and the note goes to stderr.
+    let (rows, note) = split_json_note(&out.content);
+    if as_json {
+        if let Some(n) = note {
+            eprintln!("{n}");
+        }
+        println!("{}", rows.unwrap_or_else(|| "[]".into()));
+        return Ok(());
+    }
+    match rows.as_deref().map(serde_json::from_str::<Vec<Value>>) {
+        Some(Ok(accounts)) => {
+            for a in &accounts {
+                println!("{}", a["account"].as_str().unwrap_or(""));
+                for c in a["calendars"].as_array().into_iter().flatten() {
+                    let writable = c["can_edit"].as_bool().unwrap_or_else(|| {
+                        matches!(c["access_role"].as_str(), Some("owner" | "writer"))
+                    });
+                    println!(
+                        "  {} {:<32} {}{}",
+                        if c["is_primary"].as_bool().unwrap_or(false) {
+                            "●"
+                        } else {
+                            " "
+                        },
+                        c["name"].as_str().unwrap_or(""),
+                        c["id"].as_str().unwrap_or(""),
+                        if writable { "" } else { "  (read-only)" },
+                    );
+                }
+            }
+        }
+        _ => println!("{}", out.content),
+    }
+    if let Some(n) = note {
+        println!("\n{n}");
+    }
+    Ok(())
+}
+
+/// A tool answer that is JSON, optionally followed by a prose note on its own
+/// lines — `with_notes`' shape in mecha-mail. Returns the JSON text when the
+/// leading part parses, and whatever follows it.
+fn split_json_note(content: &str) -> (Option<String>, Option<String>) {
+    let mut de = serde_json::Deserializer::from_str(content).into_iter::<Value>();
+    match de.next() {
+        Some(Ok(v)) => {
+            let rest = content[de.byte_offset()..].trim();
+            (
+                Some(v.to_string()),
+                (!rest.is_empty()).then(|| rest.to_string()),
+            )
+        }
+        _ => (None, None),
+    }
 }
 
 /// Stage a new email under the routed send tool's configured name. The name
@@ -2408,13 +2491,26 @@ fn draft_prompt(
              saying why it is being sent on, then the thread. Do not \
              editorialise beyond that.\n"
         )),
-        Draft::Schedule => p.push_str(
-            "Create a calendar event with `calendar_create_event` for what \
-             this thread arranges. Use the date, time and attendees the thread \
-             actually states. **If it does not state a specific time, draft \
-             nothing and say so** — an event invented from 'sometime next \
-             week' is worse than no event.\n",
-        ),
+        // **The owner's calendar, and nobody else's inbox.** The verb is "add
+        // this to my calendar": a seminar announcement put on the calendar
+        // with its sender as an attendee sends that sender an invitation to
+        // their own seminar — which is what the first version, told to use
+        // "the attendees the thread states", staged from a faculty-meeting
+        // save-the-date. Attendees now come only from the owner's note.
+        Draft::Schedule => p.push_str(&format!(
+            "Add what this thread announces or arranges to the owner's own \
+             calendar with `calendar_create_event`, on account {account:?}. \
+             Use the date, time and location the thread actually states, and \
+             give the event a short title a person would recognise on a \
+             calendar. Put the useful details — a join link, a room, an \
+             agenda — in `description`, briefly. **Leave `attendees` out** \
+             unless the owner's note below names people to invite: an \
+             attendee receives an invitation, and the people who wrote the \
+             thread already know about their own event. **If the thread does \
+             not state a specific date and time, draft nothing and say so** — \
+             an event invented from 'sometime next week' is worse than no \
+             event.\n"
+        )),
     }
     if let Some(n) = note {
         p.push_str(&format!("\nThe owner adds: {n}\n"));
@@ -2495,5 +2591,71 @@ mod classify_exit_tests {
     #[test]
     fn an_empty_answer_is_an_error() {
         assert!(parse_recent("").is_err());
+    }
+}
+
+#[cfg(test)]
+mod draft_prompt_tests {
+    use super::{draft_prompt, Draft};
+    use mecha_core::mail_triage::Record;
+
+    fn rec() -> Record {
+        serde_json::from_value(serde_json::json!({
+            "thread_id": "t1", "account": "dartmouth", "state": "classified"
+        }))
+        .unwrap()
+    }
+
+    /// 2026-09-23: "add to calendar" on a faculty-meeting save-the-date
+    /// staged an event with the sender as an attendee — releasing it would
+    /// have sent the organiser an invitation to their own meeting. The
+    /// prompt said "use the attendees the thread states", which for an
+    /// announcement is everyone who wrote it.
+    #[test]
+    fn adding_to_the_calendar_invites_nobody_the_owner_did_not_name() {
+        let p = draft_prompt(&rec(), "t1", "dartmouth", &Draft::Schedule, None);
+        assert!(!p.contains("attendees the thread"), "{p}");
+        assert!(p.contains("Leave `attendees` out"), "{p}");
+        assert!(p.contains("owner's own calendar"), "{p}");
+        // The event lands on the account the thread arrived in.
+        assert!(p.contains("on account \"dartmouth\""), "{p}");
+
+        // The owner's note is the one way attendees get in.
+        let p = draft_prompt(
+            &rec(),
+            "t1",
+            "dartmouth",
+            &Draft::Schedule,
+            Some("invite priya@example.edu"),
+        );
+        assert!(
+            p.contains("The owner adds: invite priya@example.edu"),
+            "{p}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod calendars_tests {
+    use super::split_json_note;
+
+    /// `calendar_list` appends a prose note when one account fails; the page
+    /// needs the JSON and must not lose it to the note.
+    #[test]
+    fn a_partial_answer_splits_into_rows_and_note() {
+        let (rows, note) = split_json_note(
+            "[{\"account\":\"dartmouth\",\"calendars\":[]}]\n\nnote — some accounts could not be read:\npersonal: 401",
+        );
+        assert_eq!(
+            rows.as_deref(),
+            Some("[{\"account\":\"dartmouth\",\"calendars\":[]}]")
+        );
+        assert!(note.unwrap().contains("personal: 401"));
+
+        let (rows, note) = split_json_note("[]");
+        assert_eq!(rows.as_deref(), Some("[]"));
+        assert!(note.is_none());
+
+        assert_eq!(split_json_note("no calendars configured"), (None, None));
     }
 }
