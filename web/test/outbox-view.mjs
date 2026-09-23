@@ -6,7 +6,7 @@
 // a key the form does not show dropped on save, an empty attendee field sent
 // as `[""]`. Each of those looks fine in the form and is wrong on the
 // calendar.
-import { kindOf, stampIn, wallIn, eventFields, eventArgs, inclusiveEnd, whenLabel, attendeesOf, editsAsEvent } from '../src/lib/outbox-view.js';
+import { kindOf, stampIn, wallIn, eventFields, eventArgs, inclusiveEnd, whenLabel, attendeesOf, editsAsEvent, unreadableAccounts, unreadableNote } from '../src/lib/outbox-view.js';
 
 let pass = 0;
 let fail = 0;
@@ -113,6 +113,20 @@ t('a multi-day all-day event shows its span', /Oct 5 – .*Oct 7 · all day/.tes
 t('a one-day all-day event shows one day', !whenLabel({ start_time: '2026-10-05', end_time: '2026-10-06', all_day: true }).includes('–'));
 t('attendees accept a comma string', attendeesOf({ attendees: 'a@x.edu, b@x.edu' }).length === 2);
 t('attendees accept objects', attendeesOf({ attendees: [{ email: 'a@x.edu' }] })[0] === 'a@x.edu');
+
+// ---- unreadable calendar accounts (#261) ----
+{
+  const rows = [
+    { account: 'work', calendars: [{ id: 'w', name: 'Calendar' }] },
+    { account: 'personal', calendars: [], error: 'API error (401): token expired' },
+  ];
+  t('an errored row is unreadable', JSON.stringify(unreadableAccounts(rows)) === '["personal"]');
+  t('an empty account is not unreadable', unreadableAccounts([{ account: 'x', calendars: [] }]).length === 0);
+  t('no rows yet is no warning', unreadableAccounts('loading').length === 0 && unreadableNote([]) === null);
+  t('one account reads "its"', /^personal could not be read — its calendars/.test(unreadableNote(['personal'])));
+  t('two accounts read "their"', /^work and personal could not be read — their calendars/.test(unreadableNote(['work', 'personal'])));
+  t('three accounts are listed with "and"', unreadableNote(['a', 'b', 'c']).startsWith('a, b and c could not'));
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);
