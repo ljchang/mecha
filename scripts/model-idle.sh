@@ -37,17 +37,31 @@ set -uo pipefail
 SLOTS_URL="${MECHA_SLOTS_URL:-http://127.0.0.1:8080/slots}"
 GPU_BUSY="${MECHA_GPU_BUSY:-30}"
 
-slots="$(curl -sf -m 5 "$SLOTS_URL")"
+# The body and the status separately: `curl -f` would fold every HTTP error
+# into one exit code, and two of them mean opposite things here.
+reply="$(curl -s -m 5 -w '\n%{http_code}' "$SLOTS_URL")"
 rc=$?
-# curl 28 is a timeout: something is listening but too busy to answer in 5 s
-# (a long prefill does that), which is the busiest the model gets — skip.
-# Anything else (refused, reset, an HTTP error) is a server that is not
-# there to ask, and fails loudly as above.
+code="${reply##*$'\n'}"
+slots="${reply%$'\n'*}"
+# "Not now" — skip, and the next tick asks again:
+#   curl 28, a timeout: something is listening but too busy to answer in 5 s
+#     (a long prefill does that), which is the busiest the model gets;
+#   HTTP 503: llama-server is still loading the model, which it does after
+#     every restart — failing here would leave a false alarm in `mecha doctor`
+#     each time the server is bounced.
+# Anything else — refused, reset, 501 (`--no-slots`), any other status — is a
+# server that is not there to ask, and fails loudly as above.
 if [ "$rc" -eq 28 ]; then
     echo "model-idle: $SLOTS_URL too busy to answer — skipping this run"
     exit 1
 elif [ "$rc" -ne 0 ]; then
     echo "model-idle: no answer from $SLOTS_URL (curl $rc) — failing so mecha doctor sees it"
+    exit 255
+elif [ "$code" = 503 ]; then
+    echo "model-idle: $SLOTS_URL says the model is still loading — skipping this run"
+    exit 1
+elif [ "$code" != 200 ]; then
+    echo "model-idle: $SLOTS_URL answered HTTP $code — failing so mecha doctor sees it"
     exit 255
 fi
 # A shape this does not recognise is not idle: an empty array, or slots
