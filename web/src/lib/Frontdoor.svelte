@@ -133,11 +133,11 @@
   // but a hand-edited or future-written record would take the whole page down
   // on the dereference below rather than degrade. It costs nothing.
   const settled = (r) => r.state === 'booked' && r.booking;
-  // Closed is terminal and waits on nobody (`frontdoor::CLOSED`), so it leaves
-  // the queue for the same reason a booking does. Folded rather than dropped:
-  // a hand-closed booking keeps its reason reachable. `answered` is left in
-  // the queue until the owner asks for it to go too.
-  const isClosed = (r) => r.state === 'closed';
+  // `answered` and `closed` wait on nobody (the `WAITING_ON_OWNER` doc in
+  // `frontdoor.rs`), so they leave the queue for the same reason a booking
+  // does. Folded rather than dropped: a hand-closed booking keeps its reason
+  // reachable, and an answered request its reply.
+  const isClosed = (r) => r.state === 'closed' || r.state === 'answered';
   const queue = $derived((rows ?? []).filter((r) => !settled(r) && !isClosed(r)));
   const booked = $derived(
     (rows ?? [])
@@ -217,7 +217,7 @@
 
         {#if closed.length}
           <button class="foldrow" onclick={() => (showClosed = !showClosed)}>
-            <span>{closed.length} closed</span>
+            <span>{closed.length} answered or closed</span>
             <span class="foldnote">nothing owed</span>
             <span class="chev" class:open={showClosed}>›</span>
           </button>
