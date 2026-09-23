@@ -708,7 +708,7 @@
                   </span>
                   <span class="subject">{r.subject || r.summary}</span>
                   <span class="line3">
-                    <span class="summary">{r.subject ? r.summary : ''}</span>
+                    <span class="summary">{r.subject && r.summary !== r.subject ? r.summary : ''}</span>
                     {#if r.proposed && r.proposed !== 'none'}
                       <span class="prop p-{r.proposed}">{i === at ? '⏎ ' : ''}{(VERB_LABEL[r.proposed] ?? r.proposed).toLowerCase()}</span>
                     {/if}
@@ -743,7 +743,7 @@
               <div class="suggest">
                 <div class="grow">
                   <div class="kicker">Suggested</div>
-                  <div><strong>{VERB_LABEL[acceptVerb(cur)]}</strong>{#if cur.subject && cur.summary}<span>{' — '}{cur.summary}</span>{/if}</div>
+                  <div><strong>{VERB_LABEL[acceptVerb(cur)]}</strong>{#if cur.subject && cur.summary && cur.summary !== cur.subject}<span>{' — '}{cur.summary}</span>{/if}</div>
                 </div>
                 <button class="primary" onclick={accept}>Accept <kbd>⏎</kbd></button>
               </div>
