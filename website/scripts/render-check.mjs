@@ -226,6 +226,53 @@ for (const route of ROUTES) {
   await context.close();
 }
 
+// The phone page's gestures, at the width every check above uses: a row
+// swiped right leaves the list and Undo brings it back, and accepting from
+// the thread view opens the next thread in place rather than the list.
+{
+  const context = await browser.newContext({viewport: {width: 420, height: 900}});
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  page.on('console', (m) => {
+    if (m.type() === 'error') errors.push(m.text());
+  });
+  try {
+    await page.goto(`${base}#mail`, {waitUntil: 'networkidle'});
+    await page.waitForSelector('.page .row', {timeout: 5000});
+    const before = await page.locator('.page .row').count();
+    const box = await page.locator('.page .row').first().boundingBox();
+    const y = box.y + box.height / 2;
+    await page.mouse.move(box.x + 60, y);
+    await page.mouse.down();
+    for (let s = 1; s <= 10; s++) await page.mouse.move(box.x + 60 + 16 * s, y);
+    await page.mouse.up();
+    const swiped = await page.locator('.page .row').count();
+    // Only a swipe that acted leaves an Undo; a missed one is the finding
+    // below, not a 30 s wait for a button that will never appear.
+    if (swiped < before) await page.locator('.toast .undo').click({timeout: 3000});
+    const undone = await page.locator('.page .row').count();
+    await page.locator('.page .row').first().click();
+    await page.waitForSelector('.threadhead', {timeout: 5000});
+    const first = await page.locator('.reader h1').innerText();
+    await page.locator('.bigaccept').click();
+    const next = await page.locator('.reader h1').innerText();
+    for (const [what, ok] of [
+      ['a list of threads', before > 0],
+      ['a right swipe taking the row off the list', swiped === before - 1],
+      ['Undo bringing it back', undone === before],
+      ['Accept opening the next thread in place', next !== first],
+    ]) {
+      if (!ok) failures.push(`mail phone: ${what} did not happen`);
+    }
+  } catch (error) {
+    failures.push(`mail phone: ${String(error.message).split('\n')[0]}`);
+  }
+  if (errors.length) failures.push(`mail phone: ${errors[0].split('\n')[0]}`);
+  checked += 1;
+  await context.close();
+}
+
 // Chat creation is a POST, before either transcript GET or EventSource.
 // Delay the opening response, leave the view, then simulate a server restart:
 // this measures cancellation and reconnects in the actual compiled component.
