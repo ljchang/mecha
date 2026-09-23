@@ -146,6 +146,18 @@ export function splitSender(from) {
   return m ? { name: m[1].trim(), address: m[2].trim() } : { name: '', address: (from ?? '').trim() };
 }
 
+/**
+ * Verbs the CLI will run on a thread the triage store has never seen — the
+ * plain inbox's rows, mostly. `archive` and `spam` resolve a thread leniently
+ * (`mail.rs`, `triage`: "the store is a lookup table here, not a
+ * precondition"); `dismiss`, `task`, `needs-info` and the drafting verbs use
+ * the strict resolver and refuse one.
+ */
+export const LENIENT = new Set(['archive', 'spam']);
+
+/** Whether `verb` can act on `row`, given the keys the store holds. */
+export const verbWorksOn = (verb, row, storeKeys) => LENIENT.has(verb) || storeKeys.has(keyOf(row));
+
 /** "3m", "2h", "5d", "6w" — compact enough for a list column. */
 export function ageOf(date, now = Date.now()) {
   const t = Date.parse(date ?? '');
