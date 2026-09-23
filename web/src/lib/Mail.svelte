@@ -4,7 +4,7 @@
   import { apiFetch as fetch } from './api.js';
   import { parseThread } from './mail-thread.js';
   import { LANES, sortRows, acceptVerb, keyOf, senderOf, sweepGroups, ageOf, tickedGroups } from './mail-desk.js';
-  import { MailQueue, HOLD_MS, VERB_PAST, VERB_LABEL } from './mail-queue.svelte.js';
+  import { MailQueue, HOLD_MS, VERB_PAST, VERB_LABEL, UNSEEN } from './mail-queue.svelte.js';
 
   // Mail on a phone: the desk's model with thumbs instead of keys. The queue,
   // its hold-then-commit timing and its reads are MailQueue's, shared with
@@ -118,6 +118,12 @@
 
   function ask(verb, text, placeholder, row, { wantTo = false, required = false } = {}) {
     more = false;
+    // Before the owner writes anything: none of the asking verbs works on a
+    // thread the store has never seen.
+    if (!q.canAct(verb, [row])) {
+      say(UNSEEN);
+      return;
+    }
     // The thread is fixed now: the minute's reload must not retarget it.
     asking = { verb, label: text, placeholder, wantTo, required, rows: [row] };
     askText = '';
@@ -178,7 +184,10 @@
 
   function down(e, row) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
-    if (drag) return;
+    // A gesture whose row was unmounted mid-drag (the minute's reload) may
+    // never see its pointerup or pointercancel; do not let it disable
+    // swiping for the session. A second finger still defers to a live one.
+    if (drag && visible.some((r) => keyOf(r) === drag.key)) return;
     drag = { id: e.pointerId, key: keyOf(row), x0: e.clientX, y0: e.clientY, dx: 0, moved: false };
     e.currentTarget.setPointerCapture?.(e.pointerId);
   }
@@ -299,7 +308,7 @@
 
     <div class="scroll">
       {#if q.error}<div class="warnline">{@render hazardGlyph()}<span>{q.error}</span></div>{/if}
-      {#if lane !== 'inbox' && sweepCounts.archive > 1}
+      {#if (lane === 'respond' || lane === 'notify') && sweepCounts.archive > 1}
         <button class="sweepcard" onclick={openSweep}>
           <span class="grow">
             <strong>{sweepCounts.archive} suggested archives</strong>
@@ -378,6 +387,9 @@
       <h1>{cur.subject || cur.summary}</h1>
       <div class="meta">
         <span class="who">{senderOf(cur)}</span>
+        <!-- The address as well as the name: the name is the sender's own
+             choice, and this is the page where one swipe accepts. -->
+        {#if cur.from_name && cur.from}<span class="addr">&lt;{cur.from}&gt;</span>{/if}
         <span>· {cur.account}</span>
         {#if cur.date}<span>· {ageOf(cur.date)} ago</span>{/if}
         {#if cur.deadline}<span class="chip due">due {cur.deadline}</span>{/if}
@@ -452,6 +464,7 @@
           <input type="checkbox" checked={ticked.has(g.key)} onchange={() => toggleGroup(g)} />
           <span class="grow groupbody">
             <strong>{g.name}</strong>
+            {#if g.name !== g.key}<span class="addr">{g.key}</span>{/if}
             <span>{g.rows[0].subject || g.rows[0].summary}{g.rows.length > 1 ? ` + ${g.rows.length - 1} more` : ''}</span>
           </span>
           <span class="n">{g.rows.length}</span>
@@ -486,7 +499,7 @@
     <div class="sheet">
       <div class="sheet-grip"></div>
       <div class="warnline">{@render hazardGlyph()}<span>Spam trains the provider's filter — the one triage action with an effect outside your mailbox.</span></div>
-      <div class="sheet-sub">{senderOf(confirmSpam)} · {confirmSpam.subject || confirmSpam.summary}</div>
+      <div class="sheet-sub">{senderOf(confirmSpam)}{#if confirmSpam.from_name && confirmSpam.from} &lt;{confirmSpam.from}&gt;{/if} · {confirmSpam.subject || confirmSpam.summary}</div>
       <div class="btnrow">
         <button class="btn" onclick={() => (confirmSpam = null)}>Back</button>
         <button class="btn primary" onclick={markSpam}>Mark spam</button>
@@ -593,6 +606,7 @@
   .reader h1, .sweeptitle { margin: 0; font-size: 19px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
   .meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--text-muted); }
   .meta .who { color: #c9c9d3; }
+  .addr { font-family: var(--mono); font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
   .suggest { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border: 1px solid var(--accent-700); border-radius: var(--radius); background: var(--accent-900); font-size: 14px; line-height: 1.45; }
   .suggest strong { color: var(--accent-300); font-weight: 600; }
   .msg { display: flex; flex-direction: column; gap: 8px; }

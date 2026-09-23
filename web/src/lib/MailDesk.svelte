@@ -4,7 +4,7 @@
   import { apiFetch as fetch } from './api.js';
   import { parseThread } from './mail-thread.js';
   import { LANES, laneOf, sortRows, acceptVerb, keyOf, senderOf, sweepGroups, ageOf, tickedGroups } from './mail-desk.js';
-  import { MailQueue, HOLD_MS, VERB_PAST, VERB_LABEL } from './mail-queue.svelte.js';
+  import { MailQueue, HOLD_MS, VERB_PAST, VERB_LABEL, UNSEEN } from './mail-queue.svelte.js';
 
   // Mail triage at a desk: lanes, a dense list and the open thread side by
   // side, driven from the keyboard. The phone keeps Mail.svelte; App.svelte
@@ -169,6 +169,12 @@
 
   function ask(verb, label, placeholder, { wantTo = false, required = false } = {}) {
     if (!targets.length) return;
+    // Before the owner writes a steer, not after: none of the asking verbs
+    // works on a thread the store has never seen.
+    if (!q.canAct(verb, targets)) {
+      say(UNSEEN);
+      return;
+    }
     if (targets.length > 1 && (wantTo || verb === 'needs-info')) {
       say('That one works on a single thread');
       return;
@@ -657,11 +663,11 @@
         <div><div class="kicker">Decide</div>
           <p><kbd>⏎</kbd> accept the suggestion</p>
           <p><kbd>e</kbd> archive · <kbd>d</kbd> dismiss</p>
-          <p><kbd>p</kbd> park until someone replies</p></div>
+          <p><kbd>p</kbd> park until someone replies</p>
+          <p><kbd>t</kbd> make a task on the board</p></div>
         <div><div class="kicker">Draft (to the outbox)</div>
           <p><kbd>r</kbd> reply · <kbd>s</kbd> schedule</p>
-          <p><kbd>f</kbd> forward · <kbd>t</kbd> task</p>
-          <p><kbd>c</kbd> compose new</p></div>
+          <p><kbd>f</kbd> forward · <kbd>c</kbd> compose new</p></div>
         <div><div class="kicker">Batch and recover</div>
           <p><kbd>x</kbd> select · <kbd>⇧↓</kbd> <kbd>J</kbd> <kbd>K</kbd> extend</p>
           <p><kbd>z</kbd> undo (within {HOLD_MS / 1000}s)</p>
