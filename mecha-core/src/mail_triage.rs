@@ -922,6 +922,22 @@ fn is_zero(n: &u32) -> bool {
     *n == 0
 }
 
+/// A message nothing about which can make a working classifier fail: asked
+/// when a sweep classified nothing and failed several threads, to tell a
+/// model that cannot answer (the server's fault) from threads it cannot
+/// answer about (their own). No real mailbox, no real person.
+pub fn canary_thread() -> ThreadInput {
+    ThreadInput {
+        thread_id: "mecha-canary".into(),
+        account: "canary".into(),
+        from: "colleague@example.org".into(),
+        from_name: "A colleague".into(),
+        subject: "Lunch tomorrow?".into(),
+        date: chrono::Utc::now().to_rfc3339(),
+        body: "Are you free for lunch tomorrow at noon? No worries if not.".into(),
+    }
+}
+
 /// Whether a classification failure is the provider's rather than the
 /// thread's. Those fail every thread in a sweep alike, so they must not pace
 /// any one of them (see [`retry_after`]): a transport failure, a server
