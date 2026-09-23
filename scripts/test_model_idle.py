@@ -75,12 +75,13 @@ class ModelIdle(unittest.TestCase):
     def tearDown(self):
         self.state.cleanup()
 
-    def run_check(self, url, stuck_max=3, gpu_busy="100", path=None):
+    def run_check(self, url, stuck_max=3, gpu_busy="100", path=None, busy_max=36):
         env = dict(
             os.environ,
             PATH=path or os.environ["PATH"],
             MECHA_SLOTS_URL=url,
             MECHA_IDLE_STUCK_MAX=str(stuck_max),
+            MECHA_IDLE_BUSY_MAX=str(busy_max),
             MECHA_GPU_BUSY=gpu_busy,  # never skip on the real GPU under test
             XDG_STATE_HOME=self.state.name,
         )
@@ -94,6 +95,17 @@ class ModelIdle(unittest.TestCase):
         code, said = self.run_check(f"{self.base}/busy")
         self.assertEqual(code, 1)
         self.assertIn("1 model slot(s) in use", said)
+
+    def test_a_slot_busy_for_too_long_fails(self):
+        # A wedged slot would otherwise skip the sweep forever.
+        codes = [self.run_check(f"{self.base}/busy", busy_max=3)[0] for _ in range(3)]
+        self.assertEqual(codes, [1, 1, 255])
+
+    def test_an_idle_tick_clears_the_busy_count(self):
+        self.run_check(f"{self.base}/busy", busy_max=3)
+        self.run_check(f"{self.base}/busy", busy_max=3)
+        self.assertEqual(self.run_check(f"{self.base}/idle", busy_max=3)[0], 0)
+        self.assertEqual(self.run_check(f"{self.base}/busy", busy_max=3)[0], 1)
 
     def test_a_server_answering_wrongly_fails_at_once(self):
         # --no-slots, and every slot shape this script does not recognise:
@@ -134,7 +146,7 @@ class ModelIdle(unittest.TestCase):
                 (bindir / tool).symlink_to(real)
         if util is not None:
             smi = bindir / "nvidia-smi"
-            smi.write_text(f"#!/bin/sh\necho {util}\n")
+            smi.write_text(f"#!/bin/sh\necho '{util}'\n")
             smi.chmod(0o755)
         return str(bindir)
 
@@ -145,6 +157,11 @@ class ModelIdle(unittest.TestCase):
 
     def test_a_quiet_gpu_runs(self):
         self.assertEqual(self.run_check(f"{self.base}/idle", gpu_busy="30", path=self.gpu_path(12))[0], 0)
+
+    def test_an_unreadable_gpu_fails_open_but_says_so(self):
+        code, said = self.run_check(f"{self.base}/idle", gpu_busy="30", path=self.gpu_path("[N/A]"))
+        self.assertEqual(code, 0)
+        self.assertIn("no readable GPU utilisation", said)
 
     def test_no_gpu_query_fails_open(self):
         # A box without a usable nvidia-smi still sorts its mail.

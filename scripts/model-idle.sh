@@ -42,35 +42,46 @@
 # apart, so consecutive skips of that kind are counted in a state file, and
 # after MECHA_IDLE_STUCK_MAX of them in a row (default 9: three hours of
 # ticks) the check fails instead. Any answer that proves the server alive —
-# an idle or busy slot list — clears the count, as does a GPU skip, which
-# says nothing about the server.
+# an idle or busy slot list — clears the count.
+#
+# **A busy slot is counted too, on a much longer fuse.** Busy is the normal
+# reason to skip, and the owner chatting through an afternoon must never
+# alarm; but a slot stuck `is_processing` — a wedged request, a run that never
+# ends — would skip the sweep forever with nothing to say so. So consecutive
+# busy skips get their own count, cleared by any tick that finds every slot
+# idle, and fail after MECHA_IDLE_BUSY_MAX (default 36: twelve hours, longer
+# than the whole daytime window).
 set -uo pipefail
 
 SLOTS_URL="${MECHA_SLOTS_URL:-http://127.0.0.1:8080/slots}"
 GPU_BUSY="${MECHA_GPU_BUSY:-30}"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/mecha"
 STUCK_MAX="${MECHA_IDLE_STUCK_MAX:-9}"
-STUCK_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/mecha/model-idle-stuck"
+STUCK_FILE="$STATE_DIR/model-idle-stuck"
+BUSY_MAX="${MECHA_IDLE_BUSY_MAX:-36}"
+BUSY_FILE="$STATE_DIR/model-idle-busy"
 
-# A transient-looking skip: counted, and loud once it has lasted too long.
-stuck_skip() {
-    local n
-    n="$(cat "$STUCK_FILE" 2>/dev/null)"
+# A skip that may be passing or may be permanent: counted in FILE, and loud
+# once MAX of them have come in a row.
+counted_skip() {
+    local file=$1 max=$2 why=$3 n
+    n="$(cat "$file" 2>/dev/null)"
     [ "$n" -eq "$n" ] 2>/dev/null || n=0
     n=$((n + 1))
     # A count that cannot be kept can never escalate, which would turn "loud
     # after three hours" into "quiet forever" — so that is a failure too.
-    if ! { mkdir -p "$(dirname "$STUCK_FILE")" && printf '%s\n' "$n" >"$STUCK_FILE"; } 2>/dev/null; then
-        echo "model-idle: $1, and the skip count cannot be saved to $STUCK_FILE — failing so mecha doctor sees it"
+    if ! { mkdir -p "$STATE_DIR" && printf '%s\n' "$n" >"$file"; } 2>/dev/null; then
+        echo "model-idle: $why, and the skip count cannot be saved to $file — failing so mecha doctor sees it"
         exit 255
     fi
-    if [ "$n" -ge "$STUCK_MAX" ]; then
-        echo "model-idle: $1 for $n ticks in a row — failing so mecha doctor sees it"
+    if [ "$n" -ge "$max" ]; then
+        echo "model-idle: $why for $n ticks in a row — failing so mecha doctor sees it"
         exit 255
     fi
-    echo "model-idle: $1 — skipping this run ($n in a row)"
+    echo "model-idle: $why — skipping this run ($n in a row)"
     exit 1
 }
-clear_stuck() { rm -f "$STUCK_FILE"; }
+stuck_skip() { counted_skip "$STUCK_FILE" "$STUCK_MAX" "$1"; }
 
 # The body and the status separately: `curl -f` would fold every HTTP error
 # into one exit code, and two of them mean opposite things here.
@@ -123,13 +134,19 @@ if ! [ "$busy" -eq "$busy" ] 2>/dev/null; then
     exit 255
 fi
 # A readable slot list: the server is alive, whatever it is doing.
-clear_stuck
+rm -f "$STUCK_FILE"
 if [ "$busy" -gt 0 ]; then
-    echo "model-idle: $busy model slot(s) in use — skipping this run"
-    exit 1
+    counted_skip "$BUSY_FILE" "$BUSY_MAX" "$busy model slot(s) in use"
 fi
+rm -f "$BUSY_FILE"
 
 util="$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -dc '0-9')"
+# Present but unreadable (`[N/A]`, which this box's nvidia-smi answers for
+# its memory queries) still fails open, but says so: from the journal it must
+# not look like a quiet GPU.
+if [ -z "$util" ] && command -v nvidia-smi >/dev/null 2>&1; then
+    echo "model-idle: nvidia-smi gave no readable GPU utilisation — not gating on it"
+fi
 if [ -n "$util" ] && [ "$util" -gt "$GPU_BUSY" ]; then
     echo "model-idle: GPU at ${util}% (> ${GPU_BUSY}%) — skipping this run"
     exit 1
