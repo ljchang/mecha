@@ -196,6 +196,11 @@ impl Environment {
     /// opens. A term of every row's condition hash.
     pub fn digest(&self, base: &Path) -> Result<String> {
         let dir = self.dir(base);
+        // Guarded here as well as in `base_config`: `ExperimentStore::plan`
+        // digests first, and `status` never reaches `base_config`, so a
+        // `dir` inside the home would be read whole before the refusal
+        // (found on review).
+        refuse_operator_home(&dir, &crate::work::mecha_home()?)?;
         let mut files = Vec::new();
         collect_files(&dir, &dir, &mut files)
             .with_context(|| format!("reading the experiment environment {}", dir.display()))?;
@@ -659,6 +664,16 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
         assert!(refuse_operator_home(&tmp.path().join("alias"), &real).is_err());
         refuse_operator_home(&sibling, &real).unwrap();
         assert!(refuse_operator_home(&tmp.path().join("missing"), &real).is_err());
+        // The digest refuses before reading: pointed at the real home, it
+        // errors rather than walking it.
+        let at_home = Environment {
+            dir: Some(crate::work::mecha_home().unwrap()),
+            live_servers: Vec::new(),
+        };
+        if crate::work::mecha_home().unwrap().exists() {
+            let err = at_home.digest(Path::new("/")).unwrap_err();
+            assert!(format!("{err:#}").contains("mecha home"), "{err:#}");
+        }
         // A home not created yet is compared lexically, not waved through.
         let unborn = tmp.path().join("fresh/.mecha");
         assert!(refuse_operator_home(&tmp.path().join("home"), &unborn).is_ok());

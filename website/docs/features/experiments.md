@@ -503,7 +503,9 @@ calls each with `MECHA_HOME`, `MECHA_FIXTURES` (the home's fixture-store
 root), `MECHA_EXPERIMENT_WORKSPACE` and `MECHA_EXPERIMENT_TASK` set, and
 every edge fails the trial rather than passing it: a non-zero exit, a
 timeout, no JSON, an unknown shape, or a verdict that disagrees with its own
-checks. `eval/fixtures/source_stub.py` is the whole contract in forty lines.
+checks. Under `mecha exp run --jobs`, a source's `setup` and `grade` may run
+for several arms at once, so key any state on `MECHA_FIXTURES` or
+`MECHA_HOME` (both per arm), never on a fixed path. `eval/fixtures/source_stub.py` is the whole contract in forty lines.
 
 `eval/fixtures/dojo.py` is AgentDojo as a fixture world — the same program
 serves a suite's tools over MCP and acts as the task source for its user

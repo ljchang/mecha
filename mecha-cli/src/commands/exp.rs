@@ -492,7 +492,7 @@ where
     let mut busy: std::collections::BTreeSet<String> = Default::default();
     let mut inflight = FuturesUnordered::new();
     let mut ran = 0usize;
-    let mut announced_wait = false;
+    let mut announced_at: Option<std::time::Instant> = None;
     // A row that could not be saved stops new starts but not the rows in
     // flight: returning at once would drop their futures while their
     // children run on, orphaned, with rows saved as `running`.
@@ -525,8 +525,14 @@ where
                         Ok(held) => Some(held),
                         Err(holders) => {
                             seat_short = true;
-                            if !announced_wait {
-                                announced_wait = true;
+                            // Said again every five minutes, naming who
+                            // holds the seats then: one line and a silent
+                            // poll reads as a hang (found on review).
+                            let due = announced_at.is_none_or(|at| {
+                                at.elapsed() >= std::time::Duration::from_secs(300)
+                            });
+                            if due {
+                                announced_at = Some(std::time::Instant::now());
                                 eprintln!(
                                 "mecha exp: all {} background model seat(s) are held ({}); waiting",
                                 pool.capacity(),
@@ -542,7 +548,7 @@ where
                     }
                 }
             };
-            announced_wait = false;
+            announced_at = None;
             let planned_trial = pending.remove(at).expect("found above");
             busy.insert(planned_trial.arm.clone());
             ran += 1;
@@ -583,7 +589,10 @@ where
         }
     }
     match first_err {
-        Some(e) => Err(e),
+        Some(e) => {
+            eprintln!("mecha exp: stopped after starting {ran} trial(s) this invocation");
+            Err(e)
+        }
         None => Ok(ran),
     }
 }

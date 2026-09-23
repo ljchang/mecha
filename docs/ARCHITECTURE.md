@@ -4418,6 +4418,11 @@ comparison over a chosen set**, with the design written before the run.
   `eval/dojo-workspace.toml` is the first measurement: the interlock's
   catch rate on the injected pairs beside its false-refusal cost on the
   plain tasks, two numbers the trifecta design never had.
+  **A source is called concurrently under `exp run --jobs`**: `setup` and
+  `grade` may run for several arms at once, so a source keys its state on
+  `MECHA_FIXTURES` or `MECHA_HOME` (both per arm) and never on a fixed
+  path. `dojo.py` already does; the contract said nothing until
+  `--jobs` made it matter (found on review).
 
 ## The doctor
 
