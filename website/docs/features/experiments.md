@@ -140,10 +140,11 @@ stands. `bare` forces every lever off except `approval_rules`, and is what
 `mecha eval` runs. The preset applies first, then `levers_off`, then
 `levers_on`.
 
-`levers_on` undoes a preset or a `levers_off`. It forces a switch on against
-your config only for `step_checks` and `goal_guidance`. A switch your config
-leaves off (`step_escalation` ships off) stays off under `levers_on`, so turn
-it on in your config and measure it with `levers_off` instead.
+`levers_on` undoes a preset or a `levers_off`, and **forces** a switch on
+even where your config turns it off, so `levers_on = ["step_escalation"]`
+measures step escalation although it ships off. A forced switch is part of
+the row's condition hash. Switches an arm does not name keep your config's
+value.
 
 **Levers**, the per-run switches, named in `levers_off` / `levers_on`:
 
@@ -550,8 +551,6 @@ holds the plans for each one.
   the sandbox or the security settings. A variation outside the lever set and
   the four knobs is a separate experiment with a different base config, and
   its rows do not pair with the first one's.
-- **`levers_on` forces only two switches**, as described under
-  [presets](#what-an-arm-can-vary).
 - **Judging is pairwise, on one metric.** Each treatment against the control
   only, with win/loss/tie counts. There is no per-task breakdown, token or
   wall-clock cost, pass^k across seeds, or lifetime slope. For those, run
