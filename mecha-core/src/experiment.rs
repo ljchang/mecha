@@ -121,6 +121,13 @@ pub struct Manifest {
     /// mailbox are the dataset and D12 holds for them too.
     #[serde(default)]
     pub fixtures: Fixtures,
+    /// The world a trial home is built from (`trial_env`): the harness
+    /// config, charter, skills, learning store and server stores, with the
+    /// machine facts taken from the operator's config. Absent, the
+    /// checkout's `eval/envs/default`. Nothing of the operator's home rides
+    /// in unless `live_servers` names it.
+    #[serde(default)]
+    pub environment: crate::trial_env::Environment,
     /// Explicit grading provider/model for cases with `expect.judge`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judge: Option<JudgeConfig>,
@@ -1440,6 +1447,7 @@ impl Manifest {
             schedule: Schedule::default(),
             principal: None,
             fixtures: Fixtures::default(),
+            environment: Default::default(),
             judge: None,
         };
         m.validate()?;
@@ -1478,6 +1486,7 @@ impl Manifest {
             schedule: Schedule::default(),
             principal: None,
             fixtures: Fixtures::default(),
+            environment: Default::default(),
             judge: None,
         };
         m.validate()?;
@@ -1711,7 +1720,7 @@ impl Manifest {
     /// an arm that names its own overrides them, and the hash follows the
     /// arm. Pure: the store decides which have run.
     pub fn trials(&self, task_ids: &[String], provider: &str, model: &str) -> Vec<Trial> {
-        self.trials_with_world(task_ids, provider, model, None)
+        self.trials_with_world(task_ids, provider, model, None, None)
     }
 
     /// [`Manifest::trials`] with the fixture charter's digest on every row's
@@ -1723,6 +1732,7 @@ impl Manifest {
         provider: &str,
         model: &str,
         charter_digest: Option<&str>,
+        env_digest: Option<&str>,
     ) -> Vec<Trial> {
         let seeds: Vec<Option<u64>> = if self.seeds.is_empty() {
             vec![None]
@@ -1757,6 +1767,7 @@ impl Manifest {
                     &route,
                     charter_digest,
                     &forced_on,
+                    env_digest,
                 )),
                 status: TrialStatus::Pending,
                 session_id: None,
@@ -1994,6 +2005,7 @@ pub fn condition_hash_of(
         &[],
         None,
         &[],
+        None,
     )
 }
 
@@ -2017,6 +2029,7 @@ pub fn condition_hash_world(
     route: &[String],
     charter_digest: Option<&str>,
     forced_on: &[Lever],
+    env_digest: Option<&str>,
 ) -> String {
     let mut overrides: Vec<&str> = overrides.iter().map(String::as_str).collect();
     overrides.sort_unstable();
@@ -2073,12 +2086,21 @@ pub fn condition_hash_world(
         canonical.push_str("|charter=");
         canonical.push_str(d);
     }
+    // The environment's whole directory and its live servers
+    // (`trial_env::Environment::digest`). Appended only when a caller has
+    // one, so every hash minted before environments existed keeps its
+    // value — and every planned row has one, since a manifest that names
+    // no environment runs in the default.
+    if let Some(d) = env_digest {
+        canonical.push_str("|env=");
+        canonical.push_str(d);
+    }
     fnv64(canonical.as_bytes())
 }
 
 /// FNV-1a over bytes, as a hex string: an equality key, not a credential,
 /// so no hashing dependency is worth adding for it.
-fn fnv64(bytes: &[u8]) -> String {
+pub(crate) fn fnv64(bytes: &[u8]) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in bytes {
         h ^= u64::from(*b);
@@ -2293,8 +2315,9 @@ impl ExperimentStore {
     ) -> Result<(Vec<Trial>, usize)> {
         let (on_disk, skipped) = self.trials()?;
         let digest = manifest.fixtures.charter_digest(base)?;
+        let env = manifest.environment.digest(base)?;
         let planned = manifest
-            .trials_with_world(task_ids, provider, model, digest.as_deref())
+            .trials_with_world(task_ids, provider, model, digest.as_deref(), Some(&env))
             .into_iter()
             .map(|t| on_disk.get(&t.id).cloned().unwrap_or(t))
             .collect();
@@ -2303,32 +2326,45 @@ impl ExperimentStore {
 
     /// The isolated home one arm's trials run in (D12). Created with the
     /// marker, and **refused if it is, or contains, the real home**.
-    pub fn arm_home(&self, arm: &str) -> Result<PathBuf> {
-        self.home_at(arm)
+    pub fn arm_home(&self, arm: &str, seed_from: &Path) -> Result<PathBuf> {
+        self.home_at(arm, seed_from)
     }
 
     /// The isolated home one *lifetime* runs in — one per arm × seed ×
     /// repetition (`lifetime_id`), because a lifetime's whole point is what
     /// its stages leave in the store for the next task, and two lifetimes
     /// sharing a home would learn from each other.
-    pub fn lifetime_home(&self, lifetime: &str) -> Result<PathBuf> {
-        self.home_at(lifetime)
+    pub fn lifetime_home(&self, lifetime: &str, seed_from: &Path) -> Result<PathBuf> {
+        self.home_at(lifetime, seed_from)
     }
 
-    fn home_at(&self, name: &str) -> Result<PathBuf> {
+    /// `seed_from` is the experiment's environment directory: a fresh home
+    /// takes its learning store, skills and charter from there, never from
+    /// the real home (`trial_env`).
+    fn home_at(&self, name: &str, seed_from: &Path) -> Result<PathBuf> {
         let home = self.root.join("homes").join(name);
         let real = crate::work::mecha_home()?;
         refuse_unsafe_home(&home, &real)?;
         let fresh = !home.join(HOME_MARKER).exists();
         std::fs::create_dir_all(&home)?;
         if fresh {
-            seed_home(&real, &home)?;
+            seed_home(seed_from, &home)?;
         }
         std::fs::write(
             home.join(HOME_MARKER),
             b"an experiment home; see mecha exp\n",
         )?;
         Ok(home)
+    }
+
+    /// Where the environment's server stores are built, once per
+    /// environment digest: a world edited between runs builds anew beside
+    /// the old, which the rows that ran in it still name by hash.
+    pub fn stores_cache(&self, env_digest: &str) -> PathBuf {
+        self.root
+            .join("environment")
+            .join(env_digest)
+            .join("stores")
     }
 
     pub fn workspace_for(&self, trial_id: &str) -> PathBuf {
@@ -3009,9 +3045,9 @@ pub fn fold_home_overrides(
 /// reflections), the skills directory, the charter. A fresh trial home has
 /// none, so `full` would have meant "the machine's `[agent]` switches and
 /// nothing else" (found on review). Seeded once, when the arm's home is
-/// first created, from the real home — a snapshot, never written back, so
-/// `full` means the harness as this machine had it when the arm started
-/// and a trial's `learn` lands in the copy.
+/// first created, from the experiment's environment directory
+/// (`trial_env`) — never written back, and since 2026-09-23 never the real
+/// home, whose copy carried the operator's world in with it.
 pub const SEEDED: [&str; 3] = ["learning", "skills", "charter.toml"];
 
 pub fn seed_home(real: &Path, home: &Path) -> Result<()> {
@@ -3039,7 +3075,7 @@ pub fn seed_home(real: &Path, home: &Path) -> Result<()> {
     Ok(())
 }
 
-fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+pub(crate) fn copy_tree(from: &Path, to: &Path) -> Result<()> {
     if from.is_dir() {
         std::fs::create_dir_all(to)?;
         for entry in std::fs::read_dir(from)? {
@@ -3748,7 +3784,7 @@ rationale = "r"
         assert_eq!(h("rules"), h("full"));
         assert_eq!(
             condition_hash(&[], &[], "p", "m", None),
-            condition_hash_world(&[], &[], "p", "m", None, &[], &[], &[], None, &[]),
+            condition_hash_world(&[], &[], "p", "m", None, &[], &[], &[], None, &[], None),
             "no forced switch: every earlier hash keeps its value"
         );
     }
@@ -4788,9 +4824,14 @@ rationale = "no rumination should fail more over the sequence"
         let m = store.create(MANIFEST).unwrap();
         assert!(store.create(MANIFEST).is_err(), "written once");
         let tasks = vec!["a".to_string()];
-        let (planned, skipped) = store
-            .plan(&m, &tasks, "local", "m", Path::new("."))
-            .unwrap();
+        // The design's world: with no default environment under the
+        // checkout, planning refuses rather than hashing nothing.
+        let base = root.join("checkout");
+        assert!(store.plan(&m, &tasks, "local", "m", &base).is_err());
+        let env = base.join(crate::trial_env::DEFAULT_DIR);
+        std::fs::create_dir_all(&env).unwrap();
+        std::fs::write(env.join("config.toml"), "").unwrap();
+        let (planned, skipped) = store.plan(&m, &tasks, "local", "m", &base).unwrap();
         assert_eq!(planned.len(), 6);
         assert_eq!(skipped, 0);
         let mut first = planned[0].clone();
@@ -4798,9 +4839,7 @@ rationale = "no rumination should fail more over the sequence"
         first.passed = Some(true);
         store.save_trial(&first).unwrap();
         std::fs::write(store.trial_path("torn"), b"{not json").unwrap();
-        let (planned, skipped) = store
-            .plan(&m, &tasks, "local", "m", Path::new("."))
-            .unwrap();
+        let (planned, skipped) = store.plan(&m, &tasks, "local", "m", &base).unwrap();
         assert_eq!(planned[0].status, TrialStatus::Done, "the store's row wins");
         assert_eq!(skipped, 1, "a torn row is counted, not read as pending");
         // An unknown status reads as unknown, never as a failed file.
@@ -4809,7 +4848,9 @@ rationale = "no rumination should fail more over the sequence"
             .replace("\"done\"", "\"vanished\"");
         let t: Trial = serde_json::from_str(&raw).unwrap();
         assert_eq!(t.status, TrialStatus::Unknown);
-        let home = store.arm_home("bare").unwrap();
+        let home = store
+            .arm_home("bare", &root.join("no-environment"))
+            .unwrap();
         assert!(is_experiment_home(&home));
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -5354,6 +5395,7 @@ seed = "seed"
                 route,
                 None,
                 &[],
+                None,
             )
         };
         assert_eq!(rows[0].condition_hash, world(&["mail__mail_send".into()]));
@@ -5387,9 +5429,15 @@ seed = "seed"
             &["mail__mail_send".into()],
             Some("abc"),
             &[],
+            None,
         );
         assert_ne!(with_charter, world(&["mail__mail_send".into()]));
-        let rows2 = m.trials_with_world(&["a".into()], "p", "m", Some("abc"));
+        let rows2 = m.trials_with_world(&["a".into()], "p", "m", Some("abc"), None);
+        // And the environment's digest, only when there is one.
+        let in_env = m.trials_with_world(&["a".into()], "p", "m", Some("abc"), Some("e1"));
+        let other_env = m.trials_with_world(&["a".into()], "p", "m", Some("abc"), Some("e2"));
+        assert_ne!(in_env[0].condition_hash, rows2[0].condition_hash);
+        assert_ne!(in_env[0].condition_hash, other_env[0].condition_hash);
         assert_eq!(rows2[0].condition_hash, with_charter);
         // The digest is of the text: two paths, one text, one digest.
         let base = std::env::temp_dir().join(format!("mecha-cd-{}", uuid::Uuid::new_v4()));
