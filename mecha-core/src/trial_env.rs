@@ -664,16 +664,19 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
         assert!(refuse_operator_home(&tmp.path().join("alias"), &real).is_err());
         refuse_operator_home(&sibling, &real).unwrap();
         assert!(refuse_operator_home(&tmp.path().join("missing"), &real).is_err());
-        // The digest refuses before reading: pointed at the real home, it
-        // errors rather than walking it.
+        // The digest refuses before reading: pointed at the home, it errors
+        // rather than walking it. The home is a guarded scratch one, never
+        // the operator's, and the lock is `work`'s, since another test may
+        // move `MECHA_HOME` meanwhile (found on review).
+        let home = crate::work::tests::HomeGuard::new();
+        std::fs::write(home.dir().join("config.toml"), "").unwrap();
         let at_home = Environment {
-            dir: Some(crate::work::mecha_home().unwrap()),
+            dir: Some(home.dir().to_path_buf()),
             live_servers: Vec::new(),
         };
-        if crate::work::mecha_home().unwrap().exists() {
-            let err = at_home.digest(Path::new("/")).unwrap_err();
-            assert!(format!("{err:#}").contains("mecha home"), "{err:#}");
-        }
+        let err = at_home.digest(Path::new("/")).unwrap_err();
+        assert!(format!("{err:#}").contains("mecha home"), "{err:#}");
+        drop(home);
         // A home not created yet is compared lexically, not waved through.
         let unborn = tmp.path().join("fresh/.mecha");
         assert!(refuse_operator_home(&tmp.path().join("home"), &unborn).is_ok());

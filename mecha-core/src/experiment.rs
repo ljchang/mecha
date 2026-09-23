@@ -3230,9 +3230,25 @@ pub fn judge(
         let stages = health_of(name);
         let control_stages = health_of(control_name);
         let mut judgement = judgement;
-        // Rows resumed at a different `--jobs` pair two concurrency
-        // regimes into one verdict: the same claim as a stage not known to
-        // have run as designed, so the same hold (found on review).
+        let broken = stages.broken() + control_stages.broken() + unreadable_stage_lines;
+        // Both directions: a treatment not known to have occurred can no
+        // more be refuted than confirmed, and a confident reject over two
+        // arms that both failed to ruminate would read as evidence against
+        // it (found on review).
+        if broken > 0
+            && matches!(
+                judgement.disposition,
+                crate::candidate::Disposition::Accept | crate::candidate::Disposition::Reject(_)
+            )
+        {
+            judgement.disposition = crate::candidate::Disposition::Propose(format!(
+                "{broken} stage line(s) failed, interrupted, unreadable, or in a status this build cannot read across this arm's and the control's lifetimes; the treatment is not known to have run as designed"
+            ));
+        }
+        // Rows resumed at a different `--jobs` pair two concurrency regimes
+        // into one verdict: the same claim as a stage not known to have run
+        // as designed, so the same hold (found on review). After the stage
+        // hold, the stronger claim, so its reason is the one kept.
         let jobs_seen: Vec<u32> = pairs
             .iter()
             .flat_map(|p| [p.control.jobs.unwrap_or(1), p.treatment.jobs.unwrap_or(1)])
@@ -3247,21 +3263,6 @@ pub fn judge(
         {
             judgement.disposition = crate::candidate::Disposition::Propose(format!(
                 "this arm's pairs ran under different --jobs limits ({jobs_seen:?}); concurrency moves the run, so the verdict is not comparing like with like"
-            ));
-        }
-        let broken = stages.broken() + control_stages.broken() + unreadable_stage_lines;
-        // Both directions: a treatment not known to have occurred can no
-        // more be refuted than confirmed, and a confident reject over two
-        // arms that both failed to ruminate would read as evidence against
-        // it (found on review).
-        if broken > 0
-            && matches!(
-                judgement.disposition,
-                crate::candidate::Disposition::Accept | crate::candidate::Disposition::Reject(_)
-            )
-        {
-            judgement.disposition = crate::candidate::Disposition::Propose(format!(
-                "{broken} stage line(s) failed, interrupted, unreadable, or in a status this build cannot read across this arm's and the control's lifetimes; the treatment is not known to have run as designed"
             ));
         }
         out.push(ArmJudgement {

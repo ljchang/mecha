@@ -19,9 +19,9 @@ its own A/B flags are two-arm manifests waiting to be written as such.
 
 Two arms, one task, one seed: the harness as the default
 [environment](#environments) configures it, against the same harness without
-learned rules. Nothing a trial does reaches your own graph, mail or rules. Run it from the checkout root, since
-relative paths in a manifest resolve against the directory you run `mecha exp`
-from.
+learned rules. Nothing a trial does reaches your own graph, mail or rules. Run
+it from the checkout root, since relative paths in a manifest resolve against
+the directory you run `mecha exp` from.
 
 ```toml
 # quickstart.toml
@@ -501,15 +501,16 @@ source_timeout_secs = 600
 
 `list` prints the tasks as JSON (id, prompt, tags, an optional turn ceiling,
 an optional `expect` block); `setup <task>` puts the world in the task's
-starting state before the run; `grade <task>` reads the run's `--json`
-result on stdin and prints a verdict with the checks behind it. The driver
-calls each with `MECHA_HOME`, `MECHA_FIXTURES` (the home's fixture-store
-root), `MECHA_EXPERIMENT_WORKSPACE` and `MECHA_EXPERIMENT_TASK` set, and
-every edge fails the trial rather than passing it: a non-zero exit, a
-timeout, no JSON, an unknown shape, or a verdict that disagrees with its own
-checks. Under `mecha exp run --jobs`, a source's `setup` and `grade` may run
-for several arms at once, so key any state on `MECHA_FIXTURES` or
-`MECHA_HOME` (both per arm), never on a fixed path. `eval/fixtures/source_stub.py` is the whole contract in forty lines.
+starting state before the run; `grade <task>` reads the run's `--json` result
+on stdin and prints a verdict with the checks behind it. The driver calls each
+with `MECHA_HOME`, `MECHA_FIXTURES` (the home's fixture-store root),
+`MECHA_EXPERIMENT_WORKSPACE` and `MECHA_EXPERIMENT_TASK` set, and every edge
+fails the trial rather than passing it: a non-zero exit, a timeout, no JSON,
+an unknown shape, or a verdict that disagrees with its own checks. Under
+`mecha exp run --jobs`, a source's `setup` and `grade` may run for several
+arms at once, so key any state on `MECHA_FIXTURES` or `MECHA_HOME` (both per
+arm), never on a fixed path. `eval/fixtures/source_stub.py` is the whole
+contract in forty lines.
 
 `eval/fixtures/dojo.py` is AgentDojo as a fixture world — the same program
 serves a suite's tools over MCP and acts as the task source for its user
