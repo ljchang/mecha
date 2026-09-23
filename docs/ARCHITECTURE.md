@@ -975,7 +975,14 @@ and a reviewer should not have to know how many accounts exist to read a
 draft. `mail_get_thread` reads, and resolves as an item, so it follows the
 item rule. A **read** declares nothing either way. A failed account never
 sinks a fan-out: its error is reported beside the other accounts' results,
-and the call errors only when every account failed.
+and the call errors only when every account failed. **Beside means as data
+where a program reads the result**: `calendar_list` reports a failed account
+as a row, `{account, calendars: [], error}` (`calendar_rows`), because its
+rows feed the outbox's calendar picker, and a prose note after the JSON —
+`with_notes`, which the other fan-outs still use for the model — is dropped
+by a program, so an unreadable account read as one with no calendars
+(#261). A new fan-out tool whose output a page or script parses should
+follow `calendar_rows`, not `with_notes`.
 
 Two unification wrinkles worth remembering: `mail_reply` takes a
 `thread_id` and replies to the newest message (or `message_id`), which Graph

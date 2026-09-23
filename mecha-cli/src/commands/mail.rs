@@ -722,8 +722,11 @@ async fn calendars(global: &GlobalOpts, account: Option<&str>, as_json: bool) ->
     if out.is_error {
         bail!("{}", out.content);
     }
-    // A partial answer carries a note after the JSON (one account failed);
-    // the JSON is the part a page can use, and the note goes to stderr.
+    // Since #261 an account that could not be read is a row with an `error`,
+    // not a note. The note split stays for an older mecha-mail — a session's
+    // MCP child outlives an install until that session restarts — which
+    // still appends one after the JSON; the JSON is what a page uses, and the
+    // note goes to stderr.
     let (rows, note) = split_json_note(&out.content);
     if as_json {
         // No rows is a failure to say so, not an empty list: the page must
@@ -2656,8 +2659,9 @@ mod draft_prompt_tests {
 mod calendars_tests {
     use super::split_json_note;
 
-    /// `calendar_list` appends a prose note when one account fails; the page
-    /// needs the JSON and must not lose it to the note.
+    /// An older mecha-mail's `calendar_list` (before #261) appended a prose
+    /// note when one account failed; the page needs the JSON and must not
+    /// lose it to the note. Current servers report the failure as a row.
     #[test]
     fn a_partial_answer_splits_into_rows_and_note() {
         let (rows, note) = split_json_note(
