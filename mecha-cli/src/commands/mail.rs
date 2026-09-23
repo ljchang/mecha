@@ -728,7 +728,7 @@ async fn calendars(global: &GlobalOpts, account: Option<&str>, as_json: bool) ->
     if as_json {
         // No rows is a failure to say so, not an empty list: the page must
         // tell "could not read" from "none" (found on review).
-        let Some(rows) = rows else {
+        let Some(rows) = rows.filter(|r| r.starts_with('[')) else {
             bail!(
                 "calendar_list answered without rows: {}",
                 out.content.trim()

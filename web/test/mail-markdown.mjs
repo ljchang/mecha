@@ -117,6 +117,15 @@ t('an angle autolink is a link', parseInline('<https://example.org>')[0]?.t === 
   parseBlocks(hostile);
   t('a hostile body parses in well under a second', Date.now() - t0 < 1000);
 }
+{
+  // Found on review: a bare URL trailed by a long `)` run was trimmed one
+  // character per full re-scan.
+  const t0 = Date.now();
+  const nodes = parseInline('see https://a.example/x' + ')'.repeat(60000));
+  t('a URL with a hostile paren tail parses fast', Date.now() - t0 < 1000);
+  t('…and the tail is not part of the link', nodes.some((n) => n.t === 'link' && n.href === 'https://a.example/x'));
+  t('a URL keeps the paren it opened', parseInline('(see https://en.example.org/wiki/Foo_(bar))').some((n) => n.t === 'link' && n.href === 'https://en.example.org/wiki/Foo_(bar)'));
+}
 t('empty text is no blocks', parseBlocks('').length === 0 && parseBlocks(null).length === 0);
 {
   // Pathological nesting must not recurse without bound.
