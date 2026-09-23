@@ -75,13 +75,13 @@ class ModelIdle(unittest.TestCase):
     def tearDown(self):
         self.state.cleanup()
 
-    def run_check(self, url, stuck_max=3, gpu_busy="100", path=None, busy_max=36):
+    def run_check(self, url, stuck_max=3, gpu_busy="100", path=None, day_max=44):
         env = dict(
             os.environ,
             PATH=path or os.environ["PATH"],
             MECHA_SLOTS_URL=url,
             MECHA_IDLE_STUCK_MAX=str(stuck_max),
-            MECHA_IDLE_BUSY_MAX=str(busy_max),
+            MECHA_IDLE_DAY_MAX=str(day_max),
             MECHA_GPU_BUSY=gpu_busy,  # never skip on the real GPU under test
             XDG_STATE_HOME=self.state.name,
         )
@@ -96,16 +96,23 @@ class ModelIdle(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("1 model slot(s) in use", said)
 
-    def test_a_slot_busy_for_too_long_fails(self):
+    def test_a_slot_busy_all_day_fails(self):
         # A wedged slot would otherwise skip the sweep forever.
-        codes = [self.run_check(f"{self.base}/busy", busy_max=3)[0] for _ in range(3)]
+        codes = [self.run_check(f"{self.base}/busy", day_max=3)[0] for _ in range(3)]
         self.assertEqual(codes, [1, 1, 255])
 
     def test_an_idle_tick_clears_the_busy_count(self):
-        self.run_check(f"{self.base}/busy", busy_max=3)
-        self.run_check(f"{self.base}/busy", busy_max=3)
-        self.assertEqual(self.run_check(f"{self.base}/idle", busy_max=3)[0], 0)
-        self.assertEqual(self.run_check(f"{self.base}/busy", busy_max=3)[0], 1)
+        self.run_check(f"{self.base}/busy", day_max=3)
+        self.run_check(f"{self.base}/busy", day_max=3)
+        self.assertEqual(self.run_check(f"{self.base}/idle", day_max=3)[0], 0)
+        self.assertEqual(self.run_check(f"{self.base}/busy", day_max=3)[0], 1)
+
+    def test_a_busy_count_from_an_earlier_day_starts_over(self):
+        # Nothing ticks overnight to clear it; the day in the file does.
+        state = Path(self.state.name) / "mecha"
+        state.mkdir()
+        (state / "model-idle-busy").write_text("2000-01-01 2\n")
+        self.assertEqual(self.run_check(f"{self.base}/busy", day_max=3)[0], 1)
 
     def test_a_server_answering_wrongly_fails_at_once(self):
         # --no-slots, and every slot shape this script does not recognise:
@@ -140,7 +147,7 @@ class ModelIdle(unittest.TestCase):
         # all, which needs a PATH without the real one on it.
         bindir = Path(self.state.name) / "bin"
         bindir.mkdir()
-        for tool in ["bash", "curl", "python3", "cat", "mkdir", "dirname", "rm", "head", "tr"]:
+        for tool in ["bash", "curl", "python3", "cat", "mkdir", "dirname", "rm", "head", "tr", "date"]:
             real = subprocess.run(["bash", "-c", f"command -v {tool}"], capture_output=True, text=True).stdout.strip()
             if real:
                 (bindir / tool).symlink_to(real)
@@ -154,6 +161,11 @@ class ModelIdle(unittest.TestCase):
         code, said = self.run_check(f"{self.base}/idle", gpu_busy="30", path=self.gpu_path(85))
         self.assertEqual(code, 1)
         self.assertIn("GPU at 85%", said)
+
+    def test_a_gpu_busy_all_day_fails(self):
+        path = self.gpu_path(85)
+        codes = [self.run_check(f"{self.base}/idle", gpu_busy="30", path=path, day_max=2)[0] for _ in range(2)]
+        self.assertEqual(codes, [1, 255])
 
     def test_a_quiet_gpu_runs(self):
         self.assertEqual(self.run_check(f"{self.base}/idle", gpu_busy="30", path=self.gpu_path(12))[0], 0)

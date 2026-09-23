@@ -38,7 +38,8 @@
 # unit does not depend on which branch a checkout happens to have out). It
 # skips the run — not a failure, just "not now" — when any local-model slot
 # is busy (the owner is chatting, or an agent run is working) or the GPU is
-# above 30% (research work). The next tick asks again. A model server that
+# above 30% (research work). The next tick asks again, and a whole day of
+# ticks that all skipped — the sweep never ran once — fails the unit. A model server that
 # does not answer, or answers with a slot list it cannot read, *fails* the
 # unit instead, so `mecha doctor` notices rather than the sweep going quiet.
 #
