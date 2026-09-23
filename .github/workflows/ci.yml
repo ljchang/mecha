@@ -134,6 +134,18 @@ jobs:
       - uses: actions/checkout@v7
       - run: python3 scripts/voice/test_echo_filter.py
 
+  # The daytime mail sweep's idle check (scripts/model-idle.sh): its whole job
+  # is its exit code — run, skip quietly, or fail so `mecha doctor` sees it —
+  # and a change that turns a loud failure quiet is only caught by running
+  # this. Its own job, not the voice one: it needs bash, curl and a loopback
+  # socket, and a failure here should not read as the voice filter failing.
+  model-idle:
+    name: model-idle check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 scripts/test_model_idle.py
+
   # The integration tests skip themselves when a sandbox backend is missing, and
   # a silently skipped test reads exactly like a passing one. This job installs
   # the backends and sets MECHA_TEST_REQUIRE_BACKENDS=1, which turns every skip

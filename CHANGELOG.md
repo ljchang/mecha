@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Mail is classified through the working day, not only overnight.
+  `mecha-mail-classify-day.timer` runs the same sweep every 20 minutes,
+  07:30–21:50 in the owner's zone, clear of the morning briefing and the
+  front door's hourly run; the 05:30 UTC nightly stays as the catch-up.
+  `scripts/model-idle.sh` gates each run: it skips while any local-model
+  slot is busy or the GPU is above 30%, and fails the unit — so `mecha
+  doctor` sees it — when the model server does not answer, answers with a
+  slot list it cannot read, or has been stuck loading for three hours.
+
 ## [0.1.21] - 2026-09-18
 
 ### Added

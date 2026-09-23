@@ -1,0 +1,33 @@
+# Every 20 minutes, 07:30–21:50 in the owner's zone (the box runs UTC; the
+# zone is named so daylight saving moves the window with the owner, not
+# against them).
+#
+# **Not 07:00.** That is the `morning` briefing trigger's minute, in the same
+# zone (see mecha-mail-classify.timer), and the idle check only protects the
+# briefing if the briefing reaches a model slot first — a coin flip. The
+# 07:00 tick would also carry the whole night's mail, the day's most
+# expensive sweep, into the briefing's window. Half an hour later costs
+# nothing: the briefing is where that mail gets read anyway.
+#
+# **Not on the hour either.** `mecha-frontdoor.timer` is `hourly` with a
+# 5-minute spread, and its extract and triage legs are model-bound with no
+# idle check of their own — the 07:00 argument, fourteen more times a day.
+# :10, :30 and :50 stay clear of its whole window.
+#
+# `Persistent=` is deliberately off, unlike the nightly's: a missed daytime
+# tick is covered by the next one twenty minutes later, and replaying a
+# morning's worth of ticks after a reboot would be a burst of exactly the
+# load this unit exists to avoid. A oneshot that is still running when the
+# next tick comes is not started twice — systemd skips it — so a slow sweep
+# cannot pile up behind itself.
+[Unit]
+Description=Classify new mail through the working day
+
+[Timer]
+OnCalendar=*-*-* 07:30/20:00 America/New_York
+OnCalendar=*-*-* 08..21:10/20:00 America/New_York
+RandomizedDelaySec=60
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

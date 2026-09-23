@@ -1,0 +1,90 @@
+# Install: install -D -m 755 scripts/model-idle.sh ~/.local/bin/mecha-model-idle
+#          cp scripts/mecha-mail-classify-day.{service,timer} ~/.config/systemd/user/
+#          systemctl --user daemon-reload
+#          systemctl --user enable --now mecha-mail-classify-day.timer
+#          loginctl enable-linger "$USER"     # timers must fire while logged out
+#
+# The daytime half of mail triage. `mecha-mail-classify` runs once, at 05:30
+# UTC, which made the desk a morning digest: mail that arrived at 10:00 was
+# unsorted until the next night. This runs the same sweep every 20 minutes
+# through the working day, so a thread is classified within about half an
+# hour of arriving, and the nightly stays as the catch-up for everything that
+# came in after hours.
+#
+# **Cheap when there is nothing to do.** `classify` lists the recent threads
+# per account (about a second) and skips every thread the store already
+# holds, so a quiet tick costs one provider listing and no model call. A
+# busy tick classifies only what is new — measured on 2026-09-16..23 at
+# roughly 25–30 s per model-classified thread, with most mail disposed of
+# without a model at all.
+#
+# **One exception to "quiet ticks are free".** A `failed` record is retried
+# on every sweep while it is inside the recent window
+# (`TriageStore::needs_classifying` has no attempt counter), so a thread that
+# fails for a reason that does not go away — a body that trips the provider,
+# a verdict that will not parse — makes every tick build a provider and call
+# the model — and since a quiet tick is the common case, *most* ticks then
+# consist of that thread alone, which `run_accomplished_nothing` reports as
+# a failed run. So one stuck thread leaves this unit failed nearly all day,
+# drowning the alarm the idle check spends exit 255 to raise. At one sweep
+# a night that was one retry a day; at this cadence it is ~43. A retry cap
+# or a `last_attempt` on `Record` is the fix, and it is a Rust change, like
+# the permit below. Until then, `mecha doctor` showing this unit failed with
+# the model server healthy points at a stuck thread: `mecha mail list` shows
+# it, `mecha mail dismiss` clears it.
+#
+# **It stands down rather than competing.** `ExecCondition=` runs
+# model-idle.sh first (installed as ~/.local/bin/mecha-model-idle, so the
+# unit does not depend on which branch a checkout happens to have out). It
+# skips the run — not a failure, just "not now" — when any local-model slot
+# is busy (the owner is chatting, or an agent run is working) or the GPU is
+# above 30% (research work). The next tick asks again, and a whole day of
+# ticks that all skipped — the sweep never ran once — fails the unit. A model server that
+# does not answer, or answers with a slot list it cannot read, *fails* the
+# unit instead, so `mecha doctor` notices rather than the sweep going quiet.
+#
+# It takes no `permit.rs` seat, and the nightly does not either. That is a
+# real gap, not an equivalent: a permit is a *reserve* that keeps
+# background runs from filling the slots the owner would queue behind,
+# while this is a point check at the door. It passes whenever no slot
+# happens to be processing at that instant — including between the model
+# calls of runs that hold permits — and then the sweep holds an uncounted
+# slot for as long as it runs. Taking a permit around the model-calling half
+# of `classify` is the durable form; that is a Rust change, not this unit's. `Nice=` lowers the driver's own CPU weight; the model's GPU time is
+# bounded by the idle check, since niceness does not reach the model server.
+#
+# Everything else is the nightly unit's reasoning, unchanged — see
+# mecha-mail-classify.service for why the workspace is named explicitly and
+# why this is a timer rather than a `mecha trigger`. `--limit 25` is the CLI
+# default; twenty minutes of mail is well under it, and anything a busy
+# stretch pushes past it is the nightly's `--limit 50`'s to catch.
+[Unit]
+Description=mecha daytime mail triage (classify what arrived, when the model is free)
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Where the idle check asks. It is the local provider's `base_url` plus
+# `/slots` — say so here, where it can be seen and edited, rather than only
+# as the script's default: a model server anywhere else would otherwise
+# refuse every tick and fail the unit after three hours. The check only
+# makes sense for a local model; on a hosted provider, drop the
+# ExecCondition= line (and this one) instead.
+Environment=MECHA_SLOTS_URL=http://127.0.0.1:8080/slots
+# Through `sh`, not directly: `ExecCondition=`'s skip band (1–254) includes
+# 203/EXEC, so a missing or non-executable check would stand the sweep down
+# silently forever — the exact failure the script exists to make loud. The
+# wrapper turns that into 255, which fails the unit where `mecha doctor`
+# looks. (`AssertFileIsExecutable=` was tried: an unmet assertion fails the
+# start job but leaves the unit `inactive`, which doctor does not list.)
+ExecCondition=/bin/sh -c '[ -x "$0" ] || { echo "model-idle: $0 is missing or not executable"; exit 255; }; exec "$0"' %h/.local/bin/mecha-model-idle
+ExecStartPre=/bin/mkdir -p %h/.mecha/work/mail-classify
+ExecStart=%h/.cargo/bin/mecha --workspace %h/.mecha/work/mail-classify mail classify --limit 25
+Nice=10
+# A catch-up tick (the first after install, or 07:30 carrying the hours since
+# the nightly) can hold dozens of threads at ~30 s each; the first live run
+# classified 38. Records are written per thread, so a timeout loses nothing,
+# but it would read as a failure — 30 minutes covers the catch-up, and a
+# still-running sweep simply makes the next ticks skip.
+TimeoutStartSec=30min
