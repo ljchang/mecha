@@ -3,7 +3,7 @@
   import MailBody from './MailBody.svelte';
   import {
     kindOf, KINDS, editsAsEvent, eventFields, eventArgs, inclusiveEnd, whenLabel, eventZone,
-    attendeesOf, MAIL_HEADERS, ago, localZone, EVENT_CARD_KEYS,
+    attendeesOf, MAIL_HEADERS, ago, localZone, EVENT_CARD_KEYS, unreadableAccounts, unreadableNote,
   } from './outbox-view.js';
 
   // The outbox: every draft waiting on the owner, and the one place any of
@@ -485,8 +485,8 @@
                     {/if}
                   {/each}
                 </select>
-                {#if calendars.some((a) => a.error)}
-                  <span class="hint warntext">{calendars.filter((a) => a.error).map((a) => a.account).join(', ')} could not be read — its calendars are missing from this list, not empty.</span>
+                {#if unreadableNote(unreadableAccounts(calendars))}
+                  <span class="hint warntext">{unreadableNote(unreadableAccounts(calendars))}</span>
                 {/if}
               {:else}
                 <div class="frow">
