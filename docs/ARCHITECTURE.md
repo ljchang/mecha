@@ -4004,20 +4004,26 @@ comparison over a chosen set**, with the design written before the run.
   **an arm varies the closed set and nothing else** (D5, D14): levers by
   name from `harness::Lever`, knobs by `KEY=VALUE` through
   `harness::parse_change`, a preset (`bare` is what `mecha eval` runs,
-  `full` is every lever on) applied first, and `levers_on` — levers turned
+  `full` forces nothing off) applied first, and `levers_on` — levers turned
   back on after the preset, the add-one-to-bare design, and how eval's
   `--ab-rules` is spelled; a name in both lists is on. An unknown lever
   name is a load error, never a skipped line. `approval_rules` is refused
   outright, in `levers_on` as in `levers_off`: a
   `forbid` is the operator's standing word, and only eval's fixture
   workspaces justify lifting it.
-- **Explicit planning levers must change the rendered config.**
-  `child_invocation` sets `step_checks` and `goal_guidance` true when explicitly
-  named in `levers_on`, even if the operator disabled them. Guidance defaults
-  off: removing it from the resolved off-list alone produced two identical
-  execution conditions under different hashes. Unspecified settings still
-  inherit the operator's config. Test materialized configurations, not just
-  lever lists; `appraisal_fixture` compares every other config field and flag.
+- **A lever named on must change the rendered config, and the hash.**
+  `child_invocation` sets every *config switch* (`Arm::resolve_forced_on`:
+  the seven `[agent]` switches and `[messages] enabled`) true when named in
+  `levers_on`, even if the operator disabled it; a flag-only lever needs no
+  forcing, since absent from the off-list it passes no flag. Removing a
+  lever from the off-list alone leaves the operator's `false` standing:
+  guidance was fixed that way first, and `step_escalation` (ships off)
+  stayed broken until 2026-09-23 — an arm naming it ran as the control and,
+  since the hash saw only the off-list, hashed as the control too. A forced
+  switch is now a `forced_on=` term on the condition hash, appended only
+  when there is one. Unspecified settings still inherit the operator's
+  config. Test materialized configurations, not just lever lists;
+  `appraisal_fixture` compares every other config field and flag.
 - **Isolation is the whole store** (D12). Every trial runs as a child
   `mecha run` with `MECHA_HOME` pointing at its arm's home under the
   experiment directory, whose `config.toml` *is* the arm: the operator's

@@ -2,7 +2,14 @@
 
 **Implementation addendum, 2026-09-09:** The single-run driver now has a concrete appraisal pilot in `eval/appraisal-guidance.toml`: paired guidance off/on, twelve artifact-graded tasks and three seeds. Explicit planning `levers_on` override disabled operator defaults. See `HISTORY.md` under this date; the original design and its dated open items below are retained. No live efficacy result is claimed.
 
-> **Status: unbuilt.** Written 2026-08-26, after the *Communication as
+> **Status (2026-09-23): partly built.** `mecha exp` with `single` and
+> `lifetime` trials, the switch set, the principal, fixture servers and task
+> sources are on main; §19's status paragraph lists what landed and when, and
+> `website/docs/features/experiments.md` is the user's guide, including what
+> is not built. Branching, snapshots, `ensemble` and analysis (§11 B, C, D₂,
+> E) remain.
+>
+> **Originally unbuilt.** Written 2026-08-26, after the *Communication as
 > Inference-Time Scaling* research spec (49 sections) and its initial
 > literature review, and against GitHub issue #60. Verified against `main` at
 > **be75b73**, and cited by symbol rather than by line — see the end of §5 for
