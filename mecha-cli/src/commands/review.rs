@@ -675,6 +675,27 @@ fn oldest_age<'a>(stamps: impl IntoIterator<Item = &'a str>) -> Option<String> {
     age_of(stamps.into_iter().min())
 }
 
+/// The front-door row's detail when nothing failed extraction: every finished
+/// state by name, in the order a request finishes, leaving out the empty ones.
+/// The pane folds `answered` and `closed` together and bookings apart, so the
+/// line names all three rather than a sum the pane never shows.
+fn finished_detail(answered: usize, closed: usize, booked: usize) -> String {
+    let parts: Vec<String> = [
+        (answered, "answered"),
+        (closed, "closed"),
+        (booked, "booked"),
+    ]
+    .into_iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(n, what)| format!("{n} {what}"))
+    .collect();
+    if parts.is_empty() {
+        "nothing finished yet".into()
+    } else {
+        parts.join(", ")
+    }
+}
+
 struct Queue {
     name: &'static str,
     depth: Option<usize>,
@@ -875,7 +896,8 @@ fn collect_queues() -> Vec<Queue> {
 
     let (depth, detail, oldest) = match Frontdoor::open_default().and_then(|s| s.records()) {
         Ok(records) => {
-            // Anything not closed is still somebody's problem; extraction
+            // Anything not finished (answered, closed or booked — see
+            // `counts_as_open`) is still somebody's problem; extraction
             // failures are called out because they wait on a human by design
             // rather than by backlog.
             let open: Vec<_> = records
@@ -892,13 +914,14 @@ fn collect_queues() -> Vec<Queue> {
                 // Counted by state, never as `records.len() - open.len()`:
                 // that difference silently absorbed `booked` the moment it
                 // stopped counting as open, and reported confirmed meetings
-                // as closes.
+                // as closes. Every state `counts_as_open` excludes gets a
+                // name here, or it vanishes from both the number and the line.
                 let by = |state: &str| records.iter().filter(|r| r.state == state).count();
-                match (by(frontdoor::CLOSED), by(frontdoor::BOOKED)) {
-                    (closed, 0) => format!("{closed} closed"),
-                    (0, booked) => format!("{booked} booked"),
-                    (closed, booked) => format!("{closed} closed, {booked} booked"),
-                }
+                finished_detail(
+                    by(frontdoor::ANSWERED),
+                    by(frontdoor::CLOSED),
+                    by(frontdoor::BOOKED),
+                )
             };
             let oldest = oldest_age(open.iter().map(|r| r.created_at.as_str()));
             (Some(open.len()), d, oldest)
@@ -1527,6 +1550,17 @@ pub fn decide_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every state `counts_as_open` excludes is named, so none can drop out of
+    /// the number and the explanation at once — `answered` did, for one commit.
+    #[test]
+    fn the_front_door_detail_names_every_finished_state() {
+        assert_eq!(finished_detail(4, 6, 12), "4 answered, 6 closed, 12 booked");
+        assert_eq!(finished_detail(4, 0, 0), "4 answered");
+        assert_eq!(finished_detail(0, 6, 0), "6 closed");
+        assert_eq!(finished_detail(0, 0, 12), "12 booked");
+        assert_eq!(finished_detail(0, 0, 0), "nothing finished yet");
+    }
 
     /// A named set is never trimmed. `--top` defaults to 10 in the graph and
     /// bounds `--ids` as well, so before this the dive into a 17-member

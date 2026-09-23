@@ -133,13 +133,20 @@
   // but a hand-edited or future-written record would take the whole page down
   // on the dereference below rather than degrade. It costs nothing.
   const settled = (r) => r.state === 'booked' && r.booking;
-  const queue = $derived((rows ?? []).filter((r) => !settled(r)));
+  // `answered` and `closed` wait on nobody (the `WAITING_ON_OWNER` doc in
+  // `frontdoor.rs`), so they leave the queue for the same reason a booking
+  // does. Folded rather than dropped: a hand-closed booking keeps its reason
+  // reachable, and an answered request its reply.
+  const isClosed = (r) => r.state === 'closed' || r.state === 'answered';
+  const queue = $derived((rows ?? []).filter((r) => !settled(r) && !isClosed(r)));
   const booked = $derived(
     (rows ?? [])
       .filter(settled)
       .sort((a, b) => new Date(b.booking.start) - new Date(a.booking.start)),
   );
+  const closed = $derived((rows ?? []).filter(isClosed).sort((a, b) => b.seq - a.seq));
   let showBooked = $state(false);
+  let showClosed = $state(false);
 </script>
 
 {#snippet hazardGlyph(size = 13)}
@@ -207,6 +214,31 @@
             {/each}
           {/if}
         {/if}
+
+        {#if closed.length}
+          <button class="foldrow" onclick={() => (showClosed = !showClosed)}>
+            <span>{closed.length} answered or closed</span>
+            <span class="foldnote">nothing owed</span>
+            <span class="chev" class:open={showClosed}>›</span>
+          </button>
+          {#if showClosed}
+            {#each closed as r}
+              <button class="card rowbtn muted" onclick={() => open(r)}>
+                <div class="rowtop">
+                  <span class="chip">{r.type_id}</span>
+                  <span class="chip">{stateChip(r.state)}</span>
+                  <span class="when">#{r.seq} · {(r.created_at ?? '').slice(0, 10)}</span>
+                </div>
+                {#if r.booking}
+                  <div class="topic" class:past={isPast(r.booking)}>{span(r.booking)}</div>
+                {:else if r.topic}
+                  <div class="topic">{r.topic}</div>
+                {/if}
+                {#if r.reply_to}<div class="meta"><span>{r.reply_to}</span></div>{/if}
+              </button>
+            {/each}
+          {/if}
+        {/if}
       {/if}
     </div>
   {:else}
@@ -245,7 +277,10 @@
                action. -->
         {:else if ['drained', 'extraction_failed'].includes(reading.row.state)}
           <button class="abtn primary" disabled={busy} onclick={async () => { if (await act('extract', reading.row)) back(); }}>Extract</button>
-        {:else}
+        {:else if reading.row.state === 'extracted'}
+          <!-- `frontdoor triage` selects on `state == EXTRACTED` alone, so any
+               other state (an answered or closed request opened from the fold)
+               would get the same dead button the comment above records. -->
           <button class="abtn primary" disabled={busy} onclick={async () => { if (await act('triage', reading.row)) back(); }}>Draft a reply…</button>
         {/if}
         <!-- `inert && valid`, not `inert`: an invalid record is one the model

@@ -823,7 +823,9 @@ conflict. `Record::is_settled_booking` is the single home for the policy — an
 allowlist of who may auto-confirm narrows it there and nowhere else — and
 `booked` stays out of `WAITING_ON_OWNER` and out of `counts_as_open`, so
 neither the charter sensor nor the queue surfaces count finished meetings as
-work owed. Two states are deliberately *not* settled: `closed`, because a
+work owed. `answered` left `counts_as_open` too (2026-09-23): a released reply
+waits on nobody, so the Home card, `/queues` and the backlog depth stopped
+counting it along with the review pane that folds it away. Two states are deliberately *not* settled: `closed`, because a
 person's reason must not be overwritten, and `awaiting_me`, because
 `reconcile` only advances records in that state and settling one would orphan
 its staged draft.

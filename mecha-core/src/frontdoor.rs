@@ -1086,11 +1086,14 @@ pub fn waiting_on_owner(state: &str) -> bool {
 /// rate than requests do, so counting them is precisely how a review queue
 /// comes to read as a backlog of work that already happened.
 ///
-/// `answered` deliberately stays *in*. It means a draft was released, and both
-/// surfaces have always counted those until somebody closes them; narrowing
-/// that is a separate decision from this one.
+/// `answered` is out too, since 2026-09-23 and on the owner's ruling. It means
+/// a draft was released: the reply went, and the request waits on nobody —
+/// [`WAITING_ON_OWNER`]'s doc already said so. Counting it kept the Home card
+/// at "Front door: N" behind a pane that folds answered requests away, so the
+/// card and the pane it opens disagreed. The backlog series steps down at
+/// this commit; see `frontdoor_depths` in `backlog.rs`.
 pub fn counts_as_open(state: &str) -> bool {
-    state != CLOSED && state != BOOKED
+    state != CLOSED && state != BOOKED && state != ANSWERED
 }
 
 impl Record {
@@ -1487,16 +1490,17 @@ mod tests {
         assert_ne!(stores.front.record(10).unwrap().state, BOOKED);
     }
 
-    /// `booked` is finished work; `answered` deliberately is not, because the
-    /// queue surfaces have always counted a released draft until somebody
-    /// closes it.
+    /// `booked`, `closed` and `answered` are finished work and wait on nobody;
+    /// everything still moving through the pipeline counts.
     #[test]
-    fn a_booked_request_is_not_open_work_but_an_answered_one_still_is() {
+    fn finished_requests_are_not_open_work() {
         assert!(!counts_as_open(BOOKED));
         assert!(!counts_as_open(CLOSED));
-        assert!(counts_as_open(ANSWERED));
+        assert!(!counts_as_open(ANSWERED));
         assert!(counts_as_open(EXTRACTED));
         assert!(counts_as_open(AWAITING_ME));
+        assert!(counts_as_open(NEEDS_INFO));
+        assert!(counts_as_open(DRAINED));
     }
 
     /// An ordinary request is not a booking, so nothing here changes what the
