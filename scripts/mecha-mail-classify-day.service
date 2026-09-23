@@ -24,11 +24,13 @@
 # the provider, a verdict that will not parse) called the model 43 times a
 # day and, on the quiet ticks where it was the only work, failed this unit
 # (`run_accomplished_nothing`) — keeping `mecha doctor` red and drowning the
-# alarms the idle check spends exit 255 on. Now a failure waits an hour, then
-# two, four, … up to a day (`mail_triage::retry_after`), so an outage still
-# recovers within the hour and a stuck thread costs one attempt a day. It
-# stays `failed` in the queue for a person: `mecha mail list` shows it with
-# its next retry, `mecha mail dismiss` clears it.
+# alarms the idle check spends exit 255 on. Now a thread's own failure waits
+# an hour, then two, four, … up to a day (`mail_triage::retry_after`), so a
+# stuck thread costs one attempt a day. A provider outage is not counted
+# against any thread (`failure_is_outage`), so those are retried every sweep
+# and caught up once the server is back. A stuck thread stays `failed` in the
+# queue for a person: `mecha mail list` shows it with its next retry, `mecha
+# mail dismiss` clears it.
 #
 # **It stands down rather than competing.** `ExecCondition=` runs
 # model-idle.sh first (installed as ~/.local/bin/mecha-model-idle, so the

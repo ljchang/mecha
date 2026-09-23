@@ -610,12 +610,13 @@ fn list(all: bool, aged: bool, aged_hours: i64, surface: bool, as_json: bool) ->
                 "  !  {:<10} {:<9} classification failed{} — {}",
                 r.account,
                 "",
-                match r.attempts {
-                    0 | 1 => String::new(),
-                    n => format!(
+                match (r.attempts, r.next_retry()) {
+                    (0 | 1, _) => String::new(),
+                    (n, Some(due)) if due > chrono::Utc::now() => format!(
                         " ({n} times; next try in {}h)",
-                        mecha_core::mail_triage::retry_after(n).num_hours()
+                        (due - chrono::Utc::now()).num_hours().max(1)
                     ),
+                    (n, _) => format!(" ({n} times; due now)"),
                 },
                 r.error.as_deref().unwrap_or("no reason recorded")
             ),
@@ -1202,13 +1203,12 @@ async fn classify(
                 failed += 1;
                 eprintln!("  ! {} — {e:#}", thread.thread_id);
                 let mut r = record(&thread, None, Some(format!("{e:#}")));
-                // Consecutive failures pace the retries (`retry_after`); a
-                // success writes a fresh record, which starts the count over.
-                r.attempts = store
-                    .get(&thread.account, &thread.thread_id)
-                    .filter(|prev| prev.state == FAILED)
-                    .map_or(0, |prev| prev.attempts)
-                    + 1;
+                // Pace retries by the thread's own failures, not an outage's
+                // (`Record::carry_failure`, `mail_triage::retry_after`).
+                r.carry_failure(
+                    store.get(&thread.account, &thread.thread_id).as_ref(),
+                    mecha_core::mail_triage::failure_is_outage(&e),
+                );
                 r
             }
         };
