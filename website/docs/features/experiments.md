@@ -338,8 +338,10 @@ designs only). Two rules shape it:
   time. Arms interleave rather than running in blocks.
 - **Each trial holds one of the background model seats** (three, one fewer
   than the server's slots, so your own turn never queues). When none is free,
-  the run waits and says who holds them. `--jobs 1`, the default, takes no
-  seat, like any run you are watching from a terminal.
+  the run waits and says who holds them, so `--jobs 8` still runs at most
+  three at once, and fewer while other background runs hold seats.
+  `--jobs 1`, the default, takes no seat, like any run you are watching from
+  a terminal.
 
 Every row records the `jobs` it ran under. Concurrent requests share the
 server, so time and queue wait change with it, and a pinned seed only

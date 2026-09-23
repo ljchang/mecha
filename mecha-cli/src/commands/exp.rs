@@ -482,7 +482,23 @@ async fn run_single_trials(
             let held = match &permits {
                 None => None,
                 Some(pool) => {
-                    match pool.take(&format!("exp {} {}", manifest.name, pending[at].id))? {
+                    // A seat that could not be taken (the pool's directory
+                    // unwritable, a full disk) is the save failure's shape:
+                    // start no more, drain what is in flight. A `?` here
+                    // dropped the running trials' futures (found on review).
+                    let taken =
+                        match pool.take(&format!("exp {} {}", manifest.name, pending[at].id)) {
+                            Ok(taken) => taken,
+                            Err(e) => {
+                                eprintln!(
+                                "mecha exp: {e:#}; finishing the trials in flight, starting no more"
+                            );
+                                first_err.get_or_insert(e);
+                                pending.clear();
+                                break;
+                            }
+                        };
+                    match taken {
                         Ok(held) => Some(held),
                         Err(holders) => {
                             seat_short = true;

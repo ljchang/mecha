@@ -152,7 +152,18 @@ impl Permits {
             taken_at: Utc::now(),
             what: (!what.is_empty()).then(|| what.to_string()),
         };
-        let path = self.dir.join(format!("{}.permit", std::process::id()));
+        // One file per seat, not per process: `live` counts files, and a
+        // process that holds several seats (`mecha exp run --jobs N`) must
+        // count as several. Named by pid then a nonce — the pid is for a
+        // human reading the directory; the sweep reads it from the file.
+        // Keyed on the pid alone, N seats from one driver were one file,
+        // the fan-out never waited, and the first seat dropped freed them
+        // all (found on review).
+        let path = self.dir.join(format!(
+            "{}-{}.permit",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
         std::fs::write(&path, serde_json::to_string_pretty(&permit)?)?;
         Ok(Ok(Held { path }))
     }
@@ -184,6 +195,21 @@ mod tests {
         assert_eq!(p.live().len(), 1);
         drop(one);
         assert!(p.live().is_empty(), "released on drop, not by a call");
+    }
+
+    /// Seats from one process are seats: each counts against capacity, and
+    /// dropping one releases only that one.
+    #[test]
+    fn one_process_can_hold_several_seats() {
+        let p = Permits::new(scratch("several"), 2);
+        let first = p.take("exp a").unwrap().expect("a free seat");
+        let second = p.take("exp b").unwrap().expect("a second seat");
+        assert_eq!(p.live().len(), 2);
+        assert!(p.take("exp c").unwrap().is_err(), "capacity counts both");
+        drop(first);
+        assert_eq!(p.live().len(), 1, "only the dropped seat is released");
+        drop(second);
+        assert!(p.live().is_empty());
     }
 
     /// The refusal names who is holding, because "queued" with no reason is
