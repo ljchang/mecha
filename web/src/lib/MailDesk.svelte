@@ -463,7 +463,7 @@
       case 'f': ask('forward', 'Forward to, and a covering line', 'FYI — the one I mentioned', { wantTo: true }); break;
       case 'p': ask('needs-info', 'What are you waiting for?', 'their dates, before I can book', { required: true }); break;
       case '!': askSpam(); break;
-      case 'x': if (cur) { const k = keyOf(cur); selected.has(k) ? selected.delete(k) : selected.add(k); } break;
+      case 'x': if (cur) { const k = keyOf(cur); selected.has(k) ? selected.delete(k) : selected.add(k); anchor = at; } break;
       case 'z': undo(); break;
       case '/': searchEl?.focus(); break;
       case '?': help = true; break;

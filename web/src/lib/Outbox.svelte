@@ -3,7 +3,7 @@
   import MailBody from './MailBody.svelte';
   import {
     kindOf, KINDS, editsAsEvent, eventFields, eventArgs, inclusiveEnd, whenLabel, eventZone,
-    attendeesOf, MAIL_HEADERS, ago, localZone,
+    attendeesOf, MAIL_HEADERS, ago, localZone, EVENT_CARD_KEYS,
   } from './outbox-view.js';
 
   // The outbox: every draft waiting on the owner, and the one place any of
@@ -71,6 +71,11 @@
   const mailHeaders = $derived((detail?.headers ?? []).filter(([k]) => MAIL_HEADERS.includes(k)));
   const restHeaders = $derived((detail?.headers ?? []).filter(([k]) => !MAIL_HEADERS.includes(k)));
   const invited = $derived(attendeesOf(args));
+  const unshown = $derived(
+    asEvent
+      ? [...(detail?.headers ?? []), ...(detail?.other ?? [])].filter(([k]) => !EVENT_CARD_KEYS.includes(k))
+      : (detail?.other ?? []),
+  );
 
   async function loadList() {
     try {
@@ -98,7 +103,9 @@
       detail = d;
       mode = 'read';
       evError = null;
-      showSources = false;
+      // Open, as the page has always shown them: what a draft answers is part
+      // of reading it. The toggle is for a long thread already read.
+      showSources = true;
       showArgs = false;
       error = null;
     } catch (e) {
@@ -262,6 +269,13 @@
   }
   function onKey(e) {
     if (!wide || e.metaKey || e.ctrlKey || e.altKey) return;
+    // A held key repeats. `a` flips an armed draft into its confirm step, and
+    // the next repeat would press "Send it" — the confirm has to be a second,
+    // deliberate press, and none of these keys can be undone (found on review).
+    if (e.repeat && ['a', 'x', 'e'].includes(e.key)) {
+      e.preventDefault();
+      return;
+    }
     const t = e.target;
     const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
     if (e.key === 'Escape') {
@@ -548,9 +562,12 @@
           {/if}
         {/if}
 
-        {#if detail.other?.length && !asEvent}
+        <!-- Every argument is shown somewhere (`detail_json`'s nothing-is-
+             dropped property): on an event card, whatever the card itself
+             does not render — a `recurrence`, a `send_updates` — lands here. -->
+        {#if unshown.length}
           <div class="card pad hgrid">
-            {#each detail.other as [key, value]}<div class="hrow"><span class="hkey">{key}</span><span class="hval">{value}</span></div>{/each}
+            {#each unshown as [key, value]}<div class="hrow"><span class="hkey">{key}</span><span class="hval">{value}</span></div>{/each}
           </div>
         {/if}
 
