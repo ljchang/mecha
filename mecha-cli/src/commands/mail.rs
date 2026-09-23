@@ -2505,9 +2505,11 @@ fn draft_prompt(
         // their own seminar — which is what the first version, told to use
         // "the attendees the thread states", staged from a faculty-meeting
         // save-the-date. Attendees now come only from the owner's note.
-        Draft::Schedule => p.push_str(&format!(
+        Draft::Schedule => p.push_str(
             "Add what this thread announces or arranges to the owner's own \
-             calendar with `calendar_create_event`, on account {account:?}. \
+             calendar with `calendar_create_event`. Leave `account` out unless \
+             the owner's note names one: the calendar tool has its own \
+             configured default, which is not the mailbox this arrived in. \
              Use the date, time and location the thread actually states, and \
              give the event a short title a person would recognise on a \
              calendar. Put the useful details — a join link, a room, an \
@@ -2517,8 +2519,8 @@ fn draft_prompt(
              thread already know about their own event. **If the thread does \
              not state a specific date and time, draft nothing and say so** — \
              an event invented from 'sometime next week' is worse than no \
-             event.\n"
-        )),
+             event.\n",
+        ),
     }
     if let Some(n) = note {
         p.push_str(&format!("\nThe owner adds: {n}\n"));
@@ -2625,8 +2627,11 @@ mod draft_prompt_tests {
         assert!(!p.contains("attendees the thread"), "{p}");
         assert!(p.contains("Leave `attendees` out"), "{p}");
         assert!(p.contains("owner's own calendar"), "{p}");
-        // The event lands on the account the thread arrived in.
-        assert!(p.contains("on account \"dartmouth\""), "{p}");
+        // The calendar tool's own default decides where it lands, not the
+        // mailbox the thread arrived in (found on review: naming the thread's
+        // account overrode `default_calendar`).
+        assert!(!p.contains("on account"), "{p}");
+        assert!(p.contains("Leave `account` out"), "{p}");
 
         // The owner's note is the one way attendees get in.
         let p = draft_prompt(
