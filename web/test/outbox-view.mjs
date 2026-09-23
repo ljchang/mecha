@@ -27,8 +27,13 @@ t('an event is an event', kindOf('mail__calendar_create_event') === 'event');
 t('a doc edit is a doc', kindOf('docs__docs_replace') === 'doc');
 t('a meeting poll is a poll', kindOf('factory__poll_meeting_create') === 'poll');
 t('anything else is other', kindOf('web__fetch') === 'other');
-t('create and update edit as events', editsAsEvent('mail__calendar_create_event') && editsAsEvent('mail__calendar_update_event'));
+t('a create edits as an event', editsAsEvent('mail__calendar_create_event'));
+// Found on review: an update carries only what it changes and a delete only
+// an id; shown as a new-event card they read as "add to calendar", and the
+// editor would write a full start and end into a partial update.
+t('an update does not', !editsAsEvent('mail__calendar_update_event'));
 t('a delete does not', !editsAsEvent('mail__calendar_delete_event'));
+t('…though both still file under Calendar', kindOf('mail__calendar_update_event') === 'event' && kindOf('mail__calendar_delete_event') === 'event');
 
 // ---- offsets follow the date, not today ----
 const NY = 'America/New_York';

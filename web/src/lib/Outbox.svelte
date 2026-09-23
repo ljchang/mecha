@@ -27,7 +27,8 @@
   let resolved = $state(0);
   let loaded = $state(false);
   let detail = $state(null);
-  let error = $state(null);
+  let error = $state(null); // an action's failure: stays until the next action
+  let listError = $state(null); // the list poll's own, cleared by the next poll
   let busy = $state(false);
   let filter = $state('all');
   let selectedId = $state(null);
@@ -64,6 +65,8 @@
   });
   const visible = $derived(filter === 'all' ? pending : pending.filter((p) => kindOf(p.tool) === filter));
   const kind = $derived(detail ? kindOf(detail.tool) : null);
+  // The event card is for a create only; see `editsAsEvent`.
+  const asEvent = $derived(!!detail && editsAsEvent(detail.tool));
   const args = $derived(detail?.args ?? {});
   const mailHeaders = $derived((detail?.headers ?? []).filter(([k]) => MAIL_HEADERS.includes(k)));
   const restHeaders = $derived((detail?.headers ?? []).filter(([k]) => !MAIL_HEADERS.includes(k)));
@@ -77,11 +80,11 @@
       pending = data.pending;
       resolved = data.resolved;
       loaded = true;
-      error = null;
+      listError = null;
       // At a desk the pane is never empty while there is something to read.
       if (wide && !selectedId && visible.length) open(visible[0].id);
     } catch (e) {
-      error = String(e?.message ?? e);
+      listError = String(e?.message ?? e);
     }
   }
 
@@ -220,7 +223,7 @@
   });
   // The pane names the calendar an event lands on; ask once, lazily.
   $effect(() => {
-    if (kind === 'event' && calendars === null) loadCalendars();
+    if (asEvent && calendars === null) loadCalendars();
   });
 
   const calKey = (account, id) => `${account}\u0000${id}`;
@@ -244,7 +247,7 @@
   const approveLabel = $derived(
     !detail ? 'Approve'
       : kind === 'mail' ? 'Approve and send'
-      : kind === 'event' ? (invited.length ? 'Approve — add and invite' : 'Approve — add to calendar')
+      : asEvent ? (invited.length ? 'Approve — add and invite' : 'Approve — add to calendar')
       : kind === 'doc' ? 'Approve the edit'
       : 'Approve',
   );
@@ -308,7 +311,8 @@
     const ms = Date.parse(s);
     return Number.isNaN(ms) ? '' : new Date(ms).toLocaleDateString('en-US', { day: 'numeric', timeZone: eventZone(a) });
   };
-  const rowWhen = (p) => (p.start_time ? whenLabel({ start_time: p.start_time }) : '');
+  // In the event's own zone, as the pane shows it, so the two agree.
+  const rowWhen = (p) => (p.start_time ? whenLabel({ start_time: p.start_time, timezone: p.timezone, all_day: p.all_day }) : '');
 </script>
 
 {#snippet hazardGlyph(size = 13)}
@@ -347,7 +351,7 @@
         </div>
       {/if}
       <div class="rows" bind:this={listEl}>
-        {#if error && !detail}<div class="warnline pad">{@render hazardGlyph()}<span>{error}</span></div>{/if}
+        {#if listError || (error && !detail)}<div class="warnline pad">{@render hazardGlyph()}<span>{listError ?? error}</span></div>{/if}
         {#each visible as item (item.id)}
           <button class="row" class:on={item.id === selectedId} onclick={() => open(item.id)}>
             <span class="kicon k-{kindOf(item.tool)}">{@render kindGlyph(kindOf(item.tool))}</span>
@@ -390,7 +394,7 @@
           <span class="grow"></span>
           <span class="muted mono">staged {ago(detail.created_at)}{detail.edited ? ' · edited by you' : ''}</span>
         </div>
-        <h1>{kind === 'event' ? (args.title ?? detail.headline) : detail.headline || detail.label}</h1>
+        <h1>{asEvent ? (args.title ?? detail.headline) : detail.headline || detail.label}</h1>
 
         {#if error}<div class="warnline">{@render hazardGlyph()}<span>{error}</span></div>{/if}
 
@@ -430,7 +434,7 @@
           </div>
         {/if}
 
-        {#if kind === 'event' && mode === 'event' && ev}
+        {#if asEvent && mode === 'event' && ev}
           <!-- The event, as fields. What is saved is what Approve sends. -->
           <form class="card pad col" onsubmit={(e) => { e.preventDefault(); saveEvent(); }}>
             <label class="field">Title<input bind:value={ev.title} /></label>
@@ -464,7 +468,7 @@
                   <input bind:value={ev.account} placeholder="account" aria-label="Account" />
                   <input bind:value={ev.calendar_id} placeholder="primary" aria-label="Calendar id" />
                 </div>
-                <span class="hint">{calendars === 'loading' ? 'reading your calendars…' : calendars === 'error' ? 'Could not list your calendars — type the account and calendar id.' : ''}</span>
+                <span class="hint">{calendars === 'loading' ? 'reading your calendars…' : calendars === 'error' ? 'Could not list your calendars — type the account and calendar id.' : Array.isArray(calendars) ? 'No calendars were listed for any account — type the account and calendar id.' : ''}</span>
               {/if}
             </div>
             <label class="field">Location<input bind:value={ev.location} /></label>
@@ -478,7 +482,7 @@
               <button class="btn primary" type="submit" disabled={busy}>Save changes</button>
             </div>
           </form>
-        {:else if kind === 'event'}
+        {:else if asEvent}
           <div class="card event">
             <div class="cal"><span class="cm">{monthOf(args)}</span><span class="cd">{dayOf(args)}</span></div>
             <div class="evbody">
@@ -544,7 +548,7 @@
           {/if}
         {/if}
 
-        {#if detail.other?.length && kind !== 'event'}
+        {#if detail.other?.length && !asEvent}
           <div class="card pad hgrid">
             {#each detail.other as [key, value]}<div class="hrow"><span class="hkey">{key}</span><span class="hval">{value}</span></div>{/each}
           </div>

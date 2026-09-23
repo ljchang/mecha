@@ -344,6 +344,8 @@ const draftHold = {
   edited: false,
   account: 'personal',
   start_time: '2026-11-12T15:00:00+02:00',
+  timezone: 'Africa/Johannesburg',
+  all_day: false,
 };
 
 export const outbox = {

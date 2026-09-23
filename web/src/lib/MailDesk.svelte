@@ -382,7 +382,7 @@
     const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
     // ⌘A / Ctrl-A selects the lane rather than the page's text — the one
     // modified key the desk takes, and only outside a text field.
-    if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'a' && !typing && mode === 'list' && !composing && !asking && !help) {
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key ?? '').toLowerCase() === 'a' && !typing && mode === 'list' && !composing && !asking && !help) {
       selectAll();
       e.preventDefault();
       return;
