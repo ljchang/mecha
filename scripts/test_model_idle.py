@@ -75,9 +75,10 @@ class ModelIdle(unittest.TestCase):
     def tearDown(self):
         self.state.cleanup()
 
-    def run_check(self, url, stuck_max=3, gpu_busy="100"):
+    def run_check(self, url, stuck_max=3, gpu_busy="100", path=None):
         env = dict(
             os.environ,
+            PATH=path or os.environ["PATH"],
             MECHA_SLOTS_URL=url,
             MECHA_IDLE_STUCK_MAX=str(stuck_max),
             MECHA_GPU_BUSY=gpu_busy,  # never skip on the real GPU under test
@@ -121,6 +122,33 @@ class ModelIdle(unittest.TestCase):
         self.assertEqual(self.run_check(f"{self.base}/busy", stuck_max=3)[0], 1)
         # Had the count survived, this third stuck tick would fail.
         self.assertEqual(self.run_check(f"{self.base}/loading", stuck_max=3)[0], 1)
+
+    def gpu_path(self, util):
+        # A stub `nvidia-smi` first on PATH; util None means no nvidia-smi at
+        # all, which needs a PATH without the real one on it.
+        bindir = Path(self.state.name) / "bin"
+        bindir.mkdir()
+        for tool in ["bash", "curl", "python3", "cat", "mkdir", "dirname", "rm", "head", "tr"]:
+            real = subprocess.run(["bash", "-c", f"command -v {tool}"], capture_output=True, text=True).stdout.strip()
+            if real:
+                (bindir / tool).symlink_to(real)
+        if util is not None:
+            smi = bindir / "nvidia-smi"
+            smi.write_text(f"#!/bin/sh\necho {util}\n")
+            smi.chmod(0o755)
+        return str(bindir)
+
+    def test_a_busy_gpu_skips(self):
+        code, said = self.run_check(f"{self.base}/idle", gpu_busy="30", path=self.gpu_path(85))
+        self.assertEqual(code, 1)
+        self.assertIn("GPU at 85%", said)
+
+    def test_a_quiet_gpu_runs(self):
+        self.assertEqual(self.run_check(f"{self.base}/idle", gpu_busy="30", path=self.gpu_path(12))[0], 0)
+
+    def test_no_gpu_query_fails_open(self):
+        # A box without a usable nvidia-smi still sorts its mail.
+        self.assertEqual(self.run_check(f"{self.base}/idle", gpu_busy="30", path=self.gpu_path(None))[0], 0)
 
     def test_a_count_that_cannot_be_kept_fails_rather_than_never_escalating(self):
         blocker = Path(self.state.name) / "mecha"
