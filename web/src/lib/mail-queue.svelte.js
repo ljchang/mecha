@@ -217,7 +217,7 @@ export class MailQueue {
     if (!items.length) return false;
     const drafts = items.filter((it) => DRAFTING.has(it.verb)).length;
     if (drafts > MAX_DRAFTS) {
-      this.say(`That would start ${drafts} drafting runs at once — pick ${MAX_DRAFTS} or fewer`);
+      this.say(`That would start ${drafts} drafting runs at once — choose ${MAX_DRAFTS} or fewer`);
       return false;
     }
     // A retry clears the old failure, or the row would stay on screen while
