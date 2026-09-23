@@ -207,6 +207,11 @@ done
 # and the fix, when the repo copy is right and the installed one drifted:
 #   cp scripts[/voice]/<unit>.service ~/.config/systemd/user/ && systemctl --user daemon-reload
 #   then restart a long-running unit; a timer-fired oneshot picks it up at its next firing.
+# not a unit, but installed the same way and drifting the same way: the
+# daytime mail sweep's ExecCondition= runs a *copy* of scripts/model-idle.sh,
+# and a stale copy fails toward running the sweep
+#   diff scripts/model-idle.sh ~/.local/bin/mecha-model-idle
+#   install -m 755 scripts/model-idle.sh ~/.local/bin/mecha-model-idle   # when the repo copy is right
 ```
 
 `mecha-serve` carries the line twice on this machine — the installed unit
