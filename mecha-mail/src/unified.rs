@@ -371,7 +371,7 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
         },
         {
             "name": "calendar_list",
-            "description": "List the calendars in every configured account (or one, when `account` is given), with write access noted.",
+            "description": "List the calendars in every configured account (or one, when `account` is given), with write access noted. An account that could not be read is listed with an `error` and no calendars — it is unreadable, not empty.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"account": account("Omit to list every account's calendars.")}
@@ -838,6 +838,27 @@ fn merge<T>(
     }
     let all_failed = ok.is_empty() && !failed.is_empty();
     (ok, failed, all_failed)
+}
+
+/// `calendar_list`'s rows: one per account, in the order asked. **An account
+/// that could not be read is a row with an `error`, not a note after the
+/// JSON** — a note is prose a program reading the rows drops, and then an
+/// unreadable account looks exactly like one with no calendars (the outbox's
+/// calendar picker did just that). Every account failing is still a failure.
+fn calendar_rows(
+    results: Vec<(String, Provider, Result<Value, MailError>)>,
+) -> Result<Vec<Value>, String> {
+    if !results.is_empty() && results.iter().all(|(_, _, r)| r.is_err()) {
+        let (_, failures, _) = merge(results);
+        return Err(failures.join("\n"));
+    }
+    Ok(results
+        .into_iter()
+        .map(|(name, _, r)| match r {
+            Ok(cals) => json!({"account": name, "calendars": cals}),
+            Err(e) => json!({"account": name, "calendars": [], "error": e.to_string()}),
+        })
+        .collect())
 }
 
 fn with_notes(body: String, failures: &[String]) -> String {
@@ -1386,16 +1407,12 @@ impl MailTools {
                         .map(|a| async { (a.name.clone(), a.provider, calendars_one(a).await) }),
                 )
                 .await;
-                let (ok, failures, all_failed) = merge(results);
-                if all_failed {
-                    return fail(failures.join("\n"));
-                }
-                let listed: Vec<Value> = ok
-                    .into_iter()
-                    .map(|(name, _, cals)| json!({"account": name, "calendars": cals}))
-                    .collect();
-                let body = serde_json::to_string_pretty(&listed).unwrap_or_else(|_| "[]".into());
-                Some((with_notes(body, &failures), false))
+                let rows = match calendar_rows(results) {
+                    Ok(rows) => rows,
+                    Err(all_failed) => return fail(all_failed),
+                };
+                let body = serde_json::to_string_pretty(&rows).unwrap_or_else(|_| "[]".into());
+                Some((body, false))
             }
             "calendar_list_events" => {
                 let now = chrono::Utc::now();
@@ -1683,6 +1700,46 @@ impl crate::mcp::ToolProvider for MailTools {
 
 #[cfg(test)]
 mod tests {
+    /// Found on #258's review: a failed account arrived as a prose note
+    /// after the JSON, which a reader of the rows drops, so the outbox's
+    /// calendar picker showed "no calendars" for an account it could not
+    /// read. The failure is a row now; all of them failing is still a failure.
+    #[test]
+    fn an_unreadable_account_is_a_row_with_an_error_not_a_missing_one() {
+        use crate::types::MailError;
+        let ok = || Ok(serde_json::json!([{"id": "primary", "name": "Calendar"}]));
+        let bad = || {
+            Err(MailError::ApiError {
+                status: 401,
+                message: "token expired".into(),
+            })
+        };
+
+        let rows = super::calendar_rows(vec![
+            ("dartmouth".into(), Provider::Outlook, ok()),
+            ("personal".into(), Provider::Google, bad()),
+        ])
+        .unwrap();
+        assert_eq!(rows.len(), 2, "both accounts are listed: {rows:?}");
+        assert_eq!(rows[0]["account"], "dartmouth");
+        assert!(rows[0].get("error").is_none());
+        assert_eq!(rows[1]["account"], "personal");
+        assert_eq!(rows[1]["calendars"], serde_json::json!([]));
+        assert!(
+            rows[1]["error"].as_str().unwrap().contains("401"),
+            "{rows:?}"
+        );
+
+        let all_bad = super::calendar_rows(vec![
+            ("dartmouth".into(), Provider::Outlook, bad()),
+            ("personal".into(), Provider::Google, bad()),
+        ]);
+        assert!(
+            all_bad.is_err(),
+            "every account failing is a failure, not two empty rows"
+        );
+    }
+
     use super::*;
 
     fn names(list: &[&str]) -> Vec<String> {

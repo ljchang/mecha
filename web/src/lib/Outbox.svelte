@@ -470,13 +470,24 @@
                     <option value={evCalKey}>{ev.account || 'default account'} · {ev.calendar_id}</option>
                   {/if}
                   {#each calendars as a}
-                    <optgroup label={a.account}>
-                      {#each (a.calendars ?? []).filter(writable) as c}
-                        <option value={calKey(a.account, c.id)}>{c.name}{c.is_primary ? ' (primary)' : ''}</option>
-                      {/each}
-                    </optgroup>
+                    {#if a.error}
+                      <!-- An account the provider would not list is shown as
+                           unreadable, never as an account with no calendars. -->
+                      <optgroup label={`${a.account} — could not be read`}>
+                        <option disabled value="">{a.error}</option>
+                      </optgroup>
+                    {:else}
+                      <optgroup label={a.account}>
+                        {#each (a.calendars ?? []).filter(writable) as c}
+                          <option value={calKey(a.account, c.id)}>{c.name}{c.is_primary ? ' (primary)' : ''}</option>
+                        {/each}
+                      </optgroup>
+                    {/if}
                   {/each}
                 </select>
+                {#if calendars.some((a) => a.error)}
+                  <span class="hint warntext">{calendars.filter((a) => a.error).map((a) => a.account).join(', ')} could not be read — its calendars are missing from this list, not empty.</span>
+                {/if}
               {:else}
                 <div class="frow">
                   <input bind:value={ev.account} placeholder="account" aria-label="Account" />
@@ -735,6 +746,7 @@
   .check { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--text); }
   .check input { accent-color: var(--accent-500); }
   .hint { font-size: 12px; color: var(--text-muted); }
+  .hint.warntext { color: var(--hazard); }
 
   .sources { display: flex; flex-direction: column; gap: 10px; }
   .disclose { display: flex; align-items: center; gap: 8px; background: none; border: 0; padding: 4px 0; font-size: 13px; color: var(--text-muted); text-align: left; }
