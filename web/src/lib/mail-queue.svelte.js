@@ -45,7 +45,7 @@ export const VERB_PAST = {
   task: 'Task created',
   spam: 'Marked spam',
   reply: 'Reply drafting',
-  schedule: 'Invite drafting',
+  schedule: 'Calendar event drafting',
   forward: 'Forward drafting',
   'needs-info': 'Parked',
 };
@@ -53,7 +53,7 @@ export const VERB_LABEL = {
   reply: 'Draft reply',
   archive: 'Archive',
   task: 'Make task',
-  schedule: 'Schedule',
+  schedule: 'Add to calendar',
   spam: 'Spam',
   forward: 'Forward',
 };

@@ -352,6 +352,7 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         )
         .route("/api/mail", get(mail::list))
         .route("/api/mail/inbox", get(mail::inbox))
+        .route("/api/mail/calendars", get(mail::calendars))
         .route("/api/mail/compose", axum::routing::post(mail::compose))
         .route("/api/mail/read", get(mail::read))
         .route("/api/mail/act", axum::routing::post(mail::act))
@@ -931,7 +932,11 @@ mod tests {
     async fn the_mail_routes_sit_behind_the_owner_guard() {
         // New surface, same door: a probe without the header learns nothing,
         // not even that a mail queue exists.
-        for uri in ["/api/mail", "/api/mail/read?thread=t&account=a"] {
+        for uri in [
+            "/api/mail",
+            "/api/mail/read?thread=t&account=a",
+            "/api/mail/calendars",
+        ] {
             let response = test_router()
                 .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
                 .await
