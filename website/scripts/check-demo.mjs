@@ -35,7 +35,10 @@ const CALL = /(?:fetch|new EventSource)\(\s*[`'"]([^`'"]*)/g;
 const paths = new Set();
 const files = [join(web, 'src/App.svelte'), ...readdirSync(lib).map((f) => join(lib, f))];
 for (const file of files) {
-  if (!file.endsWith('.svelte')) continue;
+  // `.svelte.js` too: a runes module (mail-queue.svelte.js) makes API calls
+  // that no component names any more, and a guard that skipped it would pass
+  // green through a rename of every endpoint it holds.
+  if (!/\.svelte(\.js)?$/.test(file)) continue;
   const source = readFileSync(file, 'utf8');
   for (const [, raw] of source.matchAll(CALL)) {
     if (!raw.startsWith('/api/')) continue;

@@ -171,17 +171,20 @@
   // browser; a drag that starts out vertical is abandoned at once, so a
   // scroll never turns into an archive.
 
-  let drag = $state(null); // { key, x0, y0, dx, moved }
+  // One gesture at a time, owned by the pointer that started it: a second
+  // finger landing mid-swipe is ignored rather than retargeting the first.
+  let drag = $state(null); // { id, key, x0, y0, dx, moved }
   let swallowClick = false;
 
   function down(e, row) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
-    drag = { key: keyOf(row), x0: e.clientX, y0: e.clientY, dx: 0, moved: false };
+    if (drag) return;
+    drag = { id: e.pointerId, key: keyOf(row), x0: e.clientX, y0: e.clientY, dx: 0, moved: false };
     e.currentTarget.setPointerCapture?.(e.pointerId);
   }
 
   function moveDrag(e) {
-    if (!drag) return;
+    if (!drag || e.pointerId !== drag.id) return;
     const dx = e.clientX - drag.x0;
     const dy = e.clientY - drag.y0;
     if (!drag.moved && Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) {
@@ -192,8 +195,8 @@
     drag.dx = Math.max(-SWIPE_MAX, Math.min(SWIPE_MAX, dx));
   }
 
-  function up(row) {
-    if (!drag) return;
+  function up(e, row) {
+    if (!drag || e.pointerId !== drag.id || drag.key !== keyOf(row)) return;
     const d = drag;
     drag = null;
     swallowClick = d.moved;
@@ -223,8 +226,13 @@
     Object.fromEntries(SWEEP_VERBS.map((v) => [v, sweepRows.filter((r) => r.proposed === v).length])),
   );
   let sweepSeen = $state(new Set()); // groups on screen when the sheet opened, for `tickedGroups`
+  let sweepSeenRows = $state(new Set()); // and the threads, so a late arrival cannot join a ticked group
   const ticked = $derived(new Set(tickedGroups(groups, sweepVerb, sweepMarks, sweepSeen).map((g) => g.key)));
-  const checkedRows = $derived(groups.filter((g) => ticked.has(g.key)).flatMap((g) => g.rows));
+  // Only threads there when the sheet opened, as on the desk: the count on
+  // the button must not move under a thumb because the minute's reload ran.
+  const checkedRows = $derived(
+    groups.filter((g) => ticked.has(g.key)).flatMap((g) => g.rows).filter((r) => sweepSeenRows.has(keyOf(r))),
+  );
 
   // Archive and task sweeps open with every group on screen ticked, drafting
   // sweeps with none; a group that arrives while the sheet is open starts
@@ -234,6 +242,7 @@
     sweepVerb = v;
     sweepMarks.clear();
     sweepSeen = new Set(sweepGroups(sweepRows, v).map((g) => g.key));
+    sweepSeenRows = new Set(sweepRows.map(keyOf));
   }
 
   function openSweep() {
@@ -300,7 +309,7 @@
         </button>
       {/if}
 
-      {#if (lane !== 'inbox' && q.rows === null) || (lane === 'inbox' && q.inbox === null)}
+      {#if !q.error && ((lane !== 'inbox' && q.rows === null) || (lane === 'inbox' && q.inbox === null))}
         <div class="empty">{lane === 'inbox' ? 'reading the inbox — every account, newest first…' : 'reading the queue…'}</div>
       {:else}
         <div class="rows">
@@ -320,8 +329,8 @@
                 style:transform="translateX({dx}px)"
                 onpointerdown={(e) => down(e, r)}
                 onpointermove={moveDrag}
-                onpointerup={() => up(r)}
-                onpointercancel={() => (drag = null)}
+                onpointerup={(e) => up(e, r)}
+                onpointercancel={(e) => { if (drag && e.pointerId === drag.id) drag = null; }}
                 onclick={() => tap(i)}
               >
                 <span class="urg {urgencyClass(r.urgency)}"></span>

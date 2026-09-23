@@ -91,10 +91,10 @@
 
 
   const matches = (r) => {
-    const q = search.trim().toLowerCase();
-    if (!q) return true;
+    const needle = search.trim().toLowerCase();
+    if (!needle) return true;
     return [r.subject, r.summary, r.from, r.from_name, ...(r.tags ?? [])]
-      .some((f) => (f ?? '').toLowerCase().includes(q));
+      .some((f) => (f ?? '').toLowerCase().includes(needle));
   };
 
   const laneRows = $derived(q.laneRows(lane));

@@ -227,8 +227,9 @@ for (const route of ROUTES) {
 }
 
 // The phone page's gestures, at the width every check above uses: a row
-// swiped right leaves the list and Undo brings it back, and accepting from
-// the thread view opens the next thread in place rather than the list.
+// swiped right leaves the list and Undo brings it back, a drag that starts
+// vertical does nothing, a left swipe archives, and accepting from the
+// thread view opens the next thread in place rather than the list.
 {
   const context = await browser.newContext({viewport: {width: 420, height: 900}});
   const page = await context.newPage();
@@ -252,6 +253,21 @@ for (const route of ROUTES) {
     // below, not a 30 s wait for a button that will never appear.
     if (swiped < before) await page.locator('.toast .undo').click({timeout: 3000});
     const undone = await page.locator('.page .row').count();
+    // A drag that starts vertical is a scroll, never an archive: the one
+    // accidental-destructive path on this page. This one ends 120px left,
+    // past the archive threshold, so only the vertical abandon stops it.
+    await page.mouse.move(box.x + 250, y);
+    await page.mouse.down();
+    for (let s = 1; s <= 10; s++) await page.mouse.move(box.x + 250 - 12 * s, y + 20 * s);
+    await page.mouse.up();
+    const scrolled = await page.locator('.page .row').count();
+    // A left swipe archives.
+    await page.mouse.move(box.x + 250, y);
+    await page.mouse.down();
+    for (let s = 1; s <= 10; s++) await page.mouse.move(box.x + 250 - 16 * s, y);
+    await page.mouse.up();
+    const archived = await page.locator('.page .row').count();
+    if (archived < before) await page.locator('.toast .undo').click({timeout: 3000});
     await page.locator('.page .row').first().click();
     await page.waitForSelector('.threadhead', {timeout: 5000});
     const first = await page.locator('.reader h1').innerText();
@@ -261,6 +277,8 @@ for (const route of ROUTES) {
       ['a list of threads', before > 0],
       ['a right swipe taking the row off the list', swiped === before - 1],
       ['Undo bringing it back', undone === before],
+      ['a mostly vertical drag leaving the list alone', scrolled === before],
+      ['a left swipe taking the row off the list', archived === before - 1],
       ['Accept opening the next thread in place', next !== first],
     ]) {
       if (!ok) failures.push(`mail phone: ${what} did not happen`);
