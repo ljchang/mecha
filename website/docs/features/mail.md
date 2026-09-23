@@ -603,7 +603,12 @@ systemctl --user enable --now mecha-mail-classify.timer mecha-mail-classify-day.
 
 The daytime sweep stands down rather than competing: before each run,
 `model-idle.sh` skips it when any slot on the local model server is busy (the
-owner is chatting, or an agent is working) or the GPU is above 30%. A quiet
+owner is chatting, or an agent is working) or the GPU is above 30%. That check
+is for a **local** model: it asks the llama-server named by
+`MECHA_SLOTS_URL` in the service (`http://127.0.0.1:8080/slots` as shipped —
+set it to your `[providers.local] base_url` plus `/slots`). With a hosted
+provider there is no local server to ask; remove the service's
+`ExecCondition=` line instead, or every tick will fail. A quiet
 tick costs one mailbox listing and no model call, since the sweep only
 classifies threads it has not seen.
 

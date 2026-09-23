@@ -64,6 +64,13 @@ After=network-online.target
 [Service]
 Type=oneshot
 Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Where the idle check asks. It is the local provider's `base_url` plus
+# `/slots` — say so here, where it can be seen and edited, rather than only
+# as the script's default: a model server anywhere else would otherwise
+# refuse every tick and fail the unit after three hours. The check only
+# makes sense for a local model; on a hosted provider, drop the
+# ExecCondition= line (and this one) instead.
+Environment=MECHA_SLOTS_URL=http://127.0.0.1:8080/slots
 # Through `sh`, not directly: `ExecCondition=`'s skip band (1–254) includes
 # 203/EXEC, so a missing or non-executable check would stand the sweep down
 # silently forever — the exact failure the script exists to make loud. The
