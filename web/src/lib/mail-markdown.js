@@ -110,13 +110,29 @@ function closeBracket(s, start) {
 /** `url "title"` → url. */
 const destOf = (inside) => inside.trim().replace(/\s+("[^"]*"|'[^']*')$/, '').trim();
 
-/** A bare URL's end: trailing punctuation belongs to the sentence. */
+/**
+ * A bare URL's end: trailing punctuation belongs to the sentence, and so does
+ * a closing paren the URL did not open. One pass from the end with the paren
+ * balance counted once — the earlier loop re-scanned the token per character,
+ * quadratic in a stranger's `)))…` (found on review).
+ */
 function trimUrl(u) {
-  let out = u;
-  while (/[.,;:!?'"*_]$/.test(out)) out = out.slice(0, -1);
-  // A closing paren the URL did not open is the sentence's.
-  while (out.endsWith(')') && (out.match(/\(/g) ?? []).length < (out.match(/\)/g) ?? []).length) out = out.slice(0, -1);
-  return out;
+  let open = 0;
+  let close = 0;
+  for (const ch of u) {
+    if (ch === '(') open++;
+    else if (ch === ')') close++;
+  }
+  let end = u.length;
+  while (end > 0) {
+    const ch = u[end - 1];
+    if (/[.,;:!?'"*_]/.test(ch)) end--;
+    else if (ch === ')' && open < close) {
+      close--;
+      end--;
+    } else break;
+  }
+  return u.slice(0, end);
 }
 
 const MAX_DEPTH = 6;
@@ -216,7 +232,8 @@ export function parseInline(s, depth = 0, inLink = false) {
     }
     // A bare URL, at a word boundary.
     if (!inLink && (c === 'h' || c === 'H') && (i === 0 || /[\s(]/.test(s[i - 1]))) {
-      const m = /^https?:\/\/[^\s<>]+/i.exec(rest);
+      // Bounded like a link destination: no URL a person reads is longer.
+      const m = /^https?:\/\/[^\s<>]{1,4000}/i.exec(rest);
       if (m) {
         const raw = trimUrl(m[0]);
         const href = safeHref(raw);
