@@ -78,7 +78,14 @@ export const ROUTES = [
   [
     'GET',
     /^\/api\/mail\/read$/,
-    (url) => fx.mailRead[url.searchParams.get('thread_id')] ?? fx.mailRead['thr-8812'],
+    // `/api/mail/read` answers with `mecha mail show`'s text, not JSON — the
+    // header block, then `--- ` message blocks — so render the fixture that way.
+    (url) => {
+      const t = fx.mailRead[url.searchParams.get('thread')] ?? fx.mailRead['thr-8812'];
+      return new Response(`subject:   ${t.subject}\n\n--- ${t.meta}\nSubject: ${t.subject}\n\n${t.body}\n`, {
+        headers: { 'content-type': 'text/plain' },
+      });
+    },
   ],
 
   ['GET', /^\/api\/outbox$/, () => fx.outbox],

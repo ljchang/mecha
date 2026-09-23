@@ -4,6 +4,7 @@
   import Nav from './lib/Nav.svelte';
   import Review from './lib/Review.svelte';
   import Mail from './lib/Mail.svelte';
+  import MailDesk from './lib/MailDesk.svelte';
   import Tasks from './lib/Tasks.svelte';
   import Graph from './lib/Graph.svelte';
   import Settings from './lib/Settings.svelte';
@@ -21,6 +22,20 @@
   };
   let route = $state(fromHash());
   const view = $derived(route.view);
+
+  // Mail is the one view with a separate desktop build: triage at a desk is
+  // a keyboard job, and the phone's one-thread-at-a-time sheets are the
+  // opposite of that. Same breakpoint as the rail below, read once and then
+  // followed, so a window dragged across 900px swaps the reader live.
+  const WIDE = '(min-width: 900px)';
+  let wide = $state(typeof matchMedia === 'function' && matchMedia(WIDE).matches);
+  $effect(() => {
+    if (typeof matchMedia !== 'function') return;
+    const mq = matchMedia(WIDE);
+    const follow = (e) => (wide = e.matches);
+    mq.addEventListener('change', follow);
+    return () => mq.removeEventListener('change', follow);
+  });
 
   // Entries are pushed with a depth stamped on them, which is what lets a
   // back gesture know whether there is anywhere to go back *to*. Rewriting
@@ -85,7 +100,7 @@
     {#if view === 'chat'}
       <Chat resume={route.sub} />
     {:else if view === 'mail'}
-      <Mail />
+      {#if wide}<MailDesk />{:else}<Mail />{/if}
     {:else if view === 'review'}
       <Review initial={route.sub} {navigate} />
     {:else if view === 'tasks'}
