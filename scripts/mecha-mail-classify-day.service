@@ -1,0 +1,44 @@
+# Install: install -m 755 scripts/model-idle.sh ~/.local/bin/mecha-model-idle
+#          cp scripts/mecha-mail-classify-day.{service,timer} ~/.config/systemd/user/
+#          systemctl --user daemon-reload
+#          systemctl --user enable --now mecha-mail-classify-day.timer
+#
+# The daytime half of mail triage. `mecha-mail-classify` runs once, at 05:30
+# UTC, which made the desk a morning digest: mail that arrived at 10:00 was
+# unsorted until the next night. This runs the same sweep every 20 minutes
+# through the working day, so a thread is classified within about half an
+# hour of arriving, and the nightly stays as the catch-up for everything that
+# came in after hours.
+#
+# **Cheap when there is nothing to do.** `classify` lists the recent threads
+# per account (about a second) and skips every thread the store already
+# holds, so a quiet tick costs one provider listing and no model call. A
+# busy tick classifies only what is new — measured on 2026-09-16..23 at
+# roughly 25–30 s per model-classified thread, with most mail disposed of
+# without a model at all.
+#
+# **It stands down rather than competing.** `ExecCondition=` runs
+# model-idle.sh first (installed as ~/.local/bin/mecha-model-idle, so the
+# unit does not depend on which branch a checkout happens to have out). It
+# skips the run — not a failure, just "not now" — when any local-model slot
+# is busy (the owner is chatting, or an agent run is working) or the GPU is
+# above 30% (research work). The next tick asks again. `Nice=` lowers the driver's own CPU weight; the model's GPU time is
+# bounded by the idle check, since niceness does not reach the model server.
+#
+# Everything else is the nightly unit's reasoning, unchanged — see
+# mecha-mail-classify.service for why the workspace is named explicitly and
+# why this is a timer rather than a `mecha trigger`. `--limit 25` is the CLI
+# default; twenty minutes of mail is well under it, and anything a busy
+# stretch pushes past it is the nightly's `--limit 50`'s to catch.
+[Unit]
+Description=mecha daytime mail triage (classify what arrived, when the model is free)
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecCondition=%h/.local/bin/mecha-model-idle
+ExecStartPre=/bin/mkdir -p %h/.mecha/work/mail-classify
+ExecStart=%h/.cargo/bin/mecha --workspace %h/.mecha/work/mail-classify mail classify --limit 25
+Nice=10
+TimeoutStartSec=15min
