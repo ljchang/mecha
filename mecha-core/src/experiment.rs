@@ -1734,6 +1734,7 @@ impl Manifest {
         let route = self.fixtures.routed().to_vec();
         for (arm_name, arm) in &self.arms {
             let resolved = arm.resolve_levers().expect("validated at load");
+            let forced_on = arm.resolve_forced_on().expect("validated at load");
             let stages = arm.resolve_stages().expect("validated at load");
             let provider = arm.provider.as_deref().unwrap_or(provider);
             let model = arm.model.as_deref().unwrap_or(model);
@@ -1755,6 +1756,7 @@ impl Manifest {
                     &fixtures,
                     &route,
                     charter_digest,
+                    &forced_on,
                 )),
                 status: TrialStatus::Pending,
                 session_id: None,
@@ -1837,6 +1839,30 @@ impl Arm {
             .collect())
     }
 
+    /// The levers `levers_on` must *force* on, in `Lever::ALL`'s order: the
+    /// ones whose off position can be the operator's config, not only a
+    /// flag. Taking such a lever out of the off-list leaves the operator's
+    /// `false` standing — `step_escalation` ships off — so an arm that named
+    /// it on ran as the control while its row said otherwise. A flag-only
+    /// lever needs no forcing: absent from the off-list, no flag is passed.
+    pub fn resolve_forced_on(&self) -> Result<Vec<Lever>> {
+        // A name in both lists is on (`resolve_levers`), so every name
+        // here is forced whatever `levers_off` says.
+        let mut on = Vec::new();
+        for name in &self.levers_on {
+            on.push(Lever::parse(name).with_context(|| {
+                format!(
+                    "`{name}` is not a lever (the closed set: {})",
+                    Lever::names()
+                )
+            })?);
+        }
+        Ok(Lever::ALL
+            .into_iter()
+            .filter(|l| on.contains(l) && config_switch(*l).is_some())
+            .collect())
+    }
+
     /// The stage levers this arm carries off, in `StageLever::ALL`'s order.
     /// An unknown name is the load error, never a skipped line.
     pub fn resolve_stages(&self) -> Result<Vec<StageLever>> {
@@ -1854,6 +1880,35 @@ impl Arm {
             .into_iter()
             .filter(|l| off.contains(l))
             .collect())
+    }
+}
+
+/// The config field a lever's off position can live in, when it has one:
+/// turning such a lever on is an act (the operator's `false` must be
+/// overwritten), not the absence of a flag. The one list `resolve_forced_on`
+/// filters by and `child_invocation` writes through, so the two cannot
+/// disagree — and exhaustive, so a new lever fails the build until it is
+/// classified. Defaulting to "not forced" is the defect `resolve_forced_on`
+/// exists for, recurring.
+fn config_switch(lever: Lever) -> Option<fn(&mut crate::config::Config) -> &mut bool> {
+    match lever {
+        Lever::StepChecks => Some(|c| &mut c.agent.step_checks),
+        Lever::GoalGuidance => Some(|c| &mut c.agent.goal_guidance),
+        Lever::StepEscalation => Some(|c| &mut c.agent.step_escalation),
+        Lever::Boredom => Some(|c| &mut c.agent.boredom),
+        Lever::CompactValidate => Some(|c| &mut c.agent.compact_validate),
+        Lever::PredictiveCompaction => Some(|c| &mut c.agent.predictive_compaction),
+        Lever::CarriedState => Some(|c| &mut c.agent.carried_state),
+        Lever::Messages => Some(|c| &mut c.messages.enabled),
+        Lever::Mcp
+        | Lever::LearnedRules
+        | Lever::Hooks
+        | Lever::Outbox
+        | Lever::Fallback
+        | Lever::Skills
+        | Lever::Charter
+        | Lever::CompactTool
+        | Lever::ApprovalRules => None,
     }
 }
 
@@ -1938,6 +1993,7 @@ pub fn condition_hash_of(
         fixtures,
         &[],
         None,
+        &[],
     )
 }
 
@@ -1960,6 +2016,7 @@ pub fn condition_hash_world(
     fixtures: &[String],
     route: &[String],
     charter_digest: Option<&str>,
+    forced_on: &[Lever],
 ) -> String {
     let mut overrides: Vec<&str> = overrides.iter().map(String::as_str).collect();
     overrides.sort_unstable();
@@ -1994,6 +2051,23 @@ pub fn condition_hash_world(
         names.sort_unstable();
         canonical.push_str("|route=");
         canonical.push_str(&names.join(","));
+    }
+    // A switch forced on against the operator's config is a condition the
+    // off-list cannot show. Appended only when there is one, so a row with
+    // no forced switch keeps its earlier hash. A row naming `step_checks`
+    // or `goal_guidance` on was already forced before the term existed and
+    // rehashes with nothing changed in what it runs; a resumed experiment
+    // keys rows on trial id (`Store::plan`), so its finished rows keep the
+    // old value beside new ones.
+    if !forced_on.is_empty() {
+        canonical.push_str("|forced_on=");
+        canonical.push_str(
+            &forced_on
+                .iter()
+                .map(|l| l.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+        );
     }
     if let Some(d) = charter_digest {
         canonical.push_str("|charter=");
@@ -2792,13 +2866,14 @@ pub fn child_invocation(
     config.skills.dir = None;
     config.messages.dir = None;
     // Removing these levers from the off-list is insufficient when the
-    // operator disabled them (guidance defaults off). Explicit on must
-    // materialize a different condition; unspecified switches still inherit.
-    if arm.levers_on.iter().any(|name| name == "step_checks") {
-        config.agent.step_checks = true;
-    }
-    if arm.levers_on.iter().any(|name| name == "goal_guidance") {
-        config.agent.goal_guidance = true;
+    // operator disabled them (guidance and step escalation ship off).
+    // Explicit on must materialize a different condition; unspecified
+    // switches still inherit. Every config switch, not a hand-picked two:
+    // `step_escalation` named on once ran as the control.
+    for lever in arm.resolve_forced_on()? {
+        if let Some(field) = config_switch(lever) {
+            *field(&mut config) = true;
+        }
     }
     let mut flags = Vec::new();
     for lever in levers_off {
@@ -3574,6 +3649,108 @@ rationale = "no notice, fewer turns"
             ..Arm::default()
         };
         assert!(bad.resolve_levers().is_err());
+    }
+
+    /// A lever named on is on in the child's config even where the
+    /// operator's config has it off — every config switch, not two. Before,
+    /// `step_escalation` (off by default) named in `levers_on` ran as the
+    /// control and hashed as the control, so the two arms were one
+    /// condition under two names.
+    #[test]
+    fn levers_on_forces_every_config_switch_and_the_hash_says_so() {
+        let mut real = crate::config::Config::default();
+        real.agent.step_escalation = false;
+        real.agent.goal_guidance = false;
+        real.agent.step_checks = false;
+        real.agent.boredom = false;
+        real.agent.compact_validate = false;
+        real.agent.predictive_compaction = false;
+        real.agent.carried_state = false;
+        real.messages.enabled = false;
+        let names = [
+            "step_escalation",
+            "goal_guidance",
+            "step_checks",
+            "boredom",
+            "compact_validate",
+            "predictive_compaction",
+            "carried_state",
+            "messages",
+        ];
+        let arm = Arm {
+            levers_on: names.iter().map(|n| n.to_string()).collect(),
+            ..Arm::default()
+        };
+        assert_eq!(arm.resolve_forced_on().unwrap().len(), names.len());
+        let c = child_invocation(&real, &arm, None).unwrap().config;
+        assert!(c.agent.step_escalation);
+        assert!(c.agent.goal_guidance);
+        assert!(c.agent.step_checks);
+        assert!(c.agent.boredom);
+        assert!(c.agent.compact_validate);
+        assert!(c.agent.predictive_compaction);
+        assert!(c.agent.carried_state);
+        assert!(c.messages.enabled);
+
+        // Unnamed switches still inherit the operator's value.
+        let plain = child_invocation(&real, &Arm::default(), None)
+            .unwrap()
+            .config;
+        assert!(!plain.agent.step_escalation);
+
+        // Named in both lists it is forced (on wins, `resolve_levers`); a
+        // flag-only lever is not forced.
+        let both = Arm {
+            levers_off: vec!["step_escalation".into()],
+            levers_on: vec!["step_escalation".into(), "learned_rules".into()],
+            ..Arm::default()
+        };
+        assert_eq!(
+            both.resolve_forced_on().unwrap(),
+            vec![Lever::StepEscalation]
+        );
+
+        // The hash: a forced switch is a different condition from the
+        // control; `levers_on` of a flag-only lever over `full` is the
+        // control itself, and so is the bare-plus-one design's old value.
+        let m = Manifest::parse(
+            r#"
+name = "forced"
+control = "full"
+split_seed = 1
+[tasks]
+cases = "c.jsonl"
+fixture = "w"
+[arms.full]
+preset = "full"
+[arms.escalate]
+levers_on = ["step_escalation"]
+[arms.escalate.prediction]
+metric = "failure"
+rationale = "r"
+[arms.rules]
+levers_on = ["learned_rules"]
+[arms.rules.prediction]
+metric = "failure"
+rationale = "r"
+"#,
+        )
+        .unwrap();
+        let rows = m.trials(&["t".into()], "p", "m");
+        let h = |arm: &str| {
+            rows.iter()
+                .find(|t| t.arm == arm)
+                .unwrap()
+                .condition_hash
+                .clone()
+        };
+        assert_ne!(h("escalate"), h("full"));
+        assert_eq!(h("rules"), h("full"));
+        assert_eq!(
+            condition_hash(&[], &[], "p", "m", None),
+            condition_hash_world(&[], &[], "p", "m", None, &[], &[], &[], None, &[]),
+            "no forced switch: every earlier hash keeps its value"
+        );
     }
 
     /// A front-end's two-arm design is a manifest like any other: valid,
@@ -5176,6 +5353,7 @@ seed = "seed"
                 &["graph".into(), "mail".into()],
                 route,
                 None,
+                &[],
             )
         };
         assert_eq!(rows[0].condition_hash, world(&["mail__mail_send".into()]));
@@ -5208,6 +5386,7 @@ seed = "seed"
             &["graph".into(), "mail".into()],
             &["mail__mail_send".into()],
             Some("abc"),
+            &[],
         );
         assert_ne!(with_charter, world(&["mail__mail_send".into()]));
         let rows2 = m.trials_with_world(&["a".into()], "p", "m", Some("abc"));
