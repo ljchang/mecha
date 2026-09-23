@@ -3124,6 +3124,11 @@ pub struct ArmJudgement {
     /// arm, so it holds every verdict: a line that could not be read is
     /// not evidence the stage ran as designed.
     pub unreadable_stage_lines: usize,
+    /// The distinct `--jobs` limits this arm's pairs ran under, both sides
+    /// counted, a row from before the field read as 1. More than one means
+    /// the pairs span concurrency regimes, which moves wall clock and
+    /// exact seed replay, and the verdict is held at *propose*.
+    pub jobs_seen: Vec<u32>,
 }
 
 /// A finished control trial and the treatment trial on the same episode.
@@ -3225,6 +3230,25 @@ pub fn judge(
         let stages = health_of(name);
         let control_stages = health_of(control_name);
         let mut judgement = judgement;
+        // Rows resumed at a different `--jobs` pair two concurrency
+        // regimes into one verdict: the same claim as a stage not known to
+        // have run as designed, so the same hold (found on review).
+        let jobs_seen: Vec<u32> = pairs
+            .iter()
+            .flat_map(|p| [p.control.jobs.unwrap_or(1), p.treatment.jobs.unwrap_or(1)])
+            .collect::<std::collections::BTreeSet<u32>>()
+            .into_iter()
+            .collect();
+        if jobs_seen.len() > 1
+            && matches!(
+                judgement.disposition,
+                crate::candidate::Disposition::Accept | crate::candidate::Disposition::Reject(_)
+            )
+        {
+            judgement.disposition = crate::candidate::Disposition::Propose(format!(
+                "this arm's pairs ran under different --jobs limits ({jobs_seen:?}); concurrency moves the run, so the verdict is not comparing like with like"
+            ));
+        }
         let broken = stages.broken() + control_stages.broken() + unreadable_stage_lines;
         // Both directions: a treatment not known to have occurred can no
         // more be refuted than confirmed, and a confident reject over two
@@ -3250,6 +3274,7 @@ pub fn judge(
             stages,
             control_stages,
             unreadable_stage_lines,
+            jobs_seen,
         });
     }
     out
@@ -4326,6 +4351,48 @@ rationale = "no rumination should fail more over the sequence"
         let (all, torn) = store.all_stage_runs().unwrap();
         assert_eq!((all.len(), torn), (ledger.len(), 1));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pairs that ran under different `--jobs` limits hold the verdict at
+    /// propose, and a row from before the field counts as one at a time.
+    #[test]
+    fn mixed_concurrency_holds_the_verdict_at_propose() {
+        let m = Manifest::parse(MANIFEST).unwrap();
+        let mut trials = Vec::new();
+        for i in 0..12u64 {
+            trials.push(done("full", &format!("t{i}"), 1, true, 10));
+            trials.push(done("bare", &format!("t{i}"), 1, false, 10));
+        }
+        // None and Some(1) are one regime: the clean verdict stands.
+        for t in trials.iter_mut().step_by(2) {
+            t.jobs = Some(1);
+        }
+        let same = judge(&m, &trials, &[], 0);
+        let bare = same.iter().find(|v| v.arm == "bare").unwrap();
+        assert_eq!(bare.jobs_seen, vec![1]);
+        assert!(
+            matches!(
+                bare.judgement.disposition,
+                crate::candidate::Disposition::Reject(_)
+            ),
+            "{:?}",
+            bare.judgement.disposition
+        );
+        // Half the treatment rows resumed at --jobs 3.
+        for t in trials.iter_mut().filter(|t| t.arm == "bare").take(6) {
+            t.jobs = Some(3);
+        }
+        let mixed = judge(&m, &trials, &[], 0);
+        let bare = mixed.iter().find(|v| v.arm == "bare").unwrap();
+        assert_eq!(bare.jobs_seen, vec![1, 3]);
+        assert!(
+            matches!(
+                bare.judgement.disposition,
+                crate::candidate::Disposition::Propose(_)
+            ),
+            "{:?}",
+            bare.judgement.disposition
+        );
     }
 
     /// A broken stage on either side of a comparison holds the verdict at

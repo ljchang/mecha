@@ -342,8 +342,9 @@ designs only). Two rules shape it:
   time. Arms interleave rather than running in blocks.
 - **Each trial holds one of the background model seats** (three, one fewer
   than the server's slots, so your own turn never queues). When none is free,
-  the run waits and says who holds them, so `--jobs 8` still runs at most
-  three at once, and fewer while other background runs hold seats.
+  the run waits and says who holds them. `--jobs` above the seat count is
+  clamped to it (`--jobs 8` runs at most three), and fewer run while other
+  background runs hold seats.
   `--jobs 1`, the default, takes no seat, like any run you are watching from
   a terminal.
 
@@ -353,10 +354,13 @@ when every seat is taken, and they name the experiment's trials as the
 holders. Scheduled triggers take no seat and still run. A long design at
 `--jobs 3` can hold all three for hours; `--jobs 2` leaves one free.
 
-Every row records the `--jobs` limit it ran under. That's an upper bound:
-the seats and the one-trial-per-arm rule can hold it lower. Concurrent
-requests share the server, so time and queue wait change with it, and a
-pinned seed only replays exactly when nothing else is in the batch.
+Every row records the `--jobs` limit it ran under, after that clamp. It's
+still an upper bound, because the one-trial-per-arm rule can hold it lower.
+Concurrent requests share the server, so time and queue wait change with
+it, and a pinned seed only replays exactly when nothing else is in the
+batch. So when an arm's pairs ran under different limits (say, an
+experiment started at `--jobs 1` and resumed at `--jobs 3`), `judge` holds
+the verdict at *propose* and says why.
 
 Expect a modest speed-up, not an N-fold one. The server's throughput stops
 growing at its slot count, and short, prompt-heavy trials barely gain at

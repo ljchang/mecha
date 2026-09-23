@@ -464,6 +464,20 @@ async fn run_single_trials(
     } else {
         None
     };
+    // More jobs than seats would hold every seat and then report waiting on
+    // itself; the pool is the real limit, so it is the one used (found on
+    // review), and the one each row records.
+    let jobs = match &permits {
+        Some(pool) if (jobs as usize) > pool.capacity() => {
+            eprintln!(
+                "mecha exp: --jobs {jobs} is above the {} background model seat(s); running at most {}",
+                pool.capacity(),
+                pool.capacity()
+            );
+            pool.capacity() as u32
+        }
+        _ => jobs,
+    };
     schedule(&pending, jobs, permits.as_ref(), &manifest.name, |t| {
         drive_single(store, manifest, mecha, real, cases, t, jobs)
     })
@@ -2391,6 +2405,12 @@ fn judge_cmd(name: &str, json: bool) -> Result<()> {
             j.holdout.losses,
             j.holdout.ties
         );
+        if v.jobs_seen.len() > 1 {
+            println!(
+                "  --jobs differed across this arm's pairs ({:?}): held at propose",
+                v.jobs_seen
+            );
+        }
         if manifest.kind == TrialKind::Lifetime {
             println!(
                 "  stages: treatment {} ok · {} failed · {} interrupted · {} skipped · {} unknown    control {} ok · {} failed · {} interrupted · {} skipped · {} unknown{}",
