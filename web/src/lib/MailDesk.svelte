@@ -33,6 +33,13 @@
   // moving the cursor opens a thread that is already loaded.
 
   const HOLD_MS = 5000;
+  // Drafting verbs answer at once and run detached (`spawn_detached`), so the
+  // commit bound does not bound them: each is a whole agent run on the local
+  // model. One keystroke may start at most this many.
+  const MAX_DRAFTS = 5;
+  const DRAFTING = new Set(['reply', 'schedule', 'forward']);
+  // Full thread text kept for re-reading; the oldest are dropped past this.
+  const MAX_READS = 60;
   const VERB_PAST = {
     archive: 'Archived',
     dismiss: 'Dismissed',
@@ -291,6 +298,11 @@
         .then(async (res) => {
           const text = await res.text();
           reads.set(keyOf(row), res.ok ? { status: 'ok', text } : { status: 'error', text: text.trim() });
+          // Insertion order is age: drop the oldest finished reads past the cap.
+          for (const [k, v] of reads) {
+            if (reads.size <= MAX_READS) break;
+            if (v.status !== 'loading') reads.delete(k);
+          }
         })
         .catch((e) => reads.set(keyOf(row), { status: 'error', text: String(e?.message ?? e) }))
         .finally(() => {
@@ -325,18 +337,24 @@
 
   // ---- acting ----
 
+  /** Hold one keystroke's actions; false when it was refused. */
   function hold(items, label) {
-    if (!items.length) return;
+    if (!items.length) return false;
+    const drafts = items.filter((it) => DRAFTING.has(it.verb)).length;
+    if (drafts > MAX_DRAFTS) {
+      say(`That would start ${drafts} drafting runs at once — tick ${MAX_DRAFTS} or fewer`);
+      return false;
+    }
     // A retry clears the old failure, or the row would stay on screen while
     // its new action is held.
     for (const it of items) failed.delete(keyOf(it.row));
     pending.add(items, label);
     selected.clear();
     say(`${label} · z to undo`, true);
+    return true;
   }
 
-  function run(verb, extra = {}) {
-    const list = targets;
+  function run(verb, extra = {}, list = targets) {
     if (!list.length) return;
     const items = list.map((row) => ({ row, verb, extra }));
     const label = list.length === 1
@@ -381,7 +399,9 @@
       say('That one works on a single thread');
       return;
     }
-    asking = { verb, label, placeholder, wantTo, required };
+    // The threads are fixed now, as `askSpam` fixes its row: a click or the
+    // background reload must not retarget a reply that is being written.
+    asking = { verb, label, placeholder, wantTo, required, rows: [...targets] };
     askText = '';
     askTo = '';
     queueMicrotask(() => askEl?.focus());
@@ -396,7 +416,7 @@
     if (askText.trim()) extra.text = askText.trim();
     if (a.wantTo) extra.to = askTo.trim();
     asking = null;
-    run(a.verb, extra);
+    run(a.verb, extra, a.rows);
   }
 
   function askSpam() {
@@ -452,17 +472,27 @@
 
   function openSweep() {
     mode = 'sweep';
+    sweepOpen.clear();
+    setSweepVerb(sweepVerb);
+  }
+
+  // Archive and task sweeps start with every group ticked: that is the bulk
+  // the sweep exists for. Drafting sweeps start with none, because each
+  // ticked thread is an agent run and `hold` refuses more than MAX_DRAFTS.
+  function setSweepVerb(v) {
+    sweepVerb = v;
     sweepCursor = 0;
     sweepOff.clear();
-    sweepOpen.clear();
+    if (DRAFTING.has(v)) for (const g of sweepGroups(sweepRows, v)) sweepOff.add(g.key);
   }
 
   function applySweep() {
     const n = checkedRows.length;
     if (!n) return;
     const verb = sweepVerb;
-    hold(checkedRows.map((row) => ({ row, verb, extra: {} })), `${VERB_PAST[verb]} ${n} threads from the sweep`);
-    mode = 'list';
+    if (hold(checkedRows.map((row) => ({ row, verb, extra: {} })), `${VERB_PAST[verb]} ${n} threads from the sweep`)) {
+      mode = 'list';
+    }
   }
 
   function toggleGroup(g) {
@@ -482,9 +512,7 @@
       case 'ArrowRight': case 'l': if (g) sweepOpen.add(g.key); break;
       case 'ArrowLeft': case 'h': if (g) sweepOpen.delete(g.key); break;
       case '1': case '2': case '3': case '4':
-        sweepVerb = SWEEP_VERBS[Number(e.key) - 1];
-        sweepCursor = 0;
-        sweepOff.clear();
+        setSweepVerb(SWEEP_VERBS[Number(e.key) - 1]);
         break;
       case 'Enter': if (e.shiftKey) applySweep(); else return; break;
       case 'z': undo(); break;
@@ -568,6 +596,7 @@
       case '?': help = true; break;
       case 'c': composing = true; break;
       case 'g': gPrefix = Date.now(); break;
+      case ' ': break; // the list scrolls itself with the cursor; not the page
       case 'Escape': selected.clear(); search = ''; break;
       default:
         if (byKey) { pickLane(byKey.id); break; }
@@ -615,7 +644,7 @@
           </button>
         {/each}
         <button class="lane" class:on={lane === 'inbox'} onclick={() => pickLane('inbox')}>
-          <kbd>{INBOX.key}</kbd><span class="grow">{INBOX.label}</span><span class="n">{inbox ? inbox.length : ''}</span>
+          <kbd>{INBOX.key}</kbd><span class="grow">{INBOX.label}</span><span class="n">{inbox ? inbox.filter((r) => !hidden.has(keyOf(r))).length : ''}</span>
         </button>
         <span class="grow"></span>
         <button class="sweepcard" onclick={openSweep}>
@@ -718,7 +747,7 @@
 
           {#if asking}
             <form class="askbar" onsubmit={(e) => { e.preventDefault(); submitAsk(); }}>
-              <div class="asklabel">{asking.label}{targets.length > 1 ? ` · ${targets.length} threads` : ''}</div>
+              <div class="asklabel">{asking.label} · {asking.rows.length > 1 ? `${asking.rows.length} threads` : (asking.rows[0].subject || asking.rows[0].summary)}</div>
               {#if asking.wantTo}
                 <input bind:this={askEl} bind:value={askTo} placeholder="name@example.edu, …" aria-label="Forward to" />
                 <input bind:value={askText} placeholder={asking.placeholder} aria-label="Covering note" />
@@ -758,7 +787,7 @@
         <button class="ghost" onclick={() => (mode = 'list')}><kbd>esc</kbd> back to triage</button>
         <span class="grow"></span>
         {#each SWEEP_VERBS as v, i}
-          <button class="tab" class:on={sweepVerb === v} onclick={() => { sweepVerb = v; sweepCursor = 0; sweepOff.clear(); }}>
+          <button class="tab" class:on={sweepVerb === v} onclick={() => setSweepVerb(v)}>
             <kbd>{i + 1}</kbd>{sweepVerbLabel[v]} <span class="n">{sweepCounts[v]}</span>
           </button>
         {/each}

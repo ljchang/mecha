@@ -37,6 +37,7 @@ t('an ignored thread is in no lane', laneOf({ state: 'classified', bucket: 'igno
 t('a failed classification needs you', laneOf({ state: 'failed' }) === 'respond');
 t('parked and drafted have their own lanes', laneOf({ state: 'parked' }) === 'parked' && laneOf({ state: 'drafted' }) === 'drafted');
 t('acted and dismissed are finished', laneOf({ state: 'acted' }) === null && laneOf({ state: 'dismissed' }) === null);
+t('a state this page does not know shows up rather than vanishing', laneOf({ state: 'snoozed' }) === 'respond');
 
 // ---- order ----
 const sorted = sortRows([

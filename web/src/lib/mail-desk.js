@@ -4,8 +4,9 @@
 // Three ideas carry the desk, and each lives here rather than in markup:
 //
 // - **Lanes are the store's states, not a second classifier.** A row's lane is
-//   read off `state` and `bucket` exactly as `Record::needs_me` and the TUI
-//   read them; the page never decides on its own what needs the owner.
+//   read off `state` and `bucket` the way `Record::needs_me` and the TUI read
+//   them. It is a re-derivation in JS, so it can drift; an unknown state
+//   lands in "Needs you" rather than nowhere, so drift shows.
 // - **The classifier's proposal is the default action.** `acceptVerb` maps a
 //   proposal to the verb Enter runs, and says so when there is nothing to
 //   accept rather than inventing one.
@@ -26,7 +27,9 @@ export const LANES = [
 /**
  * Which lane a store row belongs to, or null when it is finished (`acted`,
  * `dismissed`) or the classifier said ignore. `failed` is the owner's
- * problem by definition, so it sits with the threads that need them.
+ * problem by definition, so it sits with the threads that need them — and so
+ * does any state this file does not know: a state added to `mail_triage.rs`
+ * later must show up as a puzzling row, never vanish from the backlog.
  */
 export function laneOf(row) {
   switch (row.state) {
@@ -40,8 +43,11 @@ export function laneOf(row) {
       if (row.bucket === 'respond') return 'respond';
       if (row.bucket === 'notify') return 'notify';
       return null;
-    default:
+    case 'acted':
+    case 'dismissed':
       return null;
+    default:
+      return 'respond';
   }
 }
 
