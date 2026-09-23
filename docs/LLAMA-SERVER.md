@@ -150,6 +150,13 @@ whatever placement decision is made at load is never revisited.
 
 ## Flags that cost something to learn
 
+- **`/slots` is read by a scheduled job.** `scripts/model-idle.sh` (the
+  daytime mail sweep's `ExecCondition=`) asks `GET /slots` whether any slot
+  is processing before it lets background work onto the model. llama-server
+  serves it by default; a flag change that disables it (`--no-slots`) makes
+  that unit fail, not skip — deliberately, so `mecha doctor` says so instead
+  of the sweep going quiet.
+
 - **`--cache-idle-slots` is deliberately absent. Do not add it.** It saves an
   idle slot to the prompt cache on a new task *and clears it*, so the slot
   holding a live conversation's prefix is wiped, LCP similarity finds nothing,
@@ -389,5 +396,6 @@ machine from starting is one people turn off.
 - `scripts/mmproj.sh` — the projector guard every start script sources
 - `provider/preflight.rs` — one `GET /props`, checked against config
 - `scripts/bench-slots.sh` — throughput
+- `scripts/model-idle.sh` — the idle check that reads `/slots` before daytime background work
 - `scripts/affinity-test.py` — prefix reuse
 - `cache_lens.rs` — the per-run observer that caught the affinity regression
