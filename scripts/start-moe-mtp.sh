@@ -235,6 +235,10 @@ CRAM="${MECHA_LLAMA_CRAM:-32768}"
 # **Sampling is measured, not assumed.** `curl -s localhost:8080/props` prints
 # what the server will actually use; a flag here only means something if it
 # shows up there after a restart.
+#
+# **`/slots` is load-bearing.** `scripts/model-idle.sh` reads it before every
+# daytime mail sweep; do not add `--no-slots`, and check that script if a
+# release reshapes the slot JSON (`is_processing`). See docs/LLAMA-SERVER.md.
 
 exec ${LLAMA_SERVER:-llama-server} -m "$M" \
   --mmproj "$MMPROJ" \

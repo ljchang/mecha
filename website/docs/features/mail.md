@@ -583,15 +583,36 @@ answered by whether a form for that kind actually exists. A kind with no form
 keeps its name, because that is evidence about what your mail actually contains,
 and loses only a promotion there would be nothing behind.
 
-### Running it nightly
+### Running it on a schedule
 
-`scripts/mecha-mail-classify.{service,timer}` sweeps at 05:30 UTC:
+Two timers, one sweep. `scripts/mecha-mail-classify.{service,timer}` sweeps at
+05:30 UTC as the after-hours catch-up;
+`scripts/mecha-mail-classify-day.{service,timer}` sweeps every 20 minutes
+through the working day (07:30–21:50), so a thread is sorted within about half
+an hour of arriving. The daytime timer names its zone (`America/New_York`) so
+the window follows daylight saving; set the zone on its two `OnCalendar=` lines
+to your own before installing:
 
 ```bash
 cp scripts/mecha-mail-classify.{service,timer} ~/.config/systemd/user/
+install -D -m 755 scripts/model-idle.sh ~/.local/bin/mecha-model-idle
+cp scripts/mecha-mail-classify-day.{service,timer} ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now mecha-mail-classify.timer
+systemctl --user enable --now mecha-mail-classify.timer mecha-mail-classify-day.timer
 ```
+
+The daytime sweep stands down rather than competing: before each run,
+`model-idle.sh` skips it when any slot on the local model server is busy (the
+owner is chatting, or an agent is working) or the GPU is above 30%. That check
+is for a **local** model: it asks the llama-server named by
+`MECHA_SLOTS_URL` in the service (`http://127.0.0.1:8080/slots` as shipped —
+set it to your `[providers.local] base_url` plus `/slots`). With a hosted
+provider there is no local server to ask; remove the service's
+`ExecCondition=` line instead — left in, it reads a refused connection as a
+restarting server, so the sweep skips silently for about three hours and then
+fails every tick. A quiet
+tick costs one mailbox listing and no model call, since the sweep only
+classifies threads it has not seen.
 
 A timer rather than a [trigger](/docs/features/triggers), because a trigger's
 action is a *prompt* on purpose and this is a deterministic command. The unit
