@@ -86,7 +86,13 @@ t('a nameless sender shows its address', groups.find((g) => g.key === 'cal@x.com
   // The regression: a group arriving after the tab opened (the minute's
   // reload, a new sender) must not be ticked for a drafting verb.
   t('a group that appears later is not ticked for a draft', tickedGroups([g('a'), g('b'), g('new')], 'reply', marks).every((x) => x.key !== 'new'));
-  t('but is for an archive', tickedGroups([g('a'), g('new')], 'archive', new Set()).some((x) => x.key === 'new'));
+  t('an archive with no record of what was shown ticks every group', tickedGroups([g('a'), g('new')], 'archive', new Set()).some((x) => x.key === 'new'));
+  // Archive has no inverse past its hold: a group the owner never saw on the
+  // screen they acted from must not ride along with the ones they did.
+  const shown = new Set(['a']);
+  t('an archive sweep does not tick a group that arrived after it opened', tickedGroups([g('a'), g('new')], 'archive', new Set(), shown).map((x) => x.key).join() === 'a');
+  t('but marking that group ticks it', tickedGroups([g('a'), g('new')], 'archive', new Set(['new']), shown).map((x) => x.key).join() === 'a,new');
+  t('and marking a shown group unticks it', tickedGroups([g('a'), g('new')], 'archive', new Set(['a']), shown).length === 0);
 }
 
 // ---- senders ----
