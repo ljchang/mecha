@@ -44,13 +44,15 @@
 # ticks) the check fails instead. Any answer that proves the server alive —
 # an idle or busy slot list — clears the count.
 #
-# **A busy slot is counted too, on a much longer fuse.** Busy is the normal
-# reason to skip, and the owner chatting through an afternoon must never
-# alarm; but a slot stuck `is_processing` — a wedged request, a run that never
-# ends — would skip the sweep forever with nothing to say so. So consecutive
-# busy skips get their own count, cleared by any tick that finds every slot
-# idle, and fail after MECHA_IDLE_BUSY_MAX (default 36: twelve hours, longer
-# than the whole daytime window).
+# **A busy model and a busy GPU are counted too, per day.** They are the
+# normal reasons to skip — the owner chatting, a research job on the card —
+# and neither must alarm for an afternoon of it; but a slot stuck
+# `is_processing` or a GPU pegged for days would skip the sweep forever with
+# nothing to say so. So each has a count that belongs to one day (it starts
+# over on the first tick of the next) and is cleared by any tick that finds
+# the model idle, and fails after MECHA_IDLE_DAY_MAX in a row (default 44:
+# every tick of the 07:30–21:50 window). The alarm then means one precise
+# thing: the daytime sweep did not run once today.
 set -uo pipefail
 
 SLOTS_URL="${MECHA_SLOTS_URL:-http://127.0.0.1:8080/slots}"
@@ -58,19 +60,26 @@ GPU_BUSY="${MECHA_GPU_BUSY:-30}"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/mecha"
 STUCK_MAX="${MECHA_IDLE_STUCK_MAX:-9}"
 STUCK_FILE="$STATE_DIR/model-idle-stuck"
-BUSY_MAX="${MECHA_IDLE_BUSY_MAX:-36}"
+DAY_MAX="${MECHA_IDLE_DAY_MAX:-44}"
 BUSY_FILE="$STATE_DIR/model-idle-busy"
+GPU_FILE="$STATE_DIR/model-idle-gpu"
+# A placeholder if `date` fails, so the file keeps two fields and the count
+# still climbs (it just never starts over for a new day).
+TODAY="$(date +%F 2>/dev/null)"
+TODAY="${TODAY:-unknown-day}"
 
 # A skip that may be passing or may be permanent: counted in FILE, and loud
-# once MAX of them have come in a row.
+# once MAX of them have come in a row. With PERDAY set, a count left from an
+# earlier day starts over — the file holds "<date> <count>".
 counted_skip() {
-    local file=$1 max=$2 why=$3 n
-    n="$(cat "$file" 2>/dev/null)"
-    [ "$n" -eq "$n" ] 2>/dev/null || n=0
+    local file=$1 max=$2 why=$3 perday=${4:-} day n
+    read -r day n <"$file" 2>/dev/null || true
+    [ "${n:-}" -eq "${n:-}" ] 2>/dev/null || n=0
+    [ -n "$perday" ] && [ "${day:-}" != "$TODAY" ] && n=0
     n=$((n + 1))
     # A count that cannot be kept can never escalate, which would turn "loud
     # after three hours" into "quiet forever" — so that is a failure too.
-    if ! { mkdir -p "$STATE_DIR" && printf '%s\n' "$n" >"$file"; } 2>/dev/null; then
+    if ! { mkdir -p "$STATE_DIR" && printf '%s %s\n' "$TODAY" "$n" >"$file"; } 2>/dev/null; then
         echo "model-idle: $why, and the skip count cannot be saved to $file — failing so mecha doctor sees it"
         exit 255
     fi
@@ -136,7 +145,7 @@ fi
 # A readable slot list: the server is alive, whatever it is doing.
 rm -f "$STUCK_FILE"
 if [ "$busy" -gt 0 ]; then
-    counted_skip "$BUSY_FILE" "$BUSY_MAX" "$busy model slot(s) in use"
+    counted_skip "$BUSY_FILE" "$DAY_MAX" "$busy model slot(s) in use" perday
 fi
 rm -f "$BUSY_FILE"
 
@@ -148,8 +157,8 @@ if [ -z "$util" ] && command -v nvidia-smi >/dev/null 2>&1; then
     echo "model-idle: nvidia-smi gave no readable GPU utilisation — not gating on it"
 fi
 if [ -n "$util" ] && [ "$util" -gt "$GPU_BUSY" ]; then
-    echo "model-idle: GPU at ${util}% (> ${GPU_BUSY}%) — skipping this run"
-    exit 1
+    counted_skip "$GPU_FILE" "$DAY_MAX" "GPU at ${util}% (> ${GPU_BUSY}%)" perday
 fi
+rm -f "$GPU_FILE"
 
 exit 0
