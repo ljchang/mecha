@@ -1213,9 +1213,44 @@ async fn classify(
         };
         store.put(&rec)?;
     }
-    let sweep_outage = sweep_was_outage(ok, failures.len());
+    // A sweep that classified nothing and failed several threads may be the
+    // server's fault or several threads' own — two stuck threads on a quiet
+    // tick look exactly like an outage by their counts. Only the model can
+    // say which: ask it one message nothing can make fail.
+    let canary_answered = if ok == 0 && failures.len() >= 2 {
+        let answered = mecha_core::mail_triage::classify_with(
+            provider.as_ref(),
+            &model,
+            &mecha_core::mail_triage::canary_thread(),
+            &today,
+            &examples,
+            learned.as_deref(),
+        )
+        .await
+        .is_ok();
+        eprintln!(
+            "  {}",
+            if answered {
+                "the model answered a canary — these failures are the threads' own"
+            } else {
+                "the model failed a canary too — an outage, counted against no thread"
+            }
+        );
+        answered
+    } else {
+        true
+    };
+    let sweep_outage = sweep_was_outage(ok, failures.len(), canary_answered);
+    // Every failure is written even if one write errors, so a bad file does
+    // not cost the other failures their record; the first error is returned.
+    let mut write_error = None;
     for (thread, prev, e) in &failures {
-        store.put(&failed_record(thread, prev.as_ref(), e, sweep_outage))?;
+        if let Err(err) = store.put(&failed_record(thread, prev.as_ref(), e, sweep_outage)) {
+            write_error.get_or_insert(err);
+        }
+    }
+    if let Some(err) = write_error {
+        return Err(err);
     }
     // The pre-filtered count is reported rather than folded into `ok`,
     // because "how much is the cheap rule taking" is the question that decides
@@ -1327,17 +1362,20 @@ fn failed_record(
 }
 
 /// Whether a sweep's failures were the server's, whatever their error type:
-/// the model classified nothing and more than one thread failed.
+/// the model classified nothing, more than one thread failed, and the model
+/// could not answer a canary either (`mail_triage::canary_thread`).
 ///
 /// `failure_is_outage` reads the error, and a server-wide failure need not
 /// carry a `ProviderError` — llama-server answering HTTP 200 with empty
 /// content when `--reasoning-budget` eats `max_tokens` fails every thread
 /// through a plain error. Counting that against each thread would walk the
-/// whole mailbox up the backoff after one bad server flag. A single failure
-/// on a sweep with nothing else to do still counts: that is the stuck thread
-/// on a quiet tick, which the backoff exists to pace.
-fn sweep_was_outage(ok: u32, failures: usize) -> bool {
-    ok == 0 && failures >= 2
+/// whole mailbox up the backoff after one bad server flag. But the counts
+/// alone cannot tell that from two threads stuck at once on a quiet tick —
+/// which, treated as an outage, would never back off, the very bug the
+/// backoff fixes — so the canary decides. A single failure is always the
+/// thread's own; no canary is asked.
+fn sweep_was_outage(ok: u32, failures: usize, canary_answered: bool) -> bool {
+    ok == 0 && failures >= 2 && !canary_answered
 }
 
 fn record(t: &ThreadInput, verdict: Option<Verdict>, error: Option<String>) -> Record {
@@ -2641,16 +2679,29 @@ mod classify_exit_tests {
         );
     }
 
-    /// Nothing classified and several failures is the server's; one failure
-    /// alone is the stuck thread the backoff paces; any success means the
-    /// failures that remain were the threads' own.
+    /// Nothing classified, several failures, and the model cannot answer a
+    /// canary either: the server's. Everything else is the threads' own.
     #[test]
-    fn a_sweep_that_classified_nothing_and_failed_several_was_an_outage() {
-        assert!(sweep_was_outage(0, 25), "every thread failed alike");
-        assert!(sweep_was_outage(0, 2));
-        assert!(!sweep_was_outage(0, 1), "the stuck thread on a quiet tick");
-        assert!(!sweep_was_outage(5, 3), "the model worked for others");
-        assert!(!sweep_was_outage(0, 0));
+    fn a_sweep_is_an_outage_only_when_the_model_also_fails_a_canary() {
+        assert!(
+            sweep_was_outage(0, 25, false),
+            "every thread failed, and so did the canary"
+        );
+        // Review finding: two threads stuck at once on a quiet tick look like
+        // an outage by their counts; treated as one, they never backed off.
+        assert!(
+            !sweep_was_outage(0, 2, true),
+            "two stuck threads, a healthy model"
+        );
+        assert!(
+            !sweep_was_outage(0, 1, false),
+            "one failure is the thread's own"
+        );
+        assert!(
+            !sweep_was_outage(5, 3, false),
+            "the model worked for others"
+        );
+        assert!(!sweep_was_outage(0, 0, false));
     }
 
     /// 2026-08-19: the nightly classified 0 of 16 and systemd logged SUCCESS,

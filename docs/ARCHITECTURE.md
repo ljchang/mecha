@@ -1205,6 +1205,22 @@ door's own rule is that a paraphrase of an injection is the injection
 rearranged. The name has to reach the run, so this is not fixable by
 withholding; it is a question about what capture should default to, and it is
 named in HANDOFF rather than papered over here.
+**A thread whose classification keeps failing is retried on a backoff, and an
+outage never counts against it.** A `failed` record is retried — a transient
+failure must not be permanent, or a night's outage buries a manuscript
+invitation for good (2026-08-19) — but not on every sweep: `Record::attempts`
+counts the thread's own consecutive failures, and `mail_triage::retry_after`
+waits an hour, doubling, at most a day. Without it, one thread that always
+fails called the model on every 20-minute daytime tick and failed the unit on
+the quiet ones, keeping `mecha doctor` red. What counts is the thread's own
+failure only: `failure_is_outage` (a transient `ProviderError`, or `Auth` /
+`Billing`) keeps the previous count *and* clock (`Record::carry_failure`), and
+a sweep that classified nothing and failed several threads asks the model a
+canary (`canary_thread`) — if that fails too, nothing in the sweep counts.
+The counts alone cannot separate an outage from two threads stuck at once;
+the canary can. `mail list` shows a failure's count and when it is next due;
+`classify --force` retries everything at once.
+
 **A deadline the classifier reports must cite the words it came from, and the
 harness checks them rather than trusts them.** The prompt asks for
 `deadline_quote` — the exact words, copied verbatim — and `ground_deadline`
