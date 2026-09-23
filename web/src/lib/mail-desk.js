@@ -40,9 +40,11 @@ export function laneOf(row) {
     case 'drafted':
       return 'drafted';
     case 'classified':
-      if (row.bucket === 'respond') return 'respond';
+      // `ignore` is the classifier saying so; an unknown bucket is drift,
+      // and lands with the owner for the same reason an unknown state does.
+      if (row.bucket === 'ignore') return null;
       if (row.bucket === 'notify') return 'notify';
-      return null;
+      return 'respond';
     case 'acted':
     case 'dismissed':
       return null;

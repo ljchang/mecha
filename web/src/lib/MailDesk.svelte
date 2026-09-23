@@ -31,6 +31,11 @@
   // held for a few seconds (`PendingActions`), so `z` can take it back, then
   // commits in the background. And the next threads are read ahead, so
   // moving the cursor opens a thread that is already loaded.
+  //
+  // Leaving the view commits anything still held (dropping it would be
+  // worse), and a fresh mount starts with no memory of it: come straight
+  // back and a row whose CLI child has not finished yet shows again for a
+  // moment. The phone page has the same window.
 
   const HOLD_MS = 5000;
   // Drafting verbs answer at once and run detached (`spawn_detached`), so the
@@ -170,8 +175,15 @@
         seen.add(k);
         threads.push(m);
       }
-      // A fresh inbox is the truth for what was acted on from it.
-      for (const [k, d] of done) if (d.inbox) done.delete(k);
+      // A fresh inbox is the truth only for what it no longer lists: a thread
+      // that is gone has been acted on and needs no `done` entry. One still
+      // listed may just predate an action that landed while this (slow) fetch
+      // was outstanding, so it stays hidden until DONE_GRACE_MS says otherwise.
+      const now = Date.now();
+      for (const [k, d] of done) {
+        if (!d.inbox) continue;
+        if (!seen.has(k) || now - d.at > DONE_GRACE_MS) done.delete(k);
+      }
       inbox = threads.map((m) => ({
         fromInbox: true,
         thread_id: m.thread_id,
