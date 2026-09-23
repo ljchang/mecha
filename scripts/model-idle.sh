@@ -32,10 +32,38 @@
 # busy model. Unknown is never clean, and it is not quiet either. A missing
 # or unreadable `nvidia-smi` does NOT decline: a box without a usable GPU
 # query should still sort its mail, as the nightly's own check fails open.
+#
+# **Two skips are believed transient, and are only allowed to stay so.** A
+# timeout and a 503 ("loading model") are what a busy or restarting server
+# looks like — and also what a server that can never finish loading, or a
+# black-holed port, looks like forever. Persistence is what tells them
+# apart, so consecutive skips of that kind are counted in a state file, and
+# after MECHA_IDLE_STUCK_MAX of them in a row (default 9: three hours of
+# ticks) the check fails instead. Any answer that proves the server alive —
+# an idle or busy slot list — clears the count, as does a GPU skip, which
+# says nothing about the server.
 set -uo pipefail
 
 SLOTS_URL="${MECHA_SLOTS_URL:-http://127.0.0.1:8080/slots}"
 GPU_BUSY="${MECHA_GPU_BUSY:-30}"
+STUCK_MAX="${MECHA_IDLE_STUCK_MAX:-9}"
+STUCK_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/mecha/model-idle-stuck"
+
+# A transient-looking skip: counted, and loud once it has lasted too long.
+stuck_skip() {
+    local n
+    n="$(cat "$STUCK_FILE" 2>/dev/null)"
+    [ "$n" -eq "$n" ] 2>/dev/null || n=0
+    n=$((n + 1))
+    mkdir -p "$(dirname "$STUCK_FILE")" && printf '%s\n' "$n" >"$STUCK_FILE"
+    if [ "$n" -ge "$STUCK_MAX" ]; then
+        echo "model-idle: $1 for $n ticks in a row — failing so mecha doctor sees it"
+        exit 255
+    fi
+    echo "model-idle: $1 — skipping this run ($n in a row)"
+    exit 1
+}
+clear_stuck() { rm -f "$STUCK_FILE"; }
 
 # The body and the status separately: `curl -f` would fold every HTTP error
 # into one exit code, and two of them mean opposite things here.
@@ -52,14 +80,12 @@ slots="${reply%$'\n'*}"
 # Anything else — refused, reset, 501 (`--no-slots`), any other status — is a
 # server that is not there to ask, and fails loudly as above.
 if [ "$rc" -eq 28 ]; then
-    echo "model-idle: $SLOTS_URL too busy to answer — skipping this run"
-    exit 1
+    stuck_skip "$SLOTS_URL too busy to answer"
 elif [ "$rc" -ne 0 ]; then
     echo "model-idle: no answer from $SLOTS_URL (curl $rc) — failing so mecha doctor sees it"
     exit 255
 elif [ "$code" = 503 ]; then
-    echo "model-idle: $SLOTS_URL says the model is still loading — skipping this run"
-    exit 1
+    stuck_skip "$SLOTS_URL says the model is still loading"
 elif [ "$code" != 200 ]; then
     echo "model-idle: $SLOTS_URL answered HTTP $code — failing so mecha doctor sees it"
     exit 255
@@ -81,6 +107,8 @@ if ! [ "$busy" -eq "$busy" ] 2>/dev/null; then
     echo "model-idle: could not read a slot count from $SLOTS_URL — failing so mecha doctor sees it"
     exit 255
 fi
+# A readable slot list: the server is alive, whatever it is doing.
+clear_stuck
 if [ "$busy" -gt 0 ]; then
     echo "model-idle: $busy model slot(s) in use — skipping this run"
     exit 1

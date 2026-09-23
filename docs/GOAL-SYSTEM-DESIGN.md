@@ -295,7 +295,9 @@ model) applies with more force here because part of this runs per turn.
 
 ### 4.2 Two findings from probing the machine, 2026-08-26
 
-**`GET /slots` is a free interoceptive channel and nothing reads it.** It
+**`GET /slots` is a free interoceptive channel and no run reads it.** (A
+scheduled script does since 2026-09-23 — `scripts/model-idle.sh`, the daytime
+mail sweep's idle check — but nothing in a run's path.) It
 reports per slot: `is_processing`, `n_prompt_tokens`,
 `n_prompt_tokens_processed`, `n_prompt_tokens_cache`. That is load sensed
 directly rather than by proxy, and the last field is a *second, independent

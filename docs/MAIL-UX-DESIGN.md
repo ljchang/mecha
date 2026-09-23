@@ -28,7 +28,7 @@ Shipped and running, so these are facts rather than proposals:
 | The classifier | no tools, no history, no system prompt, no shared cache prefix; one isolated call per thread |
 | `mecha mail` | `classify` / `list` / `show` / `dismiss` |
 | Escalation | snippet first; full body when the verdict is `respond` or names a request kind (~25% of threads) |
-| The nightly | `mecha-mail-classify.timer`, 05:30 UTC, Dartmouth only |
+| The schedule | `mecha-mail-classify.timer`, 05:30 UTC, both accounts; `mecha-mail-classify-day.timer`, every 20 min 07:30–21:50 local, gated on `model-idle.sh` |
 
 Measured on 51 real threads when it shipped: 30 `ignore`, 9 `notify`, 12
 `respond`. That sample is superseded by the corpus measurement for anything

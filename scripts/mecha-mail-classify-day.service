@@ -18,6 +18,18 @@
 # roughly 25–30 s per model-classified thread, with most mail disposed of
 # without a model at all.
 #
+# **One exception to "quiet ticks are free".** A `failed` record is retried
+# on every sweep while it is inside the recent window
+# (`TriageStore::needs_classifying` has no attempt counter), so a thread that
+# fails for a reason that does not go away — a body that trips the provider,
+# a verdict that will not parse — makes every tick build a provider and call
+# the model, and a tick where it is the only new thread fails the unit. At
+# one sweep a night that was a retry a day; at this cadence it is ~43. A
+# retry cap or a `last_attempt` on `Record` is the fix, and it is a Rust
+# change, like the permit below. Until then, `mecha doctor` showing this
+# unit failed with the model server healthy points at a stuck thread:
+# `mecha mail list` shows it, `mecha mail dismiss` clears it.
+#
 # **It stands down rather than competing.** `ExecCondition=` runs
 # model-idle.sh first (installed as ~/.local/bin/mecha-model-idle, so the
 # unit does not depend on which branch a checkout happens to have out). It

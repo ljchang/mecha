@@ -583,15 +583,27 @@ answered by whether a form for that kind actually exists. A kind with no form
 keeps its name, because that is evidence about what your mail actually contains,
 and loses only a promotion there would be nothing behind.
 
-### Running it nightly
+### Running it on a schedule
 
-`scripts/mecha-mail-classify.{service,timer}` sweeps at 05:30 UTC:
+Two timers, one sweep. `scripts/mecha-mail-classify.{service,timer}` sweeps at
+05:30 UTC as the after-hours catch-up;
+`scripts/mecha-mail-classify-day.{service,timer}` sweeps every 20 minutes
+through the working day (07:30–21:50 in the owner's zone), so a thread is
+sorted within about half an hour of arriving:
 
 ```bash
 cp scripts/mecha-mail-classify.{service,timer} ~/.config/systemd/user/
+install -m 755 scripts/model-idle.sh ~/.local/bin/mecha-model-idle
+cp scripts/mecha-mail-classify-day.{service,timer} ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now mecha-mail-classify.timer
+systemctl --user enable --now mecha-mail-classify.timer mecha-mail-classify-day.timer
 ```
+
+The daytime sweep stands down rather than competing: before each run,
+`model-idle.sh` skips it when any slot on the local model server is busy (the
+owner is chatting, or an agent is working) or the GPU is above 30%. A quiet
+tick costs one mailbox listing and no model call, since the sweep only
+classifies threads it has not seen.
 
 A timer rather than a [trigger](/docs/features/triggers), because a trigger's
 action is a *prompt* on purpose and this is a deterministic command. The unit
