@@ -2,6 +2,7 @@
 #          cp scripts/mecha-mail-classify-day.{service,timer} ~/.config/systemd/user/
 #          systemctl --user daemon-reload
 #          systemctl --user enable --now mecha-mail-classify-day.timer
+#          loginctl enable-linger "$USER"     # timers must fire while logged out
 #
 # The daytime half of mail triage. `mecha-mail-classify` runs once, at 05:30
 # UTC, which made the desk a morning digest: mail that arrived at 10:00 was
@@ -23,7 +24,8 @@
 # skips the run — not a failure, just "not now" — when any local-model slot
 # is busy (the owner is chatting, or an agent run is working) or the GPU is
 # above 30% (research work). The next tick asks again. A model server that
-# does not answer at all *fails* the unit instead, so `mecha doctor` notices.
+# does not answer, or answers with a slot list it cannot read, *fails* the
+# unit instead, so `mecha doctor` notices rather than the sweep going quiet.
 #
 # It takes no `permit.rs` seat, and the nightly does not either: the idle
 # check is a point check at the door, stricter than a permit there (any busy
@@ -39,6 +41,7 @@
 # stretch pushes past it is the nightly's `--limit 50`'s to catch.
 [Unit]
 Description=mecha daytime mail triage (classify what arrived, when the model is free)
+Wants=network-online.target
 After=network-online.target
 
 [Service]

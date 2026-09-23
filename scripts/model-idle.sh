@@ -26,10 +26,12 @@
 # it in front of `mecha doctor`, which watches `mecha-*` units. The nightly
 # still catches up either way.
 #
-# An answer that is not a readable slot count also declines rather than
-# guessing — unknown is never clean. A missing or unreadable `nvidia-smi`
-# does NOT decline: a box without a usable GPU query should still sort its
-# mail, as the nightly's own check fails open.
+# **An answer that is not a readable slot count fails the same way**, for the
+# same reason: a llama.cpp that renames `is_processing`, or a box that lost
+# `python3`, would otherwise skip every tick forever and look exactly like a
+# busy model. Unknown is never clean, and it is not quiet either. A missing
+# or unreadable `nvidia-smi` does NOT decline: a box without a usable GPU
+# query should still sort its mail, as the nightly's own check fails open.
 set -uo pipefail
 
 SLOTS_URL="${MECHA_SLOTS_URL:-http://127.0.0.1:8080/slots}"
@@ -50,9 +52,8 @@ elif [ "$rc" -ne 0 ]; then
 fi
 # A shape this does not recognise is not idle: an empty array, or slots
 # whose busy flag is spelled some other way (it is llama.cpp's field, not a
-# contract), must decline like any other unreadable answer rather than sum
-# to a confident zero. Exiting non-zero leaves `busy` empty, which the
-# check below declines.
+# contract), must not sum to a confident zero. Exiting non-zero leaves
+# `busy` empty, which the check below fails on.
 busy="$(printf '%s' "$slots" | python3 -c '
 import json, sys
 s = json.load(sys.stdin)
@@ -61,10 +62,10 @@ if not isinstance(s, list) or not s or any("is_processing" not in x for x in s):
 print(sum(1 for x in s if x["is_processing"]))
 ' 2>/dev/null)"
 # The type, not a sentinel: python3 missing, killed or raising all leave
-# `busy` empty or non-numeric, and every one of them must decline.
+# `busy` empty or non-numeric, and every one of them fails loudly.
 if ! [ "$busy" -eq "$busy" ] 2>/dev/null; then
-    echo "model-idle: could not read a slot count from $SLOTS_URL — skipping this run"
-    exit 1
+    echo "model-idle: could not read a slot count from $SLOTS_URL — failing so mecha doctor sees it"
+    exit 255
 fi
 if [ "$busy" -gt 0 ]; then
     echo "model-idle: $busy model slot(s) in use — skipping this run"
