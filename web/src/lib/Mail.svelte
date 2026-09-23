@@ -222,15 +222,18 @@
   const sweepCounts = $derived(
     Object.fromEntries(SWEEP_VERBS.map((v) => [v, sweepRows.filter((r) => r.proposed === v).length])),
   );
-  const ticked = $derived(new Set(tickedGroups(groups, sweepVerb, sweepMarks).map((g) => g.key)));
+  let sweepSeen = $state(new Set()); // groups on screen when the sheet opened, for `tickedGroups`
+  const ticked = $derived(new Set(tickedGroups(groups, sweepVerb, sweepMarks, sweepSeen).map((g) => g.key)));
   const checkedRows = $derived(groups.filter((g) => ticked.has(g.key)).flatMap((g) => g.rows));
 
-  // Archive and task sweeps open with every group ticked, drafting sweeps
-  // with none — and stay that way for groups that arrive while the sheet is
-  // open (`tickedGroups`): each ticked thread is an agent run.
+  // Archive and task sweeps open with every group on screen ticked, drafting
+  // sweeps with none; a group that arrives while the sheet is open starts
+  // unticked either way (`tickedGroups`) — an archive has no inverse past
+  // its hold, and each drafting thread is an agent run.
   function setSweepVerb(v) {
     sweepVerb = v;
     sweepMarks.clear();
+    sweepSeen = new Set(sweepGroups(sweepRows, v).map((g) => g.key));
   }
 
   function openSweep() {
