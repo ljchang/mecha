@@ -50,6 +50,15 @@ pub struct Row {
     created_at: String,
     tainted: bool,
     edited: bool,
+    /// Which mailbox or calendar account the draft acts as, when it names one.
+    account: Option<String>,
+    /// An event's start, verbatim (RFC 3339 or a date) — the list shows when
+    /// an event is without opening it. `None` for everything that is not one.
+    start_time: Option<String>,
+    /// The event's own zone and all-day flag, so the list renders its start
+    /// the way the draft pane does rather than in the browser's zone.
+    timezone: Option<String>,
+    all_day: bool,
 }
 
 /// The registry name, made into a verb. Curated for the tools that exist,
@@ -63,7 +72,13 @@ fn label_for(tool: &str) -> String {
         "docs_create" => "New doc".into(),
         "sheets_write" => "Sheet write".into(),
         "slides_write" => "Slides edit".into(),
-        "calendar_create" | "calendar_respond" => "Calendar".into(),
+        // The registry names are `calendar_create_event` and friends; the
+        // short spellings stay for whatever still stages under them.
+        "calendar_create_event" | "calendar_create" => "Calendar event".into(),
+        "calendar_update_event" => "Event change".into(),
+        "calendar_delete_event" => "Event cancellation".into(),
+        "calendar_respond" => "RSVP".into(),
+        "poll_meeting_create" => "Meeting poll".into(),
         other => {
             let words = other.replace('_', " ");
             let mut c = words.chars();
@@ -127,6 +142,11 @@ fn headline_and_snippet(args: &serde_json::Value) -> (String, String) {
 
 fn row(item: &OutboxItem) -> Row {
     let (headline, snippet) = headline_and_snippet(&item.args);
+    let is_calendar = item
+        .tool
+        .rsplit("__")
+        .next()
+        .is_some_and(|t| t.starts_with("calendar_"));
     Row {
         id: item.id.clone(),
         tool: item.tool.clone(),
@@ -138,6 +158,15 @@ fn row(item: &OutboxItem) -> Row {
         created_at: item.created_at.clone(),
         tainted: item.taint.trifecta_armed(),
         edited: item.edited(),
+        account: item.args["account"].as_str().map(str::to_string),
+        // Calendar calls only: another tool's `start_time` is not an event's.
+        start_time: is_calendar
+            .then(|| item.args["start_time"].as_str().map(str::to_string))
+            .flatten(),
+        timezone: is_calendar
+            .then(|| item.args["timezone"].as_str().map(str::to_string))
+            .flatten(),
+        all_day: is_calendar && item.args["all_day"].as_bool().unwrap_or(false),
     }
 }
 
@@ -687,9 +716,15 @@ pub struct RejectBody {
     pub reason: String,
 }
 
+/// Exactly one of the two: the prose (`outbox edit --body-file`), or the
+/// whole arguments as an object (`outbox edit --args-file`) — the second is
+/// how the event editor changes a time or a calendar, which are not prose.
 #[derive(serde::Deserialize)]
 pub struct EditBody {
-    pub body: String,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub args: Option<serde_json::Value>,
 }
 
 /// POST /api/outbox/{id}/approve — the page confirmed (tainted drafts with
@@ -757,13 +792,32 @@ pub async fn edit(
     UrlPath(id): UrlPath<String>,
     Json(body): Json<EditBody>,
 ) -> Response {
+    let (flag, ext, content) = match (body.body, body.args) {
+        (Some(text), None) => ("--body-file", "md", text),
+        (None, Some(args)) if args.is_object() => ("--args-file", "json", args.to_string()),
+        (None, Some(_)) => {
+            return (StatusCode::BAD_REQUEST, "`args` must be a JSON object\n").into_response()
+        }
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "send exactly one of `body` (the prose) or `args` (the whole arguments)\n",
+            )
+                .into_response()
+        }
+    };
+    // The id is not in the name: it arrives percent-decoded from the URL, and
+    // `%2e%2e%2f` would walk out of the temp dir before the CLI ever checked
+    // it. A per-call counter keeps two concurrent edits apart instead.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir();
-    let path = dir.join(format!("mecha-web-edit-{}-{}.md", id, std::process::id()));
-    if let Err(e) = std::fs::write(&path, &body.body) {
+    let path = dir.join(format!("mecha-web-edit-{}-{seq}.{ext}", std::process::id()));
+    if let Err(e) = std::fs::write(&path, &content) {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response();
     }
     let path_str = path.to_string_lossy().to_string();
-    let result = verb(&state, &["outbox", "edit", &id, "--body-file", &path_str]).await;
+    let result = verb(&state, &["outbox", "edit", &id, flag, &path_str]).await;
     let _ = std::fs::remove_file(&path);
     result
 }

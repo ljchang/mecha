@@ -535,6 +535,7 @@ mecha outbox [list|show|edit|review|approve|reconcile|reject|anticipate|outcome]
 | `edit` | `<ID>` | Open the draft's prose in `$EDITOR`. |
 | `edit` | `--json` | Edit all arguments, including recipients, as JSON. |
 | `edit` | `--body-file <FILE>` | Replace prose from a file; conflicts with `--json`. |
+| `edit` | `--args-file <FILE>` | Replace all arguments with a file's JSON object — `--json` without the editor; the web outbox's event editor writes through it. |
 | `review` | `[IDS]...` | Walk items one at a time, deciding each. Ids, or unique prefixes; several is fine. |
 | `review` | `--all` | Every pending item, subject to the filters. |
 | `review` | `--kind <KIND>` | Only `message` or only `publish`. |
@@ -681,7 +682,7 @@ See [The work directory](/docs/features/work).
 The inbox as a queue you work. `list` is the default subcommand.
 
 ```
-mecha mail [list|show|classify|reply|forward|schedule|archive|spam|task|needs-info|correct|dismiss|reflect|score|eval] [ARGS]
+mecha mail [list|show|classify|reply|forward|schedule|archive|spam|task|needs-info|correct|dismiss|calendars|reflect|score|eval] [ARGS]
 ```
 
 Threads are named by an eight-character handle — the **last** eight characters of
@@ -703,6 +704,8 @@ error, never a guess.
 | `classify` | `--dry-run` | say what would be classified, and spend nothing |
 | `reply` | `--note <TEXT>` | extra steering — "decline politely", "ask for the deadline first" |
 | `forward` | `--to <ADDRS>` | comma-separated recipients |
+| `schedule` | `--note <TEXT>` | put what the thread announces on your own calendar. Nobody is invited unless the note names them — "invite Priya too" |
+| `calendars` | `--account <NAME>` / `--json` | every account's calendars, with write access noted |
 | `task` | `--name` / `--due` / `--context` / `--project` | the task, its deadline, its GTD context (`@email`), and a parent project that **must already exist** on the graph |
 | `needs-info` | `--missing <TEXT>` | what you are waiting for, in your own words |
 | `correct` | `--bucket` / `--urgency` / `--proposed` / `--request-type` / `--deadline` | field-level; `none` clears a field |
