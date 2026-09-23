@@ -226,7 +226,17 @@ export const mail = [
 
 export const mailInbox = [
   // `mecha mail recent --json`'s rows, which `/api/mail/inbox` passes through:
-  // the plain inbox, untriaged, so no verdict fields.
+  // the plain inbox, untriaged, so no verdict fields. One row per *message*,
+  // so a thread with a follow-up appears twice (thr-8812 below).
+  {
+    thread_id: 'thr-8812',
+    account: 'work',
+    from: 'Tomas Lindqvist <editor@jac.example.org>',
+    subject: 'Re: Review request — manuscript JAC-2291',
+    snippet: 'A gentle nudge on the review request below.',
+    date: '2026-08-28T16:30:00Z',
+    unread: true,
+  },
   {
     thread_id: 'thr-8812',
     account: 'work',
