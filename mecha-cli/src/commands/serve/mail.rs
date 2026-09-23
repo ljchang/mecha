@@ -44,6 +44,14 @@ pub struct Row {
     bucket: Option<String>,
     deadline: Option<String>,
     proposed: Option<String>,
+    /// The desktop triage list shows subject and summary as two lines, and a
+    /// sender by name; the same display-only prose the reader already shows.
+    /// `from_name` is attacker-chosen, as `Record` says — rendered as text,
+    /// never markup, and never fed to a run from here.
+    subject: String,
+    from_name: String,
+    /// RFC 3339 as the provider reported it, for the list's age column.
+    date: String,
 }
 
 fn row(r: &Record) -> Row {
@@ -67,6 +75,9 @@ fn row(r: &Record) -> Row {
         bucket: v.map(|v| v.bucket.as_str().to_string()),
         deadline: v.and_then(|v| v.deadline.clone()),
         proposed: v.map(|v| v.proposed.as_str().to_string()),
+        subject: r.subject.clone(),
+        from_name: r.from_name.clone(),
+        date: r.date.clone(),
     }
 }
 
