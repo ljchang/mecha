@@ -27,11 +27,14 @@
 # does not answer, or answers with a slot list it cannot read, *fails* the
 # unit instead, so `mecha doctor` notices rather than the sweep going quiet.
 #
-# It takes no `permit.rs` seat, and the nightly does not either: the idle
-# check is a point check at the door, stricter than a permit there (any busy
-# slot declines) and holding nothing afterwards. Taking a permit around the
-# model-calling half of `classify` would be the durable form; that is a
-# Rust change, not this unit's. `Nice=` lowers the driver's own CPU weight; the model's GPU time is
+# It takes no `permit.rs` seat, and the nightly does not either. That is a
+# real gap, not an equivalent: a permit is a *reserve* that keeps
+# background runs from filling the slots the owner would queue behind,
+# while this is a point check at the door. It passes whenever no slot
+# happens to be processing at that instant — including between the model
+# calls of runs that hold permits — and then the sweep holds an uncounted
+# slot for as long as it runs. Taking a permit around the model-calling half
+# of `classify` is the durable form; that is a Rust change, not this unit's. `Nice=` lowers the driver's own CPU weight; the model's GPU time is
 # bounded by the idle check, since niceness does not reach the model server.
 #
 # Everything else is the nightly unit's reasoning, unchanged — see
