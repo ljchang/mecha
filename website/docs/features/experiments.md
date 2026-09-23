@@ -15,6 +15,55 @@ of arms that name models under the `bare` preset, run in-process and printed
 as a scorecard; it shares this feature's case file, fixture and graders, and
 its own A/B flags are two-arm manifests waiting to be written as such.
 
+## Quickstart
+
+Two arms, one task, one seed: your harness as it stands against the same
+harness without its learned rules. Run it from the checkout root, since
+relative paths in a manifest resolve against the directory you run `mecha exp`
+from.
+
+```toml
+# quickstart.toml
+name = "quickstart"
+control = "full"
+seeds = [1]
+split_seed = 7
+
+[tasks]
+cases = "eval/cases.jsonl"
+fixture = "eval/workspace"
+ids = ["read-readme"]
+
+[arms.full]
+preset = "full"
+
+[arms.no-rules]
+levers_off = ["learned_rules"]
+[arms.no-rules.prediction]
+metric = "turns"
+rationale = "without the rules block the run takes more turns"
+```
+
+```bash
+mecha exp new quickstart.toml
+mecha exp run quickstart --dry-run     # the trial plan, with each row's condition hash
+mecha exp run quickstart
+mecha exp status quickstart
+mecha exp judge quickstart
+```
+
+Here is what `judge` prints for that design:
+
+```
+no-rules  [turns]  1 pairs (0 selection, 1 holdout)
+  selection: 0 wins · 0 losses · 0 ties    holdout: 0 wins · 0 losses · 1 ties
+  work: control 1 calls, treatment 1 calls
+  PROPOSE — only 0 paired episode(s) in the selection slice, below the floor of 8 — read it rather than trusting it
+```
+
+The mechanics work, but one pair is not evidence. [Sizing a
+design](#sizing-a-design) says how many trials a verdict needs.
+
 ## The manifest
 
 The design is a TOML file, written once:
@@ -66,8 +115,8 @@ vary the closed set: levers by name in `levers_off`, or turned back on
 after a preset in `levers_on` (`bare` plus `learned_rules` is the
 add-one-to-bare design; a name in both lists is on — the list of levers is
 `mecha_core::harness::Lever`), knobs as `KEY=VALUE` over the same override set
-`harness ruminate` uses, and a preset — `bare` is what eval runs, `full` is
-every lever on. An unknown lever name is a load error. The `approval_rules`
+`harness ruminate` uses, and a preset — `bare` is what eval runs, `full`
+forces nothing off. An unknown lever name is a load error. The `approval_rules`
 lever is refused: a `forbid` in your rules file is your standing word, and an
 experiment does not lift it.
 
@@ -75,6 +124,75 @@ The control carries no prediction. Every other arm must, and the metric is
 always a cost — the task outcome enters as `failure` (`1 − passed`), the rest
 are the gate's own (`turns`, `tool_error_rate`, `cut_short`, `compactions`,
 `ended_on_failed_call`, `malformed_args`).
+
+## What an arm can vary
+
+The set is closed. Anything an arm could change without the record naming it
+would be a confound that nothing can read back later, so every axis below is
+recorded on each trial's row and folded into its condition hash.
+
+**Model.** `provider` (a key in `[providers]`) and `model`. llama-server
+ignores the requested model name, so check what is actually loaded
+(`GET /props`) before an arm names a second local model.
+
+**Presets.** `full` forces nothing off, so the arm runs your config as it
+stands. `bare` forces every lever off except `approval_rules`, and is what
+`mecha eval` runs. The preset applies first, then `levers_off`, then
+`levers_on`.
+
+`levers_on` undoes a preset or a `levers_off`. It forces a switch on against
+your config only for `step_checks` and `goal_guidance`. A switch your config
+leaves off (`step_escalation` ships off) stays off under `levers_on`, so turn
+it on in your config and measure it with `levers_off` instead.
+
+**Levers**, the per-run switches, named in `levers_off` / `levers_on`:
+
+| Lever | Off means |
+|---|---|
+| `mcp` | Configured MCP servers are not connected. |
+| `learned_rules` | The learned-rules block is not built into the prompt. |
+| `hooks` | `[[hook]]` commands do not run. |
+| `outbox` | `[outbox] tools` execute unstaged. |
+| `fallback` | A provider failure is not retried against a fallback. |
+| `messages` | No inter-agent mailbox is attached. |
+| `skills` | The skill block is not built. |
+| `charter` | The charter block is not built. |
+| `compact_tool` | The model's `compact` tool is not registered. |
+| `step_escalation` | An ambiguous finished plan step is not escalated to a quarantined check. Ships off. |
+| `step_checks` | Declared plan-step checks are not run. |
+| `goal_guidance` | No guidance from the goal, charter and planning discrepancies is added. Ships off. |
+| `boredom` | The notice that an approach has stopped teaching the run anything is never raised. |
+| `compact_validate` | A compaction summary is not checked for omissions against what it replaced. |
+| `predictive_compaction` | Compaction triggers on the reported size only, never on the forecast. |
+| `carried_state` | Tool state (the plan) does not carry across a compaction. |
+| `approval_rules` | *Refused in a manifest.* Your `forbid` list stands. |
+
+Each lever corresponds to a `--no-…` flag on `mecha run`, so you can try one
+by hand before designing around it.
+
+**Knobs** are `KEY=VALUE` strings in `overrides`, validated when the
+manifest loads:
+
+| Key | Values |
+|---|---|
+| `max_turns` | an integer ≥ 1 |
+| `max_output_tokens` | an integer ≥ 1 |
+| `compact_at_tokens` | an integer ≥ 1000 |
+| `effort` | `low`, `medium`, `high`, `xhigh`, `max` |
+
+```toml
+[arms.short-leash]
+overrides = ["max_turns=6", "effort=low"]
+```
+
+A case in the case file may set its own ceiling. The arm's knob wins when an
+arm moves that knob, because the arm is the treatment.
+
+**Stage levers** apply to [lifetimes](#lifetimes) only: `reflect`, `learn`,
+`validate`, `retire`, `ruminate`, `sensors_in_brief`, named in `stages_off`.
+
+**The world** is the manifest's `[fixtures]` and `[tasks]` rather than any
+one arm's. It is the same for every arm, and it is part of the hash too.
 
 ## Running
 
@@ -111,6 +229,28 @@ through the same gate `harness ruminate` uses: wins on the selection slice,
 confirmed on the holdout, under the work guardrail. A trial with no grade or
 no stats drops its pair rather than counting as zero. Below the gate's floors
 the verdict is *propose*, and says so.
+
+### Sizing a design
+
+A treatment arm is compared with the control **pair by pair**: the same task,
+seed and repetition on both sides. The gate needs at least **4 holdout pairs
+and 8 selection pairs**. One pair in every `holdout_in` (default 3) is held
+out, with a minimum of 4. So a verdict needs **at least 12 pairs per
+treatment arm**:
+
+```
+pairs per arm = tasks × len(seeds) × repetitions      # ≥ 12
+trials        = pairs per arm × number of arms
+```
+
+Six tasks × two seeds gives twelve pairs. With a control and three treatments
+that is 48 trials. Trials run **one at a time**, each a full child run, so
+use `--dry-run` to count them and `--limit N` to spread a large design across
+sittings. `run` resumes, and never reruns a finished trial.
+
+Each treatment arm is judged against the control only, on its own predicted
+metric. Tasks with more room to differ make better pairs: a task every arm
+passes in two turns ties every time and teaches the gate nothing.
 
 ## Lifetimes
 
@@ -364,3 +504,60 @@ recorded, and an explicit citation audit supplies supported/contradicted labels
 before scoring. The sources are synthetic and frozen; this experiment does not
 file graph verdicts or change the ordinary `mecha gossip` behavior. Its README
 specifies the local model requirements, audit format and limits of the comparison.
+
+## Recipes: one design per question
+
+Every recipe below is a manifest with the fields above. What changes is which
+axis the arms vary and which trial kind the question needs.
+
+| Question | Kind | Arms | Metric |
+|---|---|---|---|
+| Does subsystem X earn its place? | `single` | `full` against `full` + `levers_off = ["x"]` | `failure`, or the cost X claims to lower |
+| Does X help on its own? | `single` | `bare` against `bare` + `levers_on = ["x"]` | `failure` |
+| Is model B as good as model A here? | `single` | same preset, different `provider`/`model` | `failure` |
+| Where should a limit sit? | `single` | one arm per value, e.g. `overrides = ["max_turns=8"]` | `cut_short`, `failure` |
+| Does the learning loop improve later runs? | `lifetime` | `full` against `stages_off = ["learn"]` (or `ruminate`, …) | `failure`, read as a slope |
+| Does the interlock stop an injected send, and what does it cost? | `single`, task source | `full` on `eval/dojo-workspace.toml` | the source's `security` and `utility` checks |
+| Does the run behave with an owner in the loop? | `lifetime`, principal | `eval/home-lifetime.toml` | `failure` |
+
+Shipped manifests to copy from: `eval/dojo-workspace.toml` (task source,
+fixture servers), `eval/home-lifetime.toml` and `eval/assistant-lifetime.toml`
+(lifetime, principal, synthetic home), and `eval/appraisal-*.toml` (single and
+lifetime pilots over an artifact-graded task source).
+
+**To test something the shipped tasks do not cover**, write the tasks rather
+than the harness. A line in a case file is a prompt plus an `expect` block:
+which tools must or must not be called, what the answer must contain, a turn
+ceiling, a stop cause, a taint state. [Evaluation](/docs/features/evaluation)
+documents every check. For a world with state, such as a mailbox, a board, or
+a suite with its own grader, write a [task source](#task-sources).
+`eval/fixtures/source_stub.py` is the whole contract.
+
+Two habits pay for themselves. Run `mecha exp run <name> --limit 1` and
+open that trial's session before spending the other forty-seven. And read the
+first trials by hand with `mecha exp export <name>`: the gate counts wins, and
+only a transcript shows why.
+
+## Not built yet
+
+These are the limits of the instrument today. Design with them in mind;
+[`EXPERIMENT-DESIGN.md`](https://github.com/ljchang/mecha/blob/main/docs/EXPERIMENT-DESIGN.md)
+holds the plans for each one.
+
+- **Trials run sequentially.** A large design costs its full wall-clock time,
+  even on a server with free slots.
+- **Four knobs.** There is no arm field for the system prompt, the tool list,
+  the sandbox or the security settings. A variation outside the lever set and
+  the four knobs is a separate experiment with a different base config, and
+  its rows do not pair with the first one's.
+- **`levers_on` forces only two switches**, as described under
+  [presets](#what-an-arm-can-vary).
+- **Judging is pairwise, on one metric.** Each treatment against the control
+  only, with win/loss/tie counts. There is no per-task breakdown, token or
+  wall-clock cost, pass^k across seeds, or lifetime slope. For those, run
+  `export` and analyse the JSON.
+- **No multi-agent trials, and no mid-run forking.** An `ensemble` kind,
+  branching a recorded run at one message, and snapshotting an environment
+  are the communication-research half of the design, and none is built.
+- **The principal is gold-verdict only.** A model-driven owner for judgements
+  gold cannot express, such as tone or usefulness, is proposed and not built.
