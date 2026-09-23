@@ -168,8 +168,10 @@ value.
 | `carried_state` | Tool state (the plan) does not carry across a compaction. |
 | `approval_rules` | *Refused in a manifest.* Your `forbid` list stands. |
 
-Each lever corresponds to a `--no-…` flag on `mecha run`, so you can try one
-by hand before designing around it.
+Every lever except `approval_rules` corresponds to a `--no-…` flag on
+`mecha run`, so you can try one by hand before designing around it. There is
+deliberately no flag for `approval_rules`: a `forbid` is your standing word,
+and only `mecha eval`'s fixture workspaces lift it.
 
 **Knobs** are `KEY=VALUE` strings in `overrides`, validated when the
 manifest loads:

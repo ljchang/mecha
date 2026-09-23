@@ -1846,7 +1846,8 @@ impl Arm {
     /// it on ran as the control while its row said otherwise. A flag-only
     /// lever needs no forcing: absent from the off-list, no flag is passed.
     pub fn resolve_forced_on(&self) -> Result<Vec<Lever>> {
-        let off = self.resolve_levers()?;
+        // A name in both lists is on (`resolve_levers`), so every name
+        // here is forced whatever `levers_off` says.
         let mut on = Vec::new();
         for name in &self.levers_on {
             on.push(Lever::parse(name).with_context(|| {
@@ -1858,7 +1859,7 @@ impl Arm {
         }
         Ok(Lever::ALL
             .into_iter()
-            .filter(|l| on.contains(l) && !off.contains(l) && config_switch(*l))
+            .filter(|l| on.contains(l) && config_switch(*l))
             .collect())
     }
 
@@ -1886,17 +1887,28 @@ impl Arm {
 /// that turning it on is an act rather than an absence of a flag. The same
 /// set `child_invocation` writes into the trial home's config.
 fn config_switch(lever: Lever) -> bool {
-    matches!(
-        lever,
+    // Exhaustive rather than `matches!`: a new lever must be classified
+    // here or the build fails. Defaulting to "not forced" is the defect
+    // `resolve_forced_on` exists for, recurring.
+    match lever {
         Lever::StepChecks
-            | Lever::GoalGuidance
-            | Lever::StepEscalation
-            | Lever::Boredom
-            | Lever::CompactValidate
-            | Lever::PredictiveCompaction
-            | Lever::CarriedState
-            | Lever::Messages
-    )
+        | Lever::GoalGuidance
+        | Lever::StepEscalation
+        | Lever::Boredom
+        | Lever::CompactValidate
+        | Lever::PredictiveCompaction
+        | Lever::CarriedState
+        | Lever::Messages => true,
+        Lever::Mcp
+        | Lever::LearnedRules
+        | Lever::Hooks
+        | Lever::Outbox
+        | Lever::Fallback
+        | Lever::Skills
+        | Lever::Charter
+        | Lever::CompactTool
+        | Lever::ApprovalRules => false,
+    }
 }
 
 fn trial_id(arm: &str, task: &str, seed: Option<u64>, rep: u32) -> String {
@@ -3689,7 +3701,8 @@ rationale = "no notice, fewer turns"
             .config;
         assert!(!plain.agent.step_escalation);
 
-        // On wins over off, and is forced; a flag-only lever is not forced.
+        // Named in both lists it is forced (on wins, `resolve_levers`); a
+        // flag-only lever is not forced.
         let both = Arm {
             levers_off: vec!["step_escalation".into()],
             levers_on: vec!["step_escalation".into(), "learned_rules".into()],
