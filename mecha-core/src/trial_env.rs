@@ -223,7 +223,8 @@ impl Environment {
 pub fn refuse_operator_home(dir: &Path, real: &Path) -> Result<()> {
     let env = dir.canonicalize().with_context(|| {
         format!(
-            "the experiment environment {} does not exist",
+            "the experiment environment {} does not exist (a manifest with no \
+             [environment] runs in {DEFAULT_DIR}, relative to the checkout)",
             dir.display()
         )
     })?;

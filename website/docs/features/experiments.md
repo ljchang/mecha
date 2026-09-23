@@ -346,17 +346,17 @@ designs only). Two rules shape it:
   three at once, and fewer while other background runs hold seats.
   `--jobs 1`, the default, takes no seat, like any run you are watching from
   a terminal.
-- **While it holds the seats, your other background work waits.** A
-  detached `mecha tasks work` and an unattended `mecha questions answer`
-  refuse to start when every seat is taken, and they name the experiment's
-  trials as the holders. Scheduled triggers take no seat and still run.
-  A long design at `--jobs 3` can hold all three for hours; `--jobs 2`
-  leaves one free.
+
+**While it holds the seats, your other background work waits.** A detached
+`mecha tasks work` and an unattended `mecha questions answer` refuse to start
+when every seat is taken, and they name the experiment's trials as the
+holders. Scheduled triggers take no seat and still run. A long design at
+`--jobs 3` can hold all three for hours; `--jobs 2` leaves one free.
 
 Every row records the `--jobs` limit it ran under. That's an upper bound:
-the seats and the one-trial-per-arm rule can hold it lower. Concurrent requests share the
-server, so time and queue wait change with it, and a pinned seed only
-replays exactly when nothing else is in the batch.
+the seats and the one-trial-per-arm rule can hold it lower. Concurrent
+requests share the server, so time and queue wait change with it, and a
+pinned seed only replays exactly when nothing else is in the batch.
 
 Expect a modest speed-up, not an N-fold one. The server's throughput stops
 growing at its slot count, and short, prompt-heavy trials barely gain at

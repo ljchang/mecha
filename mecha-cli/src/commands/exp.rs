@@ -454,8 +454,7 @@ async fn run_single_trials(
     limit: Option<usize>,
     jobs: u32,
 ) -> Result<usize> {
-    use futures::stream::{FuturesUnordered, StreamExt};
-    let mut pending: std::collections::VecDeque<&Trial> = todo
+    let pending: Vec<&Trial> = todo
         .iter()
         .copied()
         .take(limit.unwrap_or(usize::MAX))
@@ -465,6 +464,31 @@ async fn run_single_trials(
     } else {
         None
     };
+    schedule(&pending, jobs, permits.as_ref(), &manifest.name, |t| {
+        drive_single(store, manifest, mecha, real, cases, t, jobs)
+    })
+    .await
+}
+
+/// The scheduler, apart from what a trial does: up to `jobs` rows in
+/// flight, never two of one arm, each holding a seat when `permits` is
+/// given, and a `drive` error — or a seat that cannot be taken — stopping
+/// new starts while the rows in flight finish. Taking `drive` as a closure
+/// is what lets that drain be tested with a scripted failure; it was the
+/// one guarantee here nothing measured (found on review).
+async fn schedule<'a, F, Fut>(
+    rows: &[&'a Trial],
+    jobs: u32,
+    permits: Option<&mecha_core::permit::Permits>,
+    experiment: &str,
+    drive: F,
+) -> Result<usize>
+where
+    F: Fn(&'a Trial) -> Fut,
+    Fut: std::future::Future<Output = Result<()>> + 'a,
+{
+    use futures::stream::{FuturesUnordered, StreamExt};
+    let mut pending: std::collections::VecDeque<&'a Trial> = rows.iter().copied().collect();
     let mut busy: std::collections::BTreeSet<String> = Default::default();
     let mut inflight = FuturesUnordered::new();
     let mut ran = 0usize;
@@ -486,18 +510,17 @@ async fn run_single_trials(
                     // unwritable, a full disk) is the save failure's shape:
                     // start no more, drain what is in flight. A `?` here
                     // dropped the running trials' futures (found on review).
-                    let taken =
-                        match pool.take(&format!("exp {} {}", manifest.name, pending[at].id)) {
-                            Ok(taken) => taken,
-                            Err(e) => {
-                                eprintln!(
+                    let taken = match pool.take(&format!("exp {experiment} {}", pending[at].id)) {
+                        Ok(taken) => taken,
+                        Err(e) => {
+                            eprintln!(
                                 "mecha exp: {e:#}; finishing the trials in flight, starting no more"
                             );
-                                first_err.get_or_insert(e);
-                                pending.clear();
-                                break;
-                            }
-                        };
+                            first_err.get_or_insert(e);
+                            pending.clear();
+                            break;
+                        }
+                    };
                     match taken {
                         Ok(held) => Some(held),
                         Err(holders) => {
@@ -509,7 +532,7 @@ async fn run_single_trials(
                                 pool.capacity(),
                                 holders
                                     .iter()
-                                    .filter_map(|p| p.what.as_deref())
+                                    .map(|p| p.what.as_deref().unwrap_or("unnamed"))
                                     .collect::<Vec<_>>()
                                     .join(", ")
                             );
@@ -524,9 +547,9 @@ async fn run_single_trials(
             busy.insert(planned_trial.arm.clone());
             ran += 1;
             eprintln!("· {} ({ran})", planned_trial.id);
+            let run = drive(planned_trial);
             inflight.push(async move {
-                let out =
-                    drive_single(store, manifest, mecha, real, cases, planned_trial, jobs).await;
+                let out = run.await;
                 drop(held);
                 (planned_trial.arm.clone(), out)
             });
@@ -2455,6 +2478,81 @@ mod tests {
         );
         busy.insert("b".to_string());
         assert_eq!(next_startable(&pending, &busy), None, "every arm busy");
+    }
+
+    fn fake_row(arm: &str, task: &str) -> Trial {
+        serde_json::from_value(serde_json::json!({
+            "id": format!("{arm}__{task}"),
+            "arm": arm,
+            "task": task,
+            "repetition": 1,
+            "condition_hash": "h",
+            "status": "pending",
+        }))
+        .unwrap()
+    }
+
+    /// A trial that fails stops new starts, but the trial already in flight
+    /// finishes before the error is returned — dropping it would orphan a
+    /// child with its row saved as `running`.
+    #[tokio::test]
+    async fn a_failure_drains_the_trials_in_flight_and_starts_no_more() {
+        use std::sync::{Arc, Mutex};
+        let rows = [
+            fake_row("a", "t1"),
+            fake_row("b", "t1"),
+            fake_row("c", "t1"),
+            fake_row("a", "t2"),
+        ];
+        let refs: Vec<&Trial> = rows.iter().collect();
+        let started = Arc::new(Mutex::new(Vec::<String>::new()));
+        let finished = Arc::new(Mutex::new(Vec::<String>::new()));
+        let out = schedule(&refs, 2, None, "x", |t| {
+            let (started, finished) = (started.clone(), finished.clone());
+            let id = t.id.clone();
+            async move {
+                started.lock().unwrap().push(id.clone());
+                if id == "b__t1" {
+                    anyhow::bail!("the store is full");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                finished.lock().unwrap().push(id);
+                Ok(())
+            }
+        })
+        .await;
+        assert!(format!("{:#}", out.unwrap_err()).contains("the store is full"));
+        assert_eq!(
+            *started.lock().unwrap(),
+            ["a__t1", "b__t1"],
+            "no new starts"
+        );
+        assert_eq!(
+            *finished.lock().unwrap(),
+            ["a__t1"],
+            "the one in flight finished"
+        );
+    }
+
+    /// A seat pool that cannot be written is an error from the scheduler,
+    /// never a panic or a silent start without a seat.
+    #[tokio::test]
+    async fn a_seat_that_cannot_be_taken_starts_nothing_and_says_so() {
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-exp-seat-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::write(&dir, b"a file where the pool's directory should be").unwrap();
+        let pool = mecha_core::permit::Permits::new(&dir, 3);
+        let rows = [fake_row("a", "t1")];
+        let refs: Vec<&Trial> = rows.iter().collect();
+        let out = schedule(&refs, 2, Some(&pool), "x", |_| async {
+            panic!("started without a seat")
+        })
+        .await;
+        assert!(out.is_err());
+        let _ = std::fs::remove_file(&dir);
     }
 
     /// `--jobs 0` would start nothing and wait forever; it is a parse error.
