@@ -111,7 +111,7 @@ class ModelIdle(unittest.TestCase):
         # Nothing ticks overnight to clear it; the day in the file does.
         state = Path(self.state.name) / "mecha"
         state.mkdir()
-        (state / "model-idle-busy").write_text("2000-01-01 2\n")
+        (state / "model-idle-day").write_text("2000-01-01 2\n")
         self.assertEqual(self.run_check(f"{self.base}/busy", day_max=3)[0], 1)
 
     def test_a_server_answering_wrongly_fails_at_once(self):
@@ -161,6 +161,20 @@ class ModelIdle(unittest.TestCase):
         code, said = self.run_check(f"{self.base}/idle", gpu_busy="30", path=self.gpu_path(85))
         self.assertEqual(code, 1)
         self.assertIn("GPU at 85%", said)
+
+    def test_alternating_skip_reasons_still_add_up_to_a_day(self):
+        # The review finding: per-reason counts reset each other, so a day of
+        # busy slot, busy GPU, busy slot, ... never escalated. One day count.
+        path = self.gpu_path(85)
+        codes = []
+        for i in range(4):
+            route = "/busy" if i % 2 == 0 else "/idle"  # /idle + a hot GPU = a GPU skip
+            codes.append(self.run_check(f"{self.base}{route}", gpu_busy="30", path=path, day_max=4)[0])
+        self.assertEqual(codes, [1, 1, 1, 255])
+
+    def test_a_stuck_server_counts_toward_the_day_too(self):
+        codes = [self.run_check(f"{self.base}/loading", stuck_max=9, day_max=2)[0] for _ in range(2)]
+        self.assertEqual(codes, [1, 255])
 
     def test_a_gpu_busy_all_day_fails(self):
         path = self.gpu_path(85)

@@ -591,7 +591,10 @@ Two timers, one sweep. `scripts/mecha-mail-classify.{service,timer}` sweeps at
 through the working day (07:30–21:50), so a thread is sorted within about half
 an hour of arriving. The daytime timer names its zone (`America/New_York`) so
 the window follows daylight saving; set the zone on its two `OnCalendar=` lines
-to your own before installing:
+to your own before installing. A zone in a calendar spec needs a recent systemd
+(this was written on 255); check yours accepts it first with
+`systemd-analyze calendar '*-*-* 08..21:10/20:00 America/New_York'`, because a
+spec it cannot parse leaves the timer never firing rather than failing:
 
 ```bash
 cp scripts/mecha-mail-classify.{service,timer} ~/.config/systemd/user/
