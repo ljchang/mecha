@@ -972,10 +972,13 @@ pub fn failure_is_outage(e: &anyhow::Error) -> bool {
 /// through an outage a fresh thread is retried every sweep as before, and is
 /// caught up within a sweep of the server coming back. Counting outages would
 /// have pushed every thread in a day-long outage onto the long waits, stale
-/// until the next morning — the incident this backoff exists to avoid. That matters since the daytime sweep: every 20 minutes,
-/// one such thread called the model 43 times a day and, on the quiet ticks
-/// where it was the only work, failed the unit (`run_accomplished_nothing`),
-/// which kept `mecha doctor` red and drowned the alarms that mean something.
+/// until the next morning — the incident this backoff exists to avoid.
+///
+/// The pacing matters since the daytime sweep: every 20 minutes, a thread
+/// that keeps failing for its own reason called the model 43 times a day and,
+/// on the quiet ticks where it was the only work, failed the unit
+/// (`run_accomplished_nothing`), which kept `mecha doctor` red and drowned
+/// the alarms that mean something.
 /// The thread stays `failed` throughout, so the queue still shows it to a
 /// person, and `classify --force` still retries it at once.
 pub fn retry_after(attempts: u32) -> chrono::Duration {

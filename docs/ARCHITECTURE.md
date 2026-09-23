@@ -1205,6 +1205,7 @@ door's own rule is that a paraphrase of an injection is the injection
 rearranged. The name has to reach the run, so this is not fixable by
 withholding; it is a question about what capture should default to, and it is
 named in HANDOFF rather than papered over here.
+
 **A thread whose classification keeps failing is retried on a backoff, and an
 outage never counts against it.** A `failed` record is retried — a transient
 failure must not be permanent, or a night's outage buries a manuscript
