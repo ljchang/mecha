@@ -208,6 +208,10 @@ impl Backlog {
     /// depth, so the discontinuity reaches `guilt.rs`'s reading too; its
     /// `AGE_HALF_AT_HOURS` note documents the same shape for its own formula
     /// change. Compare across that boundary only with the change in mind.
+    ///
+    /// **It stepped down a second time on 2026-09-23**, when `answered` left
+    /// the predicate too (the owner's ruling, recorded on `counts_as_open`).
+    /// Same shape, smaller step: answered requests were a few, not a flood.
     fn frontdoor_depths(
         records: &[frontdoor::Record],
         sent: Option<&HashSet<&str>>,
