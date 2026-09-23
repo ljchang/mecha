@@ -607,9 +607,16 @@ fn list(all: bool, aged: bool, aged_hours: i64, surface: bool, as_json: bool) ->
     for r in &rows {
         match (&r.verdict, r.state.as_str()) {
             (_, FAILED) => println!(
-                "  !  {:<10} {:<9} classification failed — {}",
+                "  !  {:<10} {:<9} classification failed{} — {}",
                 r.account,
                 "",
+                match r.attempts {
+                    0 | 1 => String::new(),
+                    n => format!(
+                        " ({n} times; next try in {}h)",
+                        mecha_core::mail_triage::retry_after(n).num_hours()
+                    ),
+                },
                 r.error.as_deref().unwrap_or("no reason recorded")
             ),
             (Some(v), _) => {
@@ -1194,7 +1201,15 @@ async fn classify(
             Err(e) => {
                 failed += 1;
                 eprintln!("  ! {} — {e:#}", thread.thread_id);
-                record(&thread, None, Some(format!("{e:#}")))
+                let mut r = record(&thread, None, Some(format!("{e:#}")));
+                // Consecutive failures pace the retries (`retry_after`); a
+                // success writes a fresh record, which starts the count over.
+                r.attempts = store
+                    .get(&thread.account, &thread.thread_id)
+                    .filter(|prev| prev.state == FAILED)
+                    .map_or(0, |prev| prev.attempts)
+                    + 1;
+                r
             }
         };
         store.put(&rec)?;
@@ -1305,6 +1320,7 @@ fn record(t: &ThreadInput, verdict: Option<Verdict>, error: Option<String>) -> R
         verdict,
         error,
         classified_at: chrono::Utc::now().to_rfc3339(),
+        attempts: 0,
         escalated: false,
         escalated_changed: Vec::new(),
         escalated_from: None,

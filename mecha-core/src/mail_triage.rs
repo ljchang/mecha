@@ -851,8 +851,15 @@ pub struct Record {
     /// is the one behaviour that would make this layer decorative.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// For a `failed` record, when the attempt was made; otherwise when the
+    /// verdict was written. [`Self::retry_due`] reads it as the last attempt.
     #[serde(default)]
     pub classified_at: String,
+    /// Consecutive failed attempts to classify this thread; 0 once one
+    /// succeeds (a success writes a fresh record). Paces retries — see
+    /// [`retry_after`]. Absent from older records, which read as 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub attempts: u32,
     /// Whether a second pass over the full body ran at all.
     ///
     /// The denominator, and it has to be stored separately from
@@ -911,6 +918,32 @@ pub const ACTED: &str = "acted";
 pub const DISMISSED: &str = "dismissed";
 pub const FAILED: &str = "failed";
 
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// How long a thread that has failed `attempts` times in a row waits before
+/// the next sweep tries it again: an hour after the first failure, doubling,
+/// never more than a day.
+///
+/// **Why a backoff and not a cap.** A cap would bring back the bug
+/// [`TriageStore::needs_classifying`] exists to prevent: on 2026-08-19 the
+/// model server was down for a night and 17 threads failed, and a sweep that
+/// gave up on them would have buried a manuscript review invitation for good.
+/// A backoff keeps retrying — an outage recovers within the hour — while a
+/// thread that fails for a reason that does not go away (a body that trips the
+/// provider, a verdict that will not parse) is tried about once a day instead
+/// of on every sweep. That matters since the daytime sweep: every 20 minutes,
+/// one such thread called the model 43 times a day and, on the quiet ticks
+/// where it was the only work, failed the unit (`run_accomplished_nothing`),
+/// which kept `mecha doctor` red and drowned the alarms that mean something.
+/// The thread stays `failed` throughout, so the queue still shows it to a
+/// person, and `classify --force` still retries it at once.
+pub fn retry_after(attempts: u32) -> chrono::Duration {
+    let hours = 1i64 << attempts.saturating_sub(1).min(5);
+    chrono::Duration::hours(hours.min(24))
+}
+
 /// Waiting on somebody else, and **not the same as dismissed**.
 ///
 /// `dismissed` is "drop this, I am not doing it". `parked` is "I have asked
@@ -943,6 +976,25 @@ pub const PARKED_FOR: &str = "parked_for";
 pub const SURFACED_AT: &str = "surfaced_at";
 
 impl Record {
+    /// Whether a sweep at `now` should try this record again: a `failed`
+    /// record whose [`retry_after`] wait has passed since its last attempt.
+    ///
+    /// A failure with no attempt count (written before the count existed) or
+    /// an unreadable timestamp is due at once — unknown is never clean, and
+    /// "retry" is the side that cannot bury a thread.
+    pub fn retry_due(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        if self.state != FAILED {
+            return false;
+        }
+        if self.attempts == 0 {
+            return true;
+        }
+        match chrono::DateTime::parse_from_rfc3339(&self.classified_at) {
+            Ok(at) => now >= at.with_timezone(&chrono::Utc) + retry_after(self.attempts),
+            Err(_) => true,
+        }
+    }
+
     /// The verdict **as the classifier produced it**, with the user's
     /// corrections undone.
     ///
@@ -1159,6 +1211,7 @@ impl TriageStore {
             verdict: None,
             error: None,
             classified_at: String::new(),
+            attempts: 0,
             escalated: false,
             escalated_changed: Vec::new(),
             escalated_from: None,
@@ -1191,11 +1244,22 @@ impl TriageStore {
     ///
     /// A transient outage must not be permanent. `dismissed` is excluded
     /// because that is a person's decision rather than an accident, and
-    /// `classified` because it is done.
+    /// `classified` because it is done. A `failed` record is retried on the
+    /// [`retry_after`] schedule rather than on every sweep.
     pub fn needs_classifying(&self, account: &str, thread_id: &str) -> bool {
+        self.needs_classifying_at(account, thread_id, chrono::Utc::now())
+    }
+
+    /// [`Self::needs_classifying`] with the clock passed in.
+    pub fn needs_classifying_at(
+        &self,
+        account: &str,
+        thread_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> bool {
         match self.get(account, thread_id) {
             None => true,
-            Some(r) => r.state == FAILED,
+            Some(r) => r.retry_due(now),
         }
     }
 
@@ -1299,6 +1363,7 @@ mod tests {
             }),
             error: None,
             classified_at: "2026-08-18T09:05:00Z".into(),
+            attempts: 0,
             escalated: false,
             escalated_changed: Vec::new(),
             escalated_from: None,
@@ -2103,6 +2168,38 @@ mod tests {
         );
     }
 
+    /// The backoff: an hour after the first failure, doubling, capped at a
+    /// day — so an outage recovers within the hour, and a thread that always
+    /// fails costs one attempt a day instead of one a sweep.
+    #[test]
+    fn retries_back_off_to_once_a_day_and_never_stop() {
+        let h = |n| retry_after(n).num_hours();
+        assert_eq!(
+            [h(1), h(2), h(3), h(4), h(5), h(6), h(40)],
+            [1, 2, 4, 8, 16, 24, 24]
+        );
+        // attempts 0 is a record from before the count existed: due at once.
+        assert_eq!(h(0), 1);
+        let mut r = rec("a", "t", Bucket::Ignore);
+        r.state = FAILED.into();
+        let now = chrono::Utc::now();
+        r.attempts = 0;
+        assert!(r.retry_due(now), "an uncounted failure is retried at once");
+        r.attempts = 50;
+        r.classified_at = (now - chrono::Duration::hours(25)).to_rfc3339();
+        assert!(
+            r.retry_due(now),
+            "however many failures, a day later it is tried again"
+        );
+        r.classified_at = "not a time".into();
+        assert!(
+            r.retry_due(now),
+            "an unreadable timestamp is due, not buried"
+        );
+        r.state = CLASSIFIED.into();
+        assert!(!r.retry_due(now), "only failures are retried");
+    }
+
     /// A failed classification must be retried; anything else must not.
     /// Fails on `is_known`, which is the call this replaced.
     #[test]
@@ -2123,6 +2220,23 @@ mod tests {
             "dismissal is a person's decision, not an accident"
         );
         assert!(store.needs_classifying("a", "never-seen"));
+
+        // A failure with a count waits out its backoff, and is due after it.
+        let mut backed = rec("a", "b", Bucket::Ignore);
+        backed.state = FAILED.into();
+        backed.attempts = 3;
+        backed.classified_at = "2026-09-23T12:00:00Z".into();
+        store.put(&backed).unwrap();
+        let at = |s: &str| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        };
+        assert!(
+            !store.needs_classifying_at("a", "b", at("2026-09-23T15:59:00Z")),
+            "the third failure waits four hours"
+        );
+        assert!(store.needs_classifying_at("a", "b", at("2026-09-23T16:00:00Z")));
 
         // The old filter could not tell any of these apart, which is the bug.
         for id in ["f", "c", "d"] {
