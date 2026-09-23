@@ -59,17 +59,22 @@
 # stretch pushes past it is the nightly's `--limit 50`'s to catch.
 [Unit]
 Description=mecha daytime mail triage (classify what arrived, when the model is free)
-Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=oneshot
 Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecCondition=%h/.local/bin/mecha-model-idle
+# Through `sh`, not directly: `ExecCondition=`'s skip band (1–254) includes
+# 203/EXEC, so a missing or non-executable check would stand the sweep down
+# silently forever — the exact failure the script exists to make loud. The
+# wrapper turns that into 255, which fails the unit where `mecha doctor`
+# looks. (`AssertFileIsExecutable=` was tried: an unmet assertion fails the
+# start job but leaves the unit `inactive`, which doctor does not list.)
+ExecCondition=/bin/sh -c '[ -x "$0" ] || { echo "model-idle: $0 is missing or not executable"; exit 255; }; exec "$0"' %h/.local/bin/mecha-model-idle
 ExecStartPre=/bin/mkdir -p %h/.mecha/work/mail-classify
 ExecStart=%h/.cargo/bin/mecha --workspace %h/.mecha/work/mail-classify mail classify --limit 25
 Nice=10
-# A catch-up tick (the first after install, or 07:20 carrying the hours since
+# A catch-up tick (the first after install, or 07:30 carrying the hours since
 # the nightly) can hold dozens of threads at ~30 s each; the first live run
 # classified 38. Records are written per thread, so a timeout loses nothing,
 # but it would read as a failure — 30 minutes covers the catch-up, and a

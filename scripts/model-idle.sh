@@ -83,15 +83,19 @@ slots="${reply%$'\n'*}"
 #     (a long prefill does that), which is the busiest the model gets;
 #   curl 7, refused: nothing is bound to the port, which is what a restart
 #     looks like before the server has opened it;
+#   curl 52 or 56, an empty reply or a reset: a listening socket torn down
+#     mid-restart, the moment before the refusal;
 #   HTTP 503: llama-server is still loading the model after a restart.
 # Failing on any of these would leave a false alarm in `mecha doctor` each
 # time the server is bounced; the count makes a lasting one loud.
-# Anything else — a reset, 501 (`--no-slots`), any other status — is a server
-# that is there and answering wrongly, and fails at once.
+# Anything else — 501 (`--no-slots`), any other status, an answer it cannot
+# read — is a server that is there and answering wrongly, and fails at once.
 if [ "$rc" -eq 28 ]; then
     stuck_skip "$SLOTS_URL too busy to answer"
 elif [ "$rc" -eq 7 ]; then
     stuck_skip "nothing listening at $SLOTS_URL"
+elif [ "$rc" -eq 52 ] || [ "$rc" -eq 56 ]; then
+    stuck_skip "$SLOTS_URL dropped the connection"
 elif [ "$rc" -ne 0 ]; then
     echo "model-idle: no answer from $SLOTS_URL (curl $rc) — failing so mecha doctor sees it"
     exit 255
