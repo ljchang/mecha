@@ -1779,6 +1779,7 @@ impl Manifest {
                 stats: None,
                 position,
                 lifetime: position.map(|_| lifetime_id(arm_name, seed, rep)),
+                jobs: None,
             };
             match self.kind {
                 TrialKind::Single => {
@@ -2153,6 +2154,14 @@ pub struct Trial {
     pub position: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifetime: Option<String>,
+    /// How many trials the driver allowed in flight when this row ran
+    /// (`exp run --jobs`). A confound the row must carry: concurrent
+    /// requests share the server's seats, so wall-clock and queue wait
+    /// move with it, and a pinned seed replays token-for-token only when
+    /// nothing else is in the batch. Absent on rows run before the field
+    /// existed, which were all one at a time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jobs: Option<u32>,
 }
 
 impl Trial {
@@ -3967,6 +3976,7 @@ rationale = "r"
             }),
             position: None,
             lifetime: None,
+            jobs: None,
         }
     }
 
