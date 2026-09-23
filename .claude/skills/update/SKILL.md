@@ -211,7 +211,7 @@ done
 # daytime mail sweep's ExecCondition= runs a *copy* of scripts/model-idle.sh,
 # and a stale copy fails toward running the sweep
 #   diff scripts/model-idle.sh ~/.local/bin/mecha-model-idle
-#   install -m 755 scripts/model-idle.sh ~/.local/bin/mecha-model-idle   # when the repo copy is right
+#   install -D -m 755 scripts/model-idle.sh ~/.local/bin/mecha-model-idle   # when the repo copy is right
 ```
 
 `mecha-serve` carries the line twice on this machine — the installed unit

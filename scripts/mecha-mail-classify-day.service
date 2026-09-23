@@ -1,4 +1,4 @@
-# Install: install -m 755 scripts/model-idle.sh ~/.local/bin/mecha-model-idle
+# Install: install -D -m 755 scripts/model-idle.sh ~/.local/bin/mecha-model-idle
 #          cp scripts/mecha-mail-classify-day.{service,timer} ~/.config/systemd/user/
 #          systemctl --user daemon-reload
 #          systemctl --user enable --now mecha-mail-classify-day.timer
@@ -23,12 +23,15 @@
 # (`TriageStore::needs_classifying` has no attempt counter), so a thread that
 # fails for a reason that does not go away — a body that trips the provider,
 # a verdict that will not parse — makes every tick build a provider and call
-# the model, and a tick where it is the only new thread fails the unit. At
-# one sweep a night that was a retry a day; at this cadence it is ~43. A
-# retry cap or a `last_attempt` on `Record` is the fix, and it is a Rust
-# change, like the permit below. Until then, `mecha doctor` showing this
-# unit failed with the model server healthy points at a stuck thread:
-# `mecha mail list` shows it, `mecha mail dismiss` clears it.
+# the model — and since a quiet tick is the common case, *most* ticks then
+# consist of that thread alone, which `run_accomplished_nothing` reports as
+# a failed run. So one stuck thread leaves this unit failed nearly all day,
+# drowning the alarm the idle check spends exit 255 to raise. At one sweep
+# a night that was one retry a day; at this cadence it is ~43. A retry cap
+# or a `last_attempt` on `Record` is the fix, and it is a Rust change, like
+# the permit below. Until then, `mecha doctor` showing this unit failed with
+# the model server healthy points at a stuck thread: `mecha mail list` shows
+# it, `mecha mail dismiss` clears it.
 #
 # **It stands down rather than competing.** `ExecCondition=` runs
 # model-idle.sh first (installed as ~/.local/bin/mecha-model-idle, so the
