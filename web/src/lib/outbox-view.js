@@ -261,6 +261,22 @@ export const EVENT_CARD_KEYS = [
   'location', 'attendees', 'description', 'calendar_id',
 ];
 
+/** The accounts `calendar_list` could not read (rows carrying an `error`). */
+export const unreadableAccounts = (calendars) =>
+  Array.isArray(calendars) ? calendars.filter((a) => a?.error).map((a) => a.account) : [];
+
+/**
+ * The picker's warning for unreadable accounts, or null when there are none.
+ * Missing, not empty: an unreadable account has calendars nobody could list.
+ */
+export function unreadableNote(names) {
+  if (!names.length) return null;
+  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  return names.length === 1
+    ? `${list} could not be read — its calendars are missing from this list, not empty.`
+    : `${list} could not be read — their calendars are missing from this list, not empty.`;
+}
+
 /** The mail headers worth a row each, in reading order. */
 export const MAIL_HEADERS = ['to', 'cc', 'bcc', 'subject', 'account'];
 
