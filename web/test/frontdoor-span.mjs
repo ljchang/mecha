@@ -100,8 +100,9 @@ t('a future meeting is not', !isPast({ end: '2999-01-01T00:00:00Z' }));
 t('an unreadable end is not guessed at', !isPast({ end: 'later' }));
 
 // The queue's membership: finished requests fold away, live ones stay. The
-// Rust side pins the same line in `finished_requests_are_not_open_work`, and
-// the Home card counts through that predicate, so the two must agree.
+// Rust side pins the same states in `finished_requests_are_not_open_work`, and
+// the Home card counts through that predicate. (`settled` also wants
+// `r.booking`, a branch Frontdoor.svelte notes is unreachable.)
 const liftLine = (name) => {
   const m = src.match(new RegExp(`\\n  const ${name} = (\\(r\\) => [^\\n]+);\\n`));
   if (!m) throw new Error(`Frontdoor.svelte no longer defines ${name} on one line`);
@@ -109,7 +110,11 @@ const liftLine = (name) => {
 };
 const settled = liftLine('settled');
 const isClosed = liftLine('isClosed');
-const inQueue = (r) => !settled(r) && !isClosed(r);
+// The queue's own filter, lifted from the `$derived` that ships, so dropping
+// a term from it fails here rather than only in the predicates it composes.
+const qm = src.match(/\n  const queue = \$derived\(\(rows \?\? \[\]\)\.filter\((\(r\) => [^\n]+?)\)\);\n/);
+if (!qm) throw new Error('Frontdoor.svelte no longer derives queue by one filter');
+const inQueue = new Function('settled', 'isClosed', `return ${qm[1]};`)(settled, isClosed);
 t('a closed request leaves the queue', !inQueue({ state: 'closed' }));
 t('an answered request leaves the queue', !inQueue({ state: 'answered' }));
 t('a settled booking leaves the queue', !inQueue({ state: 'booked', booking: {} }));
