@@ -57,6 +57,15 @@ t('a query is elided', shortUrl('https://dartmouth.zoom.us/j/95332509984?pwd=abc
   t('…and is not a link inside a link', nodes[0].c.every((n) => n.t !== 'link'));
 }
 
+{
+  // Found on review: scheme-less address text over a different destination.
+  const nodes = parseInline('[mail.dartmouth.edu/login](https://evil.example/login)');
+  t('host-shaped link text shows the real destination', textOf(nodes) === 'evil.example/login');
+  const mail = parseInline('[dean@dartmouth.edu](mailto:attacker@evil.example)');
+  t('an address as link text shows the real recipient', textOf(mail) === 'attacker@evil.example');
+  t('ordinary words stay words', textOf(parseInline('[the programme](https://uct.example.org/p)')) === 'the programme');
+}
+
 // ---- images are never fetched ----
 {
   const nodes = parseInline('[![](https://st2.zoom.us/static/logo.png)](https://zoom.us/)');
@@ -99,6 +108,14 @@ t('an angle autolink is a link', parseInline('<https://example.org>')[0]?.t === 
   t('a hard-wrapped paragraph reads as one', !p.inline.some((n) => n.t === 'br') && textOf(p.inline).includes('Spacing effects in applied'));
   const [sig] = parseBlocks('With thanks,\nTomas Lindqvist\nAssociate Editor');
   t('a signature keeps its lines', sig.inline.filter((n) => n.t === 'br').length === 2);
+}
+{
+  // Found on review: an unclosed `[` scanned to the end of the body from
+  // every `[`, quadratic in a stranger's text.
+  const hostile = '['.repeat(60000) + '*a'.repeat(20000);
+  const t0 = Date.now();
+  parseBlocks(hostile);
+  t('a hostile body parses in well under a second', Date.now() - t0 < 1000);
 }
 t('empty text is no blocks', parseBlocks('').length === 0 && parseBlocks(null).length === 0);
 {

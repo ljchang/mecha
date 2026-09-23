@@ -622,7 +622,7 @@
             </form>
           {:else if mode === 'read'}
             <button class="btn primary big" disabled={busy} onclick={approveClicked}>
-              {busy ? 'sending…' : approveLabel}{#if wide}<kbd>a</kbd>{/if}
+              {busy ? 'sending…' : detail.taint.armed ? `${approveLabel} · confirms first` : approveLabel}{#if wide}<kbd>a</kbd>{/if}
             </button>
             <button class="btn" disabled={busy || !canEdit} onclick={startEdit}>Edit{#if wide}<kbd>e</kbd>{/if}</button>
             <button class="btn" disabled={busy} onclick={startReject}>Reject…{#if wide}<kbd>x</kbd>{/if}</button>

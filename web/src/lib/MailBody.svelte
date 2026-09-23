@@ -41,6 +41,7 @@
   .h { font-weight: 600; color: var(--text); }
   .h1 { font-size: 17px; }
   .h2 { font-size: 15px; }
+  .h3 { font-size: 14px; }
   .mailbody :global(strong) { font-weight: 600; color: var(--text); }
   .mailbody :global(a) { color: var(--accent-300, #b9a8ff); text-decoration: underline; text-decoration-color: rgba(185, 168, 255, 0.35); text-underline-offset: 2px; }
   .mailbody :global(a:hover) { text-decoration-color: currentColor; }

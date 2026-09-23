@@ -142,6 +142,11 @@ fn headline_and_snippet(args: &serde_json::Value) -> (String, String) {
 
 fn row(item: &OutboxItem) -> Row {
     let (headline, snippet) = headline_and_snippet(&item.args);
+    let is_calendar = item
+        .tool
+        .rsplit("__")
+        .next()
+        .is_some_and(|t| t.starts_with("calendar_"));
     Row {
         id: item.id.clone(),
         tool: item.tool.clone(),
@@ -154,9 +159,14 @@ fn row(item: &OutboxItem) -> Row {
         tainted: item.taint.trifecta_armed(),
         edited: item.edited(),
         account: item.args["account"].as_str().map(str::to_string),
-        start_time: item.args["start_time"].as_str().map(str::to_string),
-        timezone: item.args["timezone"].as_str().map(str::to_string),
-        all_day: item.args["all_day"].as_bool().unwrap_or(false),
+        // Calendar calls only: another tool's `start_time` is not an event's.
+        start_time: is_calendar
+            .then(|| item.args["start_time"].as_str().map(str::to_string))
+            .flatten(),
+        timezone: is_calendar
+            .then(|| item.args["timezone"].as_str().map(str::to_string))
+            .flatten(),
+        all_day: is_calendar && item.args["all_day"].as_bool().unwrap_or(false),
     }
 }
 

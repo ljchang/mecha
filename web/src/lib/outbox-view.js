@@ -150,50 +150,72 @@ export function eventFields(args) {
 }
 
 /**
- * The editor's fields → arguments. Keys the form does not show ride through
- * untouched; empty optional fields are dropped rather than sent blank; an
- * empty attendee list is no `attendees` at all.
+ * The editor's fields → arguments, **writing only what the owner changed**.
+ * Every field left as it was keeps its original bytes: the staged arguments
+ * carry pinned schema defaults (`calendar_id: "primary"`, from
+ * `with_schema_defaults`) and the model's own stamp spellings, and an
+ * untouched Save that re-rendered them would make `args != args_before` —
+ * an "edit" the writing miner would learn from, and the end of the goal
+ * system's only sent-unchanged signal (found on review). Keys the form does
+ * not show ride through untouched; a cleared optional field is removed
+ * rather than sent blank.
  *
  * Returns `{ args }` or `{ error }` — an end before its start is refused here
  * rather than by the provider after the owner pressed Approve.
  */
 export function eventArgs(original, f) {
+  const base = inclusiveEnd(eventFields(original));
   const out = { ...original };
   const title = f.title.trim();
   if (!title) return { error: 'The event needs a title' };
   if (!DATE_ONLY.test(f.date)) return { error: 'Pick a date' };
   const endDate = DATE_ONLY.test(f.endDate) ? f.endDate : f.date;
-  out.title = title;
+  if (title !== base.title) out.title = title;
+
+  const whenChanged = f.allDay !== base.allDay || f.date !== base.date || endDate !== base.endDate
+    || (!f.allDay && (f.start !== base.start || f.end !== base.end || f.zone !== base.zone));
   if (f.allDay) {
     if (endDate < f.date) return { error: 'The event ends before it starts' };
-    out.all_day = true;
-    out.start_time = f.date;
-    // All-day ends are exclusive in both providers; a one-day event ends the
-    // next day. The form shows the last day, inclusive.
-    const next = new Date(`${endDate}T00:00:00Z`);
-    next.setUTCDate(next.getUTCDate() + 1);
-    out.end_time = next.toISOString().slice(0, 10);
+    if (whenChanged) {
+      out.all_day = true;
+      out.start_time = f.date;
+      // All-day ends are exclusive in both providers; a one-day event ends
+      // the next day. The form shows the last day, inclusive.
+      const next = new Date(`${endDate}T00:00:00Z`);
+      next.setUTCDate(next.getUTCDate() + 1);
+      out.end_time = next.toISOString().slice(0, 10);
+    }
   } else {
     if (!/^\d{2}:\d{2}$/.test(f.start) || !/^\d{2}:\d{2}$/.test(f.end)) return { error: 'Pick a start and an end time' };
     const start = stampIn(f.zone, f.date, f.start);
     const end = stampIn(f.zone, endDate, f.end);
     if (Date.parse(end) <= Date.parse(start)) return { error: 'The event ends before it starts' };
-    out.all_day = false;
-    out.start_time = start;
-    out.end_time = end;
-    out.timezone = f.zone;
+    if (whenChanged) {
+      if (f.allDay !== base.allDay || 'all_day' in original) out.all_day = false;
+      out.start_time = start;
+      out.end_time = end;
+      // The stamps carry their offset; the zone is named only where it was
+      // named before or has just changed.
+      if ('timezone' in original || f.zone !== base.zone) out.timezone = f.zone;
+    }
   }
-  const set = (k, v) => {
-    if (v) out[k] = v;
+  const text = (k, now, was) => {
+    if (now === was) return;
+    if (now) out[k] = now;
     else delete out[k];
   };
-  set('location', f.location.trim());
-  set('description', f.description.trim());
+  text('location', f.location.trim(), base.location.trim());
+  text('description', f.description.trim(), base.description.trim());
   const people = f.attendees.split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean);
-  if (people.length) out.attendees = people;
-  else delete out.attendees;
-  set('account', f.account.trim());
-  set('calendar_id', f.calendar_id && f.calendar_id !== 'primary' ? f.calendar_id : '');
+  if (people.join(',') !== attendeesOf(original).join(',')) {
+    if (people.length) out.attendees = people;
+    else delete out.attendees;
+  }
+  text('account', f.account.trim(), base.account.trim());
+  if (f.calendar_id !== base.calendar_id) {
+    if (f.calendar_id) out.calendar_id = f.calendar_id;
+    else delete out.calendar_id;
+  }
   return { args: out };
 }
 
