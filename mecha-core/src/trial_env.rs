@@ -49,9 +49,9 @@ pub const DEFAULT_DIR: &str = "eval/envs/default";
 /// Stands for a server's store directory under the trial home.
 pub const STORE_TOKEN: &str = "${STORE}";
 
-/// The top-level keys an environment's config may not set: they are this
-/// machine's facts and the owner's standing word, taken from the operator's
-/// config. The rule tables' TOML names are `rule` and `search`.
+/// The top-level keys an environment's config may not set: this machine's
+/// facts and the owner's standing word, taken from the operator's config.
+/// The rule tables' TOML names are `rule` and `search`.
 pub const MACHINE_TABLES: [&str; 7] = [
     "default_provider",
     "providers",
@@ -61,6 +61,16 @@ pub const MACHINE_TABLES: [&str; 7] = [
     "approval",
     "search",
 ];
+
+/// Tables a checked-out file may never set: the four a project layer is
+/// stripped of (`Config::merge_file`), for the reason given there — a file
+/// that arrives with a cloned repository must not name the Slack surface,
+/// the web surface, the mailbox, or `[harness] source_dir`, the authority a
+/// `ruminate` stage's diagnostician reads on which protections are
+/// load-bearing. An environment directory is resolved against a checkout,
+/// so it is refused them outright rather than stripped with a warning
+/// (found on review).
+pub const OPERATOR_ONLY_TABLES: [&str; 4] = ["harness", "messages", "slack", "web"];
 
 /// Marks a finished store build, so a crash mid-build is a rebuild, not a
 /// half-seeded world.
@@ -113,6 +123,34 @@ impl Environment {
                  and search come from your own config, never from an experiment environment",
                 path.display()
             );
+        }
+        for key in OPERATOR_ONLY_TABLES {
+            anyhow::ensure!(
+                !table.contains_key(key),
+                "{}: `[{key}]` may not be set by a file that arrives with a checkout, and an \
+                 experiment environment is one",
+                path.display()
+            );
+        }
+        // A stored server's name is a directory under the home and a
+        // `remove_dir_all` target on every fresh trial: one plain
+        // component, as `Fixtures::validate` requires of a fixture server
+        // (where `..` once resolved to the home itself).
+        if let Some(servers) = table.get("mcp").and_then(|v| v.as_array()) {
+            for server in servers {
+                if let Some(name) = server.get("name").and_then(|v| v.as_str()) {
+                    anyhow::ensure!(
+                        !name.is_empty()
+                            && Path::new(name).components().count() == 1
+                            && !matches!(name, "." | "..")
+                            && !name.contains(['/', '\\'])
+                            && !name.contains("__"),
+                        "{}: server name `{name}` must be one plain path component \
+                         (no `/`, `.`, `..` or `__`) — it names a store directory",
+                        path.display()
+                    );
+                }
+            }
         }
         let mut cfg = Config::default();
         cfg.merge_environment_file(&path)?;
@@ -251,7 +289,7 @@ pub async fn build_stores(env_dir: &Path, cfg: &Config, cache: &Path) -> Result<
             server.name,
             uuid::Uuid::new_v4()
         ));
-        let built = build_one(env_dir, server, &staging).await;
+        let built = build_one(env_dir, server, &cfg.sandbox, &staging).await;
         if let Err(e) = built {
             let _ = std::fs::remove_dir_all(&staging);
             return Err(e.context(format!("building the `{}` store", server.name)));
@@ -262,7 +300,12 @@ pub async fn build_stores(env_dir: &Path, cfg: &Config, cache: &Path) -> Result<
     Ok(())
 }
 
-async fn build_one(env_dir: &Path, server: &McpServerConfig, staging: &Path) -> Result<()> {
+async fn build_one(
+    env_dir: &Path,
+    server: &McpServerConfig,
+    sandbox: &crate::sandbox::SandboxConfig,
+    staging: &Path,
+) -> Result<()> {
     std::fs::create_dir_all(staging)?;
     let seed = env_dir.join("stores").join(&server.name);
     if seed.is_dir() {
@@ -277,7 +320,10 @@ async fn build_one(env_dir: &Path, server: &McpServerConfig, staging: &Path) -> 
     let text = std::fs::read_to_string(&calls)?;
     let mut bound = server.clone();
     bind(&mut bound, staging);
-    let sandbox = crate::sandbox::Sandbox::new(Default::default());
+    // The operator's sandbox, as every other `connect` site passes: a
+    // server the trial child confines is confined while its store is built
+    // too (found on review — the first cut built it unconfined).
+    let sandbox = crate::sandbox::Sandbox::new(sandbox.clone());
     let client = crate::mcp::McpClient::connect(&bound, &sandbox, staging)
         .await
         .with_context(|| format!("starting `{}` to replay {}", server.name, calls.display()))?;
@@ -304,6 +350,17 @@ async fn build_one(env_dir: &Path, server: &McpServerConfig, staging: &Path) -> 
                     );
                 }
                 SeedStep::Run { run } => {
+                    // A command runs on the host with an environment
+                    // allowlist and nothing more. A server that asks to be
+                    // confined cannot have its store touched that way, so
+                    // it is refused rather than run unconfined.
+                    anyhow::ensure!(
+                        !server.sandbox,
+                        "{}:{}: `run` steps execute unconfined, and `{}` is configured with                          `sandbox = true` — seed it through its tools instead",
+                        calls.display(),
+                        n + 1,
+                        server.name
+                    );
                     let (program, args) = run.split_first().with_context(|| {
                         format!("{}:{}: an empty `run`", calls.display(), n + 1)
                     })?;
@@ -500,6 +557,83 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
                 "{body}: {err:#}"
             );
         }
+        // And the four a checked-out file never sets.
+        for body in [
+            "[harness]\nsource_dir = \"/elsewhere\"",
+            "[messages]\nenabled = true",
+            "[slack]",
+            "[web]",
+        ] {
+            let tmp = Scratch::new();
+            let env = env_at(tmp.path(), body);
+            let err = env.base_config(&operator(), tmp.path()).unwrap_err();
+            assert!(format!("{err:#}").contains("checkout"), "{body}: {err:#}");
+        }
+    }
+
+    /// A server's name is a store directory and a `remove_dir_all` target:
+    /// one plain component or a load error.
+    #[test]
+    fn a_server_name_is_one_plain_component() {
+        for name in ["../..", "..", ".", "a/b", "a__b", ""] {
+            let tmp = Scratch::new();
+            let env = env_at(
+                tmp.path(),
+                &format!(
+                    "[[mcp]]\nname = {name:?}\ncommand = \"x\"\nenv = {{ D = \"${{STORE}}\" }}\n"
+                ),
+            );
+            assert!(
+                env.base_config(&operator(), tmp.path()).is_err(),
+                "{name:?}"
+            );
+        }
+    }
+
+    /// The shipped default environment loads, names only files that exist,
+    /// and seeds its graph through lines that parse and end in the embed
+    /// that sizes the vector tables. The first cut shipped without the
+    /// seed file (a `*.jsonl` ignore rule) and no test noticed.
+    #[test]
+    fn the_default_environment_is_complete() {
+        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let env = Environment::default();
+        let dir = env.dir(checkout);
+        let mut real = operator();
+        real.mcp.clear();
+        let cfg = env.base_config(&real, checkout).unwrap();
+        assert!(cfg.hooks.is_empty());
+        assert!(cfg
+            .agent
+            .system_prompt_file
+            .as_ref()
+            .is_some_and(|p| p.is_file()));
+        let stored: Vec<&str> = stored_servers(&cfg)
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(stored, ["graph", "mail"]);
+        for server in &cfg.mcp {
+            for arg in &server.args {
+                if arg.ends_with(".py") {
+                    assert!(Path::new(arg).is_file(), "{arg}");
+                }
+            }
+        }
+        assert!(dir.join("stores/graph/config.toml").is_file());
+        assert!(dir.join("stores/mail/mailbox.json").is_file());
+        let calls = std::fs::read_to_string(dir.join("stores/graph.calls.jsonl")).unwrap();
+        let steps: Vec<SeedStep> = calls
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with("//"))
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert!(steps.len() > 1);
+        assert!(
+            matches!(steps.last(), Some(SeedStep::Run { run }) if run == &["mecha-graph", "embed"])
+        );
+        crate::charter::Charter::parse(&std::fs::read_to_string(dir.join("charter.toml")).unwrap())
+            .unwrap();
     }
 
     /// The digest moves with any file's content and with the live servers,
