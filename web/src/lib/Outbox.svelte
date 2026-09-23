@@ -603,7 +603,7 @@
         {#if showArgs && mode !== 'confirm'}<pre class="argdump">{JSON.stringify(detail.args, null, 2)}</pre>{/if}
       </div>
 
-      {#if !detail.delivery_uncertain && mode !== 'event'}
+      {#if !detail.delivery_uncertain && mode !== 'event' && mode !== 'prose'}
         <div class="bar">
           {#if mode === 'confirm'}
             <div class="confirm">
