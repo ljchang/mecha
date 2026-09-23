@@ -123,6 +123,19 @@ pub async fn inbox(State(state): St) -> Response {
     }
 }
 
+/// GET /api/mail/calendars — `mecha mail calendars --json`: every account's
+/// calendars with write access noted, for the outbox's event editor. The
+/// provider's list, so a calendar is picked rather than an id typed.
+pub async fn calendars(State(state): St) -> Response {
+    match self_text(&state, &["mail", "calendars", "--json"]).await {
+        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(v) => Json(v).into_response(),
+            Err(_) => Json(serde_json::json!([])).into_response(),
+        },
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct ComposeBody {
     pub to: String,

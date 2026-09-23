@@ -5,6 +5,7 @@
   import { parseThread } from './mail-thread.js';
   import { LANES, sortRows, acceptVerb, keyOf, senderOf, sweepGroups, ageOf, tickedGroups } from './mail-desk.js';
   import { MailQueue, HOLD_MS, VERB_PAST, VERB_LABEL, UNSEEN } from './mail-queue.svelte.js';
+  import MailBody from './MailBody.svelte';
 
   // Mail on a phone: the desk's model with thumbs instead of keys. The queue,
   // its hold-then-commit timing and its reads are MailQueue's, shared with
@@ -226,7 +227,7 @@
   // ---- sweep ----
 
   const SWEEP_VERBS = ['archive', 'reply', 'task', 'schedule'];
-  const SWEEP_LABEL = { archive: 'Archive', reply: 'Draft replies', task: 'Make tasks', schedule: 'Draft invites' };
+  const SWEEP_LABEL = { archive: 'Archive', reply: 'Draft replies', task: 'Make tasks', schedule: 'Add to calendar' };
   let sweepVerb = $state('archive');
   const sweepMarks = new SvelteSet(); // groups toggled; what that means is `tickedGroups`'s
   const sweepRows = $derived(q.laneRows('respond').concat(q.laneRows('notify')));
@@ -414,9 +415,13 @@
             {#if msg.subject && msg.subject !== cur.subject}<div class="msg-subject">{msg.subject}</div>{/if}
             <!-- Third-party text: the gutter marks every line, the outbox
                  source-read rule — a heading scrolls off, a per-line marker
-                 cannot. Plain text on purpose: a rendered link in a
-                 stranger's mail is a tap onto a stranger's URL. -->
-            <div class="quoted"><span class="gutter"></span><div class="mailbody">{msg.body}</div></div>
+                 cannot. Formatted, with live links, at the owner's request
+                 (2026-09-23): this used to be plain text because a rendered
+                 link in a stranger's mail is a tap onto a stranger's URL.
+                 What answers that now is MailBody's rules — http, https and
+                 mailto only, redirectors unwrapped so the link shows and goes
+                 where it really leads, no image ever fetched. -->
+            <div class="quoted"><span class="gutter"></span><div class="mailbody"><MailBody text={msg.body} /></div></div>
           </div>
         {/each}
       {:else}
@@ -429,7 +434,7 @@
       {/if}
       {#if more}
         <div class="grid">
-          <button class="abtn" onclick={() => ask('schedule', 'Steering for the invite (optional)', 'propose Thursday afternoon', cur)}>Schedule…</button>
+          <button class="abtn" onclick={() => run('schedule', [cur])}>Add to calendar</button>
           <button class="abtn" onclick={() => ask('forward', 'Forward to (comma-separated) + covering note', 'FYI — this is the one I mentioned', cur, { wantTo: true })}>Forward…</button>
           <button class="abtn" onclick={() => run('dismiss', [cur])}>Dismiss</button>
           <button class="abtn" onclick={() => { more = false; confirmSpam = cur; }}>Spam…</button>
@@ -614,7 +619,8 @@
   .msg-subject { font-size: 15px; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
   .quoted { display: flex; gap: 10px; }
   .gutter { width: 2px; background: var(--hazard); flex-shrink: 0; }
-  .mailbody { font-size: 15px; line-height: 1.6; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .mailbody { min-width: 0; flex: 1; }
+  .mailbody :global(.mailbody) { font-size: 15px; color: var(--text); }
   .qtext { font-size: 13px; line-height: 1.55; color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 
   .actions { flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; padding: 10px var(--gutter) calc(6px + env(safe-area-inset-bottom)); border-top: 1px solid var(--accent-900); background: var(--bg); }

@@ -90,6 +90,12 @@ pub enum Cmd {
         /// writes through this, so there is one implementation of "edit").
         #[arg(long, conflicts_with = "json", value_name = "FILE")]
         body_file: Option<std::path::PathBuf>,
+        /// Replace the whole arguments with this file's JSON object — `--json`
+        /// without the editor, for a surface that edits fields rather than
+        /// prose (the web outbox's event editor: a time, a calendar, a
+        /// location). The tool is unchanged; only its arguments are.
+        #[arg(long, conflicts_with_all = ["json", "body_file"], value_name = "FILE")]
+        args_file: Option<std::path::PathBuf>,
     },
     /// Walk the pending items one at a time, deciding each.
     ///
@@ -170,7 +176,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             id,
             json,
             body_file,
-        } => edit(&store, &id, json, body_file.as_deref()),
+            args_file,
+        } => match args_file {
+            Some(path) => edit_args(&store, &id, &path),
+            None => edit(&store, &id, json, body_file.as_deref()),
+        },
         Cmd::Review { selection } => review(global, &store, &selection).await,
         Cmd::Approve { selection, yes } => send(global, &store, &selection, yes).await,
         Cmd::Reconcile {
@@ -916,6 +926,41 @@ fn edit(store: &OutboxStore, id: &str, json: bool, body_file: Option<&Path>) -> 
     Ok(())
 }
 
+/// Replace a pending message draft's arguments with a file's JSON object —
+/// the no-terminal `--json`. The same guards as `edit`: pending only, never
+/// a publish, and a parse failure changes nothing.
+fn edit_args(store: &OutboxStore, id: &str, path: &Path) -> Result<()> {
+    let item = store.item(id)?;
+    if item.status != "pending" {
+        bail!("outbox item {} is {}, not pending", item.id, item.status);
+    }
+    if item.kind == OutboxKind::Publish {
+        bail!(
+            "outbox item {} is a publish; its arguments are a path and a visibility \
+             flag, not a draft — re-render and publish again instead",
+            item.id
+        );
+    }
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let args: serde_json::Value = serde_json::from_str(&text)
+        .context("the arguments file is not valid JSON; the item is unchanged")?;
+    if !args.is_object() {
+        bail!("the arguments must be a JSON object; the item is unchanged");
+    }
+    let _lock = store.lock()?;
+    let updated = store.update_args(&item.id, args)?;
+    println!(
+        "{}",
+        if updated.edited() {
+            "edited"
+        } else {
+            "no change"
+        }
+    );
+    Ok(())
+}
+
 /// Re-read what the caller reviewed, and refuse anything not still pending.
 ///
 /// The caller holds the store lock; this is the check-and-act that must happen
@@ -1469,6 +1514,55 @@ mod tests {
         // makes the fixture fresh regardless of what any earlier run did.
         let _ = std::fs::remove_dir_all(&dir);
         OutboxStore::open(dir).unwrap()
+    }
+
+    /// The web event editor changes fields, not prose: a start time, a
+    /// calendar. `--args-file` replaces the arguments whole, keeps the
+    /// original for the learning capture, and refuses anything that is not a
+    /// JSON object without touching the item.
+    #[test]
+    fn an_args_file_replaces_the_arguments_and_a_bad_one_changes_nothing() {
+        let store = temp_store();
+        let staged = store
+            .stage(
+                "mail__calendar_create_event",
+                OutboxKind::Message,
+                json!({"title": "PBS Faculty Meeting", "start_time": "2026-09-30T15:30:00-04:00",
+                       "end_time": "2026-09-30T17:00:00-04:00", "attendees": ["organiser@example.edu"]}),
+                Default::default(),
+                Default::default(),
+            )
+            .unwrap();
+        let dir = std::env::temp_dir().join(format!("mecha-args-file-{}", staged.id));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let bad = dir.join("bad.json");
+        std::fs::write(&bad, "[1, 2]").unwrap();
+        assert!(edit_args(&store, &staged.id, &bad).is_err());
+        std::fs::write(&bad, "{not json").unwrap();
+        assert!(edit_args(&store, &staged.id, &bad).is_err());
+        assert!(
+            !store.item(&staged.id).unwrap().edited(),
+            "a refused edit changes nothing"
+        );
+
+        let good = dir.join("good.json");
+        let fixed = json!({"title": "PBS Faculty Meeting", "start_time": "2026-09-30T15:30:00-04:00",
+                           "end_time": "2026-09-30T17:00:00-04:00", "calendar_id": "work"});
+        std::fs::write(&good, fixed.to_string()).unwrap();
+        edit_args(&store, &staged.id, &good).unwrap();
+        let item = store.item(&staged.id).unwrap();
+        assert_eq!(item.args, fixed);
+        assert!(item.edited());
+        assert_eq!(
+            item.args_before["attendees"],
+            json!(["organiser@example.edu"])
+        );
+
+        // Resolved items are not edited, whatever the file says.
+        store.resolve(&staged.id, "rejected", None).unwrap();
+        assert!(edit_args(&store, &staged.id, &good).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `review` shows a draft and then waits for a human, so the copy it holds
