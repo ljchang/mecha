@@ -133,13 +133,20 @@
   // but a hand-edited or future-written record would take the whole page down
   // on the dereference below rather than degrade. It costs nothing.
   const settled = (r) => r.state === 'booked' && r.booking;
-  const queue = $derived((rows ?? []).filter((r) => !settled(r)));
+  // Closed is terminal and waits on nobody (`frontdoor::CLOSED`), so it leaves
+  // the queue for the same reason a booking does. Folded rather than dropped:
+  // a hand-closed booking keeps its reason reachable. `answered` is left in
+  // the queue until the owner asks for it to go too.
+  const isClosed = (r) => r.state === 'closed';
+  const queue = $derived((rows ?? []).filter((r) => !settled(r) && !isClosed(r)));
   const booked = $derived(
     (rows ?? [])
       .filter(settled)
       .sort((a, b) => new Date(b.booking.start) - new Date(a.booking.start)),
   );
+  const closed = $derived((rows ?? []).filter(isClosed).sort((a, b) => b.seq - a.seq));
   let showBooked = $state(false);
+  let showClosed = $state(false);
 </script>
 
 {#snippet hazardGlyph(size = 13)}
@@ -203,6 +210,31 @@
                   {#if r.reply_to}<span>{r.reply_to}</span>{/if}
                   {#if r.booking.duration_minutes}<span>{r.booking.duration_minutes} min</span>{/if}
                 </div>
+              </button>
+            {/each}
+          {/if}
+        {/if}
+
+        {#if closed.length}
+          <button class="foldrow" onclick={() => (showClosed = !showClosed)}>
+            <span>{closed.length} closed</span>
+            <span class="foldnote">nothing owed</span>
+            <span class="chev" class:open={showClosed}>›</span>
+          </button>
+          {#if showClosed}
+            {#each closed as r}
+              <button class="card rowbtn muted" onclick={() => open(r)}>
+                <div class="rowtop">
+                  <span class="chip">{r.type_id}</span>
+                  <span class="chip">{stateChip(r.state)}</span>
+                  <span class="when">#{r.seq} · {(r.created_at ?? '').slice(0, 10)}</span>
+                </div>
+                {#if r.booking}
+                  <div class="topic" class:past={isPast(r.booking)}>{span(r.booking)}</div>
+                {:else if r.topic}
+                  <div class="topic">{r.topic}</div>
+                {/if}
+                {#if r.reply_to}<div class="meta"><span>{r.reply_to}</span></div>{/if}
               </button>
             {/each}
           {/if}
