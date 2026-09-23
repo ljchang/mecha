@@ -1,23 +1,10 @@
 <script>
   import { onDestroy, untrack } from 'svelte';
-  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+  import { SvelteSet } from 'svelte/reactivity';
   import { apiFetch as fetch } from './api.js';
   import { parseThread } from './mail-thread.js';
-  import {
-    LANES,
-    laneOf,
-    sortRows,
-    acceptVerb,
-    keyOf,
-    senderOf,
-    sweepGroups,
-    ageOf,
-    PendingActions,
-    DRAFTING,
-    verbWorksOn,
-    tickedGroups,
-    splitSender,
-  } from './mail-desk.js';
+  import { LANES, laneOf, sortRows, acceptVerb, keyOf, senderOf, sweepGroups, ageOf, tickedGroups } from './mail-desk.js';
+  import { MailQueue, HOLD_MS, VERB_PAST, VERB_LABEL, UNSEEN } from './mail-queue.svelte.js';
 
   // Mail triage at a desk: lanes, a dense list and the open thread side by
   // side, driven from the keyboard. The phone keeps Mail.svelte; App.svelte
@@ -41,37 +28,8 @@
   // back and a row whose CLI child has not finished yet shows again for a
   // moment. The phone page has the same window.
 
-  const HOLD_MS = 5000;
-  // Drafting verbs answer at once and run detached (`spawn_detached`), so the
-  // commit bound does not bound them: each is a whole agent run on the local
-  // model. One keystroke may start at most this many.
-  const MAX_DRAFTS = 5;
-  // Full thread text kept for re-reading; the oldest are dropped past this.
-  const MAX_READS = 60;
-  const VERB_PAST = {
-    archive: 'Archived',
-    dismiss: 'Dismissed',
-    task: 'Task created',
-    spam: 'Marked spam',
-    reply: 'Reply drafting',
-    schedule: 'Invite drafting',
-    forward: 'Forward drafting',
-    'needs-info': 'Parked',
-  };
-  const VERB_LABEL = {
-    reply: 'Draft reply',
-    archive: 'Archive',
-    task: 'Make task',
-    schedule: 'Schedule',
-    spam: 'Spam',
-    forward: 'Forward',
-  };
   const INBOX = { id: 'inbox', label: 'Plain inbox', key: '5' };
 
-  let rows = $state(null);
-  let inbox = $state(null);
-  let inboxNote = $state(null);
-  let error = $state(null);
   let lane = $state('respond');
   let cursor = $state(0);
   let search = $state('');
@@ -93,17 +51,21 @@
   let gPrefix = 0; // timestamp of a bare `g`, for `g s`
 
   const selected = new SvelteSet();
-  // Committed this session: key -> { state, at }, the store state the row had
-  // when it was acted on. The row stays hidden only while a fresh load still
-  // reports that old state; once the store has moved it (archived away, or
-  // into Parked / In the outbox), the new row is the truth and shows where it
-  // now belongs. A drafting run is detached, so "ok" only means it started:
-  // if the store still shows the old state after DONE_GRACE_MS, the row comes
-  // back rather than vanishing with nothing on screen to say why.
-  const done = new SvelteMap();
-  const DONE_GRACE_MS = 3 * 60 * 1000;
-  const failed = new SvelteMap(); // key -> why the server refused
-  const reads = new SvelteMap(); // key -> { status: 'loading' | 'ok' | 'error', text }
+
+  // The queue, its timing and its reads are shared with the phone page
+  // (mail-queue.svelte.js); this file is the desk's layout and keymap.
+  const q = new MailQueue({ say: (text, undo) => say(text, undo), keepKey: () => (cur ? keyOf(cur) : null) });
+  q.attach({ inboxOpen: () => lane === 'inbox' });
+  const rows = $derived(q.rows);
+  const inbox = $derived(q.inbox);
+  const inboxNote = $derived(q.inboxNote);
+  const error = $derived(q.error);
+  const hidden = $derived(q.hidden);
+  const heldCount = $derived(q.heldCount);
+  const sendingCount = $derived(q.sendingCount);
+  const openRows = $derived(q.openRows);
+  const laneCounts = $derived(q.laneCounts);
+  const { failed, reads, load, loadInbox } = q;
 
   // Sweep state.
   let sweepVerb = $state('archive');
@@ -111,149 +73,13 @@
   const sweepMarks = new SvelteSet(); // groups toggled; what that means is `tickedGroups`'s
   const sweepOpen = new SvelteSet();
 
-  // `PendingActions` is plain JS; `pendingTick` is how its changes reach the
-  // page's derivations.
-  let pendingTick = $state(0);
-  const pending = new PendingActions({
-    delayMs: HOLD_MS,
-    commit: commitOne,
-    onChange: () => pendingTick++,
-    onFail: (item, err) => {
-      failed.set(keyOf(item.row), String(err?.message ?? err));
-      say(`${item.verb} failed for “${item.row.subject || item.row.summary}” — it is back in the list`);
-    },
-  });
 
-  load();
 
-  async function load() {
-    try {
-      const res = await fetch('/api/mail');
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).trim()}`);
-      const fresh = await res.json();
-      const byKey = new Map(fresh.map((r) => [keyOf(r), r]));
-      const now = Date.now();
-      for (const [k, d] of done) {
-        // The queue load says nothing about plain-inbox threads, which the
-        // store may never have seen — `loadInbox` owns whether they are gone.
-        // The grace window is still enforced here, because `loadInbox` only
-        // runs while that lane is open, and an entry nobody prunes hides its
-        // row in every lane for good (a thread parked from the inbox moves
-        // to Parked, and `mail recent` keeps listing it).
-        if (d.inbox) {
-          if (now - d.at > DONE_GRACE_MS) done.delete(k);
-          continue;
-        }
-        const r = byKey.get(k);
-        if (!r || r.state !== d.state || now - d.at > DONE_GRACE_MS) done.delete(k);
-      }
-      rows = fresh;
-      error = null;
-    } catch (e) {
-      error = String(e?.message ?? e);
-    }
-  }
 
-  // New mail is classified in the background, and drafts land minutes after
-  // they start: keep the list current without a manual refresh.
-  $effect(() => {
-    const every = setInterval(() => {
-      if (document.hidden) return;
-      load();
-      if (lane === 'inbox') loadInbox();
-    }, 60 * 1000);
-    return () => clearInterval(every);
-  });
 
-  async function loadInbox() {
-    try {
-      const res = await fetch('/api/mail/inbox');
-      if (!res.ok) throw new Error((await res.text()).trim());
-      const data = await res.json();
-      // Plain inbox rows carry no verdict, so they have no proposal to accept;
-      // every other verb works on them, since a verb only needs the thread.
-      const list = Array.isArray(data) ? data : [];
-      inboxNote = Array.isArray(data) ? null : (data.note ?? null);
-      // `mail recent` lists messages, not threads, and every verb acts on a
-      // thread: keep one row per thread, the newest message, so a thread
-      // with two messages in the inbox is one row and one key.
-      const seen = new Set();
-      const threads = [];
-      for (const m of [...list].sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''))) {
-        const k = `${m.account}\u0000${m.thread_id}`;
-        if (seen.has(k)) continue;
-        seen.add(k);
-        threads.push(m);
-      }
-      // A fresh inbox is the truth only for what it no longer lists: a thread
-      // that is gone has been acted on and needs no `done` entry. One still
-      // listed may just predate an action that landed while this (slow) fetch
-      // was outstanding, so it stays hidden until DONE_GRACE_MS says otherwise.
-      const now = Date.now();
-      for (const [k, d] of done) {
-        if (!d.inbox) continue;
-        if (!seen.has(k) || now - d.at > DONE_GRACE_MS) done.delete(k);
-      }
-      inbox = threads.map((m) => ({
-        fromInbox: true,
-        thread_id: m.thread_id,
-        account: m.account,
-        from: splitSender(m.from).address,
-        from_name: splitSender(m.from).name,
-        subject: m.subject ?? '',
-        summary: m.snippet ?? '',
-        date: m.date ?? '',
-        urgency: '',
-        tags: [],
-        proposed: null,
-        unread: m.unread,
-      }));
-      error = null;
-    } catch (e) {
-      error = String(e?.message ?? e);
-    }
-  }
 
-  async function commitOne({ row, verb, extra }) {
-    const res = await fetch('/api/mail/act', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ verb, thread: row.thread_id, account: row.account, ...extra }),
-      // A flush on pagehide must outlive the page.
-      keepalive: true,
-    });
-    const text = await res.text();
-    if (!res.ok) throw new Error(text.trim() || `HTTP ${res.status}`);
-    failed.delete(keyOf(row));
-    done.set(keyOf(row), { state: row.state, at: Date.now(), inbox: !!row.fromInbox });
-  }
 
-  // Reload once everything held has gone out, so the list shows what the
-  // store now says (and any mail classified meanwhile) without a manual step.
-  // On the busy → idle edge only: `load` itself prunes `done`, so a
-  // condition on `done` here would re-arm this after every load.
-  let reloadTimer;
-  let wasBusy = false;
-  $effect(() => {
-    pendingTick;
-    const busy = pending.pendingCount + pending.committingCount > 0;
-    if (wasBusy && !busy) {
-      clearTimeout(reloadTimer);
-      reloadTimer = setTimeout(load, 1500);
-    }
-    wasBusy = busy;
-  });
-
-  const flushNow = () => pending.flush({ now: true });
-  $effect(() => {
-    window.addEventListener('pagehide', flushNow);
-    return () => window.removeEventListener('pagehide', flushNow);
-  });
-  onDestroy(() => {
-    clearTimeout(reloadTimer);
-    clearTimeout(toastTimer);
-    pending.flush();
-  });
+  onDestroy(() => clearTimeout(toastTimer));
 
   function say(text, undo = false) {
     toast = { text, undo };
@@ -263,37 +89,15 @@
 
   // ---- what is on screen ----
 
-  const hidden = $derived.by(() => {
-    pendingTick;
-    const keys = pending.hiddenKeys();
-    for (const k of done.keys()) keys.add(k);
-    return keys;
-  });
-
-  const heldCount = $derived((pendingTick, pending.pendingCount));
-  const sendingCount = $derived((pendingTick, pending.committingCount));
-
-  // Threads the triage store holds; the rest are plain-inbox strangers.
-  const storeKeys = $derived(new Set((rows ?? []).map(keyOf)));
-
-  const openRows = $derived((rows ?? []).filter((r) => laneOf(r) && !hidden.has(keyOf(r))));
-
-  const laneCounts = $derived.by(() => {
-    const c = {};
-    for (const r of openRows) c[laneOf(r)] = (c[laneOf(r)] ?? 0) + 1;
-    return c;
-  });
 
   const matches = (r) => {
-    const q = search.trim().toLowerCase();
-    if (!q) return true;
+    const needle = search.trim().toLowerCase();
+    if (!needle) return true;
     return [r.subject, r.summary, r.from, r.from_name, ...(r.tags ?? [])]
-      .some((f) => (f ?? '').toLowerCase().includes(q));
+      .some((f) => (f ?? '').toLowerCase().includes(needle));
   };
 
-  const laneRows = $derived(
-    lane === 'inbox' ? (inbox ?? []).filter((r) => !hidden.has(keyOf(r))) : openRows.filter((r) => laneOf(r) === lane),
-  );
+  const laneRows = $derived(q.laneRows(lane));
   const visible = $derived((lane === 'inbox' ? laneRows : sortRows(laneRows)).filter(matches));
 
   const at = $derived(Math.max(0, Math.min(cursor, visible.length - 1)));
@@ -306,59 +110,12 @@
 
   // ---- read-ahead ----
 
-  let readQueue = [];
-  let reading = 0;
-  function want(row) {
-    if (!row) return;
-    // A failed read is retried the next time the cursor asks: the read is a
-    // CLI child reaching the provider, and one OAuth refresh or MCP startup
-    // hiccup must not pin "could not read" on a thread for the session.
-    const prev = reads.get(keyOf(row));
-    if (prev && prev.status !== 'error') return;
-    reads.set(keyOf(row), { status: 'loading', text: '' });
-    readQueue.push(row);
-    pumpReads();
-  }
-  function pumpReads() {
-    // Two at a time: each is a CLI child reaching the provider, and the one
-    // under the cursor must not wait behind a long read-ahead queue.
-    while (reading < 2 && readQueue.length) {
-      const row = readQueue.shift();
-      reading++;
-      const q = new URLSearchParams({ thread: row.thread_id, account: row.account });
-      fetch(`/api/mail/read?${q}`)
-        .then(async (res) => {
-          const text = await res.text();
-          reads.set(keyOf(row), res.ok ? { status: 'ok', text } : { status: 'error', text: text.trim() });
-          // Insertion order is age: drop the oldest finished reads past the cap.
-          // Never the thread under the cursor, which would sit on "reading…".
-          const keep = cur ? keyOf(cur) : null;
-          for (const [k, v] of reads) {
-            if (reads.size <= MAX_READS) break;
-            if (v.status !== 'loading' && k !== keep) reads.delete(k);
-          }
-        })
-        .catch((e) => reads.set(keyOf(row), { status: 'error', text: String(e?.message ?? e) }))
-        .finally(() => {
-          reading--;
-          pumpReads();
-        });
-    }
-  }
   $effect(() => {
     if (mode !== 'list' || !cur) return;
     const here = cur;
     const ahead = [visible[at + 1], visible[at + 2]];
     // Depends on the cursor only; the cache writes below must not re-run it.
-    untrack(() => {
-      // Read-ahead is a fixed cost: whatever was queued for rows the cursor
-      // has already passed is dropped (the two in flight finish), so holding
-      // `j` down a long lane never leaves hundreds of reads behind it.
-      for (const r of readQueue) reads.delete(keyOf(r));
-      readQueue = [];
-      want(here);
-      ahead.forEach(want);
-    });
+    untrack(() => q.readAround(here, ahead));
   });
 
   // Keep the cursor row in view as it moves.
@@ -373,26 +130,9 @@
 
   /** Hold one keystroke's actions; false when it was refused. */
   function hold(items, label) {
-    if (!items.length) return false;
-    // A plain-inbox thread the classifier has never seen takes archive and
-    // spam only (`LENIENT`); the rest would fail five seconds from now, after
-    // the row had gone. Refuse now and say why, instead.
-    if (items.some((it) => !verbWorksOn(it.verb, it.row, storeKeys))) {
-      say('Only archive and spam work on a thread the classifier has not seen yet');
-      return false;
-    }
-    const drafts = items.filter((it) => DRAFTING.has(it.verb)).length;
-    if (drafts > MAX_DRAFTS) {
-      say(`That would start ${drafts} drafting runs at once — choose ${MAX_DRAFTS} threads or fewer`);
-      return false;
-    }
-    // A retry clears the old failure, or the row would stay on screen while
-    // its new action is held.
-    for (const it of items) failed.delete(keyOf(it.row));
-    pending.add(items, label);
-    selected.clear();
-    say(`${label} · z to undo`, true);
-    return true;
+    const ok = q.hold(items, label, 'z to undo');
+    if (ok) selected.clear();
+    return ok;
   }
 
   function run(verb, extra = {}, list = targets) {
@@ -425,21 +165,14 @@
     hold(items, skipped ? `${label} (${skipped} without one left in place)` : label);
   }
 
-  function undo() {
-    const entry = pending.undo();
-    if (!entry) {
-      say(pending.committingCount ? 'Already sent — that one cannot be taken back' : 'Nothing to undo');
-      return;
-    }
-    say(`Undone · ${entry.label.split(' · ')[0]}`);
-  }
+  const undo = () => q.undo();
 
   function ask(verb, label, placeholder, { wantTo = false, required = false } = {}) {
     if (!targets.length) return;
     // Before the owner writes a steer, not after: none of the asking verbs
     // works on a thread the store has never seen.
-    if (targets.some((r) => !verbWorksOn(verb, r, storeKeys))) {
-      say('Only archive and spam work on a thread the classifier has not seen yet');
+    if (!q.canAct(verb, targets)) {
+      say(UNSEEN);
       return;
     }
     if (targets.length > 1 && (wantTo || verb === 'needs-info')) {
@@ -502,7 +235,7 @@
       cTo = cSubject = cBody = '';
       say('Staged — review it in the Outbox before it sends');
     } catch (e) {
-      error = String(e?.message ?? e);
+      q.error = String(e?.message ?? e);
     }
   }
 
