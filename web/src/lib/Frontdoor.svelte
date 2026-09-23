@@ -277,7 +277,10 @@
                action. -->
         {:else if ['drained', 'extraction_failed'].includes(reading.row.state)}
           <button class="abtn primary" disabled={busy} onclick={async () => { if (await act('extract', reading.row)) back(); }}>Extract</button>
-        {:else}
+        {:else if reading.row.state === 'extracted'}
+          <!-- `frontdoor triage` selects on `state == EXTRACTED` alone, so any
+               other state (an answered or closed request opened from the fold)
+               would get the same dead button the comment above records. -->
           <button class="abtn primary" disabled={busy} onclick={async () => { if (await act('triage', reading.row)) back(); }}>Draft a reply…</button>
         {/if}
         <!-- `inert && valid`, not `inert`: an invalid record is one the model
