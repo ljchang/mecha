@@ -25,9 +25,15 @@
 
   // Mail is the one view with a separate desktop build: triage at a desk is
   // a keyboard job, and the phone's one-thread-at-a-time sheets are the
-  // opposite of that. Same breakpoint as the rail below, read once and then
-  // followed, so a window dragged across 900px swaps the reader live.
-  const WIDE = '(min-width: 900px)';
+  // opposite of that. Read once and then followed, so a window dragged
+  // across the line swaps the reader live.
+  //
+  // **Not the rail's 900px.** The desk's rail, lanes and list are fixed at
+  // about 820px together, so at 900–1000px the thread pane was 80–200px wide.
+  // 1200px leaves it at least 380; below that the phone page, which is fine
+  // at any width, is the better reader — a half-screen window on a 1920
+  // display, or a tablet in landscape.
+  const WIDE = '(min-width: 1200px)';
   let wide = $state(typeof matchMedia === 'function' && matchMedia(WIDE).matches);
   $effect(() => {
     if (typeof matchMedia !== 'function') return;

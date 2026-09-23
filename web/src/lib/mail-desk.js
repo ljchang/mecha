@@ -116,17 +116,25 @@ export const DRAFTING = new Set(['reply', 'schedule', 'forward']);
 
 /**
  * The sweep groups that are ticked. `marks` holds the groups the owner has
- * toggled, and what a mark means depends on the verb:
+ * toggled; `seen` the groups that were on screen when the sweep opened (or
+ * its verb changed). What a mark means depends on the verb:
  *
- * - archive and task sweeps are the bulk the sweep exists for, so every group
- *   is in unless marked out;
- * - drafting sweeps start empty and a group is in only if marked in, so a
- *   group that appears later (a new sender, on the minute's reload) is *not*
- *   ticked. Each ticked thread is an agent run the owner must have chosen.
+ * - archive and task sweeps are the bulk the sweep exists for, so a group
+ *   that was on screen is in unless marked out. One that appeared later (a
+ *   new sender, on the minute's reload) is out unless marked in: the owner
+ *   never read it, and an archive has no inverse once its hold ends.
+ * - drafting sweeps start empty and a group is in only if marked in. Each
+ *   ticked thread is an agent run the owner must have chosen.
+ *
+ * With no `seen`, every group counts as having been on screen.
  */
-export function tickedGroups(groups, verb, marks) {
+export function tickedGroups(groups, verb, marks, seen = null) {
   const optIn = DRAFTING.has(verb);
-  return groups.filter((g) => (optIn ? marks.has(g.key) : !marks.has(g.key)));
+  return groups.filter((g) => {
+    if (optIn) return marks.has(g.key);
+    const shown = !seen || seen.has(g.key);
+    return shown !== marks.has(g.key);
+  });
 }
 
 /**

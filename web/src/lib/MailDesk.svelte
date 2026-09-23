@@ -497,7 +497,9 @@
   const sweepCounts = $derived(
     Object.fromEntries(SWEEP_VERBS.map((v) => [v, sweepRows.filter((r) => r.proposed === v).length])),
   );
-  const ticked = $derived(new Set(tickedGroups(groups, sweepVerb, sweepMarks).map((g) => g.key)));
+  let sweepSeen = $state(new Set()); // groups on screen when the sweep opened, for `tickedGroups`
+  let sweepBodyEl = $state(null);
+  const ticked = $derived(new Set(tickedGroups(groups, sweepVerb, sweepMarks, sweepSeen).map((g) => g.key)));
   const checkedRows = $derived(groups.filter((g) => ticked.has(g.key)).flatMap((g) => g.rows));
   const sweepAt = $derived(Math.max(0, Math.min(sweepCursor, groups.length - 1)));
 
@@ -507,14 +509,21 @@
     setSweepVerb(sweepVerb);
   }
 
-  // Archive and task sweeps start with every group ticked, drafting sweeps
-  // with none — and stay that way for groups that arrive while the sweep is
-  // open (`tickedGroups`).
+  // Archive and task sweeps start with every group on screen ticked,
+  // drafting sweeps with none; a group that arrives while the sweep is open
+  // starts unticked either way (`tickedGroups`).
   function setSweepVerb(v) {
     sweepVerb = v;
     sweepCursor = 0;
     sweepMarks.clear();
+    sweepSeen = new Set(sweepGroups(sweepRows, v).map((g) => g.key));
   }
+
+  // Keep the sweep's cursor group in view, as the list keeps its row.
+  $effect(() => {
+    sweepAt;
+    if (mode === 'sweep') sweepBodyEl?.querySelector('.group.cur')?.scrollIntoView({ block: 'nearest' });
+  });
 
   function applySweep() {
     const n = checkedRows.length;
@@ -564,6 +573,11 @@
       }
       return;
     }
+    // Enter and Space on a focused control are that control's (Refresh,
+    // Compose, a lane) — not a triage key aimed at the cursor thread. The
+    // thread rows are buttons too, and after a click on one the keys must
+    // still triage, so they are the exception.
+    if ((e.key === 'Enter' || e.key === ' ') && t?.closest?.('button, a, select, label') && !t.closest('.row')) return;
     if (composing) {
       if (e.key === 'Escape') composing = false;
       return;
@@ -600,9 +614,10 @@
 
     if (Date.now() - gPrefix < 1000) {
       gPrefix = 0;
-      if (e.key === 's') { openSweep(); e.preventDefault(); }
-      else if (e.key === 'i') { pickLane('inbox'); e.preventDefault(); }
-      return;
+      if (e.key === 's') { openSweep(); e.preventDefault(); return; }
+      if (e.key === 'i') { pickLane('inbox'); e.preventDefault(); return; }
+      // Any other key is itself, as if `g` had not been pressed: `g` then `e`
+      // archives rather than being dropped.
     }
 
     const lanes = [...LANES, INBOX];
@@ -823,7 +838,7 @@
           </button>
         {/each}
       </div>
-      <div class="sweepbody">
+      <div class="sweepbody" bind:this={sweepBodyEl}>
         <div class="sweeptitle">
           <div class="grow">
             <h1>{sweepVerbLabel[sweepVerb]} {sweepCounts[sweepVerb]} thread{sweepCounts[sweepVerb] === 1 ? '' : 's'}?</h1>
