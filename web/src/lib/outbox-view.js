@@ -30,11 +30,16 @@ export const KINDS = [
   { id: 'other', label: 'Other' },
 ];
 
-/** Whether the event editor can edit this tool's arguments. */
-export const editsAsEvent = (tool) => {
-  const t = toolSuffix(tool);
-  return t === 'calendar_create_event' || t === 'calendar_update_event';
-};
+/**
+ * Whether a draft is shown as an event card and edited as event fields: a
+ * create only. The other calendar calls are `event` for the list's filter and
+ * icon, but an update carries only the fields it changes and a delete only an
+ * id — a card would render them as a new event with no date ("add to
+ * calendar", on a cancellation), and the editor would write a full start and
+ * end into an update that had none, turning a location fix into a reschedule
+ * that notifies everyone. Those two keep the generic view, every field shown.
+ */
+export const editsAsEvent = (tool) => toolSuffix(tool) === 'calendar_create_event';
 
 /** The browser's IANA zone, else UTC. */
 export function localZone() {

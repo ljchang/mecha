@@ -726,10 +726,18 @@ async fn calendars(global: &GlobalOpts, account: Option<&str>, as_json: bool) ->
     // the JSON is the part a page can use, and the note goes to stderr.
     let (rows, note) = split_json_note(&out.content);
     if as_json {
+        // No rows is a failure to say so, not an empty list: the page must
+        // tell "could not read" from "none" (found on review).
+        let Some(rows) = rows else {
+            bail!(
+                "calendar_list answered without rows: {}",
+                out.content.trim()
+            );
+        };
         if let Some(n) = note {
             eprintln!("{n}");
         }
-        println!("{}", rows.unwrap_or_else(|| "[]".into()));
+        println!("{rows}");
         return Ok(());
     }
     match rows.as_deref().map(serde_json::from_str::<Vec<Value>>) {

@@ -55,6 +55,10 @@ pub struct Row {
     /// An event's start, verbatim (RFC 3339 or a date) — the list shows when
     /// an event is without opening it. `None` for everything that is not one.
     start_time: Option<String>,
+    /// The event's own zone and all-day flag, so the list renders its start
+    /// the way the draft pane does rather than in the browser's zone.
+    timezone: Option<String>,
+    all_day: bool,
 }
 
 /// The registry name, made into a verb. Curated for the tools that exist,
@@ -151,6 +155,8 @@ fn row(item: &OutboxItem) -> Row {
         edited: item.edited(),
         account: item.args["account"].as_str().map(str::to_string),
         start_time: item.args["start_time"].as_str().map(str::to_string),
+        timezone: item.args["timezone"].as_str().map(str::to_string),
+        all_day: item.args["all_day"].as_bool().unwrap_or(false),
     }
 }
 
