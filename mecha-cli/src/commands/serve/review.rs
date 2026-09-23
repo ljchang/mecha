@@ -806,20 +806,41 @@ pub async fn edit(
                 .into_response()
         }
     };
-    // The id is not in the name: it arrives percent-decoded from the URL, and
-    // `%2e%2e%2f` would walk out of the temp dir before the CLI ever checked
-    // it. A per-call counter keeps two concurrent edits apart instead.
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir();
-    let path = dir.join(format!("mecha-web-edit-{}-{seq}.{ext}", std::process::id()));
-    if let Err(e) = std::fs::write(&path, &content) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response();
-    }
+    let path = match write_private_temp(ext, &content) {
+        Ok(path) => path,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
+    };
     let path_str = path.to_string_lossy().to_string();
     let result = verb(&state, &["outbox", "edit", &id, flag, &path_str]).await;
     let _ = std::fs::remove_file(&path);
     result
+}
+
+/// Write `content` to a fresh file in the temp dir, for a CLI child to read.
+///
+/// Three properties, each for a reason. **No request bytes in the name** —
+/// the item id arrives percent-decoded from the URL, and `%2e%2e%2f` walked
+/// out of the temp dir before the CLI ever checked it. **Created, never
+/// opened** (`create_new`): a path another local user planted first — a
+/// symlink to something of the owner's — is refused rather than written
+/// through, which a plain `fs::write` would do. **Owner-only** (0600): the
+/// draft is private text. The name's random part is what makes planting
+/// impractical in the first place; `create_new` is what makes it harmless.
+fn write_private_temp(ext: &str, content: &str) -> std::io::Result<std::path::PathBuf> {
+    use std::io::Write as _;
+    let dir = std::env::temp_dir();
+    let tag = mecha_core::session::Session::new_id();
+    let path = dir.join(format!("mecha-web-edit-{tag}.{ext}"));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(&path)?;
+    f.write_all(content.as_bytes())?;
+    Ok(path)
 }
 
 /// Run our own binary and hand back its stdout, or the response a refusal
@@ -902,6 +923,30 @@ pub fn review_state(config: &mecha_core::config::Config) -> Result<ReviewState> 
 
 #[cfg(test)]
 mod tests {
+    /// The web edit's temp file: a fresh random name every call, owner-only,
+    /// and never written through a path that already exists — which is what
+    /// a planted symlink is (found on #258's review, pass 7).
+    #[test]
+    fn the_edit_temp_file_is_fresh_private_and_never_written_through() {
+        let a = super::write_private_temp("md", "one").unwrap();
+        let b = super::write_private_temp("md", "two").unwrap();
+        assert_ne!(a, b, "two calls, two files");
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "one");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&a).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "owner-only, got {mode:o}");
+        }
+        // `create_new` is the property: an existing path is refused, not
+        // truncated and written through.
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        assert!(opts.open(&a).is_err());
+        let _ = std::fs::remove_file(&a);
+        let _ = std::fs::remove_file(&b);
+    }
+
     use super::*;
     use mecha_core::agent::Taint;
     use serde_json::json;

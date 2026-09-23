@@ -129,10 +129,9 @@ pub async fn inbox(State(state): St) -> Response {
 ///
 /// An answer that does not parse is an error, never `[]`: "could not read
 /// your calendars" and "you have none" must not look alike on the page.
-/// A *partial* answer (one account failed) carries its note on the child's
-/// stderr, which `self_text` does not pass on — so that account is simply
-/// absent from the picker. Carrying it would need an envelope here and in
-/// the page; the typed-id fallback covers the gap meanwhile.
+/// A *partial* answer (one account failed) is a row with an `error` —
+/// `calendar_list` reports it as data, and the picker shows that account as
+/// unreadable rather than as one with no calendars.
 pub async fn calendars(State(state): St) -> Response {
     match self_text(&state, &["mail", "calendars", "--json"]).await {
         Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
