@@ -13,6 +13,9 @@
     sweepGroups,
     ageOf,
     PendingActions,
+    DRAFTING,
+    tickedGroups,
+    splitSender,
   } from './mail-desk.js';
 
   // Mail triage at a desk: lanes, a dense list and the open thread side by
@@ -42,7 +45,6 @@
   // commit bound does not bound them: each is a whole agent run on the local
   // model. One keystroke may start at most this many.
   const MAX_DRAFTS = 5;
-  const DRAFTING = new Set(['reply', 'schedule', 'forward']);
   // Full thread text kept for re-reading; the oldest are dropped past this.
   const MAX_READS = 60;
   const VERB_PAST = {
@@ -105,7 +107,7 @@
   // Sweep state.
   let sweepVerb = $state('archive');
   let sweepCursor = $state(0);
-  const sweepOff = new SvelteSet();
+  const sweepMarks = new SvelteSet(); // groups toggled; what that means is `tickedGroups`'s
   const sweepOpen = new SvelteSet();
 
   // `PendingActions` is plain JS; `pendingTick` is how its changes reach the
@@ -195,8 +197,8 @@
         fromInbox: true,
         thread_id: m.thread_id,
         account: m.account,
-        from: m.from,
-        from_name: '',
+        from: splitSender(m.from).address,
+        from_name: splitSender(m.from).name,
         subject: m.subject ?? '',
         summary: m.snippet ?? '',
         date: m.date ?? '',
@@ -495,7 +497,8 @@
   const sweepCounts = $derived(
     Object.fromEntries(SWEEP_VERBS.map((v) => [v, sweepRows.filter((r) => r.proposed === v).length])),
   );
-  const checkedRows = $derived(groups.filter((g) => !sweepOff.has(g.key)).flatMap((g) => g.rows));
+  const ticked = $derived(new Set(tickedGroups(groups, sweepVerb, sweepMarks).map((g) => g.key)));
+  const checkedRows = $derived(groups.filter((g) => ticked.has(g.key)).flatMap((g) => g.rows));
   const sweepAt = $derived(Math.max(0, Math.min(sweepCursor, groups.length - 1)));
 
   function openSweep() {
@@ -504,14 +507,13 @@
     setSweepVerb(sweepVerb);
   }
 
-  // Archive and task sweeps start with every group ticked: that is the bulk
-  // the sweep exists for. Drafting sweeps start with none, because each
-  // ticked thread is an agent run and `hold` refuses more than MAX_DRAFTS.
+  // Archive and task sweeps start with every group ticked, drafting sweeps
+  // with none — and stay that way for groups that arrive while the sweep is
+  // open (`tickedGroups`).
   function setSweepVerb(v) {
     sweepVerb = v;
     sweepCursor = 0;
-    sweepOff.clear();
-    if (DRAFTING.has(v)) for (const g of sweepGroups(sweepRows, v)) sweepOff.add(g.key);
+    sweepMarks.clear();
   }
 
   function applySweep() {
@@ -524,8 +526,8 @@
   }
 
   function toggleGroup(g) {
-    if (sweepOff.has(g.key)) sweepOff.delete(g.key);
-    else sweepOff.add(g.key);
+    if (sweepMarks.has(g.key)) sweepMarks.delete(g.key);
+    else sweepMarks.add(g.key);
   }
 
   // ---- the keyboard ----
@@ -555,6 +557,7 @@
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) {
       if (e.key === 'Escape') {
         if (asking) asking = null;
+        else if (composing) composing = false;
         else if (t === searchEl && search) search = '';
         t.blur();
         e.preventDefault();
@@ -832,7 +835,7 @@
           <section class="group" class:cur={i === sweepAt}>
             <div class="grouphead">
               <label class="grow">
-                <input type="checkbox" checked={!sweepOff.has(g.key)} onchange={() => toggleGroup(g)} />
+                <input type="checkbox" checked={ticked.has(g.key)} onchange={() => toggleGroup(g)} />
                 <strong>{g.name}</strong>
                 {#if g.name !== g.key}<span class="addr">{g.key}</span>{/if}
               </label>

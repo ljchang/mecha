@@ -16,6 +16,8 @@ import {
   sweepGroups,
   ageOf,
   PendingActions,
+  tickedGroups,
+  splitSender,
 } from '../src/lib/mail-desk.js';
 
 let pass = 0;
@@ -74,6 +76,23 @@ t('groups only the chosen proposal', groups.reduce((n, g) => n + g.rows.length, 
 t('largest group first', groups[0].key === 'news@list.edu' && groups[0].rows.length === 2);
 t('groups by address, not the attacker-chosen name', groups.filter((g) => g.name === 'Listserv').length === 2);
 t('a nameless sender shows its address', groups.find((g) => g.key === 'cal@x.com').name === 'cal@x.com');
+
+// ---- which sweep groups are ticked ----
+{
+  const g = (key) => ({ key, rows: [] });
+  const marks = new Set(['b']);
+  t('an archive sweep ticks every group but the marked', tickedGroups([g('a'), g('b')], 'archive', marks).map((x) => x.key).join() === 'a');
+  t('a drafting sweep ticks only the marked', tickedGroups([g('a'), g('b')], 'reply', marks).map((x) => x.key).join() === 'b');
+  // The regression: a group arriving after the tab opened (the minute's
+  // reload, a new sender) must not be ticked for a drafting verb.
+  t('a group that appears later is not ticked for a draft', tickedGroups([g('a'), g('b'), g('new')], 'reply', marks).every((x) => x.key !== 'new'));
+  t('but is for an archive', tickedGroups([g('a'), g('new')], 'archive', new Set()).some((x) => x.key === 'new'));
+}
+
+// ---- senders ----
+t('a Name <address> sender splits', JSON.stringify(splitSender('Tomas Lindqvist <editor@jac.example.org>')) === JSON.stringify({ name: 'Tomas Lindqvist', address: 'editor@jac.example.org' }));
+t('a quoted name splits too', splitSender('"Barnett, Hollis" <hb@x.edu>').name === 'Barnett, Hollis');
+t('a bare address is only an address', JSON.stringify(splitSender('it@x.edu')) === JSON.stringify({ name: '', address: 'it@x.edu' }));
 
 // ---- age ----
 const now = Date.parse('2026-09-23T12:00:00Z');
