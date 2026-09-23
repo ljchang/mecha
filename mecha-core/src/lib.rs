@@ -107,6 +107,7 @@ pub mod surface;
 pub(crate) mod text;
 pub mod title;
 pub mod tool;
+pub mod trial_env;
 pub mod trigger;
 pub mod work;
 pub mod workflow;

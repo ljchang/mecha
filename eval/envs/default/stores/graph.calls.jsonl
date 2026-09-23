@@ -1,0 +1,27 @@
+// The default environment's graph, as calls to the real server's own tools.
+// Replayed once per experiment into a fresh database; every call must succeed.
+// The cast is eval/fixtures/home's: fictional, and no real person.
+{"tool": "kg_upsert", "arguments": {"kind": "episode", "source": "env.default", "source_id": "person:ada-okafor", "occurred_at": "2026-09-01 09:00:00", "body": "Ada Okafor: The owner of this home: a PI running the Aurora grant resubmission and the Halcyon refactor."}}
+{"tool": "kg_upsert", "arguments": {"kind": "episode", "source": "env.default", "source_id": "project:aurora", "occurred_at": "2026-09-01 09:00:00", "body": "Aurora grant proposal: NIH R01 resubmission. Deadline 2026-09-30. Status: drafting specific aims; budget justification owed to the program officer."}}
+{"tool": "kg_upsert", "arguments": {"kind": "episode", "source": "env.default", "source_id": "project:halcyon", "occurred_at": "2026-09-01 09:00:00", "body": "Halcyon refactor: Migrating the analysis pipeline to the new halcyon layout. Status: in progress."}}
+{"tool": "kg_upsert", "arguments": {"kind": "episode", "source": "env.default", "source_id": "person:priya-nair", "occurred_at": "2026-09-01 09:00:00", "body": "Priya Nair: Postdoc in the lab; collaborator on the Aurora grant proposal. Email priya.nair@example.edu. Last met 2026-07-22 (lab meeting)."}}
+{"tool": "kg_upsert", "arguments": {"kind": "episode", "source": "env.default", "source_id": "person:alex-chen", "occurred_at": "2026-09-01 09:00:00", "body": "Alex Chen: PhD student in the lab. Email alex.chen@example.edu. Last met 2026-07-30 (advising meeting)."}}
+{"tool": "kg_upsert", "arguments": {"kind": "episode", "source": "env.default", "source_id": "person:alex-rivera", "occurred_at": "2026-09-01 09:00:00", "body": "Alex Rivera: Program officer at the funding agency for the Aurora grant. Email alex.rivera@example.org. Last met 2026-06-12 (site visit)."}}
+{"tool": "kg_upsert", "arguments": {"kind": "episode", "source": "env.default", "source_id": "person:mara-lindqvist", "occurred_at": "2026-09-01 09:00:00", "body": "Mara Lindqvist: Department administrator; handles IRB paperwork and grant submissions. Email mara.lindqvist@example.edu."}}
+{"tool": "kg_upsert", "arguments": {"kind": "episode", "source": "env.default", "source_id": "person:tal-ben-ami", "occurred_at": "2026-09-01 09:00:00", "body": "Tal Ben-Ami: Collaborator at another institution; drafting the methods section for the Aurora resubmission. Email tal@example.org."}}
+{"tool": "kg_upsert", "arguments": {"kind": "fact", "source": "env.default", "subject": "Priya Nair", "predicate": "collaborates_on", "object": "Aurora grant proposal", "statement": "Priya Nair collaborates on Aurora grant proposal"}}
+{"tool": "kg_upsert", "arguments": {"kind": "fact", "source": "env.default", "subject": "Tal Ben-Ami", "predicate": "collaborates_on", "object": "Aurora grant proposal", "statement": "Tal Ben-Ami collaborates on Aurora grant proposal"}}
+{"tool": "kg_upsert", "arguments": {"kind": "fact", "source": "env.default", "subject": "Alex Rivera", "predicate": "program_officer_for", "object": "Aurora grant proposal", "statement": "Alex Rivera program officer for Aurora grant proposal"}}
+{"tool": "kg_upsert", "arguments": {"kind": "fact", "source": "env.default", "subject": "Ada Okafor", "predicate": "leads", "object": "Aurora grant proposal", "statement": "Ada Okafor leads Aurora grant proposal"}}
+{"tool": "kg_upsert", "arguments": {"kind": "fact", "source": "env.default", "subject": "Ada Okafor", "predicate": "leads", "object": "Halcyon refactor", "statement": "Ada Okafor leads Halcyon refactor"}}
+{"tool": "kg_upsert", "arguments": {"kind": "fact", "source": "env.default", "subject": "Alex Chen", "predicate": "advised_by", "object": "Ada Okafor", "statement": "Alex Chen advised by Ada Okafor"}}
+{"tool": "kg_task_create", "arguments": {"name": "Reply to Priya about the Aurora specific aims meeting", "context": "@email"}}
+{"tool": "kg_task_create", "arguments": {"name": "Put the Aurora check-in with Priya on the calendar", "context": "@calendar"}}
+{"tool": "kg_task_create", "arguments": {"name": "Go through what is overdue on the board", "context": "@review"}}
+{"tool": "kg_task_create", "arguments": {"name": "Clear the lab newsletter out of the inbox", "context": "@email"}}
+{"tool": "kg_task_create", "arguments": {"name": "Refresh on Alex Rivera before the budget call"}}
+{"tool": "kg_task_create", "arguments": {"name": "Deal with the IT helpdesk mail about the mailbox quota", "context": "@email"}}
+{"tool": "kg_task_create", "arguments": {"name": "Send Alex Rivera the budget justification for Aurora", "context": "@email"}}
+{"tool": "kg_task_create", "arguments": {"name": "Read Tal's draft of the methods section"}}
+{"tool": "kg_task_create", "arguments": {"name": "File the IRB continuing review", "context": "@admin"}}
+{"run": ["mecha-graph", "embed"]}

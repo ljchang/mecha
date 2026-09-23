@@ -1055,6 +1055,13 @@ impl Config {
         Self::load_layers(Self::global_path().as_deref(), None)
     }
 
+    /// Fold an experiment environment's `config.toml` onto these defaults,
+    /// through the same parser and table rules as the global file — the
+    /// one door `trial_env` needs, rather than the layer machinery itself.
+    pub(crate) fn merge_environment_file(&mut self, path: &Path) -> Result<()> {
+        self.merge_file(path, LayerTrust::Global)
+    }
+
     fn merge_file(&mut self, path: &Path, trust: LayerTrust) -> Result<()> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;

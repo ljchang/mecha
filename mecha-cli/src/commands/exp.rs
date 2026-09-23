@@ -335,8 +335,8 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool) -> Result<()> {
     let store = ExperimentStore::open_default(name)?;
     let manifest = store.manifest()?;
     let cases = cases_for(&manifest).await?;
-    let real = mecha_core::config::Config::load_global()?;
-    let (provider, model) = provider_and_model(&real)?;
+    let loaded = mecha_core::config::Config::load_global()?;
+    let (provider, model) = provider_and_model(&loaded)?;
     let task_ids: Vec<String> = cases.iter().map(|c| c.id.clone()).collect();
     // The manifest's paths resolve against the checkout `exp run` starts
     // from, and the fixture charter's text is a term of every row's hash.
@@ -380,6 +380,21 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool) -> Result<()> {
         }
         return Ok(());
     }
+    // The world every home is rendered from (`trial_env`): the
+    // environment's harness with this machine's facts. From here on `real`
+    // is that, never the operator's file — whose servers and hooks, copied
+    // into trial homes, once wrote trials into the owner's live graph.
+    let real = manifest.environment.base_config(&loaded, &base)?;
+    if manifest.fixtures.is_empty() {
+        let digest = manifest.environment.digest(&base)?;
+        mecha_core::trial_env::build_stores(
+            &manifest.environment.dir(&base),
+            &real,
+            &store.stores_cache(&digest),
+        )
+        .await
+        .context("building the experiment environment's server stores")?;
+    }
     if cases.iter().any(|c| c.expect.judge.is_some()) {
         let judge = experiment_judge(&manifest, &real)?;
         eprintln!("  rubric judge: {} (model verdicts require transcript review; a shared model is not independent)", judge.model());
@@ -421,7 +436,10 @@ async fn run_single_trials(
         let arm = &manifest.arms[&trial.arm];
         ran += 1;
         eprintln!("· {} ({ran})", trial.id);
-        let home = store.arm_home(&trial.arm)?;
+        let seed_from = manifest
+            .environment
+            .dir(&std::env::current_dir().context("cannot determine the working directory")?);
+        let home = store.arm_home(&trial.arm, &seed_from)?;
         match run_one(store, manifest, mecha, real, arm, case, &home, &mut trial).await {
             Ok(()) => {}
             Err(e) => {
@@ -490,7 +508,10 @@ async fn run_lifetimes(
         let first = rows[0];
         let arm = &manifest.arms[&first.arm];
         let stages_off = arm.resolve_stages()?;
-        let home = store.lifetime_home(&lifetime)?;
+        let seed_from = manifest
+            .environment
+            .dir(&std::env::current_dir().context("cannot determine the working directory")?);
+        let home = store.lifetime_home(&lifetime, &seed_from)?;
         let (mut ledger, torn) = store.stage_runs(&lifetime)?;
         if torn > 0 {
             eprintln!(
@@ -548,12 +569,13 @@ async fn run_lifetimes(
                     // render that failed only inside `run_one` left the
                     // stages running against a home with no config for the
                     // position (found on review).
-                    if let Err(e) = render_home(manifest, real, arm, trial.seed, &home, false)
-                        .and_then(|r| {
-                            manifest.fixtures.apply_clock(&home, &case.id)?;
-                            Ok(r)
-                        })
-                    {
+                    if let Err(e) = render_home(
+                        store, manifest, real, arm, trial.seed, &home, false,
+                    )
+                    .and_then(|r| {
+                        manifest.fixtures.apply_clock(&home, &case.id)?;
+                        Ok(r)
+                    }) {
                         world_ready = false;
                         world_error = format!("{e:#}");
                         trial.status = TrialStatus::Failed;
@@ -1524,6 +1546,7 @@ struct Rendered {
 /// `outbox approve` no server, at the one position where the fixtures were
 /// meant to be reachable first (found on the design).
 fn render_home(
+    store: &ExperimentStore,
     manifest: &Manifest,
     real: &mecha_core::config::Config,
     arm: &mecha_core::experiment::Arm,
@@ -1547,6 +1570,13 @@ fn render_home(
     // The manifest's paths are written against the checkout `exp run` is
     // started from; a server is spawned from the trial's workspace.
     let base = std::env::current_dir().context("cannot determine the working directory")?;
+    // The environment's servers keep their state under the home, from the
+    // store `run` built — unless fixture servers replace them all.
+    if manifest.fixtures.is_empty() {
+        let digest = manifest.environment.digest(&base)?;
+        mecha_core::trial_env::place_stores(&config, &store.stores_cache(&digest), home, fresh)?;
+        mecha_core::trial_env::bind_stores(&mut config, home);
+    }
     manifest.fixtures.apply(&mut config, home, &base, fresh)?;
     manifest.fixtures.apply_charter(home, &base)?;
     std::fs::write(home.join("config.toml"), toml::to_string_pretty(&config)?)
@@ -1600,6 +1630,7 @@ async fn run_one(
         passthrough,
         moved,
     } = render_home(
+        store,
         manifest,
         real,
         arm,

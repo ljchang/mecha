@@ -44,7 +44,9 @@ def props():
 
 
 def snapshot_inputs(binary, home):
-    files = INPUTS + [binary, home/'config.toml'] + sorted((home/'learning/rules').glob('*.toml'))
+    env = home.parent/'environment'
+    files = (INPUTS + [binary, home/'config.toml', env/'config.toml']
+             + sorted((env/'learning/rules').glob('*.toml')))
     return {str(p): sha(p) for p in files}
 
 
@@ -185,7 +187,7 @@ def main():
         if c['change'] != 'max_turns=10' or c['class'] != 'config': raise ValueError('candidate differs from registered treatment')
         proposal={k:c[k] for k in ('id','change','class','status')}
     out.mkdir(mode=0o700,parents=True)
-    home=out/'bootstrap'; (home/'learning/rules').mkdir(parents=True)
+    home=out/'bootstrap'; home.mkdir(parents=True)
     spec=importlib.util.spec_from_file_location('builder',ROOT/'eval/fixtures/build_executable_validation.py')
     builder=importlib.util.module_from_spec(spec);spec.loader.exec_module(builder)
     for provider in cfg.get('providers',{}).values(): provider.pop('api_key',None)
@@ -195,17 +197,25 @@ def main():
     if agent.get('system_prompt_file'):
         agent['system_prompt']=Path(agent.pop('system_prompt_file')).read_text()
     (home/'config.toml').write_text('\n'.join(f'{k} = {builder.toml(v)}' for k,v in cfg.items())+'\n')
-    for path in sorted(args.rules.glob('*.toml')): shutil.copyfile(path,home/'learning/rules'/path.name)
-    if not list((home/'learning/rules').glob('*.learned.toml')): raise ValueError('no frozen learned rules')
+    # The pilot's own experiment environment (mecha-core/src/trial_env.rs):
+    # the frozen [agent] and [tools] and the frozen rules, and nothing else of
+    # the operator's — no servers, hooks or outbox route, which a copied home
+    # used to carry into every trial. Machine facts stay in the bootstrap
+    # config above, where `mecha exp` takes them from.
+    envdir=out/'environment'; (envdir/'learning/rules').mkdir(parents=True)
+    harness={k:cfg[k] for k in ('agent','tools') if k in cfg}
+    (envdir/'config.toml').write_text('\n'.join(f'{k} = {builder.toml(v)}' for k,v in harness.items())+'\n')
+    for path in sorted(args.rules.glob('*.toml')): shutil.copyfile(path,envdir/'learning/rules'/path.name)
+    if not list((envdir/'learning/rules').glob('*.learned.toml')): raise ValueError('no frozen learned rules')
     conditions=dict(at=datetime.now(timezone.utc).isoformat(),inputs=snapshot_inputs(binary,home),server=server,proposal=proposal,
                     runtime_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip())
     write_json(out/'conditions.json',conditions)
-    shutil.copyfile(MANIFEST,out/'manifest.toml')
+    (out/'manifest.toml').write_text(MANIFEST.read_text()+f'\n[environment]\ndir = {json.dumps(str(envdir))}\n')
     env={k:v for k,v in os.environ.items() if not k.startswith('MECHA_')}
     env['MECHA_HOME']=str(home)
     def invoke(argv, log):
         with (out/log).open('w') as f: subprocess.run([str(binary),'exp',*argv],cwd=ROOT,env=env,stdout=f,stderr=subprocess.STDOUT,check=True)
-    invoke(['new',str(MANIFEST)],'new.log')
+    invoke(['new',str(out/'manifest.toml')],'new.log')
     invoke(['run',NAME,'--dry-run'],'plan.log')
     invoke(['run',NAME],'run.log')
     invoke(['export',NAME],'export.json')

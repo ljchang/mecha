@@ -1,0 +1,11 @@
+# The trial graph's own config, handed to its server as MECHA_GRAPH_CONFIG so
+# it never reads the operator's (~/.mecha-graph/config.toml carries the owner's
+# sources and their tokens). Embedding settings only, and no [sources].
+#
+# These must name the embedding server this machine runs on :8081
+# (docs/LLAMA-SERVER.md): ask it, `curl -s localhost:8081/props`, for the
+# alias, and match embed_dims to the vectors it returns. A mismatch fails the
+# store build rather than serving a graph whose search cannot run.
+[llm]
+embed_model = "harrier-oss-v1-0.6b"
+embed_dims = 1024
