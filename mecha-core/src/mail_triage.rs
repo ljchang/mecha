@@ -923,14 +923,19 @@ fn is_zero(n: &u32) -> bool {
 }
 
 /// Whether a classification failure is the provider's rather than the
-/// thread's: a transport failure, a server error, overload or a rate limit
-/// (`ProviderError::transient`, the same line failover draws). Those fail
-/// every thread alike, so they must not pace any one of them (see
-/// [`retry_after`]). Anything else — a refusal, a verdict that will not
-/// parse, a request the provider rejects — is the thread's.
+/// thread's. Those fail every thread in a sweep alike, so they must not pace
+/// any one of them (see [`retry_after`]): a transport failure, a server
+/// error, overload or a rate limit (`ProviderError::transient`) — and an
+/// expired key or a lapsed account (`Auth`, `Billing`), which `transient`
+/// leaves out only because re-sending the request is pointless, not because
+/// the thread is at fault. Counting those would put the whole mailbox on the
+/// day-long wait within a few ticks of a key expiring. Anything else — a
+/// refusal, a verdict that will not parse, a request the provider rejects
+/// (`Invalid`), a body that will not fit (`ContextOverflow`) — is the thread's.
 pub fn failure_is_outage(e: &anyhow::Error) -> bool {
-    e.downcast_ref::<crate::provider::retry::ProviderError>()
-        .is_some_and(crate::provider::retry::ProviderError::transient)
+    use crate::provider::retry::ProviderError;
+    e.downcast_ref::<ProviderError>()
+        .is_some_and(|c| c.transient() || matches!(c, ProviderError::Auth | ProviderError::Billing))
 }
 
 /// How long a thread that has failed `attempts` times in a row waits before
@@ -2288,6 +2293,10 @@ mod tests {
         assert!(failure_is_outage(&wrapped(ProviderError::Transport)));
         assert!(failure_is_outage(&wrapped(ProviderError::ServerError)));
         assert!(failure_is_outage(&wrapped(ProviderError::Overloaded)));
+        // A key or an account fails every thread alike, too.
+        assert!(failure_is_outage(&wrapped(ProviderError::Auth)));
+        assert!(failure_is_outage(&wrapped(ProviderError::Billing)));
+        assert!(!failure_is_outage(&wrapped(ProviderError::ContextOverflow)));
         assert!(!failure_is_outage(&wrapped(ProviderError::Invalid(
             "bad".into()
         ))));
