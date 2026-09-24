@@ -155,6 +155,27 @@ export function splitSender(from) {
  */
 export const LENIENT = new Set(['archive', 'spam']);
 
+/**
+ * The verb a batch key stands for when a modifier is still held, or null.
+ *
+ * A selection is built with a modifier — ⇧ for a range, ⌘/Ctrl to toggle —
+ * and the hand is often still on it when the action key goes down. ⇧E, ⇧D and
+ * ⇧T are bound to nothing else, so they always mean e, d and t. ⌘/Ctrl-E and
+ * -D mean archive and dismiss only while more than one thread is selected:
+ * elsewhere they stay the browser's (find-selection, bookmark). ⌘T is not
+ * offered — browsers keep it for a new tab, and a page never sees it.
+ */
+export function batchKeyVerb(key, { shift = false, meta = false, ctrl = false, alt = false } = {}, selectedCount = 0) {
+  if (alt || typeof key !== 'string' || key.length !== 1) return null;
+  const k = key.toLowerCase();
+  if (meta || ctrl) {
+    if (shift || selectedCount < 2) return null;
+    return { e: 'archive', d: 'dismiss' }[k] ?? null;
+  }
+  if (shift && key !== k) return { e: 'archive', d: 'dismiss', t: 'task' }[k] ?? null;
+  return null;
+}
+
 /** Whether `verb` can act on `row`, given the keys the store holds. */
 export const verbWorksOn = (verb, row, storeKeys) => LENIENT.has(verb) || storeKeys.has(keyOf(row));
 

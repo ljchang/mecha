@@ -3,7 +3,7 @@
   import { SvelteSet } from 'svelte/reactivity';
   import { apiFetch as fetch } from './api.js';
   import { parseThread } from './mail-thread.js';
-  import { LANES, laneOf, sortRows, acceptVerb, keyOf, senderOf, sweepGroups, ageOf, tickedGroups } from './mail-desk.js';
+  import { LANES, laneOf, sortRows, acceptVerb, keyOf, senderOf, sweepGroups, ageOf, tickedGroups, batchKeyVerb } from './mail-desk.js';
   import { MailQueue, HOLD_MS, VERB_PAST, VERB_LABEL, UNSEEN } from './mail-queue.svelte.js';
   import MailBody from './MailBody.svelte';
 
@@ -384,6 +384,16 @@
     // modified key the desk takes, and only outside a text field.
     if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key ?? '').toLowerCase() === 'a' && !typing && mode === 'list' && !composing && !asking && !help) {
       selectAll();
+      e.preventDefault();
+      return;
+    }
+    // The batch keys with the selecting modifier still held — ⇧ from a range,
+    // ⌘/Ctrl from a toggle (`batchKeyVerb`). Only where a triage key would
+    // act at all: never in a text field, a bar, the help or the sweep.
+    const held = batchKeyVerb(e.key, { shift: e.shiftKey, meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey }, selected.size);
+    if (held && !typing && mode === 'list' && !composing && !asking && !help && !confirmSpam) {
+      gPrefix = 0; // as the plain path: `g` then ⇧E archives, and leaves no `g` armed
+      run(held);
       e.preventDefault();
       return;
     }
@@ -797,7 +807,8 @@
           <p><kbd>⏎</kbd> accept the suggestion</p>
           <p><kbd>e</kbd> archive · <kbd>d</kbd> dismiss</p>
           <p><kbd>p</kbd> park until someone replies</p>
-          <p><kbd>t</kbd> make a task on the board</p></div>
+          <p><kbd>t</kbd> make a task on the board</p>
+          <p><kbd>⇧E</kbd> <kbd>⇧D</kbd> <kbd>⇧T</kbd> also work — and <kbd>⌘E</kbd> <kbd>⌘D</kbd> once more than one thread is selected</p></div>
         <div><div class="kicker">Draft (to the outbox)</div>
           <p><kbd>r</kbd> reply · <kbd>s</kbd> add to calendar</p>
           <p><kbd>⇧S</kbd> add to calendar, with instructions</p>
