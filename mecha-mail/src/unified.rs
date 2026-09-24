@@ -254,21 +254,7 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
         .clone()
         .or_else(|| file.calendar_default().map(String::from));
     let account = |rule: &str| plain(rule);
-    // The relative vocabulary, stated where the parameter is and not only in
-    // the tool's prose. A model reading the schema for `time_min` should be
-    // able to see that `today` is legal there — and that reaching for it is
-    // *preferred* over computing a date, which is the behaviour change this
-    // is for: the server holds a clock and the model does not.
-    let relative_time = |what: &str| -> Value {
-        json!({
-            "type": "string",
-            "description": format!(
-                "{what} An RFC 3339 timestamp, or one of `now`, `today`, `tomorrow`, \
-                 `yesterday`, `+3d`, `-1d` — resolved against the mailbox timezone by this \
-                 server. Prefer a relative term over working out the date yourself."
-            ),
-        })
-    };
+    let relative_time = crate::time::relative_time_schema;
     // An **item** op declares a default exactly when there is only one account
     // it could mean, and never otherwise: `Mode::Item` consults no default at
     // all, it errors until one is named — so `only_account` alone, with no
@@ -1897,6 +1883,16 @@ mod tests {
             .collect();
         let coded: Vec<&str> = TriageAction::ALL.iter().map(|a| a.name()).collect();
         assert_eq!(schema, coded);
+    }
+
+    /// The relative vocabulary is on this server's window parameters, not
+    /// only the unified server's — see `time::assert_window_schema`.
+    #[test]
+    fn window_parameters_name_the_relative_vocabulary() {
+        crate::time::assert_window_schema(
+            "mecha-mail",
+            &tool_definitions(&names(&["a"]), &conf(Some("a"), None, None)),
+        );
     }
 
     /// Tagging must never become a provider operation: it costs an OAuth

@@ -320,15 +320,80 @@ pub fn window(
     wz: Option<Tz>,
     now: DateTime<Utc>,
 ) -> Result<(String, String), String> {
+    // The default in the same zone as every resolved term: the same
+    // instant, but the most common call answering in UTC was the one format
+    // `window_note` exists to spare the reader.
+    let stamp = |at: DateTime<Utc>| match wz {
+        Some(tz) => at.with_timezone(&tz).to_rfc3339(),
+        None => at.to_rfc3339(),
+    };
     let time_min = match time_min {
         Some(raw) => resolve_window(&raw, wz, now, Bound::Start)?,
-        None => now.to_rfc3339(),
+        None => stamp(now),
     };
     let time_max = match time_max {
         Some(raw) => resolve_window(&raw, wz, now, Bound::End)?,
-        None => (now + Duration::days(7)).to_rfc3339(),
+        None => stamp(now + Duration::days(7)),
     };
     Ok((time_min, time_max))
+}
+
+/// The schema for a `time_min` / `time_max` parameter, shared by every server
+/// that resolves one through [`window`].
+///
+/// The relative vocabulary is stated where the parameter is and not only in
+/// the tool's prose: a model reading the schema for `time_min` should be able
+/// to see that `today` is legal there — and that reaching for it is
+/// *preferred* over computing a date, because the server holds a clock and
+/// the model does not.
+pub fn relative_time_schema(what: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "string",
+        "description": format!(
+            "{what} An RFC 3339 timestamp, or one of `now`, `today`, `tomorrow`, \
+             `yesterday`, `+3d`, `-1d` — resolved against the mailbox timezone by this \
+             server. Prefer a relative term over working out the date yourself."
+        ),
+    })
+}
+
+/// Every window-taking tool in `tools` carries [`relative_time_schema`] on
+/// both bounds — and at least one such tool exists, so a server that lost its
+/// calendar tools cannot pass by having nothing to check.
+///
+/// A test helper because the guarantee spans three files: the vocabulary
+/// once sat on the unified server's schema only, while all three resolved it
+/// through [`window`], and nothing noticed (#243's review, #267's).
+#[cfg(test)]
+pub(crate) fn assert_window_schema(server: &str, tools: &[serde_json::Value]) {
+    let windowed: Vec<_> = tools
+        .iter()
+        .filter(|t| {
+            matches!(
+                t["name"].as_str(),
+                Some("calendar_list_events" | "calendar_freebusy")
+            )
+        })
+        .collect();
+    assert!(
+        !windowed.is_empty(),
+        "{server}: no window-taking tool to check"
+    );
+    for tool in windowed {
+        let props = &tool["inputSchema"]["properties"];
+        assert_eq!(
+            props["time_min"],
+            relative_time_schema("Start of the window."),
+            "{server}: {}'s time_min",
+            tool["name"]
+        );
+        assert_eq!(
+            props["time_max"],
+            relative_time_schema("End of the window."),
+            "{server}: {}'s time_max",
+            tool["name"]
+        );
+    }
 }
 
 /// A weekday/date pair computed from the source instant, in the configured
@@ -491,8 +556,12 @@ mod tests {
     fn every_server_shares_one_window() {
         let now = at("2026-09-14T02:37:12Z");
         let (min, max) = window(None, None, eastern(), now).unwrap();
-        assert_eq!(min, now.to_rfc3339());
-        assert_eq!(max, (now + Duration::days(7)).to_rfc3339());
+        // The same instants, in the zone every resolved term answers in.
+        assert_eq!(min, "2026-09-13T22:37:12-04:00");
+        assert_eq!(max, "2026-09-20T22:37:12-04:00");
+        assert_eq!(min.parse::<DateTime<Utc>>().unwrap(), now);
+        let (min, _) = window(None, None, None, now).unwrap();
+        assert_eq!(min, now.to_rfc3339(), "no zone: UTC, as labelled");
 
         let (min, max) =
             window(Some("today".into()), Some("today".into()), eastern(), now).unwrap();
