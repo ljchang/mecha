@@ -45,6 +45,7 @@ untrusted_input = true
 tools = [
   "mail__mail_send",
   "mail__mail_reply",
+  "mail__calendar_create_event",
   "docs__docs_create",
   "docs__docs_append",
   "docs__docs_replace",

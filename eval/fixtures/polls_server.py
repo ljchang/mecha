@@ -17,14 +17,17 @@ State lives in `$MECHA_FIXTURE_DIR` (or `--store`), seeded once by `mecha exp`:
 
 A seeded meeting poll's candidates carry `days_ahead` and `hour`, resolved
 against the clock the first time the store is read, like the mail fixture's.
-`poll_create` reads its spec from the path given, relative to the trial's
-workspace (the server's working directory), as the real tool does.
+`poll_create` reads its spec (TOML, so Python 3.11+) and any `roster` CSV
+(`name,email` rows, joined with `participants`) from the paths given, relative
+to the trial's workspace (the server's working directory), as the real tool
+does.
 
 Fail-closed: no store directory is a refusal to start. Newline-delimited
 JSON-RPC, stdlib only, fictional cast only — this file is public.
 """
 
 import argparse
+import csv
 import datetime as dt
 import json
 import os
@@ -33,7 +36,7 @@ import tempfile
 
 try:
     import tomllib
-except ImportError:  # Python < 3.11: the spec is read as opaque text
+except ImportError:  # Python < 3.11 cannot read a spec: refused at start
     tomllib = None
 
 
@@ -109,6 +112,17 @@ def participants_of(args):
     raw = args.get("participants") or []
     if not isinstance(raw, list):
         raise ToolError("`participants` must be a list of {name, email}")
+    raw = list(raw)
+    roster = str_arg(args, "roster")
+    if roster:
+        if not os.path.isfile(roster):
+            raise ToolError(f"no roster at `{roster}` — write it as `name,email` rows first")
+        with open(roster, newline="") as f:
+            for row in csv.reader(f):
+                cells = [c.strip() for c in row]
+                # A header row (or any row without an address) is not a person.
+                if len(cells) >= 2 and "@" in cells[1]:
+                    raw.append({"name": cells[0], "email": cells[1]})
     out = []
     for p in raw:
         if not isinstance(p, dict) or not p.get("name") or not p.get("email"):
@@ -129,20 +143,21 @@ def poll_create(store, args):
     if not os.path.isfile(spec):
         raise ToolError(f"no spec at `{spec}` — write the questions as a TOML spec with a file tool first")
     text = open(spec).read()
-    questions = []
-    if tomllib is not None:
-        try:
-            parsed = tomllib.loads(text)
-        except tomllib.TOMLDecodeError as e:
-            raise ToolError(f"the spec is not valid TOML: {e}")
-        for q in parsed.get("question", parsed.get("questions", [])):
-            questions.append({"id": q.get("id"), "kind": q.get("kind", "choice"), "prompt": q.get("prompt") or q.get("text"), "options": q.get("options", [])})
-        if not questions:
-            raise ToolError("the spec has no questions: give each one a [[question]] table")
+    try:
+        parsed = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        raise ToolError(f"the spec is not valid TOML: {e}")
+    questions = [
+        {"id": q.get("id"), "kind": q.get("kind", "choice"), "prompt": q.get("prompt") or q.get("text"), "options": q.get("options", [])}
+        for q in parsed.get("question", parsed.get("questions", []))
+    ]
+    if not questions:
+        raise ToolError("the spec has no questions: give each one a [[question]] table")
+    participants = participants_of(args)
     store.data["polls"][poll_id] = {
         "kind": "general",
-        "title": (tomllib.loads(text).get("title") if tomllib else None) or poll_id,
-        "participants": participants_of(args),
+        "title": parsed.get("title") or poll_id,
+        "participants": participants,
         "questions": questions,
         "answers": [],
         "closed": False,
@@ -344,6 +359,9 @@ def main():
     root = opts.store or os.environ.get("MECHA_FIXTURE_DIR")
     if not root or not os.path.isdir(root):
         print("polls_server.py: no store directory — `mecha exp` creates and seeds it", file=sys.stderr)
+        return 2
+    if tomllib is None:
+        print("polls_server.py: needs Python 3.11+ (tomllib) to read a poll spec", file=sys.stderr)
         return 2
     serve(Store(root))
     return 0
