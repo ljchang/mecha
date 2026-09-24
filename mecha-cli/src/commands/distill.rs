@@ -224,8 +224,16 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     .with_requests(
         match mecha_core::frontdoor::Frontdoor::open_existing_default() {
             None => Vec::new(),
-            Some(frontdoor) => match frontdoor.records() {
-                Ok(records) => records.into_iter().map(|r| r.seq).collect(),
+            Some(frontdoor) => match frontdoor.records_counting() {
+                Ok((records, skipped)) => {
+                    if skipped > 0 {
+                        eprintln!(
+                            "mecha: {skipped} front-door record(s) could not be read — runs \
+                             anchored to them cross as the kind word `request` this run"
+                        );
+                    }
+                    records.into_iter().map(|r| r.seq).collect()
+                }
                 Err(e) => {
                     eprintln!(
                         "mecha: could not read the front-door store for goal pointers — \

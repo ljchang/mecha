@@ -711,6 +711,11 @@ impl GoalTrack {
         let Some(anchor) = self.anchor() else {
             return;
         };
+        // An anchor no plan can name (a trigger, a request) has no drift to
+        // measure: every named goal would read as a changed pointer.
+        if !anchor.a_plan_can_name() {
+            return;
+        }
         self.plan_writes.fetch_add(1, Relaxed);
         match crate::goal::drift_of(&anchor, serves) {
             crate::goal::Drift::Same => {}
@@ -2283,5 +2288,19 @@ mod jail_tests {
         // A fresh track carrying the anchor shares no counters with it.
         let carried = GoalTrack::carrying(track.anchor());
         assert_eq!(carried.snapshot().1, 0);
+    }
+
+    /// A trigger- or request-anchored run's plan cannot name its anchor, so
+    /// its plan writes are not judged: on the old tree every named goal here
+    /// counted as a changed pointer (review of #292).
+    #[test]
+    fn a_plan_under_an_anchor_no_plan_can_name_is_not_judged() {
+        use crate::goal::GoalRef;
+        let track = GoalTrack::carrying(Some(GoalRef::Trigger("morning".into())));
+        track.note_plan(Some(&GoalRef::Charter("protect-my-attention".into())));
+        track.note_plan(None);
+        let (anchor, writes, drifted, unnamed) = track.snapshot();
+        assert_eq!(anchor, Some(GoalRef::Trigger("morning".into())));
+        assert_eq!((writes, drifted, unnamed), (0, 0, 0));
     }
 }

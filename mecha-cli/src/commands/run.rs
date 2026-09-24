@@ -60,14 +60,6 @@ pub struct Args {
     pub images: Vec<std::path::PathBuf>,
 }
 
-/// Set the conversation's goal anchor and persist it **before** the run, so
-/// the pointer is on the record even if the run fails — `run --goal` (the
-/// owner's explicit confirmation) and the structural seeds
-/// (`APPRAISAL-WIRING-DESIGN.md` S1: a delegated task's `task:<id>`, a
-/// trigger's `trigger:<name>`, a front-door request's `request:<seq>`),
-/// each a pointer the harness holds from a store the owner authored or
-/// configured, never one a model named. `None` leaves the conversation as it
-/// was, which is how a resumed session keeps the anchor it saved.
 /// Parse a structural pointer the harness spelled from a store id, saying so
 /// when it does not parse rather than leaving the run silently un-anchored —
 /// the empty-anchor symptom S1 exists to fix, with nothing saying why. A
@@ -86,6 +78,14 @@ pub(crate) fn structural_pointer(spelled: String) -> Option<mecha_core::goal::Go
     }
 }
 
+/// Set the conversation's goal anchor and persist it **before** the run, so
+/// the pointer is on the record even if the run fails — `run --goal` (the
+/// owner's explicit confirmation) and the structural seeds
+/// (`APPRAISAL-WIRING-DESIGN.md` S1: a delegated task's `task:<id>`, a
+/// trigger's `trigger:<name>`, a front-door request's `request:<seq>`),
+/// each a pointer the harness holds from a store the owner authored or
+/// configured, never one a model named. `None` leaves the conversation as it
+/// was, which is how a resumed session keeps the anchor it saved.
 pub(crate) fn seed_goal_anchor(
     convo: &mut mecha_core::agent::Conversation,
     goal: Option<mecha_core::goal::GoalRef>,
@@ -516,6 +516,19 @@ mod tests {
     /// front-door request's pointer as much as a task's. On the old tree
     /// the `trigger:` and `request:` pointers did not parse, so every seed
     /// below would have been `None` and nothing would have been written.
+    /// The helper's failure path is the one it exists for: a pointer that
+    /// does not parse yields no anchor (and says so on stderr) rather than
+    /// a guess; one that parses round-trips.
+    #[test]
+    fn a_structural_pointer_that_does_not_parse_yields_no_anchor() {
+        assert!(structural_pointer("task:has a space".into()).is_none());
+        assert!(structural_pointer("epic:7".into()).is_none());
+        assert_eq!(
+            structural_pointer("trigger:morning".into()).map(|g| g.to_string()),
+            Some("trigger:morning".to_string())
+        );
+    }
+
     #[test]
     fn a_structural_seed_is_recorded_before_the_run_and_read_back_on_resume() {
         let dir = std::env::temp_dir().join(format!("mecha-seed-anchor-{}", std::process::id()));
