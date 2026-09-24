@@ -482,9 +482,12 @@ pub fn upsert_args(
     // about its own run (a sign, an agency, a channel, a pointer) rather
     // than prose a model or a fetched page could have authored, so there is
     // nothing here for an injection to have written — with one exception,
-    // redacted below. They give the graph's review queue a salience ordering — a
-    // session with a signed negative error is worth a human's attention
-    // sooner than one that went cleanly.
+    // redacted below. They were meant to give the graph's review queue a
+    // salience ordering — a session with a signed negative error is worth a
+    // human's attention sooner than one that went cleanly — but mecha-graph
+    // has no reader of `affect` or the goal errors (checked 2026-09-24), so
+    // today they are recorded and unread; `APPRAISAL-WIRING-DESIGN.md` L5
+    // says where salience gets built instead.
     if let Some((a, known)) = appraisal {
         meta["affect"] = serde_json::to_value(a.label).unwrap_or(Value::Null);
         // §17.7 item 8 — the goal *pointer* crosses, the sentence stays
