@@ -436,8 +436,10 @@ Everything here that reaches a third party **stages rather than sends**: a
 reply, a forward, and a `schedule` whose note names people to invite. A
 `schedule` with no invitees reaches nobody. It makes a private hold on your
 own calendar (`calendar_hold`), which needs the allow rule above to run
-without asking. Without that rule the hold is refused, and the run falls back
-to a staged `calendar_create_event` with no invitees. That is today's
+without asking. Without that rule the hold is refused, and the run is told to
+fall back to a staged `calendar_create_event` with no invitees. That's an
+instruction to the model, not a mechanism: a run that doesn't follow it adds
+nothing and leaves the thread alone. That is today's
 behaviour: an ordinary, visible event you release from the outbox, not a
 private hold.
 `reply` is the one action here that needs an agent rather than a tool call — a
