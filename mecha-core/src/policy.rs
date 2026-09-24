@@ -2015,7 +2015,7 @@ justification = "never recursive-force from a model-supplied path"
         );
     }
 
-    /// The exact spelling `website/docs/features/documents.md` tells an
+    /// The exact spelling `website/docs/features/tools/documents.md` tells an
     /// operator to paste for a private write (`PROVENANCE-DESIGN.md` §2). An
     /// MCP call carries no `command`, so the rule is judged tool-level — and
     /// an `allow` still has to carry an example that splits, or the start

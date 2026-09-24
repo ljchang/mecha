@@ -59,12 +59,15 @@ approver, like `docs_trash`, and not with the outbox.
 This is the existing rule, "the class is earned by a schema with no
 destination", applied to writes. It needs **no mecha-core change**, because an
 MCP tool without `openWorldHint` is already `Egress::None` (`mcp.rs`, the
-`tools/list` mapping).
+`tools/list` mapping). That is exactly why an absent key is not good enough:
+a private write says `openWorldHint: false` **outright**, so the label reads
+as a decision and not an omission, and `mcp::assert_private_writes` refuses
+the omission.
 
 | Tool | Today | After | Why nobody else can read it |
 |---|---|---|---|
-| `docs_create`, `sheets_create`, `slides_create` | `openWorldHint`, staged | no `openWorldHint`, approver | New file in the owner's Drive under `drive.file`, and there is no sharing verb (`there_is_no_sharing_or_permissions_verb`) |
-| `calendar_hold` (new) | — | no `openWorldHint`, approver | Primary calendar only, no `attendees` or `calendar_id` field, created with private visibility |
+| `docs_create`, `sheets_create`, `slides_create` | `openWorldHint`, staged | `openWorldHint: false`, approver | New file in the owner's Drive under `drive.file`, and there is no sharing verb (`there_is_no_sharing_or_permissions_verb`) |
+| `calendar_hold` (new) | — | `openWorldHint: false`, approver | Primary calendar only, no `attendees` or `calendar_id` field, created with private visibility |
 | `calendar_create_event` | staged | **unchanged** | `attendees` sends invitations, and `calendar_id` can name a shared calendar |
 | `docs_append`, `docs_replace`, `sheets_write` | staged | **unchanged** | Can target a picked document that is already shared |
 | `calendar_update_event` | staged | **unchanged** | Outlook notifies attendees on update, and it can target anyone's event |
