@@ -88,15 +88,10 @@ confirmed delivery as evidence of completion.
 
 ## A reply is shown with the message it replies to
 
-"A message's reviewable object is the message" was half a rule. A staged
-`mail_reply` carries a body and a `thread_id` — and a `thread_id` addresses the
-provider, not the reviewer, so the queue was asking people to approve a letter
-without showing them the letter it answers. Deciding *is this the right reply?*
-without the original is approving unread, in the one way this whole surface
-exists to prevent.
-
-`show` and the review modal now print it underneath the draft, labelled for
-what it is:
+A staged `mail_reply` carries a body and a `thread_id`, and a `thread_id` means
+nothing to a reviewer — deciding *is this the right reply?* without the
+original is approving unread. So `show`, the review modal and `edit` print the
+message being answered underneath the draft, labelled for what it is:
 
 ```
 replying to — third-party content via mail__mail_get_thread (thread_id),
@@ -106,29 +101,12 @@ not part of your draft:
   …
 ```
 
-Four things about that are deliberate:
-
-- **It comes from the transcript, never a live re-fetch.** A reviewer needs the
-  bytes the model drafted *from*, not today's version of the thread — a reply
-  judged against different text than it was written against is the same
-  wrong-bytes review that [the recorded jail](#an-item-records-the-jail-it-was-drafted-under)
-  exists to stop, arriving through the other door. It also keeps `show` a store
-  read: no network, no MCP startup, no token refresh behind a display.
-- **Nothing new is recorded to make it work.** The drafting run read the thread
-  before it wrote the reply, the item already names its session, and the
-  transcript already holds the result. The link was always there; nothing
-  followed it.
-- **The join knows nothing about mail.** It matches the staged call's
-  identifying arguments — the string arguments that are neither addressing nor
-  prose — by key *and* value against earlier tool calls in the same session.
-  `thread_id == thread_id` finds the read; `account == account` would have
-  matched every call in the session, which is why header fields are excluded
-  rather than merely ranked lower. No tool name is special-cased, so a Slack
-  thread or a document read joins the same way.
-- **It is labelled as third-party content, above the draft's own taint
-  warning.** What it shows is by definition somebody else's words, quoted into
-  a review surface; a reviewer reading it should be told that before they read
-  it, not after.
+It is the text the drafting run actually read, taken from that run's
+transcript — never a live re-fetch — so you judge the reply against the bytes it
+was written from, not today's version of the thread, and `show` needs no network.
+It is labelled as somebody else's words, above the draft's own taint warning,
+because that is what it is. The same applies to any tool that reads a thread or
+document before replying to it, not only mail.
 
 No block means no source was recovered — for a `mail_send` that answers
 nothing there is none to find, and for a reply whose session has been pruned it
@@ -196,15 +174,14 @@ ever give about how you want things written, and overwriting the baseline
 would destroy it.
 
 `edit` therefore rewrites `args` only. A parse failure keeps the original
-rather than staging arguments you did not mean, and the lock is taken only
-*after* `$EDITOR` exits.
+rather than staging arguments you did not mean.
 
 ## Staging is sink-agnostic; reviewing is not
 
-The outbox generalised to a second kind of outbound action — publishing a
-rendered bundle to the public surface — **with no change to `outbox.rs` at
-all**, which was the design goal. Every one of its *review* affordances broke,
-because all three assume the staged thing is prose someone wrote.
+The outbox also stages a second kind of outbound action — publishing a
+rendered bundle to the public surface — with the same staging, but review has
+to differ, because every message affordance assumes the staged thing is prose
+someone wrote.
 
 So an item carries a kind, set at staging from `[outbox] publish_tools`:
 
@@ -225,43 +202,19 @@ The kind is **config's to declare, never the tool's.** Anything unnamed is a
 
 ## An item records the jail it was drafted under
 
-A staged call is a *deferred* tool call, and a tool call means nothing apart
-from its workspace. The drafting run said `{"bundle": "site"}` inside
-`~/.mecha/work/<producer>/`; `send` runs in another process, hours later, from
-wherever the reviewer is standing.
+A staged call is a *deferred* tool call: the drafting run said
+`{"bundle": "site"}` inside its own work directory, and release happens in
+another process, hours later, from wherever you are standing. So each item
+records the workspace its tool would have executed in, and `approve` — and
+`show` — resolve paths there. A relative path therefore means the same file at
+review and at release as it did at drafting; without that, a same-named
+directory beside you would publish the wrong bytes with no error anywhere.
 
-So the item records a workspace and the release rebuilds the tool surface rooted
-there. An absolute path fails loudly in the wrong place; **a relative one is
-worse**, because a same-named directory beside the reviewer publishes the wrong
-bytes with no error anywhere.
-
-**Which workspace is recorded is the subtle part: the tool's own fixed root when
-it has one, and the run's otherwise.** A tool with a fixed root — an MCP server
-spawned once for many runs — resolved its paths against that root *at draft time
-too*, so a release that re-rooted it anywhere else would execute a different call
-than the one the model made. Note that this is not always the narrower of the
-two. It was a live bug in exactly the direction that surprises: [Slack](/docs/features/interfaces/slack)
-threads are jailed to subdirectories of the producer root the MCP servers run
-in, staging recorded the *thread* jail, and every Slack publish therefore failed
-containment on release, forever.
-
-The mirror case is the residual hazard worth knowing: an artifact authored with
-the **built-in** fs tools lives in the thread's jail, so handing its relative
-name to a fixed-root server names a different place. Give that server the
-absolute path.
-
-**`show` resolves through the recorded jail too, not only `send`.** The display
-forgot the jail long after the executor learned it, which reported a draft's
-source file as gone — and, in the symmetric case, would have printed and offered
-to open a same-named file beside the reviewer as though it were the draft's.
-A reviewer reading one file while approving another is the failure this whole
-surface exists to prevent, so every surface that touches a staged path resolves
-it the same way.
-
-A batch release builds one surface per distinct workspace, lazily, so the
-ordinary nine-replies-from-one-run case still starts the MCP servers exactly
-once. An item staged before the field existed releases against the reviewer's
-workspace, which is what it always did.
+One case to know: an artifact written with the **built-in** file tools inside a
+[Slack](/docs/features/interfaces/slack) thread lives in that thread's
+workspace, while an MCP server that serves many runs has its own fixed root. Hand
+such a server the artifact's **absolute** path, or it will look in a different
+place.
 
 ## Subagents, and eval
 
@@ -289,17 +242,10 @@ gets ignored.
 
 ## Storage
 
-The store follows the learning store's rules: one pretty-printed JSON file per
-item, so `$EDITOR` and `git diff` work on it; temp-sibling-and-rename for
-every rewrite, so a reader never sees a half-written file; and an advisory
-`flock` for read-modify-write paths, taken before reading the state acted on
-and **never held across `$EDITOR`**.
-
-**Staging takes no lock at all.** A fresh item is a fresh file with a unique
-id, so there is no state to race on — and the agent loop must never block on a
-human's review session. `send` holds the lock across execution instead, so two
-concurrent sends of the same item cannot both pass the pending check and
-double-fire.
+One pretty-printed JSON file per item, so `$EDITOR` and `git diff` work on it.
+Every rewrite is atomic, so nothing ever reads a half-written item; staging
+never waits on a review you have open; and two concurrent `approve`s of the same
+item cannot both send it.
 
 ## Where to go next
 

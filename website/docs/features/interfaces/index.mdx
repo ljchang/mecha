@@ -340,29 +340,14 @@ This is the distinction the interfaces exist to express.
 
 ### Cancel stops the run and keeps what it has
 
-`RunContext::cancel` holds a `CancellationToken`. The loop checks it at the top
-of every turn, and mid-turn a `tokio::select!` races the provider future
-against the token. Losing that race **drops the provider future**, which is
-what aborts the in-flight HTTP request — cancellation in Rust is a dropped
-future; there is nothing else to abort.
+Cancelling stops the run at the next safe point — a turn boundary, or the
+model call itself — and keeps what it has: the partial answer the model had
+written and what the prompt cost so far. Tools are never interrupted
+mid-call. A cancellable run always streams, because without a stream there
+is no partial answer to keep.
 
-Because the future is dropped, the accumulated text has to live outside it. It
-does: the partial answer and the usage so far are held in `Arc<Mutex<...>>`
-alongside the stream, so a cancelled turn keeps what the model had written and
-what the prompt cost. That is why **a cancellable run always streams**. Without
-a stream there is no partial answer to keep, and `RunContext::cancel` is opt-in
-rather than always-on for exactly that reason — a batch worker nobody can
-interrupt should not silently switch transports.
-
-Tools are never interrupted mid-call. Cancellation stops the run at the next
-safe point: a turn boundary, or the model call itself. The run ends with
-`StopCause::Interrupted` and the partial text as its answer.
-
-In `run` and `chat`, Ctrl-C is wired to this by `run_interruptible`. The signal
-is watched in a separate task rather than selected against the run, because
-selecting would drop the *run* future and throw away the very partial answer
-cancellation exists to preserve. The first Ctrl-C cancels; a second is left to
-the default handler, so a wedged run is still killable.
+In `run` and `chat`, the first Ctrl-C cancels; a second is left to the
+default handler, so a wedged run is still killable.
 
 ```
 ^C — stopping after the current step. Ctrl-C again to force.
@@ -373,24 +358,15 @@ it takes two presses to quit.
 
 ### Steer redirects a run without stopping it
 
-`RunContext::queued_input` is a queue the caller can push into while a run is in
-flight. The loop drains it at the top of each turn and folds the text into the
-message that already carries the tool results, so the model reads "here is what
-your tools returned, and also: actually, focus on X" as one user turn and keeps
-working.
-
-That placement is not a detail. Between an assistant's `tool_use` and its
-results there is no valid slot for a user message — the API requires a result
-for every call, and two user messages in a row are invalid — so the first legal
-opening is the results message itself. Taking it is what makes steering
-mid-run possible at all, rather than merely queued until the run ends.
-
-The queue is drained, so a steer is delivered exactly once; leaving it in place
-would re-send it on every subsequent turn. Text queued before any tool call
-becomes its own user message, which is the only legal shape available there.
+Text you send while a run is in flight is delivered to the model at its next
+turn, together with the results of the tools it just called, so it reads
+"here is what your tools returned, and also: actually, focus on X" and keeps
+working. Each steer is delivered exactly once.
 
 The cost is latency: a steer waits for the in-flight model call and the tools it
-asked for. Interrupting sooner would mean discarding a turn already paid for.
+asked for, because the API has no legal place for a new user message between a
+tool call and its result — and interrupting sooner would mean discarding a turn
+already paid for.
 
 ### Why the REPL cannot steer, and the other two can
 
@@ -399,28 +375,22 @@ than between runs. That is the entire criterion, and it sorts the front ends
 cleanly.
 
 A readline REPL owns stdin only *between* runs. Reading it while a run streams
-would need a second reader on the same file descriptor, and whichever reader is
-blocked when the run ends steals the user's next prompt line. `mecha-cli`'s
-`interrupt` module says so in a comment where the consumer would otherwise go:
-the queue has no consumer there on purpose.
+would need a second reader on the same terminal, and whichever reader is
+waiting when the run ends steals your next prompt line — so `chat` does not
+try.
 
 The TUI has one event loop owning the terminal for the whole session, with a
 persistent input area, so a line submitted mid-run has somewhere unambiguous to
-go. In `submit`, shell escapes (`!git status`) and slash commands are handled
-*before* steering — a `/clear` typed mid-run is far more likely to be a mistake
-than an instruction for the model, and sending it as steering would put a slash
-command into the transcript. Anything else, while a run exists, goes into that
-run's queue.
+go. Shell escapes (`!git status`) and slash commands are still handled at the
+terminal rather than sent as steering — a `/clear` typed mid-run is far more
+likely to be a mistake than an instruction for the model. Anything else, while
+a run exists, steers it.
 
 The web surface qualifies for the same reason by a different route: the page's
-input box is not competing with anything for a file descriptor, and the agent
-is in the serve process holding that conversation's `RunContext`. So text
-posted while a run is in flight lands in that run's queue, and the browser is
-steering on exactly the mechanism the TUI uses.
-
-This is a property of the front end, not of the loop. Any caller that owns its
-own input can call `RunContext::with_queued_input` and get the same behaviour —
-which is also why [`/remote-control`](#the-remote-control-is-that-owner-from-somewhere-else)
+input box competes with nothing, and the agent lives in the serve process
+holding that conversation's run. Text posted while a run is in flight steers it
+exactly as the TUI does — which is also why
+[`/remote-control`](#the-remote-control-is-that-owner-from-somewhere-else)
 works by *reaching* an owner rather than becoming a second one.
 
 ### The remote control is that owner, from somewhere else
@@ -499,20 +469,8 @@ An item is `ok` only when the run was not exhausted, the model did not refuse,
 and no tool arguments were malformed. `mecha batch` exits non-zero when anything
 failed.
 
-## As a library
+## Underneath
 
-Every front end is thin — the web surface included, which is why one browser tab and one terminal can watch the same run. `Agent::run` uses the agent's own `RunContext`;
-`Agent::run_in` takes a caller's. One agent — one provider connection, one
-cached prefix — can serve concurrent runs jailed to different directories under
-different permissions.
-
-```rust
-let cx = agent.context().as_ref().clone()
-    .with_cancel(token.clone())
-    .with_queued_input(Arc::clone(&queue));
-
-let outcome = agent.run_in(&cx, &mut convo, Some(events_tx)).await?;
-```
-
-See [Providers](/docs/features/models/providers) for what sits underneath, and
+Every front end is thin — the web surface included, which is why one browser
+tab and one terminal can watch the same run. See [Providers](/docs/features/models/providers) for what sits underneath, and
 [Tools and MCP](/docs/features/tools) for what the loop dispatches to.

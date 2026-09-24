@@ -145,22 +145,6 @@ mid-lecture is the outcome this file exists to prevent.**
 
 Each of those degrades to *more* visible, never less.
 
-## The two routes' own CSP
-
-The `/slides/addin` routes declare their own Content-Security-Policy instead of
-inheriting the gate's form policy, and it is worth knowing why the exception
-exists rather than discovering it:
-
-- `office.js` loads from Microsoft's CDN — self-hosting it is unsupported — so
-  `script-src` names `appsforoffice.microsoft.com`.
-- The chart is this origin's own projector page in a frame, so `frame-src`
-  allows `'self'`.
-- `frame-ancestors` is omitted deliberately: the page exists to be embedded by
-  PowerPoint's webview.
-
-The header middleware only fills in what a handler left unset, so declaring here
-*is* the override. Nowhere else on the gate gets either allowance.
-
 ## Known costs, accepted
 
 - **HTTPS only**, and desktop PowerPoint only — no web-slideshow persistence, no
@@ -168,6 +152,10 @@ The header middleware only fills in what a handler left unset, so declaring here
 - **WebView2** on Windows.
 - Clicks inside the add-in region don't advance the slide.
 - Office.js regressions arrive on Microsoft's schedule.
+- The add-in pages load `office.js` from Microsoft's CDN — self-hosting it is
+  unsupported — so they are the one place on the gate that runs a third-party
+  script, and they allow being embedded in another page, which is how
+  PowerPoint shows them. No other gate page gets either allowance.
 
 All tolerable for a self-sideloaded tool with a browser tab as the fallback that
 cannot break.

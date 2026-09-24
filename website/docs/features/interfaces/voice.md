@@ -107,13 +107,8 @@ you are still finding out whether you like it.
 **The call pane holds call controls only** — mute, and end the call. Voice and
 rate were preferences wearing call-control clothes, so they live on
 [the settings page](/docs/features/interfaces/web#settings-and-what-a-browser-may-write)
-now, reading and writing the voice stack's own preference store. A choice made
-there is the choice the next call opens with.
-
-That move fixed a real bug it found: the chat page kept a second copy of the
-preference machinery under a *different* storage key while claiming to share the
-first, so a voice picked mid-call was saved where nothing else looked. One store
-now, with a one-time read of the legacy key.
+now, reading and writing the voice stack's own preference store — the one store
+every page reads. A choice made there is the choice the next call opens with.
 
 **Voice.** Six generated references plus Chatterbox's own built-in voice, and
 any you have cloned. Chatterbox conditions on a few seconds of reference audio,

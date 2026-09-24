@@ -75,16 +75,9 @@ context_window = 32768
 `StreamEvent`s as they arrive — `TextDelta`, `ThinkingDelta`, `ToolUseStart`,
 and `Usage` — while still returning the accumulated response.
 
-`Usage` is emitted *as it arrives*, cumulatively, rather than only at the end.
-Cancelling a run drops the provider future and with it the final frame carrying
-the totals; without incremental usage, a run interrupted on its first turn
-would report zero tokens, and the tokens were spent. Input is usually known
-from the very first frame, which is the expensive half when a cached prefix is
-in play.
-
-Both backends split SSE frames on **bytes**, not decoded text: a network chunk
-can end mid-character, and only a complete frame is guaranteed to be complete
-UTF-8.
+`Usage` is emitted *as it arrives*, cumulatively, rather than only at the end,
+so a run you cancel mid-turn still reports the tokens it spent — including the
+input, usually the expensive half, which is known from the first frame.
 
 ## The Anthropic backend
 
@@ -199,24 +192,16 @@ that would reject an unknown one. No provider name is tested anywhere.
 It is never treated as *output*. A turn that only reasoned is nudged and
 continued, not accepted as an answer.
 
-**This was the cause of the empty turns.** Because the history sent back used
-to strip the reasoning, the model was shown turn after turn of itself
-apparently calling tools without thinking, and it obliged. Same server, same
-template, same prompt, varying only whether the history carried reasoning:
-**6 of 6 empty turns without it, 0 of 6 with it.** Replaying the prefixes that
-went quiet showed what the silence actually was — in one case 120 characters of
-"reasoning" that were nothing but an unparsed tool call, emitted before the
-model closed its thinking tag, so the server filed the entire turn as
-reasoning. 120 characters is nowhere near any limit, which rules out every
-mitigation aimed at "the model reasons too long".
+Carrying it back matters: a history stripped of reasoning shows the model
+turn after turn of itself calling tools without thinking, and a local model
+imitates that into turns that come back empty.
 
-**An empty turn now leaves a record.** When a response produces no output but
-carried reasoning, the backend logs a warn-level marker: how many characters
-of reasoning there were, whether they contain anything that looks like a tool
-call, the finish reason, and the tail — with the whole trace at
-`MECHA_LOG=debug`. Such a turn appears in no transcript at all (the loop nudges
-and continues before pushing the message, and holds no session to record it
-into), so this log is the only durable evidence that it happened.
+**An empty turn leaves a record in the log, and only there.** When a response
+produces no output but carried reasoning, the backend logs a warning with how
+much reasoning there was, whether it looks like a tool call, the finish reason
+and its tail; `MECHA_LOG=debug` adds the whole trace. Such a turn is nudged
+and continued before it reaches any transcript, so if you are chasing silent
+turns, keep the stderr.
 
 **And a run that ends having only reasoned hands that reasoning back**,
 labelled as deliberation rather than a committed answer, instead of reporting
@@ -235,14 +220,8 @@ non-streaming responses cannot be malformed.)
 
 ## Failure classification and retry
 
-Any non-2xx used to bail straight out of both providers, which meant one
-transient 429, a 529 overload, or a stale pooled connection killed the run —
-and in `batch` or `eval`, killed it in the middle of a fan-out that had already
-spent real time. Observed reproducibly: llama-server closes idle keep-alive
-connections, reqwest reuses one, and the write dies with "connection closed
-before message completed" on a request that would have succeeded one retry
-later.
-
+A transient 429, an overload, or a dropped keep-alive connection should not
+kill a run — least of all midway through a `batch` or `eval` fan-out — so
 `provider/retry.rs` classifies failures into eight classes and applies a policy
 per class.
 
@@ -285,21 +264,11 @@ retry_after_cap_secs = 60
 ### A retry must never duplicate work
 
 This is the invariant the whole design rests on. Retrying is safe exactly when
-nothing of the attempt has been acted on — no tool has run, no delta has
-reached the front end. So retries live at the request level, before the
-response body is consumed:
-
-```rust
-/// Send a request until it succeeds, the policy gives up, or the class is
-/// terminal. Retries cover the send and the status line only — the response
-/// body is never consumed here, so nothing of a retried attempt can have
-/// been shown or acted on.
-pub async fn send_with_retry(...) -> Result<reqwest::Response, RequestFailure>
-```
-
-Once a streaming body is being read, a failure is not retried at all.
-Mid-stream errors therefore carry **no `ProviderError` in their chain** — which
-is also what tells the failover wrapper it must not re-issue them.
+nothing of the attempt has been acted on — no tool has run, no text has reached
+your screen. So only the send and the status line are retried; once an answer
+has started streaming, a failure ends the turn rather than re-asking, and it is
+never handed to a [fallback](#fallbacks) either, which would replay half an
+answer as a whole one.
 
 ## Fallbacks
 

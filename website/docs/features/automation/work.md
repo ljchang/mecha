@@ -48,12 +48,11 @@ separate problems — which is usually the sign that the shape is right.
 | **A durable artifact** | An unattended run has somewhere to leave something you can open later. |
 | **`notify`** | It has a designated place to write instead of inventing one. |
 
-The jail one is the load-bearing fix. A trigger with no explicit workspace used
-to fall through to `std::env::current_dir()`, and the shipped systemd unit sets
-`WorkingDirectory=%h`. So an unattended run holding filesystem tools was jailed
-to `$HOME` — which *contains* `~/.mecha/`: the mail OAuth tokens, every session
-transcript, the learning store. The shipped `morning` trigger escaped only by
-accident of its `mail__*` allowlist.
+The jail one is the load-bearing fix. An unattended run holding filesystem
+tools needs a jail that holds nothing sensitive, and the obvious alternative —
+whatever directory the scheduler was started in, usually `$HOME` — *contains*
+`~/.mecha/`: the mail OAuth tokens, every session transcript, the learning
+store.
 
 :::note[Note the direction of the check]
 A workspace *inside* the mecha home is fine, and is now the default. What
@@ -62,10 +61,9 @@ A workspace *inside* the mecha home is fine, and is now the default. What
 model](/docs/features/security#a-jail-has-to-be-rooted-somewhere-harmless).
 :::
 
-And `notify` used to end with `mkdir -p ~/.mecha/briefings && cat > …`: a shell
-redirect into a directory it created on the way past, outside every path jail,
-so nothing could ever read it back. That existed only because there was no
-designated place to write.
+And `notify` runs in the same directory, so a trigger that wants to keep its
+answer writes it there — a relative path — where the next run can read it back,
+instead of inventing a directory outside every path jail.
 
 ## Where a trigger's workspace comes from
 

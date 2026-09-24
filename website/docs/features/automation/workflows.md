@@ -30,6 +30,8 @@ mecha workflow show FLOW_ID
 ```
 
 Commitments are entered by you. Messages are not automatically treated as promises.
+Neither [appraisal](/docs/features/appraisal) nor its anticipated-guilt sensor reads
+workflow commitments or checks yet; they are tracked here, not scored there.
 Times must include a timezone or UTC offset.
 
 ## Check the result
@@ -172,14 +174,8 @@ Cases with `expect.judge` require an explicit `[judge]` provider and model in an
 experiment manifest. The judge receives recorded tool evidence, and a failed or
 unavailable judge fails its check. These checks supplement artifact checks;
 model verdicts still need review. The assistant manifest uses the local Qwen
-model as its judge, so its verdict is not independent of the model under test.
-Run the opt-in calibration before interpreting its scores:
-
-```bash
-MECHA_GROUNDING_ENDPOINT=http://127.0.0.1:8080 \
-MECHA_GROUNDING_MODEL=qwen3.6-35b-a3b \
-cargo test -p mecha-core --test grounding_judge -- --ignored --nocapture
-```
+model as its judge, so its verdict is not independent of the model under test:
+read a judged score beside the transcripts it graded, not on its own.
 
 
 The assistant's date prompt includes a computed local calendar reference from

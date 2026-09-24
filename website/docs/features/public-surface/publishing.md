@@ -82,12 +82,9 @@ door](/docs/features/public-surface/frontdoor).
 
 ## Staging is sink-agnostic; reviewing is not
 
-The outbox generalised to a second kind of outbound action **without a line
-changing in `outbox.rs`**, which was the design goal. Every one of its
-*review* affordances broke, because all three assume the staged thing is prose
-somebody wrote.
-
-So an item carries an `OutboxKind`, set at staging from `[outbox]
+A publish is staged exactly like a message, but it cannot be reviewed like
+one: every message affordance assumes the staged thing is prose somebody
+wrote. So each item carries a kind, set at staging from `[outbox]
 publish_tools`:
 
 | | `message` | `publish` |
@@ -108,9 +105,8 @@ is not editing the draft.
 :::warning[The load-bearing one]
 The writing miner **excludes publishes**. A `writing` reflection becomes a rule
 in every future run's cached prefix, so mining `diff(args_before, args)` of a
-changed *path* would teach voice rules from bookkeeping. That is exactly the
-`"Blocked by a hook:"` mistake in a new costume — machine state read as a human
-correction — and it has a test named on it for the same reason that one does.
+changed *path* would teach voice rules from bookkeeping — machine state read
+as a human correction.
 :::
 
 ## The kind is config's to declare, never the tool's
@@ -124,29 +120,15 @@ A name in `publish_tools` that is not also in `tools` **warns on every start**,
 like a routed name that matches nothing — it means the tool executes unstaged
 while the config reads as though it were under review.
 
-Items written before the field existed load as `message`, which is what they
-were.
-
 ## An item records the jail it was drafted under
 
-A staged call is a *deferred* tool call, and a tool call means nothing apart
-from its workspace. The drafting run said `{"bundle": "site"}` inside
-`~/.mecha/work/<producer>/`; `mecha outbox send` runs in another process, hours
-later, from wherever the reviewer happens to be standing.
-
-So the item records its workspace, and the release rebuilds the tool surface
-rooted there. An absolute path would fail loudly in the wrong place; **a
-relative one is worse**, because a same-named directory beside the reviewer
-publishes the wrong bytes with no error anywhere.
-
-It is also the stricter jail of the two — the agent's, not the human's — which
-is the one [the interlock](/docs/features/security) reasoned about when it let
-the call through.
-
-A batch release builds one surface per distinct workspace, lazily, so the
-ordinary nine-replies-from-one-run case still starts the MCP servers exactly
-once. Items staged before the field existed release against the reviewer's
-workspace, which is what they always did.
+The drafting run said `{"bundle": "site"}` inside its own work directory;
+`mecha outbox approve` runs later, from wherever you happen to be standing. The
+item records the workspace the tool would have executed in, and both `show` and
+the release resolve paths there — so a relative bundle path names the same
+bytes you reviewed, never a same-named directory beside you. The details, and
+the one case where you should hand a server an absolute path, are on
+[the outbox page](/docs/features/security/outbox#an-item-records-the-jail-it-was-drafted-under).
 
 ## Published is not generated
 

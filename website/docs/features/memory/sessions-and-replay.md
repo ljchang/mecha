@@ -63,10 +63,8 @@ title.
 the normal result of a killed process. A file whose first record is not a
 header is not a session mecha wrote, and is skipped.
 
-Listing goes through `peek_meta`, which reads only the first line. That keeps
-`mecha sessions list` at O(number of sessions) rather than O(total transcript
-bytes); with reflect-on-close recording every interaction, a full parse re-read
-the whole store to print one line per file.
+`mecha sessions list` reads only each file's first line, so listing stays fast
+however large the store grows.
 
 ### recall: the record is searchable
 
@@ -135,56 +133,26 @@ mecha sessions health --days 30
 
 ### The config record
 
-Selected fields are shown here; the record also includes tool-surface fingerprints,
-active harness levers, and the workspace and surface used to match learned rules.
+A `config` record says what the run was configured with, so it can be replayed:
+the mecha version, provider and model, workspace, the resolved system prompt
+text, the tool list in registry order (and a fingerprint of the tool
+definitions), effort, thinking, the temperature and seed actually sent,
+`max_tokens`, every budget and ceiling, the compaction settings, the permission
+mode, the trifecta policy, the sandbox, the active harness levers, and the
+workspace and surface used to match learned rules.
 
-```rust
-pub struct RunConfig {
-    pub mecha_version: String,
-    pub provider: String,
-    pub model: String,
-    pub workspace: PathBuf,
-    pub system_prompt: Option<String>,   // the resolved text, not a path
-    pub tools: Vec<String>,              // in registry order
-    pub effort: Option<Effort>,
-    pub temperature: Option<f64>,        // what was actually sent
-    pub seed: Option<u64>,
-    pub thinking: bool,
-    pub cache_prompt: bool,
-    pub max_tokens: u32,
-    pub max_turns: u32,
-    pub max_output_tokens: Option<u64>,
-    pub max_cost_usd: Option<f64>,
-    pub compact_at_tokens: Option<u64>,
-    pub compact_keep_recent: usize,
-    pub permission_mode: PermissionMode,
-    pub trifecta: TrifectaPolicy,
-    pub sandbox: String,
-    pub sandbox_network: bool,
-}
-```
+The rule behind that list: **anything that shapes the request or constrains the
+run is a confound if it is not recorded.** A replay that did not know whether
+compaction was on, which permission mode denied a call, or which sandbox
+narrowed `shell` would compare two incomparable runs and report a model
+regression.
 
-The rule behind that field list: **anything that shapes the request or
-constrains the run is a confound if it is not recorded.** Not theoretical —
-compaction on versus off measured 1/5 against 5/5 on the same task, so a replay
-that did not know whether compaction was enabled would compare two incomparable
-runs and report a model regression. A denied call redirects the whole
-trajectory, so replaying a read-only session under `--yes` compares nothing.
-And `shell` declares *narrower* capabilities when confined, with the interlock
-believing them, so the same prompt can be refused under one sandbox and allowed
-under another.
-
-The system prompt is stored in full rather than hashed. A hash tells you only
-*that* something differed; the text lets a replay rebuild the request. It is no
-more sensitive than the transcript beside it.
-
-It is a **record per attach**, not a header field. A session resumed under
-different flags would make a header written at creation a lie about every turn
-after the first; within one process the configuration cannot change, so one
-record per attach is exactly the granularity that can differ.
-
-The sampler is recorded only as far as it is pinned. `None` means the server
-chose, and the run is not repeatable.
+The system prompt is stored in full rather than hashed, so a replay can rebuild
+the request; it is no more sensitive than the transcript beside it. A new
+config record is written each time a process attaches to the session, because a
+resumed session may run under different flags. The sampler is recorded only as
+far as it was pinned — no temperature or seed means the server chose, and the
+run is not exactly repeatable.
 
 ### The summary record
 
@@ -278,14 +246,14 @@ comparison is approximate
 
 ### Divergence
 
-```rust
-pub enum Divergence {
-    Tool      { index, expected, actual },      // a different tool entirely
-    Arguments { index, tool, expected, actual },// right tool, different arguments
-    Extra     { index, actual },                // the replay kept going
-    Missing   { index, expected },              // the replay stopped early
-}
-```
+A replay can depart from its recording in four ways:
+
+| Divergence | Meaning |
+|---|---|
+| tool | the model called a different tool entirely |
+| arguments | the right tool, with different arguments |
+| extra | the replay kept going after the recording ran out |
+| missing | the replay stopped early |
 
 The comparison preserves order **between assistant turns**. Within one recorded
 parallel batch, calls may arrive in a different order. Matching prefers the same
@@ -324,6 +292,10 @@ see a change in *what the model said*. A prose change needs the
 `eval --ab-config` arm instead.
 
 ### What replay is not
+
+**A probe's verdict is not stored.** `mecha sessions appraise --probe` replays
+from each steer and derives its verdict on demand; the transcript stays the
+record, and rerunning the probe recomputes it.
 
 **Replay against a non-greedy provider is pass@k-shaped, not
 exact-match-shaped.** A local server's sampler is outside this process's

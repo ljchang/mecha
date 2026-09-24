@@ -112,44 +112,37 @@ Three decisions there:
   and a `list` that refuses to print because a cross-check store is absent would
   be worse than one printing slightly stale states.
 
-## Five decisions, each a bug if undone
+## What crosses the boundary
 
-**The boundary is a function, not a rule.** `Record::for_privileged_run`
-returns the non-prose values plus the extraction, and there is deliberately no
-argument that makes it return the prose. A caller that wants the original is a
-human running `frontdoor show`. If this were "remember not to include the free
-text", it would hold until the first person in a hurry.
+**There is no way to hand a privileged run the prose.** The brief a triage run
+gets is built by one function with no option to include it; the original is for
+a human running `frontdoor show`. A rule that said "remember not to include the
+free text" would hold until the first person in a hurry.
 
-What does cross is narrow on purpose. `reply_to` is named on its own — the
-address a stranger chose *and* proved by clicking — rather than left among the
-fields. Attachments cross as **measurements** only: field, size, digest and
-the content type mecha derived, never the stranger's filename, the path, or
-the bytes. And the extraction's dates cross only as quoted text of 3 to 48
-characters that is literally in the prose (`Record::DATE_MAX_CHARS`): the
-extractor was asked for dates "as written", and that is checked rather than
-trusted. A date it invented, or a span too short to be a date or too long to be
-one — an injection copied verbatim would pass a containment check — is not
-handed over; it is shown with its reason in `frontdoor show` and the TUI, as a
-label on the record rather than a block.
+What does cross is narrow on purpose:
 
-**Which fields are prose is not decided here.** The drain writes `free_text`
-onto the record from the manifest, where free-text-ness is derived from the
-field kind. Guessing at it on this side — by looking for long strings, say —
-would be exactly the mistake of letting the caller be wrong about which values
-are dangerous.
+- **`reply_to`**, named on its own — the address the stranger chose *and*
+  proved by clicking — so a run never has to hunt for where the answer goes.
+- **The typed fields** the origin validated. Which fields count as prose comes
+  from the request type's manifest (the field kind), never from a guess on this
+  side.
+- **The extraction** — topic, claimed urgency, institution, dates — but not the
+  extractor's own free-text reading, because a paraphrase of an injection is the
+  injection rearranged.
+- **Dates only as quoted text of 3 to 48 characters that literally appear in
+  the prose.** The extractor was asked for dates "as written", and that is
+  checked rather than trusted. A date it invented — or a span too short or too
+  long to be one, since an injection copied verbatim would pass a containment
+  check — is held back and shown with its reason in `frontdoor show` and the
+  TUI, as a label to read rather than a block.
+- **Attachments as measurements only**: field, size, digest and the content type
+  mecha derived — never the stranger's filename, the path, or the bytes.
 
 **An extraction failure is not a silent pass-through.** The record goes to
-`extraction_failed` and waits for a human. It never falls back to handing the
-prose on, which is the one behaviour that would make the whole layer
-decorative.
-
-**The extractor gets no tools and no conversation.** Not "is told not to use
-tools" — is issued a request with an empty tool list and a single user message.
-There is nothing for an injected instruction to reach.
-
-**Reasoning comes first in the output, the typed fields after.** Constrained
-decoding degrades reasoning when the answer precedes the thinking, and this is
-the one call in the system whose output is trusted downstream by construction.
+`extraction_failed` and waits for you; it never falls back to handing the prose
+on. And the extractor itself is issued a request with no tools and a single
+message — not told to avoid tools, but given none — so there is nothing for an
+injected instruction to reach.
 
 ## States
 
@@ -180,13 +173,6 @@ itself and the booking it withdraws.
 
 A record that did not validate against the manifest at drain time is never
 extracted and never reaches a run.
-
-## The seam is a directory of JSON
-
-Records are deserialised structurally rather than through a shared type: the
-boundary between the public surface's client and mecha is a directory of files,
-not a crate dependency. Unknown fields are preserved on write, because the
-writer on the other side may know things this one does not.
 
 ## Where to go next
 

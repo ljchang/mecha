@@ -6,9 +6,11 @@
 //
 // Two sources, in order:
 //
-//   1. A sibling checkout at ../../../personalized_knowledge_graph — what a
-//      developer with both repos open has. Its shipped docs are byte-equal
-//      to the public repo's (the export gate guarantees it).
+//   1. A sibling checkout of the public repo at ../../../mecha-graph — what
+//      a developer with both repos open has, and the same repository the
+//      fallback below fetches from. (Not the private personalized_knowledge_graph
+//      checkout: it stopped receiving docs on 2026-09-02, when the code moved
+//      to the public repo, and a build reading it publishes stale pages.)
 //   2. raw.githubusercontent.com from the public repo, for CI and for anyone
 //      who only cloned mecha.
 //
@@ -24,7 +26,7 @@ import {fileURLToPath} from 'node:url';
 
 const RAW = 'https://raw.githubusercontent.com/ljchang/mecha-graph/main';
 const here = dirname(fileURLToPath(import.meta.url));
-const sibling = resolve(here, '../../../personalized_knowledge_graph');
+const sibling = resolve(here, '../../../mecha-graph');
 const outDir = resolve(here, '../docs/features/memory/graph');
 
 const FILES = [
