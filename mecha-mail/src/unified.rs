@@ -2414,6 +2414,25 @@ mod tests {
                 .dispatch("calendar_delete_event", &json!({"event_id": "e"}))
                 .await,
         );
+
+        // And through the trait `serve` actually calls, onto the wire. The
+        // trait's default `call_result` wraps `call`, which drops the claim,
+        // so without `MailTools`' override the feature would switch itself
+        // off with every other test still green (review of #290).
+        let wire = crate::mcp::result_json(
+            &crate::mcp::ToolProvider::call_result(
+                &tools,
+                "mail_send",
+                &json!({"to": "a@x", "subject": "s", "body_markdown": "b"}),
+            )
+            .await
+            .unwrap(),
+        );
+        assert_eq!(
+            wire["_meta"][crate::mcp::DISPATCHED_KEY],
+            json!(false),
+            "{wire}"
+        );
     }
 
     #[test]

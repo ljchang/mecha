@@ -1206,6 +1206,18 @@ fn load_mcp_file(path: &Path) -> Result<Vec<mecha_core::config::McpServerConfig>
         .map(|mut server| {
             server.command = resolve(server.command);
             server.args = server.args.into_iter().map(resolve).collect();
+            // A case set travels with a checkout, so it may declare servers
+            // but never vouch for one — the rule `merge_file` applies to a
+            // project layer. Eval forces the outbox off, so the claim has no
+            // reader here today; the door is closed anyway (review of #290).
+            if std::mem::take(&mut server.trust_result_claims) {
+                eprintln!(
+                    "note: `{}` in {} sets trust_result_claims, which is ignored — \
+                     only the global config may vouch for a server",
+                    server.name,
+                    path.display()
+                );
+            }
             server
         })
         .collect())
@@ -1999,6 +2011,22 @@ mod tests {
         assert_eq!(servers[0].command, "python3");
         assert_eq!(servers[0].args[1], "--persona");
         assert!(servers[0].capabilities.untrusted_input);
+    }
+
+    /// A case set is a file that travels with a checkout: it may declare a
+    /// server, never vouch for one (review of #290).
+    #[test]
+    fn an_mcp_file_cannot_vouch_for_a_servers_claims() {
+        let scratch = Scratch::new("vouch");
+        let toml_path = scratch.0.join("mcp.toml");
+        std::fs::write(
+            &toml_path,
+            "[[mcp]]\nname = \"mail\"\ncommand = \"python3\"\ntrust_result_claims = true\n",
+        )
+        .unwrap();
+        let servers = load_mcp_file(&toml_path).unwrap();
+        assert_eq!(servers.len(), 1, "the server itself still loads");
+        assert!(!servers[0].trust_result_claims);
     }
 
     #[test]
