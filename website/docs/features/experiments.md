@@ -316,9 +316,9 @@ the verdict is *propose*, and says so.
 `judge` gives a verdict. `mecha exp report <name>` shows what's behind it:
 
 ```
-arm               done failed pending        pass  pass^k  pass@k  turns  tokens in/out    wall tools (err)  jobs
-rules-off-12         8      0       0     6/8 75%     6/8     6/8    6.1    7.3k / 6.4k   13.0s      55 (0)     1
-rules-on-12          8      0       0     6/8 75%     6/8     6/8    5.9    7.3k / 6.4k   12.7s      53 (0)     1
+arm               done failed pending running unknown        pass  pass^k  pass@k  turns  tokens in/out    wall tools (err)  jobs
+rules-off-12         8      0       0       0       0     6/8 75%     6/8     6/8    6.1    7.3k / 6.4k   13.0s      55 (0)     1
+rules-on-12          8      0       0       0       0     6/8 75%     6/8     6/8    5.9    7.3k / 6.4k   12.7s      53 (0)     1
 
 task                         rules-off-12  rules-on-12
 latest-evidence                       0/1          0/1
@@ -326,7 +326,9 @@ linked-packet-11                      0/1          0/1
 …
 ```
 
-- **Per arm:** trials by status; the pass rate; **pass^k** (tasks that passed
+- **Per arm:** trials by status (pending, running, done, failed, and
+  unknown, a status this build can't read, which a lifetime stops at); the
+  pass rate; **pass^k** (tasks that passed
   on every run, across seeds and repetitions) and **pass@k** (on at least
   one); mean turns and wall time; total tokens and tool calls; and the
   `--jobs` limits it ran under.

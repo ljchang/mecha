@@ -51,14 +51,20 @@ pub struct ArmReport {
     pub graded: usize,
     pub passed: usize,
     pub pass_rate: Option<f64>,
-    /// Over done rows that carry run stats.
+    /// Done rows that carry run stats, the denominator of `mean_turns` and
+    /// of every total below it (a row whose session could not be read has
+    /// none).
+    pub with_stats: usize,
+    /// Over `with_stats` rows.
     pub mean_turns: Option<f64>,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub tool_calls: u64,
     pub tool_errors: u64,
     pub compactions: u64,
-    /// Seconds from start to finish, over rows that record both.
+    /// Done rows with both timestamps, the denominator of `mean_wall_secs`.
+    pub with_wall: usize,
+    /// Seconds from start to finish, over `with_wall` rows.
     pub mean_wall_secs: Option<f64>,
     /// Tasks with at least one graded run, and of those: passed on every run
     /// (pass^k) and on at least one (pass@k). Across seeds and repetitions.
@@ -173,6 +179,8 @@ pub fn build(manifest: &Manifest, trials: &[Trial]) -> Report {
             }
         }
         a.pass_rate = rate(a.passed, a.graded);
+        a.with_stats = with_stats;
+        a.with_wall = with_wall;
         a.mean_turns = (with_stats > 0).then(|| turns as f64 / with_stats as f64);
         a.mean_wall_secs = (with_wall > 0).then(|| wall / with_wall as f64);
         let mine: Vec<&Cell> = cells
@@ -337,6 +345,7 @@ rationale = "r"
         assert_eq!((a.done, a.graded, a.passed), (4, 4, 3));
         assert_eq!(a.pass_rate, Some(0.75));
         assert_eq!(a.mean_turns, Some(3.0));
+        assert_eq!((a.with_stats, a.with_wall), (4, 4));
         assert_eq!(a.tool_calls, 8);
         assert_eq!(a.mean_wall_secs, Some(10.0));
         assert_eq!((a.tasks_graded, a.tasks_always, a.tasks_ever), (2, 1, 2));
@@ -377,6 +386,10 @@ rationale = "r"
         let b = &r.arms[1];
         assert_eq!(b.pass_rate, None);
         assert_eq!(b.mean_turns, None);
+        assert_eq!(
+            b.with_stats, 0,
+            "totals over no stats are nothing, not zero"
+        );
         assert_eq!(b.mean_wall_secs, None);
         assert!(b.jobs_seen.is_empty());
     }

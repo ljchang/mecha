@@ -2509,17 +2509,35 @@ fn render_report(r: &mecha_core::exp_report::Report, skipped: usize) -> String {
             format!("{}/{} {}", a.passed, a.graded, pct(a.pass_rate)),
             format!("{}/{}", a.tasks_always, a.tasks_graded),
             format!("{}/{}", a.tasks_ever, a.tasks_graded),
-            num(a.mean_turns, ""),
-            format!("{} / {}", k(a.input_tokens), k(a.output_tokens)),
-            num(a.mean_wall_secs, "s"),
-            format!("{} ({})", a.tool_calls, a.tool_errors),
+            // A mean over fewer rows than finished says so, and totals over
+            // no stats are a dash: nothing happened, not nothing went wrong.
+            format!(
+                "{}{}",
+                num(a.mean_turns, ""),
+                if a.with_stats < a.done { "*" } else { "" }
+            ),
+            if a.with_stats == 0 {
+                "—".to_string()
+            } else {
+                format!("{} / {}", k(a.input_tokens), k(a.output_tokens))
+            },
+            format!(
+                "{}{}",
+                num(a.mean_wall_secs, "s"),
+                if a.with_wall < a.done { "*" } else { "" }
+            ),
+            if a.with_stats == 0 {
+                "—".to_string()
+            } else {
+                format!("{} ({})", a.tool_calls, a.tool_errors)
+            },
             jobs,
         ];
         let _ = writeln!(out, "{}", line(&row));
     }
     let _ = writeln!(
         out,
-        "  pass^k: tasks passed on every run; pass@k: on at least one (across seeds and repetitions).\n  turns and wall are means per done trial; tokens and tool calls are totals"
+        "  pass^k: tasks passed on every run; pass@k: on at least one (across seeds and repetitions).\n  turns and wall are means over done trials with a readable record (* = over fewer than done; --json has the counts);\n  tokens and tool calls are totals over the same trials"
     );
     if r.arms.iter().any(|a| a.off_manifest) {
         let _ = writeln!(

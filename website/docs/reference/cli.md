@@ -305,6 +305,7 @@ mecha exp run assistant-follow-through --dry-run
 mecha exp run assistant-follow-through --limit 3
 mecha exp status assistant-follow-through
 mecha exp judge assistant-follow-through --json
+mecha exp report assistant-follow-through     # per arm, per task, pass^k, cost; --json
 mecha exp export assistant-follow-through
 ```
 
