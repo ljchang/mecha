@@ -64,6 +64,18 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      # The suite again, with the smoke-test mark CLAUDE.md tells a developer
+      # to export: no unit test may read it. Every session a test writes is
+      # otherwise relabelled `test` and hidden from the readers under test,
+      # which failed 28 tests on a developer's machine while CI, which never
+      # exports it, stayed green. One leg is enough: the read is not
+      # platform-shaped. Built already, so this costs only the run.
+      - name: Test with MECHA_SESSION_KIND=test exported
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'stable'
+        env:
+          MECHA_SESSION_KIND: test
+        run: cargo test --workspace --locked
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
