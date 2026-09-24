@@ -1,0 +1,20 @@
+# Polls and booking: a meeting poll for named people, booking the time everyone can make and closing the poll, a request form written as a spec.
+#
+# A baseline measurement in the assistant environment (eval/envs/assistant):
+# one arm, no control, three seeds. Staged writes (docs, poll creation, the
+# reply to whoever asked) are graded by the arguments of the staged call.
+# Run from the checkout root.
+name = "suite-polls"
+split_seed = 1
+seeds = [1, 2, 3]
+
+[environment]
+dir = "eval/envs/assistant"
+
+[tasks]
+cases = "eval/suites/assistant.jsonl"
+fixture = "eval/workspace"
+tags = ["polls"]
+
+[arms.full]
+preset = "full"

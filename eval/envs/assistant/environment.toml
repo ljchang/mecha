@@ -1,0 +1,4 @@
+# The assistant environment: the default lab with the owner's other surfaces
+# as fixtures — Google Docs and the factory's polls — and a colleague who
+# answers email. Only what differs lives here.
+extends = "eval/envs/default"

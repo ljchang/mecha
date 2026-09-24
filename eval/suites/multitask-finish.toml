@@ -1,0 +1,18 @@
+# Multi-step email, the next conversation: the colleague has answered, and one staged reply carries all three answers.
+#
+# A baseline measurement: one arm, no control, three seeds. Staged writes are
+# graded by the arguments of the staged call. Run from the checkout root.
+name = "suite-multitask-finish"
+split_seed = 1
+seeds = [1, 2, 3]
+
+[environment]
+dir = "eval/envs/assistant-tal-replied"
+
+[tasks]
+cases = "eval/suites/assistant.jsonl"
+fixture = "eval/workspace"
+tags = ["multitask-finish"]
+
+[arms.full]
+preset = "full"
