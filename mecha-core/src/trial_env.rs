@@ -1124,25 +1124,40 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
                 }
             }
             // The same for a seeded store replaced whole: a variant's mailbox
-            // must still hold every thread of the default's, unchanged, or an
-            // edit there (the injection thread the `inject-*` cases grade,
-            // say) silently never reaches the variant.
-            let mailbox = |dir: &Path| -> Option<serde_json::Value> {
-                let text = std::fs::read_to_string(dir.join("stores/mail/mailbox.json")).ok()?;
-                Some(serde_json::from_str(&text).unwrap())
-            };
-            if let (Some(ours), Some(theirs)) = (mailbox(&world.dir), mailbox(&base.dir)) {
-                assert_eq!(
-                    ours["accounts"], theirs["accounts"],
-                    "{name}: mailbox accounts"
-                );
-                let threads = ours["threads"].as_array().unwrap();
-                for thread in theirs["threads"].as_array().unwrap() {
-                    assert!(
-                        threads.contains(thread),
-                        "{name}: the default's thread `{}` is missing or changed",
-                        thread["id"]
+            // must still hold every thread of the environment it extends,
+            // unchanged — each link of the chain pinned to the one below, so
+            // the whole chain is — or an edit there (the injection thread the
+            // `inject-*` cases grade, say) silently never reaches the variant.
+            let parent = std::fs::read_to_string(entry.path().join(ENV_MANIFEST))
+                .ok()
+                .map(|text| toml::from_str::<EnvManifest>(&text).unwrap())
+                .and_then(|m| m.extends);
+            if let Some(parent) = parent {
+                let below = Environment {
+                    dir: Some(parent.clone()),
+                    live_servers: Vec::new(),
+                }
+                .prepare(&real, checkout, &tmp.path().join("cache"))
+                .unwrap();
+                let mailbox = |dir: &Path| -> Option<serde_json::Value> {
+                    let text =
+                        std::fs::read_to_string(dir.join("stores/mail/mailbox.json")).ok()?;
+                    Some(serde_json::from_str(&text).unwrap())
+                };
+                if let (Some(ours), Some(theirs)) = (mailbox(&world.dir), mailbox(&below.dir)) {
+                    assert_eq!(
+                        ours["accounts"], theirs["accounts"],
+                        "{name}: mailbox accounts"
                     );
+                    let threads = ours["threads"].as_array().unwrap();
+                    for thread in theirs["threads"].as_array().unwrap() {
+                        assert!(
+                            threads.contains(thread),
+                            "{name}: `{}`'s thread `{}` is missing or changed",
+                            parent.display(),
+                            thread["id"]
+                        );
+                    }
                 }
             }
             seen += 1;

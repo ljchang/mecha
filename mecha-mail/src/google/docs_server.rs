@@ -200,6 +200,10 @@ pub(crate) mod answer {
         rows.join("\n")
     }
 
+    pub fn read(title: &str, body: &str) -> String {
+        format!("# {title}\n\n{body}")
+    }
+
     pub fn created(title: &str, id: &str, with_body: bool) -> String {
         if with_body {
             format!("created {title:?} [{id}] with its body")
@@ -247,7 +251,7 @@ async fn dispatch(
             Ok(id) => client
                 .read_document(id)
                 .await
-                .map(|(title, body)| format!("# {title}\n\n{body}")),
+                .map(|(title, body)| answer::read(&title, &body)),
             Err(e) => Err(e),
         },
         "sheets_read" => match arg(args, "file_id") {
@@ -542,7 +546,21 @@ mod tests {
         };
         let served = replies[0]["result"]["tools"].as_array().unwrap();
         let real = tool_definitions();
-        assert!(!served.is_empty());
+        // Both ways for the document half: a fixture that dropped a docs
+        // tool would pass a one-way check. Sheets and slides it never serves.
+        for name in [
+            "docs_list",
+            "docs_read",
+            "docs_create",
+            "docs_append",
+            "docs_replace",
+            "docs_trash",
+        ] {
+            assert!(
+                served.iter().any(|t| t["name"] == name),
+                "the fixture no longer serves `{name}`"
+            );
+        }
         for tool in served {
             let name = tool["name"].as_str().unwrap();
             let ours = real.iter().find(|t| t["name"] == name).unwrap_or_else(|| {
@@ -579,6 +597,8 @@ mod tests {
             ),
             call("docs_list", json!({})),
             call("docs_trash", json!({"file_id": "doc-0001"})),
+            call("docs_create", json!({"title": "Solo", "body": "One line."})),
+            call("docs_read", json!({"file_id": "doc-0003"})),
         ]) else {
             return;
         };
@@ -603,5 +623,6 @@ mod tests {
             )
         );
         assert_eq!(answers[7], answer::trashed("doc-0001"));
+        assert_eq!(answers[9], answer::read("Solo", "One line."));
     }
 }

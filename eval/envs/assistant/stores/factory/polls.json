@@ -3,6 +3,7 @@
  "polls": {
   "aurora-planning": {
    "kind": "meeting",
+   "instrument": "lab",
    "title": "Aurora planning meeting",
    "duration_minutes": 60,
    "auto_book": "pick",
@@ -62,6 +63,7 @@
   },
   "rec-jordan-lee": {
    "kind": "general",
+   "instrument": "lab",
    "title": "Recommendation letter request",
    "closed": true,
    "participants": [
@@ -87,7 +89,7 @@
      "prompt": "When is the earliest deadline?",
      "options": [
       "Before Oct 15",
-      "Oct 15 \u2013 Nov 1",
+      "Oct 15 – Nov 1",
       "After Nov 1"
      ]
     },
@@ -110,7 +112,7 @@
    "answers": [
     {
      "program_type": "PhD",
-     "deadline": "Oct 15 \u2013 Nov 1",
+     "deadline": "Oct 15 – Nov 1",
      "relationship": "Both",
      "highlights": "The Halcyon preprocessing work and my SfN poster."
     }
