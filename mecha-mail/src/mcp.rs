@@ -167,49 +167,61 @@ pub(crate) fn assert_tool_surface(
 /// These tools carry no `openWorldHint`, so they execute instead of staging
 /// (`docs/PROVENANCE-DESIGN.md` §2). The input schema is therefore the whole
 /// guard: the outbox's "exact arguments, one click away" review no longer
-/// applies. The schema must name nobody, and must not point at an existing
-/// object — a `file_id` could name a document someone else can already read,
-/// and writing into that is a publish.
+/// applies. The schema must name nobody, and must not point at anything that
+/// already exists — a `file_id` could name a document someone else can
+/// already read, and a `folder_id` could put the new one in a shared folder.
+/// Writing into either is a publish.
 ///
-/// `openWorldHint: false` is spelled out rather than omitted, so the label
-/// reads as a decision and not as a forgotten annotation.
+/// Two things make this a guard rather than a checklist:
+///
+/// - **Membership is derived, not listed.** Every tool that says
+///   `openWorldHint: false` outright and is not a read is *claiming* this
+///   quadrant, and every claimant is inspected. `expected` is checked against
+///   the claimants, so a new verb cannot take the exemption without its
+///   schema being read, and a listed one cannot quietly leave it.
+/// - **The schema is judged by an allowlist.** A property is allowed only if
+///   it is one of the content fields below. A name nobody anticipated —
+///   `folder_id`, `parents`, `documentId` — fails until someone reads it and
+///   adds it here in a diff. A denylist of bad names failed open on exactly
+///   those (found in review of #274).
 #[cfg(test)]
-pub(crate) fn assert_private_writes(tools: &[Value], private: &[&str]) {
-    // Property names that address a party, or an object that may already be
-    // shared. Long entries match as substrings, so `attendee_emails` or
-    // `share_with` cannot slip past on spelling; the short ones match whole
-    // words only, or `title` would trip over "to".
-    const ADDRESSING: &[&str] = &[
-        "to",
-        "cc",
-        "bcc",
-        "recipient",
-        "attendee",
-        "invite",
-        "email",
-        "share",
-        "url",
-        "channel",
-        "calendar_id",
-        "file_id",
-        "event_id",
-        "thread_id",
-        "message_id",
+pub(crate) fn assert_private_writes(tools: &[Value], expected: &[&str]) {
+    // What a private write may say: the content of the new thing, and when.
+    // Nothing here names a party or an existing object. `account` picks which
+    // of the owner's own accounts holds the new thing, among the ones the
+    // server was configured with, so it names nobody else.
+    const CONTENT: &[&str] = &[
+        "title",
+        "body",
+        "description",
+        "location",
+        "start_time",
+        "end_time",
+        "all_day",
+        "timezone",
+        "account",
     ];
-    for name in private {
-        let tool = tools
-            .iter()
-            .find(|t| t["name"] == *name)
-            .unwrap_or_else(|| panic!("no tool {name}"));
-        let a = &tool["annotations"];
-        assert_eq!(
-            a["openWorldHint"],
-            Value::Bool(false),
-            "{name} must say openWorldHint: false outright"
-        );
-        assert_ne!(a["readOnlyHint"], Value::Bool(true), "{name} is a write");
+    let claimants: Vec<&str> = tools
+        .iter()
+        .filter(|t| {
+            let a = &t["annotations"];
+            a["openWorldHint"] == Value::Bool(false) && a["readOnlyHint"] != Value::Bool(true)
+        })
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    let mut want: Vec<&str> = expected.to_vec();
+    let mut have = claimants.clone();
+    want.sort_unstable();
+    have.sort_unstable();
+    assert_eq!(
+        have, want,
+        "the tools claiming the private-write quadrant (openWorldHint: false, not a read) \
+         must be exactly the ones this test inspects"
+    );
+    for name in claimants {
+        let tool = tools.iter().find(|t| t["name"] == name).unwrap();
         assert_ne!(
-            a["destructiveHint"],
+            tool["annotations"]["destructiveHint"],
             Value::Bool(true),
             "{name} creates; it must not destroy"
         );
@@ -217,20 +229,12 @@ pub(crate) fn assert_private_writes(tools: &[Value], private: &[&str]) {
             .as_object()
             .unwrap_or_else(|| panic!("{name} has no properties"));
         for prop in props.keys() {
-            let p = prop.to_ascii_lowercase();
-            let words: Vec<&str> = p.split(|c: char| !c.is_ascii_alphanumeric()).collect();
-            for bad in ADDRESSING {
-                let hit = if bad.len() <= 3 {
-                    words.contains(bad)
-                } else {
-                    p.contains(bad)
-                };
-                assert!(
-                    !hit,
-                    "{name}.{prop} addresses a party or an existing object; \
-                     a private write may name neither"
-                );
-            }
+            assert!(
+                CONTENT.contains(&prop.as_str()),
+                "{name}.{prop} is not a content field. A private write may name no party \
+                 and no existing object; if this one names neither, add it to CONTENT \
+                 with the reason"
+            );
         }
     }
 }
