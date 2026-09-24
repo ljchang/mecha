@@ -279,7 +279,9 @@ outcome. Phases 2 and 3 can run in parallel once phase 1 lands; phases 4 and
 | 1h | The **situation brief** assembled and recorded, not yet delivered: the goal chain (task → project → charter lines), a harness-side board read reduced to counts and pointers, per-commitment readings, local time and quiet hours, seats and runs in flight, budget | B1 |
 | 1i | A test that no sensor number, setpoint or numeric valence reaches a provider request | G4 |
 
-**Done when:** most long real runs carry an anchor; verdicts per week are
+**Done when:** at least 60% of long real runs carry an anchor (S1 sized task
+and trigger coverage at 61–67%, and the rest of the programme is sized
+against that figure); verdicts per week are
 counted by channel; readings vary run to run; a closure from any surface
 appears in `sessions appraise`; the recorded brief is complete on a sample of
 runs.
@@ -300,7 +302,7 @@ changes what a run does. Dependencies are the only ordering.
 | **1f** | **One commitment record, guilt per commitment.** `workflow::Commitment` absorbs `anticipation::Commitment`; drafts, parked questions and accepted front-door requests are commitments by construction; guilt per item = excess over patience × line rank; `anticipated_guilt` becomes a readout (the maximum), with old records still readable. | S7, R12 | 1e | each pending commitment has its own value; the homeostat readout matches the maximum; no consumer reads the scalar |
 | **1g** | **Store every counterfactual comparison.** Steer-probe and validation verdicts today, and the comparisons phases 2, 3 and 5 add, write one record each: situation keys, goal kind, call class, the arms, the deciding validator, the verdict, pointers — clean sessions with a readable tool surface only. | X1, O4 | — | a `--probe` run leaves records a second read returns; tainted sessions leave none |
 | **1h** | **The situation brief, assembled and recorded.** The goal chain, a harness-side board read reduced to counts and pointers, per-commitment readings (after 1f), local time and quiet hours, seats and runs in flight, budget — recorded on the run, delivered nowhere. Small readers for `/slots` occupancy and a voice call in progress. | B1 | 1a (1f for commitments) | on fixture runs of each kind (delegated, trigger, web) with a seeded board, charter and backlog, the recorded brief carries every field; no brief text appears in any provider request |
-| **1i** | **Numbers never reach the model as text.** Half exists: `planning_sensor_metadata_never_reaches_either_provider` (`provider/anthropic.rs`) already proves `Message::planning` metadata is byte-identical out of both encoders. The gap is a sensor number, setpoint or numeric valence arriving as *block text* — a status line, a leaked brief. Add that test beside the existing one. | G4 | — | the new test fails when a status line carrying a sensor reading is injected into a tool result or user turn; the existing metadata test still passes |
+| **1i** | **Numbers never reach the model as text.** Half exists: `planning_sensor_metadata_never_reaches_either_provider` (`provider/anthropic.rs`) already proves `Message::planning` metadata is byte-identical out of both encoders. The gap is a sensor number, setpoint or numeric valence arriving as *block text* — a status line, a leaked brief. Add that test beside the existing one. | G4 | — | the new test fails when a status line carrying a sensor reading is injected into a tool result or user turn; a second check scans a real recorded request (a fixture run through both encoders) for any sensor number, setpoint or valence, so it can fail on a leak nobody thought to inject; the existing metadata test still passes |
 
 1a, 1b, 1e, 1g and 1i can proceed in parallel; 1h follows 1a. The phase-1 readout — anchored
 share of long runs, verdicts per week by channel, per-item reading variance —
@@ -363,7 +365,7 @@ contradict.
 | 5b | The frustration ladder and the desperation brake | C5 |
 | 5c | A send whose recipient does not trace to the goal is staged; destructive calls under taint or an unconfirmed goal are prompted | G1, G3 |
 | 5d | Pre-action markers from the stored comparisons, narrowing only | X2 |
-| 5e | **Mid-run policy change**: on a harness-computed trigger (a failed check, frustration, a surprise, a budget shortfall), branch two dry continuations for a bounded horizon — reads live, writes to a per-branch overlay of the workspace (bubblewrap ≥ 0.10, R28), sends to a scratch outbox, un-stageable egress ending the branch — validate structurally, commit the winner, and write the loser into the appraisal | N2 |
+| 5e | **Mid-run policy change**: on a harness-computed trigger (a failed check, frustration, a surprise, a budget shortfall), branch two dry continuations for a bounded horizon — reads live, writes to one per-branch upper layer shared by `shell` (a bubblewrap ≥ 0.10 overlay) and the file tools (a copy-on-write layer at `ToolCtx::resolve`), R28, sends to a scratch outbox, un-stageable egress ending the branch — validate structurally, commit the winner, and write the loser into the appraisal | N2 |
 
 **Done when:** on the AgentDojo suite, attack success falls and utility
 holds; per arm, tampering and reopen rates fall; N2 beats no-branching on the
@@ -434,7 +436,7 @@ widening.
 | R5 | 5 | Desperation brake: refuse writes to a frozen check's read set; withhold `Complete` after two failures | **ruled 2026-09-24** |
 | R6 | 5 | A recipient that does not trace to a confirmed goal is staged | **ruled 2026-09-24** |
 | R13 | 5 | Stored comparisons may narrow a matching call before dispatch | **ruled 2026-09-24** |
-| R28 | 5 | Mid-run counterfactual branching is built, on bubblewrap overlays: each dry branch gets a kernel overlay of the workspace (`--tmp-overlay`), so shell and file tools alike write to the branch. Prerequisite: bubblewrap ≥ 0.10 (Ubuntu 24.04 ships 0.9.0; built from upstream and installed alongside), with the sandbox preflight checking for overlay support and refusing to branch — never falling back silently — where it is missing | **ruled 2026-09-24** (the upgrade itself is an ops step, not yet done) |
+| R28 | 5 | Mid-run counterfactual branching is built. Each dry branch gets **one upper layer over the workspace, shared by `shell` and the file tools**: bubblewrap mounts it as an overlay for `shell` (`--overlay`; needs bubblewrap ≥ 0.10 — this box's 0.9.0 has no overlay options, checked 2026-09-24 — built from upstream and installed alongside), and the file tools, which write in mecha's own process outside any bubblewrap namespace, resolve through the same directory at `ToolCtx::resolve`. Preflight refuses to branch — never falls back silently — where either half is missing. The bubblewrap upgrade covers only the `shell` half; the copy-on-write layer in the file tools is harness code (found on review of #291) | **ruled 2026-09-24**, refined on review: both halves required |
 | R3 | parked | Inferring an anchor for un-anchored runs onto a closed list of pointers | parked |
 | R8 | parked | The harness may *propose* per-region autonomy grants | parked |
 | R29 | — | Sending transcripts to a cloud model for interpretation or rollouts | not proposed; the owner's privacy decision |
@@ -1019,9 +1021,14 @@ happened last time.
 the **situation brief** (B1) at the start — assembly, no model call — and the
 agent's own **situation appraisal** at a few boundaries, as a turn in the
 run's own slot so it reuses the cached prefix (5–15 s; a separate cold pass
-would cost 20–50 s, here §2.2). Delivered on the slots per-run facts already
-use — the first user turn (`date_context`'s), the surprising call's tool
-result, the staging tool result:
+would cost 20–50 s, here §2.2). Delivered only where the harness's own voice
+already goes — the first user turn (`date_context`'s), the user slot the
+boredom notice uses mid-run (`append_user_text`), and internal results the
+harness itself produces (the `todo` result, the outbox staging result) —
+**never appended to an external tool result**: a surprise is most often an
+`http_fetch`, `web_search` or MCP result marked `.from_outside()`, and
+harness prose inside third-party content is the mixing the taint model
+exists to keep apart (found on review of #291):
 - **at the start**, in the seed: the goal and what it serves (task → project
   → charter lines, with their text), the owner's state and the system's
   (P1's described state), the competing work, and the relevant past
@@ -1446,8 +1453,19 @@ session and a replay confirming it. Keyed on situation, never on valence
 On a harness-computed trigger — a failed check, frustration rung 3, a
 surprise, a budget shortfall — two continuations branch from the current
 point for a bounded horizon, **dry**: reads run live; writes — file tools and
-shell alike — go to a per-branch kernel overlay of the workspace (R28:
-bubblewrap ≥ 0.10's `--tmp-overlay`, preflight-checked, no silent fallback);
+shell alike — go to **one per-branch upper layer** over the workspace, shared
+by both tool families (R28). The file tools write *in mecha's own process*,
+outside any bubblewrap namespace, so an overlay mounted only for `shell` would
+leave `fs_write` and `fs_edit` live on the real workspace (found on review
+of #291). So: bubblewrap ≥ 0.10 mounts the branch's upper directory as an
+overlay over the workspace for `shell` (`--overlay`, not `--tmp-overlay`, so
+the layer persists and is visible to the file tools); the file tools, in a
+branch, resolve writes into that same upper directory and reads through it
+first (a copy-on-write layer at `ToolCtx::resolve`); both families therefore
+see one branch view. Committing the winner applies its upper directory to the
+real workspace; a deletion needs overlay whiteout handling, and the first cut
+ends the branch on one rather than emulate it. Preflight-checked, no silent
+fallback;
 sends go to a scratch outbox; an egress the model chooses, or any
 irreversible act with no staging route, ends the branch. A structural
 validator picks the winner, whose workspace diff is committed; the loser is
