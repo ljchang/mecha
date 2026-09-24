@@ -607,9 +607,24 @@ fn list(all: bool, aged: bool, aged_hours: i64, surface: bool, as_json: bool) ->
     for r in &rows {
         match (&r.verdict, r.state.as_str()) {
             (_, FAILED) => println!(
-                "  !  {:<10} {:<9} classification failed — {}",
+                "  !  {:<10} {:<9} classification failed{} — {}",
                 r.account,
                 "",
+                match (r.attempts, r.next_retry()) {
+                    (0, _) => String::new(),
+                    (n, Some(due)) if due > chrono::Utc::now() => {
+                        let left = due - chrono::Utc::now();
+                        format!(
+                            " ({n} times; next try in {})",
+                            if left.num_hours() >= 1 {
+                                format!("{}h", left.num_hours())
+                            } else {
+                                format!("{}m", left.num_minutes().max(1))
+                            }
+                        )
+                    }
+                    (n, _) => format!(" ({n} times; due now)"),
+                },
                 r.error.as_deref().unwrap_or("no reason recorded")
             ),
             (Some(v), _) => {
@@ -1027,16 +1042,68 @@ async fn classify(
             force || store.needs_classifying(a, t)
         })
         .collect();
+    // Failed threads due a retry that the read no longer returns: the window
+    // is the newest N messages, and a thread on a 16–24h wait in a busy
+    // mailbox has left it by the time it is due (`due_outside_window`).
+    let seen: std::collections::HashSet<(String, String)> = rows
+        .iter()
+        .filter_map(|r| {
+            Some((
+                r["account"].as_str()?.to_string(),
+                r["thread_id"].as_str()?.to_string(),
+            ))
+        })
+        .collect();
+    let stored = store.list()?;
+    let get_thread = find_tool(&prepared.registry, "mail_get_thread");
+    // Without a way to re-read a thread there is nothing to retry it from —
+    // a missing tool is configuration, never the threads' fault.
+    let requeue = if get_thread.is_some() {
+        mecha_core::mail_triage::due_outside_window(
+            &stored,
+            &seen,
+            account,
+            chrono::Utc::now(),
+            force,
+            if force {
+                REQUEUE_FORCE_MAX
+            } else {
+                REQUEUE_MAX
+            },
+        )
+    } else {
+        Vec::new()
+    };
 
     println!(
-        "{} thread(s) read, {} to classify{}",
+        "{} thread(s) read, {} to classify{}{}",
         rows.len(),
         todo.len(),
+        if requeue.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ", {} failed thread(s) retried from the store",
+                requeue.len()
+            )
+        },
         if dry_run { " (dry run)" } else { "" }
     );
-    if todo.is_empty() || dry_run {
+    if force && requeue.len() == REQUEUE_FORCE_MAX {
+        eprintln!(
+            "--force: retrying the oldest {REQUEUE_FORCE_MAX} failures outside the window; \
+             run again for the rest, or dismiss what should not be retried"
+        );
+    }
+    if (todo.is_empty() && requeue.is_empty()) || dry_run {
         for r in &todo {
             println!("  would classify {} — {}", r["thread_id"], r["subject"]);
+        }
+        for r in &requeue {
+            println!(
+                "  would retry {} — {} (outside the window)",
+                r.thread_id, r.subject
+            );
         }
         return Ok(());
     }
@@ -1064,7 +1131,7 @@ async fn classify(
     // What this recipient has corrected before, newest first. Bounded, because
     // this rides on every classification of every thread — the cheap half of
     // the correction loop only stays cheap if it stays small.
-    let examples = mecha_core::mail_triage::select_examples(&store.list()?);
+    let examples = mecha_core::mail_triage::select_examples(&stored);
     // **The rules the triage domain learns have to reach the classifier, or
     // the whole loop writes into a file nothing reads.** `PASS_DOMAINS` claims
     // this domain is routed; this is the load site that makes the claim true,
@@ -1087,23 +1154,79 @@ async fn classify(
     }
     eprintln!("classifying with {model} ({provider_name})");
 
-    let get_thread = find_tool(&prepared.registry, "mail_get_thread");
     let (mut ok, mut failed, mut escalated) = (0u32, 0u32, 0u32);
     let mut prefiltered = 0u32;
-    for row in todo {
-        let mut thread = row_to_input(row);
+    // Every failure is written the moment it happens, counted against its
+    // thread (`fail_now`) — a sweep that dies late (an error, the unit's
+    // start timeout) must not leave a failed thread with no `failed` record,
+    // since that record is what keeps it in front of a person. Whether it
+    // SHOULD count can depend on the whole sweep (`sweep_was_outage`), so the
+    // failures are also kept, and rewritten as uncounted if it was.
+    let mut failures: Vec<(ThreadInput, Option<Record>, anyhow::Error)> = Vec::new();
+    // Every write is attempted even if one errors, so a bad file does not cost
+    // the other threads their record; the first error is returned at the end.
+    let mut write_error: Option<anyhow::Error> = None;
+    // Re-reads of stored threads that failed, and how many succeeded: the
+    // mail surface's own common-mode failure, which the model canary cannot
+    // see (`reread_was_outage`).
+    let mut reread_failures: Vec<(ThreadInput, Option<Record>, anyhow::Error)> = Vec::new();
+    // Successful re-reads per account: the mail surface is judged per
+    // account, since one account's token lapsing says nothing of another's.
+    let mut reread_ok: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    // Requeued threads that classified — the summary's count, which is not
+    // `reread_ok` (a body read that the prefilter took, or the model failed).
+    let mut requeued_ok = 0u32;
+    let work = todo
+        .into_iter()
+        .map(Work::Row)
+        .chain(requeue.into_iter().map(Work::Stored));
+    for item in work {
+        // `full_body`: a thread retried from the store has no snippet to start
+        // from, so it is read whole up front and needs no second pass.
+        let (mut thread, bulk, full_body) = match item {
+            Work::Row(row) => (
+                row_to_input(row),
+                row["bulk"].as_bool().unwrap_or(false),
+                false,
+            ),
+            // `bulk` is not kept on the record, so a requeued bulk thread
+            // costs the model call the prefilter would have saved in-window —
+            // rare enough not to be worth a stored field.
+            Work::Stored(r) => {
+                let mut t = stored_to_input(r);
+                let body = match &get_thread {
+                    Some(tool) => fetch_body(tool.as_ref(), &ctx, &t).await,
+                    None => Err(anyhow::anyhow!("no mail_get_thread tool")),
+                };
+                match body {
+                    Ok(b) => {
+                        *reread_ok.entry(t.account.clone()).or_default() += 1;
+                        t.body = b;
+                        (t, false, true)
+                    }
+                    // Written now as the thread's own (moved, deleted); taken
+                    // back after the loop if every re-read failed.
+                    Err(e) => {
+                        failed += 1;
+                        eprintln!("  ! {} — {e:#}", t.thread_id);
+                        fail_now(&store, t, e, &mut reread_failures, &mut write_error);
+                        continue;
+                    }
+                }
+            }
+        };
 
         // Ahead of the model, never instead of it for anything in doubt.
         // About half a real mailbox is bulk or an automated sender, and
         // spending a classifier call on a shipping notification is the cost
         // this removes. The rule only ever produces `ignore` and reads only
         // the envelope — see `mail_triage::prefilter`.
-        if let Some((v, rule)) =
-            mecha_core::mail_triage::prefilter(&thread, row["bulk"].as_bool().unwrap_or(false))
-        {
+        if let Some((v, rule)) = mecha_core::mail_triage::prefilter(&thread, bulk) {
             if let Err(e) = store.put(&record(&thread, Some(v), None)) {
                 eprintln!("  ! {} — {e}", thread.thread_id);
                 failed += 1;
+                // Fails the run at the end, like every other write here.
+                write_error.get_or_insert(e);
             } else {
                 prefiltered += 1;
                 if global.verbose {
@@ -1131,7 +1254,7 @@ async fn classify(
         let mut did_escalate = false;
         let mut changed: Vec<String> = Vec::new();
         let verdict = match (&verdict, &get_thread) {
-            (Ok(v), Some(tool)) if needs_body(v) => {
+            (Ok(v), Some(tool)) if needs_body(v) && !full_body => {
                 match fetch_body(tool.as_ref(), &ctx, &thread).await {
                     Ok(body) => {
                         thread.body = body;
@@ -1181,9 +1304,15 @@ async fn classify(
         let rec = match verdict {
             Ok(v) => {
                 ok += 1;
+                if full_body {
+                    requeued_ok += 1;
+                }
                 print_line(&thread, &v, from_bucket.as_deref());
                 let mut r = record(&thread, Some(v), None);
                 r.escalated = did_escalate;
+                // Read whole with no snippet pass: outside the escalation
+                // measurement on both sides (`Record::read_whole`).
+                r.read_whole = full_body;
                 r.escalated_changed = changed;
                 r.escalated_from = from_bucket;
                 r
@@ -1194,18 +1323,164 @@ async fn classify(
             Err(e) => {
                 failed += 1;
                 eprintln!("  ! {} — {e:#}", thread.thread_id);
-                record(&thread, None, Some(format!("{e:#}")))
+                fail_now(&store, thread, e, &mut failures, &mut write_error);
+                continue;
             }
         };
-        store.put(&rec)?;
+        if let Err(err) = store.put(&rec) {
+            write_error.get_or_insert(err);
+        }
+    }
+    // Several failures may be the server's or several threads' own — two
+    // stuck threads look exactly like an outage by their counts, and the
+    // server failure this exists for is length-dependent, failing the long
+    // threads of a sweep that answered the short ones. Only the model can say
+    // which: ask it a canary as long as the longest thread that failed.
+    // Only when its answer can change a record: if every failure is already
+    // an outage by its error, the canary would decide nothing and cost a
+    // full retry cycle on the sweep that is shortest of time.
+    let need_canary = failures.len() >= 2
+        && failures
+            .iter()
+            .any(|(_, _, e)| !mecha_core::mail_triage::failure_is_outage(e));
+    // Where the model starts failing, by length. The server failure this
+    // exists for is length-dependent (a reasoning budget eating `max_tokens`
+    // fails long threads and answers short ones), and one canary cannot say
+    // which failures it covers: padded to the longest, its failure would
+    // excuse two genuinely stuck short threads on every sweep for ever;
+    // padded to the shortest, its answer would charge the long ones for a
+    // server flag. So find the shortest failing length among the failures'
+    // own (`first_failing_length`, a few calls at most), and excuse exactly
+    // the failures at least that long. Every length answering: all the
+    // threads' own. Even the shortest failing: the server's, all of them.
+    let failing_from = if need_canary {
+        let mut lens: Vec<usize> = failures
+            .iter()
+            .map(|(t, _, _)| t.body.chars().count().min(BODY_CHARS_MAX))
+            .collect();
+        lens.sort_unstable();
+        lens.dedup();
+        let from = first_failing_length(&lens, |n| {
+            let canary = mecha_core::mail_triage::canary_thread(n);
+            let (provider, model, today, examples, learned) = (
+                provider.as_ref(),
+                &model,
+                &today,
+                &examples,
+                learned.as_deref(),
+            );
+            async move {
+                mecha_core::mail_triage::classify_with(
+                    provider, model, &canary, today, examples, learned,
+                )
+                .await
+                .is_ok()
+            }
+        })
+        .await;
+        eprintln!(
+            "  {}",
+            match from {
+                None => "the model answered canaries as long as every failure — these failures are the threads' own".to_string(),
+                Some(n) => format!(
+                    "the model fails from {n} characters — failures that long are the server's, counted against no thread"
+                ),
+            }
+        );
+        from
+    } else {
+        None
+    };
+    // The mail surface, per account: several re-reads failing with none
+    // succeeding is either that account's surface (a lapsed token, a 503) or
+    // several threads its mailbox no longer has — opposite answers: an outage
+    // charged puts every thread on the day-long wait, and dead threads
+    // uncharged are due again next sweep, failing the unit every tick for
+    // ever. The counts cannot tell them apart, so ask the surface, as the
+    // canary asks the model: re-read a thread this sweep's own read just
+    // returned from that account, which therefore exists.
+    let mut accounts: Vec<String> = reread_failures
+        .iter()
+        .map(|(t, _, _)| t.account.clone())
+        .collect();
+    accounts.sort_unstable();
+    accounts.dedup();
+    let mut surface_down: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // An account this sweep's own read could not reach is already known to
+    // be down: the fan-out drops it from the rows and names it in the note,
+    // so there is no thread of its to probe with — the headline case, a
+    // lapsed token, would otherwise read as "nothing to probe" and charge.
+    let unreachable = unread_accounts(note.as_deref());
+    for acct in accounts {
+        let failed_here = reread_failures
+            .iter()
+            .filter(|(t, _, _)| t.account == acct)
+            .count();
+        let ok_here = reread_ok.get(&acct).copied().unwrap_or(0);
+        if unreachable.contains(&acct) && ok_here == 0 {
+            eprintln!("  {acct}: this sweep could not read the account at all — the mail surface's, counted against no thread");
+            surface_down.insert(acct);
+            continue;
+        }
+        if failed_here < 2 || ok_here > 0 {
+            continue;
+        }
+        let probe = rows.iter().find(|r| {
+            r["account"].as_str() == Some(acct.as_str()) && r["thread_id"].as_str().is_some()
+        });
+        // Nothing to probe with: unknown, so the side that backs off — the
+        // other side is the loop that fails the unit every tick.
+        let answered = match (probe, &get_thread) {
+            (Some(row), Some(tool)) => fetch_body(tool.as_ref(), &ctx, &row_to_input(row))
+                .await
+                .is_ok(),
+            _ => {
+                eprintln!(
+                    "  {acct}: nothing to probe the surface with — counted as the threads' own"
+                );
+                continue;
+            }
+        };
+        if reread_was_outage(failed_here, ok_here, answered) {
+            eprintln!("  {acct}: a re-read of a thread it has failed too — the mail surface's, counted against no thread");
+            surface_down.insert(acct);
+        } else {
+            eprintln!("  {acct}: the mailbox answered a re-read of a thread it has — these threads are gone");
+        }
+    }
+    for (thread, prev, e) in &reread_failures {
+        if surface_down.contains(&thread.account) {
+            if let Err(err) = store.put(&failed_record(thread, prev.as_ref(), e, true)) {
+                write_error.get_or_insert(err);
+            }
+        }
+    }
+    // Already written as the threads' own; the server's take the charge back.
+    for (thread, prev, e) in &failures {
+        if excused_by_length(
+            thread.body.chars().count().min(BODY_CHARS_MAX),
+            failing_from,
+        ) {
+            if let Err(err) = store.put(&failed_record(thread, prev.as_ref(), e, true)) {
+                write_error.get_or_insert(err);
+            }
+        }
+    }
+    if let Some(err) = write_error {
+        return Err(err);
     }
     // The pre-filtered count is reported rather than folded into `ok`,
     // because "how much is the cheap rule taking" is the question that decides
     // whether it is too aggressive — and a number nobody can see is a rule
     // nobody can grade.
     println!(
-        "\n{ok} classified ({escalated} read in full), \
-         {prefiltered} disposed without a model, {failed} failed"
+        "\n{ok} classified ({escalated} read in full on a second pass{}), \
+         {prefiltered} disposed without a model, {failed} failed",
+        if requeued_ok > 0 {
+            format!(", {requeued_ok} retried whole from the store")
+        } else {
+            String::new()
+        }
     );
 
     // **A run that accomplished nothing must exit non-zero.**
@@ -1263,6 +1538,53 @@ async fn fetch_body(
     ))
 }
 
+/// At most this many stored failures are retried per sweep from outside the
+/// window, so a backlog after a long outage is worked off over several
+/// sweeps rather than in one that runs past the unit's timeout.
+const REQUEUE_MAX: usize = 10;
+
+/// `--force` asks for every failure, and a 17-thread backlog after an outage
+/// must not leave seven behind — but a store holding a year of undismissed
+/// failures, at ~30 s each, would be an hours-long run. Bounded, and said.
+const REQUEUE_FORCE_MAX: usize = 200;
+
+/// One unit of a sweep's work: a row the mailbox read returned, or a failed
+/// thread retried from the store (`due_outside_window`).
+enum Work<'a> {
+    Row(&'a Value),
+    Stored(&'a Record),
+}
+
+/// Write a failure now, counted against its thread (unless its error is
+/// itself an outage), and keep it for the sweep-wide decision.
+fn fail_now(
+    store: &TriageStore,
+    thread: ThreadInput,
+    e: anyhow::Error,
+    failures: &mut Vec<(ThreadInput, Option<Record>, anyhow::Error)>,
+    write_error: &mut Option<anyhow::Error>,
+) {
+    let prev = store.get(&thread.account, &thread.thread_id);
+    if let Err(err) = store.put(&failed_record(&thread, prev.as_ref(), &e, false)) {
+        write_error.get_or_insert(err);
+    }
+    failures.push((thread, prev, e));
+}
+
+/// A stored thread as classifier input. No snippet is kept on the record, so
+/// the body is left for the caller to read whole.
+fn stored_to_input(r: &Record) -> ThreadInput {
+    ThreadInput {
+        thread_id: r.thread_id.clone(),
+        account: r.account.clone(),
+        from: r.from.clone(),
+        from_name: r.from_name.clone(),
+        subject: r.subject.clone(),
+        date: r.date.clone(),
+        body: String::new(),
+    }
+}
+
 fn row_to_input(row: &Value) -> ThreadInput {
     let s = |k: &str| row[k].as_str().unwrap_or_default().to_string();
     // `from` arrives as `Name <addr>`; the address is the half `kg_entity`
@@ -1289,6 +1611,76 @@ fn row_to_input(row: &Value) -> ThreadInput {
     }
 }
 
+/// The record a failed classification writes: the error, and the retry
+/// pacing carried forward from the thread's previous record — its own
+/// failures advance it, an outage's do not (`Record::carry_failure`,
+/// `mail_triage::retry_after`). A function so the wiring is testable: drop
+/// the carry and the backoff is decorative, with nothing else to say so.
+fn failed_record(
+    t: &ThreadInput,
+    prev: Option<&Record>,
+    e: &anyhow::Error,
+    sweep_outage: bool,
+) -> Record {
+    let mut r = record(t, None, Some(format!("{e:#}")));
+    // The sweep's verdict never overrides the provider's ruling that a
+    // failure is the thread's own (`failure_is_threads_own`).
+    let sweep_outage = sweep_outage && !mecha_core::mail_triage::failure_is_threads_own(e);
+    r.carry_failure(
+        prev,
+        sweep_outage || mecha_core::mail_triage::failure_is_outage(e),
+    );
+    r
+}
+
+/// The shortest of `lens` (sorted, deduplicated) at which `ask` — a canary
+/// of that length — fails, or `None` when every one answers. A binary
+/// search, assuming longer fails whenever shorter does, which is the shape
+/// of the length-dependent server failure it exists for: a handful of calls
+/// for a whole sweep's failures.
+async fn first_failing_length<F, Fut>(lens: &[usize], mut ask: F) -> Option<usize>
+where
+    F: FnMut(usize) -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let (mut lo, mut hi) = (0, lens.len());
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if ask(lens[mid]).await {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lens.get(lo).copied()
+}
+
+/// The accounts a `mail_recent` note says could not be read. The fan-out
+/// names each as `` account `NAME`: <error> `` (`unified.rs::merge`).
+fn unread_accounts(note: Option<&str>) -> std::collections::HashSet<String> {
+    note.unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("account `")?.split_once('`'))
+        .map(|(name, _)| name.to_string())
+        .collect()
+}
+
+/// Whether a failure of `len` characters is the server's, given where the
+/// model was found to start failing.
+fn excused_by_length(len: usize, failing_from: Option<usize>) -> bool {
+    failing_from.is_some_and(|from| len >= from)
+}
+
+/// Whether a sweep's failed re-reads of stored threads were the mail
+/// surface's: more than one failed, none succeeded, and a re-read of a
+/// thread the sweep's own read just returned failed too. One failure alone,
+/// failures beside successes, or a surface that answers the probe are the
+/// threads' own (moved, deleted) and back off — or dead threads would be due
+/// every sweep and fail the unit on every tick.
+fn reread_was_outage(failures: usize, succeeded: u32, surface_answered: bool) -> bool {
+    failures >= 2 && succeeded == 0 && !surface_answered
+}
+
 fn record(t: &ThreadInput, verdict: Option<Verdict>, error: Option<String>) -> Record {
     Record {
         thread_id: t.thread_id.clone(),
@@ -1305,9 +1697,11 @@ fn record(t: &ThreadInput, verdict: Option<Verdict>, error: Option<String>) -> R
         verdict,
         error,
         classified_at: chrono::Utc::now().to_rfc3339(),
+        attempts: 0,
         escalated: false,
         escalated_changed: Vec::new(),
         escalated_from: None,
+        read_whole: false,
         corrections: Vec::new(),
         acted: None,
         acted_at: None,
@@ -2546,8 +2940,204 @@ fn draft_prompt(
 
 #[cfg(test)]
 mod classify_exit_tests {
-    use super::{parse_recent, run_accomplished_nothing};
+    use super::{
+        excused_by_length, failed_record, first_failing_length, parse_recent, reread_was_outage,
+        run_accomplished_nothing, unread_accounts,
+    };
+    use mecha_core::mail_triage::{ThreadInput, FAILED};
+    use mecha_core::provider::retry::ProviderError;
     use serde_json::Value;
+
+    /// Review finding: failures were buffered and written after the loop,
+    /// so a late error — or the unit's start timeout during the canary —
+    /// left those threads with no `failed` record, and nothing in front of a
+    /// person. `fail_now` makes each one durable when it happens.
+    #[test]
+    fn a_failure_is_on_disk_before_the_sweep_ends() {
+        use super::fail_now;
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-fail-now-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let store = mecha_core::mail_triage::TriageStore::open(dir.clone()).unwrap();
+        let thread = ThreadInput {
+            thread_id: "t".into(),
+            account: "a".into(),
+            from: "x@example.edu".into(),
+            from_name: String::new(),
+            subject: "s".into(),
+            date: "2026-09-23T09:00:00Z".into(),
+            body: String::new(),
+        };
+        let (mut failures, mut write_error) = (Vec::new(), None);
+        fail_now(
+            &store,
+            thread,
+            anyhow::anyhow!("no JSON object"),
+            &mut failures,
+            &mut write_error,
+        );
+        // Nothing after this point runs in a sweep killed here.
+        let on_disk = store
+            .get("a", "t")
+            .expect("written at once, not at the end");
+        assert_eq!((on_disk.state.as_str(), on_disk.attempts), (FAILED, 1));
+        assert_eq!(failures.len(), 1, "and kept for the sweep-wide decision");
+        assert!(write_error.is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The wiring, not just the rule: a failed classification carries the
+    /// thread's pacing forward, so its own failures back off and an outage's
+    /// do not. Without this the core tests all pass while the backoff does
+    /// nothing, since `attempts` would stay 0 and every failure be due.
+    #[test]
+    fn a_failure_record_carries_the_backoff_and_an_outage_does_not_advance_it() {
+        let thread = ThreadInput {
+            thread_id: "t".into(),
+            account: "a".into(),
+            from: "x@example.edu".into(),
+            from_name: String::new(),
+            subject: "s".into(),
+            date: "2026-09-23T09:00:00Z".into(),
+            body: String::new(),
+        };
+        let bad_verdict = anyhow::anyhow!("classification failed after a retry: no JSON object");
+        let outage =
+            anyhow::Error::new(ProviderError::Transport).context("local: connection refused");
+
+        let first = failed_record(&thread, None, &bad_verdict, false);
+        assert_eq!((first.state.as_str(), first.attempts), (FAILED, 1));
+        let second = failed_record(&thread, Some(&first), &bad_verdict, false);
+        assert_eq!(second.attempts, 2, "the thread's own failures back off");
+        let during_outage = failed_record(&thread, Some(&second), &outage, false);
+        assert_eq!(
+            (during_outage.attempts, during_outage.classified_at.as_str()),
+            (2, second.classified_at.as_str()),
+            "an outage keeps the count and the clock"
+        );
+        // A server-wide failure that carries no provider error (the empty
+        // reply a reasoning budget produces) is caught at the sweep.
+        // Review finding: two oversized threads overflow, and a canary padded
+        // to their length overflows too — an "outage" that would retry them
+        // every sweep for ever. The provider's ruling wins.
+        let overflow = anyhow::Error::new(ProviderError::ContextOverflow).context("too long");
+        let oversized = failed_record(&thread, Some(&second), &overflow, true);
+        assert_eq!(
+            oversized.attempts, 3,
+            "a body that will not fit is the thread's own, whatever the sweep concluded"
+        );
+        // Review finding: `Invalid` is the catch-all 4xx — a mistyped model
+        // name fails every thread alike — so there the canary's verdict holds.
+        let wrong_model =
+            anyhow::Error::new(ProviderError::Invalid("model not found".into())).context("400");
+        let excused = failed_record(&thread, Some(&second), &wrong_model, true);
+        assert_eq!(
+            excused.attempts, 2,
+            "a rejected request in a sweep the canary called the server's counts against no thread"
+        );
+        let sweep_wide = failed_record(&thread, Some(&second), &bad_verdict, true);
+        assert_eq!(
+            sweep_wide.attempts, 2,
+            "a sweep that was an outage does not count"
+        );
+    }
+
+    /// Nothing classified, several failures, and the model cannot answer a
+    /// canary either: the server's. Everything else is the threads' own.
+    /// Review finding: a requeued thread's re-read failing was charged to
+    /// the thread, but a lapsed token or a 503 fails every re-read at once —
+    /// the mail surface's, which the model canary cannot see.
+    #[test]
+    fn every_re_read_failing_is_the_mail_surface_not_the_threads() {
+        assert!(
+            reread_was_outage(10, 0, false),
+            "all ten failed, and a thread the mailbox has failed too"
+        );
+        assert!(
+            !reread_was_outage(1, 0, false),
+            "one alone is the thread's own (moved, deleted)"
+        );
+        assert!(
+            !reread_was_outage(3, 7, false),
+            "failures beside successes are the threads' own — or dead threads hold every slot"
+        );
+        assert!(!reread_was_outage(0, 0, false));
+        // Review finding: two threads the mailbox no longer has fail every
+        // re-read, and taken as an outage they were due again next sweep and
+        // failed the unit on every tick. A probe of a thread the mailbox HAS
+        // answering says the surface is fine: they are gone, and back off.
+        assert!(
+            !reread_was_outage(2, 0, true),
+            "the surface answered a live thread: these threads are gone"
+        );
+    }
+
+    /// Review finding: a lapsed token drops the account from the read's rows
+    /// and names it only in the note, so the probe had no thread to use and
+    /// charged every requeued thread. The note is the evidence.
+    #[test]
+    fn an_account_the_read_could_not_reach_is_named_by_its_note() {
+        let note = "note — some accounts could not be read:\naccount `work`: token expired\naccount `home`: 503";
+        let got = unread_accounts(Some(note));
+        assert!(
+            got.contains("work") && got.contains("home") && got.len() == 2,
+            "{got:?}"
+        );
+        assert!(unread_accounts(None).is_empty());
+        assert!(unread_accounts(Some("nothing about accounts")).is_empty());
+    }
+
+    /// The failure the canary exists for is length-dependent, and one canary
+    /// could not say which failures it covered. Review findings, both ways:
+    /// padded to the longest, it excused two stuck snippet threads on every
+    /// sweep for ever; padded to the shortest, it charged long threads for a
+    /// server flag. The search finds where the model starts failing.
+    #[tokio::test]
+    async fn the_canary_finds_where_the_model_starts_failing() {
+        let lens = [120, 400, 2_000, 8_000];
+        let calls = std::cell::Cell::new(0);
+        let server_fails_from = |limit: usize| {
+            let calls = &calls;
+            move |n: usize| {
+                calls.set(calls.get() + 1);
+                async move { n < limit }
+            }
+        };
+        assert_eq!(
+            first_failing_length(&lens, server_fails_from(1_000)).await,
+            Some(2_000)
+        );
+        assert!(
+            calls.get() <= 3,
+            "a search, not a canary per failure: {}",
+            calls.get()
+        );
+        assert_eq!(
+            first_failing_length(&lens, server_fails_from(usize::MAX)).await,
+            None,
+            "all answer"
+        );
+        assert_eq!(
+            first_failing_length(&lens, server_fails_from(0)).await,
+            Some(120),
+            "even the shortest fails"
+        );
+        assert_eq!(first_failing_length(&[], server_fails_from(0)).await, None);
+
+        // Excused are exactly the failures at least that long.
+        assert!(excused_by_length(8_000, Some(2_000)));
+        assert!(excused_by_length(2_000, Some(2_000)));
+        assert!(
+            !excused_by_length(400, Some(2_000)),
+            "a short stuck thread is its own"
+        );
+        assert!(
+            !excused_by_length(8_000, None),
+            "every length answered: all the threads' own"
+        );
+    }
 
     /// 2026-08-19: the nightly classified 0 of 16 and systemd logged SUCCESS,
     /// because the command returned `Ok(())` whatever happened. Every check
