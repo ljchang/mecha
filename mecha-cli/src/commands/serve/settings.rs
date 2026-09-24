@@ -162,9 +162,12 @@ pub async fn charter_save(State(_state): St, Json(body): Json<CharterSave>) -> R
     }
     // The same reader every run loads through. A document this refuses
     // never reaches disk, which is the property the module doc names.
-    if let Err(e) = mecha_core::charter::Charter::parse(&body.raw) {
-        return (StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}\n")).into_response();
-    }
+    let parsed = match mecha_core::charter::Charter::parse(&body.raw) {
+        Ok(c) => c,
+        Err(e) => {
+            return (StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}\n")).into_response();
+        }
+    };
     let path = match mecha_core::charter::Charter::default_path() {
         Ok(p) => p,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
@@ -185,7 +188,27 @@ pub async fn charter_save(State(_state): St, Json(body): Json<CharterSave>) -> R
         let _ = std::fs::remove_file(&tmp);
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response();
     }
-    charter_state().await.into_response()
+    // The save stands; triggers whose `serves` it broke are named beside it,
+    // because renaming a line is the edit that silently stops one firing
+    // (review of #292). The store walk is file reads, off the async runtime.
+    let broken =
+        tokio::task::spawn_blocking(move || mecha_core::trigger::triggers_broken_by(&parsed))
+            .await
+            .unwrap_or_default();
+    let Json(mut state) = charter_state().await;
+    if let Some(obj) = state.as_object_mut() {
+        obj.insert(
+            "trigger_warnings".into(),
+            serde_json::json!(broken
+                .iter()
+                .map(|b| format!(
+                    "trigger `{}` will not fire: {} — `mecha trigger edit {}` fixes it",
+                    b.trigger, b.reason, b.trigger
+                ))
+                .collect::<Vec<_>>()),
+        );
+    }
+    Json(state).into_response()
 }
 
 // ─── The learning store ──────────────────────────────────────────────────

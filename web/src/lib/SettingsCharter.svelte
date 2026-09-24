@@ -48,6 +48,9 @@
   let confirming = $state(false);
   let saveError = $state(null);
   let savedNote = $state(null);
+  // Triggers whose `serves` the last save broke — the save stands, and each
+  // is named with the command that fixes it.
+  let triggerWarnings = $state([]);
   let busy = $state(false);
 
   // The raw TOML editor, kept as the escape hatch: null when closed.
@@ -117,6 +120,7 @@
     snapshot();
     confirming = false;
     savedNote = null;
+    triggerWarnings = [];
   });
 
   // The same rule for the raw editor: arming describes the document that was
@@ -251,6 +255,7 @@
       await tick();
       savedNote =
         'saved — rides in the prompt of new sessions; this page cannot rebuild ones already running';
+      triggerWarnings = charter.trigger_warnings ?? [];
     } catch (e) {
       saveError = String(e?.message ?? e);
     } finally {
@@ -586,6 +591,7 @@
   <!-- Outside `!blocked`: a raw-TOML save whose result carries comments among
        its lines lands fine, and the owner still has to be told it landed. -->
   {#if savedNote}<div class="card ok-note">{savedNote}</div>{/if}
+  {#each triggerWarnings as w}<div class="card notice">{w}</div>{/each}
 
   <!-- Outside the `!blocked` branch on purpose: a charter that does not parse
        is exactly the one that needs an editor, and the notice above promises
