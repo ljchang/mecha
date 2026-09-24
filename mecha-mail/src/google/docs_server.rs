@@ -491,15 +491,26 @@ mod tests {
             }
             Err(e) => panic!("MECHA_TEST_REQUIRE_BACKENDS is set and python3 failed: {e}"),
         };
+        // Written from a thread while the replies are read here, so a reply
+        // larger than the pipe buffer cannot deadlock the two ends.
         let mut stdin = child.stdin.take().unwrap();
-        for (i, request) in requests.iter().enumerate() {
-            let mut line = request.clone();
-            line["jsonrpc"] = json!("2.0");
-            line["id"] = json!(i + 1);
-            writeln!(stdin, "{line}").unwrap();
-        }
-        drop(stdin);
+        let lines: Vec<String> = requests
+            .iter()
+            .enumerate()
+            .map(|(i, request)| {
+                let mut line = request.clone();
+                line["jsonrpc"] = json!("2.0");
+                line["id"] = json!(i + 1);
+                line.to_string()
+            })
+            .collect();
+        let writer = std::thread::spawn(move || {
+            for line in lines {
+                writeln!(stdin, "{line}").unwrap();
+            }
+        });
         let out = child.wait_with_output().unwrap();
+        writer.join().unwrap();
         assert!(out.status.success(), "the fixture exited {}", out.status);
         let replies: Vec<Value> = String::from_utf8(out.stdout)
             .unwrap()

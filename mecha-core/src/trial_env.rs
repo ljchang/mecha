@@ -1068,6 +1068,9 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
         let tmp = Scratch::new();
         let mut real = operator();
         real.mcp.clear();
+        let base = Environment::default()
+            .prepare(&real, checkout, &tmp.path().join("cache"))
+            .unwrap();
         let mut seen = 0;
         for entry in std::fs::read_dir(checkout.join("eval/envs")).unwrap() {
             let entry = entry.unwrap();
@@ -1096,6 +1099,28 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
             for server in &world.config.mcp {
                 for arg in server.args.iter().filter(|a| a.ends_with(".py")) {
                     assert!(checkout.join(arg).is_file(), "{name}: {arg}");
+                }
+                // `[[mcp]]` replaces whole, so a variant adding one server
+                // re-declares the base's. Nothing else pins the copy: an edit
+                // to the default's mail server would leave every variant
+                // running the old world.
+                if let Some(same) = base.config.mcp.iter().find(|b| b.name == server.name) {
+                    assert_eq!(
+                        (
+                            &server.command,
+                            &server.args,
+                            &server.env,
+                            format!("{:?}", server.capabilities)
+                        ),
+                        (
+                            &same.command,
+                            &same.args,
+                            &same.env,
+                            format!("{:?}", same.capabilities)
+                        ),
+                        "{name}: `{}` drifted from the default's",
+                        server.name
+                    );
                 }
             }
             seen += 1;

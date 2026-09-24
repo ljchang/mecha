@@ -824,9 +824,12 @@ knowing beyond the tests:
   refused by the trifecta interlock. Only a staged send goes out, after you
   approve it, and the answer arrives later. That's why the multi-step task is
   two suites.
-- **Free-text form answers aren't readable to the assistant.** `poll_status`
-  counts them but never quotes them, by design, so a letter is built from the
-  structured answers and the student's own documents.
+- **Free-text form answers arrive as untrusted text.** `poll_status` quotes
+  them apart from the counts, under `text_answers`, with a warning to treat
+  them as data. They're other people's words, and from a link poll anyone's,
+  so they arm the trifecta interlock the way a mail body does. That's why the
+  environment marks the poll server `untrusted_input`, as your own config
+  does.
 - **The web isn't part of these tasks yet.** An MCP tool can't be classed as
   having no destination the model picks, so a fixture search server would be
   refused where your real `web_search` is allowed. Testing web lookups

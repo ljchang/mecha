@@ -1,4 +1,4 @@
-# Recommendation letters: drafting from the template, the form's structured answers and the student's docs, and saying plainly that free-text answers are not readable.
+# Recommendation letters: drafting from the template, the form's answers (free text arrives quoted, as untrusted data) and the student's docs, and reporting what a student wrote exactly.
 #
 # A baseline measurement in the assistant environment (eval/envs/assistant):
 # one arm, no control, three seeds. Staged writes (docs, poll creation, the
