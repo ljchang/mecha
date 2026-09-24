@@ -467,6 +467,7 @@ mod tests {
             // places would mean two schemas to keep honest for one behaviour.
             &[],
         );
+        crate::mcp::assert_private_writes(&tool_definitions(), &[]);
     }
 
     /// A reply must be reachable as its own tool: Graph threads by replying

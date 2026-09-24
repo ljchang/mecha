@@ -173,7 +173,7 @@ TOOLS = [
         "name": "docs_create",
         "description": "Create a new Google Doc with a title, and optionally an initial body. Returns its file id. Anything mecha creates is reachable from then on with no further permission step.",
         "inputSchema": {"type": "object", "properties": {"title": {"type": "string"}, "body": {"type": "string"}}, "required": ["title"]},
-        "annotations": {"openWorldHint": True},
+        "annotations": {"openWorldHint": False, "readOnlyHint": False},
     },
     {
         "name": "docs_append",

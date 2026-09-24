@@ -2014,4 +2014,35 @@ justification = "never recursive-force from a model-supplied path"
             RuleDecision::Allow
         );
     }
+
+    /// The exact spelling `website/docs/features/tools/documents.md` tells an
+    /// operator to paste for a private write (`PROVENANCE-DESIGN.md` §2). An
+    /// MCP call carries no `command`, so the rule is judged tool-level — and
+    /// an `allow` still has to carry an example that splits, or the start
+    /// fails on a line the documentation handed out.
+    #[test]
+    fn a_documented_private_write_allow_loads_and_allows() {
+        #[derive(Deserialize)]
+        struct Wrap {
+            #[serde(rename = "rule")]
+            rules: Vec<RuleConfig>,
+        }
+        let w: Wrap = toml::from_str(
+            r#"
+[[rule]]
+tool = "docs__docs_create"
+decision = "allow"
+match = ["create"]
+"#,
+        )
+        .unwrap();
+        let p = ExecPolicy::from_config(&w.rules, true).expect("the documented rule loads");
+        let ruling = p
+            .decide("docs__docs_create", &json!({"title": "Notes", "body": "x"}))
+            .expect("a tool-level rule speaks for a call with no command");
+        assert_eq!(ruling.decision, RuleDecision::Allow);
+        assert!(p
+            .decide("docs__docs_append", &json!({"file_id": "f"}))
+            .is_none());
+    }
 }

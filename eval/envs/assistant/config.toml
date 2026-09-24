@@ -48,7 +48,10 @@ tools = [
   "mail__calendar_create_event",
   "mail__calendar_update_event",
   "mail__calendar_delete_event",
-  "docs__docs_create",
+  # `docs__docs_create` is deliberately absent: a new Doc reaches nobody
+  # (`docs/PROVENANCE-DESIGN.md` §2), so it executes as it does on the
+  # owner's machine. No rule is needed here, and none may be written:
+  # approval rules are a machine fact, and trials run `--yes`.
   "docs__docs_append",
   "docs__docs_replace",
   "factory__poll_create",
