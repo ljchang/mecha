@@ -153,6 +153,8 @@ export function splitSender(from) {
  * precondition"); `dismiss`, `task`, `needs-info` and the drafting verbs use
  * the strict resolver and refuse one.
  */
+export const LENIENT = new Set(['archive', 'spam']);
+
 /**
  * The verb a batch key stands for when a modifier is still held, or null.
  *
@@ -173,8 +175,6 @@ export function batchKeyVerb(key, { shift = false, meta = false, ctrl = false, a
   if (shift && key !== k) return { e: 'archive', d: 'dismiss', t: 'task' }[k] ?? null;
   return null;
 }
-
-export const LENIENT = new Set(['archive', 'spam']);
 
 /** Whether `verb` can act on `row`, given the keys the store holds. */
 export const verbWorksOn = (verb, row, storeKeys) => LENIENT.has(verb) || storeKeys.has(keyOf(row));
