@@ -2563,24 +2563,45 @@ mod tests {
         );
     }
 
-    /// A seat pool that cannot be written is an error from the scheduler,
-    /// never a panic or a silent start without a seat.
+    /// A seat that cannot be taken while another trial is in flight stops
+    /// new starts and lets that trial finish before the error returns —
+    /// the drain a `?` at the seat-take site once skipped. The first seat
+    /// is taken; starting its trial replaces the pool's directory with a
+    /// file (the closure body runs when the trial starts, before any
+    /// await), so the second arm's seat fails with the first in flight.
     #[tokio::test]
-    async fn a_seat_that_cannot_be_taken_starts_nothing_and_says_so() {
+    async fn a_seat_that_cannot_be_taken_drains_the_trial_in_flight() {
+        use std::sync::{Arc, Mutex};
         let dir = std::env::temp_dir().join(format!(
             "mecha-exp-seat-{}-{}",
             std::process::id(),
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
         ));
-        std::fs::write(&dir, b"a file where the pool's directory should be").unwrap();
         let pool = mecha_core::permit::Permits::new(&dir, 3);
-        let rows = [fake_row("a", "t1")];
+        let rows = [fake_row("a", "t1"), fake_row("b", "t1")];
         let refs: Vec<&Trial> = rows.iter().collect();
-        let out = schedule(&refs, 2, Some(&pool), "x", |_| async {
-            panic!("started without a seat")
+        let finished = Arc::new(Mutex::new(Vec::<String>::new()));
+        let out = schedule(&refs, 2, Some(&pool), "x", |t| {
+            if t.id == "b__t1" {
+                panic!("started without a seat");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::write(&dir, b"a file where the pool's directory was").unwrap();
+            let finished = finished.clone();
+            let id = t.id.clone();
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                finished.lock().unwrap().push(id);
+                Ok(())
+            }
         })
         .await;
-        assert!(out.is_err());
+        assert!(out.is_err(), "the seat failure is the run's error");
+        assert_eq!(
+            *finished.lock().unwrap(),
+            ["a__t1"],
+            "the one in flight finished"
+        );
         let _ = std::fs::remove_file(&dir);
     }
 
