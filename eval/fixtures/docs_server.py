@@ -114,6 +114,10 @@ def docs_replace(store, args):
         doc["body"] = "".join(out)
     store.save()
     store.record("docs_replace", args, {"file_id": doc["id"], "replaced": count})
+    if count == 0:
+        # Zero is not success, as on the real server: a model told "ok" goes
+        # on to report an edit that never happened.
+        return f"no occurrences of {find!r} found — nothing was changed. Read the document and quote its exact wording."
     return f"replaced {count} occurrence(s) in \"{doc['title']}\" ({doc['id']})"
 
 
@@ -141,11 +145,13 @@ TOOLS = [
         "name": "docs_create",
         "description": "Create a new Google Doc with a title, and optionally an initial body. Returns its file id. Anything mecha creates is reachable from then on with no further permission step.",
         "inputSchema": {"type": "object", "properties": {"title": {"type": "string"}, "body": {"type": "string"}}, "required": ["title"]},
+        "annotations": {"openWorldHint": True},
     },
     {
         "name": "docs_append",
         "description": "Append text to the end of a Google Doc.",
         "inputSchema": {"type": "object", "properties": {"file_id": FILE_ID, "text": {"type": "string"}}, "required": ["file_id", "text"]},
+        "annotations": {"openWorldHint": True},
     },
     {
         "name": "docs_replace",
@@ -155,6 +161,7 @@ TOOLS = [
             "properties": {"file_id": FILE_ID, "find": {"type": "string"}, "replace": {"type": "string"}, "match_case": {"type": "boolean"}},
             "required": ["file_id", "find", "replace"],
         },
+        "annotations": {"openWorldHint": True},
     },
     {
         "name": "docs_read",
