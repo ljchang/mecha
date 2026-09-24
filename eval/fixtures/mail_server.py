@@ -545,6 +545,38 @@ def calendar_create_event(store, args):
     )
 
 
+def calendar_hold(store, args):
+    # The real server's hold: calendar_create_event with nothing that could
+    # reach anyone else, whatever the arguments say (unified.rs, create_params).
+    held = {k: v for k, v in args.items() if k not in ("attendees", "calendar_id")}
+    held["calendar_id"] = "primary"
+    title = str_arg(held, "title")
+    if title is None:
+        raise ToolError("calendar_hold needs title, start_time and end_time")
+    start = parse_time(held.get("start_time"), "start_time")
+    end = parse_time(held.get("end_time"), "end_time")
+    if end <= start:
+        raise ToolError("end_time must be after start_time")
+    a = store.pick_send(str_arg(held, "account"))
+    e = {
+        "id": store.next_event_id(),
+        "account": a["name"],
+        "calendar_id": "primary",
+        "title": title,
+        "start": iso(start),
+        "end": iso(end),
+        "all_day": bool(held.get("all_day", False)),
+        "location": str_arg(held, "location"),
+        "description": str_arg(held, "description"),
+        "attendees": [],
+        "private": True,
+    }
+    store.calendar["events"].append(e)
+    store.save()
+    store.record_send("calendar_hold", a["name"], held, {"event_id": e["id"]})
+    return f"created private hold {e['id']} on `{a['name']}`: {title} {e['start']} – {e['end']}"
+
+
 def find_event(store, args):
     event_id = str_arg(args, "event_id")
     if event_id is None:
@@ -672,6 +704,20 @@ TOOLS = [
         "annotations": {"openWorldHint": True},
     },
     {
+        "name": "calendar_hold",
+        "description": "Block time on the owner's own primary calendar: a private hold that invites nobody, and whose details only the owner can see. Use it for reminders, focus time, or an event the owner is attending that has no invite to accept. To invite anyone, use calendar_create_event instead. Times are RFC 3339 (or YYYY-MM-DD with all_day).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"}, "start_time": {"type": "string"}, "end_time": {"type": "string"}, "account": ACCOUNT,
+                "description": {"type": "string"}, "location": {"type": "string"},
+                "all_day": {"type": "boolean", "default": False}, "timezone": {"type": "string"},
+            },
+            "required": ["title", "start_time", "end_time"],
+        },
+        "annotations": {"openWorldHint": False, "readOnlyHint": False},
+    },
+    {
         "name": "calendar_update_event",
         "description": "Update fields of an existing event by event_id in the `account` it lives in. Only the fields provided change; attendees are notified.",
         "inputSchema": {
@@ -704,6 +750,7 @@ HANDLERS = {
     "calendar_list_events": calendar_list_events,
     "calendar_freebusy": calendar_freebusy,
     "calendar_create_event": calendar_create_event,
+    "calendar_hold": calendar_hold,
     "calendar_update_event": calendar_update_event,
     "calendar_delete_event": calendar_delete_event,
 }

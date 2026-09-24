@@ -496,6 +496,31 @@ async fn the_mail_fixture_records_every_send_and_delivers_nothing() {
     let (err, _) = call(&create, json!({"title": "x", "start_time": "2026-09-08T10:00:00Z", "end_time": "2026-09-08T09:00:00Z"}), &dir).await;
     assert!(err, "an end before its start is refused");
 
+    // A hold reaches nobody, so the whole exemption is that `openWorldHint:
+    // false` comes out of `mcp`'s mapping as no egress at all — asserted
+    // through the real client, not on the annotation JSON. And the fixture
+    // strips what the real server strips, whatever the model sends.
+    let hold = tool_named(&again, "mail__calendar_hold");
+    assert!(
+        !hold.capabilities().can_send(),
+        "a hold reaches nobody — it must not be a sink"
+    );
+    assert!(!hold.read_only(), "a read-only run must not reach it");
+    let (err, text) = call(
+        &hold,
+        json!({"title": "Focus", "start_time": "2026-09-08T13:00:00Z", "end_time": "2026-09-08T14:00:00Z",
+               "attendees": ["priya.nair@example.edu"], "calendar_id": "shared@group.calendar.google.com"}),
+        &dir,
+    )
+    .await;
+    assert!(!err && text.contains("private hold"), "{text}");
+    assert!(!text.contains("invitation"), "{text}");
+    let sent = std::fs::read_to_string(store.join("sent.jsonl")).unwrap();
+    let last: Value = serde_json::from_str(sent.lines().last().unwrap()).unwrap();
+    assert_eq!(last["tool"], "calendar_hold");
+    assert!(last["args"].get("attendees").is_none(), "{last}");
+    assert_eq!(last["args"]["calendar_id"], "primary");
+
     std::fs::remove_dir_all(&dir).ok();
 }
 

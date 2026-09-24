@@ -426,6 +426,36 @@ mod tests {
     /// corpus rather than one file, and `drive.file` would permit it — so the
     /// boundary has to be the tool surface, and an absence needs a test or it
     /// is only a habit.
+    /// The whole verb set, by name. With the create verbs executing
+    /// unreviewed, this surface having no way to share is the premise their
+    /// exemption rests on, and a denylist of words (`share`, `permission`)
+    /// passes `docs_invite` or `drive_acl_set`. A new verb fails here until
+    /// someone adds it in the diff that adds it (found in review of #274).
+    #[test]
+    fn the_verb_set_is_closed() {
+        let mut names: Vec<String> = tool_definitions()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "docs_append",
+                "docs_create",
+                "docs_list",
+                "docs_read",
+                "docs_replace",
+                "docs_trash",
+                "sheets_create",
+                "sheets_read",
+                "sheets_write",
+                "slides_create",
+                "slides_read",
+            ]
+        );
+    }
+
     #[test]
     fn there_is_no_sharing_or_permissions_verb() {
         let names: Vec<String> = tool_definitions()

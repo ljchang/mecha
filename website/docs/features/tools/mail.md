@@ -95,10 +95,30 @@ account `dartmouth`: run `mecha-mail auth dartmouth --provider outlook`
 
 ## Resolution: the rule that shapes the surface
 
-Eleven tools — `mail_search`, `mail_recent`, `mail_get_thread`, `mail_send`,
+Twelve tools — `mail_search`, `mail_recent`, `mail_get_thread`, `mail_send`,
 `mail_reply`, `calendar_list`, `calendar_list_events`, `calendar_freebusy`,
-`calendar_create_event`, `calendar_update_event`, `calendar_delete_event` — and
-three resolution modes.
+`calendar_create_event`, `calendar_hold`, `calendar_update_event`,
+`calendar_delete_event` — and three resolution modes.
+
+`calendar_hold` is the one write that is not a send. It blocks time on your
+own primary calendar, invites nobody, and marks the event private, so someone
+you share the calendar with at a *reader* level sees "busy" and not the
+title. Private is not secret: a person who can make changes to your calendar,
+or an Outlook delegate you allowed to see private items, sees the details. It has no
+`attendees` or `calendar_id` field, and the server ignores both if a model
+sends them anyway. Because it reaches nobody it does not need the outbox:
+leave it out of `[outbox] tools` and allow it by rule, and a reminder or a
+focus block lands without a draft to release. To invite anyone, the model
+uses `calendar_create_event`, which still stages.
+
+```toml
+[[rule]]
+tool = "mail__calendar_hold"
+decision = "allow"
+# An `allow` must carry an example; the call has no command to match, so
+# any plain word proves the rule loads.
+match = ["hold"]
+```
 
 `calendar_freebusy` is the scheduling one: busy intervals merged across every
 account, with no event details in them. "When am I free on Thursday?" is
@@ -255,12 +275,21 @@ interlock, so config forces `untrusted_input = true` on the server — the same
 treatment the knowledge graph gets. That override only ever *widens*: config can
 distrust a server further than its own annotations, never less.
 
-**Sends and calendar writes do reach third parties** — recipients, invitees — so
-they carry `openWorldHint`, and `calendar_update_event` / `calendar_delete_event`
-add `destructiveHint`. Those names go in `[outbox] tools`, so they **stage
-rather than deliver**. See [the outbox](/docs/features/security/outbox).
+**Sends and calendar writes that can reach someone do reach third parties** —
+recipients, invitees — so they carry `openWorldHint`, and
+`calendar_update_event` / `calendar_delete_event` add `destructiveHint`. Those
+names go in `[outbox] tools`, so they **stage rather than deliver**. See [the
+outbox](/docs/features/security/outbox).
 
-**And there is a third quadrant, which is neither.** `mail_triage` — archive,
+**A fourth quadrant is the private write: `calendar_hold`.** It reaches nobody.
+It goes on your own primary calendar, invites no one, and is marked private.
+So it says `openWorldHint: false` outright, stays out of `[outbox] tools`, and
+sits with the approver, where an `allow` rule lets it run unasked. The same
+quadrant holds the documents surface's create verbs. The guard is a test
+that inspects every such tool's schema against an allowlist of content
+fields, because nothing else reviews a call that doesn't stage.
+
+**And there is one more quadrant, which is neither.** `mail_triage` — archive,
 mark read or unread, report spam, trash — mutates your own mailbox and reaches
 nobody. It carries `destructiveHint` alone:
 

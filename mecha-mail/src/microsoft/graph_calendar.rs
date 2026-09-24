@@ -54,6 +54,10 @@ pub struct CreateEventRequest {
     pub attendees: Vec<String>,
     pub all_day: bool,
     pub timezone: Option<String>,
+    /// `sensitivity: private`: hidden from a delegate unless the delegate
+    /// was granted "view private items"; full mailbox access is not
+    /// filtered by it. See the Google twin.
+    pub private: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -154,26 +158,7 @@ impl OutlookCalendarProvider {
         calendar_id: &str,
         event: &CreateEventRequest,
     ) -> Result<CalendarEvent, MailError> {
-        let tz = event.timezone.as_deref().unwrap_or("UTC");
-        let mut body = json!({
-            "subject": event.title,
-            "isAllDay": event.all_day,
-            "start": graph_time(&event.start_time, event.all_day, tz),
-            "end": graph_time(&event.end_time, event.all_day, tz),
-        });
-        if let Some(desc) = &event.description {
-            body["body"] = json!({"contentType": "text", "content": desc});
-        }
-        if let Some(loc) = &event.location {
-            body["location"] = json!({"displayName": loc});
-        }
-        if !event.attendees.is_empty() {
-            body["attendees"] = json!(event
-                .attendees
-                .iter()
-                .map(|a| json!({"emailAddress": {"address": a}, "type": "required"}))
-                .collect::<Vec<_>>());
-        }
+        let body = create_body(event);
 
         let url = if calendar_id.is_empty() || calendar_id == "primary" {
             format!("{GRAPH}/me/events")
@@ -429,8 +414,64 @@ fn parse_event(item: &Value, calendar_id: &str) -> CalendarEvent {
     }
 }
 
+/// The JSON body of an event create. Pure, so what a hold sends is testable:
+/// no `attendees` key unless there are attendees — Graph mails every one —
+/// and `sensitivity: private` when the request is private.
+pub(crate) fn create_body(event: &CreateEventRequest) -> Value {
+    let tz = event.timezone.as_deref().unwrap_or("UTC");
+    let mut body = json!({
+        "subject": event.title,
+        "isAllDay": event.all_day,
+        "start": graph_time(&event.start_time, event.all_day, tz),
+        "end": graph_time(&event.end_time, event.all_day, tz),
+    });
+    if let Some(desc) = &event.description {
+        body["body"] = json!({"contentType": "text", "content": desc});
+    }
+    if let Some(loc) = &event.location {
+        body["location"] = json!({"displayName": loc});
+    }
+    if !event.attendees.is_empty() {
+        body["attendees"] = json!(event
+            .attendees
+            .iter()
+            .map(|a| json!({"emailAddress": {"address": a}, "type": "required"}))
+            .collect::<Vec<_>>());
+    }
+    if event.private {
+        body["sensitivity"] = json!("private");
+    }
+    body
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// What a hold sends: nobody invited, details private. The provider
+    /// half of `docs/PROVENANCE-DESIGN.md` §2's guard.
+    #[test]
+    fn a_private_request_with_no_attendees_invites_nobody_and_hides_its_details() {
+        let hold = CreateEventRequest {
+            title: "Focus".into(),
+            description: Some("draft the aims".into()),
+            start_time: "2026-09-25T09:00:00-04:00".into(),
+            end_time: "2026-09-25T10:00:00-04:00".into(),
+            location: None,
+            attendees: Vec::new(),
+            all_day: false,
+            timezone: Some("America/New_York".into()),
+            private: true,
+        };
+        let body = create_body(&hold);
+        assert!(body.get("attendees").is_none(), "{body}");
+        assert_eq!(body["sensitivity"], "private");
+
+        let open = CreateEventRequest {
+            private: false,
+            ..hold
+        };
+        assert!(create_body(&open).get("sensitivity").is_none());
+    }
     use super::*;
     use serde_json::json;
 
