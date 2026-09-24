@@ -142,15 +142,25 @@ one machine per account should be the one draining.
 name = "factory"
 command = "factory-publish"
 args = ["mcp"]
-sandbox = true
+[mcp.capabilities]
+untrusted_input = true   # poll answers and box reads are other people's text
 
 [outbox]
-tools         = ["factory__bundle_publish", "factory__bundle_alias", "factory__bundle_unpublish"]
-publish_tools = ["factory__bundle_publish", "factory__bundle_alias", "factory__bundle_unpublish"]
+tools = [
+  "factory__bundle_publish", "factory__bundle_alias", "factory__bundle_unpublish",
+  "factory__poll_create", "factory__poll_meeting_create", "factory__poll_close",
+  "factory__type_push", "factory__surface_push", "factory__surface_pull",
+]
+publish_tools = [
+  "factory__bundle_publish", "factory__bundle_alias", "factory__bundle_unpublish",
+  "factory__type_push",
+]
 ```
 
 Because [the outbox](/docs/features/security/outbox) routes by tool *name*, naming these
-stages them for review with no change to mecha at all. `bundle_render` is
+stages them for review with no change to mecha at all
+([onboarding](/docs/features/public-surface/onboarding#what-is-routed-and-what-is-not)
+says why each is routed, and why the poll verbs are not publishes). `bundle_render` is
 deliberately not routed: rendering is cheap and local, and making every
 iteration cost a human review is how a review queue stops being read.
 `publish_tools` additionally tells the review surface that these items are
@@ -160,13 +170,13 @@ with a path and a visibility flag.
 See [Publishing](/docs/features/public-surface/publishing) for the full tool surface, and
 [Onboarding](/docs/features/public-surface/onboarding) for pairing a machine to a handle.
 
-:::warning[One honest gap]
-The notebook renderer executes code that mecha did not write — `marimo export`
-runs the notebook to capture its state — and **that subprocess is not yet
-confined**. It runs as you, with your environment. mecha confines the MCP server
-it launches, but the render subprocess lives inside the factory crate, where
-mecha's sandbox cannot see it. Do not wire notebook rendering to anything
-unattended until it is confined and preflighted.
+:::note[What the notebook renderer does not do]
+`marimo export` **parses** a notebook; it does not run the cells, which execute
+later in the reader's browser under Pyodide. The one thing a render reaches
+beyond your machine is `--vendor-runtime`, which fetches Pyodide from a pinned
+allowlist. The render subprocess lives inside the factory crate, so mecha's
+sandbox does not see it either way. See
+[Notebooks](/docs/features/public-surface/notebooks#the-export-does-not-run-your-notebook).
 :::
 
 ## Where to go next

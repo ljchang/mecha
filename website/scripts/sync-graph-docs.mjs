@@ -1,5 +1,5 @@
 // mecha-graph's docs have one source of truth: the mecha-graph repository.
-// This copies four of its files into the site's Graph section at build time,
+// This copies six of its files into the site's Graph section at build time,
 // so the site can never drift from the repo — the exact duplication
 // sync-changelog.mjs exists to avoid, applied across a repository boundary
 // the way sync-gallery.mjs already does.
@@ -12,9 +12,11 @@
 //   2. raw.githubusercontent.com from the public repo, for CI and for anyone
 //      who only cloned mecha.
 //
-// The copies are gitignored. A missing file is a warning, not an error —
-// the authored overview still builds, and a sidebar entry that 404s is a
-// better failure than no docs build at all.
+// The copies are gitignored. A file that cannot be fetched is only a warning
+// *here* — the script skips it and carries on — but the build still fails
+// afterwards: authored pages link to every synced page, and
+// docusaurus.config.ts sets onBrokenLinks: 'throw'. A missing sync is caught,
+// just by the link checker rather than by this script.
 
 import {mkdirSync, readFileSync, writeFileSync, existsSync} from 'node:fs';
 import {dirname, resolve} from 'node:path';

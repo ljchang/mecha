@@ -17,12 +17,14 @@ knows it exists.
 name = "factory"
 command = "factory-publish"
 args = ["mcp"]
+[mcp.capabilities]
+untrusted_input = true   # poll answers and box reads are other people's text
 
 [outbox]
 tools = [
   "factory__bundle_publish", "factory__bundle_alias", "factory__bundle_unpublish",
   "factory__poll_create", "factory__poll_meeting_create", "factory__poll_close",
-  "factory__type_push",
+  "factory__type_push", "factory__surface_push", "factory__surface_pull",
 ]
 publish_tools = [
   "factory__bundle_publish", "factory__bundle_alias", "factory__bundle_unpublish",
@@ -36,7 +38,7 @@ reviewed as a message — readable as prose, editable, and its unedited release
 counted as the writing signal it is. A `publish`-kind card would lead with
 local paths that do not exist and refuse `edit` on the owner's own sentence.
 
-Fifteen tools, in four families:
+Eighteen tools, in five families:
 
 | Family | Tools | Reaches the box |
 |---|---|---|
@@ -44,17 +46,32 @@ Fifteen tools, in four families:
 | Polls | `poll_create`, `poll_meeting_create`, `poll_status`, `poll_close` | all four |
 | Notebooks | `notebook_render` | no |
 | Request types | `type_check`, `type_push`, `type_list` | `push`, `list` |
+| Surfaces | `surface_push`, `surface_pull`, `surface_list` | all three |
 
-The division that matters is **local versus outbound**. `bundle_render`,
-`notebook_render` and `type_check` do their work on your machine and touch
-nothing; `bundle_fetch`, `bundle_list` and `bundle_status` read your own
-records. Everything in the right-hand column carries `openWorldHint`, which in
-mecha sets **both** `untrusted_input` and `chosen` egress (a remote schema is
-the server's to write, so nothing local can prove it holds no destination) —
-so those are
-[trifecta](/docs/features/security) sinks, and the ones that change what the
-world can see go through [the outbox](/docs/features/security/outbox) exactly as a send
-does. See [the onboarding guide](/docs/features/public-surface/onboarding) for the routing to
+The surfaces are your public pages' own records — a profile, the hangar, or
+one switchboard, each a local TOML file. `surface_push` sends one to the box
+and changes what a stranger sees at your public pages, so it is a publication
+like `type_push`; `surface_pull` writes the box's copy back over the local
+file (the cockpit can edit these too, and a push from a stale file overwrites
+what was changed there); `surface_list` names every board the box holds and
+which were edited in the cockpit since their last push.
+
+The division that matters is **local versus outbound**. `bundle_render` and
+`type_check` do their work on your machine and touch nothing, and
+`notebook_render` touches nothing either unless asked to vendor the runtime —
+`vendor_runtime` fetches Pyodide from a pinned allowlist; `bundle_fetch`,
+`bundle_list` and `bundle_status` read your own records. Everything in the
+right-hand column carries `openWorldHint` except the three reads —
+`poll_status`, `type_list` and `surface_list`, which are declared read-only:
+nothing a model writes leaves through them. `openWorldHint` in mecha sets
+**both** `untrusted_input` and `chosen` egress (a remote schema is the
+server's to write, so nothing local can prove it holds no destination) — so
+those are [trifecta](/docs/features/security) sinks, and the ones that change
+what the world can see go through [the outbox](/docs/features/security/outbox)
+exactly as a send does. The reads are not sinks, but what they return is
+still third-party text — a poll's free-text answers are other people's words —
+and nothing marks it so except the `[mcp.capabilities] untrusted_input = true`
+line on the server block above. See [the onboarding guide](/docs/features/public-surface/onboarding) for the routing to
 copy.
 
 `type_push` is the one to look at twice: uploading a request-type manifest is

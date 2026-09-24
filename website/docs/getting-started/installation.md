@@ -24,10 +24,12 @@ rustc --version        # must be 1.89.0 or later
 rustup update stable   # if it is not
 ```
 
-Nothing else is required to build. TLS comes from `rustls` rather than the
-system OpenSSL (`reqwest` is pulled in with `default-features = false` and the
-`rustls-tls` feature), so there is no `libssl-dev` step and no vendored C
-build.
+**A C compiler** (`cc`/`gcc` or `clang` — `build-essential` on Debian and
+Ubuntu, the Xcode command-line tools on macOS). TLS comes from `rustls` rather
+than the system OpenSSL (`reqwest` is pulled in with `default-features = false`
+and the `rustls-tls` feature), so there is no `libssl-dev` step — but `rustls`
+uses `ring` for its cryptography, and `ring` compiles a little C and assembly
+at build time. Nothing else is required to build.
 
 ## Installing
 
@@ -109,6 +111,7 @@ The workspace has four members. `cargo build --release` builds all of them:
 | `mecha-mail` | `mecha-mail` | One MCP server over every configured account, whatever provider each uses. This is the one to wire up. |
 | `mecha-google` | `mecha-mail` | Gmail and Google Calendar only, with its own credential store. |
 | `mecha-outlook` | `mecha-mail` | Outlook mail and calendar over Microsoft Graph, its own credential store. |
+| `mecha-docs` | `mecha-mail` | Google Docs, Sheets and Slides under `drive.file`, sharing the mail crate's OAuth and token handling. See [Documents](/docs/features/tools/documents). |
 | — | `mecha-core` | The library every interface is built on. No binary of its own. |
 | — | `mecha-slack` | The Slack transport: Socket Mode, the Web API, files both ways. No binary of its own — the connector is `mecha slack connect`, run as a systemd unit (`scripts/mecha-slack.service`). |
 
@@ -218,6 +221,14 @@ Then start it and let mecha read the settings off it rather than typing them:
 llama-server -m model.gguf --mmproj mmproj-BF16.gguf --host 127.0.0.1 --port 8080 --jinja
 mecha setup --write        # writes model, context_window and vision from /props
 ```
+
+That last line writes a new `[providers.local]` only when the config has no
+local provider yet and the default provider has no API key — the case where
+nothing else could answer. If you already have, say, `ANTHROPIC_API_KEY`
+exported, `mecha setup --write` says no local server was checked; add
+`[providers.local]` with `kind = "local"` and `base_url =
+"http://127.0.0.1:8080"`, then run `mecha setup --write --provider local`. See
+[Setting up](/docs/getting-started/setting-up#if-a-server-is-already-running).
 
 [Serving a local model](/docs/features/models/serving) covers slots, what `-c`
 actually divides, and how to measure whether a restart made things slower.

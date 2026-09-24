@@ -38,8 +38,11 @@ else](#the-remote-control-is-that-owner-from-somewhere-else).
 [Voice](/docs/features/interfaces/voice) is not a sixth entry either, for a more concrete
 reason: **it is not a separate front end at all.** A call is opened from the
 chat view of the web surface and speaks into the conversation already open
-there. There is no `mecha voice` you can run in a terminal, no phone number,
-and no other way in. If you want to talk to mecha, `mecha serve` is the door.
+there. There is no phone number and no terminal client. `mecha voice-serve`
+exists, but it is only the loopback endpoint the voice worker calls, with an
+agent of its own — `mecha serve` already mounts the same endpoint in-process,
+and only the mounted one speaks into your web conversations. If you want to
+talk to mecha, `mecha serve` is the door.
 
 ## One loop, several processes, and no extra models
 
@@ -108,8 +111,9 @@ mecha run --resume 20260805T091500-3f2a "and what about Thursday?"
 echo "explain this" | mecha run -
 ```
 
-The prompt can be an argument, `-`, or omitted, in which case it is read from
-stdin. Output streams by default; `--no-stream` waits for the whole answer,
+The prompt can be an argument, or `-` to read it from stdin. Omitting it
+also reads stdin when stdin is piped; at a terminal an omitted prompt is an
+error rather than a silent wait. Output streams by default; `--no-stream` waits for the whole answer,
 `--quiet` drops the tool narration, and `--json` emits one object with the
 text, stop reason, turn count, usage, cost, and the session id.
 
@@ -257,9 +261,15 @@ border characters too, so `s` there shows the link alone at column 0.
 ## `mecha serve` — the web surface
 
 ```bash
-mecha serve                          # the door, on [web] port
-mecha serve --voice-port 8990        # with the voice facade mounted
+mecha serve                          # the door, on [web] port, voice facade on :8990
+mecha serve --voice-yes              # let spoken turns act without per-call approval
+mecha serve --voice-port 0           # no voice facade
 ```
+
+The voice facade is mounted by default on loopback port 8990. Without
+`--voice-yes` it inherits the config's `ask`, and a call has nobody to answer
+a card, so every voice tool call comes back blocked; sends stage in the outbox
+either way. See [Voice](/docs/features/interfaces/voice).
 
 The same agent, behind a small web app bound to `127.0.0.1` and fronted by
 [`tailscale serve`](https://tailscale.com/kb/1242/tailscale-serve). It exists
@@ -279,13 +289,12 @@ data behind it rather than a box — tap through it, and type into the chat:
     {hash: 'mail', label: 'mail'},
     {hash: 'review', label: 'review'},
     {hash: 'tasks', label: 'tasks'},
-    {hash: 'notes', label: 'notes'},
     {hash: 'graph/Priya%20Raghavan', label: 'graph'},
     {hash: 'settings', label: 'settings'},
   ]}
   caption={
     <>
-      The seven pages of <code>mecha serve</code>. Sending in <strong>chat</strong> replays a
+      The seven pages of <code>mecha serve</code> — notes now live inside <strong>graph</strong>. Sending in <strong>chat</strong> replays a
       recorded run — a tool call resolving, then a reply that stages a draft instead of
       sending it.
     </>

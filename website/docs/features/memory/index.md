@@ -12,7 +12,7 @@ thing are worth remembering and no single trust model fits them all:
 | Memory | Holds | Trust model | Write path |
 |---|---|---|---|
 | **The knowledge graph** | The world: people, projects, events, facts | **Untrusted on read** — third-party text by construction | Agent writes are staged candidates; a person promotes them |
-| **The [learning store](/docs/features/learning)** | Behaviour: rules mined from your corrections | Provenance-gated — only clean-origin reflections become rules | `reflect` → nightly consolidation → gated proposals |
+| **The [learning store](/docs/features/learning)** | Behaviour: rules mined from your corrections | Provenance-gated — only clean-origin reflections become rules (a tainted session still yields clean ones from your own typed words; triage rules carry a narrow exemption) | `reflect` → consolidation from a `session_end` hook (`scripts/learn-live.sh`), self-applied behind a measurement gate (probation when nothing can be graded); a nightly sweep catches the rest; `--propose` stages for review instead |
 | **The [session transcript](/docs/features/memory/sessions-and-replay)** | What was actually said and done, verbatim | The record itself; `recall` re-surfaces it taint-neutrally | Append-only, rewrites recorded with what they replaced |
 
 The separations are load-bearing. A learned rule rides in every future

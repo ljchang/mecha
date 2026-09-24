@@ -30,7 +30,7 @@ so a crashed run still leaves a readable transcript. Ids are
 `20260805T091500-3f2a1b7c` — sortable by name, and still unique when two runs
 start in the same second.
 
-Seven record kinds:
+Nine record kinds:
 
 ```json
 {"record":"meta","id":"20260805T091500-3f2a1b7c","created_at":"...","provider":"anthropic","model":"claude-opus-5","workspace":"/home/you/project","title":"summarize what changed"}
@@ -38,6 +38,8 @@ Seven record kinds:
 {"record":"message","role":"user","content":[{"type":"text","text":"..."}]}
 {"record":"taint","private":true,"untrusted":false}
 {"record":"rewrite","messages":[...]}
+{"record":"goal_anchor","goal":"epic:7"}
+{"record":"title","title":"summarize what changed"}
 {"record":"summary","usage":{...},"turns":4}
 {"record":"outcome","turns":4,"stop_cause":"end_turn","tool_calls":11,"tool_errors":1,"tool_denied":0,"ended_on_failed_call":false,"compactions":0, ...}
 ```
@@ -51,6 +53,11 @@ and loading replaces what was accumulated so far. The states a rewrite
 the conversation, and the end-of-run recording walks them before the final
 state — so a run long enough to compact itself still gets its whole head
 into the file.
+
+A `goal_anchor` record follows each recorded run and names the goal that run
+was anchored to, so a resumed conversation keeps its goal. A `title` record
+renames the conversation as it grows; the last one wins over the header's
+title.
 
 `load` skips unparseable lines rather than failing — a truncated final line is
 the normal result of a killed process. A file whose first record is not a
@@ -323,10 +330,12 @@ exact-match-shaped.** A local server's sampler is outside this process's
 knowledge, and the same case measures 5/5 rather than deterministically. One
 divergent replay is a sample, not a regression.
 
-A replayed result is also **not provenance**. The transcript does not record
-which results actually came from outside, so replayed outputs carry no
-`external` marking and a replay's taint may be *less* armed than the
-recording's was. Refusals the interlock produced at record time were recorded
+A replay is also **never less armed than the recording**. Each recorded tool
+result carries its provenance (`tool_provenance` on the message), and replay
+passes every call's `external` marking through unchanged; a result whose
+provenance is unknown — a recording made before the field existed — counts as
+external. Replay can therefore over-taint a legacy recording, never
+under-taint one. Refusals the interlock produced at record time were recorded
 as results, so they replay verbatim regardless.
 
 ## The standing regression check

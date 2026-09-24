@@ -113,8 +113,9 @@ without it every "what's on Thursday" is answered several hours off — and wron
 in the worst way, because the times stay internally consistent with each other
 and read as correct.
 
-It rides in the system prompt with today's date, and mecha hands the same zone
-to every MCP server as `MECHA_TZ` — set it here once, never per server. The mail
+The harness asks the clock on every turn and adds today's date, in this zone, to
+the message it sends — so a session left open overnight never works from
+yesterday's date. mecha hands the same zone to every MCP server as `MECHA_TZ` — set it here once, never per server. The mail
 servers render event times in it and resolve `today` and `tomorrow` in it, and
 without it they refuse those words rather than guess the day.
 
@@ -141,8 +142,13 @@ Three things depend on it, and without it all three degrade silently:
   something you must remember to configure into something that works.
 - **The TUI status line becomes a fuel gauge** — `context 29.3k/32.8k (89%)`,
   yellow at 75%, red at 90% — instead of a number with nothing to compare it to.
-- **Overflow recovery** knows what it is recovering from. A prompt that does not
-  fit is refused outright, and the loop compacts and retries the same turn once.
+- **The tool-output budget derives from it** — the byte allowance one turn's
+  tool results share, so a burst of parallel results cannot by itself push the
+  next request past the window.
+
+Overflow recovery does not read it: a prompt that does not fit is refused by the
+server, and the loop compacts and retries the same turn once. Without
+`context_window` (or `compact_at_tokens`), that is the only compaction left.
 
 If you change the server's `-c` or `-np`, change this to match. A stale value is worse
 than none, because the derived threshold trusts it.

@@ -33,11 +33,15 @@ mecha trigger tick --dry-run  # what would fire, and why
 mecha trigger runs            # the ledger, newest first
 ```
 
-Everything that shapes a run — `--provider`, `--model`, `--workspace`,
-`--tool`, `--no-mcp`, `--max-turns`, `--max-output-tokens`, `--max-cost`,
-`--yes` / `--read-only` — is already a global flag, and `add` records exactly
-those into the trigger file. One vocabulary, whether you run it now or every
-morning.
+The run shapers — `--provider`, `--model`, `--workspace`, `--tool`,
+`--tool-profile`, `--no-mcp`, `--max-turns`, `--max-output-tokens`,
+`--max-cost`, `--yes` / `--read-only` — are already global flags, and `add`
+records exactly those into the trigger file, along with its own `--skill`
+(repeatable: the skills this unattended run may load). One vocabulary, whether
+you run it now or every morning. `add` accepts the other global flags too, but
+does **not** record them — `--effort`, `--system`, `--no-thinking`,
+`--no-mcp-server` and the other `--no-*` switches are dropped, so a scheduled
+run gets your config's defaults for them.
 
 The action is a **prompt**, never a command. Scheduled commands are what cron
 is for, and giving one a home here would mean re-answering how it gets
@@ -74,10 +78,24 @@ systemctl --user enable --now mecha-triggers
 loginctl enable-linger "$USER"     # so it runs while logged out
 ```
 
-The unit's `WorkingDirectory` is the home directory on purpose, and its
-`TimeoutStopSec` is sized to outlast a tool call in progress: SIGTERM reaches
-the in-flight run itself, which stops at its next safe point, keeps the
-partial answer, and still writes its ledger row.
+The shipped file's `WorkingDirectory` is the home directory on purpose, and its
+`TimeoutStopSec=180` is sized to outlast a tool call in progress: SIGTERM
+reaches the in-flight run itself, which stops at its next safe point, keeps the
+partial answer, and still writes its ledger row. It also sets
+`Environment=PATH=` to include `~/.cargo/bin`, because systemd gives a unit a
+minimal environment and a `--notify` command calling anything cargo installed
+otherwise exits 127 under the daemon while working by hand.
+
+The printed unit is **shorter** than the file: `--print-unit` writes
+`ExecStart` with this binary's own path, `Restart=on-failure` and
+`RestartSec=30`, and none of `WorkingDirectory`, `Environment=PATH` or
+`TimeoutStopSec`. Add those three lines under `[Service]` before enabling it:
+
+```ini
+WorkingDirectory=%h
+Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+TimeoutStopSec=180
+```
 
 ## Five decisions
 

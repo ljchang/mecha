@@ -39,38 +39,43 @@ curl -s localhost:8080/props | jq .total_slots
 
 ### The trade, measured
 
-More slots buy throughput and cost latency. Measured on one machine with a
-35B MoE at a short prompt and 300 generated tokens, so this is generation
-rather than prefill:
+More slots buy throughput and cost a little latency. Measured on 2026-08-20 on
+a quiet machine with a 35B MoE, 262,144 tokens per slot in every arm, 300
+generated tokens (so this is generation rather than prefill), single-stream
+median of 3:
 
-| Configuration | Load | Throughput |
+| Configuration | Single stream | 4-stream throughput |
 |---|---|---|
-| `-c 131072 -np 1` | 1 stream | 79.8 tok/s |
-| `-c 262144 -np 4` | 1 stream | 70.5 tok/s |
-| `-c 262144 -np 4` | 4 streams | ~35 each, ~129 aggregate |
+| `-c 262144 -np 1` | 88.6 tok/s | 85.7 tok/s |
+| `-c 524288 -np 2` | 85.5 tok/s | 107.4 tok/s |
+| `-c 1048576 -np 4` | 83–85 tok/s | 135–140 tok/s |
 
-Four slots cost **12% of single-stream speed** and return **1.6× aggregate** —
-so four independent tasks finish in about 0.6× the wall clock of running them
-one after another, not 0.25×. Generation is bandwidth-bound, and speculative
-decoding is exactly the thing batching dilutes.
+Four slots cost **about 5% of single-stream speed** — under a second on a
+500-token answer — and return **about 1.6× throughput**, not 4×: generation is
+bandwidth-bound, and speculative decoding is exactly the thing batching
+dilutes. (An earlier measurement put the single-stream cost at 12%; it compared
+arms at different `-c`, and was withdrawn.)
 
-The choice is therefore per workload, not global:
-
-- **Interactive use** — chat, the TUI, Slack, a trigger — is single-stream.
-  Keep `-np 1`.
-- **A [batch](/docs/features/interfaces) or [eval](/docs/features/experiments/evaluation)
-  sweep** genuinely fans out. Raise `-np`, and raise `-c` with it, because `-c`
-  is divided.
+So the reference launch script runs **`-np 4`**, with `-c` raised to four
+times the per-slot window, because `-c` is divided. The load-bearing reason is
+not the throughput: [`mecha batch`](/docs/features/interfaces) and
+[`mecha eval`](/docs/features/experiments/evaluation) default to
+`--concurrency 4`, and against one slot that was worse than serial — four
+conversations round-robining through a single KV cache, each evicting the
+last one's prefix. At about 5%, interactive use pays almost nothing for the
+extra slots.
 
 ## What happens when two agents talk to one slot
 
 Nothing incorrect. Each request carries its whole transcript, the server
-prefills it, and no state leaks between conversations. Concurrent requests
-simply **queue** — a Slack message arriving mid-trigger waits its turn.
+prefills it, and no state leaks between conversations. Requests beyond the
+number of slots simply **queue** — a Slack message arriving while every slot is
+busy waits its turn.
 
-The cost is subtler and it is silent. A slot keeps the previous prompt's tokens
-and reuses the longest common prefix with the next one. Two conversations
-alternating on a single slot therefore look like this:
+The cost is subtler and it is silent, and it appears once conversations
+outnumber slots — at `-np 1`, as soon as there are two. A slot keeps the
+previous prompt's tokens and reuses the longest common prefix with the next
+one. Two conversations alternating on a single slot therefore look like this:
 
 ```mermaid
 sequenceDiagram
@@ -93,9 +98,16 @@ used is roughly 30 seconds of pure overhead before the first token.
 
 :::tip[If you want real isolation, isolate the slot]
 Raising `-np` gives concurrent conversations their own KV caches and stops the
-thrash — at the cost of dividing `-c` and of the single-stream slowdown above.
-The alternative, and usually the better one for a personal machine, is to
-accept that interactive work is single-stream and let the queue do its job.
+thrash — at the cost of dividing `-c` and of the small single-stream slowdown
+above. A host-memory prompt cache (`-cram`, sized above one slot's KV) lets a
+slot pick an evicted prefix back up rather than re-prefilling it.
+
+mecha also bounds the other side: background runs — delegated tasks and the
+like, never your own chat turns — take a **permit** before holding the model, and by default
+three may run at once against `-np 4`, one seat short of the server's so an
+interactive turn never queues behind them. Interactive work takes no permit.
+That is a latency control: beyond the slot count, throughput stops rising and
+every turn just takes longer.
 :::
 
 ## Unified memory has no separate pool
@@ -130,9 +142,10 @@ Keep the server launch flags and mecha configuration in sync:
 | `--reasoning-budget` | the server's launch flags | Caps thinking so the model actually closes the block and answers. |
 | `max_tokens` | `[agent]` | Must exceed the reasoning budget, comfortably — otherwise thinking consumes the whole allowance and the turn comes back empty, which mecha reports as an empty-output failure. |
 
-`context_window` is the load-bearing one, because four separate behaviours
-derive from it: the compaction threshold, the per-turn tool-output budget, the
-TUI's fuel gauge, and overflow recovery. A stale value is worse than no value,
+`context_window` is the load-bearing one, because three separate behaviours
+derive from it: the compaction threshold, the per-turn tool-output budget, and
+the TUI's fuel gauge. Without it, overflow recovery — which keys on the
+server's refusal, not the window — is the only thing that compacts. A stale value is worse than no value,
 because everything downstream trusts it. See
 [Context window and cost](/docs/features/models/providers#context-window-and-cost).
 

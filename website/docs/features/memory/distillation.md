@@ -39,7 +39,7 @@ It is told to skip freely: smoke tests, one-line lookups, greetings, aborted or
 purely mechanical runs leave nothing durable, and the graph is for what the user
 would ask about later — noise costs more than a gap. The reply is one JSON
 object, `{"skip": true}` or `{"skip": false, "episode": "..."}`, either of
-which may carry a `corrections` array.
+which may carry a `corrections` array and a `surprises` array.
 
 It reports corrections separately from the episode: the moments you told the
 agent the graph has something wrong — "no, she's at Yale now", "that's the old
@@ -50,6 +50,10 @@ otherwise skipped.
 The transcript is rendered head-and-tail bounded (6,000 characters of head,
 18,000 of tail) so a long session cannot overflow the distiller's own context.
 The tail gets the larger share because outcomes live at the end.
+The rendering labels mecha's own voice in a user-role message — a peer's
+delivered message, a boredom notice, a plan-step nudge — as `[harness]`
+rather than as you, so none of it reaches the graph as something the owner
+said.
 
 What gets pushed:
 
@@ -210,11 +214,13 @@ The failure handling follows from what each failure means:
 
 ## Where it runs
 
-`mecha distill` sits in the nightly rumination pass, after `reflect`, catching
-whatever a `session_end` hook missed:
+`mecha distill` sits in the nightly rumination pass (`scripts/ruminate.sh`),
+after `reflect`, catching whatever a `session_end` hook missed:
 
 ```
-reflect → distill → validate → learn --propose → rules propose-retirements
+reflect → distill → validate --unprocessed-only --cover 1
+  → learn --holdout 0.25 --auto → rules propose-retirements --apply
+  → work clean → harness ruminate
 ```
 
 It can also be fired directly from a hook at session close. Either way it is

@@ -26,6 +26,8 @@ compact_at_tokens = 22000     # explicit
 compact_keep_recent = 6       # turns kept verbatim
 compact_validate = true       # on by default
 loop_guard = true             # on by default
+predictive_compaction = true  # on by default: also fire on the forecast
+carried_state = true          # on by default: carry the plan verbatim
 ```
 
 ```bash
@@ -34,9 +36,25 @@ mecha run "..." --compact-at 22000
 
 ## Knowing when to compact
 
-The threshold is measured against what the provider **reported** for the last
-turn, not against an estimate over the message list — so it counts cached
-tokens too, and tracks the real prompt.
+The threshold is checked between turns against two readings, and either one
+fires it. The first is what the provider **reported** for the last request —
+not an estimate over the message list, so it counts cached tokens too and
+tracks the real prompt.
+
+That reading is a turn out of date: by the time the check runs, the assistant
+turn and a batch of tool results nobody has priced are already in the
+transcript. So the second is a **forecast** of the next request — the last
+reported size plus the bytes added since, converted at the token-per-byte rate
+measured between the last two reports and clamped into the range a real
+tokenizer can occupy. It is arithmetic on two measurements: no tuned parameter
+and no model call. The check is `reported || predicted`, never the forecast
+alone, so it can only make compaction fire *earlier* than the reported size
+would, never later.
+
+The forecast is on by default. `predictive_compaction = false` in `[agent]`, or
+`--no-predictive-compaction` on a run, leaves only the reported size — the
+threshold itself stays. It needs a first response to anchor on, so it starts
+empty on every run, which in `mecha chat` and the TUI means every user turn.
 
 You can set it directly, or let it derive:
 
@@ -58,21 +76,53 @@ compaction from something you must remember to configure into something that
 works, and the failure it prevents is total rather than gradual — one turn over
 the window and the server refuses the request outright.
 
-Two thirds, not nine tenths, because the check happens *between* turns against
-what the last one reported. The next request still has to fit the model's reply
-and whatever a burst of parallel tool results adds. Leaving a third of the
-window free is what makes a reactive check safe.
+Two thirds, not nine tenths, because the check still happens *between* turns.
+The request it clears must also fit the model's reply, the forecast is an
+estimate at a measured rate rather than a count, and with the forecast turned
+off, whatever a burst of parallel tool results added since the last report is
+not seen at all. Leaving a third of the window free is what makes that safe.
 
-Two other things read `context_window`: the TUI status line becomes a fuel
+Other things read `context_window` too: the TUI status line becomes a fuel
 gauge (`context 29.3k/32.8k (89%)`, yellow at 75%, red at 90%) instead of a
-number with nothing to compare to, and overflow recovery has something to aim
-at. If you change the server's `-c`, change `context_window` to match — a stale
-value is worse than none, because the derived threshold trusts it.
+number with nothing to compare to, the per-turn tool-output budget is sized
+from it, and whether the [`compact` tool](#the-model-can-ask-for-it) is offered
+depends on there being a threshold at all. Overflow recovery does not need it —
+it keys on the server's refusal — but with no window and no
+`compact_at_tokens`, that refusal is the only thing that ever compacts. If you
+change the server's `-c`, change `context_window` to match — a stale value is
+worse than none, because the derived threshold trusts it.
 
 A per-run override exists (`RunContext::with_compact_at`) for the same reason
 the budget and the path jail are per-run: one agent serves many runs, and an
 eval case that means to exercise compaction cannot ask every other case to
 compact too.
+
+## The model can ask for it
+
+Wherever a run has a threshold, the model also gets a `compact` tool. It takes
+no arguments and rewrites nothing itself: it sets a flag, and before the next
+turn the loop runs exactly what a threshold crossing runs — the free passes
+below, then the summary. The summary always runs on a request, because the
+request is by design made while the transcript is still under the threshold,
+and re-asking "is it over?" there would answer no after the model was told
+it would be summarised.
+
+The description tells the model to call it at a boundary — after finishing a
+step of its plan, before starting the next — because that is the one thing the
+model knows and the harness does not: how much of its own plan is left. *How*
+to compact stays the harness's: the cut point is chosen by the same pure code
+either way.
+
+It can only ever **add** a compaction; the threshold still fires on its own, so
+nothing the model reads can make a run compact later. It is not gated on
+approval — compaction is lossy but not destructive, and the states a rewrite
+replaces are [still recorded](#what-a-rewrite-replaced-is-still-recorded).
+
+`--no-compact-tool` withholds it (the run still compacts at its threshold), as
+does leaving `compact` out of `[tools]` — in `disabled`, or an `enabled` list
+or `--tool` allowlist that does not name it. `mecha eval` forces it off with the
+rest of its levers, `predictive_compaction` and `carried_state` among them, so
+a scorecard does not depend on this machine's config.
 
 ## The order of operations
 
@@ -166,10 +216,11 @@ Four rules:
   [learning miner](/docs/features/learning) reads a correction out of, and compaction
   rewrites the transcript in place, so folding three refusals into one marker
   destroys the evidence rather than merely undercounting it.
-- **It does not count toward "freed enough, defer the summary".** It removes
-  repetition rather than bulk, so treating it as freed space would spend a turn
-  arriving back at the same threshold. It *is* enough to write a `rewrite`
-  record, because the transcript really did change.
+- **It counts toward "freed enough" by what it actually freed, no more.** The
+  loop re-measures after the passes, so a collapse that removed repetition but
+  little bulk simply leaves the transcript over the threshold and the summary
+  runs. It is always enough to write a `rewrite` record, because the
+  transcript really did change.
 
 Distinct from [the loop guard](#a-compaction-arms-the-loop-guard), which stops a
 run that has already gone wrong and only after a compaction. This runs before
@@ -200,10 +251,14 @@ so it does not depend on a summariser noticing it mattered. It costs no
 request, and an already-thinned result is left alone so repeated passes do not
 eat the head a chunk at a time.
 
-**If eviction or thinning freed anything, the summary is deferred a turn** —
-collapsing does not count, for the reason above. The next reported prompt size
-says whether that was enough, and a summary is lossy where thinning is merely
-lossy about the middle of a file.
+**Then the loop asks again, in the same turn.** The passes rewrote the list the
+reported size measured, so that number is retired and the forecast answers
+against the transcript as it now is. If the three passes between them brought
+it back under the threshold, no summary is paid for — a summary is lossy where
+thinning is merely lossy about the middle of a file. With
+`predictive_compaction` off there is no fresh reading, and unknown falls toward
+the summary: it runs unless a new report says otherwise. A model's `compact`
+request skips the re-ask, for the reason [above](#the-model-can-ask-for-it).
 
 ### 4. Summarise the middle
 
@@ -294,7 +349,9 @@ included, and is told to fold that summary into the new one — so a long
 session carries one summary, not a growing stack of them, and the validator
 checks the new summary against a rendering that still holds the old one.
 
-The loop learns that some tools have state, never which one. See
+The loop learns that some tools have state, never which one. `carried_state =
+false` (or `--no-carried-state`) is an experiment's lever: the summary still
+installs, the plan just does not ride across it. See
 [Tools and MCP](/docs/features/tools).
 
 ## The summariser gets prose, not a replay
@@ -329,6 +386,13 @@ what remained, and, explicitly, **where in a sequence the work had got to**:
 It also asks the summariser to say when a fact came from content a third party
 could have written: the distinction survives compaction even when the text does
 not.
+
+The rendering labels each line with who said it, and harness text that rides
+in a user message — a peer's delivered message, a boredom notice, a plan-step
+nudge — is labelled `[harness]`, not as the owner. Labelled by role alone, the
+summary would say the owner had said them, and it lands in the task message
+where it outlives every turn it describes; `mecha distill` reuses the same
+rendering.
 
 The summariser has **its own token budget** (8192), not the agent's. Tying them
 was measured to kill runs: at `[agent] max_tokens = 4096` the summariser hit its
@@ -377,9 +441,11 @@ needed. `compact_validate = false` turns it off.
 
 ## Overflow recovery
 
-The reactive threshold cannot always prevent an overflow: a turn's parallel tool
-results land all at once, so the size checked between turns can sit well under
-the limit while the *next* request is well over.
+The threshold cannot always prevent an overflow: a turn's parallel tool
+results land all at once, so the size last reported can sit well under the
+limit while the *next* request is well over. The forecast narrows that gap but
+cannot close it — it has no anchor on a run's first request, and it is off in
+`mecha eval`.
 
 `is_context_overflow` recognises the refusal across backends by message text —
 no backend gives it a usable code — and the loop compacts and retries **the same
