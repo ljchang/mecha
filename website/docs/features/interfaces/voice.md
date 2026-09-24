@@ -90,7 +90,7 @@ component standing between a microphone and an agent holding your mail.
 
 ## Turning it on
 
-From a checkout, with the four services running:
+From a checkout, with the three services and the worker running:
 
 ```bash
 mecha serve --voice-port 8990 --voice-yes
@@ -128,6 +128,15 @@ a voice can be added or deleted without anyone's consent being the thing that
 made it legal. That script is a **one-off tool, not a service** — it needs a
 Kokoro container running while it generates, and nothing needs one afterwards.
 
+`scripts/voice/add-vctk-voices.py` adds references of a different kind:
+recordings of **real speakers** from the VCTK corpus, which carry prosody a
+synthesised reference does not, so a clone of one sounds less flat. Consent is
+a property of the source here too — VCTK is CC BY 4.0 and was recorded to be
+redistributed — but that licence **requires attribution**, and the script
+appends it to an `ATTRIBUTION.md` in the voices directory. Keep that file with
+the clips if you share them. The script only adds files and never overwrites
+one, and it takes speaker ids, never a URL.
+
 **Cloning your own** needs `[web] voices_dir` pointed at the host directory the
 TTS container mounts as `/voices`; unset, the endpoint answers *not configured*
 rather than failing obscurely. A reference is **5 to 120 seconds** — under five
@@ -158,6 +167,31 @@ two-note pulse while mecha is thinking, rings that radiate while it speaks, and
 a ring that breathes with your own microphone level so you can see that it is
 hearing you. The end chime is synthesised in the browser rather than
 downloaded, because the moment it matters most is when the network has died.
+
+A connection that drops is a different event from you going quiet, and the
+call treats it as one. When the audio stops arriving — a cellular stall, or
+the phone muting the microphone — the page sounds a two-note pause, and a
+resume when audio flows again. Meanwhile the worker holds any turn that was
+about to end, so a two-second stall mid-sentence does not send the first half
+of the sentence to the model as a whole turn. The page also holds a screen wake
+lock for the length of a call, because a phone that sleeps mid-call stops
+sending audio.
+
+**A draft can be released out loud.** When a run in a call stages something,
+the harness — not the model — reads the draft aloud from the outbox and asks.
+Your answer is matched against a fixed set of accepted phrases before any model
+sees it; a yes releases it through `mecha outbox approve`, one draft
+at a time. Anything that is not an answer takes the question down and goes to
+the model as speech, and the draft is asked about once more before it is left
+pending in the outbox. At no point does the decision pass through a context
+window, which is what keeps a transcript an injection wrote from saying yes on
+your behalf.
+
+The dictate buttons outside a call (graph and tasks) give the same kind of
+feedback: a short listening tone when recording has actually started, a live
+level drawn inside the button, and a refusal to send a clip that recorded
+nothing. Bars that do not move are the sign that the phone never started the
+microphone.
 
 mecha also writes differently out loud. No bullet lists, no headings, no code
 blocks; numbers and times spoken as words; long tool output summarised rather

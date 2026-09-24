@@ -45,6 +45,8 @@ never build an agent (where they are simply ignored).
 | `--no-fallback` | Never fall back to another provider. A transient failure that survives its retries fails the run. |
 | `--no-compact-tool` | Withhold the model's `compact` tool; automatic compaction remains available. |
 | `--no-step-escalation` | Disable quarantined checks of ambiguous completed plan steps. |
+| `--no-step-checks` | Do not execute declared plan checks. |
+| `--no-goal-guidance` | Disable goal and charter planning guidance. |
 | `--no-boredom` | Disable notices about approaches that stop yielding new evidence. |
 | `--no-compact-validate` | Skip omission checks on compaction summaries. |
 | `--no-predictive-compaction` | Trigger on reported context size only; output budgeting and headroom forecasts remain active. |
@@ -79,8 +81,9 @@ mecha run [OPTIONS] [PROMPT]
 | `--quiet` | Print only the answer — no tool narration. |
 | `--no-stream` | Wait for the whole answer instead of streaming it. |
 | `--resume <ID>` | Continue a saved session by id or unique prefix. |
-| `--goal <KIND:ID>` | Explicitly confirm this run's goal. |
+| `--goal <KIND:ID>` | Confirm what this run serves: `task:<id>`, `project:<id>`, `charter:<id>` or `setpoint:<id>`. Overrides the saved anchor when resuming; omitting it preserves the anchor. |
 | `--appraisal-evidence <FILE>` | Owner-authored commitment/check evidence for the matching `--goal`; see [anticipatory appraisal](/docs/features/appraisal/anticipation). |
+| `--mismatch-case <FILE>` | Owner-authored JSON fixture for isolated artifact validation of later mismatches; `mecha validate --trigger mismatch` reads it back. Conflicts with `--resume`, `--no-session`, `--image` and `--appraisal-evidence`. |
 | `--no-session` | Do not write a transcript. |
 | `--image <PATH>` | Attach image pixels to the user turn. Repeatable; requires a vision-enabled provider. |
 
@@ -146,14 +149,24 @@ Slash commands:
 
 | Command | Description |
 |---|---|
-| `/help` | The list. |
+| `/help` | This list. |
 | `/tools` | Tools this agent can call. |
+| `/skills` | Procedures this agent can load, and which are loaded. |
+| `/charter` | Standing priorities, ranked — `e` edits them in `$EDITOR`. |
 | `/triggers` | Scheduled prompts: see, edit, run, cancel. |
-| `/outbox` | Staged sends and publishes: show, edit, send, reject. |
-| `/queues` | Every store waiting on you — incl. the graph's merge queue, reviewed in place. |
-| `/frontdoor` | Inbound requests: extract, triage, close. |
-| `/polls` | Open polls, their tallies, and the lecture controls. |
-| `/review [now\|later\|auto]` | What happens to drafts a run stages. |
+| `/queues` | Every store waiting on you, incl. the graph merge queue. |
+| `/learning` | Reflections, rules and proposals — read, edit, refuse. |
+| `/outbox` | Staged outbound drafts: read, edit, send, reject. |
+| `/mail` | The classified inbox: read, dismiss, make a task (alias `/inbox`). |
+| `/frontdoor` | Inbound requests: read, extract, triage, close. |
+| `/tasks` | The graph's task board: see, capture, edit, move on. |
+| `/note <text>` | Capture a note into the knowledge graph. |
+| `/find [query]` | Search the graph: entities, facts, episodes. |
+| `/entity` | Who is who in the graph: rename, alias, add a person. |
+| `/polls` | Open polls on the gate: tallies, close, export. |
+| `/doctor` | What is silently wrong across the stores, and the way out. |
+| `/docs` | Documents in scope, and how to put one there. |
+| `/review [now\|later\|auto]` | What happens when a run stages drafts. |
 | `/model [id]` | Show or switch the model. |
 | `/provider [name]` | Show or switch the provider. |
 | `/mode [ask\|allow\|read-only]` | Show or switch the permission mode. |
@@ -163,7 +176,9 @@ Slash commands:
 | `/clear` | Start a new conversation, dropping its taint. |
 | `/session` | Where the transcript is being written. |
 | `/todo` | Show or hide the live task pane. |
-| `/exit` | Quit. |
+| `/send <path>` | Send a file to your Slack DM, to look at elsewhere. |
+| `/remote-control [name\|off]` | Mirror this session into a named Slack thread. Also `/remote` and `/rc`. |
+| `/exit` | Quit (also `/quit`, `/q`). |
 
 The status line shows context use as a fraction of the window when
 `[providers.X] context_window` is configured. Steering is a property of this
@@ -262,12 +277,19 @@ mecha eval [OPTIONS] [CASES]
 | `--no-ask-user` | Withhold `ask_user`, which is otherwise part of the tool surface. |
 | `--ab-rules` | Run the set twice — rules-free, then with this machine's learned rules — and report the per-case flips. |
 | `--ab-config <KEY=VALUE>` | Run the set twice, differing only in this override, and judge the difference against a holdout. Repeatable. |
-| `--holdout-in <N>` | One case in N is held out of selection, for `--ab-config`. Default `3`. |
+| `--holdout-in <N>` | One case in N is held out of selection, for `--ab-config` and `--ab-rules`. Default `3`. |
 | `--compare <FILES>...` | Compare previously written scorecards side by side instead of running. |
 
 `mecha eval` exits non-zero when anything fails, so it works as a regression gate.
-It forces MCP off, hooks off, learned rules off, the outbox off and fallback off, so
-a scorecard grades the model it names rather than this machine's local setup.
+It forces off the whole closed lever set (`harness::Lever`) — MCP, learned rules,
+hooks, the outbox, fallback, messages, skills, the charter, the compact tool, step
+escalation, step checks, goal guidance, boredom, compaction validation, predictive
+compaction and carried state — so a scorecard grades the model it names rather
+than this machine's local setup. `--mcp` and `--ab-rules` are the two opt-ins back.
+The approval rules file is the one lever that set's bare arm never throws; eval
+lifts it by its own explicit line, because a `forbid` in this machine's rules would
+score a case's `shell` call as blocked here and not elsewhere, and the fixture
+workspace is what makes lifting it defensible.
 
 `--runs k` matters more than it looks: reliability decays much faster than mean
 success, and the gap between pass^k and pass@k is the model's unreliability. A
@@ -309,8 +331,20 @@ mecha exp report assistant-follow-through     # per arm, per task, pass^k, cost;
 mecha exp export assistant-follow-through
 ```
 
+| Subcommand | Flag | Description |
+|---|---|---|
+| `new` | `<MANIFEST>` | Create an experiment from a TOML manifest; its `name` names the experiment. The design is written once, before anything runs. |
+| `run` | `<NAME>` | Drive every trial the design calls for that has not finished. |
+| `run` | `--jobs <N>` | Trials in flight at once, never two of one arm (they share its home). Default `1`. Above 1, each trial holds one of the background model seats and waits when none is free. `single` only. |
+| `run` | `--limit <N>` | Stop after this many trials this invocation. |
+| `run` | `--dry-run` | Plan and print the trials without spawning anything. |
+| `status` | `<NAME> [--json]` | Where the trials stand, per arm. |
+| `judge` | `<NAME> [--json]` | Judge every treatment arm against the control through the gate. |
+| `report` | `<NAME> [--json]` | Per arm, per task, and for a lifetime the pass rate along the sequence. |
+| `export` | `<NAME>` | The whole record — manifest, trials, judgements — as one JSON. |
+
 `new` refuses an existing name. `run` resumes unfinished trials and skips finished
-ones. See [Experiments](/docs/features/experiments) for manifests, fixtures, and
+ones; a trial found `running` at start crashed with its runner and is rerun. See [Experiments](/docs/features/experiments) for manifests, fixtures, and
 how to interpret the gate.
 
 ## `tools`
@@ -372,7 +406,8 @@ See [Skills](/docs/features/learning/skills).
 ## `charter`
 
 Print the standing priorities in `~/.mecha/charter.toml`, in rank order, as a
-run would see them.
+run would see them. Only a person edits a charter, and `mecha charter edit` is how
+— never a model.
 
 ```
 mecha charter [edit] [--json]
@@ -380,7 +415,7 @@ mecha charter [edit] [--json]
 
 | Subcommand | Flag | Description |
 |---|---|---|
-| *(none)* | `--json` | Emit JSON instead of a table — including on failure, so a scripted consumer sees the parse error in the payload rather than only in the exit code. |
+| *(none)* | `--json` | Emit JSON instead of a table — including on failure, so a scripted consumer sees the parse error in the payload rather than only in the exit code. Refused alongside `edit`, which has no JSON to emit. |
 | `edit` | | Open the charter in `$EDITOR`, creating a commented template first if there is no file yet. |
 
 **The owner may edit it; a model never authors a line of it.** That is the
@@ -445,8 +480,8 @@ mecha sessions <list|show|path|stats|health|appraise> [OPTIONS]
 | `appraise` | `--days <N>` | Only sessions started in the last N days. |
 | `appraise` | `-n`, `--limit <N>` | Stop after this many sessions, newest first. |
 | `appraise` | `--json` | Emit JSON instead of a table. |
-| `appraise`, `health` | `--kind <KIND>` | Filter to a recorded surface, such as `web`, `task`, or `tui`. |
-| `appraise`, `health` | `--include-tests` | Include smoke-test sessions; `--kind test` implies this. |
+| `list`, `appraise`, `health` | `--kind <KIND>` | Only sessions opened through this surface: `run`, `chat`, `tui`, `web`, `voice`, `task`, `trigger`, `frontdoor`, `mail`, `slack` or `test`. A transcript from before kinds were recorded matches no filter. |
+| `list`, `appraise`, `health` | `--include-tests` | Include smoke-test sessions (`MECHA_SESSION_KIND=test`); `--kind test` implies this. |
 | `appraise` | `--probe` | Resolve each intervention's agency by counterfactual replay. **Paid** — a model run per intervention. |
 | `appraise` | `--max-probes <N>` | Ceiling on replays across the whole walk. Default `25`. Requires `--probe`. |
 | `appraise` | `--appraise` | Run the quarantined appraiser over each session's numeric evidence. **Paid**, and independent of `--probe`. |
@@ -540,11 +575,14 @@ mecha outbox [list|show|edit|review|approve|reconcile|reject|anticipate|outcome]
 | `review` | `[IDS]...` | Walk items one at a time, deciding each. Ids, or unique prefixes; several is fine. |
 | `review` | `--all` | Every pending item, subject to the filters. |
 | `review` | `--kind <KIND>` | Only `message` or only `publish`. |
-| `approve` | `<ID>` | Execute the item's tool call, for real, and mark it sent. |
-| `approve` | `-y`, `--yes` | Skip the confirmation shown for items drafted in a tainted conversation. |
+| `review` | `--via <VIA>` | Only items staged by a tool whose name contains this. |
+| `approve` | `[IDS]...` | Execute each item's tool call, for real, and mark it sent. Ids, or unique prefixes; several is fine. |
+| `approve` | `--all` / `--kind <KIND>` / `--via <VIA>` | Every pending item, narrowed by the same filters as `review`. |
+| `approve` | `-y`, `--yes` | The global flag: skip the confirmation. Without it, a batch of more than one item is confirmed as a batch, and any item drafted in a tainted conversation is printed in full and confirmed; a single untainted item is not asked about. |
 | `reconcile` | `<ID> --outcome delivered\|not-delivered --evidence <TEXT>` | Record an uncertain delivery's observed outcome; never sends. |
-| `reject` | `<ID>` | Refuse an item. It stays on file as the record of the refusal. |
-| `reject` | `--reason <REASON>` | Why — recorded on the item for the next reader. |
+| `reject` | `[IDS]...` | Refuse items. They stay on file as the record of the refusal. |
+| `reject` | `--all` / `--kind <KIND>` / `--via <VIA>` | Every pending item, narrowed by the same filters as `review`. |
+| `reject` | `--reason <REASON>` | Why — recorded on each item for the next reader. |
 | `anticipate` | `<ID> [--file <FILE>] [--guide\|--observe]` | Read predictions or attach owner evidence to a pending message. `--guide` requires a current, resolved assessment before release; omitting the mode preserves it. |
 | `outcome` | `<ID> --file <FILE>` | Record post-delivery owner feedback linked to the prediction; revisions explicitly supersede prior feedback. |
 
@@ -573,23 +611,37 @@ merge queue, decidable from mecha. `queues` is the default subcommand. See
 [The queues](/docs/features/automation/queues) for the design.
 
 ```
-mecha review [queues|proposers|list|sample|items|accept|reject] [ARGS]
+mecha review [queues|list|proposers|shadow|sample|items|groups|bind|accept|reject] [ARGS]
 ```
 
 | Subcommand | Flag | Description |
 |---|---|---|
 | `queues` | | What is waiting, across every store. An unreadable store shows `—`, never 0. |
 | `proposers` | | The graph queue by proposing mechanism, with each one's **human** accept rate and Wilson lower bound. Machine rejects reported beside the rate, never inside it. |
-| `list` | `--proposer <P>` | Pending classes, optionally one mechanism's. |
+| `list` | `--proposer <P>` | Pending graph fact candidates, optionally one mechanism's. |
+| `list` | `--limit <N>` | Default `200`. |
+| `shadow` | | The graph's surfaced-verdict queue (review-on-use): live shadow facts about to matter — contradicting a reviewed fact, served in a context pack, or spot-checked by a sampled class. Listing is the default. |
+| `shadow` | `--confirm <FACT_UID>` / `--refute <FACT_UID>` | Decide one: confirm that a human stands behind it, or refute it as never true. The two conflict. |
+| `shadow` | `--reason <R>`, `--limit <N>` | Why, for `--refute` (feeds the graph's rejection memory); how many to list, default `10`. |
 | `sample` | `--proposer <P> --predicate <PRED>` | Individual candidates drawn **uniformly at random** — the default way to look at items, because judging the head of an ordered queue measures the ordering. |
 | `sample` | `-n <N>`, `--seed <S>` | Sample size (default 12) and the seed. Omit the seed and one is drawn and printed, so any sample can be redrawn and checked. |
 | `items` | `--proposer <P> --predicate <PRED>` | Queue order, for a class already decided about. Says outright its verdicts are not a rate. |
+| `items` | `--limit <N>` | Default `50`. |
+| `items` | `--ids <IDS>` | Only these candidate ids, comma-separated, in the order given — how a similarity group's members are read in full. |
+| `groups` | `--proposer <P> --predicate <PRED>` | One class's pending candidates grouped by semantic similarity, largest first — where one verdict fans out furthest. A group's face is a real member plus samples, never a model-written summary. Commitments do not group. |
+| `groups` | `--all` | Group the whole pending queue regardless of class, at the graph's stricter global floor; each group names the classes it spans. `--proposer` becomes an optional filter. |
+| `groups` | `--threshold <F>` | Cosine floor; omitted, the graph's calibrated default for the mode applies. |
+| `bind` | `<ID> [--to <NAME>]` | Rebind a candidate's unresolvable subject to a real entity — the way through `cannot resolve subject 'X'`. `--to` is the target's exact display name, else the graph's top suggestion. The old spelling is learned as an alias. |
 | `accept` | `[IDS]...` | Accept candidates by id. |
 | `accept` | `--proposer <P> --predicate <PRED>` | A whole class. A cluster kind like `(commitment)` is refused by name rather than matching nothing. |
 | `accept` | `--limit <N>`, `--dry-run` | Cap the bulk match (the graph defaults to 500), or see what would be hit without changing anything. |
-| `reject` | | Same shapes as `accept`, plus `--reason`. |
+| `accept` | `--create-subjects` | A subject the graph does not know becomes a new topic node instead of a failure. |
+| `accept` | `--like`, `--threshold <F>` | Cascade: the one named id is your verdict, and every same-class candidate similar to it follows as a machine cascade the autonomy ladder never counts. `--threshold` is the cosine floor. |
+| `accept` | `--cascade <IDS>`, `--across-classes` | Cascade over an explicit comma-separated member list from a `groups` listing; `--across-classes` lets those ids span classes (pair with `groups --all`). |
+| `reject` | | Same shapes as `accept` except `--create-subjects`, plus `--reason`. |
 
-Every subcommand takes `--json`. The graph verbs drive the `mecha-graph`
+`queues`, `proposers`, `list`, `shadow`, `sample`, `items` and `groups` take
+`--json`; `bind`, `accept` and `reject` do not. The graph verbs drive the `mecha-graph`
 binary as a child process (`$MECHA_GRAPH_BIN`, else `PATH`) — deliberately
 not an MCP tool, so nothing a model can call accepts a fact candidate.
 
@@ -683,7 +735,7 @@ See [The work directory](/docs/features/automation/work).
 The inbox as a queue you work. `list` is the default subcommand.
 
 ```
-mecha mail [list|show|classify|reply|forward|schedule|archive|spam|task|needs-info|correct|dismiss|calendars|reflect|score|eval] [ARGS]
+mecha mail [list|show|classify|recent|calendars|compose|dismiss|correct|reply|forward|schedule|archive|spam|task|needs-info|reflect|score|eval] [ARGS]
 ```
 
 Threads are named by an eight-character handle — the **last** eight characters of
@@ -703,6 +755,9 @@ error, never a guess.
 | `classify` | `--limit <N>` | recent threads to consider per account. Default `25` |
 | `classify` | `--force` | re-classify threads already in the store |
 | `classify` | `--dry-run` | say what would be classified, and spend nothing |
+| `recent` | `--max <N>` | the plain inbox, untriaged: the most recent messages across every account (or one), newest first, through the same `mail_recent` tool the model uses. Default `15` |
+| `recent` | `--json` | pass the tool's rows through |
+| `compose` | `--to` / `--subject` / `--body` / `--cc` | write a **new** email. `--body` is Markdown, converted to HTML at send time. No model runs: your words are staged verbatim |
 | `reply` | `--note <TEXT>` | extra steering — "decline politely", "ask for the deadline first" |
 | `forward` | `--to <ADDRS>` | comma-separated recipients |
 | `schedule` | `--note <TEXT>` | put what the thread announces on your own calendar. Nobody is invited unless the note names them — "invite Priya too" |
@@ -712,12 +767,16 @@ error, never a guess.
 | `correct` | `--bucket` / `--urgency` / `--proposed` / `--request-type` / `--deadline` | field-level; `none` clears a field |
 | `reflect` | `--dry-run` | turn corrections into `triage`-domain reflections |
 | `score` | `--min-age-hours <N>` | exclude threads younger than this. Default `48` |
+| `score`, `eval` | `--account <NAME>` | which account's corpus. Default `dartmouth` |
 | `eval` | `--sample` / `--seed` / `--prefilter-only` / `--out <PATH>` | grade the classifier against a corpus whose outcome is known |
 
-Every subcommand takes `--account <NAME>`.
+Every subcommand except `list` takes `--account <NAME>`; `list` reads the
+triage store across every account. On `compose`, omitting it sends from the
+default account, and the send fails loudly at release if none is set.
 
-`reply`, `forward` and `schedule` **stage into the [outbox](/docs/features/security/outbox)
-and never send**. `archive` and `spam` reach nobody outside your own mailbox and
+`compose`, `reply`, `forward` and `schedule` **stage into the [outbox](/docs/features/security/outbox)
+and never send** — a draft you typed yourself waits in the same queue as one a
+model wrote. `archive` and `spam` reach nobody outside your own mailbox and
 so are not staged. Separate verbs rather than one `--action` argument, because a
 free-form label would put `spam` inside a verb that reads as harmless.
 
@@ -765,6 +824,7 @@ server says so instead of showing an empty board.
 | `set` | `<ID>` | the task's node id, from `tasks list` |
 | `set` | `--status <S>` | `next`, `inbox`, `scheduled`, `waiting`, `done`, `dropped` |
 | `set` | `--due` / `--defer` / `--context` / `--waiting-on` / `--project` | Omit to leave untouched; pass `""` to clear. Projects resolve by name or node ID. |
+| `set` | `--session <SESSION>` | The conversation working this task. Set by the harness that starts one, never typed by a person. |
 | `source` | `<ID>` | Read the source the task was captured from. |
 | `work` | `<ID> [--note <TEXT>...]` | Delegate the task in its own conversation and workflow. |
 | `work` | `--unattended` | Run without terminal approval prompts; reads run and configured sends stage. |
@@ -830,7 +890,7 @@ mecha workflow close FLOW_ID
 | `commit <ID>` | Record `--party`, `--source`, `--due`, and `--follow-up`; timestamps require an offset. |
 | `check`, `uncheck`, `verify`, `close` | Define and inspect artifact or delivery evidence before completion. `uncheck <ID> <N>` uses a one-based check number. |
 | `depend <ID> <PREDECESSOR>`, `resume <ID>` | Require a completed predecessor and continue the recorded conversation. |
-| `cancel <ID> --reason <TEXT>`, `reopen <ID>` | Stop tracking or explicitly reopen; cancellation does not stop an active runner. |
+| `cancel <ID> --reason <TEXT>`, `reopen <ID>` | Stop tracking, and block further runs of the workflow's task — `tasks work`, a web chat on it, an answered question resuming it — until explicitly reopened. Cancelling does not claim completion, does not stop an active runner, and does not affect triggers, which are not tied to a task. |
 | `recover <ID> --reason <TEXT>` | Clear stale ownership after confirming the old runner stopped. |
 | `attention`, `tick`, `snooze`, `ack` | Configure quiet hours, refresh reminders, defer or acknowledge notices. `tick --dry-run` previews without writing. |
 
@@ -872,6 +932,25 @@ the outbox. See [Polls](/docs/features/public-surface/polls).
 
 Read and maintain the graph through the configured `kg_*` MCP tools.
 
+```
+mecha kg <notes|search|entity|assert|retract|related|timeline|alias|unalias|note> [ARGS]
+```
+
+| Subcommand | Flag | Description |
+|---|---|---|
+| `notes` | `--limit <N>`, `--json` | Recent notes, newest first. Default `20`. |
+| `search` | `<QUERY>...`, `-k <K>`, `--json` | The same context pack the model gets; `#tag` tokens filter to hand-tagged episodes. Default `10` results. |
+| `entity` | `<NAME>...`, `--json` | Everything about one entity: facts, interaction recency, episodes. `--json` prints the node id and fact uids the other verbs take. |
+| `assert` | `<SUBJECT> <PREDICATE> [OBJECT]` | State a fact yourself. Lands live, never in the review queue. A connection is a fact too, so this is how a node gains one. |
+| `assert` | `--value <VALUE>` | A literal object, when the object is not a node; omit `OBJECT`. |
+| `assert` | `--statement <TEXT>` | The sentence form search and readers see. Composed from the parts when omitted. |
+| `retract` | `<UID>` | Retract a fact by uid — never a text match. |
+| `retract` | `--as-of <WHEN>` | When it stopped being true. Omitted, it is invalidated as of now — right for a claim that was never true. |
+| `related` | `<NAME>...`, `--hops <1\|2>`, `--json` | The bounded neighborhood over current facts. Default `1` hop. |
+| `timeline` | `<NAME>...`, `--json` | Superseded facts beside what replaced them, and the episode timeline. |
+| `alias` / `unalias` | `<NODE_ID> <ALIAS>` | Add or remove an alias, by node id rather than name. |
+| `note` | `<TEXT>...`, `--edit <SOURCE_ID>` | Capture a note as an episode, or rewrite an existing one in place. |
+
 ```bash
 mecha kg notes
 mecha kg search "grant planning" --k 5
@@ -879,10 +958,8 @@ mecha kg entity "Priya" --json
 mecha kg note "Discussed the grant timeline with Priya."
 ```
 
-`note --edit <SOURCE_ID>` rewrites an existing note; it does not retract claims
-already extracted from the old text. `assert` and `retract` maintain facts;
-`alias` and `unalias` maintain names using node IDs. `related` reads a bounded
-neighborhood; `timeline` includes superseded facts. See
+`note --edit <SOURCE_ID>` rewrites an existing note and re-mines it; it does not
+retract claims already extracted from the old text. See
 [The graph](/docs/features/memory/graph) and each subcommand's `--help`.
 
 ## `frontdoor`
@@ -1095,6 +1172,8 @@ mecha reflect [OPTIONS]
 | `--sessions-dir <DIR>` | Directory of session transcripts. Defaults to the standard location. |
 | `--dry-run` | List what would be mined without calling a model or writing anything. |
 | `--limit <N>` | Mine at most this many sessions this run. |
+| `--remine-untrusted` | One-shot backfill: re-mine sessions whose reflections the provenance gate excluded, through the clean-evidence path — the user's own words and tool names, tainted excerpts withheld. Idempotent. |
+| `--backfill-situations` | One-shot backfill: give reflections mined before the situation field one, recomputed from their transcripts with no model call. Idempotent; `--dry-run` reports what would be written. |
 
 Reflections are appended to `reflections.jsonl` in the learning store, each carrying
 the session id that proves it and an `Origin` classified from the transcript's
@@ -1210,10 +1289,12 @@ mecha validate [OPTIONS]
 | Flag | Description |
 |---|---|
 | `--unprocessed-only` | Only validate reflections not yet consumed by a learn pass — the held-out set. |
-| `--trigger <LIST>` | Probe only these triggers (comma-separated: `steer`, `denial`, `followup`). Default is all three. |
+| `--trigger <LIST>` | Probe only these triggers (comma-separated: `steer`, `denial`, `followup`, `mismatch`). Default is all four. Mismatch probes need an owner-supplied artifact fixture (`run --mismatch-case`). |
 | `--judge-model <MODEL>` | Judge model id. |
 | `--judge-provider <PROVIDER>` | Provider entry the judge runs on. Defaults to the model under test. |
 | `--no-attribute` | Skip the bisection that attributes a regression to one rule. Regressions are still recorded, just unattributed. |
+| `--repeat` | Re-run unchanged probe inputs deliberately. By default only fresh inputs, transient failures, and regressions awaiting confirmation run again. |
+| `--cover <N>` | Also probe up to this many reflections per (rule, region) pair the ledger has never graded, so a widened rule is probed in each sub-region. Default `0`. |
 
 Steer and denial probes are counterfactual replays: the recorded prefix is driven
 again, with and without the rules, and the verdict is structural. Followup probes are
@@ -1231,12 +1312,14 @@ Rule tenure: ledger tallies per rule, retirement, and staging retirements for ru
 the validation ledger keeps convicting. `list` is the default subcommand.
 
 ```
-mecha rules [list|retire|restore|propose-retirements] [ARGS]
+mecha rules [list|show|retire|restore|propose-retirements] [ARGS]
 ```
 
 | Subcommand | Flag | Description |
 |---|---|---|
 | `list` | | Every rule with its ledger tallies and staleness. |
+| `list` | `--json` | Machine-readable, for `/learning`. |
+| `show` | `<ID>` | One rule in full: its text, domain, state and ledger tally. What the TUI's `Enter` on the Rules pane runs. |
 | `retire` | `<ID>` | Retire a rule by id or unique prefix. |
 | `retire` | `--reason <REASON>` | Recorded on the rule and shown to the learner so the lesson does not come back reworded. |
 | `restore` | `<ID>` | Un-retire a rule by id or unique prefix. |
@@ -1260,7 +1343,7 @@ Review, accept, or reject rule changes staged by `mecha learn --propose` or
 `mecha rules propose-retirements`. `list` is the default subcommand.
 
 ```
-mecha proposals [list|show|accept|reject] [ARGS]
+mecha proposals [list|show|accept|reject|supersede] [ARGS]
 ```
 
 | Subcommand | Flag | Description |
@@ -1271,6 +1354,9 @@ mecha proposals [list|show|accept|reject] [ARGS]
 | `accept` | `--force` | Apply even though the live rules changed since the proposal was measured. |
 | `reject` | `<ID>` | Refuse a pending proposal, consuming its reflections. |
 | `reject` | `--reason <REASON>` | Why — recorded on the proposal for the next reader. |
+| `supersede` | `[ID]` | Retire a stale pending proposal, releasing its reflections **unconsumed**. |
+| `supersede` | `--stale` | Instead of one id, sweep every pending proposal measured against a baseline that has since moved. |
+| `supersede` | `--reason <REASON>` | Why — recorded on the proposal for the next reader. |
 
 `accept` checks that the live rules still match what the candidate was measured
 against; a diff on screen that is not the change being applied needs `--force` to say
@@ -1479,6 +1565,7 @@ mecha diagnose [OPTIONS]
 | `--model <MODEL>` | Which model's runs to diagnose. Defaults to whichever has the most. |
 | `--days <N>` | Only sessions started in the last N days. |
 | `-n`, `--limit <N>` | Stop after this many sessions, newest first. Default `200`. |
+| `--from-workspace <PATH>` | Only sessions rooted at this path or beneath it. Not the global `--workspace`, which names this run's path jail. |
 | `--dry-run` | Print the brief the diagnostician would be handed, and stop. |
 
 **It proposes; it does not measure and does not apply.** It prints a typed block
@@ -1514,6 +1601,7 @@ mecha harness <ruminate|list|show|accept|reject|revert|overrides> [OPTIONS]
 | `ruminate` | `--days <N>` | Only diagnose from sessions started in the last N days. |
 | `ruminate` | `-n`, `--limit <N>` | Scan at most this many sessions for the corpus. Default `200`. |
 | `ruminate` | `--holdout-in <N>` | One episode in this many is held out of selection. Default `3`, minimum `2`. |
+| `ruminate` | `--from-workspace <PATH>` | Only diagnose from sessions rooted at this path or beneath it. |
 | `list` | `--all` | The whole record, not just what is waiting on you. |
 | `list` | `--json` | Machine-readable, for `/queues`. |
 | `show` | `<ID>` | One candidate, whole: prediction, measurement, evidence. |
@@ -1574,9 +1662,14 @@ mecha corroborate [OPTIONS]
 
 | Flag | Description |
 |---|---|
-| `--proposer <P>` / `--predicate <P>` / `--limit <N>` / `--server <S>` | As in `vet`. |
-| `--since <DATE>` | Evidence on/after this date. |
-| `--min-coverage <N>` | Minimum episodes a source needs before it counts. |
+| `--proposer <P>` | Proposer of the class to work. Default `bee:suggested`. |
+| `--predicate <P>` | Predicate of the class to work. Default `related_to`. |
+| `--limit <N>` | Candidates to judge, oldest first. Default `10`. |
+| `--since <DATE>` | Evidence on/after this date — both readers get the same window, so a difference must be the sources disagreeing. Default `2024-01-01`. |
+| `--min-coverage <N>` | Minimum episodes a source needs before it can be a vantage. Default `3`. |
+| `--server <S>` | The `[[mcp]]` server holding the graph. Default `graph`. |
+| `--record` | File the verdicts beside their candidates. Off by default. |
+| `--out <PATH>` | Append one JSON line per judged candidate — verdict, both sightings with citations, and the dissenter's pre-reveal answer. |
 
 ## `gossip`
 
@@ -1590,12 +1683,13 @@ mecha gossip --entity <ENTITY> [OPTIONS]
 | Flag | Description |
 |---|---|
 | `--entity <E>` | The person or project to gossip about — a name, alias, or id. |
-| `--rounds <N>` | Rounds of question-and-answer. Bounded on purpose: a preserved disagreement is a finding. |
-| `--since <DATE>` | Evidence on/after this date — both readers get the same window, so a difference must be the *sources* disagreeing, not the world having moved. |
+| `--rounds <N>` | Rounds of question-and-answer. Default `3`. Bounded on purpose: a preserved disagreement is a finding. |
+| `--since <DATE>` | Evidence on/after this date — both readers get the same window, so a difference must be the *sources* disagreeing, not the world having moved. Default `2024-01-01`. |
 | `--min-coverage <N>` | Minimum episodes a source needs before it can be a vantage. Default 3. |
-| `--verify <N>` | Claims to audit after the exchange; 0 skips the audit. |
-| `--adjudicate <N>` | Pending claims *about this entity* to adjudicate after the exchange; 0 skips it. |
+| `--verify <N>` | Claims to audit after the exchange; 0 skips the audit. Default `8`. |
+| `--adjudicate <N>` | Pending claims *about this entity* to adjudicate after the exchange; 0 skips it. Default `25`. |
 | `--server <S>` | The `[[mcp]]` server holding the graph. Default `graph`. |
+| `--out <PATH>` | Append the whole run as one JSON line — exchange, graph findings, audit verdicts. |
 
 After building context on the entity, the run judges that entity's pending
 claims — the one output that makes the review backlog smaller rather than

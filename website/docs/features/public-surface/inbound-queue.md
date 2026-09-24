@@ -127,8 +127,11 @@ neither aware of the other. The `ack` race itself is harmless (whoever acks
 first deletes; the second ack deletes nothing). The duplicated *work* is not.
 
 **Run exactly one draining machine per account.** If a second machine needs to
-publish, pair it and let it hold `publish.key` without `drain.key` — the scopes
-are separate for exactly this reason.
+publish, it should hold `publish.key` without `drain.key` — the scopes are
+separate for exactly this reason. Pairing installs both, so pair it and then
+revoke that machine's `drain` key from the **Machines** table on your account
+page (each key is listed with its scope and label); a revoked key drains
+nothing even if the file stays on disk.
 
 ### Several drainers on one machine are fine, and normal
 
@@ -147,15 +150,22 @@ requests from coming home.
 
 ## What the box will not tell you
 
-The box tracks queue depth per account, but today it surfaces that only to an
-operator, and it records nothing at all about *when a machine last drained*.
-There is consequently no "your agent is connected" indicator anywhere in the
-account UI.
+There is no "your agent is connected" indicator, because there is nothing
+connected to indicate. What the box does keep is close to it:
 
-Worth knowing because of what it means for silence: a queue with three
-untouched requests looks identical to a queue nobody has written to. If you
-want certainty that the path is working end to end, the honest check today is
-at home — look for records arriving in `~/.mecha/requests/`, or run
+- **Each key's last use.** The **Machines** table on your account page lists
+  every key with its scope, label, when it was minted and when it was last
+  used — and every authenticated call stamps that, so a `drain` key's "last
+  used" is when that machine last asked for the queue.
+- **Your queue depth.** `GET /v1/health` answers anyone with a bare "up", and
+  adds your account's `queued` count, handle and status for a caller holding
+  any live key of yours.
+
+Neither says the rest of the path worked: a drain key used seconds ago says
+the drain is running, not that anything at home extracted or answered what it
+fetched. If you want
+certainty that the path is working end to end, the honest check is at home —
+look for records arriving in `~/.mecha/requests/`, or run
 [`mecha doctor`](/docs/features/learning/run-quality), which reports requests that have
 been waiting on you past a threshold.
 

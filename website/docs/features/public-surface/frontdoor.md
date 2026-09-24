@@ -70,9 +70,13 @@ fix. Three verbs end one:
 
 - **`triage` is the privileged half.** A full agent, with mail and calendar,
   told only what `next` would print, ending in outbox drafts and never in mail
-  in flight. Each request gets its own conversation, so prose flagged as reading
-  like instructions cannot arm the [interlock](/docs/features/security) for the
-  request behind it.
+  in flight. Each request gets its own conversation — a fresh taint — so
+  whatever one request's run took in cannot arm the
+  [interlock](/docs/features/security) for the request behind it. (The
+  extractor's `reads_like_instructions` flag is not what does this: it is a
+  label shown to you in `show` and the TUI, and it gates nothing, because a gate
+  built on that judgement rejects real people and still passes the attack that
+  mattered.)
 
   **It refuses to run without the outbox route**, rather than running unrouted:
   without it a `mail_send` the model makes actually sends, and a stranger's
@@ -115,6 +119,18 @@ returns the non-prose values plus the extraction, and there is deliberately no
 argument that makes it return the prose. A caller that wants the original is a
 human running `frontdoor show`. If this were "remember not to include the free
 text", it would hold until the first person in a hurry.
+
+What does cross is narrow on purpose. `reply_to` is named on its own — the
+address a stranger chose *and* proved by clicking — rather than left among the
+fields. Attachments cross as **measurements** only: field, size, digest and
+the content type mecha derived, never the stranger's filename, the path, or
+the bytes. And the extraction's dates cross only as quoted text of 3 to 48
+characters that is literally in the prose (`Record::DATE_MAX_CHARS`): the
+extractor was asked for dates "as written", and that is checked rather than
+trusted. A date it invented, or a span too short to be a date or too long to be
+one — an injection copied verbatim would pass a containment check — is not
+handed over; it is shown with its reason in `frontdoor show` and the TUI, as a
+label on the record rather than a block.
 
 **Which fields are prose is not decided here.** The drain writes `free_text`
 onto the record from the manifest, where free-text-ness is derived from the

@@ -25,14 +25,18 @@ internet can reach your agent by knowing an address.
 
 ### 1. Create the app
 
-An internal, single-workspace app. It needs these bot scopes:
+An internal, single-workspace app. `scripts/slack-app-manifest.yaml` is the
+whole app as a manifest — paste it into "Create New App → From a manifest". It
+holds these bot scopes, the minimum for what is built:
 
-`chat:write`, `assistant:write`, `im:history`, `app_mentions:read`,
-`files:read`, `files:write`, `users:read`, `users:read.email`, `commands`
+`chat:write`, `im:history`, `im:write`, `files:read`, `files:write`
 
-plus an **app-level token** with `connections:write`, which is what Socket Mode
-opens the connection with. `users:read.email` is used once, at link time, and for
-nothing else.
+`assistant:write` is in the manifest commented out: the assistant-thread status
+API it unlocks needs a paid Slack plan, and nothing requires it.
+
+Plus an **app-level token** with `connections:write`, which is what Socket Mode
+opens the connection with, and the App Home "Messages Tab" turned on with
+sending allowed — without it a DM to the app is silently impossible.
 
 You end up with two tokens: a bot token (`xoxb-…`) and an app-level token
 (`xapp-…`).
@@ -93,7 +97,8 @@ The unit refuses to start without both the credential and the binding, loudly.
 
 ## What it feels like to use
 
-Message the app, or mention it in a thread. The answer streams in, and each tool
+Message the app in a DM — the app subscribes to direct messages only, so a
+mention in a channel never reaches it. The answer streams in, and each tool
 call becomes a small card that changes state as it runs — so a long run shows
 what it is doing rather than a spinner.
 
@@ -111,9 +116,37 @@ what it is doing rather than a spinner.
   that already exists — and what a run creates is uploaded back. An
   [image](/docs/features/interfaces/images) also goes on the turn itself, so "what is
   wrong with this chart" is a question you can ask from a phone.
+- **What a run creates comes back as attachments, up to five.** Past that,
+  the rest are named in the thread rather than sent.
 - **`mecha slack notify`** reads stdin and DMs it to you, which puts a
   [trigger's](/docs/features/automation/triggers) morning briefing on your phone for the
   price of a config line.
+
+## Command words
+
+A few DM messages are commands rather than prompts. Each is matched before the
+text can reach the model, and only after the owner check, so a stranger's
+`doctor` never gets looked at:
+
+| Message | What comes back |
+|---|---|
+| `doctor` | the same findings `mecha doctor` prints, with a button on the ones a phone can fix |
+| `queues` | the review backlog across the stores, read-only |
+| `tasks` | the task board, with **Done** (and **Next** for an inbox capture) on each row |
+| `task <text>` | captures `<text>` onto the board |
+| `triggers` | the schedule, with **Run**, **Cancel**, **Enable** or **Disable** as each row's state allows |
+| `note <text>` | captures `<text>` into the knowledge graph |
+| `review [now\|later\|auto]` | shows or sets when staged drafts stop for review — for the thread it is sent in, or for new threads if sent top-level |
+
+The bare words (`doctor`, `queues`, `tasks`, `triggers`) must be the whole
+message — "show my tasks please" is a prompt. A capture is deterministic on
+purpose: a note *asked* of the model may or may not get written, and a capture
+that depends on the model's mood is not a capture.
+
+Every button carries a fixed verb and an object id, never a command line. The
+command is rebuilt by code from the store at tap time and run as the matching
+`mecha …` child process, so no model output and no message text sits between a
+finding and what a tap executes.
 
 ## Configure the tool surface
 
@@ -154,7 +187,12 @@ server cost **~7–8k input tokens per turn** before any work happened — again
 there. A phone rarely needs the mail, the calendar and the factory at once.
 
 Names are exact, never globs. Note that `http_fetch` is also what a `research`
-subagent needs — without it, that subagent silently stops being registered.
+subagent needs — without it, that subagent is not registered, and the only sign
+is a line in the connector's journal.
+
+Slack runs load no [skills](/docs/features/learning/skills), for the same reason
+`ask_user` is absent (below): one agent serves every thread, and a skill loaded
+in one thread would change the tool surface of the others.
 
 ## Getting a file out
 
@@ -171,14 +209,25 @@ mecha slack send results/accuracy.png
 ```
 
 Two things about it are deliberate. **The destination is not an argument** —
-it is your DM, read from the binding, and no flag moves it; that is what will
-let the agent itself surface a chart later without the ability to send one
-anywhere else. And **the TUI's `/send` resolves the path through the run's
+it is your DM, read from the binding, and no flag moves it; that is what
+lets the agent surface a chart itself without the ability to send one anywhere
+else (see `show_file`, below). And **the TUI's `/send` resolves the path through the run's
 jail**, so it reaches what the session can reach and nothing else. To send
 something from outside the workspace, `!cp` it in first.
 
 `[slack] max_upload_mb` (25 MB) caps this, and caps attachments coming the
 other way with the same number.
+
+**The agent's own version is the `show_file` tool.** In the TUI, a run can put
+a workspace file into the session's [`/remote-control`](#remote-control-one-session-two-places)
+thread in your DM — a chart it just rendered on a headless box, rather than a
+sentence describing it. The model names a path (through the jail, like every
+other path) and never a destination, which comes from the attach record. It is
+declared read-only, so it asks no approval, and it is not routed through the
+[outbox](/docs/features/security/outbox): the destination is the owner's own
+DM, and approving a draft in order to see the picture you asked for would be
+review going in a circle. When the session is not attached it refuses and tells
+the model to say where the file is instead.
 
 ## Remote control: one session, two places
 

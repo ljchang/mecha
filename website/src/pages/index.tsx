@@ -149,7 +149,13 @@ prefix_tools = false   # its kg_* tools carry their own namespace
 untrusted_input = true
 
 [outbox]               # staged for review, never sent outright
-tools = ["mail__mail_send", "mail__mail_reply"]`}
+tools = [
+  "mail__mail_send", "mail__mail_reply",
+  # an invitation reaches other people too
+  "mail__calendar_create_event",
+  "mail__calendar_update_event",
+  "mail__calendar_delete_event",
+]`}
             </CodeBlock>
           </div>
         </div>

@@ -92,7 +92,7 @@ The current consumers have different jobs:
 | Project closure | Labels and separate positive/negative sums across task-linked sessions, including counts of unreadable or undelegated tasks. |
 | Distillation | Signed errors and resolved goal pointers in episode metadata; goal sentences and the owner's answers stay in mecha. |
 | Harness replay selection | Among candidates tied on metric headroom, prefer evidence attributed to a higher-ranked charter line. This does not optimize the affect label. |
-| Harness diagnosis | Homeostat and anticipated-guilt readings enter the diagnostic brief when `[agent] sensors_in_brief` is enabled. They do not directly alter permissions or budgets. |
+| Harness diagnosis | Homeostat and anticipated-guilt readings enter the diagnostic brief unless `[agent] sensors_in_brief` is disabled (it is on by default). They do not directly alter permissions or budgets. |
 
 A draft sent unchanged already contributes positive appraisal evidence. Learning
 writing rules from that positive signal is still separate open work; the

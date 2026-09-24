@@ -113,12 +113,16 @@ run inside the server so active conversations stay coordinated.
 | Page | What it is |
 |---|---|
 | **Home / Today** | Urgent work, decisions, verified results, and waiting items, followed by store counts and doctor findings. [Workflows](/docs/features/automation/workflows) connect tasks to conversations, drafts, questions, and completion evidence. Finished workflows can be reopened. Unreadable sources are shown as unavailable. |
-| **Chat** | A streaming conversation with the agent — steering, cancel, a context gauge, approval cards, and a session drawer holding both live and recorded conversations. The waveform button opens a [voice call](/docs/features/interfaces/voice) into *this* conversation |
-| **Mail** | Two tabs: the triage queue (what needs you, classified) and a plain inbox (what just arrived). Reading, triaging, and drafting — see [mail](/docs/features/tools/mail) |
+| **Chat** | A streaming conversation with the agent — steering, cancel, a context gauge, approval cards, and a session drawer holding both live and recorded conversations, each naming itself after its first turn and again as it grows, from your own turns only (never the model's text or tool results). The waveform button opens a [voice call](/docs/features/interfaces/voice) into *this* conversation |
+| **Mail** | Five lane chips: the triage queue split into *Needs you*, *FYI*, *Parked* and *In the outbox*, plus a plain *Inbox* (what just arrived). Reading, triaging, and drafting — see [mail](/docs/features/tools/mail). On a window at least 1200px wide it becomes a keyboard-driven desk: lanes, list and thread side by side, with `e`/`d`/`t` to archive, dismiss or make a task, and a multi-thread selection (⇧-click or ⌘/Ctrl-click) acted on by ⇧E/⇧D/⇧T or ⌘/Ctrl-E/D |
 | **Graph** | One surface over the [knowledge graph](/docs/features/memory/graph): capture a note (typed or dictated) with the graph's own confirmation of what it linked, a recent-notes list with in-place edit, one find field over everything (hybrid keyword + semantic search, ⌘K focuses it), and entity pages — facts with Confirm/Refute on anything unreviewed, aliases, per-source coverage, the connected neighborhood, history with superseded facts, and recent evidence. Opening an entity is itself a review trigger; see [the graph](/docs/features/memory/graph#where-you-review-what-it-proposes). The old `#notes` address still works |
-| **Review** | [Outbox](/docs/features/security/outbox), the graph's merge queue, and the [front door](/docs/features/public-surface/frontdoor) — every approval surface in one place |
+| **Review** | [Outbox](/docs/features/security/outbox), the graph's merge queue, the [front door](/docs/features/public-surface/frontdoor), and **Proposals** — harness changes, rule proposals and graph entity proposals, each accepted or rejected after its detail is shown — every approval surface in one place. A mail draft reads as mail, beside the thread it answers (reread when you open it), and Send is one press; a reply goes out from the account the thread was received on |
 | **Tasks** | The GTD board, with the views in a drawer and one tap per status change |
 | **Settings** | Behind the gear — upper-right on *every* view, since settings is chrome rather than a place to be. An index of three features, each opening its own pane: the [charter](/docs/features/appraisal/charter) (edited as a list — tap a line, drag its grip to re-rank — behind a validated two-tap save), the [learning](/docs/features/learning) store — reflections and rules, read, edited and refused — and the [voice](/docs/features/interfaces/voice) stack's health and preferences. Each row says what is in there — a count, or a dash where the store could not be read |
+
+On a wider screen the app changes shape rather than stretching a phone
+column: from 900px the bottom nav becomes a left rail, and from 1180px the chat's
+session drawer stays open beside the conversation.
 
 Open the same chat on multiple devices to follow one conversation. Typed
 messages, spoken turns, and steering appear on every connected page; sending
@@ -191,10 +195,11 @@ recording of somebody's voice should be as easy to remove as it was to add. The
 same closed alphabet is the containment — the path is built from a validated
 stem, never from anything resolvable.
 
-Two things this page deliberately does not do. Accepting a rule **proposal**
-stays in the [queue](/docs/features/automation/queues) and the TUI, because a proposal is a
-whole rewritten rule set and reject-all is not an objection worth offering on a
-phone. And every learning verb runs as a `mecha reflections …` / `mecha rules …`
+Rule **proposals** are not on this pane: they are answered in Review's
+Proposals tab, beside the other [queues](/docs/features/automation/queues), where
+accept and reject stay greyed until the proposal itself has been shown — a
+proposal is a whole rewritten rule set, and deciding one off its title is the
+failure that queue exists to prevent. Every learning verb runs as a `mecha reflections …` / `mecha rules …`
 child process, so there is nothing a browser can do to that store which the
 command line cannot — the promotion, the withholding and the git commit behind
 each write all live in one implementation.
@@ -328,10 +333,13 @@ that looks exactly like nothing happening.
 
 ```bash
 mecha serve                          # the door, on [web] port
-mecha serve --port 8080              # override for one run
+mecha serve --port 63243             # override for one run
 mecha serve --owner-login you@ex.com # override the owner for one run
-mecha serve --voice-port 8990        # mount the voice facade in-process
+mecha serve --voice-yes              # voice turns act without per-call approval
+mecha serve --voice-port 0           # don't mount the voice facade (default :8990)
 mecha serve --assets ./web/dist      # serve a build from somewhere else
 ```
 
-`scripts/mecha-serve.service` is the systemd unit that keeps it up.
+`scripts/voice/mecha-serve.service` is the systemd unit that keeps it up; it
+runs `mecha serve --voice-port 8990 --voice-yes`, so calls through it act
+without stopping to ask (see [Voice](/docs/features/interfaces/voice)).

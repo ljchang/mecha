@@ -6,12 +6,14 @@ description: Every store waiting on you, in one list — and the knowledge graph
 
 # The queues
 
-Five stores accumulate work for you, and each has its own verb: the
-[outbox](/docs/features/security/outbox) holds drafts, the [front door](/docs/features/public-surface/frontdoor) holds
+Six stores accumulate work for you, and each has its own verb: the
+[outbox](/docs/features/security/outbox) holds drafts, the question store holds
+the questions a delegated run stopped to ask you (`mecha questions`), the
+[front door](/docs/features/public-surface/frontdoor) holds
 strangers' requests, [learning](/docs/features/learning) stages rule changes,
 [run quality](/docs/features/learning/run-quality) stages harness changes, and — in another
 repository entirely — the [knowledge graph](/docs/features/memory/graph) holds a merge
-queue of proposed facts. Knowing what was waiting meant remembering five
+queue of proposed facts. Knowing what was waiting meant remembering six
 commands, which is how a queue can grow to thousands of items without anybody
 deciding to let it.
 
@@ -19,12 +21,13 @@ deciding to let it.
 
 ```
 $ mecha review
-4,514 item(s) waiting on you
+4,515 item(s) waiting on you
 
   4,461      9d  graph candidates       3 proposer(s); 12 from mechanisms you have never judged
      32      2d  graph entities         2 detector(s) with something to say
      10      1h  graph shadow           2,456 unreviewed facts live, 118 ever served
      10      9d  outbox drafts          10 drafted with the trifecta armed
+      1      3h  blocked questions      1 asked with third-party content in the conversation
       1      5d  front-door requests    5 closed
       0          rule proposals         0 decided
       0          harness changes        0 resolved
@@ -48,8 +51,8 @@ the graph's MCP tool surface — the model can *show* the queue
 settle it.
 
 It holds nothing of its own — like [the doctor](/docs/reference/cli#doctor), it
-reads what the other stores own and adds no sixth store that could disagree
-with them. Four of the rows hand off to the surface that already owns them,
+reads what the other stores own and adds no seventh store that could disagree
+with them. The five mecha-owned rows hand off to the surface that already owns them,
 because `/outbox` and `/frontdoor` carry the confirmations and taint warnings
 that make their approvals safe, and a second copy of those would be a second
 thing to keep correct. The graph queue is the exception: it is reviewed in
@@ -65,7 +68,7 @@ for the stores rather than for the act.
 
 "Nothing waiting" and "could not look" are opposite findings. If the graph
 binary is missing or too old, its row reports `—` with the reason beside it,
-the other four rows are unaffected, and a footer says the total is a floor.
+the other rows are unaffected, and a footer says the total is a floor.
 A reader that rendered its own failure as an empty queue would reproduce
 exactly the bug this surface exists to catch.
 
@@ -224,7 +227,7 @@ child process, found on `PATH` or via `$MECHA_GRAPH_BIN` — resolved from the
 environment and never from `mecha.toml`, since a project file arrives with a
 cloned repository, and a project that could name a binary mecha executes has
 been handed arbitrary execution. The dependency is runtime and optional:
-every verb degrades to a named error, and the summary still covers the four
+every verb degrades to a named error, and the summary still covers the five
 mecha-owned stores without it.
 
 ## The commands
@@ -236,9 +239,13 @@ mecha review shadow           # the surfaced-verdict queue  [--confirm U | --ref
 mecha review list             # pending classes  [--proposer X]
 mecha review sample           # a random draw    [--proposer X --predicate Y -n 12 --seed S]
 mecha review items            # queue order — not a rate
+mecha review groups           # one class grouped by similarity  [--proposer X --predicate Y | --all]
+mecha review bind <id>        # rebind an unresolvable subject    [--to NAME]
 mecha review accept <ids…>    # or --proposer X --predicate Y [--limit N] [--dry-run]
 mecha review reject <ids…>    # same, plus --reason
 ```
 
-Every one of them takes `--json`, and the modal drives exactly these — there
-is nothing `/queues` can do that a script cannot.
+Every listing takes `--json` — `queues`, `proposers`, `shadow`, `list`,
+`sample`, `items` and `groups`; the three that change the graph (`accept`,
+`reject`, `bind`) do not. The modal drives exactly these — there is nothing
+`/queues` can do that a script cannot.
