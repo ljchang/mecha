@@ -49,24 +49,18 @@ is what lets one agent serve concurrent runs jailed to different directories.
 ### A jail has to be rooted somewhere harmless
 
 A correct containment check around the wrong directory contains nothing worth
-containing, and for a long time that is what shipped.
-
-`~/.mecha/` holds the mail OAuth tokens, every session transcript, and the
-learning store — and `$HOME` **contains** `~/.mecha/`. So `mecha chat` started
-from a home directory was jailed over all of it. An unattended
-[trigger](/docs/features/automation/triggers) with no explicit workspace was worse: it
-fell through to `std::env::current_dir()`, and the shipped systemd unit sets
-`WorkingDirectory=%h`. The shipped `morning` trigger escaped only by accident
-of its `mail__*` allowlist.
-
-Two changes close it:
+containing. `~/.mecha/` holds the mail OAuth tokens, every session transcript,
+and the learning store — and `$HOME` **contains** `~/.mecha/`, so a jail
+rooted at your home directory would cover all of it. Two rules follow:
 
 - `setup` **refuses any workspace that contains the mecha home**. Note the
-  direction: a workspace *inside* `~/.mecha/` is fine and is now the default.
-  What is refused is one the mecha home sits under.
-- An unattended run's default workspace is now
-  [`~/.mecha/work/<producer>/`](/docs/features/automation/work) — a directory that holds
-  nothing sensitive, and that the run is meant to write to.
+  direction: a workspace *inside* `~/.mecha/` is fine and is the default for
+  unattended runs. What is refused is one the mecha home sits under.
+- An unattended run — a [trigger](/docs/features/automation/triggers) with no
+  explicit workspace, for instance — defaults to
+  [`~/.mecha/work/<producer>/`](/docs/features/automation/work), a directory
+  that holds nothing sensitive and that the run is meant to write to, rather
+  than to whatever directory the service happened to start in.
 
 ```
 workspace /home/you contains the mecha home (/home/you/.mecha), so the path
@@ -79,9 +73,9 @@ Run from a project directory instead, or name one explicitly with
 A path that cannot be canonicalized is compared as written: over-refusing a
 workspace is recoverable, under-refusing one is the bug.
 
-The capability interlock below remained a backstop throughout. But a backstop
-is not a boundary, and a jail rooted where the secrets live is the
-silently-degrading-sandbox pattern this project keeps finding.
+The capability interlock below is a backstop, but a backstop is not a
+boundary: a jail rooted where the secrets live is a sandbox that has silently
+stopped protecting anything.
 
 ## Capabilities
 
@@ -123,10 +117,18 @@ What the built-ins declare:
 | `web_open` | `untrusted_input` + `blind` egress |
 | `shell` | `private_data` + `destructive`, and `chosen` egress unless a sandbox has taken the network away |
 
-MCP tools declare theirs from the server's annotations, and config can force
-extra flags on a server with `[[mcp]] capabilities`. That override is a
-**union, never an assignment** — config can distrust a server further, never
-less. Letting config narrow a declaration would disarm the interlock on the
+MCP tools get theirs partly by assumption and partly from the server's
+annotations. Every MCP tool is assumed to return `private_data` — that is what
+most servers exist to do. `openWorldHint` makes a tool `untrusted_input` and
+`chosen` egress, and `destructiveHint` makes it `destructive`. No annotation
+can say "this returns other people's words", so a server like
+[mail](/docs/features/tools/mail#capability-labeling-reads-are-untrusted-sources-not-send-sinks),
+whose reads are not open-world, counts as an untrusted source **only because
+its `[mcp.capabilities]` block sets `untrusted_input = true`**. Drop that line
+and reading an attacker's email arms nothing.
+
+That override is a **union, never an assignment** — config can distrust a
+server further, never less. Letting config narrow a declaration would disarm the interlock on the
 strength of a claim nothing enforces, and would make the cheapest
 configuration the most dangerous one.
 
@@ -178,15 +180,28 @@ The refusal is counted on the run outcome as `blocked_sends`, which is what
 The dispatch order for one call is:
 
 ```
-interlock  →  pre_tool hook  →  approver (the human)  →  execute
+interlock  →  pre_tool hook  →  outbox staging (routed calls stop here)
+           →  approval rules ([[rule]])  →  approver (the human)  →  execute
 ```
 
 The interlock is first because **a human clicking "yes" is exactly what an
 injection is trying to engineer.** A prompt that has already convinced the
 model to exfiltrate has a good chance of producing an approval dialog that
 looks reasonable. The rule is structural, not a judgement, so it is applied
-before anyone is asked. Hooks come next, and they can narrow policy but never
-loosen it; the human comes last.
+before anyone is asked.
+
+- [Hooks](/docs/features/security/hooks) come next, and they can narrow
+  policy but never loosen it.
+- A call named in `[outbox] tools` is then **staged, not executed**: it
+  becomes a draft for you to release with `mecha outbox`, and never reaches
+  the rules, the approver or execution. Staging sends nothing, which is why a
+  routed call skips the interlock — the draft records the conversation's
+  taint so the review can say so. See [the outbox](/docs/features/security/outbox).
+- [Approval rules](/docs/reference/configuration#rule-and-approval) narrow
+  what the approver would pass: `forbid` refuses with nobody asked, `prompt`
+  asks even for a read-only tool, and `allow` can never soften an escalation
+  the interlock asked for.
+- The human comes last.
 
 ### The whole turn is gated, not each call in isolation
 
@@ -194,8 +209,8 @@ Taint is updated after a turn's calls execute, because provenance cannot be
 known before a call returns. That alone would let a model read a secret and
 send it **in the same turn** and see a clean slate at both gates. So the loop
 first computes what the turn *will* arm, from the declared capabilities of
-every call in the batch, and gates against that. This was found by running it:
-a mail read and an `http_fetch` batched into one turn went through.
+every call in the batch, and gates against that — so a mail read and an
+`http_fetch` requested together are judged as the armed turn they are.
 
 ### Policy
 
@@ -222,17 +237,19 @@ pub struct Conversation {
 }
 ```
 
-It used to be created fresh inside `run`, which meant a chat turn reset it.
-The hole that opened: fetch a hostile page on turn one, read a secret and send
-on turn two, and the interlock saw a clean slate both times — while the
-attacker's text sat in the model's context the whole while, still able to
-steer the model. **A turn boundary is not a security boundary.**
+**A turn boundary is not a security boundary.** A hostile page fetched on
+turn one is still in the model's context on turn two, still able to steer it,
+so a secret read and sent on turn two must be judged against it.
 
 Bundling the taint with the messages makes the right thing the default rather
 than something every caller has to remember. Keep the history and you keep the
-taint. Start a new `Conversation` — a batch item, a subagent, an eval case, a
-trigger fire — and you get a clean one, because you built a new object to do
-it.
+taint. Start a new `Conversation` — a batch item, an eval case, a trigger
+fire — and you get a clean one, because you built a new object to do it.
+
+A **subagent is not a new start**: it gets a fresh conversation but begins
+with its parent's taint, because the one message it receives was written out
+of everything the parent had read. Delegation does not create a clean
+boundary. See [Subagents](/docs/features/tools#subagents).
 
 Two consequences worth knowing:
 
@@ -271,7 +288,9 @@ The rule for tool authors: **any tool that reaches the network must call
 
 The private leg is different and deliberately so: it is set from the declared
 capability, because a tool that reads your files has read your files whether
-or not the call succeeded.
+or not the call succeeded. An [image you attach](/docs/features/interfaces/images)
+arms it too — a screenshot is captured, not composed, so it can hold anything
+that was on the screen.
 
 When `mark_untrusted_output` is on, external content is additionally wrapped
 in a marker telling the model to treat it as data rather than instructions.
@@ -297,8 +316,10 @@ cannot redirect it. That is `blind` egress: the trifecta interlock leaves it
 alone and `block_sends_after_private` still refuses it.
 
 Mail reads are the other contrast: a mail body is other people's words, so
-reads are `untrusted_input`, but a search query travels only to the provider
-that already custodies the mailbox, so they are not egress at all.
+the mail server is configured with `untrusted_input = true` (see
+[Capabilities](#capabilities) — the override, not an annotation, is what makes
+it so), but a search query travels only to the provider that already
+custodies the mailbox, so reads are not egress at all.
 
 Alongside the capability model, `http_fetch` refuses loopback, private,
 link-local (including the `169.254.169.254` metadata endpoint) and CGNAT
@@ -315,11 +336,18 @@ nothing could have influenced it yet.
 
 That leaves an ordinary privacy leak: the agent putting your private data into
 an outbound call because you asked it to, or because it judged that helpful.
-`block_sends_after_private = true` refuses **any** outbound call once private
-data is in context. It is off by default because it breaks "read my notes,
-then look something up", and because the better answer for most people is
-capability separation — put the search in a subagent with no filesystem
-access, so the two never meet.
+`block_sends_after_private = true` refuses **any** outbound call — `blind` or
+`chosen` — once private data is in context. It is off by default because it
+breaks "read my notes, then look something up".
+
+Moving the lookup into a [subagent](/docs/features/tools#subagents) does not
+get around it. A child starts with its parent's taint, and a subagent's egress
+is the highest among its own tools, so once private data is in the parent's
+context, delegating to any child that can send is refused by this guard too. A
+child whose only sender is `blind` — a search-only research profile — is
+still let through by the *interlock* in an armed conversation, but never by
+this guard. If you turn it on, do the lookup before the private data arrives,
+or in a separate session.
 
 ## The known gap: `shell`
 

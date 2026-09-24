@@ -6,7 +6,7 @@ description: mecha-mail — every Gmail and Outlook account behind one provider-
 
 # Mail and calendar
 
-`mecha-mail` is a third crate: a **library plus three thin MCP binaries**.
+`mecha-mail` is a third crate: a **library plus four thin MCP binaries**.
 
 The library holds Gmail and Google Calendar v3, Outlook mail and calendar over
 Microsoft Graph, both OAuth flows, and the token lifecycle. It is what a GUI
@@ -17,6 +17,7 @@ would depend on directly.
 | `mecha-google` | one Google account, its own credential store |
 | `mecha-outlook` | one Microsoft account, its own credential store |
 | **`mecha-mail`** | **every account in `~/.mecha/mail/` behind one provider-neutral surface** |
+| `mecha-docs` | Google Docs — see [Documents](/docs/features/tools/documents) |
 
 `mecha-mail` is the one deployments should wire. Behind it, no mecha-core or
 mecha-cli code knows that Google or Microsoft exists — and neither does the
@@ -47,15 +48,31 @@ tools = [
 
 ```toml
 default = "dartmouth"
+# default_mail = "dartmouth"      # optional: where new mail goes from
+# default_calendar = "personal"   # optional: where new events go
 
 [[account]]
 name = "personal"
 provider = "google"
+# grant_lifetime_days = 7         # optional: see below
 
 [[account]]
 name = "dartmouth"
 provider = "outlook"
 ```
+
+`default_mail` and `default_calendar` override `default` for one surface each,
+because where your mail goes out from and which calendar your life is on are
+separate decisions. Either one left out falls back to `default`.
+
+`grant_lifetime_days` declares how long this account's sign-in lasts when it
+is known to expire on a schedule — a Google OAuth client left in *Testing*
+status issues refresh tokens that die after 7 days. `mecha doctor` uses it to
+warn you before the grant expires instead of after. mecha never guesses it;
+leave it out and nothing warns.
+
+Set `$MECHA_MAIL_DIR` to keep the registry somewhere other than
+`~/.mecha/mail/`.
 
 ```bash
 mecha-mail auth dartmouth --provider outlook --tenant <tenant-id>
@@ -63,6 +80,7 @@ mecha-mail auth personal  --provider google
 mecha-mail import personal --provider google    # copy a mecha-google / mecha-outlook login in
 mecha-mail accounts                              # names, providers, addresses, the default
 mecha-mail default dartmouth                     # set the standing default
+mecha-mail default personal --calendar           # …or one surface's (--mail / --calendar)
 mecha-mail serve                                 # the MCP server (also the no-subcommand default)
 ```
 
@@ -77,8 +95,8 @@ the same provider. Adding your second Gmail account is one command with two
 arguments.
 
 Credentials live at `~/.mecha/mail/<name>/oauth.json`, one store per account.
-Names are lowercase letters, digits, `-` and `_`; duplicates and a default that
-names no configured account are refused at load.
+Names are lowercase letters, digits, `-` and `_`; duplicates and a default
+(general or per-surface) that names no configured account are refused at load.
 
 **The account names are baked into every tool schema as an enum at startup.**
 `accounts.toml` is read once, and every tool's `account` property is emitted as
@@ -95,8 +113,8 @@ account `dartmouth`: run `mecha-mail auth dartmouth --provider outlook`
 
 ## Resolution: the rule that shapes the surface
 
-Twelve tools — `mail_search`, `mail_recent`, `mail_get_thread`, `mail_send`,
-`mail_reply`, `calendar_list`, `calendar_list_events`, `calendar_freebusy`,
+Thirteen tools — `mail_search`, `mail_recent`, `mail_get_thread`, `mail_send`,
+`mail_reply`, `mail_triage`, `calendar_list`, `calendar_list_events`, `calendar_freebusy`,
 `calendar_create_event`, `calendar_hold`, `calendar_update_event`,
 `calendar_delete_event` — and three resolution modes.
 
@@ -156,10 +174,19 @@ the account it came from:
 That tagging is what makes the next rule workable: the model always already has
 the account by the time it needs to name one.
 
-### Item operations name their account
+### Item operations: threads are found, events are named
 
-Thread ids and event ids are **account-scoped**. `mail_get_thread`,
-`mail_reply`, `calendar_update_event` and `calendar_delete_event` require
+Thread and event ids are **account-scoped**, and the two are handled
+differently.
+
+**A thread is looked up.** `mail_get_thread`, `mail_reply` and `mail_triage`
+with no `account` ask every account for the thread and act in the one that
+holds it — a reply goes out from the mailbox the thread arrived in, so naming
+it only repeats what the id already says. A thread found in no account, or in
+more than one, is refused with every account's answer.
+
+**An event must be named.** `calendar_update_event`, `calendar_delete_event`,
+and `calendar_list_events` with a `calendar_id` other than `primary` require
 `account` when more than one is configured, and say where to find it:
 
 ```
@@ -172,14 +199,18 @@ mode resolves to it.
 
 ### Creates use the default, or ask
 
-`mail_send` and `calendar_create_event` fall back to the default account. With
+`mail_send` falls back to `default_mail`, and `calendar_create_event` and
+`calendar_hold` to `default_calendar`; either falls back to `default`. With
 several accounts and no default, the error says to **ask the user**:
 
 ```
 several accounts are configured (dartmouth, personal) and no default is set —
 ask the user which account to use, then pass it as `account`.
-(They can set a standing default with `mecha-mail default <name>`.)
+(They can set a standing default with `mecha-mail default <name>`, or one for
+this surface alone with `mecha-mail default <name> --mail`.)
 ```
+
+(`--calendar` in place of `--mail` for a calendar create.)
 
 The wording is deliberate and there is a test pinning it. "Ask the user" rather
 than "use your best judgment": the second phrasing was measured to make models
@@ -199,21 +230,26 @@ account `personal`: request timed out
 The call reports an error **only when every account failed**. One expired
 refresh token does not cost you the other mailbox.
 
-## Two commands with no model in them
+## Commands with no model in them
 
 `mecha-mail` also serves the scheduling pipeline directly, as data, on a timer:
 
 ```bash
 mecha-mail freebusy --days 60 --json     # merged busy intervals across every account
 mecha-mail bookings --dry-run            # what drained bookings would become events
+mecha-mail polls --dry-run               # what meeting polls are owed
 ```
 
 **`freebusy` deliberately inverts the rule above: it fails when *any* account
 is unreadable.** The MCP surface answers a person who can see the note about
 which mailbox was skipped; this one feeds a public booking page. A mailbox that
 could not be read is not a mailbox with free time, and a slot list built from a
-partial answer offers strangers hours the user does not have. `--from`/`--to`
-name an explicit window instead of `--days`, and `--account` narrows to one.
+partial answer offers strangers hours the user does not have. The one
+exception is a login that has been **revoked**: no retry will ever fix it, and
+you have already been told (`mecha doctor`, exit code 77), so its calendar is
+skipped with a loud warning rather than halting your booking page for days. If
+every login is revoked, it fails. `--from`/`--to` name an explicit window
+instead of `--days`, and `--account` narrows to one.
 
 **`bookings` is the inbound sibling**: it turns drained booking records into
 calendar events, deterministically, with no model anywhere. It is idempotent
@@ -225,6 +261,13 @@ parked loudly for a human rather than double-booked. `--account` names the
 calendar that receives the events, defaulting to the default account; an absent
 request store is "nothing drained yet" rather than an error, because this runs
 on a timer that must not cry wolf.
+
+**`polls` does the mail-and-calendar half of a meeting poll**: it mails each
+person their own link, sends the one nudge the sweep queued, and creates the
+event for a clean winner from your account with everyone invited. It decides
+nothing — that is `factory-publish polls sweep`, on the same timer — and it is
+idempotent against `~/.mecha/mail/polls.jsonl`. `--account` names the account
+to send and book from when a poll names none.
 
 ## The plain inbox, and writing a letter yourself
 
@@ -343,6 +386,17 @@ from a closed vocabulary, a deadline if the thread implies one, and the kind of
 standard request it is if it recognises one. On a fifty-thread sample of real
 academic mail, twenty-eight were archivable and twenty-two needed attention.
 
+**A deadline must come with the words it was taken from.** The classifier
+copies the phrase from the message that sets the date, and the date is kept
+only if that phrase is actually in the subject or body it was shown — and is
+long enough to be a date and short enough not to smuggle anything after it.
+Otherwise the date is dropped, the verdict otherwise stands, and the reason is
+kept. `mecha mail list` and `mecha mail show` show a dropped date with why,
+and `mecha mail task` says the classifier's date *was dropped* rather than
+that it found none — two different situations, because a dropped date is one
+you may want to type in with `--due`. A wrong date makes a task due when
+nothing is; a missing one costs you one look at the thread.
+
 ### The prefilter: half the mailbox never reaches a model
 
 `prefilter` disposes of a thread **from its envelope alone, ahead of the
@@ -442,6 +496,14 @@ today's behaviour: an ordinary, visible event you release from the outbox,
 not a private hold. The fallback is an instruction to the model, not a
 mechanism. A run that doesn't follow it adds nothing and leaves the thread
 alone.
+
+`reply`, `forward` and `schedule` are the actions here that need an agent
+rather than a tool call — a model has to read the thread and write prose — and
+the run that does so reads the thread, which arms both interlock legs. So the
+draft arrives in `/outbox` flagged tainted, which is correct: it was written
+after reading a stranger's words. Drafting from the classifier's one-line
+summary instead would produce *clean* drafts written from a paraphrase, which
+is worse exactly where it matters.
 
 `archive` and `spam` reach nobody outside your own mailbox, so they are not
 staged — staging them would make triage circular, reviewing a queue in order to
@@ -628,7 +690,8 @@ and loses only a promotion there would be nothing behind.
 ### Running it on a schedule
 
 Two timers, one sweep. `scripts/mecha-mail-classify.{service,timer}` sweeps at
-05:30 UTC as the after-hours catch-up;
+05:30 in the machine's local time (its `OnCalendar=` names no zone, so a
+host on UTC runs it at 05:30 UTC) as the after-hours catch-up;
 `scripts/mecha-mail-classify-day.{service,timer}` sweeps every 20 minutes
 through the working day (07:30–21:50), so a thread is sorted within about half
 an hour of arriving. The daytime timer names its zone (`America/New_York`) so
@@ -687,7 +750,9 @@ thread that has scrolled out of that window is retried from the store when it
 comes due, so a busy inbox cannot strand it. `mecha mail list` shows when each
 failure is next tried.
 
-## Microsoft signs in with device code
+## Signing in
+
+### Microsoft: device code
 
 ```bash
 mecha-mail auth dartmouth --provider outlook --tenant <tenant-id>
@@ -700,77 +765,50 @@ and enter this code:
     F7KQ2XM9B
 ```
 
-Three properties follow from choosing device code over loopback:
-
-- **No redirect URI**, so it reuses an org-approved app registration untouched.
-- **No forwarded port**, so it works over SSH.
-- **It is a public client.** Entra binds the refresh credential to the auth
-  method that minted it, so sending a `client_secret` after a device-code grant
-  fails with `AADSTS7000215` even when the secret is correct. The stored
-  credential keeps `client_secret` empty and the flow never sends one.
-
-Scopes are exactly four, and deliberately no more:
+Device code needs no redirect URI, so it works with an app registration your
+organisation has already approved, and no forwarded port, so it works over
+SSH. The scopes are exactly four:
 
 ```
-https://graph.microsoft.com/Mail.Read
+https://graph.microsoft.com/Mail.ReadWrite
 https://graph.microsoft.com/Mail.Send
 https://graph.microsoft.com/Calendars.ReadWrite
 offline_access
 ```
 
-`Mail.ReadWrite` is excluded because nothing here modifies a message in place.
-`User.Read` is excluded because `GET /me` is not worth a consent prompt — so the
-account's own address is read from **Sent Items** instead (`/me/mailFolders/
-sentitems/messages?$top=1&$select=from`), using a scope the account already
-needs.
+`Mail.ReadWrite` is there because triage — archive, mark read, report spam,
+trash — changes messages in place; without it triage would work on Gmail and
+silently do nothing on Outlook. **It often needs an administrator.** Microsoft
+classes it high-impact, and a managed tenant's recommended consent policy
+blocks end users from granting it: instead of a consent screen you see *"Need
+admin approval"*, and `auth` fails there rather than at first use. Ask your
+tenant administrator to grant the app registration `Mail.ReadWrite` once, then
+run `auth` again. `mecha doctor` reports an account whose grant does not cover
+the triage verbs. `User.Read` is not requested; the account's address is read
+from Sent Items instead.
 
-**An account lookup must never be fatal to `auth`.** If the address cannot be
-determined, the flow prints a note and saves the tokens anyway. Losing a
-completed sign-in over a cosmetic detail makes the user authenticate twice.
+When sign-in fails, the Entra error is translated into a sentence saying what
+to change — admin consent, an app not registered in the tenant, the wrong
+organisation — with the raw description kept beside it.
 
-Entra error codes are translated rather than passed through raw — admin consent,
-app-not-registered-in-tenant, wrong-org, unrecognised tenant, and the
-public-client-flows switch each get a sentence saying what to change, with the
-raw description kept in parentheses.
+### Google: browser loopback
 
-Google, by contrast, uses a loopback PKCE flow on `127.0.0.1:8924` with
-`access_type=offline&prompt=consent` (Google needs both to reliably return a
-refresh token every time), four scopes (`gmail.modify`, `gmail.send`,
-`calendar`, `calendar.events` — stopping short of `https://mail.google.com/`,
-so permanent deletion is not granted), and a 120-second
-timeout on the redirect.
+`mecha-mail auth personal --provider google` opens a browser sign-in that
+returns to `127.0.0.1:8924` (`--port` to change it) and waits two minutes.
+Four scopes: `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` —
+stopping short of `https://mail.google.com/`, so permanent deletion is never
+granted.
 
-## The token lifecycle
+### When a sign-in expires
 
-Storage, refresh, and retry-on-401 live in Rust, in the library, so every caller
-gets them:
-
-- **`oauth.json` at mode 0600**, written to a temp sibling that is *created* with
-  that mode before any bytes land, then renamed. The directory is 0700.
-- **Refresh ahead of expiry, behind a lock.** The cached token is used only while
-  more than 120 seconds of life remain — clock skew plus the duration of the call
-  the token is about to make. The credentials sit behind an async mutex held
-  across the refresh, so two concurrent tool calls cannot race two refreshes;
-  both providers rotate the refresh token, and the loser of that race would
-  persist a stale one.
-- **One forced refresh and retry on a 401.** An HTTP 401 from either API is
-  recognised as auth expiry, triggers a refresh regardless of the clock, and the
-  call is retried exactly once.
-- **Retry with backoff on 429 and 5xx**: three attempts total, 500 ms then
-  1000 ms. Transport errors retry; other 4xx never do. A streaming request that
-  cannot be cloned gets one try.
-
-## Provider quirks handled for you
-
-Four places where the obvious call is the wrong one, each settled in the
-library so no caller has to know:
-
-- **Graph replies go through `POST /messages/{id}/reply`**, so they thread
-  rather than arriving as a new conversation.
-- **The calendar reads `calendarView`**, so recurring events do not vanish from
-  a window.
-- **Search uses `$search`**, not a `$filter` that 400s beside `$orderby`.
-- **`to` splits on commas**, exactly as `cc` and `bcc` do.
+Tokens refresh on their own; you should not see them. What you will see is a
+refresh token the provider has **revoked or expired** — a changed password, a
+tenant policy, or a Google client in *Testing* status after 7 days. That is
+permanent, so nothing retries it: `mecha-mail` exits with code 77, `mecha
+doctor` and `mecha-mail accounts` name the dead account, and the fix is to run
+`mecha-mail auth <name> --provider <provider>` again. Declaring
+`grant_lifetime_days` for an account that expires on a schedule gets you the
+warning before it happens.
 
 ## Two unification wrinkles
 
@@ -789,13 +827,3 @@ falls back) — and
 all-day events skip zone conversion entirely and keep their bare date, or a
 Monday retreat gets announced as Sunday at 8pm. See
 [Timezones](/docs/reference/configuration).
-
-## HTML-only mail
-
-Taking only the `text/plain` part is how an HTML-only email reaches the model as
-an empty body. So the body falls back through `body_text` → HTML converted to
-markdown → the snippet, and everything on that path is then sanitized: HTML
-comments stripped, long base64 runs replaced with a placeholder, and
-`<system` / `<tool` / `<function` escaped. Outbound header values containing a
-line break are refused outright, so a model-supplied subject cannot inject a
-header.
