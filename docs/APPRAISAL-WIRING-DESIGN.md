@@ -423,7 +423,7 @@ widening.
 | R20 | 2 | The guard on credit and tenure from text: the owner's verdict overrides; grounded claims from clean runs only; a measured lever with a revert first | proposed |
 | R25 | 2 | I1 is the distiller extended; the counts-only appraiser is retired into it; the reflector folds in only after its lessons measure no worse; the graph episode's text stays unchanged | proposed |
 | R26 | 2 | Whole-session harness rumination is replaced by point-wise comparison at informative decision points, and behaviour-changing policies are measured on fixtures | proposed |
-| R21 | 3 | State reaches the agent as described state — words and bands — never numbers or setpoints, on the user-turn or tool-result slot | proposed |
+| R21 | 3 | State reaches the agent as described state, on the user-turn or tool-result slot, never the prefix. Budget *facts* may be numbers — turns left, context remaining, as the `todo` headroom line already gives them, and as the one measured budget-awareness gain did (arXiv 2511.17006). Anything a model could treat as a *score to move* stays words: sensor readings against the owner's setpoints, per-commitment guilt, valence, priorities | proposed |
 | R22 | 3 | An in-run situation appraisal is part of the run: it inherits its taint, shapes the plan, and never widens a permission or chooses an action | proposed |
 | R27 | 3, 5 | Policies are compared only where a structural validator decides; a model judge at most breaks a tie between candidates that passed every structural check | proposed |
 | R4 | 3 | The completion certificate: template only first | proposed |
