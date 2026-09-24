@@ -6,6 +6,7 @@
     attendeesOf, MAIL_HEADERS, ago, localZone, EVENT_CARD_KEYS, unreadableAccounts, unreadableNote,
     threadOf, ROUTING_KEYS, toolSuffix, threadMessages, answeredMessage, msgWhen,
     rowSummary, docEdit, DOC_EDIT_KEYS, REJECT_REASONS, tooSoon,
+    replySubject, liveThread, sinceDrafted, readOf, shouldReread,
   } from './outbox-view.js';
 
   // The outbox: every draft waiting on the owner, and the one place any of
@@ -96,22 +97,14 @@
   const thread = $derived(kind === 'mail' ? threadOf(detail?.sources) : null);
   // The thread the run read, as messages: the one a reply answers is shown
   // as mail — who, when, what they said — and the rest one click away.
-  const readThread = $derived.by(() => {
-    if (kind !== 'mail') return null;
-    for (const source of detail?.sources ?? []) {
-      if (toolSuffix(source.tool) !== 'mail_get_thread') continue;
-      const parsed = threadMessages(source.text, source.clipped);
-      if (parsed?.messages.length) return { source, ...parsed };
-    }
-    return null;
-  });
+  const readThread = $derived(readOf(detail));
   const answered = $derived(readThread ? answeredMessage(readThread, args) : null);
   const otherSources = $derived((detail?.sources ?? []).filter((x) => x !== readThread?.source));
   // A reply's sender is the thread's account, looked up at send time; say so
   // when the draft does not name one itself.
   const fromThread = $derived(thread && !mailHeaders.some(([k]) => k === 'account') ? thread.account : null);
   const title = $derived(
-    !detail ? '' : asEvent ? (args.title ?? detail.headline) : detail.headline || (thread?.subject ? `Re: ${thread.subject}` : ''),
+    !detail ? '' : asEvent ? (args.title ?? detail.headline) : detail.headline || replySubject(thread?.subject),
   );
   const invited = $derived(attendeesOf(args));
   const doc = $derived(detail ? docEdit(detail.tool, detail.args) : null);
@@ -182,6 +175,39 @@
       }
     }
   }
+  // The thread as it is now, for an unpinned reply: `mail_reply` answers the
+  // newest message *when it is sent*, and a draft can sit for days. One
+  // read-only `mecha mail show` per draft opened, reused for two minutes.
+  let live = $state({}); // id → { status: 'loading'|'ok'|'error', thread, at }
+  async function checkLive(d) {
+    if (toolSuffix(d.tool) !== 'mail_reply' || d.args?.message_id || !d.args?.thread_id) return;
+    const account = d.args.account ?? threadOf(d.sources)?.account;
+    if (!account) return;
+    if (!shouldReread(live[d.id])) return;
+    live[d.id] = { status: 'loading', at: Date.now() };
+    try {
+      const q = new URLSearchParams({ thread: d.args.thread_id, account });
+      const res = await fetch(`/api/mail/read?${q}`);
+      if (!res.ok) throw new Error((await res.text()).trim());
+      live[d.id] = { status: 'ok', thread: liveThread(await res.text(), account), at: Date.now() };
+    } catch {
+      live[d.id] = { status: 'error', at: Date.now() };
+    }
+  }
+  // Only for a draft that stays selected: `show` runs on every j/k, held
+  // keys included, and each reread is a `mecha mail show` subprocess and a
+  // provider round-trip (review of #275).
+  const LIVE_SETTLE_MS = 300;
+  let settleTimer = null;
+  function settleThenCheck(d) {
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => {
+      if (selectedId === d.id) checkLive(d);
+    }, LIVE_SETTLE_MS);
+  }
+  const liveNow = $derived(detail ? live[detail.id] : null);
+  const since = $derived(liveNow?.status === 'ok' ? sinceDrafted(readThread, liveNow.thread) : null);
+
   function show(d, keepError) {
     detail = d;
     openedAt = Date.now();
@@ -194,7 +220,8 @@
     // With no thread to show as mail, the reads are what there is to see.
     // Only a mail draft draws its thread as messages; an event or a doc edit
     // written from a mail has no other rendering of it (found on review).
-    showSources = !(kindOf(d.tool) === 'mail' && d.sources?.some((x) => toolSuffix(x.tool) === 'mail_get_thread' && threadMessages(x.text, x.clipped)));
+    showSources = !readOf(d);
+    settleThenCheck(d);
     showArgs = false;
     rejectReason = '';
     if (!keepError) error = null;
@@ -445,9 +472,17 @@
 
   loadList();
   const timer = setInterval(() => {
-    if (!document.hidden) loadList();
+    if (document.hidden) return;
+    loadList();
+    // The open draft's "no new messages" is a claim about now; keep it one.
+    // `shouldReread` (outbox-view.js) sets the cadence: a good read every two
+    // minutes, a failed one every minute, never two in flight (review of #275).
+    if (detail && mode === 'read') checkLive(detail);
   }, 30_000);
-  $effect(() => () => clearInterval(timer));
+  $effect(() => () => {
+    clearInterval(timer);
+    clearTimeout(settleTimer); // a reread must not fire for a page that is gone
+  });
 
   const monthOf = (a) => {
     const s = a?.start_time ?? '';
@@ -518,17 +553,23 @@
         {#if listError || (error && !detail)}<div class="warnline pad">{@render hazardGlyph()}<span>{listError ?? error}</span></div>{/if}
         {#each visible as item (item.id)}
           {@const sum = rowSummary(cache[item.id])}
+          {@const moved = live[item.id]?.status === 'ok' ? sinceDrafted(readOf(cache[item.id]), live[item.id].thread) : null}
           <button class="row" class:on={item.id === selectedId} onclick={() => open(item.id)}>
             <span class="kicon k-{kindOf(item.tool)}">{@render kindGlyph(kindOf(item.tool))}</span>
             <span class="rbody">
               <span class="rtop">
-                {#if sum?.who}
+                {#if moved?.grew}
+                  <!-- Reread when the draft was opened: the reply now goes to
+                       whoever wrote last, not to who the draft answered. -->
+                  <span class="rwho">{moved.newest.name || moved.newest.address}</span>
+                {:else if sum?.who}
                   <span class="rwho">{sum.who}</span>
                 {:else}
                   <span class="rlabel">{item.label}</span>
                   {#if item.account}<span class="acct">{item.account}</span>{/if}
                 {/if}
                 <span class="grow"></span>
+                {#if moved?.grew}<span class="stuck">{moved.grew} new</span>{/if}
                 {#if cache[item.id]?.delivery_uncertain}<span class="stuck">check sent</span>{:else if cache[item.id]?.error}<span class="stuck">failed</span>{/if}
                 <span class="when">{ago(item.created_at)}</span>
               </span>
@@ -699,7 +740,35 @@
               <!-- Only a verified split may say who a reply goes back to: a
                    body can forge a header, and a staged reply names no one
                    else. Unverified, it is what the run read, newest last. -->
-              <div class="kicker">{toolSuffix(detail.tool) !== 'mail_reply' ? 'Written from' : readThread.verified ? 'Replying to' : 'The thread it read'}</div>
+              <div class="kicker">{toolSuffix(detail.tool) !== 'mail_reply' ? 'Written from' : readThread.verified || since?.grew ? 'Replying to' : 'The thread it read'}</div>
+              {#if toolSuffix(detail.tool) === 'mail_reply' && !args.message_id}
+                <!-- The draft answers the newest message *the run read*; the
+                     reply goes to the newest one when it is sent, and a draft
+                     can wait days (review of #272). The thread is reread when
+                     the draft opens — a verified live read, so the page can
+                     say who. A reply pinned by message_id has a fixed target. -->
+                {#if since?.grew}
+                  <div class="newmail" role="status">
+                    {@render hazardGlyph()}
+                    <span><strong>{since.grew} new {since.grew === 1 ? 'message' : 'messages'} since this was drafted.</strong>
+                      The draft was written before {since.grew === 1 ? 'it' : 'them'}. Sending now replies to {since.newest.name || since.newest.address}.</span>
+                  </div>
+                  {#if since.added}
+                    {#each since.added as m}{@render message(m, m === since.newest)}{/each}
+                  {:else}
+                    {@render message(since.newest, true)}
+                  {/if}
+                  <div class="kicker">what the draft was written to</div>
+                {:else if since}
+                  <div class="hint ok">✓ No new messages since this was drafted — checked {ago(new Date(liveNow.at).toISOString())}.</div>
+                {:else if liveNow?.status === 'loading'}
+                  <div class="hint">Checking the thread for new messages…</div>
+                {:else if readThread.verified}
+                  <!-- A reread that failed, or came back unverifiable, is not a
+                       reread that found nothing: say which (review of #275). -->
+                  <div class="hint">The newest message when this was drafted. If anyone has written since, the reply goes to them instead{liveNow?.status === 'error' ? " — the thread couldn't be reread just now" : liveNow?.status === 'ok' ? " — the thread was reread, but mecha couldn't confirm what is new in it" : ''}.</div>
+                {/if}
+              {/if}
               {#if !readThread.verified}
                 <!-- An unproven split is not drawn as messages: a parsed header
                      in bold is a sender the page vouches for, and a forged one
@@ -712,14 +781,6 @@
                   The reply goes to the newest message in the real thread.
                 </div>
                 <div class="quoted"><span class="gutter"></span><div class="qtext"><MailBody text={readThread.source.text} compact /></div></div>
-              {:else}
-                {#if toolSuffix(detail.tool) === 'mail_reply' && !args.message_id}
-                  <!-- The name is the newest message *the run read*; the
-                       reply goes to the newest one when it is sent, and a
-                       draft can wait days (found on review). A reply pinned
-                       by message_id has a fixed target, so it needs no line. -->
-                  <div class="hint">The newest message when this was drafted. If anyone has written since, the reply goes to them instead — open the thread in Mail to check.</div>
-                {/if}
               {/if}
               {#if readThread.verified && showThread}
                 {#each readThread.messages as m}{@render message(m, m === answered)}{/each}
@@ -1007,6 +1068,9 @@
   .btnrow { display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
   .barerr { width: 100%; display: flex; gap: 8px; align-items: flex-start; font-size: 13px; line-height: 1.45; color: var(--hazard); overflow-wrap: anywhere; }
   .btnrow.start { justify-content: flex-start; }
+  .newmail { display: flex; gap: 8px; align-items: flex-start; padding: 9px 12px; border: 1px solid var(--hazard); border-radius: var(--radius); font-size: 13px; line-height: 1.45; color: var(--text-muted); }
+  .newmail strong { color: var(--hazard); font-weight: 600; }
+  .hint.ok { color: #7fc4b8; }
   .notice { margin: 0 18px 10px; padding: 7px 10px; border-radius: var(--radius-chip); background: rgba(127, 196, 184, 0.1); color: #7fc4b8; font-size: 12px; overflow-wrap: anywhere; }
   .rejectbox { width: 100%; display: flex; flex-direction: column; gap: 8px; }
   .reasons { display: flex; gap: 8px; flex-wrap: wrap; }

@@ -22,6 +22,32 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-24 — the outbox unclogged: a reply goes from its thread's account,
+and the web review reads as mail and sends in one press.** #272
+(`97188f8b`). Six staged replies named no `account`; mecha-mail refused each
+at send time, the release path recorded the refusal as an *unknown* delivery,
+and an unknown item hides every action — the owner could not approve, and
+Send looked like it did nothing. `mail_reply` / `mail_get_thread` /
+`mail_triage` now act in the one account whose read of the thread returned
+messages (`thread_home`; an empty read holds nothing, because Graph answers a
+foreign `conversationId` with 200 and `[]`). The web outbox drops the
+armed-only confirm sheet — every assistant draft is armed, so it was on every
+draft — and draws each link's full destination inline instead; the reasoning
+is in `ARCHITECTURE.md` §the outbox, and **it is a ruling for the owner to
+ratify**, which the later review passes named as such without objecting. A reply
+names its recipient only from a split it can prove: mecha-mail ends every
+thread read with `--- end of thread · N messages` (`thread_footer`), and a
+clipped or miscounted read is shown verbatim, naming nobody. **Deployed
+2026-09-24** (`mecha`, `mecha-mail`, `~/.mecha/web/dist`, `mecha-serve`/
+`-slack`/`-triggers`/`-drain` restarted; the build is #272's head, which
+differs from main only by #273's comment). **Two drafts were left
+`check sent`** by the old refusal — never sent, since the account check runs
+before any provider call; reconciling them is the owner's. The follow-up
+branch `fix/outbox-followups` rereads a reply's thread when it opens
+(`sinceDrafted`) — one live draft's thread had gone from one message to three
+while it waited — and carries #272's review minors. What stays open is under
+*Mail* in *What to do next*.
+
 **2026-09-24 — a stale date is caught by the calendar instead of believed,
 and the zone is configured once.** #243 (`9308c00b`) and #267 (`a5140ed2`)
 are the tool-boundary half of #238's clock arc. `calendar_list_events` and
@@ -4703,6 +4729,18 @@ What is missing beyond that is refinement:
   authentication.
 
 ### Mail as a surface you work — built; what is open is judgement
+
+**A send refused before it reached any provider is still recorded as an
+unknown delivery.** #272 removed the common cause (a reply with no
+`account`), not the class: an unknown account name, or a `mail_send` with no
+default, is refused by mecha-mail before any network call, and the release
+path (`Surface::release`) cannot tell that from a send that may have gone out,
+so the draft sits at `check sent` until the owner reconciles it. The fix is a
+typed "nothing was dispatched" signal from the server — an MCP `_meta` marker
+carried on `ToolOutput` — which touches `mcp.rs` and `tool/mod.rs`, the files
+the provenance-security arc (`feat/provenance-security`) is working in, so it
+waits for that to land. Trusting the server's own word here is sound: the
+server is the sender, so it is the authority on whether it sent.
 
 **The mail half of the tool-boundary clock work is unbuilt.** #243 made a
 stale date inexpressible in `calendar_list_events` and `calendar_freebusy`;

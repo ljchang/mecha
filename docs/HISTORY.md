@@ -14,6 +14,43 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-24 — the outbox had clogged, and the reason was one missing
+argument.** #272 (`97188f8b`). The owner reported the web outbox could not
+approve a draft, that approving took two presses, and that Send did nothing.
+All three had one root: six staged `mail_reply` drafts named no `account`
+while two were configured, mecha-mail refused each with "pass `account`"
+before any provider call, and the release path — which records the attempt
+before dispatch so a crash can never retry blindly — kept the refusal as
+*unknown*, which hides every action on the item. The error did render, at the
+top of a scrolled pane, far from the button. The owner's ruling: a reply goes
+out from the account it was received on, so an omitted account is looked up
+(`thread_home`), not demanded.
+
+Five review passes each found something the last had not, and three are
+worth keeping. **An empty read is not a holder**: Graph answers a
+`conversationId` filter that matches nothing with HTTP 200 and an empty list,
+so the first version made every Outlook account hold every Gmail thread — a
+reply refused as "found in several accounts", and a triage acting in the wrong
+mailbox when the real holder's read failed. **A staged reply has no `to`**, so
+the pane's "Replying to" was the only statement of the recipient, and a body
+can type a whole header block; mecha-mail now ends every thread read with a
+count (`thread_footer`) on the one line no body can reach, and a split that
+does not match — or a read clipped at `outbox_source::MAX_CHARS`, which looks
+exactly like a one-message thread — is shown verbatim and names nobody.
+**`mail_reply` answers the newest message when it is released, not the one
+the draft was written to**, and the queue's whole premise is that drafts wait:
+the pane says so, and the follow-up rereads the thread on open. The armed
+confirm sheet was removed on the owner's instruction; what it showed that the
+page did not, a link's destination, is drawn inline with its query string,
+because `shortUrl` folding a query to `?…` hid exactly the exfiltrating case
+the first version claimed to reveal.
+
+Two traps on the way. The live check caught what the demo could not: four of
+twelve real drafts read their thread before mecha-mail wrote a `Calendar
+date:` line, and parsed to nothing. And `pkill -f "<pattern>"` run inside a
+shell whose own command line contains the pattern kills that shell — twice;
+start a dev server with `setsid … & echo $!` and kill the process group.
+
 **2026-09-24 — the calendar contradicts a stale date instead of confirming
 it.** #238 had made the harness's own clock unable to go stale, and left the
 other half open on purpose: on 2026-09-14 a run working from a stale date
