@@ -2834,8 +2834,16 @@ async fn draft(
     // count and the run would report nothing (found in review of #281).
     // Only a schedule run counts: a hold from any other kind of run is not
     // what that run was asked to do, and must not close its thread.
+    // A staged call also comes back clean ("Drafted, not sent"), so if the
+    // owner ever routes `calendar_hold` through the outbox, a hold here was
+    // staged, not made, and counting it would report a calendar change that
+    // did not happen. Staged is never made (found in review of #281).
+    let hold_is_staged = prepared.agent.context().outbox.as_ref().is_some_and(|o| {
+        o.routed()
+            .any(|n| n.rsplit("__").next() == Some("calendar_hold"))
+    });
     let holds = match kind {
-        Draft::Schedule => holds_made(
+        Draft::Schedule if !hold_is_staged => holds_made(
             convo
                 .rewritten
                 .iter()

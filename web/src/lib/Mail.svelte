@@ -464,7 +464,7 @@
     </div>
     <div class="scroll">
       <h1 class="sweeptitle">{SWEEP_LABEL[sweepVerb]} {sweepCounts[sweepVerb]} thread{sweepCounts[sweepVerb] === 1 ? '' : 's'}?</h1>
-      <p class="sweepnote">The classifier suggested this for each one. Untick a group to keep it in the queue; one Undo brings the whole batch back. Add to calendar makes each hold directly, once the batch goes.</p>
+      <p class="sweepnote">The classifier suggested this for each one. Untick a group to keep it in the queue; one Undo brings the whole batch back.{#if sweepVerb === 'schedule'} Each one becomes a private hold on your calendar, made directly once the batch goes.{/if}</p>
       {#each groups as g (g.key)}
         <label class="group">
           <input type="checkbox" checked={ticked.has(g.key)} onchange={() => toggleGroup(g)} />
