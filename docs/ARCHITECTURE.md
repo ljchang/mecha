@@ -371,14 +371,24 @@ turn one, read a secret and send on turn two, and the interlock saw a clean
 slate both times while the attacker's text sat in context the whole while. A
 turn boundary is not a security boundary. Bundling taint with the messages makes
 the right thing the default — keep the history and you keep the taint; start a
-new `Conversation` (a batch item, a subagent, an eval case) and you get a clean
-one.
+new `Conversation` (a batch item, an eval case, a trigger fire) and you get a
+clean one. **A subagent is the exception**: `Subagent::call` seeds `convo.taint`
+from the dispatch stamp (`ctx.taint`, the `turn_taint` forecast) and treats an
+unstamped context as fully tainted, because the task string was composed out
+of everything the parent read (TRIFECTA.md channel 2).
 
 Tools declare `Capabilities` — `private_data`,
 `untrusted_input`, `external_send`, `destructive`. The loop tracks which have
-entered the conversation (`Taint`) and refuses any `external_send` tool once
+entered the conversation (`Taint`) and refuses any `Egress::Chosen` tool once
 both private and untrusted are present. It sits *ahead* of the approver on
 purpose: a human clicking "yes" is what an injection is trying to engineer.
+
+**The whole turn is gated, not each call.** Taint is updated after a turn's
+calls execute, because provenance is unknown before a call returns, so the loop
+first forecasts what the turn *will* arm from the declared capabilities of
+every call in the batch (`turn_taint`) and gates each call against that
+forecast. Without it, a mail read and an `http_fetch` requested in the same
+turn each saw a clean slate and the send went through.
 
 Two distinctions that are easy to get wrong:
 
@@ -1225,6 +1235,32 @@ reading `None` as *not covered* is the point, since every such grant predates
 the change. `mecha doctor` reports an account that cannot triage as
 `Attention` with the re-auth remedy, so the discovery happens there rather
 than mid-run on a 403.
+
+**A mail body is sanitized on the way to a prompt, and a header value is
+refused if it breaks a line.** The body falls back `body_text` → HTML
+converted to markdown → the snippet (`text::clean_body`), then
+`text::sanitize_for_prompt` strips HTML comments, replaces base64 runs of 200+
+characters with a marker, and escapes `<system` / `<tool` / `<function`.
+Outbound, `gmail::checked_header` refuses any header value containing CR, LF
+or NUL, so a model-supplied subject cannot inject a header.
+
+**The refresh margin and the lock exist because both providers rotate the
+refresh token.** The cached access token is used only while more than
+`EXPIRY_MARGIN_SECS` (120) remain — clock skew plus the call it is about to
+make — and the credentials sit behind an async mutex held across the refresh:
+the loser of a refresh race would persist a stale refresh token. The file is
+written to a temp sibling *created* 0600 before any bytes land, then renamed;
+the directory is 0700. Backoff on 429/5xx is three attempts total (500 ms, then
+1000 ms); other 4xx never retry, and a request body that cannot be cloned gets
+one try.
+
+**Entra errors are translated, never passed through raw**
+(`microsoft::auth::humanize_aadsts`): admin consent, app not in tenant,
+wrong org, unrecognised tenant, the public-client-flows switch and a sent
+`client_secret` each get a sentence naming the change, with the raw
+description kept in parentheses. Google's loopback PKCE flow sends
+`access_type=offline&prompt=consent` because Google needs both to reliably
+return a refresh token every time.
 
 ## Documents
 
@@ -2140,6 +2176,32 @@ carry:
   the final response lands in `messages` — and the Anthropic decoder has had
   this shape since it was written. Parity, not a regression, and the shape a
   Slack thread will show once.
+
+**The MCP client's wire behaviour** (`mcp.rs`). Each of these was a
+silent failure before it was a rule:
+
+- **Response ids are matched however the server spelled them.** mecha sends
+  numeric ids; JSON-RPC allows strings and real servers echo numbers back as
+  strings. Refusing those left every call to time out against a server that
+  was answering.
+- **`tools/list` is paged.** Stopping at the first page silently shrank a
+  large server's surface; the loop follows `nextCursor` and is bounded at 100
+  pages (warning "still paging after 100 pages") so a server handing out
+  cursors forever cannot wedge startup.
+- **stderr is a log, not the protocol.** It used to inherit mecha's and
+  garbled a full-screen front end mid-frame; it is now piped and re-emitted
+  at `tracing::debug!` tagged with the server name.
+- **A dead server wakes its callers.** When stdout closes, every pending
+  request is released rather than left to time out one by one.
+- **A transport failure is `ToolOutput::err`** (`MCP call failed: ...`), never
+  an `Err` that ends the run; `connect_all` reports and skips a server that
+  fails to start, except under `mecha eval --mcp-file`, where a partial surface
+  would grade nothing and a failure is fatal.
+- **`Registry::insert` replaces by name, but config cannot reach that.**
+  Prefixed MCP names cannot collide with a built-in, and an unprefixed
+  (`prefix_tools = false`) collision fails startup in `setup`. The
+  "MCP servers can shadow built-ins" doc comment on `Registry::insert`
+  describes the method, not a configurable behaviour.
 
 ## Approval rules
 

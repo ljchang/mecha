@@ -39,6 +39,11 @@ further step. This is the common case and it costs nothing.
 mecha-docs auth            # consent once
 ```
 
+Every `mecha-docs` command takes `--account <NAME>`, which grant to use —
+`personal` when you leave it out. There is no positional account name:
+`mecha-docs auth --account work` is a second, separate grant stored under
+`~/.mecha/docs/work/`.
+
 **Handing it over.** An existing document is adopted through Google's real
 file chooser:
 
