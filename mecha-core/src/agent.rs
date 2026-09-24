@@ -596,7 +596,11 @@ pub struct Conversation {
     ///
     /// [`ContextTracker::carry_into`]: crate::pressure::ContextTracker::carry_into
     pub pressure: crate::pressure::ContextTracker,
-    /// Last human-confirmed goal, owned by this conversation, never a shared agent.
+    /// Last confirmed goal, owned by this conversation, never a shared
+    /// agent: confirmed by the owner (`run --goal`, an answered question) or
+    /// seeded structurally from a store the owner authored or configured —
+    /// a board task, a trigger, a front-door request
+    /// (`APPRAISAL-WIRING-DESIGN.md` S1). Never a pointer a model named alone.
     pub goal_anchor: Option<crate::goal::GoalRef>,
 }
 
@@ -9353,6 +9357,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unrelated.goal_anchor, None);
+    }
+
+    /// A structural anchor (`APPRAISAL-WIRING-DESIGN.md` S1) — here a
+    /// trigger's — rides the conversation into the run and out on its
+    /// outcome, where the run record keeps it, exactly as a confirmed one
+    /// does. No plan is needed: the anchor is recorded whether or not the
+    /// model writes one.
+    #[tokio::test]
+    async fn a_trigger_anchor_reaches_the_outcome_without_a_plan() {
+        let (agent, _) = agent_with_tools(
+            vec![assistant(vec![Block::text("brief")], StopReason::EndTurn)],
+            vec![],
+            PermissionMode::Allow,
+        );
+        let mut convo = Conversation::user("brief me");
+        convo.goal_anchor = Some(crate::goal::GoalRef::Trigger("morning".into()));
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(
+            outcome.goal_anchor,
+            Some(crate::goal::GoalRef::Trigger("morning".into()))
+        );
+        assert_eq!(convo.goal_anchor, outcome.goal_anchor);
     }
 
     /// The delegated-run path: a caller seeds the anchor on the run's own

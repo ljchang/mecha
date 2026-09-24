@@ -1243,8 +1243,15 @@ pub fn of_session(
                 .is_some_and(|c| c.lines().iter().any(|l| &l.id == id)),
             // The board owns task and project ids, and the closure appraisal
             // supplies its own; nothing here can check them and nothing
-            // labels on them alone.
-            GoalRef::Task(_) | GoalRef::Project(_) | GoalRef::Setpoint(_) => true,
+            // labels on them alone. A trigger or request pointer is the
+            // harness's own seeding from its own stores (the trigger file,
+            // the front-door record), never a model's string, and `distill`
+            // resolves it before it crosses a wire.
+            GoalRef::Task(_)
+            | GoalRef::Project(_)
+            | GoalRef::Setpoint(_)
+            | GoalRef::Trigger(_)
+            | GoalRef::Request(_) => true,
         })
         .cloned()
         .collect();

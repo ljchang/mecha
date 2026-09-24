@@ -187,7 +187,23 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             distill::KnownPointers::none()
         }
     }
-    .with_charter_lines(charter_lines);
+    .with_charter_lines(charter_lines)
+    // The stores behind the two structural anchor kinds, read in-process: a
+    // `trigger:` or `request:` pointer crosses whole only if its own store
+    // still holds it. A store that cannot be read admits nothing of its kind
+    // — the pointer drops to its kind word, never a guess.
+    .with_triggers(
+        mecha_core::trigger::TriggerStore::open_existing_default()
+            .and_then(|s| s.list().ok())
+            .map(|(triggers, _problems)| triggers.into_iter().map(|t| t.name).collect::<Vec<_>>())
+            .unwrap_or_default(),
+    )
+    .with_requests(
+        mecha_core::frontdoor::Frontdoor::open_existing_default()
+            .and_then(|f| f.records().ok())
+            .map(|records| records.into_iter().map(|r| r.seq).collect::<Vec<_>>())
+            .unwrap_or_default(),
+    );
 
     let mut distilled = 0usize;
     let mut skipped = 0usize;

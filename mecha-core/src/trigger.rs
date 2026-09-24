@@ -261,6 +261,46 @@ pub struct Trigger {
     /// record; this is delivery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify: Option<String>,
+
+    /// The charter line this trigger serves, as `charter:<id>` — optional,
+    /// never required (`APPRAISAL-WIRING-DESIGN.md` R1). A trigger run is
+    /// anchored to the trigger itself (`trigger:<name>`) whether or not this
+    /// is set; this is the owner saying which standing priority that
+    /// scheduled work is for, where they want to say it. Checked against the
+    /// loaded charter when the trigger loads ([`Trigger::check_serves`]), so
+    /// a renamed or deleted line refuses the trigger rather than pointing at
+    /// nothing. Read from this file when needed, never copied onto the run's
+    /// anchor — the file is the one place it can be true.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_serves"
+    )]
+    pub serves: Option<crate::goal::GoalRef>,
+}
+
+/// A trigger's `serves`, read **strictly**: the file is owner-written, so a
+/// typo is refused where the owner will see it (`mecha trigger list`), not
+/// dropped the way a record written by a newer binary is. Only a charter line
+/// may be named — the pointer is the owner's link from scheduled work to a
+/// standing priority, and a board task or project is the wrong tier for a
+/// schedule that recurs.
+fn de_serves<'de, D>(d: D) -> std::result::Result<Option<crate::goal::GoalRef>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let Some(text) = Option::<String>::deserialize(d)? else {
+        return Ok(None);
+    };
+    let goal: crate::goal::GoalRef = text.parse().map_err(D::Error::custom)?;
+    match goal {
+        crate::goal::GoalRef::Charter(_) => Ok(Some(goal)),
+        other => Err(D::Error::custom(format!(
+            "`serves = \"{other}\"` — a trigger may only serve a charter line, as \
+             `serves = \"charter:<id>\"`"
+        ))),
+    }
 }
 
 fn is_default_catch_up(c: &CatchUp) -> bool {
@@ -296,6 +336,7 @@ impl Trigger {
             timeout: None,
             catch_up: CatchUp::default(),
             notify: None,
+            serves: None,
         }
     }
 
@@ -332,6 +373,34 @@ impl Trigger {
         }
         if let Some(t) = &self.timeout {
             parse_duration(t).with_context(|| format!("trigger `{}`: bad timeout", self.name))?;
+        }
+        Ok(())
+    }
+
+    /// The charter line `serves` names must be a line of the charter —
+    /// pure over the charter (or why it could not be read), so a test needs
+    /// no home directory. A charter that cannot be read refuses a trigger
+    /// that names a line: the owner asked for a link nothing can check, and
+    /// unknown is never clean. A trigger with no `serves` never reads it.
+    pub fn check_serves(
+        &self,
+        charter: std::result::Result<&crate::charter::Charter, &str>,
+    ) -> Result<()> {
+        let Some(crate::goal::GoalRef::Charter(id)) = &self.serves else {
+            return Ok(());
+        };
+        match charter {
+            Ok(c) => anyhow::ensure!(
+                c.lines().iter().any(|l| &l.id == id),
+                "trigger `{}` serves `charter:{id}`, which is not a line of your charter \
+                 (`mecha charter` lists them)",
+                self.name
+            ),
+            Err(why) => anyhow::bail!(
+                "trigger `{}` serves `charter:{id}`, and the charter could not be read to \
+                 check it: {why}",
+                self.name
+            ),
         }
         Ok(())
     }
@@ -636,6 +705,12 @@ impl TriggerStore {
                 .map(DateTime::<Utc>::from);
         }
         trigger.validate()?;
+        if trigger.serves.is_some() {
+            let charter = crate::charter::Charter::default_path()
+                .and_then(|p| crate::charter::Charter::load(&p))
+                .map_err(|e| format!("{e:#}"));
+            trigger.check_serves(charter.as_ref().map_err(String::as_str))?;
+        }
         Ok(trigger)
     }
 
@@ -859,6 +934,67 @@ mod tests {
 
     fn utc(s: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    /// `APPRAISAL-WIRING-DESIGN.md` R1: a trigger *may* name the charter line
+    /// it serves. Absent is fine and never read; a charter line parses; any
+    /// other kind, or a malformed pointer, is refused at parse — the file is
+    /// the owner's, so a typo is surfaced rather than dropped.
+    #[test]
+    fn a_trigger_may_name_the_charter_line_it_serves_and_nothing_else() {
+        let base = "schedule = \"0 7 * * *\"\nprompt = \"brief me\"\n";
+        let plain: Trigger = toml::from_str(base).unwrap();
+        assert_eq!(plain.serves, None);
+        let linked: Trigger = toml::from_str(&format!(
+            "{base}serves = \"charter:protect-my-attention\"\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            linked.serves,
+            Some(crate::goal::GoalRef::Charter("protect-my-attention".into()))
+        );
+        for bad in [
+            "task:t1",
+            "trigger:morning",
+            "charter:two words",
+            "nonsense",
+        ] {
+            let err = toml::from_str::<Trigger>(&format!("{base}serves = \"{bad}\"\n"))
+                .expect_err(bad)
+                .to_string();
+            assert!(!err.is_empty(), "{bad}");
+        }
+        // And it round-trips as the same one string on save.
+        let saved = toml::to_string_pretty(&linked).unwrap();
+        assert!(
+            saved.contains("serves = \"charter:protect-my-attention\""),
+            "{saved}"
+        );
+    }
+
+    /// The link is checked against the charter the owner actually has: a
+    /// line that exists passes, a renamed or deleted one refuses the
+    /// trigger, and a charter that cannot be read refuses it too — a link
+    /// nothing can check is not a link. A trigger with no `serves` is never
+    /// affected, whatever state the charter is in.
+    #[test]
+    fn a_serves_link_is_checked_against_the_loaded_charter() {
+        let charter = crate::charter::Charter::parse(
+            "[[line]]\nid = \"protect-my-attention\"\ntext = \"Guard my attention.\"\n",
+        )
+        .unwrap();
+        let mut t = daily_7am("morning");
+        assert!(
+            t.check_serves(Err("unreadable")).is_ok(),
+            "no link, no read"
+        );
+        t.serves = Some(crate::goal::GoalRef::Charter("protect-my-attention".into()));
+        assert!(t.check_serves(Ok(&charter)).is_ok());
+        t.serves = Some(crate::goal::GoalRef::Charter("gone-line".into()));
+        let err = t.check_serves(Ok(&charter)).unwrap_err().to_string();
+        assert!(err.contains("not a line of your charter"), "{err}");
+        let err = t.check_serves(Err("parse error")).unwrap_err().to_string();
+        assert!(err.contains("could not be read"), "{err}");
     }
 
     fn daily_7am(name: &str) -> Trigger {

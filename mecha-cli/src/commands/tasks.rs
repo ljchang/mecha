@@ -2178,6 +2178,20 @@ async fn work(
     if let Some(route) = &prepared.agent.context().outbox {
         route.set_session_id(&session.meta.id);
     }
+    // **The task is the run's goal** (`APPRAISAL-WIRING-DESIGN.md` S1): the
+    // board row is owner-created, so the pointer is structural — the seed
+    // used to write `Id: task-…` into prose and leave the anchor empty. Seeded
+    // only where the conversation carries none, so a hand-over keeps the
+    // anchor its session saved. The project above the task is the board
+    // row's `project_id`, read from the board when needed, never copied
+    // onto the pointer.
+    if convo.goal_anchor.is_none() {
+        super::run::seed_goal_anchor(
+            &mut convo,
+            format!("task:{task_id}").parse().ok(),
+            Some(&session),
+        )?;
+    }
 
     // **D13.** `ask_user` is registered here, and only here, because this is
     // the front-end that owns the human — asynchronously. The asker does not
