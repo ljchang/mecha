@@ -1250,7 +1250,7 @@
               {entry.showArgs ? 'hide' : 'show'} the exact arguments
             </button>
             {#if entry.showArgs}
-              {#each d.other.filter(([k]) => ROUTING_KEYS.includes(k)) as [name, value]}
+              {#each d.other.filter(([k, v]) => ROUTING_KEYS.includes(k) && !(k === 'reply_all' && v === 'true')) as [name, value]}
                 <div class="dfield"><span class="dkey">{name}</span><span>{value}</span></div>
               {/each}
             {/if}

@@ -191,7 +191,7 @@
       const q = new URLSearchParams({ thread: d.args.thread_id, account });
       const res = await fetch(`/api/mail/read?${q}`);
       if (!res.ok) throw new Error((await res.text()).trim());
-      live[d.id] = { status: 'ok', thread: liveThread(await res.text()), at: Date.now() };
+      live[d.id] = { status: 'ok', thread: liveThread(await res.text(), account), at: Date.now() };
     } catch {
       live[d.id] = { status: 'error', at: Date.now() };
     }
