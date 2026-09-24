@@ -1216,10 +1216,19 @@ fails called the model on every 20-minute daytime tick and failed the unit on
 the quiet ones, keeping `mecha doctor` red. What counts is the thread's own
 failure only: `failure_is_outage` (a transient `ProviderError`, or `Auth` /
 `Billing`) keeps the previous count *and* clock (`Record::carry_failure`), and
-a sweep that classified nothing and failed several threads asks the model a
-canary (`canary_thread`) — if that fails too, nothing in the sweep counts.
-The counts alone cannot separate an outage from two threads stuck at once;
-the canary can. `mail list` shows a failure's count and when it is next due;
+a sweep that failed several threads asks the model a canary
+(`canary_thread`) padded to the longest of them — if that fails too, nothing
+in the sweep counts. The counts alone cannot separate an outage from two
+threads stuck at once, and the server failure that matters here
+(`--reasoning-budget` eating `max_tokens`) is length-dependent, failing the
+long threads of a sweep that answered the short ones; a length-matched
+canary separates both. The sweep reads the newest N messages, a count and
+not a time, so a due failure that has left that window is retried from the
+store (`due_outside_window`, capped per sweep) — otherwise the 16–24h waits
+of a busy mailbox would strand it, and the backoff would be a cap. Each
+failure is written when it happens (and rewritten if the sweep proves an
+outage), so a sweep that dies late still leaves it `failed` in front of a
+person. `mail list` shows a failure's count and when it is next due;
 `classify --force` retries everything at once.
 
 **A deadline the classifier reports must cite the words it came from, and the

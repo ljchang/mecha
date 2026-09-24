@@ -923,10 +923,24 @@ fn is_zero(n: &u32) -> bool {
 }
 
 /// A message nothing about which can make a working classifier fail: asked
-/// when a sweep classified nothing and failed several threads, to tell a
-/// model that cannot answer (the server's fault) from threads it cannot
-/// answer about (their own). No real mailbox, no real person.
-pub fn canary_thread() -> ThreadInput {
+/// when a sweep failed several threads, to tell a model that cannot answer
+/// (the server's fault) from threads it cannot answer about (their own). No
+/// real mailbox, no real person.
+///
+/// Padded to at least `min_chars` of neutral text, because the server-side
+/// failure it exists to catch is **length-dependent**: llama-server's
+/// `--reasoning-budget` eating `max_tokens` fails the long threads and
+/// answers the short ones, so a one-line canary would answer, and those
+/// threads would be charged for a server flag. Asked at the length of the
+/// longest thread that failed, the canary can only answer if a message that
+/// long is answerable at all.
+pub fn canary_thread(min_chars: usize) -> ThreadInput {
+    let mut body = String::from("Are you free for lunch tomorrow at noon? No worries if not.");
+    const FILLER: &str = " The rest of this note is the usual chatter about the \
+                          week, the weather, and nothing that needs a reply.";
+    while body.chars().count() < min_chars {
+        body.push_str(FILLER);
+    }
     ThreadInput {
         thread_id: "mecha-canary".into(),
         account: "canary".into(),
@@ -934,8 +948,37 @@ pub fn canary_thread() -> ThreadInput {
         from_name: "A colleague".into(),
         subject: "Lunch tomorrow?".into(),
         date: chrono::Utc::now().to_rfc3339(),
-        body: "Are you free for lunch tomorrow at noon? No worries if not.".into(),
+        body,
     }
+}
+
+/// Stored `failed` threads that are due for a retry but that the sweep's
+/// mailbox read did not return — oldest first, at most `max`.
+///
+/// **The retry window is a count, not a time.** A sweep reads the newest N
+/// messages per account, and [`retry_after`] reaches 16 and then 24 hours: in
+/// a mailbox taking more than N messages in that span, a backed-off thread
+/// has left the window before its retry comes due, and a backoff that never
+/// lands again is the cap it was written to avoid. These are retried from the
+/// store instead — a store walk, not a mailbox read. `seen` is the
+/// (account, thread id) pairs the read returned; `account` narrows as the
+/// sweep's own `--account` does.
+pub fn due_outside_window<'a>(
+    records: &'a [Record],
+    seen: &std::collections::HashSet<(String, String)>,
+    account: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+    max: usize,
+) -> Vec<&'a Record> {
+    let mut due: Vec<&Record> = records
+        .iter()
+        .filter(|r| r.retry_due(now))
+        .filter(|r| account.is_none_or(|a| r.account == a))
+        .filter(|r| !seen.contains(&(r.account.clone(), r.thread_id.clone())))
+        .collect();
+    due.sort_by(|a, b| a.classified_at.cmp(&b.classified_at));
+    due.truncate(max);
+    due
 }
 
 /// Whether a classification failure is the provider's rather than the
@@ -2234,6 +2277,59 @@ mod tests {
     /// The backoff: an hour after the first failure, doubling, capped at a
     /// day — so an outage recovers within the hour, and a thread that always
     /// fails costs one attempt a day instead of one a sweep.
+    #[test]
+    fn a_due_failure_outside_the_window_is_retried_from_the_store() {
+        // Review finding: the sweep reads the newest N messages, and a thread
+        // on a 16–24h wait in a busy mailbox has left that window before its
+        // retry is due — a backoff that never lands again is a cap.
+        let now = chrono::Utc::now();
+        let failed = |id: &str, acct: &str, attempts: u32, hours_ago: i64| {
+            let mut r = rec(acct, id, Bucket::Ignore);
+            r.state = FAILED.into();
+            r.attempts = attempts;
+            r.classified_at = (now - chrono::Duration::hours(hours_ago)).to_rfc3339();
+            r
+        };
+        let records = vec![
+            failed("old", "work", 6, 30),        // due (24h wait, 30h ago)
+            failed("older", "work", 6, 40),      // due, and older
+            failed("waiting", "work", 6, 2),     // not yet due
+            failed("inwin", "work", 6, 30),      // due, but the read returned it
+            failed("home", "home", 6, 30),       // due, other account
+            rec("work", "done", Bucket::Ignore), // not failed
+        ];
+        let seen: std::collections::HashSet<(String, String)> =
+            [("work".to_string(), "inwin".to_string())]
+                .into_iter()
+                .collect();
+        let ids = |v: Vec<&Record>| v.iter().map(|r| r.thread_id.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            ids(due_outside_window(&records, &seen, None, now, 10)),
+            vec!["older", "old", "home"],
+            "due, outside the window, oldest first"
+        );
+        assert_eq!(
+            ids(due_outside_window(&records, &seen, Some("work"), now, 10)),
+            vec!["older", "old"],
+            "narrowed like the sweep's --account"
+        );
+        assert_eq!(
+            ids(due_outside_window(&records, &seen, None, now, 1)),
+            vec!["older"]
+        );
+    }
+
+    #[test]
+    fn the_canary_is_as_long_as_it_is_asked_to_be() {
+        assert!(canary_thread(0).body.chars().count() > 0);
+        for n in [100, 2_000, 12_000] {
+            assert!(
+                canary_thread(n).body.chars().count() >= n,
+                "a length-dependent server failure fails a short canary's long twins"
+            );
+        }
+    }
+
     #[test]
     fn retries_back_off_to_once_a_day_and_never_stop() {
         let h = |n| retry_after(n).num_hours();
