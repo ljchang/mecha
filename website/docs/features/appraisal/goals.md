@@ -23,14 +23,15 @@ decided by the model:
 | **Anchor** | The confirmed pointer. It belongs to the conversation, so it carries across chat turns, and it survives resume and compaction. | recorded by the harness |
 | **Alignment** | Each later plan write is compared with the anchor; see [measuring goal drift](#measuring-goal-drift). | computed by the harness |
 
-**What happens today.** Every stage above the hypothesis depends on a run
-stating one, and the served local model rarely does: it writes a plan only when
-your own message asks for one, and none of the sessions recorded since the
-charter began asking for a goal sentence contains one. A delegated board task is handed its task id in the prompt, but
-today that id does not set the anchor; only `mecha run --goal`, an answered
-question, a question resume, and an owner-authored artifact case
-(`mecha run --mismatch-case`) do. Most runs therefore carry no confirmed goal,
-and their appraisal records no goal rather than guessing one.
+**What happens today.** A run the model plans on its own rarely states a goal:
+it writes a plan only when your own message asks for one. So the harness sets
+the anchor itself wherever it already holds the pointer — a delegated board
+task, a scheduled trigger, a front-door request — without waiting for the
+model (see [anchors the harness sets itself](#anchors-the-harness-sets-itself)).
+Beyond those, `mecha run --goal`, an answered question, a question resume and
+an owner-authored artifact case (`mecha run --mismatch-case`) set it.
+Interactive chats that start from none of these usually carry no confirmed
+goal, and their appraisal records no goal rather than guessing one.
 
 
 A `GoalRef` is a **pointer, never a copy**, and renders on the wire as
