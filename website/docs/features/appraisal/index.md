@@ -126,6 +126,41 @@ Two boundaries hold across the whole picture:
   cannot release a draft, approve a tool or loosen the sandbox. The readers
   display it, rank by it, or propose a task for you to accept.
 
+### What reads the appraisal today, and what does not
+
+Row 6 is the whole of it. Every reader either shows the result to you or makes a
+small, reviewable choice:
+
+| Reader | What it does with the appraisal |
+|---|---|
+| TUI, web, Slack, voice | Show the label and valence after a run; voice shifts its delivery slightly on the next turn. |
+| Task closure | Prints a reading when you close a task and may stage one follow-up task for you to accept. |
+| Project closure | Prints a reading across a project's tasks when you close its last one. |
+| Nightly replay | Breaks ties between equally informative sessions by the rank of the charter line their errors touched. |
+| Distillation | Puts the label, the signed errors and the goal pointers on each episode sent to the graph. Nothing on the graph side reads them yet. |
+
+**No reader changes what mecha does during a run.** The appraisal does not yet
+steer a plan, choose what to verify, decide when to ask you something, order
+the nightly learning, or pick which memories to load. The planning advice
+described on [plan steps](/docs/features/appraisal/plan-steps) is the one
+exception, and it is off by default. [`docs/APPRAISAL-WIRING-DESIGN.md`](https://github.com/ljchang/mecha/blob/main/docs/APPRAISAL-WIRING-DESIGN.md)
+is the proposal for connecting it, with the measurement each step needs first.
+
+## The parts of the appraisal system
+
+The label is one readout of a larger set of parts. Each one has its own page:
+
+| Part | What it does | Where to read more |
+|---|---|---|
+| **Signed outcomes and the readout** | Turns your verdicts and the run's own facts into signed errors, a valence and a label. | This page; [reference](/docs/features/appraisal/reference) |
+| **Your priorities** | A ranked charter, and sensors that watch a store against a setpoint you chose. | [The charter](/docs/features/appraisal/charter) |
+| **Goal inference** | A run states a goal, you confirm it, the confirmed goal becomes the run's anchor, and later plans are compared with it. | [Goals](/docs/features/appraisal/goals) |
+| **Checks** | A completed plan step is read against the work actually done, and a check the plan declared is executed rather than taken on the model's word. | [Plan steps and checks](/docs/features/appraisal/plan-steps) |
+| **Anticipation** | Records a concern before a draft goes out, and your verdict on it after delivery. | [Anticipatory appraisal](/docs/features/appraisal/anticipation) |
+| **Counterfactual replay** | Re-runs a session from just before your steer, without it, to learn whether the steer mattered; the same replay tests whether a learned rule now does what you asked for. | [Reference](/docs/features/appraisal/reference), [learning](/docs/features/learning) |
+| **Situation-scoped memory** | A learned rule records where it was learned, and loads only on runs in a matching situation. | [Where a rule loads](/docs/features/learning#where-a-rule-loads) |
+| **Graph verification** | Two independent readers question each other about the graph's claims. | [The graph](/docs/features/memory/graph) |
+
 ## The process, step by step
 
 ### Before the run: you say what matters
@@ -400,8 +435,18 @@ The measurements so far, from [`docs/APPRAISAL-RESEARCH.md`](https://github.com/
   owner, so the strongest channels (drafts, questions, steers) were empty.
 - **The model-based appraiser added nothing** on that set: it returned "no
   further error" on 169 of 169.
-- **Opt-in planning guidance tied.** In a 72-run pilot, 36 of 36 tasks
-  passed with guidance and 36 of 36 without.
+- **Opt-in planning guidance has not helped, and lost on harder tasks.** Six
+  pilots ran on 2026-09-09 on the local Qwen 3.6 35B model. The first guidance
+  pilot tied at 36 of 36 in each arm. On harder tasks with a confirmed goal,
+  runs without guidance passed 20 of 24 and runs with it passed 18 of 24, with
+  four regressions against two improvements; a privacy follow-up went 6 of 6
+  without and 5 of 6 with. Guidance is off by default.
+- **The learning arms showed no benefit either.** Attribution and learning tied
+  at 30 of 36, a sequential learning pilot tied at 6 of 6 with too few
+  reflections to learn a rule, and learning from verified mismatches passed 9 of
+  12 against the control's 10 of 12. The full table is on
+  [plan steps](/docs/features/appraisal/plan-steps#the-pilot-record), and the
+  dated entries in `docs/HISTORY.md` carry the detail.
 
 What appraisal is good for today is what the examples show. It reads your
 own verdicts back as evidence, connects work to the priorities you ranked,
