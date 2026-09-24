@@ -2434,7 +2434,7 @@ fn judge_cmd(name: &str, json: bool) -> Result<()> {
         }
         if v.same_condition_as_control {
             println!(
-                "  same condition as `{control}`: every row carries the control's hash, so this arm measures noise"
+                "  same condition as `{control}`: on every seed both arms ran, this arm's hashes are the control's, so it measures noise"
             );
         }
         if manifest.kind == TrialKind::Lifetime {

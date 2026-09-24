@@ -3163,6 +3163,30 @@ pub struct ArmJudgement {
     pub same_condition_as_control: bool,
 }
 
+/// Whether an arm is the control's condition under another name: over the
+/// seeds both arms have rows for, each seed's hashes agree. Per seed,
+/// because the seed is a term of the hash and every other term is the
+/// arm's. Not equality over all rows, nor subset, nor any shared hash: a
+/// `--limit`ed sitting leaves *some* arm short, and which one is decided by
+/// arm name (rows are planned arm-major); and a resumed experiment keeps a
+/// finished row's stored hash (`Store::plan`), so one arm can carry an old
+/// hash that coincides with the control's beside a new one that does not
+/// (all three found on review).
+fn same_condition(trials: &[Trial], arm: &str, control: &str) -> bool {
+    let by_seed = |name: &str| {
+        let mut m: BTreeMap<Option<u64>, std::collections::BTreeSet<&str>> = BTreeMap::new();
+        for t in trials.iter().filter(|t| t.arm == name) {
+            m.entry(t.seed)
+                .or_default()
+                .insert(t.condition_hash.as_str());
+        }
+        m
+    };
+    let (own, ctl) = (by_seed(arm), by_seed(control));
+    let common: Vec<&Option<u64>> = own.keys().filter(|s| ctl.contains_key(*s)).collect();
+    !common.is_empty() && common.iter().all(|s| own[*s] == ctl[*s])
+}
+
 /// The set of condition hashes an arm's rows carry, whatever their status:
 /// the hash is a property of the design, not of whether the row has run.
 fn arm_hashes<'a>(trials: &'a [Trial], arm: &str) -> std::collections::BTreeSet<&'a str> {
@@ -3307,13 +3331,7 @@ pub fn judge(
                 "this arm's pairs ran under different --jobs limits ({jobs_seen:?}); concurrency moves the run, so the verdict is not comparing like with like"
             ));
         }
-        let own = arm_hashes(trials, name);
-        // Neither equality nor subset: a sitting stopped by `--limit` leaves
-        // *some* arm short, and which one is decided by arm name (rows are
-        // planned arm-major over a `BTreeMap`), not by which is the control.
-        // Two arms share a hash only where their conditions coincide, so
-        // one shared hash is the whole test (both found on review).
-        let same_condition_as_control = !own.is_disjoint(&arm_hashes(trials, control_name));
+        let same_condition_as_control = same_condition(trials, name, control_name);
         out.push(ArmJudgement {
             arm: name.clone(),
             metric,
@@ -3918,6 +3936,29 @@ rationale = "r"
         };
         assert!(flag("rules"));
         assert!(!flag("escalate"));
+        // A resumed experiment: `escalate`'s seed-1 rows kept a stored hash
+        // that happens to equal the control's, its seed-2 rows carry its
+        // own. Mixed, so not the control's condition.
+        let mut resumed = rows2.clone();
+        let full_s1 = resumed
+            .iter()
+            .find(|t| t.arm == "full" && t.seed == Some(1))
+            .unwrap()
+            .condition_hash
+            .clone();
+        for t in resumed
+            .iter_mut()
+            .filter(|t| t.arm == "escalate" && t.seed == Some(1))
+        {
+            t.condition_hash = full_s1.clone();
+        }
+        let v = judge(&two_seeds, &resumed, &[], 0);
+        assert!(
+            !v.iter()
+                .find(|a| a.arm == "escalate")
+                .unwrap()
+                .same_condition_as_control
+        );
         assert_eq!(
             condition_hash(&[], &[], "p", "m", None),
             condition_hash_world(&[], &[], "p", "m", None, &[], &[], &[], None, &[], None),
