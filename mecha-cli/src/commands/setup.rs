@@ -195,7 +195,7 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         return Ok(());
     }
     if args.write {
-        return write_verified(&name, &facts);
+        return write_verified(&name, pcfg.kind != "local", &facts);
     }
     render(&steps);
 
@@ -475,7 +475,7 @@ async fn probe_for_a_local_server() -> onboarding::LocalProbe {
 /// the server rather than from a guess: this edits a file somebody may have
 /// had reasons for, and the whole argument for reading values off the wire is
 /// weakened if the reading is also unattended.
-fn write_verified(provider: &str, facts: &Facts) -> Result<()> {
+fn write_verified(provider: &str, hosted: bool, facts: &Facts) -> Result<()> {
     // The probed case: a server is running that no provider names. Writing it
     // down is the remedy the blocking step now offers, and it is the same act
     // as the one below — read the values off the wire, show them, ask — with
@@ -492,11 +492,10 @@ fn write_verified(provider: &str, facts: &Facts) -> Result<()> {
         // `NotAttempted` has two causes and only one of them is this: a
         // configured local provider that is merely down is also not probed,
         // and "Start the server" below is exactly right for it (found on
-        // review). The credential is what separates them — a local provider
-        // has none.
-        if matches!(facts.local_probe, onboarding::LocalProbe::NotAttempted)
-            && facts.provider_credential
-        {
+        // review). The provider's kind is what separates them: a credential
+        // is not, since a llama-server can be configured with an
+        // `api_key_env` (found on the second review).
+        if matches!(facts.local_probe, onboarding::LocalProbe::NotAttempted) && hosted {
             anyhow::bail!(
                 "no local server was checked: `{provider}` is a hosted provider with its \
                  credential, so nothing was probed. To record a llama-server, run \
@@ -841,7 +840,7 @@ mod tests {
             provider_credential: true,
             ..Facts::default()
         };
-        let err = write_verified("anthropic", &hosted)
+        let err = write_verified("anthropic", true, &hosted)
             .unwrap_err()
             .to_string();
         assert!(err.contains("no local server was checked"), "{err}");
@@ -850,11 +849,21 @@ mod tests {
             provider_credential: false,
             ..Facts::default()
         };
-        let err = write_verified("local", &local_but_down)
+        let err = write_verified("local", false, &local_but_down)
             .unwrap_err()
             .to_string();
         assert!(err.contains("Start the server"), "{err}");
         assert!(!err.contains("hosted"), "{err}");
+
+        // A local server behind an API key is still local: down means start it.
+        let local_with_a_key = Facts {
+            provider_credential: true,
+            ..Facts::default()
+        };
+        let err = write_verified("local", false, &local_with_a_key)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Start the server"), "{err}");
     }
 
     fn lines(text: &str) -> Vec<String> {
