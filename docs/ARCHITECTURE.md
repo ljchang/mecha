@@ -3887,10 +3887,15 @@ is context, never credit ("Attribution follows the event", below). This
 paragraph listed it as `+0.5`, `Own` after the code had stopped producing it
 (found by the 2026-09-24 inventory sweep).
 
-**`Channel::Setpoint` and `GoalRef::Setpoint` have no production
-producer.** They exist because both enums are a wire format written to
-append-only stores; only tests construct either. A surface or a document
-must not present the setpoint channel as live.
+**`Channel::Setpoint` has no production producer, and nothing in the
+harness mints a `GoalRef::Setpoint`.** Both exist because the enums are a
+wire format written to append-only stores; only tests construct a
+`Channel::Setpoint`. A `GoalRef::Setpoint` can still arrive from outside the
+harness — `GoalRef::from_str` accepts `setpoint:<id>`, so `mecha run --goal
+setpoint:x` records one as an anchor and a model's `serves: setpoint:x`
+mints one through `parse_lenient` — which is why `distill` never lets a
+setpoint name cross whole. A surface or a document must not present the
+setpoint channel as live.
 
 **Owner-bound anticipatory appraisal is separate from the backlog sensor.**
 `anticipation::Evidence` accepts an explicit owner commitment and check/cost

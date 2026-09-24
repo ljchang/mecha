@@ -77,9 +77,11 @@ ARCHITECTURE's goal-system section, and the website's appraisal pages):
 - ARCHITECTURE's commitment paragraph still lists a negative
   `backlog_delta` as a +0.5 `Own` error. `of_session` no longer produces it;
   the earlier draft of this file repeated the stale claim.
-- `Channel::Setpoint` and `GoalRef::Setpoint` have no production producer —
-  they exist because the enums are a wire format — and the website's
-  reference page presents `setpoint` as a live channel.
+- `Channel::Setpoint` has no production producer, and nothing in the harness
+  mints a `GoalRef::Setpoint` — both exist because the enums are a wire
+  format — though `GoalRef::from_str` accepts `setpoint:<id>`, so `run --goal`
+  or a model's `serves` can still write one. The website's reference page
+  presented `setpoint` as a live channel.
 
 ---
 
