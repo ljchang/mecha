@@ -954,9 +954,14 @@ invariants:
   URL came from a backend or a `location` header. Only the "no such handle"
   refusal, which comes before the ledger, is clean, because it quotes the
   model's own argument.
-- **An approval card shows the URL.** `Tool::review_input` puts the URL
-  beside the handle, because a handle is the whole argument and none of the
-  decision.
+- **Every view shows the URL.** `Tool::review_input` puts the URL beside the
+  handle, because a handle is the whole argument and none of the decision.
+  Approval cards render it, and so does the `ToolCall` event every transcript
+  is built from. A read-only `web_open` reaches no approver, so the
+  transcript is where it is seen.
+- **A result whose host the query named gets no handle.** Blindness rests on
+  the backend, not the model, having supplied the URL, and a query-echoing
+  backend would break that. So the check is made where the handle is issued.
 
 What it leaks is which result was picked (`log2(N)` bits per call) to
 whoever serves that page. A per-conversation budget of blind calls is the
