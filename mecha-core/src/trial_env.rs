@@ -948,6 +948,43 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
         drop(home);
     }
 
+    /// The shipped variant over the shipped default: the real configs through
+    /// the real merge — a nested `[mcp.capabilities]` inside an array of
+    /// tables, inline `env = {…}` with `${STORE}` — so the round-trip every
+    /// live run takes is measured, not only a toy base (found on review).
+    #[test]
+    fn the_shipped_variant_merges_over_the_shipped_default() {
+        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let tmp = Scratch::new();
+        let mut real = operator();
+        real.mcp.clear();
+        let variant = Environment {
+            dir: Some("eval/envs/no-shell".into()),
+            live_servers: Vec::new(),
+        };
+        let world = variant
+            .prepare(&real, checkout, &tmp.path().join("cache"))
+            .unwrap();
+        assert_eq!(world.config.tools.disabled, ["shell"]);
+        let base = Environment::default()
+            .prepare(&real, checkout, &tmp.path().join("cache"))
+            .unwrap();
+        assert_eq!(world.config.agent.max_turns, base.config.agent.max_turns);
+        assert_eq!(world.config.agent.timezone, base.config.agent.timezone);
+        let names: Vec<&str> = world.config.mcp.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["graph", "mail"], "the base's servers, whole");
+        let graph = &world.config.mcp[0];
+        assert!(graph.env["MECHA_GRAPH_DB"].contains(STORE_TOKEN));
+        assert_eq!(graph.prefix_tools, Some(false));
+        assert!(
+            graph.capabilities.untrusted_input,
+            "nested capabilities survive"
+        );
+        assert_eq!(stored_servers(&world.config).len(), 2);
+        assert_eq!(world.config.outbox.tools, base.config.outbox.tools);
+        assert_ne!(world.digest, base.digest);
+    }
+
     /// A chain that loops, or runs through the operator's home, or holds a
     /// link, is refused.
     #[test]

@@ -309,8 +309,12 @@ disabled = ["shell"]
 How a variant combines with its base:
 
 - **Any file** in the variant replaces the base's file at the same path, such
-  as a different `charter.toml`, a different prompt file, or a different
-  `stores/graph.calls.jsonl` for a richer graph.
+  as a different `charter.toml` or a different `stores/graph.calls.jsonl`
+  for a richer graph. A file that `config.toml` names by path (the system
+  prompt, a server's script) is read from the checkout, not from the built
+  environment, so to vary one, point the setting at the variant's own file
+  by its checkout-relative path, as the table below shows. Overlaying a file
+  at the base's path changes nothing but the hash.
 - **`config.toml`** merges key by key. Tables combine; a single value or a
   list replaces the base's. So a variant's `[agent] max_turns = 6` keeps the
   rest of the base's `[agent]`, while a variant's `[[mcp]]` list is its whole
