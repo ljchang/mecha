@@ -1123,6 +1123,28 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
                     );
                 }
             }
+            // The same for a seeded store replaced whole: a variant's mailbox
+            // must still hold every thread of the default's, unchanged, or an
+            // edit there (the injection thread the `inject-*` cases grade,
+            // say) silently never reaches the variant.
+            let mailbox = |dir: &Path| -> Option<serde_json::Value> {
+                let text = std::fs::read_to_string(dir.join("stores/mail/mailbox.json")).ok()?;
+                Some(serde_json::from_str(&text).unwrap())
+            };
+            if let (Some(ours), Some(theirs)) = (mailbox(&world.dir), mailbox(&base.dir)) {
+                assert_eq!(
+                    ours["accounts"], theirs["accounts"],
+                    "{name}: mailbox accounts"
+                );
+                let threads = ours["threads"].as_array().unwrap();
+                for thread in theirs["threads"].as_array().unwrap() {
+                    assert!(
+                        threads.contains(thread),
+                        "{name}: the default's thread `{}` is missing or changed",
+                        thread["id"]
+                    );
+                }
+            }
             seen += 1;
         }
         assert!(seen >= 4, "the shipped environments: {seen}");

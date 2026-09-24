@@ -811,7 +811,7 @@ recommendation-request form.
 |---|---|
 | `docs.toml` | Creating a doc from an email, drafting a project update from the graph and your notes, adding to an existing doc without creating a new one |
 | `polls.toml` | A meeting poll for named people, booking the time everyone can make with all of them invited and closing the poll, and a request form written as a spec file first |
-| `recletter.toml` | Drafting a recommendation letter from your template, the form's multiple-choice answers and the student's docs, and saying plainly that the form's free-text answers can't be read |
+| `recletter.toml` | Drafting a recommendation letter from your template, the form's answers and the student's docs, and reporting exactly what the student wrote in the form's free-text answer |
 | `multitask-ask.toml` | Planning a three-part email, answering two parts from the charter or graph and an old email, and staging the question only a colleague can answer |
 | `multitask-finish.toml` | The next conversation, once the colleague has replied (`eval/envs/assistant-tal-replied`): one staged reply with all three answers |
 
