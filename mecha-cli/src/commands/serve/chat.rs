@@ -1673,8 +1673,11 @@ fn begin_turn(
         // is read here, at the start of the turn, so a change from the page
         // takes effect on the next turn; a change mid-turn does not re-stamp
         // the turn already running.
+        // Either signal marks a task chat: `withheld` is the broader one (a
+        // resumed delegation keeps it with `task: None`), and `task` is the
+        // belt for a session created before its init was applied (review).
         run_posture: Some(web_posture(
-            ws.withheld.iter().any(|t| t == "kg_task_update"),
+            ws.task.is_some() || ws.withheld.iter().any(|t| t == "kg_task_update"),
             opts.approve_all,
             *ws.mode.lock().unwrap_or_else(|e| e.into_inner()),
         )),
