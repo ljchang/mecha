@@ -1517,6 +1517,15 @@ impl Manifest {
     }
 
     fn validate(&self) -> Result<()> {
+        for (name, arm) in &self.arms {
+            if let Some(env) = &arm.environment {
+                anyhow::ensure!(
+                    env.dir.is_some() || !env.live_servers.is_empty(),
+                    "arm `{name}` names an environment with neither `dir` nor `live_servers`; \
+                     drop it to run in the manifest's"
+                );
+            }
+        }
         if let Some(judge) = &self.judge {
             anyhow::ensure!(
                 !judge.provider.trim().is_empty() && !judge.model.trim().is_empty(),
@@ -1728,10 +1737,10 @@ impl Manifest {
     /// every row — each group sorted, the groups in arm order. An arm
     /// identical to another measures nothing but noise; that is an A/A
     /// design when meant and a silent defect when not, so the runner warns
-    /// rather than refuses. Computed through `trials` itself, so it groups
-    /// arms exactly as the store's hashes do: the world terms `trials`
-    /// omits (charter, environment) are the same for every arm, so they
-    /// change no hash's equality with another's, only its value.
+    /// rather than refuses. Computed through `trials_with_world` with each
+    /// arm's environment digest, since the environment is per arm and can
+    /// tell two arms apart; the charter term it omits is the same for every
+    /// arm, so it changes no hash's equality with another's, only its value.
     pub fn identical_arms(
         &self,
         provider: &str,
@@ -1757,17 +1766,31 @@ impl Manifest {
     }
 
     /// The environment an arm runs in: its own, or the manifest's.
-    pub fn environment_for(&self, arm: &str) -> &crate::trial_env::Environment {
-        self.arms
-            .get(arm)
-            .and_then(|a| a.environment.as_ref())
-            .unwrap_or(&self.environment)
+    ///
+    /// Field by field, never whole: an arm that names only its `dir` keeps
+    /// the manifest's `live_servers`, and one that names only its
+    /// `live_servers` keeps the manifest's `dir`. Replacing the whole value
+    /// ran the default directory for the second and silently dropped the
+    /// live servers for the first, with the result credited to the field
+    /// the operator wrote (found on review).
+    pub fn environment_for(&self, arm: &str) -> crate::trial_env::Environment {
+        match self.arms.get(arm).and_then(|a| a.environment.as_ref()) {
+            None => self.environment.clone(),
+            Some(own) => crate::trial_env::Environment {
+                dir: own.dir.clone().or_else(|| self.environment.dir.clone()),
+                live_servers: if own.live_servers.is_empty() {
+                    self.environment.live_servers.clone()
+                } else {
+                    own.live_servers.clone()
+                },
+            },
+        }
     }
 
     /// Each arm's environment digest, each distinct environment resolved
     /// once.
     pub fn env_digests(&self, base: &Path) -> Result<BTreeMap<String, String>> {
-        let mut seen: Vec<(&crate::trial_env::Environment, String)> = Vec::new();
+        let mut seen: Vec<(crate::trial_env::Environment, String)> = Vec::new();
         let mut out = BTreeMap::new();
         for name in self.arms.keys() {
             let env = self.environment_for(name);
@@ -4663,7 +4686,7 @@ rationale = "r"
 "#,
         )
         .unwrap();
-        assert_eq!(m.environment_for("same"), &m.environment);
+        assert_eq!(m.environment_for("same"), m.environment);
         assert_eq!(
             m.environment_for("prompt-b").dir.as_deref(),
             Some(Path::new("eval/envs/prompt-b"))
@@ -4687,6 +4710,55 @@ rationale = "r"
             m.identical_arms("p", "m", Some(&digests)),
             vec![vec!["base".to_string(), "same".to_string()]],
             "prompt-b differs only in its environment, and is its own condition"
+        );
+    }
+
+    /// An arm's environment overrides the manifest's field by field: an arm
+    /// naming only `live_servers` keeps the manifest's `dir`, one naming
+    /// only `dir` keeps the manifest's `live_servers`, and one naming
+    /// neither is refused.
+    #[test]
+    fn an_arms_environment_overrides_field_by_field() {
+        let text = |arm_env: &str| {
+            format!(
+                r#"
+name = "fields"
+control = "base"
+split_seed = 1
+[environment]
+dir = "eval/envs/lab"
+live_servers = ["graph"]
+[tasks]
+cases = "c.jsonl"
+fixture = "w"
+[arms.base]
+[arms.x]
+environment = {arm_env}
+[arms.x.prediction]
+metric = "failure"
+rationale = "r"
+"#
+            )
+        };
+        let m = Manifest::parse(&text(r#"{ live_servers = ["mail"] }"#)).unwrap();
+        let env = m.environment_for("x");
+        assert_eq!(
+            env.dir.as_deref(),
+            Some(Path::new("eval/envs/lab")),
+            "the manifest's dir kept"
+        );
+        assert_eq!(env.live_servers, ["mail"]);
+        let m = Manifest::parse(&text(r#"{ dir = "eval/envs/other" }"#)).unwrap();
+        let env = m.environment_for("x");
+        assert_eq!(env.dir.as_deref(), Some(Path::new("eval/envs/other")));
+        assert_eq!(
+            env.live_servers,
+            ["graph"],
+            "the manifest's live servers kept"
+        );
+        assert!(
+            Manifest::parse(&text("{}")).is_err(),
+            "an environment naming nothing"
         );
     }
 

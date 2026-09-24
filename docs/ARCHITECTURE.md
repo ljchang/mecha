@@ -4007,8 +4007,9 @@ comparison over a chosen set**, with the design written before the run.
   inherit the defaults; the condition hash follows the arm. That is the
   axis `mecha eval` varies, and it is why the two converge rather than
   stay peers: eval is the special case of arms that name models under the
-  `bare` preset, and its A/B flags are two-arm manifests. Beyond the model,
-  **an arm varies the closed set and nothing else** (D5, D14): levers by
+  `bare` preset, and its A/B flags are two-arm manifests. Beyond the model
+  and its own environment (below: every difference a file the digest
+  records), **an arm varies the closed set and nothing else** (D5, D14): levers by
   name from `harness::Lever`, knobs by `KEY=VALUE` through
   `harness::parse_change`, a preset (`bare` is what `mecha eval` runs,
   `full` forces nothing off) applied first, and `levers_on` — levers turned
@@ -4109,7 +4110,9 @@ comparison over a chosen set**, with the design written before the run.
   row's stored hash, so one arm can carry an old hash that coincides with
   the control's beside a new one that does not).
 - **An arm may run in its own environment** (`[arms.x] environment`,
-  `Manifest::environment_for`), and an environment may **extend** another
+  `Manifest::environment_for`, which overrides the manifest's field by field:
+  an arm naming only `dir` keeps the manifest's `live_servers`, and the
+  reverse; an arm environment naming neither is refused at load), and an environment may **extend** another
   (`environment.toml`: `extends`). `Environment::resolve` walks the chain —
   each directory guarded by `refuse_operator_home` and the symlink refusal,
   a loop refused, eight deep at most — overlaying files by relative path

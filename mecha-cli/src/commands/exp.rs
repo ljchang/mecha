@@ -361,7 +361,7 @@ fn prepare_worlds(
     base: &Path,
 ) -> Result<Worlds> {
     let mut seen: Vec<(
-        &mecha_core::trial_env::Environment,
+        mecha_core::trial_env::Environment,
         mecha_core::trial_env::World,
     )> = Vec::new();
     let mut out = Worlds::new();
