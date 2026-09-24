@@ -1102,8 +1102,11 @@ static KIND_ENV_IGNORED: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 
 /// For test binaries outside this crate (whose `cfg(test)` this crate does
 /// not see): ignore [`SESSION_KIND_ENV`] for the rest of the process, as
-/// this crate's own unit tests do. It can only narrow what a session is
-/// labelled, never widen it.
+/// this crate's own unit tests do. **The direction, plainly:** it drops the
+/// override, so a session keeps its surface kind and is *admitted* to the
+/// corpus where the mark would have hidden it as `test`. That is the
+/// dangerous direction for a live binary, which is why it is hidden, named
+/// for tests, and called by nothing but test code.
 #[doc(hidden)]
 pub fn ignore_kind_env_for_tests() {
     KIND_ENV_IGNORED.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -3707,7 +3710,10 @@ mod tests {
         ] {
             let out = std::process::Command::new(&exe)
                 .args([
-                    "kind_override_probe",
+                    // The full path: `--exact` matches it, and a bare name
+                    // matched nothing, so the child ran zero tests and
+                    // passed — this probe was vacuous until 2026-09-24.
+                    "session::tests::kind_override_probe",
                     "--exact",
                     "--ignored",
                     "--nocapture",
@@ -3723,7 +3729,57 @@ mod tests {
                 String::from_utf8_lossy(&out.stdout),
                 String::from_utf8_lossy(&out.stderr)
             );
+            assert!(
+                String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+                "the probe must actually run:\n{}",
+                String::from_utf8_lossy(&out.stdout)
+            );
         }
+    }
+
+    /// A unit test process ignores a smoke-test mark exported in its shell:
+    /// a child run with `MECHA_SESSION_KIND=test` and *no* probe opt-in
+    /// writes a `run` session as `run`. CI never exports the variable, so
+    /// without this the hermeticity could go away with every test green.
+    #[test]
+    fn a_unit_test_ignores_the_shells_smoke_test_mark() {
+        let exe = std::env::current_exe().unwrap();
+        let out = std::process::Command::new(&exe)
+            .args([
+                "session::tests::hermetic_kind_probe",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(SESSION_KIND_ENV, "test")
+            .env_remove("MECHA_KIND_PROBE_EXPECT")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+            "the probe must actually run:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+
+    /// The child half of the test above.
+    #[test]
+    #[ignore]
+    fn hermetic_kind_probe() {
+        assert_eq!(std::env::var(SESSION_KIND_ENV).as_deref(), Ok("test"));
+        let dir = tmpdir();
+        let mut meta = meta_with_id("20260101T000000-run");
+        meta.kind = Some(SessionKind::Run);
+        let s = Session::create(&dir, meta).unwrap();
+        assert_eq!(kind_of(&s.path), Some(SessionKind::Run));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The child half of the test above. Ignored so it never runs in the
@@ -3744,11 +3800,16 @@ mod tests {
             "the override narrows and never widens"
         );
         let none = Session::create(&dir, meta_with_id("20260101T000001-none")).unwrap();
-        let expect_none = (expect == SessionKind::Test).then_some(SessionKind::Test);
+        // Under either override a session with no surface of its own takes
+        // the override's kind. `experiment` was added to the override (D13)
+        // while this probe matched nothing, so its expectation still said
+        // only `test` did — found when the probe first actually ran.
+        let expect_none =
+            matches!(expect, SessionKind::Test | SessionKind::Experiment).then_some(expect);
         assert_eq!(
             kind_of(&none.path),
             expect_none,
-            "an unknown surface under the override is a test; without it, unknown"
+            "an unknown surface under the override takes its kind; without it, unknown"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -3308,11 +3308,12 @@ pub fn judge(
             ));
         }
         let own = arm_hashes(trials, name);
-        // Subset, not equality: a sitting stopped by `--limit` leaves the arm
-        // with fewer rows than the control, and every row it has still
-        // carries a control hash (found on review).
-        let same_condition_as_control =
-            !own.is_empty() && own.is_subset(&arm_hashes(trials, control_name));
+        // Neither equality nor subset: a sitting stopped by `--limit` leaves
+        // *some* arm short, and which one is decided by arm name (rows are
+        // planned arm-major over a `BTreeMap`), not by which is the control.
+        // Two arms share a hash only where their conditions coincide, so
+        // one shared hash is the whole test (both found on review).
+        let same_condition_as_control = !own.is_disjoint(&arm_hashes(trials, control_name));
         out.push(ArmJudgement {
             arm: name.clone(),
             metric,
@@ -3902,6 +3903,21 @@ rationale = "r"
                 .unwrap()
                 .same_condition_as_control
         );
+        // And the other way round: the control is the short one.
+        let control_short: Vec<Trial> = rows2
+            .iter()
+            .filter(|t| t.arm != "full" || t.seed == Some(1))
+            .cloned()
+            .collect();
+        let v = judge(&two_seeds, &control_short, &[], 0);
+        let flag = |arm: &str| {
+            v.iter()
+                .find(|a| a.arm == arm)
+                .unwrap()
+                .same_condition_as_control
+        };
+        assert!(flag("rules"));
+        assert!(!flag("escalate"));
         assert_eq!(
             condition_hash(&[], &[], "p", "m", None),
             condition_hash_world(&[], &[], "p", "m", None, &[], &[], &[], None, &[], None),
