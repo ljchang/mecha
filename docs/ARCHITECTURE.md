@@ -4627,9 +4627,39 @@ therefore measured a misleading date premise instead of next-day recall.
 UTC and the model has no clock, so without it every "what's on Thursday" is
 answered four hours off — and wrongly in the worst way, since the times stay
 internally consistent and read as correct. The zone is read per turn beside
-the date it renders, and the mail servers get it as `MECHA_TZ` in their `[[mcp]]`
-`env` so they render event times in it before the model ever sees them. An
-IANA name rather than an offset, because an offset is wrong twice a year.
+the date it renders. An IANA name rather than an offset, because an offset is
+wrong twice a year.
+
+**The zone is configured once and derived everywhere.** Every `[[mcp]]` server
+is handed `[agent] timezone` as `MECHA_TZ` (`McpServerConfig::owner_zone`,
+set in `build_command` beneath the server's own `env`, so an explicit value
+still wins). It used to be a hand-copied `env` line per server — a second place
+to set the zone and a way for the two to disagree. `owner_zone` is
+`serde(skip)` and overwritten by `Config::hand_zone_to_servers` from the
+config that is actually running — at the end of `load_layers`, in
+`TrialEnv::base_config` after the live servers are copied in, and after
+`Fixtures::apply` — because a zone stamped into `env` at load would carry the
+operator's zone into a trial that set its own. A zone reaching every server
+is the disclosure `TZ` already makes.
+
+**The mail servers resolve a window in `MECHA_TZ` alone; rendering may fall
+back to `TZ`** (`time::window_zone` vs `time::configured_zone`). A model has
+no clock, so `calendar_list_events` and `calendar_freebusy` accept `now`,
+`today`, `tomorrow`, `yesterday` and `±Nd` and resolve them on the server
+(`time::window`, one definition for `mecha-mail`, `mecha-google` and
+`mecha-outlook`), and every answer states the window and the clock it was
+resolved against — on 2026-09-14 a stale date asked for the 13th and the
+calendar confirmed the premise instead of contradicting it. Rendering in the
+machine's `TZ` shows the same instant; *resolving* in it picks a different
+day, and `TZ` is in the sandbox's passthrough list and UTC on a server, so a
+fallback there made the UTC day answer for `today` (#243's review). With no
+`MECHA_TZ` a relative term is refused by name (`Resolved::NeedsZone`) — never
+guessed — and `mecha setup` reports the unset `[agent] timezone` once a
+server is wired. `this week` is deliberately absent: where a week starts is a
+convention the server cannot read off anything, so it passes through to the
+provider's own parse error. A day offset past ±100,000 passes through too,
+because `NaiveDate + TimeDelta` panics out of range and the unwind would take
+mail and calendar down for the rest of the run.
 
 ## Compaction
 

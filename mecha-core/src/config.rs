@@ -931,6 +931,22 @@ pub struct McpServerConfig {
     /// inherits every provider key in it. `PATH`, `HOME`, `LANG`, `LC_ALL` and
     /// `TZ` always pass through — without them most runtimes cannot start.
     pub env_passthrough: Vec<String>,
+    /// `[agent] timezone`, handed to the server as `MECHA_TZ`.
+    ///
+    /// **Derived, never written:** `serde(skip)` keeps it out of every file,
+    /// and [`Config::hand_zone_to_servers`] overwrites it from the config
+    /// that is actually running. Stamped into `env` at load instead, a trial
+    /// copying a live server out of the operator's config would carry the
+    /// operator's zone into an environment that set its own. An explicit
+    /// `MECHA_TZ` in `env` still wins.
+    ///
+    /// It exists so the zone is configured once. The mail servers resolve
+    /// `today` in `MECHA_TZ` and nothing else (#243), and a hand-copied line
+    /// per server was a second place to set it and a way for the two to
+    /// disagree. A timezone reaching every server is the same disclosure
+    /// `TZ` already makes.
+    #[serde(skip)]
+    pub owner_zone: Option<String>,
     /// Confine this server with the configured `[sandbox]` backend.
     ///
     /// Off by default because a confined server sees only the workspace and,
@@ -1008,8 +1024,18 @@ impl Config {
             }
         }
         cfg.merge_env();
+        cfg.hand_zone_to_servers();
         cfg.validate()?;
         Ok(cfg)
+    }
+
+    /// Give every `[[mcp]]` server this config's `[agent] timezone`. See
+    /// [`McpServerConfig::owner_zone`]; call it last, after every layer that
+    /// can change either the zone or the server list.
+    pub fn hand_zone_to_servers(&mut self) {
+        for server in &mut self.mcp {
+            server.owner_zone = self.agent.timezone.clone();
+        }
     }
 
     /// Refuse at load what would otherwise degrade silently at run time.
