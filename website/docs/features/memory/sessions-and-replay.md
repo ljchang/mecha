@@ -293,6 +293,10 @@ see a change in *what the model said*. A prose change needs the
 
 ### What replay is not
 
+**A probe's verdict is not stored.** `mecha sessions appraise --probe` replays
+from each steer and derives its verdict on demand; the transcript stays the
+record, and rerunning the probe recomputes it.
+
 **Replay against a non-greedy provider is pass@k-shaped, not
 exact-match-shaped.** A local server's sampler is outside this process's
 knowledge, and the same case measures 5/5 rather than deterministically. One

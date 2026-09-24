@@ -265,6 +265,10 @@ mecha reflect --remine-untrusted       # recover lessons from older tainted sess
 mecha reflect --backfill-situations    # give pre-situation reflections one, no model call
 ```
 
+A reflection also records which goals it bears on: the goals of the plan steps
+whose checks failed, or otherwise the goal the plan or question named at the
+moment of the intervention, never one named later.
+
 `--remine-untrusted` re-mines the sessions whose reflections the gate
 excluded, through the user-turns path; it is idempotent and never re-mines a
 clean-covered intervention. `--backfill-situations` recomputes a situation

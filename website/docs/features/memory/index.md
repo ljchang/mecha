@@ -15,8 +15,8 @@ thing are worth remembering and no single trust model fits them all:
 | **The [learning store](/docs/features/learning)** | Behaviour: rules mined from your corrections | Provenance-gated — only clean-origin reflections become rules (a tainted session still yields clean ones from your own typed words; triage rules carry a narrow exemption) | `reflect` → consolidation from a `session_end` hook (`scripts/learn-live.sh`), self-applied behind a measurement gate (probation when nothing can be graded); a nightly sweep catches the rest; `--propose` stages for review instead |
 | **The [session transcript](/docs/features/memory/sessions-and-replay)** | What was actually said and done, verbatim | The record itself; `recall` re-surfaces it taint-neutrally | Append-only, rewrites recorded with what they replaced |
 
-The separations are load-bearing. A learned rule rides in every future
-prompt's cached prefix — a longer-lived injection path than anything else in
+The separations are load-bearing. A learned rule rides in the cached prefix of
+every future run whose situation matches its scope — a longer-lived injection path than anything else in
 the system — so learning is gated on provenance and never fed by machine
 policy. The graph is fed by mail, messages, and pages other people wrote, so
 reading it must arm the trifecta interlock. The transcript is your own
