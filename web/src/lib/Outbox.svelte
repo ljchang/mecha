@@ -474,7 +474,13 @@
 
   loadList();
   const timer = setInterval(() => {
-    if (!document.hidden) loadList();
+    if (document.hidden) return;
+    loadList();
+    // The open draft's "no new messages" is a claim about now; keep it one.
+    // `checkLive` refetches only once the last read is older than
+    // LIVE_FRESH_MS, so this is one reread per two minutes a draft stays
+    // open (review of #275).
+    if (detail && mode === 'read') checkLive(detail);
   }, 30_000);
   $effect(() => () => clearInterval(timer));
 
@@ -754,7 +760,7 @@
                   {/if}
                   <div class="kicker">what the draft was written to</div>
                 {:else if since}
-                  <div class="hint ok">✓ No new messages since this was drafted.</div>
+                  <div class="hint ok">✓ No new messages since this was drafted — checked {ago(new Date(liveNow.at).toISOString())}.</div>
                 {:else if liveNow?.status === 'loading'}
                   <div class="hint">Checking the thread for new messages…</div>
                 {:else if readThread.verified}

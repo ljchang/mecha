@@ -6,7 +6,7 @@
 // a key the form does not show dropped on save, an empty attendee field sent
 // as `[""]`. Each of those looks fine in the form and is wrong on the
 // calendar.
-import { kindOf, stampIn, wallIn, eventFields, eventArgs, inclusiveEnd, whenLabel, attendeesOf, editsAsEvent, unreadableAccounts, unreadableNote, threadOf, threadMessages, answeredMessage, rowSummary, docEdit, tooSoon, replySubject, liveThread, sinceDrafted } from '../src/lib/outbox-view.js';
+import { kindOf, stampIn, wallIn, eventFields, eventArgs, inclusiveEnd, whenLabel, attendeesOf, editsAsEvent, unreadableAccounts, unreadableNote, threadOf, threadMessages, answeredMessage, rowSummary, docEdit, tooSoon, replySubject, liveThread, sinceDrafted, readOf } from '../src/lib/outbox-view.js';
 
 let pass = 0;
 let fail = 0;
@@ -240,6 +240,12 @@ t('attendees accept objects', attendeesOf({ attendees: [{ email: 'a@x.edu' }] })
   t('a live read with no header for the asked account is nothing', liveThread(read([['A', 'M1']]), 'personal') === null);
   const cutRec = threadMessages([msg('A', 'M1'), msg('B', 'M2'), '… truncated; `mecha sessions show` has the whole result.'].join('\n\n'));
   t('a clipped recorded read claims no growth', cutRec.clipped === true && sinceDrafted(cutRec, liveThread(read([['A', 'M1'], ['B', 'M2'], ['C', 'M3']]), 'work')) === null);
+  const idlessLive = liveThread('--- [work] From: A <a@x> · T\nSubject: S\n\nold\n\n--- [work] From: B <b@x> · T\nSubject: S\n\nnew\n\n--- end of thread · 2 messages', 'work');
+  const viaCount = sinceDrafted(recorded, idlessLive);
+  t('a live read without message ids falls back to the count too', idlessLive?.verified === true && viaCount?.added === null && viaCount.grew === 1);
+  const detailOf = (texts) => ({ tool: 'mail__mail_reply', args: {}, sources: texts.map((text) => ({ tool: 'mail__mail_get_thread', text })) });
+  t('the first thread read is the one shown', readOf(detailOf([read([['A', 'M1']]), read([['B', 'M2']])]))?.messages[0].name === 'A');
+  t('a second read is never promoted when the first does not parse', readOf(detailOf(['not a thread', read([['B', 'M2']])])) === null);
   t('but never claims nothing is new', sinceDrafted(legacy, threadMessages(read([['A', 'M1'], ['B', 'M2']]))) === null);
 }
 
