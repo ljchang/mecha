@@ -484,8 +484,9 @@ costs nothing here.
 **Where the readout appears depends on where you close the task.** In a
 terminal it is printed as above. A task closed from the web board runs the
 same closure appraisal, and any follow-up it stages appears on the board, but
-the readout line itself is not shown on the page today. A task closed from
-`mecha-graph tui` changes the board directly and does not run closure
+the readout line itself is not shown on the page today. Slack's Done tap also
+runs it, and the readout is not shown in the Slack reply either. A task closed
+from `mecha-graph tui` changes the board directly and does not run closure
 appraisal at all.
 
 **And the trigger itself is owner-only, structurally.** A model cannot close a

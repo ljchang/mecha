@@ -296,7 +296,7 @@ changes what a run does. Dependencies are the only ordering.
 | **1a** | **Goal anchors from structure.** `GoalRef` gains `trigger` and `request` kinds (lenient on read — a closed enum in an append-only store is a wire format). `tasks work` seeds the anchor to `task:<id>` with the project as parent; a trigger run anchors to `trigger:<name>`; a trigger's optional `serves` is validated against the loaded charter at load; the front-door drain seeds `request:<id>`. | S1, R1 | — | a delegated and a trigger run each record a non-null anchor; `sessions health` shows them; a `serves` naming a missing line refuses the trigger at load |
 | **1b** | **Task closure as a recorded event, core half.** One closure function; the append-only closure record (transition, actor, surface, sessions, time, reason); `pre_task_close` (may deny, fails closed), `task_closed`, `task_reopened` hook events; the CLI, TUI and web board call it; the web shows the readout from the record; an unattended or delegated run cannot close. | S8, R15 | — | every direct surface writes one record per transition; a reopen is recorded and joined to its closure; a denying `pre_task_close` blocks; an unattended close is refused on every route |
 | **1b-2** | **Posture from the harness, not the environment** (review of #293; owner's option A, 2026-09-24). The shell tool registers every command it spawns — the child's pid, the run's posture, the session — in a harness-written registry under `~/.mecha`, removed when the command exits. `mecha tasks set` takes its posture from the nearest registered ancestor, so a command that sets `MECHA_RUN_POSTURE` itself changes nothing; the variable becomes advisory, and a process that claims a run no marker confirms is refused. Registering the *shell child* rather than the hosting process keeps an owner's web-board closure (a child of `serve`) from being refused while `serve` hosts a delegated chat. `mecha doctor` warns when `shell` runs unconfined, the setting the guard leans on. Residue, named: a command that detaches from its shell escapes the ancestry. | S8 | 1b | a delegated shell's `MECHA_RUN_POSTURE=interactive mecha tasks set …` is refused; an interactive shell's close records `owner-approved`; a claimed posture with no marker refuses; a web-board close during a delegated web chat succeeds; dead markers are skipped; the doctor finding fires with the sandbox off |
-| **1c** | **Closure from Slack and the graph TUI.** `TaskDone` / `TaskDrop` in Slack's closed `Action` enum, through 1b; the graph TUI's status change calls mecha's closure (a mecha-graph PR). | S8, here §5 | 1b | a Slack and a graph-TUI closure each produce a record with the right surface |
+| **1c** | **Closure from Slack and the graph TUI.** Slack's existing `TaskDone` tap re-routed through 1b's event and tagged `surface: slack` (#293 already passes `--surface slack`), plus a new `TaskDrop`; the Slack reply carries the readout from the record, since the executor parses stdout; the graph TUI's status change calls mecha's closure (a mecha-graph PR). | S8, here §5 | 1b | a Slack and a graph-TUI closure each produce a record with the right surface |
 | **1d** | **Read the verdicts already given.** Reopen signs per R16 from 1b's record; the reject reason reaches the reflector as an owner correction; workflow close / cancel / reopen / verify sign per R16b–e; rule and reflection curation and harness accept / reject / revert are recorded against the rule, reflection or candidate (R16f–h); graph review rejections of facts from `agent:mecha` episodes are recorded for L7. | S3a, R16 | 1b | `sessions appraise` shows each new channel on a fixture; none of R16f–h moves a run's valence |
 | **1e** | **Readings per item.** Charter and backlog readings carry per-item age and count beside the level, and each run's delta; a line saturated for `SATURATED_AFTER_RUNS` is withdrawn from in-run consumers and reported once by the doctor. | S5 | — | a fixture store with one stale and several fresh items: the level reads saturated while the per-item reading and the per-run delta change as items are added and cleared; the saturated line is withdrawn and reported once (on the live store, the same should be visible run to run) |
 | **1f** | **One commitment record, guilt per commitment.** `workflow::Commitment` absorbs `anticipation::Commitment`; drafts, parked questions and accepted front-door requests are commitments by construction; guilt per item = excess over patience × line rank; `anticipated_guilt` becomes a readout (the maximum), with old records still readable. | S7, R12 | 1e | each pending commitment has its own value; the homeostat readout matches the maximum; no consumer reads the scalar |
@@ -608,7 +608,9 @@ start/end."
 
 **Today.** The closure appraisal lives inside the CLI verb `tasks set`. The
 TUI's `/tasks` and the web board reach it (the web through that verb, with the
-readout lost on the child's stderr); Slack has no close action; in chat the
+readout lost on the child's stderr); Slack's Done tap (`Action::TaskDone`)
+runs the same verb and loses the readout harder still — its executor parses
+the child's stdout and reads stderr only on failure; in chat the
 model is refused a direct status write (`ClosedStatusGuard`) and may instead
 run `mecha tasks set` through `shell` behind the approver; the graph TUI's
 status cycling calls `gtd::set_task_status` and bypasses all of it. Nothing is
@@ -1441,8 +1443,10 @@ world model is least trustworthy. Never the other direction.
 Before dispatch, the harness looks the call up
 against load-bearing records in a matching region — inference-free, one
 index lookup. A hit may only narrow: the call is staged for review instead
-of executed, or the tool result carries a fixed line ("in recorded runs like
-this one, the owner redirected this call"), or `Decision` moves to `Verify`.
+of executed, or a fixed line ("in recorded runs like this one, the owner
+redirected this call") is delivered on I3's slots — the user slot or an
+internal result, never appended to the call's own result when that result is
+external — or `Decision` moves to `Verify`.
 It can never permit a call, lift a stage, or skip a question. An injection
 cannot create a marker: it would need an owner intervention in a clean
 session and a replay confirming it. Keyed on situation, never on valence
