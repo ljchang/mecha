@@ -2834,21 +2834,22 @@ async fn draft(
     // count and the run would report nothing (found in review of #281).
     // Only a schedule run counts: a hold from any other kind of run is not
     // what that run was asked to do, and must not close its thread.
-    // A staged call also comes back clean ("Drafted, not sent"), so if the
-    // owner ever routes `calendar_hold` through the outbox, a hold here was
-    // staged, not made, and counting it would report a calendar change that
-    // did not happen. Staged is never made (found in review of #281).
-    let hold_is_staged = prepared.agent.context().outbox.as_ref().is_some_and(|o| {
-        o.routed()
-            .any(|n| n.rsplit("__").next() == Some("calendar_hold"))
-    });
+    // A staged call also comes back clean ("Drafted, not sent"), so a hold
+    // the outbox staged must not count as made. Asked per call, with the
+    // loop's own question (`OutboxRoute::routes`, an exact name match): a
+    // looser suffix test over the routed set suppressed the count for a
+    // hold that really ran, and invited a duplicate (found in review of
+    // #287). Staged is never made; made is never hidden.
+    let route = prepared.agent.context().outbox.clone();
+    let executed = |name: &str| !route.as_ref().is_some_and(|o| o.routes(name));
     let holds = match kind {
-        Draft::Schedule if !hold_is_staged => holds_made(
+        Draft::Schedule => holds_made(
             convo
                 .rewritten
                 .iter()
                 .map(Vec::as_slice)
                 .chain(std::iter::once(convo.messages.as_slice())),
+            executed,
         ),
         _ => 0,
     };
@@ -2951,9 +2952,11 @@ async fn draft(
 /// surface) comes back `is_error`, and a hold that failed at the provider
 /// does too. Taken over every snapshot of the transcript, since compaction
 /// rewrites it; one hold appears in each snapshot from before its rewrite,
-/// so calls are counted by id, once.
+/// so calls are counted by id, once. `executed` says whether a call by that
+/// name ran rather than staged.
 fn holds_made<'a>(
     snapshots: impl IntoIterator<Item = &'a [mecha_core::message::Message]>,
+    executed: impl Fn(&str) -> bool,
 ) -> usize {
     use mecha_core::message::Block;
     let mut calls = std::collections::HashSet::new();
@@ -2962,7 +2965,7 @@ fn holds_made<'a>(
         for block in messages.iter().flat_map(|m| &m.content) {
             match block {
                 Block::ToolUse { id, name, .. }
-                    if name.rsplit("__").next() == Some("calendar_hold") =>
+                    if name.rsplit("__").next() == Some("calendar_hold") && executed(name) =>
                 {
                     calls.insert(id.clone());
                 }
@@ -3374,15 +3377,23 @@ mod draft_prompt_tests {
             call("b", "mail__calendar_create_event"),
             result("b", false),
         ];
-        assert_eq!(holds_made([run.as_slice()]), 0);
+        assert_eq!(holds_made([run.as_slice()], |_| true), 0);
         let run = vec![call("c", "mail__calendar_hold"), result("c", false)];
-        assert_eq!(holds_made([run.as_slice()]), 1);
+        assert_eq!(holds_made([run.as_slice()], |_| true), 1);
         let bare = vec![call("d", "calendar_hold"), result("d", false)];
         assert_eq!(
-            holds_made([bare.as_slice()]),
+            holds_made([bare.as_slice()], |_| true),
             1,
             "an unprefixed server's tool counts too"
         );
+
+        // Staged is never made, by the loop's own exact-name question: the
+        // routed name counts 0, an identically-suffixed unrouted one counts 1.
+        let run = vec![call("s", "mail__calendar_hold"), result("s", false)];
+        let routed = |n: &str| n == "mail__calendar_hold";
+        assert_eq!(holds_made([run.as_slice()], |n| !routed(n)), 0);
+        let only_bare_routed = |n: &str| n == "calendar_hold";
+        assert_eq!(holds_made([run.as_slice()], |n| !only_bare_routed(n)), 1);
 
         // Compaction: the hold lives only in pre-rewrite snapshots, repeated
         // in two of them, and the live list is a summary. Counted once, not
@@ -3391,7 +3402,10 @@ mod draft_prompt_tests {
         let also_before = before.clone();
         let after = vec![Message::user("summary of what happened")];
         assert_eq!(
-            holds_made([before.as_slice(), also_before.as_slice(), after.as_slice()]),
+            holds_made(
+                [before.as_slice(), also_before.as_slice(), after.as_slice()],
+                |_| true
+            ),
             1
         );
     }
