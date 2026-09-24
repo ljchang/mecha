@@ -181,7 +181,12 @@ impl Approver for SlackApprover {
         if self.blanket.lock().is_ok_and(|b| b.contains(tool.name())) {
             return Decision::Allow;
         }
-        self.ask(tool, summarise(tool.name(), input), false).await
+        self.ask(
+            tool,
+            summarise(tool.name(), &tool.review_input(input)),
+            false,
+        )
+        .await
     }
 
     /// Past the modes that would have *passed* the call — `Allow` and the
@@ -202,7 +207,10 @@ impl Approver for SlackApprover {
         }
         self.ask(
             tool,
-            format!("{why} {}", summarise_forced(tool.name(), input)),
+            format!(
+                "{why} {}",
+                summarise_forced(tool.name(), &tool.review_input(input))
+            ),
             true,
         )
         .await
@@ -221,7 +229,10 @@ impl Approver for SlackApprover {
         }
         self.ask(
             tool,
-            format!("{why} {}", summarise_forced(tool.name(), input)),
+            format!(
+                "{why} {}",
+                summarise_forced(tool.name(), &tool.review_input(input))
+            ),
             true,
         )
         .await
