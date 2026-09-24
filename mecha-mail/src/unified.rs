@@ -540,9 +540,20 @@ async fn thread_one(a: &Account, thread_id: &str) -> Result<Vec<Email>, MailErro
 /// that thread's own correspondents, and no id collision in another mailbox
 /// could redirect it to anyone else. Two holders is ambiguous and none is
 /// not a thread — both are refused, with every account's answer.
-fn thread_home(thread_id: &str, answers: &[(&str, Result<(), String>)]) -> Result<usize, String> {
+///
+/// **A holder is an account whose read returned messages, not one whose read
+/// succeeded.** Each answer is the read's message count. Graph answers a
+/// `conversationId` filter that matches nothing with HTTP 200 and an empty
+/// list, so `Ok` alone made every Outlook account hold every thread: a Gmail
+/// thread was "found in several accounts", and with the real holder's read
+/// failing, the Outlook account became the sole holder and a triage acted
+/// there (found on review).
+fn thread_home(
+    thread_id: &str,
+    answers: &[(&str, Result<usize, String>)],
+) -> Result<usize, String> {
     let held: Vec<usize> = (0..answers.len())
-        .filter(|&i| answers[i].1.is_ok())
+        .filter(|&i| matches!(answers[i].1, Ok(n) if n > 0))
         .collect();
     match held.as_slice() {
         [one] => Ok(*one),
@@ -550,7 +561,10 @@ fn thread_home(thread_id: &str, answers: &[(&str, Result<(), String>)]) -> Resul
             "no configured account could read thread {thread_id}: {}",
             answers
                 .iter()
-                .map(|(name, r)| format!("{name}: {}", r.as_ref().err().map_or("", String::as_str)))
+                .map(|(name, r)| match r {
+                    Ok(_) => format!("{name}: no such thread"),
+                    Err(e) => format!("{name}: {e}"),
+                })
                 .collect::<Vec<_>>()
                 .join("; ")
         )),
@@ -843,8 +857,23 @@ fn render_rows(mut rows: Vec<(Provider, String, Email)>) -> String {
     serde_json::to_string_pretty(&rows).unwrap_or_else(|_| "[]".into())
 }
 
+/// The footer ending every thread read: how many messages it holds.
+///
+/// Every header block's shape can be typed into a body by whoever wrote the
+/// message, so a reader splitting this text cannot tell a forged header from
+/// a real one — and the outbox names the person a staged reply goes back to
+/// from the split. The first line and this last one are the two a body
+/// cannot reach, so the count rides here: a forged header adds a split, and
+/// a reader that finds more messages than this knows (found on review).
+fn thread_footer(n: usize) -> String {
+    format!(
+        "--- end of thread · {n} message{}",
+        if n == 1 { "" } else { "s" }
+    )
+}
+
 fn render_thread(provider: Provider, account: &str, emails: &[Email]) -> String {
-    emails
+    let body = emails
         .iter()
         .map(|e| {
             format!(
@@ -860,7 +889,8 @@ fn render_thread(provider: Provider, account: &str, emails: &[Email]) -> String 
             )
         })
         .collect::<Vec<_>>()
-        .join("\n\n")
+        .join("\n\n");
+    format!("{body}\n\n{}", thread_footer(emails.len()))
 }
 
 /// Merge fan-out results: successes render, failures are named beside them,
@@ -1215,14 +1245,14 @@ impl MailTools {
                 .map(|a| async move { thread_one(a, thread_id).await }),
         )
         .await;
-        let answers: Vec<(&str, Result<(), String>)> = self
+        let answers: Vec<(&str, Result<usize, String>)> = self
             .accounts
             .iter()
             .zip(&reads)
             .map(|(a, r)| {
                 (
                     a.name.as_str(),
-                    r.as_ref().map(|_| ()).map_err(|e| format!("{e}")),
+                    r.as_ref().map(Vec::len).map_err(|e| format!("{e}")),
                 )
             })
             .collect();
@@ -2046,9 +2076,36 @@ mod tests {
                 "personal",
                 Err("API error (400): Invalid id value".to_string()),
             ),
-            ("dartmouth", Ok(())),
+            ("dartmouth", Ok(3)),
         ];
         assert_eq!(thread_home("T", &answers).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_thread_read_ends_with_the_count_a_body_cannot_reach() {
+        assert_eq!(thread_footer(1), "--- end of thread · 1 message");
+        assert_eq!(thread_footer(3), "--- end of thread · 3 messages");
+        let text = render_thread(Provider::Google, "work", &[]);
+        assert!(text.ends_with("--- end of thread · 0 messages"), "{text}");
+    }
+
+    #[test]
+    fn an_empty_read_does_not_hold_the_thread() {
+        // Graph's shape: a conversationId filter matching nothing is HTTP
+        // 200 with no messages. A Gmail thread, with an Outlook account
+        // beside it, must still resolve to Gmail — and with the Gmail read
+        // failing, must not fall to the Outlook account.
+        let gmail_thread = [("personal", Ok(2)), ("dartmouth", Ok(0))];
+        assert_eq!(thread_home("T", &gmail_thread).unwrap(), 0);
+        let gmail_down = [
+            ("personal", Err("HTTP request failed: timeout".to_string())),
+            ("dartmouth", Ok(0)),
+        ];
+        let err = thread_home("T", &gmail_down).unwrap_err();
+        assert!(
+            err.contains("dartmouth: no such thread") && err.contains("personal: HTTP"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -2064,7 +2121,7 @@ mod tests {
             "{err}"
         );
 
-        let both = [("a", Ok(())), ("b", Ok(()))];
+        let both = [("a", Ok(1)), ("b", Ok(4))];
         let err = thread_home("T", &both).unwrap_err();
         assert!(
             err.contains("a, b") && err.contains("pass `account`"),

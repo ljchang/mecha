@@ -335,10 +335,16 @@ const MSG_HEAD = /^--- \[([^\]]+)\] From: (.*) <([^<>]*)> · (\S+)$/;
  * followed by its `Calendar date:` (or, in older reads, `Subject:`) line — so a signature's `---`, or an
  * "-----Original Message-----" block quoted in a body, never splits one. A
  * body that forges all of it can still split; the verbatim text stays one
- * click away, and nothing here decides where a reply goes.
+ * click away. **Nothing here decides where a reply goes, but the pane names
+ * who it goes back to from this split** — so it names nobody unless the
+ * split is `verified` (review of #272 found a body forging all of the above).
  */
 export function threadMessages(text) {
-  const lines = (text ?? '').split('\n');
+  const lines = (text ?? '').replace(/\s+$/, '').split('\n');
+  // mecha-mail's closing count (`thread_footer`): the one line after every
+  // body, so a body cannot forge it. Reads staged before it existed have none.
+  const foot = /^--- end of thread · (\d+) messages?$/.exec(lines[lines.length - 1] ?? '');
+  if (foot) lines.pop();
   const first = MSG_HEAD.exec(lines[0] ?? '');
   if (!first) return null;
   const account = first[1];
@@ -363,7 +369,12 @@ export function threadMessages(text) {
     }
     return { name: name.trim(), address, date, subject, replyId, body: lines.slice(i, end).join('\n').trim() };
   });
-  return { account, messages };
+  // Whether the split can be trusted to say who wrote what — and so who a
+  // reply goes back to. A forged header in a body adds a split: the count
+  // catches it, and with no count a single message is the only split that
+  // cannot hide one (a forgery would have made a second).
+  const verified = foot ? Number(foot[1]) === messages.length : messages.length === 1;
+  return { account, messages, verified };
 }
 
 /**
@@ -404,7 +415,7 @@ export function rowSummary(detail) {
   const answered = answeredMessage(thread, args);
   const first = thread?.messages[0]?.subject ?? '';
   const subject = detail.headline || (first ? (/^re:/i.test(first) ? first : `Re: ${first}`) : '');
-  return { who: answered ? answered.name || answered.address : '', subject };
+  return { who: answered && thread.verified ? answered.name || answered.address : '', subject };
 }
 
 /**

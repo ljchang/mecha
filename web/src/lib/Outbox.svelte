@@ -174,19 +174,19 @@
     }
   }
   function show(d, keepError) {
-      detail = d;
-      openedAt = Date.now();
-      mode = 'read';
-      evError = null;
-      // Open, as the page has always shown them: what a draft answers is part
-      // of reading it. The toggle is for a long thread already read.
-      showThread = false;
-      showRaw = false;
-      // With no thread to show as mail, the reads are what there is to see.
-      showSources = !d.sources?.some((x) => toolSuffix(x.tool) === 'mail_get_thread' && threadMessages(x.text));
-      showArgs = false;
-      rejectReason = '';
-      if (!keepError) error = null;
+    detail = d;
+    openedAt = Date.now();
+    mode = 'read';
+    evError = null;
+    // The message a draft answers is always shown; the rest of the thread
+    // and the verbatim read wait for a click.
+    showThread = false;
+    showRaw = false;
+    // With no thread to show as mail, the reads are what there is to see.
+    showSources = !d.sources?.some((x) => toolSuffix(x.tool) === 'mail_get_thread' && threadMessages(x.text));
+    showArgs = false;
+    rejectReason = '';
+    if (!keepError) error = null;
   }
 
   function back() {
@@ -253,8 +253,13 @@
       open(id, { fresh: true });
     }
   }
+  // Never on a draft that appeared under your finger or pointer: after a
+  // send the next draft opens in the same place, instantly from the cache,
+  // and a second press or click would send it unread.
+  const JUST_OPENED_MS = 800;
   async function approve() {
     if (!detail || busy || detail.delivery_uncertain) return;
+    if (Date.now() - openedAt < JUST_OPENED_MS) return;
     const id = detail.id;
     const out = await act('approve');
     if (out !== null) {
@@ -409,9 +414,7 @@
     switch (e.key) {
       case 'j': case 'ArrowDown': if (mode === 'read') move(1); else return; break;
       case 'k': case 'ArrowUp': if (mode === 'read') move(-1); else return; break;
-      // Never on a draft that appeared under your finger: `a` pressed twice
-      // sends this one and then the next, unread.
-      case 'a': if (mode === 'read' && Date.now() - openedAt > 800) approve(); else return; break;
+      case 'a': if (mode === 'read') approve(); else return; break;
       case 'e': if (mode === 'read' && canEdit) startEdit(); else return; break;
       case 'x': if (mode === 'read' && detail) startReject(); else return; break;
       default: return;
@@ -680,7 +683,10 @@
         {:else if kind === 'mail'}
           {#if readThread}
             <section class="answering" aria-label="What this answers">
-              <div class="kicker">{toolSuffix(detail.tool) === 'mail_reply' ? 'Replying to' : 'Written from'}</div>
+              <!-- Only a verified split may say who a reply goes back to: a
+                   body can forge a header, and a staged reply names no one
+                   else. Unverified, it is what the run read, newest last. -->
+              <div class="kicker">{toolSuffix(detail.tool) !== 'mail_reply' ? 'Written from' : readThread.verified ? 'Replying to' : 'The thread it read · newest message'}</div>
               {#if showThread}
                 {#each readThread.messages as m}{@render message(m, m === answered)}{/each}
               {:else if answered}
