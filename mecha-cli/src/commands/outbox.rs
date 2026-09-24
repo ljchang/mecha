@@ -1072,6 +1072,17 @@ impl Surface {
             }
         };
         if output.is_error {
+            // A server the operator vouches for can say it refused before
+            // dispatching anything; then the send cleanly did not happen and
+            // the draft can go again. Any other failure may have delivered,
+            // so it stays an unknown the owner reconciles.
+            if output.not_dispatched {
+                store.record_not_dispatched(&item.id, &output.content)?;
+                bail!(
+                    "the tool refused before sending anything: {}",
+                    output.content
+                );
+            }
             store.record_error(&item.id, &output.content)?;
             bail!("the tool reported failure: {}", output.content);
         }
@@ -1254,7 +1265,11 @@ async fn send(
     // worked is not a success, and a script that fans out on this needs to
     // know without parsing prose.
     if failed > 0 {
-        bail!("{failed} of {} item(s) could not be confirmed sent; inspect their delivery state before retrying", items.len());
+        // Two kinds of failure land here: a refusal the server vouched for
+        // (nothing went out; the draft can go again) and an unknown (it may
+        // have gone out; check the destination first). `outbox show` says
+        // which, per item.
+        bail!("{failed} of {} item(s) did not send; any whose delivery is unknown must be checked at the destination before retrying", items.len());
     }
     Ok(())
 }

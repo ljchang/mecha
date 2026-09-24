@@ -613,6 +613,7 @@ impl Tool for Shell {
             is_error: code != 0,
             external: false,
             refusal: false,
+            not_dispatched: false,
         })
     }
 }
@@ -798,6 +799,7 @@ pub(crate) async fn fetch_vetted(url: &str, ctx: &ToolCtx) -> Result<Fetched> {
         is_error: !status.is_success(),
         external: true,
         refusal: false,
+        not_dispatched: false,
     }))
 }
 

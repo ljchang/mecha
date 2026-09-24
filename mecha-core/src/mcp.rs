@@ -43,6 +43,9 @@ pub struct McpClient {
     /// Capabilities forced onto every tool from this server, unioned with what
     /// it declares. See [`McpServerConfig::capabilities`].
     forced: Capabilities,
+    /// Whether this server's `_meta` claims about a result are believed.
+    /// See [`McpServerConfig::trust_result_claims`].
+    trust_result_claims: bool,
     stdin: tokio::sync::Mutex<Option<ChildStdin>>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>,
     next_id: AtomicU64,
@@ -218,6 +221,7 @@ impl McpClient {
             name: cfg.name.clone(),
             prefix_tools: cfg.prefix_tools.unwrap_or(true),
             forced: cfg.capabilities.into(),
+            trust_result_claims: cfg.trust_result_claims,
             stdin: tokio::sync::Mutex::new(Some(stdin)),
             pending,
             next_id: AtomicU64::new(1),
@@ -474,18 +478,24 @@ impl McpClient {
             }
         }
 
+        let is_error = result
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         Ok(ToolOutput {
             content: if text.is_empty() {
                 "(no content)".into()
             } else {
                 text.join("\n")
             },
-            is_error: result
-                .get("isError")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
+            is_error,
             external: true,
             refusal: false,
+            not_dispatched: result_claims_not_dispatched(
+                &result,
+                self.trust_result_claims,
+                is_error,
+            ),
         })
     }
 }
@@ -573,6 +583,27 @@ pub async fn connect_all(
     (tools, clients, errors)
 }
 
+/// The `_meta` key a server sets when it refused a call before any request.
+/// `docs/PROVENANCE-DESIGN.md` §3 is the convention; mecha-mail spells the
+/// same key, and a test on each side pins the literal.
+pub const DISPATCHED_KEY: &str = "mecha-factory.ai/dispatched";
+
+/// Whether a `tools/call` result says nothing was dispatched, **and** that is
+/// believed. The one place a server's dispatch claim is read (§3's "parsed in
+/// one place"): only from a server the operator trusts, only as the exact
+/// `false` the convention defines (anything else — absent, `true`, a string —
+/// is no claim), and only on an error, since "I refused" on a success is not
+/// a thing a server can mean. Every other case is `false`, which the outbox
+/// reads as "unknown" — the direction that fails closed.
+fn result_claims_not_dispatched(result: &Value, trusted: bool, is_error: bool) -> bool {
+    trusted
+        && is_error
+        && result
+            .get("_meta")
+            .and_then(|m| m.get(DISPATCHED_KEY))
+            .is_some_and(|v| v == &Value::Bool(false))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,6 +614,52 @@ mod tests {
 
     fn unconfined() -> Sandbox {
         Sandbox::new(SandboxConfig::default())
+    }
+
+    /// The one place a server's dispatch claim is read, and every way it
+    /// must fail closed: an untrusted server, a success, and any value but
+    /// the exact `false` the convention defines are all "no claim".
+    #[test]
+    fn a_dispatch_claim_is_believed_only_as_the_convention_says() {
+        let claim = |v: Value| json!({"isError": true, "_meta": {DISPATCHED_KEY: v}});
+        assert!(result_claims_not_dispatched(
+            &claim(json!(false)),
+            true,
+            true
+        ));
+        assert!(
+            !result_claims_not_dispatched(&claim(json!(false)), false, true),
+            "a server the operator has not vouched for is not believed"
+        );
+        assert!(
+            !result_claims_not_dispatched(&claim(json!(false)), true, false),
+            "a success cannot have been refused"
+        );
+        for not_a_claim in [json!(true), json!("false"), json!(0), Value::Null] {
+            assert!(
+                !result_claims_not_dispatched(&claim(not_a_claim.clone()), true, true),
+                "{not_a_claim}"
+            );
+        }
+        assert!(
+            !result_claims_not_dispatched(&json!({"isError": true}), true, true),
+            "absent is no claim"
+        );
+        assert!(
+            !result_claims_not_dispatched(
+                &json!({"isError": true, "_meta": {"dispatched": false}}),
+                true,
+                true
+            ),
+            "only the prefixed key is the convention's"
+        );
+    }
+
+    /// mecha-mail spells the same key (`mecha_mail::mcp::DISPATCHED_KEY`),
+    /// pinned to the same literal there.
+    #[test]
+    fn the_dispatched_key_is_the_conventions() {
+        assert_eq!(DISPATCHED_KEY, "mecha-factory.ai/dispatched");
     }
 
     #[test]

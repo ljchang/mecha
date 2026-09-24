@@ -4730,17 +4730,22 @@ What is missing beyond that is refinement:
 
 ### Mail as a surface you work — built; what is open is judgement
 
-**A send refused before it reached any provider is still recorded as an
-unknown delivery.** #272 removed the common cause (a reply with no
-`account`), not the class: an unknown account name, or a `mail_send` with no
-default, is refused by mecha-mail before any network call, and the release
-path (`Surface::release`) cannot tell that from a send that may have gone out,
-so the draft sits at `check sent` until the owner reconciles it. The fix is a
-typed "nothing was dispatched" signal from the server — an MCP `_meta` marker
-carried on `ToolOutput` — which touches `mcp.rs` and `tool/mod.rs`, the files
-the provenance-security arc (`feat/provenance-security`) is working in, so it
-waits for that to land. Trusting the server's own word here is sound: the
-server is the sender, so it is the authority on whether it sent.
+**A send refused before any provider request settles itself — once the owner
+vouches for the mail server.** #272 removed the common cause (a reply with no
+`account`); the class is now handled by `fix/pre-dispatch-refusal`, which
+builds `PROVENANCE-DESIGN.md` §3's convention: mecha-mail marks a refusal made
+before any request (`mcp::Reply::refused` → `_meta` `mecha-factory.ai/dispatched:
+false`), `McpClient::call_tool` believes it only from a server with `[[mcp]]
+trust_result_claims = true` in the **global** config, and the release path
+settles that attempt as not delivered (`OutboxStore::record_not_dispatched`)
+instead of leaving it `check sent`. **Owed by the owner, not the code:** the
+live `[[mcp]] name = "mail"` entry needs `trust_result_claims = true` for any
+of this to apply — without it the claim is ignored and failed sends stay
+unknown, exactly as before. Earlier text here said trusting the server's word
+was sound because "the server is the sender"; that was too quick. A server
+lying about it could cost a double send, which is why the claim is believed
+only on the operator's explicit vouch, never by default and never from a
+project layer.
 
 **The mail half of the tool-boundary clock work is unbuilt.** #243 made a
 stale date inexpressible in `calendar_list_events` and `calendar_freebusy`;

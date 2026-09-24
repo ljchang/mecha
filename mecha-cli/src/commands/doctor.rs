@@ -45,6 +45,7 @@ pub async fn execute(args: Args) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&findings)?);
     } else {
         render(&findings);
+        vouched_note();
         if interactive() {
             offer_remedies(&findings)?;
         }
@@ -304,6 +305,31 @@ fn unit_finding(unit: &str, dead_auth: bool) -> Finding {
             ],
             needs_terminal: false,
         }),
+    }
+}
+
+/// Name every `[[mcp]]` server whose result claims are believed
+/// (`trust_result_claims`). Not a finding: it is a decision the operator
+/// made, not distress, and a finding would make every run exit non-zero.
+/// Printed so the one switch that trusts a server *more* is visible wherever
+/// the operator looks at the machine's health (docs/PROVENANCE-DESIGN.md §3).
+/// The global config only, because that is the only layer allowed to set it.
+fn vouched_note() {
+    let Ok(config) = mecha_core::config::Config::load_global() else {
+        return; // doctor never fails on its own examination
+    };
+    let names: Vec<&str> = config
+        .mcp
+        .iter()
+        .filter(|s| s.trust_result_claims && !s.disabled)
+        .map(|s| s.name.as_str())
+        .collect();
+    if !names.is_empty() {
+        println!(
+            "\nnote: believed when they say a failed send dispatched nothing \
+             (trust_result_claims): {}",
+            names.join(", ")
+        );
     }
 }
 

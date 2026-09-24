@@ -35,6 +35,22 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     let outbox_routed =
         |name: &str| !global.no_outbox && prepared.config.outbox.tools.iter().any(|t| t == name);
+    // Servers the operator vouches for (`[[mcp]] trust_result_claims`), named
+    // here because the switch trusts a server more rather than less and must
+    // stay one visible decision (docs/PROVENANCE-DESIGN.md §3). A prefixed
+    // server's tools carry its name; an unprefixed one's cannot be attributed
+    // by name, so it is named in the header only.
+    let vouched: Vec<&mecha_core::config::McpServerConfig> = prepared
+        .config
+        .mcp
+        .iter()
+        .filter(|s| s.trust_result_claims && !s.disabled)
+        .collect();
+    let claims_believed = |name: &str| {
+        vouched
+            .iter()
+            .any(|s| s.prefix_tools != Some(false) && name.starts_with(&format!("{}__", s.name)))
+    };
 
     if args.json {
         let specs: Vec<_> = registry
@@ -50,6 +66,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     "description": t.description(),
                     "read_only": t.read_only(),
                     "outbox_routed": outbox_routed(t.name()),
+                    // This tool's server is believed when it says a failed
+                    // call dispatched nothing — see `trust_result_claims`.
+                    "result_claims_believed": claims_believed(t.name()),
                     "capabilities": {
                         "private_data": caps.private_data,
                         "untrusted_input": caps.untrusted_input,
@@ -74,6 +93,21 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         return Ok(());
     }
 
+    for s in &vouched {
+        println!(
+            "result claims believed from `{}` (trust_result_claims){}",
+            s.name,
+            if s.prefix_tools == Some(false) {
+                " — its tools are unprefixed, so not marked below"
+            } else {
+                ""
+            }
+        );
+    }
+    if !vouched.is_empty() {
+        println!();
+    }
+
     for tool in registry.iter() {
         let access = if tool.read_only() {
             "read-only"
@@ -85,7 +119,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         } else {
             ""
         };
-        println!("{}  [{}{}]", tool.name(), access, routing);
+        let claims = if claims_believed(tool.name()) {
+            " · result claims believed"
+        } else {
+            ""
+        };
+        println!("{}  [{}{}{}]", tool.name(), access, routing, claims);
         for line in tool.description().lines() {
             println!("    {line}");
         }

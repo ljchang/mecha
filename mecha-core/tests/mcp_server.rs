@@ -645,3 +645,44 @@ while True:
     assert!(removed, "{mode}: container survived its MCP client");
     drop(retained);
 }
+
+/// A server's "nothing was dispatched" claim crosses the real wire, and is
+/// believed only from a server the operator vouched for. The same refusal,
+/// the same bytes, two configs: unvouched, it is an ordinary error the
+/// outbox must treat as an unknown delivery; vouched, it is a clean refusal.
+#[tokio::test]
+async fn a_dispatch_claim_is_believed_only_from_a_vouched_server() {
+    if unavailable("python3", python3_available()) {
+        return;
+    }
+    let dir = tmpdir("mcp-dispatch-claim");
+    let refuse = json!({"refuse_before_sending": true});
+    let ctx = ToolCtx {
+        workspace: dir.clone(),
+        ..Default::default()
+    };
+
+    for (trusted, believed) in [(false, false), (true, true)] {
+        let cfg = McpServerConfig {
+            trust_result_claims: trusted,
+            ..server("python3", &fixture_server())
+        };
+        let client = McpClient::connect(&cfg, &unconfined(), &dir)
+            .await
+            .expect("the handshake");
+        let tools = client.list_tools().await.unwrap();
+        let touch = tool_named(&tools, "nosy__touch").await;
+        let out = touch.call(refuse.clone(), &ctx).await.unwrap();
+        assert!(
+            out.is_error,
+            "the refusal is still an error: {}",
+            out.content
+        );
+        assert_eq!(
+            out.not_dispatched,
+            believed,
+            "trust_result_claims = {trusted} must {} the server's claim",
+            if believed { "believe" } else { "ignore" }
+        );
+    }
+}

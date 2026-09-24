@@ -26,6 +26,7 @@ use crate::accounts::{self, Provider};
 use crate::google::calendar as gcal;
 use crate::google::gmail::GmailProvider;
 use crate::google::server::markdown_to_html;
+use crate::mcp::Reply;
 use crate::microsoft::graph_calendar as mcal;
 use crate::microsoft::graph_mail::OutlookProvider;
 use crate::text::clean_body;
@@ -1304,11 +1305,14 @@ impl MailTools {
         Ok((&self.accounts[i], emails))
     }
 
-    async fn dispatch(&self, name: &str, args: &Value) -> Option<(String, bool)> {
+    async fn dispatch(&self, name: &str, args: &Value) -> Option<Reply> {
         let str_arg = |key: &str| args.get(key).and_then(Value::as_str).map(|s| s.to_string());
         let account_arg = str_arg("account");
-        let fail = |msg: String| Some((msg, true));
-        let missing = |what: &str| Some((format!("missing required `{what}`"), true));
+        let fail = |msg: String| Some(Reply::from((msg, true)));
+        // A required argument that is absent is refused before anything is
+        // asked of a provider, whatever the tool: nothing was dispatched.
+        let missing = |what: &str| Some(Reply::refused(format!("missing required `{what}`")));
+        let refuse = |msg: String| Some(Reply::refused(msg));
 
         match name {
             "mail_search" => {
@@ -1336,7 +1340,10 @@ impl MailTools {
                     .into_iter()
                     .flat_map(|(n, p, emails)| emails.into_iter().map(move |e| (p, n.clone(), e)))
                     .collect();
-                Some((with_notes(render_rows(rows), &failures), false))
+                Some(Reply::from((
+                    with_notes(render_rows(rows), &failures),
+                    false,
+                )))
             }
             "mail_recent" => {
                 let max = args
@@ -1362,17 +1369,20 @@ impl MailTools {
                     .into_iter()
                     .flat_map(|(n, p, emails)| emails.into_iter().map(move |e| (p, n.clone(), e)))
                     .collect();
-                Some((with_notes(render_rows(rows), &failures), false))
+                Some(Reply::from((
+                    with_notes(render_rows(rows), &failures),
+                    false,
+                )))
             }
             "mail_get_thread" => {
                 let Some(thread_id) = str_arg("thread_id") else {
                     return missing("thread_id");
                 };
                 match self.locate_thread(account_arg.as_deref(), &thread_id).await {
-                    Ok((account, emails)) => Some((
+                    Ok((account, emails)) => Some(Reply::from((
                         render_thread(account.provider, &account.name, &emails),
                         false,
-                    )),
+                    ))),
                     Err(e) => fail(e),
                 }
             }
@@ -1404,13 +1414,13 @@ impl MailTools {
                     Err(e) => return fail(e),
                 };
                 match triage_one(account, &thread_id, action).await {
-                    Ok(None) => Some((
+                    Ok(None) => Some(Reply::from((
                         format!("{}: thread {thread_id} {}", account.name, action.done()),
                         false,
-                    )),
+                    ))),
                     // Graph's per-message reality, surfaced rather than
                     // rounded up: a conversation that half-moved says so.
-                    Ok(Some(n)) => Some((
+                    Ok(Some(n)) => Some(Reply::from((
                         format!(
                             "{}: thread {thread_id} {} ({n} message{})",
                             account.name,
@@ -1418,7 +1428,7 @@ impl MailTools {
                             if n == 1 { "" } else { "s" }
                         ),
                         false,
-                    )),
+                    ))),
                     Err(e) => fail(format!("{e}")),
                 }
             }
@@ -1428,9 +1438,12 @@ impl MailTools {
                 else {
                     return missing("to, subject, and body_markdown");
                 };
+                // Refused before any request: an account that does not resolve
+                // sends nothing. Only a failure of the send itself below is
+                // left unclaimed — that one may have delivered.
                 let account = match self.pick(account_arg.as_deref(), Mode::Create(Surface::Mail)) {
                     Ok(p) => p[0],
-                    Err(e) => return fail(e),
+                    Err(e) => return refuse(e),
                 };
                 let html = markdown_to_html(&body_md);
                 let cc = str_arg("cc");
@@ -1461,7 +1474,10 @@ impl MailTools {
                 })
                 .await;
                 match sent {
-                    Ok(msg) => Some((format!("{msg} from `{}` to {to}", account.name), false)),
+                    Ok(msg) => Some(Reply::from((
+                        format!("{msg} from `{}` to {to}", account.name),
+                        false,
+                    ))),
                     Err(e) => fail(format!("{e}")),
                 }
             }
@@ -1477,7 +1493,9 @@ impl MailTools {
                 let (account, emails) =
                     match self.locate_thread(account_arg.as_deref(), &thread_id).await {
                         Ok(found) => found,
-                        Err(e) => return fail(e),
+                        // Reads only: a thread no account can find refuses the
+                        // reply before it is attempted.
+                        Err(e) => return refuse(e),
                     };
                 let reply_all = args
                     .get("reply_all")
@@ -1491,7 +1509,7 @@ impl MailTools {
                     None => emails.last(),
                 };
                 let Some(target) = target else {
-                    return fail(match wanted {
+                    return refuse(match wanted {
                         Some(mid) => format!("no message `{mid}` in thread {thread_id}"),
                         None => format!("thread {thread_id} has no messages"),
                     });
@@ -1539,7 +1557,10 @@ impl MailTools {
                     }
                 };
                 match result {
-                    Ok(msg) => Some((format!("{msg} from `{}`", account.name), false)),
+                    Ok(msg) => Some(Reply::from((
+                        format!("{msg} from `{}`", account.name),
+                        false,
+                    ))),
                     Err(e) => fail(format!("{e}")),
                 }
             }
@@ -1559,7 +1580,7 @@ impl MailTools {
                     Err(all_failed) => return fail(all_failed),
                 };
                 let body = serde_json::to_string_pretty(&rows).unwrap_or_else(|_| "[]".into());
-                Some((body, false))
+                Some(Reply::from((body, false)))
             }
             "calendar_list_events" => {
                 let now = chrono::Utc::now();
@@ -1617,11 +1638,14 @@ impl MailTools {
                     // itself, and `stamp` now says the same thing plus the
                     // clock.
                     let body = format!("no events in this window.\n{stamp}");
-                    return Some((with_notes(body, &failures), false));
+                    return Some(Reply::from((with_notes(body, &failures), false)));
                 }
                 finish_events(&mut events, tz);
                 let body = serde_json::to_string_pretty(&events).unwrap_or_else(|_| "[]".into());
-                Some((with_notes(format!("{body}\n\n{stamp}"), &failures), false))
+                Some(Reply::from((
+                    with_notes(format!("{body}\n\n{stamp}"), &failures),
+                    false,
+                )))
             }
             "calendar_freebusy" => {
                 let now = chrono::Utc::now();
@@ -1666,7 +1690,7 @@ impl MailTools {
                     "busy": rows,
                 }))
                 .unwrap_or_else(|_| "{}".into());
-                Some((with_notes(body, &failures), false))
+                Some(Reply::from((with_notes(body, &failures), false)))
             }
             "calendar_create_event" | "calendar_hold" => {
                 let Some((calendar_id, request)) = event_request(name, args) else {
@@ -1675,7 +1699,7 @@ impl MailTools {
                 let account =
                     match self.pick(account_arg.as_deref(), Mode::Create(Surface::Calendar)) {
                         Ok(p) => p[0],
-                        Err(e) => return fail(e),
+                        Err(e) => return refuse(e), // resolved before any request: nothing sent
                     };
                 let result = with_token(&account.manager, |t| {
                     let (request, calendar_id) = (request.clone(), calendar_id.clone());
@@ -1694,7 +1718,10 @@ impl MailTools {
                 })
                 .await;
                 match result {
-                    Ok(body) => Some((format!("created in `{}`:\n{body}", account.name), false)),
+                    Ok(body) => Some(Reply::from((
+                        format!("created in `{}`:\n{body}", account.name),
+                        false,
+                    ))),
                     Err(e) => fail(format!("{e}")),
                 }
             }
@@ -1704,7 +1731,7 @@ impl MailTools {
                 };
                 let account = match self.pick(account_arg.as_deref(), Mode::Item) {
                     Ok(p) => p[0],
-                    Err(e) => return fail(e),
+                    Err(e) => return refuse(e), // resolved before any request: nothing sent
                 };
                 let calendar_id = str_arg("calendar_id").unwrap_or_else(|| "primary".into());
                 let attendees = args
@@ -1764,7 +1791,10 @@ impl MailTools {
                 })
                 .await;
                 match result {
-                    Ok(body) => Some((format!("updated in `{}`:\n{body}", account.name), false)),
+                    Ok(body) => Some(Reply::from((
+                        format!("updated in `{}`:\n{body}", account.name),
+                        false,
+                    ))),
                     Err(e) => fail(format!("{e}")),
                 }
             }
@@ -1774,7 +1804,7 @@ impl MailTools {
                 };
                 let account = match self.pick(account_arg.as_deref(), Mode::Item) {
                     Ok(p) => p[0],
-                    Err(e) => return fail(e),
+                    Err(e) => return refuse(e), // resolved before any request: nothing sent
                 };
                 let calendar_id = str_arg("calendar_id").unwrap_or_else(|| "primary".into());
                 let result = with_token(&account.manager, |t| {
@@ -1796,10 +1826,10 @@ impl MailTools {
                 })
                 .await;
                 match result {
-                    Ok(()) => Some((
+                    Ok(()) => Some(Reply::from((
                         format!("deleted event {event_id} from `{}`", account.name),
                         false,
-                    )),
+                    ))),
                     Err(e) => fail(format!("{e}")),
                 }
             }
@@ -1915,6 +1945,12 @@ impl crate::mcp::ToolProvider for MailTools {
     }
 
     async fn call(&self, name: &str, args: &Value) -> Option<(String, bool)> {
+        self.dispatch(name, args)
+            .await
+            .map(|r| (r.text, r.is_error))
+    }
+
+    async fn call_result(&self, name: &str, args: &Value) -> Option<Reply> {
         self.dispatch(name, args).await
     }
 }
@@ -2329,6 +2365,69 @@ mod tests {
             default_mail: None,
             default_calendar: None,
         }
+    }
+
+    /// A send refused before any provider request says so, and only then.
+    /// The outbox reads the claim (from a server the operator names) to tell
+    /// "nothing was sent" from "the outcome is unknown" — the difference
+    /// between a draft that can go again at once and one the owner must
+    /// check by hand. Every case here fails before a request: no network.
+    #[tokio::test]
+    async fn a_send_refused_before_any_request_says_nothing_was_dispatched() {
+        let tools = tools_over(&["personal", "dartmouth"], None);
+        let refused = |r: Option<Reply>| {
+            let r = r.expect("a known tool answers");
+            assert!(r.is_error && r.not_dispatched, "{r:?}");
+        };
+        // No mail default and no account named: refused at resolution.
+        refused(
+            tools
+                .dispatch(
+                    "mail_send",
+                    &json!({"to": "a@x", "subject": "s", "body_markdown": "b"}),
+                )
+                .await,
+        );
+        // An account that does not exist.
+        refused(
+            tools
+                .dispatch(
+                    "mail_send",
+                    &json!({"to": "a@x", "subject": "s", "body_markdown": "b", "account": "work"}),
+                )
+                .await,
+        );
+        // A required argument absent, on any tool.
+        refused(
+            tools
+                .dispatch("mail_reply", &json!({"thread_id": "T"}))
+                .await,
+        );
+        // A create with no calendar default, and an item op with no account.
+        refused(tools.dispatch("calendar_create_event", &json!({"title": "t", "start_time": "2026-10-01T10:00:00Z", "end_time": "2026-10-01T11:00:00Z"})).await);
+        refused(
+            tools
+                .dispatch("calendar_delete_event", &json!({"event_id": "e"}))
+                .await,
+        );
+    }
+
+    #[test]
+    fn the_dispatch_claim_rides_in_meta_only_when_it_is_one() {
+        let refused = crate::mcp::result_json(&Reply::refused("no account"));
+        assert_eq!(refused["_meta"][crate::mcp::DISPATCHED_KEY], json!(false));
+        assert_eq!(refused["isError"], json!(true));
+        // A failure that may have delivered claims nothing: no `_meta` at all,
+        // because an absent claim is "unknown", never "dispatched".
+        let unclaimed = crate::mcp::result_json(&Reply::from(("timed out".to_string(), true)));
+        assert!(unclaimed.get("_meta").is_none(), "{unclaimed}");
+    }
+
+    /// The key is the convention's (`docs/PROVENANCE-DESIGN.md` §3), spelled
+    /// again in mecha-core, which pins the same literal.
+    #[test]
+    fn the_dispatched_key_is_the_conventions() {
+        assert_eq!(crate::mcp::DISPATCHED_KEY, "mecha-factory.ai/dispatched");
     }
 
     #[test]

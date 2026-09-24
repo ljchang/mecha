@@ -935,6 +935,39 @@ impl OutboxStore {
         Ok(item)
     }
 
+    /// Record a release the server refused **before dispatching anything** —
+    /// its own claim, believed only because the operator's config vouches for
+    /// that server (`[[mcp]] trust_result_claims`; see
+    /// `ToolOutput::not_dispatched`). The in-flight attempt resolves as
+    /// [`DeliveryOutcome::NotDelivered`], with the refusal as its evidence, so
+    /// the draft is reviewable and sendable again at once. Without the claim
+    /// the same failure is an unknown delivery the owner must reconcile by
+    /// hand, and a queue of those was the queue that clogged (#272).
+    ///
+    /// Nothing is resolved `sent` here and no attempt is fabricated: this only
+    /// settles an attempt `begin_delivery` opened. The caller holds the store
+    /// lock, as for [`Self::record_error`].
+    pub fn record_not_dispatched(&self, id: &str, error: &str) -> Result<()> {
+        let mut item = self.item(id)?;
+        anyhow::ensure!(
+            item.status == "pending" && item.delivery_uncertain(),
+            "{} has no delivery in flight to settle",
+            item.id
+        );
+        let attempt = item
+            .delivery_attempts
+            .last_mut()
+            .expect("checked uncertain");
+        attempt.outcome = DeliveryOutcome::NotDelivered;
+        attempt.resolved_at = Some(chrono::Utc::now().to_rfc3339());
+        attempt.evidence = Some(format!(
+            "the server refused before dispatching anything: {}",
+            error.trim()
+        ));
+        item.error = Some(error.to_string());
+        self.write_item(&item)
+    }
+
     /// Record a failed release attempt. The item stays `pending`; an uncertain
     /// delivery still requires owner reconciliation before another `send`.
     pub fn record_error(&self, id: &str, error: &str) -> Result<()> {
@@ -2611,5 +2644,50 @@ mod tests {
         }))
         .unwrap();
         assert!(legacy.delivery_attempts.is_empty());
+    }
+
+    /// A refusal the server vouched for settles the attempt as not
+    /// delivered: the draft stays pending, reads as a failure rather than an
+    /// unknown, and can go again with no reconciliation. Without it, the same
+    /// failure leaves the delivery unknown and blocks the next send.
+    #[test]
+    fn a_vouched_refusal_settles_the_attempt_and_leaves_the_draft_sendable() {
+        let root = scratch("delivery-not-dispatched");
+        let store = OutboxStore::open(&root).unwrap();
+        let item = store.stage_by_harness("send", json!({})).unwrap();
+        let _lock = store.lock().unwrap();
+
+        store.begin_delivery(&item.id).unwrap();
+        store
+            .record_not_dispatched(&item.id, "several accounts are configured — pass `account`")
+            .unwrap();
+        let now = store.item(&item.id).unwrap();
+        assert_eq!(now.status, "pending");
+        assert!(
+            !now.delivery_uncertain(),
+            "a vouched refusal is not an unknown"
+        );
+        let attempt = now.delivery_attempts.last().unwrap();
+        assert_eq!(attempt.outcome, DeliveryOutcome::NotDelivered);
+        assert!(attempt
+            .evidence
+            .as_deref()
+            .unwrap()
+            .contains("refused before dispatching"));
+        assert!(now.error.as_deref().unwrap().contains("pass `account`"));
+        assert!(
+            now.ensure_delivery_ready().is_ok(),
+            "it can be sent again at once"
+        );
+        assert!(store.begin_delivery(&item.id).is_ok());
+
+        // The unclaimed path it replaces: an error with no claim stays
+        // unknown, and nothing can be sent until the owner reconciles.
+        store.record_error(&item.id, "timed out").unwrap();
+        assert!(store.item(&item.id).unwrap().delivery_uncertain());
+        assert!(store.begin_delivery(&item.id).is_err());
+        // And settling needs an attempt in flight: nothing is invented.
+        let fresh = store.stage_by_harness("send", json!({})).unwrap();
+        assert!(store.record_not_dispatched(&fresh.id, "x").is_err());
     }
 }

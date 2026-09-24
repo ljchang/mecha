@@ -176,8 +176,14 @@ invent a second convention:
   less"). R-P2 makes the exception deliberately; what keeps it "one visible
   decision rather than a quiet per-server exemption" is that the build names
   it in `TRIFECTA.md`'s switch table beside the widens-only rule, and that
-  `mecha tools --json` and `mecha doctor` name every server with
-  `trust_result_claims` on. Raised by mecha-8a on #274.
+  `mecha tools` and `mecha doctor` name every server with
+  `trust_result_claims` on. Raised by mecha-8a on #274. **Built for the
+  dispatch claim** (`McpClient::call_tool` → `ToolOutput::not_dispatched`):
+  `mecha tools` marks each vouched server's tools, and `--json` carries
+  `result_claims_believed` per tool; `mecha doctor` names the servers in its
+  text output as a note, not a finding, because a finding exits non-zero and
+  this is a decision rather than distress — so doctor's `--json`, which is
+  its findings, does not carry it.
 
 **Estimated yield before building:** most graph reads touch calendar
 (13,452 episodes), Bee and Slack content, which stays untrusted. The win is
