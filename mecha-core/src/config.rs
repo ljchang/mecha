@@ -1183,7 +1183,7 @@ impl Config {
     /// through the same parser and table rules as the global file — the
     /// one door `trial_env` needs, rather than the layer machinery itself.
     pub(crate) fn merge_environment_file(&mut self, path: &Path) -> Result<()> {
-        self.merge_file(path, LayerTrust::Global)
+        self.merge_file(path, LayerTrust::Environment)
     }
 
     fn merge_file(&mut self, path: &Path, trust: LayerTrust) -> Result<()> {
@@ -1194,10 +1194,11 @@ impl Config {
         layer.expand_home();
         // `trust_result_claims` believes a server's word about what it did —
         // the one `[[mcp]]` switch that trusts more rather than less (R-P2).
-        // A project file arrives with a cloned repository, so it may declare
-        // a server but never vouch for one: the flag is cleared, loudly, and
-        // the server runs as if it had never been set.
-        if trust == LayerTrust::Project {
+        // Only the operator's own file may vouch. A project file arrives with
+        // a cloned repository, and so does an experiment environment's: both
+        // may declare a server but never vouch for one. The flag is cleared,
+        // loudly, and the server runs as if it had never been set.
+        if trust != LayerTrust::Global {
             for server in layer.mcp.iter_mut().flatten() {
                 if std::mem::take(&mut server.trust_result_claims) {
                     tracing::warn!(
@@ -1444,6 +1445,12 @@ impl Config {
 enum LayerTrust {
     Global,
     Project,
+    /// An experiment environment's `config.toml` (`trial_env`): folded like
+    /// the global file for every rule that tests `== Project`, because an
+    /// environment declares its own world — but it is still a file that
+    /// arrives with a checkout, so it may not vouch for a server's claims
+    /// (review of #290).
+    Environment,
 }
 
 /// Tunables for `mecha serve` — the tailnet web surface.
@@ -2148,6 +2155,17 @@ mod tests {
         assert!(
             !from_project.mcp[0].trust_result_claims,
             "a project file must not vouch for a server"
+        );
+
+        // An experiment environment's config is folded at global trust for
+        // everything else, and arrives with a checkout all the same: it may
+        // not vouch either (review of #290).
+        let mut from_environment = Config::default();
+        from_environment.merge_environment_file(&path).unwrap();
+        assert_eq!(from_environment.mcp.len(), 1);
+        assert!(
+            !from_environment.mcp[0].trust_result_claims,
+            "an experiment environment must not vouch for a server"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

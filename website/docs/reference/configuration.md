@@ -530,8 +530,8 @@ a failed call was refused before any request, so nothing it could have sent went
 anywhere. With it, the outbox settles such a send as not delivered, and the draft can
 go again at once. Without it, the same failure is an unknown delivery you confirm by
 hand. A server lying about this could cost you a duplicate send, so it is off by
-default, honoured only from your global config (a project's `mecha.toml` setting is
-ignored, with a warning), and named by `mecha tools` and `mecha doctor`. Turn it on
+default, honoured only from your global config (a project's `mecha.toml` or an experiment
+environment's setting is ignored, with a warning), and named by `mecha tools` and `mecha doctor`. Turn it on
 for a server you wrote or can read — `mecha-mail` makes the claim:
 
 ```toml
