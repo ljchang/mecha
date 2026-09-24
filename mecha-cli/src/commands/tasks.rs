@@ -798,25 +798,46 @@ fn settle_uncertain(task: &str, board_status: Option<&str>) {
             return;
         }
     };
-    let landed = board_status == Some(pending.to.as_str());
-    let entry = if landed {
-        Entry::Confirmed {
+    // Three-way, because a board at neither end of the move is evidence of
+    // nothing: something else moved the row (the graph TUI writes status out
+    // of band until PR 1c), or the row did not say. Only the *from* status
+    // is evidence the move did not land; anything else — `None` included —
+    // leaves the transition uncertain rather than withdrawing a move that may
+    // have happened (unknown is never clean; found on review of #293).
+    let settled = match board_status {
+        Some(s) if s == pending.to => Settled::Landed,
+        Some(s) if Some(s) == pending.from.as_deref() => Settled::DidNot,
+        _ => Settled::StillUnknown,
+    };
+    let entry = match settled {
+        Settled::Landed => Entry::Confirmed {
             of: pending.id.clone(),
             at: chrono::Utc::now(),
-        }
-    } else {
-        Entry::Aborted {
+        },
+        Settled::DidNot => Entry::Aborted {
             of: pending.id.clone(),
             at: chrono::Utc::now(),
             error: format!(
-                "a later read showed {task} at {:?}, not {:?}: the uncertain move did not land",
+                "a later read showed {task} still at {:?}, not {:?}: the uncertain move did not land",
                 board_status.unwrap_or("unknown"),
                 pending.to
             ),
+        },
+        Settled::StillUnknown => {
+            eprintln!(
+                "mecha: {task}'s earlier {} (record {}) is still unsettled — the board shows {:?}, \
+                 neither {:?} (landed) nor {:?} (did not); the record stays uncertain",
+                verb_of(pending.kind),
+                pending.id,
+                board_status.unwrap_or("no status"),
+                pending.to,
+                pending.from.as_deref().unwrap_or("unknown"),
+            );
+            return;
         }
     };
     match store.append(&entry) {
-        Ok(()) if landed => eprintln!(
+        Ok(()) if settled == Settled::Landed => eprintln!(
             "mecha: {task}'s earlier {} (record {}) did land — its record is confirmed. Its \
              appraisal and task hooks did not run then and are not run now.",
             verb_of(pending.kind),
@@ -832,6 +853,15 @@ fn settle_uncertain(task: &str, board_status: Option<&str>) {
             pending.id
         ),
     }
+}
+
+/// How a later board read settles an uncertain move: only the move's own two
+/// ends are evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Settled {
+    Landed,
+    DidNot,
+    StillUnknown,
 }
 
 /// Where a task hook runs: the mecha home, since a task belongs to no run's
