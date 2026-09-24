@@ -1,6 +1,6 @@
 # Provenance decides the class — design
 
-**Status: 2026-09-24, designed; P1 building on `feat/provenance-security`.**
+**Status: 2026-09-24, designed. P1 is built (#274 documents, `calendar_hold` stacked on it); P3's `web_open` is built (#276).**
 The owner approved the four directions and their revised shape the same day,
 and ruled R-P1 to R-P4 (§7) the same afternoon.
 
