@@ -5082,7 +5082,7 @@ fn reload_tasks(app: &mut App, status: Option<String>) {
 /// the closure record — `None` when the latest record is not this move, or
 /// the task had nothing to appraise.
 fn closure_readout(task: &str, to: &str, began: chrono::DateTime<chrono::Utc>) -> Option<String> {
-    use mecha_core::closure::{ClosureStore, Entry};
+    use mecha_core::closure::ClosureStore;
     let store = ClosureStore::open_existing_default()?;
     let (t, readout) = store.latest_with_readout(task).ok()??;
     // Written after this keypress began, or it is an earlier move's record:
@@ -5090,27 +5090,9 @@ fn closure_readout(task: &str, to: &str, began: chrono::DateTime<chrono::Utc>) -
     if t.to != to || t.at < began {
         return None;
     }
-    match readout {
-        Some(Entry::Readout {
-            readout: Some(r),
-            follow_up_staged,
-            project,
-            ..
-        }) => {
-            let mut line = r;
-            if follow_up_staged {
-                line.push_str(" — a follow-up was staged");
-            }
-            // The project's reading, when this closure closed one (carried
-            // on the record since S8; review of #293: it was written and
-            // never shown).
-            if let Some(p) = project {
-                line.push_str(&format!(" · {p}"));
-            }
-            Some(line)
-        }
-        _ => None,
-    }
+    // Whichever parts the readout carries — a project's reading stands on its
+    // own when the closed task had no appraisal of its own (review of #293).
+    mecha_core::closure::readout_line(readout.as_ref())
 }
 
 fn tasks_cli(args: &[&str]) -> Result<String> {

@@ -2149,8 +2149,17 @@ now makes the move one recorded event:
 
 - **Write-ahead.** The transition line is appended (and synced) to
   `~/.mecha/closures/closures.jsonl` *before* the board row moves; a record
-  that cannot be written stops the closure ("nothing was changed"), and a
-  board write that then fails appends an `aborted` line that withdraws it.
+  that cannot be written stops the closure ("nothing was changed"). A board
+  write the server *refuses* appends an `aborted` line that withdraws it; one
+  whose outcome is *unknown* — the transport failed, the answer did not
+  parse — appends an `uncertain` line and leaves the transition standing,
+  because the server may have committed it before the reply was lost. The
+  next status change on the task settles it against the row it reads:
+  `confirmed` if the board shows the move, `aborted` if not (a confirmed
+  move's appraisal and hooks did not run and are not run late; that is
+  said). The store has no environment override for its location: the
+  process writing it can descend from a model's `shell`, and a redirectable
+  record is a hideable one (all found on review of #293).
   A readout line after the appraisal carries what it said, so a surface
   that is not a terminal reads it back instead of losing it on the child's
   stderr.

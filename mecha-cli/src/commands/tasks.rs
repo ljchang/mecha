@@ -297,6 +297,66 @@ async fn call_with(prepared: &setup::PreparedTools, tool: &str, args: Value) -> 
         .with_context(|| format!("{tool} did not answer with JSON: {}", out.content))
 }
 
+/// How a board write failed, for a caller that must know whether the board
+/// moved. A server that answered `is_error` (or a tool that is not on the
+/// surface at all) refused it: the board did not move. A transport failure,
+/// or an answer that did not parse, is an *unknown* outcome — the server may
+/// already have committed the write before the reply was lost — and must not
+/// be reported as a move that did not happen (found on review of #293).
+#[derive(Debug)]
+enum WriteFailure {
+    Refused(anyhow::Error),
+    Unknown(anyhow::Error),
+}
+
+impl WriteFailure {
+    fn into_error(self) -> anyhow::Error {
+        match self {
+            WriteFailure::Refused(e) | WriteFailure::Unknown(e) => e,
+        }
+    }
+}
+
+/// [`call_with`] for a write whose failure mode matters — the one place a
+/// closure's write-ahead record must learn whether to withdraw itself.
+async fn write_with_outcome(
+    prepared: &setup::PreparedTools,
+    tool: &str,
+    args: Value,
+) -> std::result::Result<Value, WriteFailure> {
+    let Some(found) = find_tool(&prepared.registry, tool) else {
+        return Err(WriteFailure::Refused(anyhow::anyhow!(
+            "no knowledge-graph server in this configuration — `{tool}` is not on the tool \
+             surface. Is `[[mcp]]` enabled?"
+        )));
+    };
+    outcome_of(tool, found.call(args, &tool_ctx(prepared)).await)
+}
+
+/// The classification behind [`write_with_outcome`], pure over what the
+/// call returned: an error from the call itself is a transport failure
+/// (unknown), `is_error` is a refusal (known), an answer that does not parse
+/// is unknown.
+fn outcome_of(
+    tool: &str,
+    called: Result<mecha_core::tool::ToolOutput>,
+) -> std::result::Result<Value, WriteFailure> {
+    let out = called.map_err(WriteFailure::Unknown)?;
+    if out.is_error {
+        return Err(WriteFailure::Refused(anyhow::anyhow!(
+            "{}{}",
+            tool_rejected_prefix(tool),
+            out.content.trim()
+        )));
+    }
+    serde_json::from_str(&out.content).map_err(|e| {
+        WriteFailure::Unknown(
+            anyhow::Error::from(e)
+                .context(format!("{tool} did not answer with JSON: {}", out.content)),
+        )
+    })
+}
+
 async fn list(global: &GlobalOpts, closed: bool, as_json: bool) -> Result<()> {
     let board = call(global, "kg_task_list", json!({ "include_closed": closed })).await?;
     if as_json {
@@ -525,6 +585,14 @@ async fn set(
             None => {}
         }
     }
+    // An earlier move of this task whose board write ended with an unknown
+    // outcome is settled first, against the row just read: confirmed if the
+    // board shows it, withdrawn if not. Otherwise a retry of a closure that
+    // did land would find the board already `done`, classify nothing, and
+    // leave the closure permanently unconfirmed (review of #293).
+    if let Some(b) = before.as_ref() {
+        settle_uncertain(task, b["status"].as_str());
+    }
     let moving = match (status.as_deref(), before.as_ref()) {
         (Some(to), Some(b)) => mecha_core::closure::classify(b["status"].as_str(), to),
         _ => None,
@@ -540,13 +608,23 @@ async fn set(
         _ => None,
     };
 
-    let out = match call_with(&prepared, "kg_task_update", args).await {
+    let out = match write_with_outcome(&prepared, "kg_task_update", args).await {
         Ok(out) => out,
-        Err(e) => {
-            // The record went down first; withdraw it, so a reader never sees
-            // a move that did not happen.
+        // The server refused it: the record went down first, so withdraw it
+        // and a reader never sees a move that did not happen.
+        Err(WriteFailure::Refused(e)) => {
             if let Some(m) = &begun {
                 m.abort(&e);
+            }
+            return Err(e);
+        }
+        // Unknown outcome: the board may have moved. The record stands, with
+        // the uncertainty written beside it, and the next status change on
+        // this task settles it (`settle_uncertain`).
+        Err(failure @ WriteFailure::Unknown(_)) => {
+            let e = failure.into_error();
+            if let Some(m) = &begun {
+                m.uncertain(&e);
             }
             return Err(e);
         }
@@ -626,6 +704,30 @@ struct BegunMove {
 }
 
 impl BegunMove {
+    /// The board write's outcome is unknown: leave the transition standing and
+    /// say so, on the store and on stderr, with how to settle it.
+    fn uncertain(&self, e: &anyhow::Error) {
+        let written = self.store.append(&mecha_core::closure::Entry::Uncertain {
+            of: self.record.id.clone(),
+            at: chrono::Utc::now(),
+            error: format!("{e:#}"),
+        });
+        eprintln!(
+            "mecha: the board's answer to {}'s {} was lost ({e:#}) — it may or may not have \
+             moved. Its closure record {} stands{}; `mecha tasks list --closed` shows whether \
+             it landed, and the next `mecha tasks set {}` confirms or withdraws the record \
+             either way.",
+            self.record.task,
+            verb_of(self.record.kind),
+            self.record.id,
+            match &written {
+                Ok(()) => " and is marked uncertain".to_string(),
+                Err(w) => format!(" but could not be marked uncertain ({w:#})"),
+            },
+            self.record.task,
+        );
+    }
+
     fn abort(&self, e: &anyhow::Error) {
         if let Err(w) = self.store.append(&mecha_core::closure::Entry::Aborted {
             of: self.record.id.clone(),
@@ -672,6 +774,63 @@ impl BegunMove {
             let reopened = self.record.kind == mecha_core::closure::Move::Reopen;
             hooks.task_moved(reopened, &payload, &hook_dir()).await;
         }
+    }
+}
+
+/// Settle an earlier move of `task` whose board write ended with an unknown
+/// outcome, against the status the board shows now. The smallest honest
+/// version: a move that landed is **confirmed** — its record was right all
+/// along — and one that did not is withdrawn. The appraisal and the task
+/// hooks of a move confirmed this way did not run when it happened and are
+/// not run now; that is said, so nobody reads the absent readout as "nothing
+/// to appraise". Best-effort: a store that cannot be read or written leaves
+/// the uncertainty standing and says so.
+fn settle_uncertain(task: &str, board_status: Option<&str>) {
+    use mecha_core::closure::{ClosureStore, Entry};
+    let Some(store) = ClosureStore::open_existing_default() else {
+        return;
+    };
+    let pending = match store.unresolved_uncertain(task) {
+        Ok(Some(t)) => t,
+        Ok(None) => return,
+        Err(e) => {
+            eprintln!("mecha: could not read {task}'s closure record to settle it: {e:#}");
+            return;
+        }
+    };
+    let landed = board_status == Some(pending.to.as_str());
+    let entry = if landed {
+        Entry::Confirmed {
+            of: pending.id.clone(),
+            at: chrono::Utc::now(),
+        }
+    } else {
+        Entry::Aborted {
+            of: pending.id.clone(),
+            at: chrono::Utc::now(),
+            error: format!(
+                "a later read showed {task} at {:?}, not {:?}: the uncertain move did not land",
+                board_status.unwrap_or("unknown"),
+                pending.to
+            ),
+        }
+    };
+    match store.append(&entry) {
+        Ok(()) if landed => eprintln!(
+            "mecha: {task}'s earlier {} (record {}) did land — its record is confirmed. Its \
+             appraisal and task hooks did not run then and are not run now.",
+            verb_of(pending.kind),
+            pending.id
+        ),
+        Ok(()) => eprintln!(
+            "mecha: {task}'s earlier {} (record {}) did not land — its record is withdrawn.",
+            verb_of(pending.kind),
+            pending.id
+        ),
+        Err(e) => eprintln!(
+            "mecha: could not settle {task}'s uncertain closure record {}: {e:#}",
+            pending.id
+        ),
     }
 }
 
@@ -4189,6 +4348,28 @@ mod tests {
     /// two failure modes: a missing server never contains the tool name at
     /// the front at all, and a JSON-parse failure's `"{tool} did not answer
     /// with JSON: "` has a space, not a colon, right after the tool name.
+    #[test]
+    fn a_refused_write_is_known_and_a_lost_or_garbled_answer_is_unknown() {
+        use mecha_core::tool::ToolOutput;
+        assert!(matches!(
+            outcome_of("kg_task_update", Ok(ToolOutput::err("no such task"))),
+            Err(WriteFailure::Refused(_))
+        ));
+        assert!(matches!(
+            outcome_of("kg_task_update", Err(anyhow::anyhow!("connection reset"))),
+            Err(WriteFailure::Unknown(_))
+        ));
+        assert!(matches!(
+            outcome_of("kg_task_update", Ok(ToolOutput::ok("half a reply {"))),
+            Err(WriteFailure::Unknown(_))
+        ));
+        assert!(outcome_of(
+            "kg_task_update",
+            Ok(ToolOutput::ok("{\"status\":\"updated\"}"))
+        )
+        .is_ok());
+    }
+
     #[test]
     fn tool_rejected_prefix_is_exactly_what_call_with_emits_on_is_error() {
         assert_eq!(tool_rejected_prefix("kg_task_create"), "kg_task_create: ");

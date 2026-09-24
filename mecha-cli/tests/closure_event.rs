@@ -64,7 +64,6 @@ impl Fixture {
             .current_dir(self.root.join("work"))
             .env("MECHA_HOME", self.root.join("home"))
             .env("MECHA_SESSION_KIND", "test")
-            .env_remove("MECHA_CLOSURES_DIR")
             .env_remove(mecha_core::closure::POSTURE_ENV);
         if let Some(p) = posture {
             c.env(mecha_core::closure::POSTURE_ENV, p);
@@ -342,4 +341,79 @@ fn a_row_past_a_truncated_board_is_refused_as_unknown_not_missing() {
         .find(|t| t["id"] == json!(hidden))
         .unwrap();
     assert_eq!(row["status"], json!("next"), "nothing moved");
+}
+
+/// Seed the fixture home's closure store with a transition whose board write
+/// ended with an unknown outcome, as `mecha tasks set` records one when the
+/// graph server's reply is lost.
+fn seed_uncertain(f: &Fixture, from: &str, to: &str) -> String {
+    use mecha_core::closure::{Actor, Move, Surface, Transition};
+    let store = ClosureStore::open(f.root.join("home/closures")).unwrap();
+    let t = Transition::new(
+        "task-1",
+        Some(from),
+        to,
+        Move::Close,
+        Actor::Owner,
+        Surface::Cli,
+        vec![],
+        None,
+    );
+    store.append(&Entry::Transition(t.clone())).unwrap();
+    store
+        .append(&Entry::Uncertain {
+            of: t.id.clone(),
+            at: chrono::Utc::now(),
+            error: "connection reset".into(),
+        })
+        .unwrap();
+    t.id
+}
+
+fn set_board_status(f: &Fixture, status: &str) {
+    let path = f.root.join("board/board.json");
+    let mut board: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    board["tasks"][0]["status"] = json!(status);
+    std::fs::write(&path, board.to_string()).unwrap();
+}
+
+/// A closure whose reply was lost but which did land is confirmed by the
+/// next status change, not left unconfirmed forever — the retry finds the
+/// board already `done`, classifies no move, and used to record nothing
+/// (review of #293).
+#[test]
+fn an_uncertain_closure_that_landed_is_confirmed_by_the_next_status_change() {
+    let Some(f) = Fixture::new("") else {
+        return;
+    };
+    let id = seed_uncertain(&f, "next", "done");
+    set_board_status(&f, "done");
+    let out = f.command(&["tasks", "set", "task-1", "--status", "done"], None);
+    ok(&out);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("did land"));
+    assert!(records(&f.root)
+        .iter()
+        .any(|e| matches!(e, Entry::Confirmed { of, .. } if *of == id)));
+    assert_eq!(f.store().unresolved_uncertain("task-1").unwrap(), None);
+    assert_eq!(
+        f.store().transitions().unwrap().len(),
+        1,
+        "the closure stands"
+    );
+}
+
+/// And one that did not land is withdrawn, so a reader never counts it.
+#[test]
+fn an_uncertain_closure_that_did_not_land_is_withdrawn_by_the_next_status_change() {
+    let Some(f) = Fixture::new("") else {
+        return;
+    };
+    let id = seed_uncertain(&f, "next", "done");
+    let out = f.command(&["tasks", "set", "task-1", "--status", "waiting"], None);
+    ok(&out);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("did not land"));
+    assert!(records(&f.root)
+        .iter()
+        .any(|e| matches!(e, Entry::Aborted { of, .. } if *of == id)));
+    assert!(f.store().transitions().unwrap().is_empty());
 }
