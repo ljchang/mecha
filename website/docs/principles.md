@@ -159,7 +159,7 @@ And the counting has a **sign**, which took a while to notice was missing. Every
 metric above is phrased as a cost, so the system could rank two runs that went
 badly and could not rank two that went well — and every signal that started a
 loop needed the world to act first, because nothing represented what a run was
-*for*. A [charter and a signed goal error](/docs/features/appraisal) are the
+*for*. A [charter and a signed goal error](/docs/features/appraisal-overview) are the
 other half: what mecha is for, in your own words, and how far a run landed from
 it. The honest first finding was that almost every run comes back with no label
 at all, and that is published rather than tuned away — inventing precedence until

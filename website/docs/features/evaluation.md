@@ -260,7 +260,7 @@ line, because its fixture workspaces are what make that defensible.
 | [Hooks](/docs/features/hooks) | local policy scripts firing inside cases grade this machine's config |
 | [Learned rules](/docs/features/learning) | a scorecard shaped by last night's consolidation is not comparable. The **one** deliberate lever: `--ab-rules`' treatment arm turns them back on, and it is a parameter of this function rather than a re-enable at the call site, because that is exactly how it got lost once |
 | [Skills](/docs/features/skills) | the procedures on this box are not the ones on anyone else's, and they change the tool surface |
-| [The charter](/docs/features/appraisal) | standing priorities ride in the cached prefix, so two owners would grade different prompts |
+| [The charter](/docs/features/charter) | standing priorities ride in the cached prefix, so two owners would grade different prompts |
 | [The outbox](/docs/features/outbox) | whether a tool executes or stages must not depend on routing config, and an eval must not fill the real outbox with drafts nobody will release |
 | [Inter-agent messages](/docs/features/queues) | a mailbox delivery mid-case is another session's state leaking into a scorecard |
 | [Provider fallbacks](/docs/features/providers) | a case silently answered by a fallback model is a measurement of nothing |
