@@ -250,7 +250,7 @@ widening.
 | R14 | all | Mechanisms overlapping mecha-graph are built in mecha core, porting the graph's version; no new cross-repo readers | **stated by the owner, 2026-09-24** |
 | R1 | phase 1 | A trigger run is anchored to the trigger itself (`trigger:<name>`); an owner-written `serves` link to a charter line is optional, never required | **ruled 2026-09-24: optional only** |
 | R15 | phase 1 | Closing or reopening a task, on any surface, is one recorded event with hooks | **ruled 2026-09-24** (S8) |
-| R16 | phase 1 | The unread acts sign as follows: a task reopened after `done` −1.0 on the closing session and withdraws its success; an outbox reject reason goes to the reflector as an owner correction; workflow `close` +0.5, `cancel` −0.5, `reopen` −1.0, a failed `verify` −1.0; rule and reflection curation and harness accept / reject feed tenure, never valence | yes |
+| R16 | phase 1 | How the unread acts sign. **Ruled 2026-09-24:** a task reopened after `done`, at any age, signs −1.0 on the session that closed it and withdraws its success; a graph review rejection of a fact a session extracted goes to L7's attribution only and signs nothing directly. **Open, item by item:** R16a–R16h in S3 | partly ruled |
 | R2 | — | A one-tap verdict channel | **declined 2026-09-24**: no added owner work (here §1, decision 4) |
 | R7 | parked | Pending drafts expire after an owner-set age, as `expired` | **deferred 2026-09-24** until the system has stabilised |
 | R12 | phase 1 | Guilt becomes per-commitment goal error toward another party; one commitment record; the homeostat scalar becomes a readout | **ruled 2026-09-24: per commitment** |
@@ -381,7 +381,20 @@ owner correction), rule and reflection curation (to L3), harness accept /
 reject / revert (to L6), and graph review verdicts on facts a session
 claimed (joined back by the episode's session id). Each is owner-authored,
 already recorded somewhere, and costs the owner nothing new. How each signs
-is ruling R16.
+is ruling R16. Ruled: a reopened task (any age) −1.0 on the closing session,
+withdrawing its success; a rejected graph fact goes to L7's attribution only.
+Proposed, awaiting a ruling item by item:
+
+| # | owner act | proposed signal |
+|---|---|---|
+| R16a | reject a draft **with a reason** | the reason goes to the reflector as an owner correction (the reject already signs −1.0) |
+| R16b | workflow `close` | +0.5, the owner accepted the work |
+| R16c | workflow `cancel` | −0.5, owner agency — abandoned, like an abandoned question |
+| R16d | workflow `reopen` | −1.0 on the closing session, any age — the task-reopen ruling |
+| R16e | workflow `verify` fails / passes | fails: −1.0, mecha's agency; passes: evidence for the certificate, no sign |
+| R16f | retire / restore a learned rule | tenure only: retire counts against the rule, restore for it; never a run's score |
+| R16g | drop / edit a reflection | a verdict on the reflector: a dropped reflection never becomes a rule, an edited one carries the owner's text; never a run's score |
+| R16h | harness change `accept` / `reject` / `revert` | credit for that change and the diagnosis behind it (L6); never a run's score |
 
 **S3b — declined 2026-09-24 (here §1, decision 4).** A one-tap verdict
 asks the owner for work the system is meant to infer. Kept below for the
