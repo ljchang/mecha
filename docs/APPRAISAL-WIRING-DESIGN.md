@@ -433,7 +433,7 @@ widening.
 | R5 | 5 | Desperation brake: refuse writes to a frozen check's read set; withhold `Complete` after two failures | proposed |
 | R6 | 5 | A recipient that does not trace to a confirmed goal is staged | proposed |
 | R13 | 5 | Stored comparisons may narrow a matching call before dispatch | proposed |
-| R28 | 5 | A per-branch scratch copy of the workspace, so a mid-run branch can write without side effects — reverses ARCHITECTURE's "branching a filesystem snapshot that was never captured is deliberately not done" | owner's call |
+| R28 | 5 | A per-branch scratch copy of the workspace, so a mid-run branch can write without side effects. New capability: ARCHITECTURE's note that mismatch probes do "not branch a filesystem snapshot that was never captured" is about offline probes having no recorded file state, not a ruling against online copies; the prior decision it does extend is `BRANCHING-DESIGN.md` keeping "branching mid-run" out of its v1. On this box bubblewrap is 0.9.0 (overlays arrive in 0.10) and the disk is ext4 (no reflink), so the first form is a full copy under a size cap | owner's call; can wait until N1 is measured |
 | R3 | parked | Inferring an anchor for un-anchored runs onto a closed list of pointers | parked |
 | R8 | parked | The harness may *propose* per-region autonomy grants | parked |
 | R29 | — | Sending transcripts to a cloud model for interpretation or rollouts | not proposed; the owner's privacy decision |
