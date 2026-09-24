@@ -40,12 +40,17 @@ env = { MECHA_FIXTURE_DIR = "${STORE}" }
 untrusted_input = true
 
 [outbox]
-# As the owner routes them. An unrouted calendar write is refused on its own
-# call: every MCP tool declares private data, this server is marked untrusted,
-# and an open-world write is a way out — all three legs in one call. A refused
+# As the owner routes them. An unrouted calendar write that can invite someone
+# is refused on its own call (`calendar_hold`, which cannot, is the
+# exception): every MCP tool declares private data, this server is marked
+# untrusted, and an open-world write is a way out — all three legs in one call. A refused
 # call still reads as "called" to the grader, which is why every write case
 # also pins `blocked_sends: 0`.
 tools = [
+  # `mail__calendar_hold` is deliberately absent: a private hold on the
+  # owner's own calendar reaches nobody (`docs/PROVENANCE-DESIGN.md` §2), so
+  # it is not open-world, is not refused, and executes as it does on the
+  # owner's machine rather than staging.
   "mail__mail_send",
   "mail__mail_reply",
   "mail__calendar_create_event",
