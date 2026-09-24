@@ -1,0 +1,20 @@
+# Recommendation letters: drafting from the template, the form's answers (free text arrives quoted, as untrusted data) and the student's docs, and reporting what a student wrote exactly.
+#
+# A baseline measurement in the assistant environment (eval/envs/assistant):
+# one arm, no control, three seeds. Staged writes (docs, poll creation, the
+# reply to whoever asked) are graded by the arguments of the staged call.
+# Run from the checkout root.
+name = "suite-recletter"
+split_seed = 1
+seeds = [1, 2, 3]
+
+[environment]
+dir = "eval/envs/assistant"
+
+[tasks]
+cases = "eval/suites/assistant.jsonl"
+fixture = "eval/workspace"
+tags = ["recletter"]
+
+[arms.full]
+preset = "full"

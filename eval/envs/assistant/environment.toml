@@ -1,0 +1,5 @@
+# The assistant environment: the default lab with the owner's other surfaces
+# as fixtures — Google Docs and the factory's polls. A colleague's answer is a
+# separate environment (assistant-tal-replied), because a staged send is not
+# delivered. Only what differs lives here.
+extends = "eval/envs/default"

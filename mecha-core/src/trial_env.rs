@@ -1057,6 +1057,114 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
         }
     }
 
+    /// Every shipped environment prepares, names only fixture servers that
+    /// exist, and seeds each stored server under its own name. `build_one`
+    /// copies `stores/<name>/` only if it is there, so a store directory
+    /// named apart from its server builds an empty store that every trial
+    /// then runs against — found three seeds into a run, unless here.
+    #[test]
+    fn every_shipped_environment_resolves_and_seeds_each_stored_server() {
+        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let tmp = Scratch::new();
+        let mut real = operator();
+        real.mcp.clear();
+        let base = Environment::default()
+            .prepare(&real, checkout, &tmp.path().join("cache"))
+            .unwrap();
+        let mut seen = 0;
+        for entry in std::fs::read_dir(checkout.join("eval/envs")).unwrap() {
+            let entry = entry.unwrap();
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            let env = Environment {
+                dir: Some(format!("eval/envs/{name}").into()),
+                live_servers: Vec::new(),
+            };
+            let world = env
+                .prepare(&real, checkout, &tmp.path().join("cache"))
+                .unwrap_or_else(|e| panic!("{name}: {e:#}"));
+            for server in stored_servers(&world.config) {
+                let stores = world.dir.join("stores");
+                assert!(
+                    stores.join(&server.name).is_dir()
+                        || stores
+                            .join(format!("{}.calls.jsonl", server.name))
+                            .is_file(),
+                    "{name}: `{0}` has no stores/{0}/ and no stores/{0}.calls.jsonl",
+                    server.name
+                );
+            }
+            for server in &world.config.mcp {
+                for arg in server.args.iter().filter(|a| a.ends_with(".py")) {
+                    assert!(checkout.join(arg).is_file(), "{name}: {arg}");
+                }
+                // `[[mcp]]` replaces whole, so a variant adding one server
+                // re-declares the base's. Nothing else pins the copy: an edit
+                // to the default's mail server would leave every variant
+                // running the old world.
+                if let Some(same) = base.config.mcp.iter().find(|b| b.name == server.name) {
+                    assert_eq!(
+                        (
+                            &server.command,
+                            &server.args,
+                            &server.env,
+                            format!("{:?}", server.capabilities)
+                        ),
+                        (
+                            &same.command,
+                            &same.args,
+                            &same.env,
+                            format!("{:?}", same.capabilities)
+                        ),
+                        "{name}: `{}` drifted from the default's",
+                        server.name
+                    );
+                }
+            }
+            // The same for a seeded store replaced whole: a variant's mailbox
+            // must still hold every thread of the environment it extends,
+            // unchanged — each link of the chain pinned to the one below, so
+            // the whole chain is — or an edit there (the injection thread the
+            // `inject-*` cases grade, say) silently never reaches the variant.
+            let parent = std::fs::read_to_string(entry.path().join(ENV_MANIFEST))
+                .ok()
+                .map(|text| toml::from_str::<EnvManifest>(&text).unwrap())
+                .and_then(|m| m.extends);
+            if let Some(parent) = parent {
+                let below = Environment {
+                    dir: Some(parent.clone()),
+                    live_servers: Vec::new(),
+                }
+                .prepare(&real, checkout, &tmp.path().join("cache"))
+                .unwrap();
+                let mailbox = |dir: &Path| -> Option<serde_json::Value> {
+                    let text =
+                        std::fs::read_to_string(dir.join("stores/mail/mailbox.json")).ok()?;
+                    Some(serde_json::from_str(&text).unwrap())
+                };
+                if let (Some(ours), Some(theirs)) = (mailbox(&world.dir), mailbox(&below.dir)) {
+                    assert_eq!(
+                        ours["accounts"], theirs["accounts"],
+                        "{name}: mailbox accounts"
+                    );
+                    let threads = ours["threads"].as_array().unwrap();
+                    for thread in theirs["threads"].as_array().unwrap() {
+                        assert!(
+                            threads.contains(thread),
+                            "{name}: `{}`'s thread `{}` is missing or changed",
+                            parent.display(),
+                            thread["id"]
+                        );
+                    }
+                }
+            }
+            seen += 1;
+        }
+        assert!(seen >= 4, "the shipped environments: {seen}");
+    }
+
     /// The shipped default environment loads, names only files that exist,
     /// and seeds its graph through lines that parse and end in the embed
     /// that sizes the vector tables. The first cut shipped without the
