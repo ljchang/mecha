@@ -49,7 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every re-read in the sweep failed, which is the mail surface's (a lapsed
   token, a 503) and counts against none. `mecha mail list` shows the count
   and when the next retry is due; `classify --force` still retries at once,
-  inside the window and out.
+  inside the window and out, and out of it without the per-sweep cap. A
+  thread retried from the store is marked `read_whole`, outside the
+  escalation measurement.
 
 ### Fixed
 

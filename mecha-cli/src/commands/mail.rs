@@ -1289,10 +1289,10 @@ async fn classify(
                 ok += 1;
                 print_line(&thread, &v, from_bucket.as_deref());
                 let mut r = record(&thread, Some(v), None);
-                // A requeued thread was read whole, which is what the
-                // escalation measurement counts; no second pass ran, which
-                // an empty `escalated_changed` already records.
-                r.escalated = did_escalate || full_body;
+                r.escalated = did_escalate;
+                // Read whole with no snippet pass: outside the escalation
+                // measurement on both sides (`Record::read_whole`).
+                r.read_whole = full_body;
                 r.escalated_changed = changed;
                 r.escalated_from = from_bucket;
                 r
@@ -1570,6 +1570,7 @@ fn record(t: &ThreadInput, verdict: Option<Verdict>, error: Option<String>) -> R
         escalated: false,
         escalated_changed: Vec::new(),
         escalated_from: None,
+        read_whole: false,
         corrections: Vec::new(),
         acted: None,
         acted_at: None,

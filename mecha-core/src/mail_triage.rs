@@ -894,6 +894,19 @@ pub struct Record {
     /// that only ever fires and never reports cannot be wrong out loud.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub escalated_from: Option<String>,
+    /// Classified from the whole thread in one pass, with no snippet pass
+    /// before it — a failure retried from the store after leaving the
+    /// mailbox window ([`due_outside_window`]), which has no snippet to
+    /// start from.
+    ///
+    /// **Outside the escalation measurement on both sides.** Such a record
+    /// is not "escalated" (no second pass ran, so it could never reach the
+    /// numerator) and not "never escalated" (the rule never judged a snippet
+    /// of it): counted either way it biases the ratio, and these are
+    /// systematically the awkward threads. Grade the rule over records
+    /// without this flag.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_whole: bool,
     /// Every field a human corrected, oldest first.
     ///
     /// **Appended, never overwritten.** A correction that was itself wrong is
@@ -963,7 +976,7 @@ pub fn canary_thread(min_chars: usize) -> ThreadInput {
 /// store instead — a store walk, not a mailbox read. `seen` is the
 /// (account, thread id) pairs the read returned; `account` narrows as the
 /// sweep's own `--account` does, and `force` takes every failure whatever
-/// its wait, as `classify --force` does in the window.
+/// its wait and however many, as `classify --force` does in the window.
 pub fn due_outside_window<'a>(
     records: &'a [Record],
     seen: &std::collections::HashSet<(String, String)>,
@@ -979,7 +992,12 @@ pub fn due_outside_window<'a>(
         .filter(|r| !seen.contains(&(r.account.clone(), r.thread_id.clone())))
         .collect();
     due.sort_by(|a, b| a.classified_at.cmp(&b.classified_at));
-    due.truncate(max);
+    // `max` paces the automatic sweep; `--force` is an operator asking for
+    // all of them — a 17-thread backlog (2026-08-19's shape) must not leave
+    // seven behind without a word.
+    if !force {
+        due.truncate(max);
+    }
     due
 }
 
@@ -1323,6 +1341,7 @@ impl TriageStore {
             escalated: false,
             escalated_changed: Vec::new(),
             escalated_from: None,
+            read_whole: false,
             corrections: Vec::new(),
             acted: None,
             acted_at: None,
@@ -1475,6 +1494,7 @@ mod tests {
             escalated: false,
             escalated_changed: Vec::new(),
             escalated_from: None,
+            read_whole: false,
             corrections: Vec::new(),
             acted: None,
             acted_at: None,
@@ -2017,6 +2037,20 @@ mod tests {
         // still a reading of a stranger's prose.
         let blob = serde_json::to_string(&got.for_privileged_run()).unwrap();
         assert!(!blob.contains("escalated_from"), "{blob}");
+
+        // A thread retried from the store is read whole with no snippet pass:
+        // a third state, outside the measurement, that must survive the store
+        // and stay off every record that is not one.
+        let mut whole = rec("dartmouth", "t3", Bucket::Respond);
+        whole.read_whole = true;
+        store.put(&whole).unwrap();
+        let got = store.get("dartmouth", "t3").unwrap();
+        assert!(
+            got.read_whole && !got.escalated,
+            "read whole, and not escalated"
+        );
+        let plain = serde_json::to_string(&confirmed).unwrap();
+        assert!(!plain.contains("read_whole"), "{plain}");
     }
 
     /// A confirmed misclassification from the 2026-08-18 sweep: a high school
@@ -2334,6 +2368,11 @@ mod tests {
             )),
             vec!["older", "old", "waiting"],
             "--force takes a failure still on its wait, as it does in the window"
+        );
+        assert_eq!(
+            due_outside_window(&records, &seen, None, now, true, 1).len(),
+            4,
+            "and every one of them — the per-sweep cap paces the automatic sweep only"
         );
     }
 
