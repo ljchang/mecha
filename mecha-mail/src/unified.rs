@@ -1479,16 +1479,20 @@ impl MailTools {
             }
             "calendar_list_events" => {
                 let now = chrono::Utc::now();
+                // Two zones on purpose: events render in `tz`, which may be
+                // the machine's `TZ`; the window resolves in `wz`, which is
+                // `MECHA_TZ` or nothing, and the stamp names the one it used.
                 let tz = crate::time::configured_zone();
+                let wz = crate::time::window_zone();
                 let time_min = match str_arg("time_min") {
-                    Some(raw) => match resolve_window(&raw, tz, now, crate::time::Bound::Start) {
+                    Some(raw) => match resolve_window(&raw, wz, now, crate::time::Bound::Start) {
                         Ok(v) => v,
                         Err(e) => return fail(e),
                     },
                     None => now.to_rfc3339(),
                 };
                 let time_max = match str_arg("time_max") {
-                    Some(raw) => match resolve_window(&raw, tz, now, crate::time::Bound::End) {
+                    Some(raw) => match resolve_window(&raw, wz, now, crate::time::Bound::End) {
                         Ok(v) => v,
                         Err(e) => return fail(e),
                     },
@@ -1532,7 +1536,7 @@ impl MailTools {
                 // they were — the tool confirming the premise instead of
                 // contradicting it. Both shapes now carry the window and the
                 // clock it was resolved against.
-                let stamp = window_note(&time_min, &time_max, now, tz);
+                let stamp = window_note(&time_min, &time_max, now, wz);
                 if events.is_empty() {
                     // The window once, not twice: this line used to name it
                     // itself, and `stamp` now says the same thing plus the
@@ -1546,16 +1550,20 @@ impl MailTools {
             }
             "calendar_freebusy" => {
                 let now = chrono::Utc::now();
+                // Two zones on purpose: events render in `tz`, which may be
+                // the machine's `TZ`; the window resolves in `wz`, which is
+                // `MECHA_TZ` or nothing, and the stamp names the one it used.
                 let tz = crate::time::configured_zone();
+                let wz = crate::time::window_zone();
                 let time_min = match str_arg("time_min") {
-                    Some(raw) => match resolve_window(&raw, tz, now, crate::time::Bound::Start) {
+                    Some(raw) => match resolve_window(&raw, wz, now, crate::time::Bound::Start) {
                         Ok(v) => v,
                         Err(e) => return fail(e),
                     },
                     None => now.to_rfc3339(),
                 };
                 let time_max = match str_arg("time_max") {
-                    Some(raw) => match resolve_window(&raw, tz, now, crate::time::Bound::End) {
+                    Some(raw) => match resolve_window(&raw, wz, now, crate::time::Bound::End) {
                         Ok(v) => v,
                         Err(e) => return fail(e),
                     },
@@ -1588,7 +1596,7 @@ impl MailTools {
                 let body = serde_json::to_string_pretty(&json!({
                     "time_min": time_min,
                     "time_max": time_max,
-                    "as_of": crate::time::as_of(now, tz),
+                    "as_of": crate::time::as_of(now, wz),
                     "busy": rows,
                 }))
                 .unwrap_or_else(|_| "{}".into());

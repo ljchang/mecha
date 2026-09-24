@@ -7,7 +7,8 @@
 //! the model converts.
 //!
 //! The zone comes from `MECHA_TZ`, set on the server in the `[[mcp]]` block's
-//! `env`, falling back to `TZ` and then to leaving the stamp alone.
+//! `env`, falling back to `TZ` and then to leaving the stamp alone. A query
+//! window is resolved in `MECHA_TZ` alone — see [`window_zone`].
 //!
 //! **It also resolves a query window, for the same reason and the opposite
 //! direction.** A model has no clock, so the window it asks for is only as
@@ -27,14 +28,29 @@ use chrono_tz::Tz;
 
 /// The zone to render in, if one is configured.
 pub fn configured_zone() -> Option<Tz> {
-    for var in ["MECHA_TZ", "TZ"] {
-        if let Ok(name) = std::env::var(var) {
-            if let Ok(tz) = name.parse::<Tz>() {
-                return Some(tz);
-            }
-        }
-    }
-    None
+    zone_from(RENDER_VARS, |var| std::env::var(var).ok())
+}
+
+/// The zone a relative window term is resolved in: **`MECHA_TZ` only.**
+///
+/// Rendering may fall back to `TZ` because a stamp shown in the machine's
+/// zone is still the same instant. Resolution may not: `TZ` is in the
+/// sandbox's passthrough list and is `UTC` on this server, so falling back
+/// to it made `today` the UTC day — the incident, arriving through the one
+/// path [`Resolved::NeedsZone`] was written to close (#243's review). With
+/// `MECHA_TZ` unset the answer is the refusal, never the machine's guess.
+pub fn window_zone() -> Option<Tz> {
+    zone_from(WINDOW_VARS, |var| std::env::var(var).ok())
+}
+
+const RENDER_VARS: &[&str] = &["MECHA_TZ", "TZ"];
+const WINDOW_VARS: &[&str] = &["MECHA_TZ"];
+
+/// The first of `vars` that names a zone, read through `get` so the lists
+/// above are testable without mutating the process environment.
+fn zone_from(vars: &[&str], get: impl Fn(&str) -> Option<String>) -> Option<Tz> {
+    vars.iter()
+        .find_map(|var| get(var).and_then(|name| name.parse::<Tz>().ok()))
 }
 
 /// Render one timestamp in `tz`. Returns the input unchanged when it does not
@@ -74,7 +90,8 @@ pub enum Resolved {
     Passthrough,
     /// Resolved against the configured zone.
     At(String),
-    /// A relative term, and no zone configured to resolve it in.
+    /// A relative term, and no zone configured to resolve it in — which
+    /// means no `MECHA_TZ`; [`window_zone`] does not fall back to `TZ`.
     ///
     /// **Refused rather than resolved against the machine's clock**, because
     /// this server runs where `TZ` is UTC and the whole incident was a UTC
@@ -364,6 +381,44 @@ mod tests {
     /// Refused, not answered against the machine's clock. This server runs
     /// where `TZ` is UTC, and a UTC day standing in for a local one is the
     /// failure the whole module is about.
+    /// #243's review: the refusal was unreachable on the deployment it was
+    /// written for. `TZ=UTC` reaches this server through the sandbox's
+    /// passthrough, the window zone fell back to it, and `today` became the
+    /// UTC day. Driven through the real variable lists, not a literal `None`.
+    #[test]
+    fn a_utc_tz_is_not_a_window_zone() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |var: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == var)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+        let machine_only = env(&[("TZ", "UTC")]);
+        assert_eq!(zone_from(WINDOW_VARS, machine_only), None);
+        assert_eq!(
+            zone_from(RENDER_VARS, machine_only),
+            Some(chrono_tz::UTC),
+            "rendering may still use it: a stamp in UTC is the same instant"
+        );
+        let now = at("2026-09-14T02:37:12Z");
+        assert_eq!(
+            resolve_bound(
+                "today",
+                zone_from(WINDOW_VARS, machine_only),
+                now,
+                Bound::Start
+            ),
+            Resolved::NeedsZone,
+            "with no MECHA_TZ, today is refused, not the UTC 14th"
+        );
+
+        let configured = env(&[("TZ", "UTC"), ("MECHA_TZ", "America/New_York")]);
+        assert_eq!(zone_from(WINDOW_VARS, configured), eastern());
+        assert_eq!(zone_from(RENDER_VARS, configured), eastern());
+    }
+
     #[test]
     fn a_relative_term_with_no_zone_is_refused_rather_than_guessed() {
         let now = at("2026-09-14T02:37:12Z");
