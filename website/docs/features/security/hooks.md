@@ -36,6 +36,10 @@ Three belong to a run, and three to the task board:
 | `task_closed` | `event`, `record` — the move, plus the closure's `readout`, `follow_up_staged` and `project_readout` | No |
 | `task_reopened` | `event`, `record` — the move, with `undoes` naming the closure it reopens | No |
 
+A hook's `tools = [...]` list applies to `pre_tool` and `post_tool` only. The
+three task events are not tool calls, so a task hook runs for every close or
+reopen whatever its `tools` list says.
+
 A task event fires wherever the task is closed or reopened — the terminal,
 the TUI, the web board, Slack, or a chat where you approved the agent running
 `mecha tasks set` — because every one of them goes through the same

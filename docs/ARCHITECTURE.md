@@ -2176,8 +2176,10 @@ now makes the move one recorded event:
   the approver asks a person**, not only that one is present: `posture_for`
   reads the resolved permission mode, so `-y`, `permission_mode = "allow"`
   and a TUI switched out of `ask` (by `/mode`, or restored after a `/model`
-  rebuild) stamp `unattended`, as `web_posture` already did for an
-  approvals-off web chat (found on review of #293). Independently, a
+  rebuild) stamp `unattended`; `web_posture` applies the same rule to the
+  web session's mode, so a chat set to `allow` or `read-only` from the page
+  is unattended from its next turn, as voice's approve-all always was (both
+  found on review of #293). Independently, a
   process descended from a live task-run or trigger-run marker's pid is
   refused whatever its environment — **on Linux only**: the ancestry is
   read from `/proc`, and elsewhere this second check finds nothing. **The residue is wider than it looks,
@@ -2187,7 +2189,12 @@ now makes the move one recorded event:
   run has no marker (a web task chat, an approvals-off chat, a front-door
   or mail run) nothing else stops it, and the record then says
   `owner-approved`. The guard stops a run that follows the refusal text; it
-  does not stop one that names the variable (found on review of #293).
+  does not stop one that names the variable. `MECHA_HOME` is the same
+  residue one variable over: the closure store and the marker directories
+  the ancestry check reads both come from `work::mecha_home()`, so a command
+  that sets it writes its record elsewhere and escapes the ancestry check
+  while the real board moves (both found on review of #293; #294 closes
+  them).
 - **`--surface` cannot claim `chat`**, and inside a run the flag is ignored:
   the surface of a run's closure is always `chat`.
 - **Reopen is the same event reversed** (`move: reopen`, `undoes` naming the

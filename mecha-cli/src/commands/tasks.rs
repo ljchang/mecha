@@ -597,6 +597,15 @@ async fn set(
         (Some(to), Some(b)) => mecha_core::closure::classify(b["status"].as_str(), to),
         _ => None,
     };
+    // `--reason` lives on the closure record, so a change that crosses no
+    // line has nowhere to keep it: say so rather than drop it silently
+    // (found on review of #293).
+    if moving.is_none() && reason.is_some() {
+        eprintln!(
+            "mecha: --reason is recorded only on a close or a reopen; this change crosses \
+             neither, so the reason was not kept"
+        );
+    }
 
     // A move across the open/closed line is recorded *before* the board row
     // moves, after the posture check and the `pre_task_close` hooks — either
@@ -965,7 +974,9 @@ async fn begin_move(
 fn verb_of(kind: mecha_core::closure::Move) -> &'static str {
     match kind {
         mecha_core::closure::Move::Reopen => "reopen",
-        _ => "close",
+        mecha_core::closure::Move::Close => "close",
+        // A newer build's move this one cannot read: not called a closure.
+        mecha_core::closure::Move::Unknown => "move",
     }
 }
 

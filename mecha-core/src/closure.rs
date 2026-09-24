@@ -8,11 +8,16 @@
 //! a later reopen, or observed by the owner's own tooling.
 //!
 //! **The store is append-only, one JSON object per line**, in
-//! `~/.mecha/closures/closures.jsonl`. There is deliberately no environment
-//! override for its location: the `mecha tasks set` that writes it can be a
-//! descendant of a model's `shell`, and a location the command text could
-//! redirect is a record the command text could hide while the real board
-//! moves (found on review of #293). Tests reach a scratch store through
+//! `~/.mecha/closures/closures.jsonl`. There is no store-specific environment
+//! override for its location (`MECHA_CLOSURES_DIR` was removed on review of
+//! #293): the `mecha tasks set` that writes it can be a descendant of a
+//! model's `shell`, and a location the command text could redirect is a
+//! record the command text could hide while the real board moves. **One
+//! override remains, and it is residue:** the root is `work::mecha_home()`,
+//! which honours `MECHA_HOME`, so a command that sets it writes the record
+//! into another home — and, since `tasks::live_run_pids` reads its marker
+//! directories from the same home, empties the ancestry check too (found on
+//! review of #293; see [`decide`]). Tests reach a scratch store through
 //! `MECHA_HOME` or [`ClosureStore::open`]. The kinds of line:
 //!
 //! - a [`Transition`] — written **before** the board row moves. It names the
@@ -202,9 +207,12 @@ pub fn posture_from_env() -> PostureReading {
 /// Who made a move, on which surface — or why it may not be made.
 ///
 /// `ancestor_run` is the pid of a live delegated or scheduled run this
-/// process descends from, if any ([`run_ancestor`]). It is checked first and
-/// wins over everything: a run that strips the posture variable from its
-/// command's environment is still that run's child.
+/// process descends from, if any ([`run_ancestor`]). It is checked first, so
+/// a run that strips the posture variable from its command's environment is
+/// still refused as that run's child — **unless the command also sets
+/// `MECHA_HOME`**: the marker directories `tasks::live_run_pids` reads come
+/// from `work::mecha_home()`, so a redirected home yields no live runs and
+/// this check finds nothing (found on review of #293).
 ///
 /// **What this does not close, named** (found on review of #293). The
 /// posture is an environment variable the command string itself can set:
@@ -219,8 +227,12 @@ pub fn posture_from_env() -> PostureReading {
 /// check for a marked run. This guard stops a run that follows the refusal
 /// text; it does not stop one that names the variable. A confined `shell`
 /// without the owner's `~/.mecha` or the graph cannot reach the store at
-/// all. PR #294 (stacked on this one) replaces the variable with a
-/// harness-written shell registry the command text cannot set.
+/// all. `MECHA_HOME` is the same residue one variable over: set on the same
+/// command line, it redirects both the closure store (so the record lands in
+/// another home while the real board moves) and the marker directories the
+/// ancestry check reads. PR #294 (stacked on this one) replaces the variable
+/// with a harness-written shell registry the command text cannot set, and
+/// consults the owner's real home rather than a redirectable one.
 pub fn decide(
     posture: &PostureReading,
     ancestor_run: Option<u32>,
