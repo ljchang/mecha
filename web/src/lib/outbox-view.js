@@ -477,13 +477,17 @@ export function replySubject(subject) {
  * The thread as it is **now**, from `/api/mail/read` — `mecha mail show`,
  * whose text is an optional block of the triage record's `key: value` lines
  * and then mail_get_thread's own read, ending on its count. Parsed from the
- * first header on; a header-shaped line in the block ahead of it (the
- * classifier's reasoning is model text) adds a split, and the count catches
- * it like any other forgery.
+ * first header naming `account` — **the account the page asked about, never
+ * one read out of the text**. The block ahead of the thread carries the
+ * classifier's reasoning, model prose over a stranger's mail: a header there
+ * naming another account would otherwise become the anchor and hide every
+ * real message, and a one-message thread would verify under the forged
+ * sender (review of #275). Naming the asked account instead, it adds a
+ * split, and the count catches it.
  */
-export function liveThread(text) {
+export function liveThread(text, account) {
   const lines = (text ?? '').split('\n');
-  const at = lines.findIndex((l) => MSG_HEAD.test(l));
+  const at = lines.findIndex((l) => MSG_HEAD.exec(l)?.[1] === account);
   return at < 0 ? null : threadMessages(lines.slice(at).join('\n'));
 }
 
@@ -502,6 +506,10 @@ export function sinceDrafted(recorded, live) {
   // older format can lack them, and a missing id would mark every live
   // message new. Without ids, only the count is said (review of #275).
   if (!recorded.verified || recorded.messages.some((m) => !m.replyId)) {
+    // A *clipped* read runs the other way: the cap dropped whatever came
+    // after it, so its count undercounts what the run read, and a live count
+    // above it would invent new mail (review of #275). It says nothing.
+    if (recorded.clipped) return null;
     // Which messages are new cannot be said, but *that* the thread grew can:
     // a forged header only ever adds to the recorded count, so a live count
     // above it is never an overstatement. `added: null` — the count, not the
