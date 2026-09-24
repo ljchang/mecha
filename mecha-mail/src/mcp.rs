@@ -247,21 +247,10 @@ pub(crate) fn assert_private_writes(tools: &[Value], expected: &[&str]) {
 /// [`assert_tool_surface`] so every surface inspects its claimants.
 #[cfg(test)]
 fn check_private_write_schemas(tools: &[Value], names: &[&str]) {
-    // What a private write may say: the content of the new thing, and when.
-    // Nothing here names a party or an existing object. `account` picks which
-    // of the owner's own accounts holds the new thing, among the ones the
-    // server was configured with, so it names nobody else.
-    const CONTENT: &[&str] = &[
-        "title",
-        "body",
-        "description",
-        "location",
-        "start_time",
-        "end_time",
-        "all_day",
-        "timezone",
-        "account",
-    ];
+    // What a private write may say: the content of the new thing. Nothing
+    // here names a party or an existing object. A name is added in the diff
+    // that adds the verb needing it, so its schema is read where it lands.
+    const CONTENT: &[&str] = &["title", "body"];
     for name in names {
         let tool = tools.iter().find(|t| t["name"] == *name).unwrap();
         let props = tool["inputSchema"]["properties"]
@@ -275,5 +264,83 @@ fn check_private_write_schemas(tools: &[Value], names: &[&str]) {
                  with the reason"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod guard_tests {
+    //! The guard that replaced the outbox's review, tested on its own: every
+    //! surface in this crate satisfies it, so without these a change that
+    //! stopped it guarding would leave every test green.
+
+    use super::*;
+
+    fn create(props: Value, annotations: Value) -> Value {
+        json!({
+            "name": "thing_create",
+            "description": "Create a new thing with a title, for the guard's tests.",
+            "inputSchema": {"type": "object", "properties": props},
+            "annotations": annotations,
+        })
+    }
+
+    #[test]
+    fn a_clean_private_write_passes() {
+        let tools = vec![create(
+            json!({"title": {"type": "string"}, "body": {"type": "string"}}),
+            json!({"openWorldHint": false, "readOnlyHint": false}),
+        )];
+        assert_private_writes(&tools, &["thing_create"]);
+        assert_tool_surface(&tools, &[], &[], &[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "not a content field")]
+    fn a_property_outside_the_allowlist_fails() {
+        let tools = vec![create(
+            json!({"title": {"type": "string"}, "share_with": {"type": "string"}}),
+            json!({"openWorldHint": false}),
+        )];
+        assert_private_writes(&tools, &["thing_create"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "exactly the private writes")]
+    fn an_unlisted_claimant_fails() {
+        let tools = vec![create(
+            json!({"title": {"type": "string"}}),
+            json!({"openWorldHint": false}),
+        )];
+        assert_private_writes(&tools, &[]);
+    }
+
+    /// An absent `openWorldHint` is `Egress::None` in mecha-core, so it
+    /// claims the quadrant — and must spell the decision out.
+    #[test]
+    #[should_panic(expected = "must say openWorldHint: false outright")]
+    fn an_unannotated_claimant_must_spell_the_decision() {
+        let tools = vec![create(json!({"title": {"type": "string"}}), json!({}))];
+        assert_private_writes(&tools, &["thing_create"]);
+    }
+
+    /// The surface check reaches claimants it was never told about.
+    #[test]
+    #[should_panic(expected = "not a content field")]
+    fn the_surface_check_inspects_a_claimant_nobody_listed() {
+        let tools = vec![create(
+            json!({"title": {"type": "string"}, "folder_id": {"type": "string"}}),
+            json!({"openWorldHint": false}),
+        )];
+        assert_tool_surface(&tools, &[], &[], &[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "is in no quadrant")]
+    fn a_destructive_verb_listed_nowhere_fails() {
+        let tools = vec![create(
+            json!({"title": {"type": "string"}}),
+            json!({"destructiveHint": true}),
+        )];
+        assert_tool_surface(&tools, &[], &[], &[]);
     }
 }
