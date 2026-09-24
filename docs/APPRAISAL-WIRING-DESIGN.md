@@ -21,8 +21,8 @@ homeostasis used as control rather than as a label. Figures are from those
 passes; sources are in here §14, with anything not read at source marked.
 
 **Section references.** A bare §N is `GOAL-SYSTEM-DESIGN.md`'s. This file's
-own sections are cited as "here §N", and its proposals by id (S1, C1, G1, L1,
-M1, A1, U1).
+own sections are cited as "here §N", and its proposals by id (S1, V1, C1, G1,
+L1, M1, A1, U1).
 
 ---
 
@@ -38,7 +38,9 @@ carried an anchor, and 4 of the 79 runs long enough to warrant a plan wrote
 one. The two sensors that would drive behaviour read constants (a stale
 outbox pins both at their ceiling), and the one priority consumer — replay —
 uses the goal signal only to break ties. So the build is not "more
-appraisal". It is three things in order: **supply** the pipeline from what the
+appraisal", and it is not new systems: goal inference and the validator stack
+are both designed and mostly built (here §1.1), and both idle for want of
+the same input. It is three things in order: **supply** the pipeline from what the
 harness already holds structurally; **map each appraisal to a closed set of
 harness actions**, the way functional theories of emotion say an emotion is
 a readiness for a class of action rather than a word; and **ship every
@@ -87,6 +89,92 @@ sensors whose only reader is the diagnostician's brief" undercounts (the
 charter reading also reaches `Decision` and the doctor); and `of_session`
 still puts `backlog_delta`'s +0.5 into the positive valence sum that the same
 section calls context, not credit.
+
+### 1.1 Two systems already built to receive this
+
+The table above is per signal. Two of those signals are halves of larger
+systems that were designed and largely built, and this design completes them
+rather than adding parallel ones. Both are starved by the same missing input.
+
+**Goal inference and alignment tracking** (§17.3, §17.7 items 3–5; the
+owner's *Latent Goal Inference, Goal Error Tracking, and Episodic Learning*
+proposal of 2026-09-03 is absorbed there). A pipeline in four stages:
+
+| stage | built | what fills it today |
+|---|---|---|
+| **Hypothesis** — "I take the goal to be X, serving Y" | the charter block asks for the sentence; `ask_user` takes `goal` and `serves` and carries a typed `GoalHypothesis`; the delegated seed folds it into its one question; an unattended run's goal is derived at review time by `outbox_source::serves_at_staging` | the model, and it never has: 0 of 68 sessions |
+| **Confirmation** — the one label the agent did not author | a present human answering `ask_user` (`Reply::Answered`); a parked `Question` answered; the owner releasing a draft whose note names the goal; `run --goal` | 0 goals put to the owner, 0 answered |
+| **Anchor** — the confirmed pointer | `GoalTrack` per run; `Conversation::goal_anchor` across turns, `Record::GoalAnchor` through resume and compaction; `questions::seed_anchor` on resume | 123 anchor records, all null |
+| **Alignment** — does the work still trace to it | `goal::drift_of` per plan write — same, *changed pointer*, or *unnamed*; `goal_drift_rate` in `sessions health`; `Decision::ClarifyGoal` when plan and anchor differ | no plan writes, so no reading |
+
+Named and unbuilt in §17.7 item 4: the re-ask on a changed pointer, the drift
+*event*, the turns-since-confirmation term, and §17.3's "distance × remaining
+work exceeds the cost of asking" check-in — all deliberately "off until the
+rate is read", and the rate cannot be read while nothing fills stage one.
+Also unbuilt: any *semantic* reading of the owner's answer — the anchor is a
+pointer, so a correction in the answer's prose moves nothing.
+
+**The validator stack.** The tree validates at four tiers and grounds claims
+at a fifth; §17.5 names the tier it lacks.
+
+| validates | against | how | state |
+|---|---|---|---|
+| a completed **step** (`step::appraise`) | the plan | deterministic reading of the step's span (null, failed last call, verify-less claim); a quarantined second opinion only on ambiguity (`escalate_step`) | built; plan-gated, so idle; escalation off by default |
+| a declared **check** (`step::CheckRequest`, `CHECK_TRACE`) | the model's own frozen predicate | executed through ordinary dispatch; can manufacture a failed check against itself, never a passing one | built; reachable only from `todo`, so idle |
+| a learned **rule** (`mecha validate`, `counterfactual.rs`) | the owner's recorded intervention | branch the transcript at the intervention, strip the steer, see whether the model now does the steered thing; per-region since #192; probation and retirement from the ledger | **live** — 334 ledger rows since 2026-08-29, the latest today (none 09-18 to 09-23): 18 improved, 17 regressed, 37 unchanged-pass, 139 unchanged-fail, 123 inconclusive |
+| a task **artifact** (`mismatch::ArtifactCase`) | owner-supplied gold, outside the workspace | criterion-by-criterion, after the run; feeds `extract_mismatches` | built; used by experiments, no live producer |
+| a **claim** (`grounding::admit`, `calls`) | what the run actually received | dereference; first seen wins; stale is never evidence | built for front-door dates and triage deadlines |
+| the **plan against the goal** | the confirmed anchor | §17.5: deterministic tracing of every item to the anchor, a quarantined relevance call only on ambiguity, output accept / revise / ask | **unbuilt** |
+
+Two readings of that table shape this design. The one validator that runs
+live is the rule validator, and it is mostly undecided: 35 of 334 rows moved
+a rule either way. And the tier that would make the others goal-relative —
+plan against goal — is the one missing, which is why a run can land every
+step and serve nothing. `VERIFICATION-RESEARCH.md` implications 8 and 11 name
+the other two gaps: no gate can refuse to let a run end, and checks cannot be
+declared anywhere but `todo`.
+
+How the proposals below map onto the two systems:
+
+| system gap | proposal |
+|---|---|
+| hypothesis never produced | S1 (structural anchors skip stage one entirely), S2 (the harness asks from a closed list) |
+| confirmation never happens | S2's one tap; S3's verdict confirms after the fact; A3's parked question carries the goal sentence |
+| alignment measured, never acted on | **V2** below: the re-ask and drift event, switched on by phase 1's reading |
+| plan-against-goal validator missing | **V1** below: §17.5's template, deterministic first |
+| no end-of-run gate | C1 |
+| checks only from `todo` | C2 |
+| rule validator mostly undecided | L1 spends its budget on episodes with signal; L3 moves tenure on owner verdicts per charter line |
+| artifact validator has no live producer | C2's owner `Workflow::checks` are the live form of its criteria |
+
+**V1. The goal validator (§17.5), built as designed.** On an anchored run,
+every plan write is validated against the anchor, deterministically: each
+item's `serves` must equal the anchor or trace to it through the tiers
+(step → task → project → charter line, read off the board rows S1 already
+loads). An item that does not trace is the scope creep §17.3 defines — the
+plan's items no longer tracing to the anchor while the owner's evidence has
+not moved. Output is a `planning::Action`: `Continue` if everything traces,
+`ClarifyGoal` if the pointer changed, a new `Descope` ("this item does not
+serve the confirmed goal; drop it or ask") if an item does not trace. A
+quarantined relevance call — is a correctly traced item actually relevant to
+the objective — comes only in phase 4, on the step validator's escalation
+posture. At the end of the run V1's verdict joins C1's certificate: "3 of 4
+items traced to the goal".
+
+**V2. Alignment that acts.** §17.7 item 4's named-but-unbuilt half, switched
+on once phase 1 has produced a drift rate to read:
+- a changed pointer on an anchored run re-asks (interactive surfaces: `ask_user`
+  with the new hypothesis; delegated: folded into the handoff question;
+  unattended: the note on the staged artifact, as today) — monotone, adds a
+  question and never removes one;
+- more than half the open items failing V1 logs a drift event on the run
+  record, which the frustration ladder (C5) reads as a rung-3 trigger:
+  delegate the open step to a fresh subagent seeded with the anchor alone;
+- an *unnamed* write (a plan rewritten without `serves` under an anchor) is
+  repaired by the harness, not the model: the item inherits the anchor, the
+  write is counted, and nothing is said. On a local model forgetting to
+  repeat `serves` is the likely dominant term (§17.7 item 4), and nagging
+  about it is the distractor shape boredom avoids.
 
 ---
 
@@ -685,10 +773,10 @@ Each phase ends with a measurement that decides the next.
 | phase | builds | the measurement that ends it |
 |---|---|---|
 | **0 — supply and honesty** | S1 (task, trigger, front door, web pointers), S5 per-item readings, L3 stamping, G4 test, the four doc corrections of here §1, shadow records for every here §5–§9 decision | anchored share of long runs; `sessions health` goal fields non-null; readings no longer constant |
-| **1 — verdicts and truth** | S3 thumbs, C1 certificate (template), C2 harness checks, L1 gain × need, L2 success examples | false completion on task and synthetic-home suites vs no-certificate arm; verdicts per week; replay candidates accepted per night |
-| **2 — control and narrowing** | C4 wind-down, C5 ladder + brake, G1 deterministic alignment, G2 hold, G3 risk-weighted approval, M4 compaction survivors, M5 prior attempts | per-arm: tampering, reopen, handoff quality; dojo suite attack success *and* utility vs control |
+| **1 — verdicts and truth** | S3 thumbs, C1 certificate (template), C2 harness checks, V1 goal validator (deterministic, shadow), L1 gain × need, L2 success examples | false completion on task and synthetic-home suites vs no-certificate arm; verdicts per week; replay candidates accepted per night |
+| **2 — control and narrowing** | V1 armed, V2 re-ask and drift event (once phase 1's drift rate is read), C4 wind-down, C5 ladder + brake, G1 deterministic alignment, G2 hold, G3 risk-weighted approval, M4 compaction survivors, M5 prior attempts | per-arm: tampering, reopen, handoff quality; dojo suite attack success *and* utility vs control |
 | **3 — memory and follow-through** | S4 commitments, M1 goal key, M2 salience, M3 gap delivery (after §17.7 item 2 reads), A1 duty runs, U1 gate, L5 built, U2–U4 | owner-side latency on sensored lines; interruptions per day; lesson application vs budget-matched control |
-| **4 — the model-judged half** | S2 tier 2, G1 quarantined check under adaptive attack, A2 proposals, A4 curiosity, L6 lineage | each against its own arm; nothing here ships on a synthetic result alone |
+| **4 — the model-judged half** | S2 tier 2, V1's quarantined relevance call, G1 quarantined check under adaptive attack, A2 proposals, A4 curiosity, L6 lineage | each against its own arm; nothing here ships on a synthetic result alone |
 
 Outcomes the whole programme is judged on, from APPRAISAL-RESEARCH §8.5 and
 EXPERIMENT-DESIGN Part II: independently verified task success, per-charter-line
@@ -709,6 +797,8 @@ outcome.
 | S5 sensor hygiene | | ● | | | | | ● |
 | C1 honest completion | | ● | | | ● | ● | ● |
 | C2 harness checks | ● | ● | | | | ● | |
+| V1 goal validator | ● | ● | | | | ● | |
+| V2 alignment that acts | ● | ● | | ● | | | ● |
 | C3 seeded plans | ● | ● | | | | | |
 | C4 wind-down | ● | | ● | ● | | | |
 | C5 ladder + brake | ● | ● | ● | ● | ● | | |
