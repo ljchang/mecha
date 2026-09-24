@@ -6,7 +6,7 @@
 // fetches. Then the shapes real mail arrives in — the `\` hard breaks, the
 // escaped asterisks and the safelinks-wrapped `[url](wrapper)` pairs that made
 // the reader look like a diff.
-import { parseInline, parseBlocks, safeHref, unwrapUrl, shortUrl, linksOf } from '../src/lib/mail-markdown.js';
+import { parseInline, parseBlocks, safeHref, unwrapUrl, shortUrl, linksOf, hiddenTarget } from '../src/lib/mail-markdown.js';
 
 let pass = 0;
 let fail = 0;
@@ -137,6 +137,16 @@ t('empty text is no blocks', parseBlocks('').length === 0 && parseBlocks(null).l
   let ok = true;
   try { parseInline(deep); } catch { ok = false; }
   t('deep nesting terminates', ok);
+}
+
+{
+  // A draft's link names its destination when its words do not.
+  const [named] = parseInline('[the agenda](https://evil.example/x)');
+  t('a named link reveals its destination', hiddenTarget(named) === 'evil.example/x');
+  const [bare] = parseInline('https://example.org/paper');
+  t('a bare URL is not revealed twice', hiddenTarget(bare) === null);
+  const [mail] = parseInline('[bob@example.org](mailto:bob@example.org)');
+  t('a mailto that reads as its address is not revealed', hiddenTarget(mail) === null);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

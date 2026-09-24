@@ -401,3 +401,23 @@ export function linksOf(blocks) {
   }
   return out;
 }
+
+/** The words a run of inline nodes reads as. */
+export function inlineText(nodes) {
+  return (nodes ?? []).map((n) => n.v ?? inlineText(n.c)).join('');
+}
+
+/**
+ * Where a link goes, when its words do not already say so — else null.
+ *
+ * For a draft about to be sent: `[the agenda](https://elsewhere)` renders as
+ * "the agenda", and the destination sat in a hover title nobody reads on a
+ * phone. That was the one thing the old confirm step's raw arguments showed
+ * and the rendered draft did not, so a draft pane asks for it inline.
+ */
+export function hiddenTarget(link) {
+  const shown = inlineText(link.c).trim();
+  const short = shortUrl(link.href);
+  if (shown === short || shown === link.href || shown === link.href.replace(/^mailto:/i, '')) return null;
+  return short;
+}
