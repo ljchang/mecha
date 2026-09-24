@@ -42,7 +42,7 @@ understandable alongside the root changelog's Unreleased section.
 Do not edit generated sources here:
 
 - `docs/changelog.md` is copied from the root `CHANGELOG.md`.
-- Generated graph pages come from the graph repository; `docs/graph/overview.md`
+- Generated graph pages come from the graph repository; `docs/features/memory/graph/index.md`
   is authored here.
 - `static/factory/gallery/` comes from the factory repository.
 - `static/demo/` is built from this repository's `web/` app and demo fixtures.

@@ -5,7 +5,7 @@
 > **Status (2026-09-23): partly built.** `mecha exp` with `single` and
 > `lifetime` trials, the switch set, the principal, fixture servers and task
 > sources are on main; §19's status paragraph lists what landed and when, and
-> `website/docs/features/experiments.md` is the user's guide, including what
+> `website/docs/features/experiments/index.md` is the user's guide, including what
 > is not built. Branching, snapshots, `ensemble` and analysis (§11 B, C, D₂,
 > E) remain.
 >

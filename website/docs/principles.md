@@ -127,7 +127,7 @@ Anything a model says about its own work is hearsay, including a model's opinion
 about whether mecha is working. So the parts of the system that could drift are
 attached to something that can be counted.
 
-[Eval cases](/docs/features/evaluation) are graded on the tool-call trace before
+[Eval cases](/docs/features/experiments/evaluation) are graded on the tool-call trace before
 the prose, and end in a `verify` command's exit status where one applies. Repeat
 runs report **pass^k** beside pass@k, because reliability decays faster than mean
 success and a single-run scorecard cannot distinguish a flaky case from a solid
@@ -141,7 +141,7 @@ answer text.
 Runs themselves are counted the same way. Every finished run records **how it
 went** as well as what it cost — stop cause, calls attempted against errors,
 whether it stopped of its own accord with its last call failed — and
-[that corpus](/docs/features/run-quality) is what lets a harness problem be
+[that corpus](/docs/features/learning/run-quality) is what lets a harness problem be
 noticed at all. Before it, the only signal that something was wrong was a human
 stepping in, so a run that quietly failed a third of its tool calls produced no
 intervention and nothing downstream ever heard about it.
@@ -159,7 +159,7 @@ And the counting has a **sign**, which took a while to notice was missing. Every
 metric above is phrased as a cost, so the system could rank two runs that went
 badly and could not rank two that went well — and every signal that started a
 loop needed the world to act first, because nothing represented what a run was
-*for*. A [charter and a signed goal error](/docs/features/appraisal-overview) are the
+*for*. A [charter and a signed goal error](/docs/features/appraisal) are the
 other half: what mecha is for, in your own words, and how far a run landed from
 it. The honest first finding was that almost every run comes back with no label
 at all, and that is published rather than tuned away — inventing precedence until

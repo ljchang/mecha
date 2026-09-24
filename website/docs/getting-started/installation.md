@@ -47,8 +47,8 @@ else needs it:
 cargo install mecha-mail --locked     # mecha-mail, mecha-google, mecha-outlook, mecha-docs
 ```
 
-See [Mail and calendar](/docs/features/mail) and
-[Documents](/docs/features/documents) for setup.
+See [Mail and calendar](/docs/features/tools/mail) and
+[Documents](/docs/features/tools/documents) for setup.
 
 Check what landed:
 
@@ -66,7 +66,7 @@ release, add `--version <VERSION>` using the version you intend to run.
 These docs track the repository's main branch and can describe work listed as
 [Unreleased](/docs/changelog). If an option is absent from your binary's help,
 check the release history or build from source. The browser assets are a separate
-build; refresh them when upgrading a [web installation](/docs/features/web#installing-the-app-itself).
+build; refresh them when upgrading a [web installation](/docs/features/interfaces/web#installing-the-app-itself).
 
 ## Building from source
 
@@ -113,7 +113,7 @@ The workspace has four members. `cargo build --release` builds all of them:
 | — | `mecha-slack` | The Slack transport: Socket Mode, the Web API, files both ways. No binary of its own — the connector is `mecha slack connect`, run as a systemd unit (`scripts/mecha-slack.service`). |
 
 You do not need the mail binaries unless you want mail and calendar tools; see
-[Mail and calendar](/docs/features/mail) and [Slack](/docs/features/slack).
+[Mail and calendar](/docs/features/tools/mail) and [Slack](/docs/features/interfaces/slack).
 
 ## Verifying the build
 
@@ -164,7 +164,7 @@ A configured sandbox that does not work is a startup failure, not a warning:
 instructions. Silently falling back to unconfined execution would be worse than
 having no sandbox at all, because `shell` declares narrower capabilities when
 confined and the trifecta interlock believes it. See
-[Sandbox](/docs/features/sandbox).
+[Sandbox](/docs/features/security/sandbox).
 
 ### Python 3, for regenerating eval fixtures
 
@@ -186,7 +186,7 @@ Python 3 is also what runs the fixture MCP servers used by
 `eval/graph-cases.jsonl` (`eval/fixtures/graph_server.py`), a frozen fake of a
 knowledge graph. The real one answers from live machine-local data, and a case
 graded against that measures nothing repeatable. See
-[Evaluation](/docs/features/evaluation).
+[Evaluation](/docs/features/experiments/evaluation).
 
 ### A local model, if you want one
 
@@ -209,7 +209,7 @@ curl -L -O "https://huggingface.co/$REPO/resolve/main/mmproj-BF16.gguf"
 
 That second file is the vision tower, it is not inside the weights, and
 without it the server runs happily and the model simply says it cannot see
-images. [Images](/docs/features/images) is the whole story; if you only
+images. [Images](/docs/features/interfaces/images) is the whole story; if you only
 remember one thing, remember that a multimodal model is two files.
 
 Then start it and let mecha read the settings off it rather than typing them:
@@ -219,13 +219,13 @@ llama-server -m model.gguf --mmproj mmproj-BF16.gguf --host 127.0.0.1 --port 808
 mecha setup --write        # writes model, context_window and vision from /props
 ```
 
-[Serving a local model](/docs/features/serving) covers slots, what `-c`
+[Serving a local model](/docs/features/models/serving) covers slots, what `-c`
 actually divides, and how to measure whether a restart made things slower.
 
 ### Everything else
 
 Search backends, MCP servers, and mail accounts are configured rather than
-installed. They are covered in [Tools and MCP](/docs/features/tools-and-mcp) and
+installed. They are covered in [Tools and MCP](/docs/features/tools) and
 the [configuration reference](/docs/reference/configuration).
 
 ## Next
