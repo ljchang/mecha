@@ -1223,17 +1223,36 @@ impl MailTools {
             .map(|idx| idx.into_iter().map(|i| &self.accounts[i]).collect())
     }
 
+    /// A thread's account when it takes no read to know: the named one, or
+    /// the only one. `None` when it has to be looked up.
+    fn known_thread_account(&self, arg: Option<&str>) -> Option<Result<&Account, String>> {
+        (arg.is_some() || self.accounts.len() == 1)
+            .then(|| self.pick(arg, Mode::Item).map(|picked| picked[0]))
+    }
+
+    /// The account a thread lives in, for a call that needs no read of it
+    /// (`mail_triage` acts on the id alone). Reads only when the account has
+    /// to be looked up — there the read is the evidence; anywhere else it is
+    /// a fetch that can fail for a reason unrelated to the action (found on
+    /// review).
+    async fn thread_account(&self, arg: Option<&str>, thread_id: &str) -> Result<&Account, String> {
+        match self.known_thread_account(arg) {
+            Some(known) => known,
+            None => self.locate_thread(arg, thread_id).await.map(|(a, _)| a),
+        }
+    }
+
     /// The account a thread lives in, and the thread itself: the named
     /// account when there is one (or only one to name), else whichever
-    /// account holds it — see [`thread_home`]. The read is returned because
-    /// every caller needed it anyway.
+    /// account holds it — see [`thread_home`]. For the callers that read the
+    /// thread anyway.
     async fn locate_thread(
         &self,
         arg: Option<&str>,
         thread_id: &str,
     ) -> Result<(&Account, Vec<Email>), String> {
-        if arg.is_some() || self.accounts.len() == 1 {
-            let account = self.pick(arg, Mode::Item)?[0];
+        if let Some(known) = self.known_thread_account(arg) {
+            let account = known?;
             let emails = thread_one(account, thread_id)
                 .await
                 .map_err(|e| format!("{e}"))?;
@@ -1353,8 +1372,11 @@ impl MailTools {
                 // is account-scoped, so this never fans out. Triaging "the
                 // same thread" across every account is not a thing that can
                 // be meant — the thread's own account is looked up instead.
-                let account = match self.locate_thread(account_arg.as_deref(), &thread_id).await {
-                    Ok((account, _)) => account,
+                let account = match self
+                    .thread_account(account_arg.as_deref(), &thread_id)
+                    .await
+                {
+                    Ok(account) => account,
                     Err(e) => return fail(e),
                 };
                 match triage_one(account, &thread_id, action).await {

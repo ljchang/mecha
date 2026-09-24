@@ -421,6 +421,11 @@ export function hiddenTarget(link) {
   // an injected link carries what it exfiltrates, and `shortUrl` folds it to
   // `?…` (found on review). Scheme dropped; only a very long one is cut.
   const full = link.href.replace(/^https?:\/\//i, '').replace(/^mailto:/i, '');
-  if (shown === shortUrl(link.href) || shown === link.href || shown === full) return null;
+  // Compared with the *unfolded* destination: a bare URL is displayed as its
+  // `shortUrl`, which folds a query away, so matching that was matching the
+  // one case worth revealing (found on review). Only `www.` and a trailing
+  // slash are forgiven — neither can carry anything.
+  const same = (a) => a.replace(/^www\./i, '').replace(/\/$/, '');
+  if (same(shown) === same(full) || shown === link.href) return null;
   return full.length > 300 ? `${full.slice(0, 299)}…` : full;
 }
