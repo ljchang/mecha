@@ -993,6 +993,8 @@ pub struct McpServerConfig {
 /// silently served nothing, from the snippets the docs printed. Only `~` and
 /// `~/…` expand; `~user` and a `~` anywhere else are left as written, and with
 /// no home directory to be found the path is left alone rather than guessed.
+/// `[[mcp]] env` values are not paths and are not expanded, as a shell would
+/// not expand them either.
 fn expand_home(p: &Path) -> PathBuf {
     match (p.strip_prefix("~"), dirs::home_dir()) {
         (Ok(rest), Some(home)) => home.join(rest),
@@ -1012,7 +1014,8 @@ fn expand_home_str(s: &str) -> String {
 impl ConfigLayer {
     /// Every path-valued field a config file can set, with [`expand_home`]
     /// applied. A new path field belongs here as well as in the layer — the
-    /// same two-edit shape as a new `Config` field.
+    /// same two-edit shape as a new `Config` field, and held the same way:
+    /// `every_path_field_a_layer_can_read_is_expanded`.
     fn expand_home(&mut self) {
         let opt = |p: &mut Option<PathBuf>| {
             if let Some(v) = p.as_mut() {
@@ -2355,6 +2358,52 @@ mod tests {
         })
     }
 
+    /// A path field added to a layer and left out of `ConfigLayer::expand_home`
+    /// would read `~` literally again, silently — the shape the expansion
+    /// exists to remove. Same source walk as the test below, asking the
+    /// expansion instead of `apply`.
+    #[test]
+    fn every_path_field_a_layer_can_read_is_expanded() {
+        let src = include_str!("config.rs");
+        let expand = src
+            .split_once("    fn expand_home(&mut self) {")
+            .expect("ConfigLayer::expand_home moved")
+            .1;
+        let expand = &expand[..expand.find("\n    }\n").expect("unterminated expand_home")];
+
+        let mut checked = 0;
+        for (pos, _) in src.match_indices("Layer {") {
+            let decl = src[..pos].rsplit('\n').next().unwrap_or("").trim();
+            let Some(name) = decl
+                .strip_prefix("pub struct ")
+                .or_else(|| decl.strip_prefix("struct "))
+            else {
+                continue;
+            };
+            let body = &src[pos..];
+            let body = &body[..body.find("\n}").expect("unterminated layer struct")];
+            for line in body.lines() {
+                let Some((field, rest)) = line.trim().split_once(':') else {
+                    continue;
+                };
+                if !rest.contains("PathBuf") {
+                    continue;
+                }
+                let field = field.trim().trim_start_matches("pub ");
+                assert!(
+                    apply_reads_field(expand, field),
+                    "`{name}Layer::{field}` is a path a config file can set, and \
+                     `ConfigLayer::expand_home` never expands it, so a `~` there is read literally"
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked >= 10,
+            "the walk found only {checked} path fields; did the layout change?"
+        );
+    }
+
     #[test]
     fn every_field_a_nested_layer_can_read_is_a_field_apply_reads() {
         // The hole the test above declares in its own comment: it walks
@@ -2413,10 +2462,6 @@ mod tests {
         );
     }
 
-    /// At the level it ships: the *load* fails, not only `validate` when
-    /// someone remembers to call it. Both public loaders are `load_layers`,
-    /// so this is them — the PR review of this change pointed out that the
-    /// test below would stay green with the `validate()` call deleted.
     /// `~` in a config file means the home directory, as it did in every
     /// snippet the docs printed. Before this, each of these loaded fine and
     /// named a literal `~` directory, so the MCP server never spawned and
@@ -2462,6 +2507,10 @@ mod tests {
         );
     }
 
+    /// At the level it ships: the *load* fails, not only `validate` when
+    /// someone remembers to call it. Both public loaders are `load_layers`,
+    /// so this is them — the PR review of this change pointed out that the
+    /// test below would stay green with the `validate()` call deleted.
     #[test]
     fn a_bad_global_file_fails_the_load_itself() {
         let dir = std::env::temp_dir().join(format!("mecha-tz-{}", uuid::Uuid::new_v4()));
