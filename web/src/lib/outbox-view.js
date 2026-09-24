@@ -502,10 +502,11 @@ export function liveThread(text, account) {
 export function sinceDrafted(recorded, live) {
   if (!recorded || !live?.verified) return null;
   const newest = live.messages[live.messages.length - 1] ?? null;
-  // Matching by id needs every recorded message to carry one; a read in the
-  // older format can lack them, and a missing id would mark every live
+  // Matching by id needs every message on both sides to carry one; a read in
+  // the older format can lack them, and a missing id would mark every live
   // message new. Without ids, only the count is said (review of #275).
-  if (!recorded.verified || recorded.messages.some((m) => !m.replyId)) {
+  const idless = (t) => t.messages.some((m) => !m.replyId);
+  if (!recorded.verified || idless(recorded) || idless(live)) {
     // A *clipped* read runs the other way: the cap dropped whatever came
     // after it, so its count undercounts what the run read, and a live count
     // above it would invent new mail (review of #275). It says nothing.
