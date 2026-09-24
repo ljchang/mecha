@@ -649,6 +649,13 @@ review invitation, and every later sweep would have reported "0 to classify"
 like any quiet morning. A transient infrastructure failure must not become a
 permanent editorial one.
 
+A thread that keeps failing for its own reason is retried on a backoff — an
+hour, doubling, at most a day — rather than every sweep, and an outage never
+counts against it. Because a sweep reads only the newest messages, a failed
+thread that has scrolled out of that window is retried from the store when it
+comes due, so a busy inbox cannot strand it. `mecha mail list` shows when each
+failure is next tried.
+
 ## Microsoft signs in with device code
 
 ```bash

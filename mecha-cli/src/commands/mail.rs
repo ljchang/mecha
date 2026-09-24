@@ -1035,16 +1035,50 @@ async fn classify(
             force || store.needs_classifying(a, t)
         })
         .collect();
+    // Failed threads due a retry that the read no longer returns: the window
+    // is the newest N messages, and a thread on a 16–24h wait in a busy
+    // mailbox has left it by the time it is due (`due_outside_window`).
+    let seen: std::collections::HashSet<(String, String)> = rows
+        .iter()
+        .filter_map(|r| {
+            Some((
+                r["account"].as_str()?.to_string(),
+                r["thread_id"].as_str()?.to_string(),
+            ))
+        })
+        .collect();
+    let stored = store.list()?;
+    let requeue = mecha_core::mail_triage::due_outside_window(
+        &stored,
+        &seen,
+        account,
+        chrono::Utc::now(),
+        REQUEUE_MAX,
+    );
 
     println!(
-        "{} thread(s) read, {} to classify{}",
+        "{} thread(s) read, {} to classify{}{}",
         rows.len(),
         todo.len(),
+        if requeue.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ", {} failed thread(s) retried from the store",
+                requeue.len()
+            )
+        },
         if dry_run { " (dry run)" } else { "" }
     );
-    if todo.is_empty() || dry_run {
+    if (todo.is_empty() && requeue.is_empty()) || dry_run {
         for r in &todo {
             println!("  would classify {} — {}", r["thread_id"], r["subject"]);
+        }
+        for r in &requeue {
+            println!(
+                "  would retry {} — {} (outside the window)",
+                r.thread_id, r.subject
+            );
         }
         return Ok(());
     }
@@ -1098,21 +1132,60 @@ async fn classify(
     let get_thread = find_tool(&prepared.registry, "mail_get_thread");
     let (mut ok, mut failed, mut escalated) = (0u32, 0u32, 0u32);
     let mut prefiltered = 0u32;
-    // Failures are written after the sweep, not as they happen: whether a
-    // failure counts against its thread can depend on the whole sweep
-    // (`sweep_was_outage`).
+    // Every failure is written the moment it happens, counted against its
+    // thread (`fail_now`) — a sweep that dies late (an error, the unit's
+    // start timeout) must not leave a failed thread with no `failed` record,
+    // since that record is what keeps it in front of a person. Whether it
+    // SHOULD count can depend on the whole sweep (`sweep_was_outage`), so the
+    // failures are also kept, and rewritten as uncounted if it was.
     let mut failures: Vec<(ThreadInput, Option<Record>, anyhow::Error)> = Vec::new();
-    for row in todo {
-        let mut thread = row_to_input(row);
+    // Every write is attempted even if one errors, so a bad file does not cost
+    // the other threads their record; the first error is returned at the end.
+    let mut write_error: Option<anyhow::Error> = None;
+    let work = todo
+        .into_iter()
+        .map(Work::Row)
+        .chain(requeue.into_iter().map(Work::Stored));
+    for item in work {
+        // `full_body`: a thread retried from the store has no snippet to start
+        // from, so it is read whole up front and needs no second pass.
+        let (mut thread, bulk, full_body) = match item {
+            Work::Row(row) => (
+                row_to_input(row),
+                row["bulk"].as_bool().unwrap_or(false),
+                false,
+            ),
+            Work::Stored(r) => {
+                let mut t = stored_to_input(r);
+                let body = match &get_thread {
+                    Some(tool) => fetch_body(tool.as_ref(), &ctx, &t).await,
+                    None => Err(anyhow::anyhow!(
+                        "no mail_get_thread tool to re-read a thread outside the window"
+                    )),
+                };
+                match body {
+                    Ok(b) => {
+                        t.body = b;
+                        (t, false, true)
+                    }
+                    // Unreadable now (moved, deleted): the thread's own, and
+                    // paced like any other failure of it.
+                    Err(e) => {
+                        failed += 1;
+                        eprintln!("  ! {} — {e:#}", t.thread_id);
+                        fail_now(&store, t, e, &mut failures, &mut write_error);
+                        continue;
+                    }
+                }
+            }
+        };
 
         // Ahead of the model, never instead of it for anything in doubt.
         // About half a real mailbox is bulk or an automated sender, and
         // spending a classifier call on a shipping notification is the cost
         // this removes. The rule only ever produces `ignore` and reads only
         // the envelope — see `mail_triage::prefilter`.
-        if let Some((v, rule)) =
-            mecha_core::mail_triage::prefilter(&thread, row["bulk"].as_bool().unwrap_or(false))
-        {
+        if let Some((v, rule)) = mecha_core::mail_triage::prefilter(&thread, bulk) {
             if let Err(e) = store.put(&record(&thread, Some(v), None)) {
                 eprintln!("  ! {} — {e}", thread.thread_id);
                 failed += 1;
@@ -1143,7 +1216,7 @@ async fn classify(
         let mut did_escalate = false;
         let mut changed: Vec<String> = Vec::new();
         let verdict = match (&verdict, &get_thread) {
-            (Ok(v), Some(tool)) if needs_body(v) => {
+            (Ok(v), Some(tool)) if needs_body(v) && !full_body => {
                 match fetch_body(tool.as_ref(), &ctx, &thread).await {
                     Ok(body) => {
                         thread.body = body;
@@ -1206,22 +1279,30 @@ async fn classify(
             Err(e) => {
                 failed += 1;
                 eprintln!("  ! {} — {e:#}", thread.thread_id);
-                let prev = store.get(&thread.account, &thread.thread_id);
-                failures.push((thread, prev, e));
+                fail_now(&store, thread, e, &mut failures, &mut write_error);
                 continue;
             }
         };
-        store.put(&rec)?;
+        if let Err(err) = store.put(&rec) {
+            write_error.get_or_insert(err);
+        }
     }
-    // A sweep that classified nothing and failed several threads may be the
-    // server's fault or several threads' own — two stuck threads on a quiet
-    // tick look exactly like an outage by their counts. Only the model can
-    // say which: ask it one message nothing can make fail.
-    let canary_answered = if ok == 0 && failures.len() >= 2 {
+    // Several failures may be the server's or several threads' own — two
+    // stuck threads look exactly like an outage by their counts, and the
+    // server failure this exists for is length-dependent, failing the long
+    // threads of a sweep that answered the short ones. Only the model can say
+    // which: ask it a canary as long as the longest thread that failed.
+    let canary_answered = if failures.len() >= 2 {
+        let longest = failures
+            .iter()
+            .map(|(t, _, _)| t.body.chars().count())
+            .max()
+            .unwrap_or(0)
+            .min(BODY_CHARS_MAX);
         let answered = mecha_core::mail_triage::classify_with(
             provider.as_ref(),
             &model,
-            &mecha_core::mail_triage::canary_thread(),
+            &mecha_core::mail_triage::canary_thread(longest),
             &today,
             &examples,
             learned.as_deref(),
@@ -1231,22 +1312,23 @@ async fn classify(
         eprintln!(
             "  {}",
             if answered {
-                "the model answered a canary — these failures are the threads' own"
+                "the model answered a canary as long as the longest failure — \
+                 these failures are the threads' own"
             } else {
-                "the model failed a canary too — an outage, counted against no thread"
+                "the model failed a canary of the same length — the server's, \
+                 counted against no thread"
             }
         );
         answered
     } else {
         true
     };
-    let sweep_outage = sweep_was_outage(ok, failures.len(), canary_answered);
-    // Every failure is written even if one write errors, so a bad file does
-    // not cost the other failures their record; the first error is returned.
-    let mut write_error = None;
-    for (thread, prev, e) in &failures {
-        if let Err(err) = store.put(&failed_record(thread, prev.as_ref(), e, sweep_outage)) {
-            write_error.get_or_insert(err);
+    // Already written as the threads' own; an outage takes the charge back.
+    if sweep_was_outage(failures.len(), canary_answered) {
+        for (thread, prev, e) in &failures {
+            if let Err(err) = store.put(&failed_record(thread, prev.as_ref(), e, true)) {
+                write_error.get_or_insert(err);
+            }
         }
     }
     if let Some(err) = write_error {
@@ -1316,6 +1398,48 @@ async fn fetch_body(
     ))
 }
 
+/// At most this many stored failures are retried per sweep from outside the
+/// window, so a backlog after a long outage is worked off over several
+/// sweeps rather than in one that runs past the unit's timeout.
+const REQUEUE_MAX: usize = 10;
+
+/// One unit of a sweep's work: a row the mailbox read returned, or a failed
+/// thread retried from the store (`due_outside_window`).
+enum Work<'a> {
+    Row(&'a Value),
+    Stored(&'a Record),
+}
+
+/// Write a failure now, counted against its thread (unless its error is
+/// itself an outage), and keep it for the sweep-wide decision.
+fn fail_now(
+    store: &TriageStore,
+    thread: ThreadInput,
+    e: anyhow::Error,
+    failures: &mut Vec<(ThreadInput, Option<Record>, anyhow::Error)>,
+    write_error: &mut Option<anyhow::Error>,
+) {
+    let prev = store.get(&thread.account, &thread.thread_id);
+    if let Err(err) = store.put(&failed_record(&thread, prev.as_ref(), &e, false)) {
+        write_error.get_or_insert(err);
+    }
+    failures.push((thread, prev, e));
+}
+
+/// A stored thread as classifier input. No snippet is kept on the record, so
+/// the body is left for the caller to read whole.
+fn stored_to_input(r: &Record) -> ThreadInput {
+    ThreadInput {
+        thread_id: r.thread_id.clone(),
+        account: r.account.clone(),
+        from: r.from.clone(),
+        from_name: r.from_name.clone(),
+        subject: r.subject.clone(),
+        date: r.date.clone(),
+        body: String::new(),
+    }
+}
+
 fn row_to_input(row: &Value) -> ThreadInput {
     let s = |k: &str| row[k].as_str().unwrap_or_default().to_string();
     // `from` arrives as `Name <addr>`; the address is the half `kg_entity`
@@ -1362,8 +1486,10 @@ fn failed_record(
 }
 
 /// Whether a sweep's failures were the server's, whatever their error type:
-/// the model classified nothing, more than one thread failed, and the model
-/// could not answer a canary either (`mail_triage::canary_thread`).
+/// more than one thread failed, and the model could not answer a canary as
+/// long as the longest of them either (`mail_triage::canary_thread`) — how
+/// many threads it DID answer is not the test, because the failure this
+/// catches is length-dependent and answers the short ones.
 ///
 /// `failure_is_outage` reads the error, and a server-wide failure need not
 /// carry a `ProviderError` — llama-server answering HTTP 200 with empty
@@ -1374,8 +1500,8 @@ fn failed_record(
 /// which, treated as an outage, would never back off, the very bug the
 /// backoff fixes — so the canary decides. A single failure is always the
 /// thread's own; no canary is asked.
-fn sweep_was_outage(ok: u32, failures: usize, canary_answered: bool) -> bool {
-    ok == 0 && failures >= 2 && !canary_answered
+fn sweep_was_outage(failures: usize, canary_answered: bool) -> bool {
+    failures >= 2 && !canary_answered
 }
 
 fn record(t: &ThreadInput, verdict: Option<Verdict>, error: Option<String>) -> Record {
@@ -2641,6 +2767,46 @@ mod classify_exit_tests {
     use mecha_core::provider::retry::ProviderError;
     use serde_json::Value;
 
+    /// Review finding: failures were buffered and written after the loop,
+    /// so a late error — or the unit's start timeout during the canary —
+    /// left those threads with no `failed` record, and nothing in front of a
+    /// person. `fail_now` makes each one durable when it happens.
+    #[test]
+    fn a_failure_is_on_disk_before_the_sweep_ends() {
+        use super::fail_now;
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-fail-now-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let store = mecha_core::mail_triage::TriageStore::open(dir.clone()).unwrap();
+        let thread = ThreadInput {
+            thread_id: "t".into(),
+            account: "a".into(),
+            from: "x@example.edu".into(),
+            from_name: String::new(),
+            subject: "s".into(),
+            date: "2026-09-23T09:00:00Z".into(),
+            body: String::new(),
+        };
+        let (mut failures, mut write_error) = (Vec::new(), None);
+        fail_now(
+            &store,
+            thread,
+            anyhow::anyhow!("no JSON object"),
+            &mut failures,
+            &mut write_error,
+        );
+        // Nothing after this point runs in a sweep killed here.
+        let on_disk = store
+            .get("a", "t")
+            .expect("written at once, not at the end");
+        assert_eq!((on_disk.state.as_str(), on_disk.attempts), (FAILED, 1));
+        assert_eq!(failures.len(), 1, "and kept for the sweep-wide decision");
+        assert!(write_error.is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// The wiring, not just the rule: a failed classification carries the
     /// thread's pacing forward, so its own failures back off and an outage's
     /// do not. Without this the core tests all pass while the backoff does
@@ -2684,24 +2850,29 @@ mod classify_exit_tests {
     #[test]
     fn a_sweep_is_an_outage_only_when_the_model_also_fails_a_canary() {
         assert!(
-            sweep_was_outage(0, 25, false),
+            sweep_was_outage(25, false),
             "every thread failed, and so did the canary"
         );
         // Review finding: two threads stuck at once on a quiet tick look like
         // an outage by their counts; treated as one, they never backed off.
         assert!(
-            !sweep_was_outage(0, 2, true),
+            !sweep_was_outage(2, true),
             "two stuck threads, a healthy model"
         );
         assert!(
-            !sweep_was_outage(0, 1, false),
+            !sweep_was_outage(1, false),
             "one failure is the thread's own"
         );
+        assert!(!sweep_was_outage(0, false));
+        // Review finding: the server failure the canary exists for is
+        // length-dependent — it answers the short threads and fails the long
+        // ones — so "the model worked for others" is not the test. Eighteen
+        // answered and four long ones failed, and a canary as long as them
+        // failed too: the server's, not theirs.
         assert!(
-            !sweep_was_outage(5, 3, false),
-            "the model worked for others"
+            sweep_was_outage(4, false),
+            "a length-matched canary failing is the server's, however many short threads it answered"
         );
-        assert!(!sweep_was_outage(0, 0, false));
     }
 
     /// 2026-08-19: the nightly classified 0 of 16 and systemd logged SUCCESS,
