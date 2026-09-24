@@ -135,7 +135,7 @@ outcome. Phases 2 and 3 can run in parallel once phase 1 lands; phases 4 and 5 f
 | # | work | proposal |
 |---|---|---|
 | 1 | Seed the goal anchor from what the harness holds: the task id on `tasks work` (with its project), the trigger's own name on a trigger run, the request id on a front-door run | S1 |
-| 2 | Close the closure leak: a task closed in `mecha-graph tui` goes through `mecha tasks set`; store the closure verdict instead of only printing it | S3a, R15 |
+| 2 | Task closure and reopening become one recorded lifecycle event, from every surface — CLI, TUI, web, Slack, chat, and the graph TUI — with hook events beside `pre_tool` / `post_tool` / `session_end` | S8, R15 |
 | 3 | Read the verdicts already given: task reopened after `done`, outbox reject reasons, workflow close / cancel / reopen / verify, rule and reflection curation, harness accept / reject / revert, graph review verdicts on facts a session claimed | S3a |
 | 4 | Sensor hygiene: per-item readings and a per-run delta instead of a level; a saturated reading withdrawn from consumers and reported once | S5 |
 | 5 | One commitment record and guilt computed per item from it | S7 |
@@ -232,7 +232,7 @@ long-term shape. Inventory §5 has the full overlap table.
 
 | phase | what it ports |
 |---|---|
-| phase 1 | the board's closure path (one closure path, with the appraisal on it) |
+| phase 1 | the board's closure path — the graph TUI closes through mecha's one closure event (S8) |
 | phase 2 | the D3 correction contract; the ladder's Wilson-bound tenure; decay as rule dormancy; the Selector's demand term as L1's *need* |
 | phase 3 | `verify.rs` folded into `grounding.rs` — one grounding primitive |
 | phase 4 | review-on-use's verdict queue as the shape of `mecha review` |
@@ -249,7 +249,7 @@ widening.
 |---|---|---|---|
 | R14 | all | Mechanisms overlapping mecha-graph are built in mecha core, porting the graph's version; no new cross-repo readers | **stated by the owner, 2026-09-24** |
 | R1 | phase 1 | A trigger run is anchored to the trigger itself (`trigger:<name>`); an owner-written `serves` link to a charter line is optional, never required | **ruled 2026-09-24: optional only** |
-| R15 | phase 1 | Close the closure leak: a task closed in the graph TUI goes through `mecha tasks set` | yes, while both exist |
+| R15 | phase 1 | Closing or reopening a task, on any surface, is one recorded event with hooks | **ruled 2026-09-24** (S8) |
 | R16 | phase 1 | The unread acts sign as follows: a task reopened after `done` −1.0 on the closing session and withdraws its success; an outbox reject reason goes to the reflector as an owner correction; workflow `close` +0.5, `cancel` −0.5, `reopen` −1.0, a failed `verify` −1.0; rule and reflection curation and harness accept / reject feed tenure, never valence | yes |
 | R2 | — | A one-tap verdict channel | **declined 2026-09-24**: no added owner work (here §1, decision 4) |
 | R7 | parked | Pending drafts expire after an owner-set age, as `expired` | **deferred 2026-09-24** until the system has stabilised |
@@ -264,7 +264,7 @@ widening.
 | R8 | parked | The harness may *propose* per-region autonomy grants; only the owner grants | yes, when unparked |
 | R9 | — | The live charter line `be-the-best` ("always finding ways you could have completed a task even better"). Unboundedness is not the issue — charter lines are attractors (here §2). §15's narrower worry is an unbounded line whose *object is the harness itself*, beside a loop that proposes harness changes; that pressure is held structurally, because no lane can accept a `Security`-class change. Flagged once; the owner's to keep or reword | — |
 
-**To start phase 1, R12, R15 and R16 are still needed** (R1 ruled, R2
+**To start phase 1, R12 and R16 are still needed** (R1 and R15 ruled, R2
 declined, R7 deferred). The rest can wait
 for their phase.
 
@@ -301,7 +301,7 @@ outcome.
 |---|---|---|---|---|---|---|---|
 | S1 anchors | ● | | | ● | ● | ● | |
 | S2 harness asks | ● | ● | | | | ● | ● |
-| S3a verdicts already given | | ● | | | | ● | ● |
+| S3a verdicts already given; S8 closure event | | ● | | | | ● | ● |
 | L7 D3 attribution | | ● | | | | ● | |
 | here §5, porting mecha-graph | | | ● | | | ● | ● |
 | S4 commitments | | | | ● | | | ● |
@@ -405,6 +405,58 @@ drafts already follow).
 reward hacking by construction and admissible for rule tenure under §17.2. It
 is the success label for L2, the gain term for L1, and the calibration set for
 S2 and C5. Ruling R2.
+
+#### S8. Closing a task is a recorded lifecycle event, with hooks
+
+**Ruled by the owner, 2026-09-24:** "closing a task via a chat, tui, slack,
+or web should be recorded and have a hook just like pre/post turn and session
+start/end."
+
+**Today.** The closure appraisal lives inside the CLI verb `tasks set`. The
+TUI's `/tasks` and the web board reach it (the web through that verb, with the
+readout lost on the child's stderr); Slack has no close action; in chat the
+model is refused a direct status write (`ClosedStatusGuard`) and may instead
+run `mecha tasks set` through `shell` behind the approver; the graph TUI's
+status cycling calls `gtd::set_task_status` and bypasses all of it. Nothing is
+recorded: the appraisal is printed and gone, so a closure cannot be read back,
+joined to a later reopen, or observed by the owner's own tooling. The hook
+events today are `pre_tool`, `post_tool` and `session_end` — there is no
+turn-level or session-start event, and no task event.
+
+**Build.**
+- **One closure function in mecha core**, which every surface calls:
+  transition the board row, write a **closure record**, run the closure
+  appraisal, stage at most one follow-up, run the project-closure reading, fire
+  the hooks. The record is append-only (`~/.mecha/closures.jsonl`, the
+  question store's conventions): task id, the transition (`next → done`,
+  `done → next` for a reopen), the **actor** (`owner` on a direct surface,
+  `owner-approved` when a model ran it in chat behind the approver), the
+  **surface** (`cli`, `tui`, `web`, `slack`, `chat`, `graph-tui`), the sessions
+  that worked the task, the time, and the reason if one was given.
+- **Every surface uses it.** The CLI and TUI directly; the web board and its
+  readout (now read back from the record, so the page can show it); Slack
+  gains `TaskDone` / `TaskDrop` in its closed `Action` enum
+  (`SLACK-ACTIONS-DESIGN.md`'s shape); chat keeps the approver path and is
+  recorded as `owner-approved`; the graph TUI closes through mecha (here §5).
+- **Reopening is the same event, reversed**, which is what R16's reopen
+  signal reads.
+- **A run with nobody present cannot close a task.** An unattended or
+  delegated run is refused outright, whatever route it tries — which closes
+  the residue `closure_guard.rs` names, where an unattended run holding a
+  shell could follow the refusal text to `mecha tasks set`.
+- **Hooks**, on the existing hook conventions: `pre_task_close` may deny, and
+  fails closed like `pre_tool`; `task_closed` and `task_reopened` observe,
+  receiving the closure record as JSON. The owner's tooling can then react to
+  a closure — log it, notify, archive — without mecha knowing what it does.
+
+**What the appraisal gains.** A closure verdict that is stored rather than
+printed; a reopen joined to the closure it undoes; the surface and actor on
+every verdict, so a chat closure the owner approved and one they made
+directly can be told apart; and no surface where a verdict is lost.
+
+**Not in this item:** turn-level and session-start hook events. The owner's
+ruling names them as the model to follow; they do not exist yet, and adding
+them is a separate change to `hooks.rs`.
 
 #### S5. Sensor hygiene
 
