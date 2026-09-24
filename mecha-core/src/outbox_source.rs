@@ -355,13 +355,19 @@ fn unwrap_untrusted(content: &str) -> &str {
     rest.strip_suffix("\n</untrusted-content>").unwrap_or(rest)
 }
 
+/// The line a clipped read ends on. Public because a reader that splits a
+/// read into messages must know the read is incomplete: a thread cut after
+/// its first message looks exactly like a one-message thread, and the
+/// outbox names who a reply goes back to only from a split it can trust.
+pub const CLIPPED_NOTE: &str = "… truncated; `mecha sessions show` has the whole result.";
+
 fn clip(text: &str) -> String {
     let text = text.trim();
     if text.chars().count() <= MAX_CHARS {
         return text.to_string();
     }
     let cut: String = text.chars().take(MAX_CHARS).collect();
-    format!("{cut}\n\n… truncated; `mecha sessions show` has the whole result.")
+    format!("{cut}\n\n{CLIPPED_NOTE}")
 }
 
 /// The line an editor round-trip is cut on.

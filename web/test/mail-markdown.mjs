@@ -145,6 +145,10 @@ t('empty text is no blocks', parseBlocks('').length === 0 && parseBlocks(null).l
   t('a named link reveals its destination', hiddenTarget(named) === 'evil.example/x');
   const [leaky] = parseInline('[the agenda](https://evil.example/x?d=private-thing)');
   t('the query string is shown, not folded away', hiddenTarget(leaky) === 'evil.example/x?d=private-thing');
+  const [bareLeak] = parseInline('https://evil.example/collect?d=secret');
+  t('a bare URL whose query the display folds is revealed', hiddenTarget(bareLeak) === 'evil.example/collect?d=secret');
+  const [slash] = parseInline('https://www.example.org/');
+  t('www and a trailing slash are not worth revealing', hiddenTarget(slash) === null);
   const [bare] = parseInline('https://example.org/paper');
   t('a bare URL is not revealed twice', hiddenTarget(bare) === null);
   const [mail] = parseInline('[bob@example.org](mailto:bob@example.org)');

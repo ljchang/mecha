@@ -194,5 +194,15 @@ t('attendees accept objects', attendeesOf({ attendees: [{ email: 'a@x.edu' }] })
   t('a legacy single message is verified', threadMessages(real('A', 'M1', 'one'))?.verified === true);
 }
 
+{
+  // Review of #272, pass 2: a read cut at 6000 characters after its first
+  // message must not pass as a verified one-message thread.
+  const cut = '--- [work] From: A <a@x> · T\nCalendar date: Thu\nSubject: S\nMessage id (for mail_reply): M1\n\nvery long…\n\n… truncated; `mecha sessions show` has the whole result.';
+  const th = threadMessages(cut, true);
+  t('a clipped read is not verified', th?.verified === false && th.messages.length === 1);
+  t('and the cap note is not body', !th?.messages[0].body.includes('truncated'));
+  t('so its row names nobody', rowSummary({ tool: 'mail__mail_reply', headline: '', args: {}, sources: [{ tool: 'mail__mail_get_thread', text: cut, clipped: true }] })?.who === '');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

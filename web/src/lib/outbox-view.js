@@ -339,8 +339,11 @@ const MSG_HEAD = /^--- \[([^\]]+)\] From: (.*) <([^<>]*)> · (\S+)$/;
  * who it goes back to from this split** — so it names nobody unless the
  * split is `verified` (review of #272 found a body forging all of the above).
  */
-export function threadMessages(text) {
+export function threadMessages(text, clipped = false) {
   const lines = (text ?? '').replace(/\s+$/, '').split('\n');
+  // A read cut at the source's length cap (the detail's `clipped`) ends on
+  // the cap's note, not on the count, and is missing whatever came after.
+  if (clipped) lines.pop();
   // mecha-mail's closing count (`thread_footer`): the one line after every
   // body, so a body cannot forge it. Reads staged before it existed have none.
   const foot = /^--- end of thread · (\d+) messages?$/.exec(lines[lines.length - 1] ?? '');
@@ -373,8 +376,10 @@ export function threadMessages(text) {
   // reply goes back to. A forged header in a body adds a split: the count
   // catches it, and with no count a single message is the only split that
   // cannot hide one (a forgery would have made a second).
-  const verified = foot ? Number(foot[1]) === messages.length : messages.length === 1;
-  return { account, messages, verified };
+  // A clipped read is never verified: cut after its first message, a long
+  // thread looks exactly like a one-message one (found on review).
+  const verified = !clipped && (foot ? Number(foot[1]) === messages.length : messages.length === 1);
+  return { account, messages, verified, clipped };
 }
 
 /**
@@ -411,7 +416,7 @@ export function rowSummary(detail) {
   if (tool === 'mail_send') return { who: args.to ?? '', subject: args.subject ?? detail.headline ?? '' };
   if (tool !== 'mail_reply') return null;
   const read = (detail.sources ?? []).find((s) => toolSuffix(s.tool) === 'mail_get_thread');
-  const thread = read ? threadMessages(read.text) : null;
+  const thread = read ? threadMessages(read.text, read.clipped) : null;
   const answered = answeredMessage(thread, args);
   const first = thread?.messages[0]?.subject ?? '';
   const subject = detail.headline || (first ? (/^re:/i.test(first) ? first : `Re: ${first}`) : '');

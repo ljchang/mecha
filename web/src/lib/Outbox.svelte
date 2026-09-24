@@ -100,7 +100,7 @@
     if (kind !== 'mail') return null;
     for (const source of detail?.sources ?? []) {
       if (toolSuffix(source.tool) !== 'mail_get_thread') continue;
-      const parsed = threadMessages(source.text);
+      const parsed = threadMessages(source.text, source.clipped);
       if (parsed?.messages.length) return { source, ...parsed };
     }
     return null;
@@ -183,7 +183,7 @@
     showThread = false;
     showRaw = false;
     // With no thread to show as mail, the reads are what there is to see.
-    showSources = !d.sources?.some((x) => toolSuffix(x.tool) === 'mail_get_thread' && threadMessages(x.text));
+    showSources = !d.sources?.some((x) => toolSuffix(x.tool) === 'mail_get_thread' && threadMessages(x.text, x.clipped));
     showArgs = false;
     rejectReason = '';
     if (!keepError) error = null;
@@ -259,7 +259,10 @@
   const JUST_OPENED_MS = 800;
   async function approve() {
     if (!detail || busy || detail.delivery_uncertain) return;
-    if (Date.now() - openedAt < JUST_OPENED_MS) return;
+    if (Date.now() - openedAt < JUST_OPENED_MS) {
+      say('This draft just opened — press again to send it.');
+      return;
+    }
     const id = detail.id;
     const out = await act('approve');
     if (out !== null) {
@@ -687,6 +690,9 @@
                    body can forge a header, and a staged reply names no one
                    else. Unverified, it is what the run read, newest last. -->
               <div class="kicker">{toolSuffix(detail.tool) !== 'mail_reply' ? 'Written from' : readThread.verified ? 'Replying to' : 'The thread it read · newest message'}</div>
+              {#if readThread.clipped}
+                <div class="hint warntext">The run's read of this thread was cut short, so newer messages may be missing — the reply goes to the newest message in the real thread.</div>
+              {/if}
               {#if showThread}
                 {#each readThread.messages as m}{@render message(m, m === answered)}{/each}
               {:else if answered}
