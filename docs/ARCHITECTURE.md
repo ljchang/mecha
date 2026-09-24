@@ -2198,7 +2198,13 @@ now makes the move one recorded event:
   a command that detaches from its shell and clears the variable reads as
   the owner's terminal; an unconfined shell can also edit `~/.mecha`
   directly, and a command can race the few microseconds between spawn and
-  registration. The answer is confinement: bwrap and docker run the command
+  registration. The registry's location has no environment override (a
+  `MECHA_SHELLS_DIR` the reader honoured let a command point it at a
+  registry of its own — found on review of #294); `MECHA_HOME` is the one
+  input left, and redirecting it with a hand-written config can land a move
+  on the real board — the graph server's database does not follow
+  `MECHA_HOME` — while the record goes to the redirected store. The answer is
+  confinement: bwrap and docker run the command
   with `--unshare-pid` / its own pid namespace and no `~/.mecha` mounted,
   landlock grants no path under the owner's home, and `mecha doctor`
   reports an unconfined `shell` or a `[sandbox]` that mounts the mecha home.
