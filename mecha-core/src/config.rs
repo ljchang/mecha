@@ -981,6 +981,26 @@ pub struct McpServerConfig {
     ///
     /// Only ever widens — see [`crate::tool::Capabilities::union`].
     pub capabilities: CapabilityOverride,
+    /// Believe this server's claims about its own results — the
+    /// `mecha-factory.ai/…` keys in a result's `_meta`
+    /// (`docs/PROVENANCE-DESIGN.md` §3). Today that is one claim:
+    /// `dispatched: false`, "refused before any request, so nothing was
+    /// sent", which lets the outbox resolve a failed send as not delivered
+    /// instead of leaving it for the owner to reconcile by hand.
+    ///
+    /// **This is the one switch that trusts a server more, not less**, and
+    /// the opposite direction from [`Self::capabilities`] on purpose (ruling
+    /// R-P2). What keeps it a deliberate decision rather than a quiet
+    /// exemption: it is off by default, it is honoured only from the
+    /// operator's own config (`merge_file` strips it from a project layer,
+    /// loudly), `mecha tools` marks its tools (`result_claims_believed` in
+    /// `--json`, `null` where an unprefixed server makes it unknowable by
+    /// name), `mecha doctor`'s text output names it as a note — not a
+    /// finding, so doctor's `--json` does not carry it — and
+    /// `docs/TRIFECTA.md` lists it with the other switches.
+    /// Turn it on only for a server you wrote or can read: its word is taken
+    /// about whether it sent something.
+    pub trust_result_claims: bool,
     /// Skip this server without deleting its config.
     pub disabled: bool,
 }
@@ -1163,7 +1183,7 @@ impl Config {
     /// through the same parser and table rules as the global file — the
     /// one door `trial_env` needs, rather than the layer machinery itself.
     pub(crate) fn merge_environment_file(&mut self, path: &Path) -> Result<()> {
-        self.merge_file(path, LayerTrust::Global)
+        self.merge_file(path, LayerTrust::Environment)
     }
 
     fn merge_file(&mut self, path: &Path, trust: LayerTrust) -> Result<()> {
@@ -1172,6 +1192,24 @@ impl Config {
         let mut layer: ConfigLayer =
             toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
         layer.expand_home();
+        // `trust_result_claims` believes a server's word about what it did —
+        // the one `[[mcp]]` switch that trusts more rather than less (R-P2).
+        // Only the operator's own file may vouch. A project file arrives with
+        // a cloned repository, and so does an experiment environment's: both
+        // may declare a server but never vouch for one. The flag is cleared,
+        // loudly, and the server runs as if it had never been set.
+        if trust != LayerTrust::Global {
+            for server in layer.mcp.iter_mut().flatten() {
+                if std::mem::take(&mut server.trust_result_claims) {
+                    tracing::warn!(
+                        "[[mcp]] `{}` in {} sets trust_result_claims, which is ignored — \
+                         only the global config may vouch for a server's claims",
+                        server.name,
+                        path.display()
+                    );
+                }
+            }
+        }
         // `[messages]` is receiver-side admission policy, and a project file
         // arrives with a cloned repository — it must not be able to switch a
         // session's inbound handling to `accept`. Dropped loudly rather than
@@ -1407,6 +1445,12 @@ impl Config {
 enum LayerTrust {
     Global,
     Project,
+    /// An experiment environment's `config.toml` (`trial_env`): folded like
+    /// the global file for every rule that tests `== Project`, because an
+    /// environment declares its own world — but it is still a file that
+    /// arrives with a checkout, so it may not vouch for a server's claims
+    /// (review of #290).
+    Environment,
 }
 
 /// Tunables for `mecha serve` — the tailnet web surface.
@@ -2081,6 +2125,49 @@ mod tests {
             cfg.harness.source_dir,
             Some(std::path::PathBuf::from("/tmp/attacker"))
         );
+    }
+
+    #[test]
+    fn a_project_layer_cannot_vouch_for_a_servers_claims() {
+        // `trust_result_claims` takes a server's word that it sent nothing;
+        // a cloned repository's config may declare a server, never vouch for
+        // one. Same file, two trusts: kept from the global layer, cleared
+        // from a project layer — the server itself still loads.
+        let dir = std::env::temp_dir().join(format!("mecha-claims-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("layer.toml");
+        std::fs::write(
+            &path,
+            "[[mcp]]\nname = \"mail\"\ncommand = \"mecha-mail\"\ntrust_result_claims = true\n",
+        )
+        .unwrap();
+
+        let mut from_global = Config::default();
+        from_global.merge_file(&path, LayerTrust::Global).unwrap();
+        assert!(
+            from_global.mcp[0].trust_result_claims,
+            "the operator's own config vouches"
+        );
+
+        let mut from_project = Config::default();
+        from_project.merge_file(&path, LayerTrust::Project).unwrap();
+        assert_eq!(from_project.mcp.len(), 1, "the server itself still loads");
+        assert!(
+            !from_project.mcp[0].trust_result_claims,
+            "a project file must not vouch for a server"
+        );
+
+        // An experiment environment's config is folded at global trust for
+        // everything else, and arrives with a checkout all the same: it may
+        // not vouch either (review of #290).
+        let mut from_environment = Config::default();
+        from_environment.merge_environment_file(&path).unwrap();
+        assert_eq!(from_environment.mcp.len(), 1);
+        assert!(
+            !from_environment.mcp[0].trust_result_claims,
+            "an experiment environment must not vouch for a server"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

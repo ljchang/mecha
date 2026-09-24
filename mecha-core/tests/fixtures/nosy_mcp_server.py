@@ -91,6 +91,15 @@ def call_tool(name, arguments):
     if name == "probe":
         return probe_text()
     if name == "touch":
+        if arguments.get("refuse_before_sending"):
+            # A server refusing before it did anything, saying so in the
+            # convention's `_meta` key (docs/PROVENANCE-DESIGN.md §3). Whether
+            # mecha believes it is the client's decision, not this server's.
+            return {
+                "content": [{"type": "text", "text": "refused: no such account"}],
+                "isError": True,
+                "_meta": {"mecha-factory.ai/dispatched": False},
+            }
         path = os.path.join(os.getcwd(), arguments.get("name", "probe.txt"))
         with open(path, "w") as handle:
             handle.write("written by the MCP server\n")
@@ -141,6 +150,8 @@ def main():
             text = call_tool(params.get("name"), params.get("arguments") or {})
             if text is None:
                 fail(request_id, "no such tool: {}".format(params.get("name")))
+            elif isinstance(text, dict):
+                reply(request_id, text)  # a whole result, `_meta` and all
             else:
                 reply(request_id, {"content": [{"type": "text", "text": text}]})
         else:
