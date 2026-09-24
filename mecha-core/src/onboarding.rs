@@ -774,8 +774,12 @@ fn integration_steps(facts: &Facts) -> Vec<Step> {
             "`mecha-docs` is installed with no account authorised.",
         )
         .with(
+            // `mecha-docs auth` takes the account as `--account` (default
+            // `personal`), unlike `mecha-mail auth <NAME>` above; the
+            // positional form this used to offer failed with "unexpected
+            // argument 'personal'".
             "Authorise Drive access. Use `--paste` if there is no browser here.",
-            &["mecha-docs", "auth", "personal"],
+            &["mecha-docs", "auth"],
             true,
         )
         .optional(),

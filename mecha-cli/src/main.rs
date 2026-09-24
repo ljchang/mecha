@@ -429,8 +429,8 @@ pub enum Command {
     Skills(commands::skills::Args),
 
     /// Show the standing priorities in ~/.mecha/charter.toml, ranked highest
-    /// first. Read-only — a charter is edited with a text editor, never by a
-    /// model or by this command.
+    /// first. Only a person edits a charter — `mecha charter edit` hands the
+    /// file to $EDITOR — and never a model.
     Charter(commands::charter::Args),
 
     /// Inspect saved transcripts.

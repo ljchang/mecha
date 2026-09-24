@@ -317,13 +317,14 @@ pub fn path_candidates(partial: &str, workspace: &std::path::Path) -> Vec<String
 /// One list, so completion and `HELP` cannot drift apart — there is a test that
 /// every name here parses, and another that everything `HELP` advertises is
 /// here.
-pub const NAMES: [&str; 27] = [
+pub const NAMES: [&str; 28] = [
     "help",
     "tools",
     "skills",
     "charter",
     "triggers",
     "outbox",
+    "mail",
     "queues",
     "learning",
     "frontdoor",
@@ -408,6 +409,7 @@ pub const HELP: &str = "\
   /queues                every store waiting on you, incl. the graph merge queue
   /learning              reflections, rules and proposals — read, edit, refuse
   /outbox                staged outbound drafts: read, edit, send, reject
+  /mail                  the classified inbox: read, dismiss, make a task
   /frontdoor             inbound requests: read, extract, triage, close
   /tasks                 the graph's task board: see, capture, edit, move on
   /note <text>           capture a note into the knowledge graph
@@ -415,6 +417,7 @@ pub const HELP: &str = "\
   /polls                 open polls on the gate: tallies, close, export
   /doctor                what is silently wrong across the stores, and the way out
   /docs                  documents in scope, and how to put one there
+  /entity                who is who in the graph: rename, alias, add a person
   /review [now|later|auto]      what happens when a run stages drafts
   /model [id]            show or switch the model
   /provider [name]       show or switch the provider
@@ -432,6 +435,19 @@ pub const HELP: &str = "\
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A command you can Tab to is one `/help` must name: `/entity`
+    /// completed and opened its modal while `/help` left it out, so the
+    /// only way to find it was to already know it.
+    #[test]
+    fn every_completable_command_is_in_help() {
+        for name in NAMES {
+            assert!(
+                HELP.contains(&format!("/{name} ")) || HELP.contains(&format!("/{name}\n")),
+                "/{name} completes but /help does not list it"
+            );
+        }
+    }
 
     #[test]
     fn completion_only_fires_while_the_name_is_still_being_typed() {

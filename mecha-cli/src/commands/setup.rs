@@ -484,6 +484,27 @@ fn write_verified(provider: &str, facts: &Facts) -> Result<()> {
         return write_local_provider(found);
     }
     let Some(props) = &facts.props else {
+        // "Nothing answered" is a claim about a probe, and it is only true
+        // when one ran. With a hosted default provider that already has its
+        // key, no local server is looked for at all (`run`'s `local_probe`),
+        // so a llama-server that is up and serving read as "start the
+        // server" — the wrong remedy for a server that was never asked.
+        // `NotAttempted` has two causes and only one of them is this: a
+        // configured local provider that is merely down is also not probed,
+        // and "Start the server" below is exactly right for it (found on
+        // review). The credential is what separates them — a local provider
+        // has none.
+        if matches!(facts.local_probe, onboarding::LocalProbe::NotAttempted)
+            && facts.provider_credential
+        {
+            anyhow::bail!(
+                "no local server was checked: `{provider}` is a hosted provider with its \
+                 credential, so nothing was probed. To record a llama-server, run \
+                 `mecha setup --write --provider <name>` for your local provider — adding a \
+                 `[providers.<name>]` with `kind = \"local\"` and its `base_url` first if \
+                 there is none."
+            );
+        }
         anyhow::bail!("nothing answered, so there is nothing to write down. Start the server.");
     };
     let settings = onboarding::verified_settings(props);
@@ -808,6 +829,33 @@ fn shell_words(argv: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `NotAttempted` has two causes, and `--write` must name the right one.
+    /// A hosted provider with its key skipped the probe: say nothing was
+    /// checked. A configured local provider that is down skipped it too, and
+    /// for that one "Start the server" is the answer — the first cut of this
+    /// told it its provider "is not a local one" (found on review).
+    #[test]
+    fn write_without_props_names_why_nothing_answered() {
+        let hosted = Facts {
+            provider_credential: true,
+            ..Facts::default()
+        };
+        let err = write_verified("anthropic", &hosted)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no local server was checked"), "{err}");
+
+        let local_but_down = Facts {
+            provider_credential: false,
+            ..Facts::default()
+        };
+        let err = write_verified("local", &local_but_down)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Start the server"), "{err}");
+        assert!(!err.contains("hosted"), "{err}");
+    }
 
     fn lines(text: &str) -> Vec<String> {
         text.lines().map(str::to_string).collect()
