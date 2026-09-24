@@ -183,6 +183,53 @@ fn arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, MailError> {
         .ok_or_else(|| MailError::InvalidInput(format!("`{key}` is required")))
 }
 
+/// What the document tools answer, apart from the calls that produce it, so
+/// the experiment fixture (`eval/fixtures/docs_server.py`) can be measured
+/// against the same sentences rather than a copy of them.
+pub(crate) mod answer {
+    pub fn listed<'a>(files: impl Iterator<Item = (&'a str, &'a str, &'a str)>) -> String {
+        let rows: Vec<String> = files
+            .map(|(kind, name, id)| format!("{kind:7} {name}  [{id}]"))
+            .collect();
+        if rows.is_empty() {
+            return "Nothing is in scope yet. Documents you create here become \
+                    reachable automatically; existing ones must be added by the \
+                    user with `mecha-docs pick`."
+                .to_string();
+        }
+        rows.join("\n")
+    }
+
+    pub fn created(title: &str, id: &str, with_body: bool) -> String {
+        if with_body {
+            format!("created {title:?} [{id}] with its body")
+        } else {
+            format!("created {title:?} [{id}]")
+        }
+    }
+
+    pub fn appended(text: &str) -> String {
+        format!("appended {} characters", text.len())
+    }
+
+    // Zero is not success. A model told "ok" here goes on to report an edit
+    // that never happened.
+    pub fn replaced(find: &str, n: i64) -> String {
+        if n == 0 {
+            format!(
+                "no occurrences of {find:?} found — nothing was changed. \
+                 Read the document and quote its exact wording."
+            )
+        } else {
+            format!("replaced {n} occurrence(s)")
+        }
+    }
+
+    pub fn trashed(id: &str) -> String {
+        format!("moved {id} to the Drive trash; it can be restored there")
+    }
+}
+
 async fn dispatch(
     client: &DocsClient,
     name: &str,
@@ -190,17 +237,11 @@ async fn dispatch(
 ) -> Option<Result<String, MailError>> {
     let out = match name {
         "docs_list" => client.list_scope().await.map(|files| {
-            if files.is_empty() {
-                return "Nothing is in scope yet. Documents you create here become \
-                        reachable automatically; existing ones must be added by the \
-                        user with `mecha-docs pick`."
-                    .to_string();
-            }
-            files
-                .iter()
-                .map(|f| format!("{:7} {}  [{}]", kind_of(&f.mime_type), f.name, f.id))
-                .collect::<Vec<_>>()
-                .join("\n")
+            answer::listed(
+                files
+                    .iter()
+                    .map(|f| (kind_of(&f.mime_type), f.name.as_str(), f.id.as_str())),
+            )
         }),
         "docs_read" => match arg(args, "file_id") {
             Ok(id) => client
@@ -240,13 +281,13 @@ async fn dispatch(
                     // id regardless is what makes it recoverable.
                     if let Some(body) = args["body"].as_str().filter(|b| !b.is_empty()) {
                         match client.append_text(&id, body).await {
-                            Ok(()) => Ok(format!("created {title:?} [{id}] with its body")),
+                            Ok(()) => Ok(answer::created(title, &id, true)),
                             Err(e) => Ok(format!(
                                 "created {title:?} [{id}], but writing the body failed: {e}"
                             )),
                         }
                     } else {
-                        Ok(format!("created {title:?} [{id}]"))
+                        Ok(answer::created(title, &id, false))
                     }
                 }
                 Err(e) => Err(e),
@@ -257,7 +298,7 @@ async fn dispatch(
             (Ok(id), Ok(text)) => client
                 .append_text(id, text)
                 .await
-                .map(|()| format!("appended {} characters", text.len())),
+                .map(|()| answer::appended(text)),
             (Err(e), _) | (_, Err(e)) => Err(e),
         },
         "docs_replace" => match (
@@ -268,13 +309,7 @@ async fn dispatch(
             (Ok(id), Ok(find), Ok(replace)) => {
                 let match_case = args["match_case"].as_bool().unwrap_or(true);
                 match client.replace_text(id, find, replace, match_case).await {
-                    // Zero is not success. A model told "ok" here goes on to
-                    // report an edit that never happened.
-                    Ok(0) => Ok(format!(
-                        "no occurrences of {find:?} found — nothing was changed. \
-                         Read the document and quote its exact wording."
-                    )),
-                    Ok(n) => Ok(format!("replaced {n} occurrence(s)")),
+                    Ok(n) => Ok(answer::replaced(find, n)),
                     Err(e) => Err(e),
                 }
             }
@@ -317,10 +352,7 @@ async fn dispatch(
             Err(e) => Err(e),
         },
         "docs_trash" => match arg(args, "file_id") {
-            Ok(id) => client
-                .trash(id)
-                .await
-                .map(|()| format!("moved {id} to the Drive trash; it can be restored there")),
+            Ok(id) => client.trash(id).await.map(|()| answer::trashed(id)),
             Err(e) => Err(e),
         },
         _ => return None,
@@ -433,35 +465,71 @@ mod tests {
         }
     }
 
-    /// The experiment fixture (`eval/fixtures/docs_server.py`) serves these
-    /// definitions verbatim: every tool it lists is one of ours, field for
-    /// field. A fixture that describes or annotates a tool differently from
-    /// this server measures a harness nobody runs — its writes once lacked
-    /// `openWorldHint`, so the interlock could never refuse them there.
-    #[test]
-    fn the_docs_fixture_serves_the_real_definitions() {
+    /// Drive the experiment fixture (`eval/fixtures/docs_server.py`) over a
+    /// fresh store: one JSON-RPC request per line in, one reply per request
+    /// out. `None` when there is no `python3` to run it — a skip that
+    /// `MECHA_TEST_REQUIRE_BACKENDS=1` turns into a failure, as for every
+    /// other fixture-spawning test, because in CI a skipped test reads
+    /// exactly like a passing one.
+    fn drive_fixture(requests: &[Value]) -> Option<Vec<Value>> {
         use std::io::Write;
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../eval/fixtures/docs_server.py");
         let store = tempfile::tempdir().unwrap();
-        let mut child = std::process::Command::new("python3")
+        let spawned = std::process::Command::new("python3")
             .arg(&fixture)
             .arg("--store")
             .arg(store.path())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("python3 runs the fixture");
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n")
-            .unwrap();
+            .spawn();
+        let mut child = match spawned {
+            Ok(child) => child,
+            Err(e) if std::env::var_os("MECHA_TEST_REQUIRE_BACKENDS").is_none() => {
+                eprintln!("skipping: python3 cannot run the docs fixture ({e})");
+                return None;
+            }
+            Err(e) => panic!("MECHA_TEST_REQUIRE_BACKENDS is set and python3 failed: {e}"),
+        };
+        let mut stdin = child.stdin.take().unwrap();
+        for (i, request) in requests.iter().enumerate() {
+            let mut line = request.clone();
+            line["jsonrpc"] = json!("2.0");
+            line["id"] = json!(i + 1);
+            writeln!(stdin, "{line}").unwrap();
+        }
+        drop(stdin);
         let out = child.wait_with_output().unwrap();
         assert!(out.status.success(), "the fixture exited {}", out.status);
-        let reply: Value = serde_json::from_slice(&out.stdout).unwrap();
-        let served = reply["result"]["tools"].as_array().unwrap();
+        let replies: Vec<Value> = String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(replies.len(), requests.len());
+        Some(replies)
+    }
+
+    fn call(name: &str, arguments: Value) -> Value {
+        json!({"method": "tools/call", "params": {"name": name, "arguments": arguments}})
+    }
+
+    fn text(reply: &Value) -> &str {
+        assert_ne!(reply["result"]["isError"], json!(true), "{reply}");
+        reply["result"]["content"][0]["text"].as_str().unwrap()
+    }
+
+    /// The fixture serves these definitions verbatim: every tool it lists is
+    /// one of ours, field for field. A fixture that describes or annotates a
+    /// tool differently from this server measures a harness nobody runs —
+    /// its writes once lacked `openWorldHint`, so the interlock could never
+    /// refuse them there.
+    #[test]
+    fn the_docs_fixture_serves_the_real_definitions() {
+        let Some(replies) = drive_fixture(&[json!({"method": "tools/list"})]) else {
+            return;
+        };
+        let served = replies[0]["result"]["tools"].as_array().unwrap();
         let real = tool_definitions();
         assert!(!served.is_empty());
         for tool in served {
@@ -471,5 +539,58 @@ mod tests {
             });
             assert_eq!(tool, ours, "`{name}` drifted from tool_definitions()");
         }
+    }
+
+    /// And it answers in this server's sentences — the ones `dispatch`
+    /// builds from `answer`. A case that grades on a file id the model has
+    /// to find in `docs_list` is only honest if the listing reads as it
+    /// does against Google.
+    #[test]
+    fn the_docs_fixture_answers_in_the_real_sentences() {
+        let Some(replies) = drive_fixture(&[
+            call("docs_list", json!({})),
+            call("docs_create", json!({"title": "Plain \"notes\""})),
+            call(
+                "docs_create",
+                json!({"title": "Minutes", "body": "Agenda."}),
+            ),
+            call(
+                "docs_append",
+                json!({"file_id": "doc-0002", "text": "Décisions."}),
+            ),
+            call(
+                "docs_replace",
+                json!({"file_id": "doc-0002", "find": "Agenda", "replace": "Items"}),
+            ),
+            call(
+                "docs_replace",
+                json!({"file_id": "doc-0002", "find": "absent", "replace": "x"}),
+            ),
+            call("docs_list", json!({})),
+            call("docs_trash", json!({"file_id": "doc-0001"})),
+        ]) else {
+            return;
+        };
+        let answers: Vec<&str> = replies.iter().map(text).collect();
+        assert_eq!(answers[0], answer::listed(std::iter::empty()));
+        assert_eq!(
+            answers[1],
+            answer::created("Plain \"notes\"", "doc-0001", false)
+        );
+        assert_eq!(answers[2], answer::created("Minutes", "doc-0002", true));
+        assert_eq!(answers[3], answer::appended("Décisions."));
+        assert_eq!(answers[4], answer::replaced("Agenda", 1));
+        assert_eq!(answers[5], answer::replaced("absent", 0));
+        assert_eq!(
+            answers[6],
+            answer::listed(
+                [
+                    ("doc", "Plain \"notes\"", "doc-0001"),
+                    ("doc", "Minutes", "doc-0002")
+                ]
+                .into_iter()
+            )
+        );
+        assert_eq!(answers[7], answer::trashed("doc-0001"));
     }
 }

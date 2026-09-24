@@ -1070,7 +1070,11 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
         real.mcp.clear();
         let mut seen = 0;
         for entry in std::fs::read_dir(checkout.join("eval/envs")).unwrap() {
-            let name = entry.unwrap().file_name().to_string_lossy().to_string();
+            let entry = entry.unwrap();
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
             let env = Environment {
                 dir: Some(format!("eval/envs/{name}").into()),
                 live_servers: Vec::new(),

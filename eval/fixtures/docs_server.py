@@ -2,10 +2,12 @@
 """A fixture Google Docs server: `mecha-docs`' document tools over a seeded
 store, with every write recorded and nothing reaching Google.
 
-Same tool names, argument shapes and answer texts as the real server's
-document half — `docs_create`, `docs_append`, `docs_replace`, `docs_read`,
-`docs_list`, `docs_trash` — so a run and the drafts it stages look exactly as
-they would against the real one. Sheets and slides are not served: no suite
+Same tool definitions and answer texts as the real server's document half —
+`docs_create`, `docs_append`, `docs_replace`, `docs_read`, `docs_list`,
+`docs_trash` — so a run and the drafts it stages look exactly as they would
+against the real one. Both are measured, not promised: `mecha-mail`'s
+`the_docs_fixture_serves_the_real_definitions` and
+`the_docs_fixture_answers_in_the_real_sentences`. Sheets and slides are not served: no suite
 uses them, and a tool a fixture answers wrongly is worse than one it lacks.
 
 State lives in `$MECHA_FIXTURE_DIR` (or `--store`), seeded once by `mecha exp`:
@@ -26,6 +28,14 @@ import tempfile
 
 class ToolError(Exception):
     pass
+
+
+def rust_debug(text):
+    """A string as Rust's `{:?}` prints it, which is how the real answers
+    quote a title or an anchor."""
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    escaped = escaped.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+    return f'"{escaped}"'
 
 
 def write_atomic(path, value):
@@ -79,7 +89,7 @@ def docs_create(store, args):
     store.data["docs"].append(doc)
     store.save()
     store.record("docs_create", args, {"file_id": doc["id"]})
-    return f"created \"{title}\" — file id {doc['id']} (https://docs.google.com/document/d/{doc['id']}/edit)"
+    return f"created {rust_debug(title)} [{doc['id']}]" + (" with its body" if body else "")
 
 
 def docs_append(store, args):
@@ -88,7 +98,7 @@ def docs_append(store, args):
     doc["body"] = (doc["body"] + ("\n" if doc["body"] and not doc["body"].endswith("\n") else "") + text)
     store.save()
     store.record("docs_append", args, {"file_id": doc["id"]})
-    return f"appended {len(text)} characters to \"{doc['title']}\" ({doc['id']})"
+    return f"appended {len(text.encode())} characters"
 
 
 def docs_replace(store, args):
@@ -117,8 +127,8 @@ def docs_replace(store, args):
     if count == 0:
         # Zero is not success, as on the real server: a model told "ok" goes
         # on to report an edit that never happened.
-        return f"no occurrences of {find!r} found — nothing was changed. Read the document and quote its exact wording."
-    return f"replaced {count} occurrence(s) in \"{doc['title']}\" ({doc['id']})"
+        return f"no occurrences of {rust_debug(find)} found — nothing was changed. Read the document and quote its exact wording."
+    return f"replaced {count} occurrence(s)"
 
 
 def docs_read(store, args):
@@ -127,8 +137,10 @@ def docs_read(store, args):
 
 
 def docs_list(store, args):
-    rows = [{"file_id": d["id"], "title": d["title"]} for d in store.data["docs"] if not d.get("trashed")]
-    return json.dumps(rows, indent=2) if rows else "no documents"
+    rows = [f"{'doc':7} {d['title']}  [{d['id']}]" for d in store.data["docs"] if not d.get("trashed")]
+    if not rows:
+        return "Nothing is in scope yet. Documents you create here become reachable automatically; existing ones must be added by the user with `mecha-docs pick`."
+    return "\n".join(rows)
 
 
 def docs_trash(store, args):
@@ -136,7 +148,7 @@ def docs_trash(store, args):
     doc["trashed"] = True
     store.save()
     store.record("docs_trash", args, {"file_id": doc["id"]})
-    return f"moved \"{doc['title']}\" ({doc['id']}) to the trash"
+    return f"moved {doc['id']} to the Drive trash; it can be restored there"
 
 
 # Verbatim from `mecha-mail/src/google/docs_server.rs::tool_definitions()`
