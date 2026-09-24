@@ -106,7 +106,63 @@ impl Environment {
     /// arguments — are resolved against the checkout.
     pub fn base_config(&self, real: &Config, base: &Path) -> Result<Config> {
         let dir = self.dir(base);
+        anyhow::ensure!(
+            !dir.join(ENV_MANIFEST).exists(),
+            "{} extends another environment; it is prepared (`Environment::prepare`), never \
+             read in place",
+            dir.display()
+        );
         refuse_operator_home(&dir, &crate::work::mecha_home()?)?;
+        self.config_at(&dir, real, base)
+    }
+
+    /// Resolve the environment (its `extends` chain, files overlaid,
+    /// `config.toml` merged), build it under `cache/<digest>/tree` once,
+    /// and read its config there. What every trial of an arm runs in: the
+    /// digest is over the *resolved* files, so it names exactly what ran.
+    pub fn prepare(&self, real: &Config, base: &Path, cache: &Path) -> Result<World> {
+        let files = self.resolve(base)?;
+        let digest = self.digest_of(&files);
+        let dir = cache.join(&digest).join("tree");
+        materialize(&files, &dir)?;
+        let config = self.config_at(&dir, real, base)?;
+        Ok(World {
+            digest,
+            dir,
+            config,
+        })
+    }
+
+    /// Every file the environment resolves to, by relative path: its
+    /// `extends` chain from the root down, each directory's files replacing
+    /// the one beneath at the same path, except `config.toml`, whose tables
+    /// merge key by key (a scalar or an array replaces; a table recurses).
+    /// `environment.toml` itself is consumed, never a file of the result.
+    pub fn resolve(&self, base: &Path) -> Result<std::collections::BTreeMap<String, Vec<u8>>> {
+        let home = crate::work::mecha_home()?;
+        resolve_dir(&self.dir(base), base, &home, &mut Vec::new())
+    }
+
+    fn digest_of(&self, files: &std::collections::BTreeMap<String, Vec<u8>>) -> String {
+        let mut bytes = Vec::new();
+        for (rel, content) in files {
+            bytes.extend_from_slice(rel.as_bytes());
+            bytes.push(0);
+            bytes.extend_from_slice(content);
+            bytes.push(0);
+        }
+        let mut live = self.live_servers.clone();
+        live.sort();
+        bytes.extend_from_slice(format!("live={}", live.join(",")).as_bytes());
+        crate::experiment::fnv64(&bytes)
+    }
+
+    /// The config of an environment directory already on disk — the
+    /// declared one, or a built tree. Not guarded against the home here:
+    /// a built tree lives in the experiment store, which *is* under the
+    /// home, and every authored directory it was built from was guarded by
+    /// `resolve` (found live: the first cut refused its own build).
+    fn config_at(&self, dir: &Path, real: &Config, base: &Path) -> Result<Config> {
         let path = dir.join("config.toml");
         let text = std::fs::read_to_string(&path).with_context(|| {
             format!(
@@ -198,27 +254,11 @@ impl Environment {
     /// directory, by relative path and content, plus the live servers it
     /// opens. A term of every row's condition hash.
     pub fn digest(&self, base: &Path) -> Result<String> {
-        let dir = self.dir(base);
-        // Guarded here as well as in `base_config`: `ExperimentStore::plan`
-        // digests first, and `status` never reaches `base_config`, so a
-        // `dir` inside the home would be read whole before the refusal
-        // (found on review).
-        refuse_operator_home(&dir, &crate::work::mecha_home()?)?;
-        let mut files = Vec::new();
-        collect_files(&dir, &dir, &mut files)
-            .with_context(|| format!("reading the experiment environment {}", dir.display()))?;
-        files.sort();
-        let mut bytes = Vec::new();
-        for rel in &files {
-            bytes.extend_from_slice(rel.as_bytes());
-            bytes.push(0);
-            bytes.extend_from_slice(&std::fs::read(dir.join(rel))?);
-            bytes.push(0);
-        }
-        let mut live = self.live_servers.clone();
-        live.sort();
-        bytes.extend_from_slice(format!("live={}", live.join(",")).as_bytes());
-        Ok(crate::experiment::fnv64(&bytes))
+        // `resolve` guards every directory of the chain before reading it:
+        // `ExperimentStore::plan` digests first, and `status` never reaches
+        // `config_at`, so a `dir` inside the home would otherwise be read
+        // whole before the refusal (found on review).
+        Ok(self.digest_of(&self.resolve(base)?))
     }
 }
 
@@ -290,6 +330,133 @@ fn resolve_existing_prefix(p: &Path) -> Result<PathBuf> {
             _ => return Ok(lexical),
         }
     }
+}
+
+/// An environment directory's own manifest: what it extends.
+pub const ENV_MANIFEST: &str = "environment.toml";
+
+/// How deep an `extends` chain may go.
+const MAX_EXTENDS: usize = 8;
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EnvManifest {
+    /// The environment this one overlays, relative to the checkout.
+    #[serde(default)]
+    extends: Option<PathBuf>,
+}
+
+/// What an arm's trials run in: the resolved environment, built on disk,
+/// and the harness config read from it.
+#[derive(Debug, Clone)]
+pub struct World {
+    pub digest: String,
+    pub dir: PathBuf,
+    pub config: Config,
+}
+
+fn resolve_dir(
+    dir: &Path,
+    base: &Path,
+    home: &Path,
+    chain: &mut Vec<PathBuf>,
+) -> Result<std::collections::BTreeMap<String, Vec<u8>>> {
+    refuse_operator_home(dir, home)?;
+    let canonical = dir.canonicalize()?;
+    anyhow::ensure!(
+        !chain.contains(&canonical),
+        "experiment environment {} extends itself (through {})",
+        dir.display(),
+        chain
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(" → ")
+    );
+    anyhow::ensure!(
+        chain.len() < MAX_EXTENDS,
+        "experiment environment {}: an `extends` chain deeper than {MAX_EXTENDS}",
+        dir.display()
+    );
+    chain.push(canonical);
+    let mut rels = Vec::new();
+    collect_files(dir, dir, &mut rels)
+        .with_context(|| format!("reading the experiment environment {}", dir.display()))?;
+    let mut own = std::collections::BTreeMap::new();
+    for rel in rels {
+        let bytes = std::fs::read(dir.join(&rel))?;
+        own.insert(rel, bytes);
+    }
+    let manifest: EnvManifest = match own.remove(ENV_MANIFEST) {
+        Some(bytes) => toml::from_str(&String::from_utf8(bytes)?)
+            .with_context(|| format!("{}", dir.join(ENV_MANIFEST).display()))?,
+        None => EnvManifest::default(),
+    };
+    let mut out = match manifest.extends {
+        Some(parent) => resolve_dir(&base.join(parent), base, home, chain)?,
+        None => std::collections::BTreeMap::new(),
+    };
+    for (rel, bytes) in own {
+        let merged = match (rel.as_str(), out.get(&rel)) {
+            ("config.toml", Some(under)) => merge_config(under, &bytes)
+                .with_context(|| format!("merging {} over its base", dir.join(&rel).display()))?,
+            _ => bytes,
+        };
+        out.insert(rel, merged);
+    }
+    Ok(out)
+}
+
+/// `over` merged onto `under`, table by table: a key in `over` replaces the
+/// same key in `under`, unless both are tables, which merge recursively.
+/// Arrays replace whole — `[[mcp]]` in a variant is its complete server
+/// list, never an append.
+fn merge_config(under: &[u8], over: &[u8]) -> Result<Vec<u8>> {
+    fn merge(under: &mut toml::Table, over: toml::Table) {
+        for (key, value) in over {
+            match (under.get_mut(&key), value) {
+                (Some(toml::Value::Table(u)), toml::Value::Table(o)) => merge(u, o),
+                (_, v) => {
+                    under.insert(key, v);
+                }
+            }
+        }
+    }
+    let mut base: toml::Table = toml::from_str(std::str::from_utf8(under)?)?;
+    let top: toml::Table = toml::from_str(std::str::from_utf8(over)?)?;
+    merge(&mut base, top);
+    Ok(toml::to_string(&base)?.into_bytes())
+}
+
+/// Write resolved files as a directory, once: a built tree is named by its
+/// digest, so one that exists is the one wanted. Staged and renamed, so a
+/// crash leaves no half tree behind a finished name.
+fn materialize(files: &std::collections::BTreeMap<String, Vec<u8>>, dir: &Path) -> Result<()> {
+    if dir.join(BUILT).exists() {
+        return Ok(());
+    }
+    if dir.exists() {
+        std::fs::remove_dir_all(dir)?;
+    }
+    let parent = dir.parent().context("a built environment needs a parent")?;
+    std::fs::create_dir_all(parent)?;
+    let staging = parent.join(format!(".tree-{}", uuid::Uuid::new_v4()));
+    let built: Result<()> = (|| {
+        for (rel, bytes) in files {
+            let path = staging.join(rel);
+            if let Some(p) = path.parent() {
+                std::fs::create_dir_all(p)?;
+            }
+            std::fs::write(&path, bytes)?;
+        }
+        std::fs::write(staging.join(BUILT), b"built by mecha exp\n")?;
+        std::fs::rename(&staging, dir)?;
+        Ok(())
+    })();
+    if built.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    built.with_context(|| format!("building the environment at {}", dir.display()))
 }
 
 /// Every file under the environment, relative to it. **A symlink anywhere
@@ -711,6 +878,150 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
         assert_eq!(
             resolve_existing_prefix(Path::new("no-such-dir/x/../y")).unwrap(),
             cwd.join("no-such-dir/y")
+        );
+    }
+
+    /// A variant `extends` a base: its files replace the base's at the same
+    /// path, its `config.toml` merges key by key (tables recurse, arrays
+    /// and scalars replace), `environment.toml` is consumed, and the built
+    /// world reads the merged config. The digest names the resolved files.
+    #[test]
+    fn a_variant_extends_its_base_and_merges_its_config() {
+        let tmp = Scratch::new();
+        let base_dir = tmp.path().join("envs/base");
+        std::fs::create_dir_all(&base_dir).unwrap();
+        std::fs::write(
+            base_dir.join("config.toml"),
+            "[agent]\nmax_turns = 12\ntimezone = \"UTC\"\n[[mcp]]\nname = \"graph\"\ncommand = \"g\"\n",
+        )
+        .unwrap();
+        std::fs::write(base_dir.join("charter.toml"), "# base\n").unwrap();
+        let variant_dir = tmp.path().join("envs/variant");
+        std::fs::create_dir_all(&variant_dir).unwrap();
+        std::fs::write(variant_dir.join(ENV_MANIFEST), "extends = \"envs/base\"\n").unwrap();
+        std::fs::write(
+            variant_dir.join("config.toml"),
+            "[agent]\nmax_turns = 6\n[tools]\ndisabled = [\"shell\"]\n",
+        )
+        .unwrap();
+        std::fs::write(variant_dir.join("charter.toml"), "# variant\n").unwrap();
+        let base_env = Environment {
+            dir: Some("envs/base".into()),
+            live_servers: Vec::new(),
+        };
+        let variant = Environment {
+            dir: Some("envs/variant".into()),
+            live_servers: Vec::new(),
+        };
+        let files = variant.resolve(tmp.path()).unwrap();
+        assert!(!files.contains_key(ENV_MANIFEST), "consumed, not a file");
+        assert_eq!(files["charter.toml"], b"# variant\n");
+        let cache = tmp.path().join("cache");
+        let world = variant.prepare(&operator(), tmp.path(), &cache).unwrap();
+        assert_eq!(world.config.agent.max_turns, 6, "the variant's key");
+        assert_eq!(
+            world.config.agent.timezone.as_deref(),
+            Some("UTC"),
+            "the base's key kept"
+        );
+        assert_eq!(world.config.tools.disabled, ["shell"]);
+        assert_eq!(world.config.mcp.len(), 1, "the base's servers kept");
+        assert_eq!(
+            std::fs::read_to_string(world.dir.join("charter.toml")).unwrap(),
+            "# variant\n"
+        );
+        // The digest is the resolved world's: stable, and apart from the base's.
+        assert_eq!(world.digest, variant.digest(tmp.path()).unwrap());
+        assert_ne!(world.digest, base_env.digest(tmp.path()).unwrap());
+        // Editing the base moves the variant too: it is part of what ran.
+        std::fs::write(base_dir.join("config.toml"), "[agent]\nmax_turns = 12\n").unwrap();
+        assert_ne!(world.digest, variant.digest(tmp.path()).unwrap());
+        // An extending environment is prepared, never read in place.
+        assert!(variant.base_config(&operator(), tmp.path()).is_err());
+        // The build cache lives in the experiment store, inside the mecha
+        // home, and preparing there works: the guard is for authored
+        // directories, never for the tree `prepare` builds itself.
+        let home = crate::work::tests::HomeGuard::new();
+        let in_home = home.dir().join("experiments/x/environment");
+        let world = variant.prepare(&operator(), tmp.path(), &in_home).unwrap();
+        assert!(world.dir.starts_with(home.dir()));
+        drop(home);
+    }
+
+    /// The shipped variant over the shipped default: the real configs through
+    /// the real merge — a nested `[mcp.capabilities]` inside an array of
+    /// tables, inline `env = {…}` with `${STORE}` — so the round-trip every
+    /// live run takes is measured, not only a toy base (found on review).
+    #[test]
+    fn the_shipped_variant_merges_over_the_shipped_default() {
+        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let tmp = Scratch::new();
+        let mut real = operator();
+        real.mcp.clear();
+        let variant = Environment {
+            dir: Some("eval/envs/no-shell".into()),
+            live_servers: Vec::new(),
+        };
+        let world = variant
+            .prepare(&real, checkout, &tmp.path().join("cache"))
+            .unwrap();
+        assert_eq!(world.config.tools.disabled, ["shell"]);
+        let base = Environment::default()
+            .prepare(&real, checkout, &tmp.path().join("cache"))
+            .unwrap();
+        assert_eq!(world.config.agent.max_turns, base.config.agent.max_turns);
+        assert_eq!(world.config.agent.timezone, base.config.agent.timezone);
+        let names: Vec<&str> = world.config.mcp.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["graph", "mail"], "the base's servers, whole");
+        let graph = &world.config.mcp[0];
+        assert!(graph.env["MECHA_GRAPH_DB"].contains(STORE_TOKEN));
+        assert_eq!(graph.prefix_tools, Some(false));
+        assert!(
+            graph.capabilities.untrusted_input,
+            "nested capabilities survive"
+        );
+        assert_eq!(stored_servers(&world.config).len(), 2);
+        assert_eq!(world.config.outbox.tools, base.config.outbox.tools);
+        assert_ne!(world.digest, base.digest);
+    }
+
+    /// A chain that loops, or runs through the operator's home, or holds a
+    /// link, is refused.
+    #[test]
+    fn an_extends_chain_is_guarded_like_the_directory() {
+        let tmp = Scratch::new();
+        for name in ["a", "b"] {
+            let d = tmp.path().join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("config.toml"), "").unwrap();
+        }
+        std::fs::write(tmp.path().join("a").join(ENV_MANIFEST), "extends = \"b\"\n").unwrap();
+        std::fs::write(tmp.path().join("b").join(ENV_MANIFEST), "extends = \"a\"\n").unwrap();
+        let looped = Environment {
+            dir: Some("a".into()),
+            live_servers: Vec::new(),
+        };
+        let err = looped.resolve(tmp.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("extends itself"), "{err:#}");
+        let home = crate::work::tests::HomeGuard::new();
+        std::fs::write(
+            tmp.path().join("b").join(ENV_MANIFEST),
+            format!("extends = {:?}\n", home.dir().display().to_string()),
+        )
+        .unwrap();
+        let err = looped.resolve(tmp.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("mecha home"), "{err:#}");
+        drop(home);
+        let bad_key = tmp.path().join("c");
+        std::fs::create_dir_all(&bad_key).unwrap();
+        std::fs::write(bad_key.join(ENV_MANIFEST), "extend = \"a\"\n").unwrap();
+        let typo = Environment {
+            dir: Some("c".into()),
+            live_servers: Vec::new(),
+        };
+        assert!(
+            typo.resolve(tmp.path()).is_err(),
+            "an unknown key is an error"
         );
     }
 

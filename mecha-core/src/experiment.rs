@@ -1053,6 +1053,12 @@ pub struct Arm {
     /// that changes nothing would still move the hash.
     #[serde(default)]
     pub stages_off: Vec<String>,
+    /// This arm's own world, in place of the manifest's `[environment]`:
+    /// a different system prompt, tool list, charter or graph seed, as a
+    /// directory the digest names by content. Usually one that `extends`
+    /// the manifest's, carrying only what the arm changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<crate::trial_env::Environment>,
     #[serde(default)]
     pub prediction: Option<Prediction>,
 }
@@ -1511,6 +1517,15 @@ impl Manifest {
     }
 
     fn validate(&self) -> Result<()> {
+        for (name, arm) in &self.arms {
+            if let Some(env) = &arm.environment {
+                anyhow::ensure!(
+                    env.dir.is_some() || !env.live_servers.is_empty(),
+                    "arm `{name}` names an environment with neither `dir` nor `live_servers`; \
+                     drop it to run in the manifest's"
+                );
+            }
+        }
         if let Some(judge) = &self.judge {
             anyhow::ensure!(
                 !judge.provider.trim().is_empty() && !judge.model.trim().is_empty(),
@@ -1722,12 +1737,19 @@ impl Manifest {
     /// every row — each group sorted, the groups in arm order. An arm
     /// identical to another measures nothing but noise; that is an A/A
     /// design when meant and a silent defect when not, so the runner warns
-    /// rather than refuses. Computed through `trials` itself, so it groups
-    /// arms exactly as the store's hashes do: the world terms `trials`
-    /// omits (charter, environment) are the same for every arm, so they
-    /// change no hash's equality with another's, only its value.
-    pub fn identical_arms(&self, provider: &str, model: &str) -> Vec<Vec<String>> {
-        let rows = self.trials(&["probe".into()], provider, model);
+    /// rather than refuses. Computed through `trials_with_world` with each
+    /// arm's environment digest, since the environment is per arm and can
+    /// tell two arms apart; the charter term it omits is the same for every
+    /// arm, so it changes no hash's equality with another's, only its value.
+    pub fn identical_arms(
+        &self,
+        provider: &str,
+        model: &str,
+        env_digests: Option<&BTreeMap<String, String>>,
+    ) -> Vec<Vec<String>> {
+        // The environment is per arm now, so it is a term that *can* tell
+        // two arms apart and must be in the rows compared.
+        let rows = self.trials_with_world(&["probe".into()], provider, model, None, env_digests);
         let mut groups: Vec<(std::collections::BTreeSet<&str>, Vec<String>)> = Vec::new();
         for arm in self.arms.keys() {
             let hashes = arm_hashes(&rows, arm);
@@ -1741,6 +1763,50 @@ impl Manifest {
             .map(|(_, names)| names)
             .filter(|names| names.len() > 1)
             .collect()
+    }
+
+    /// The environment an arm runs in: its own, or the manifest's.
+    ///
+    /// Field by field, never whole: an arm that names only its `dir` keeps
+    /// the manifest's `live_servers`, and one that names only its
+    /// `live_servers` keeps the manifest's `dir`. Replacing the whole value
+    /// ran the default directory for the second and silently dropped the
+    /// live servers for the first, with the result credited to the field
+    /// the operator wrote (found on review).
+    pub fn environment_for(&self, arm: &str) -> crate::trial_env::Environment {
+        match self.arms.get(arm).and_then(|a| a.environment.as_ref()) {
+            None => self.environment.clone(),
+            Some(own) => crate::trial_env::Environment {
+                dir: own.dir.clone().or_else(|| self.environment.dir.clone()),
+                live_servers: if own.live_servers.is_empty() {
+                    self.environment.live_servers.clone()
+                } else {
+                    own.live_servers.clone()
+                },
+            },
+        }
+    }
+
+    /// Each arm's environment digest, each distinct environment resolved
+    /// once.
+    pub fn env_digests(&self, base: &Path) -> Result<BTreeMap<String, String>> {
+        let mut seen: Vec<(crate::trial_env::Environment, String)> = Vec::new();
+        let mut out = BTreeMap::new();
+        for name in self.arms.keys() {
+            let env = self.environment_for(name);
+            let digest = match seen.iter().find(|(e, _)| *e == env) {
+                Some((_, d)) => d.clone(),
+                None => {
+                    let d = env
+                        .digest(base)
+                        .with_context(|| format!("arm `{name}`'s environment"))?;
+                    seen.push((env, d.clone()));
+                    d
+                }
+            };
+            out.insert(name.clone(), digest);
+        }
+        Ok(out)
     }
 
     /// Every trial the design calls for, in a stable order, each with its
@@ -1760,7 +1826,7 @@ impl Manifest {
         provider: &str,
         model: &str,
         charter_digest: Option<&str>,
-        env_digest: Option<&str>,
+        env_digests: Option<&BTreeMap<String, String>>,
     ) -> Vec<Trial> {
         let seeds: Vec<Option<u64>> = if self.seeds.is_empty() {
             vec![None]
@@ -1776,6 +1842,9 @@ impl Manifest {
             let stages = arm.resolve_stages().expect("validated at load");
             let provider = arm.provider.as_deref().unwrap_or(provider);
             let model = arm.model.as_deref().unwrap_or(model);
+            let env_digest = env_digests
+                .and_then(|m| m.get(arm_name))
+                .map(String::as_str);
             let row = |task: &String, seed: Option<u64>, rep: u32, position: Option<u32>| Trial {
                 owner_actions: None,
                 fixture_checked: None,
@@ -2352,9 +2421,9 @@ impl ExperimentStore {
     ) -> Result<(Vec<Trial>, usize)> {
         let (on_disk, skipped) = self.trials()?;
         let digest = manifest.fixtures.charter_digest(base)?;
-        let env = manifest.environment.digest(base)?;
+        let envs = manifest.env_digests(base)?;
         let planned = manifest
-            .trials_with_world(task_ids, provider, model, digest.as_deref(), Some(&env))
+            .trials_with_world(task_ids, provider, model, digest.as_deref(), Some(&envs))
             .into_iter()
             .map(|t| on_disk.get(&t.id).cloned().unwrap_or(t))
             .collect();
@@ -2364,7 +2433,7 @@ impl ExperimentStore {
     /// The isolated home one arm's trials run in (D12). Created with the
     /// marker, and **refused if it is, or contains, the real home**.
     pub fn arm_home(&self, arm: &str, seed_from: &Path) -> Result<PathBuf> {
-        self.home_at(arm, seed_from)
+        self.home_at(arm, seed_from, true)
     }
 
     /// The isolated home one *lifetime* runs in — one per arm × seed ×
@@ -2372,26 +2441,76 @@ impl ExperimentStore {
     /// its stages leave in the store for the next task, and two lifetimes
     /// sharing a home would learn from each other.
     pub fn lifetime_home(&self, lifetime: &str, seed_from: &Path) -> Result<PathBuf> {
-        self.home_at(lifetime, seed_from)
+        self.home_at(lifetime, seed_from, false)
     }
 
     /// `seed_from` is the experiment's environment directory: a fresh home
     /// takes its learning store, skills and charter from there, never from
     /// the real home (`trial_env`).
-    fn home_at(&self, name: &str, seed_from: &Path) -> Result<PathBuf> {
+    ///
+    /// The home records the built environment it was seeded from. When the
+    /// arm's environment has changed since (an edit between sittings, a new
+    /// digest), a `single` home is re-seeded — its charter, skills and
+    /// learning store replaced, since each trial starts from the seed
+    /// anyway — and a lifetime's is refused: re-seeding mid-sequence would
+    /// discard what the loop learned and splice two conditions into one
+    /// sequence. Without the record the config and stores followed the new
+    /// environment while the charter stayed the old one's, under a digest
+    /// that named a charter which never ran (found on review).
+    fn home_at(&self, name: &str, seed_from: &Path, reseed: bool) -> Result<PathBuf> {
         let home = self.root.join("homes").join(name);
         let real = crate::work::mecha_home()?;
         refuse_unsafe_home(&home, &real)?;
         let fresh = !home.join(HOME_MARKER).exists();
         std::fs::create_dir_all(&home)?;
-        if fresh {
+        let record = home.join(SEEDED_FROM);
+        // The build's digest — the directory it is built in is named by it
+        // (`environment/<digest>/tree`) — not its absolute path, which a
+        // differently spelled `MECHA_HOME` changes while the world does not
+        // (found on review).
+        let want = seed_from
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| seed_from.to_string_lossy().into_owned());
+        let had = std::fs::read_to_string(&record).ok();
+        // A home from before the record existed adopts its current world
+        // rather than reading as changed: that would re-seed every old
+        // single and stop every old lifetime.
+        let changed = !fresh && had.as_deref().is_some_and(|h| h != want);
+        if changed {
+            anyhow::ensure!(
+                reseed,
+                "`{name}` was seeded from another environment than its arm now names — a \
+                 lifetime cannot change world mid-sequence; start a new experiment for the \
+                 new environment"
+            );
+            for entry in SEEDED {
+                let path = home.join(entry);
+                if path.is_dir() {
+                    std::fs::remove_dir_all(&path)?;
+                } else if path.exists() {
+                    std::fs::remove_file(&path)?;
+                }
+            }
+        }
+        if fresh || changed {
             seed_home(seed_from, &home)?;
+        }
+        if fresh || changed || had.is_none() {
+            std::fs::write(&record, &want)?;
         }
         std::fs::write(
             home.join(HOME_MARKER),
             b"an experiment home; see mecha exp\n",
         )?;
         Ok(home)
+    }
+
+    /// Where environments are resolved and built, one directory per
+    /// digest: `<digest>/tree` (the resolved files) and `<digest>/stores`.
+    pub fn environments(&self) -> PathBuf {
+        self.root.join("environment")
     }
 
     /// Where the environment's server stores are built, once per
@@ -3077,6 +3196,10 @@ pub fn fold_home_overrides(
     }
     Ok(moved)
 }
+
+/// Which built environment a home's charter, skills and learning store were
+/// seeded from, beside `HOME_MARKER`.
+const SEEDED_FROM: &str = ".seeded-from";
 
 /// The stores a lever left *on* reads: the learning store (rules and
 /// reflections), the skills directory, the charter. A fresh trial home has
@@ -3894,7 +4017,7 @@ rationale = "r"
         assert_eq!(h("rules"), h("full"));
         // Which the runner names, and the judge flags on the stored rows.
         assert_eq!(
-            m.identical_arms("p", "m"),
+            m.identical_arms("p", "m", None),
             vec![vec!["full".to_string(), "rules".to_string()]]
         );
         let verdicts = judge(&m, &rows, &[], 0);
@@ -4497,6 +4620,159 @@ rationale = "no rumination should fail more over the sequence"
         let (all, torn) = store.all_stage_runs().unwrap();
         assert_eq!((all.len(), torn), (ledger.len(), 1));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A single's home follows its arm's environment when it changes
+    /// between sittings; a lifetime's refuses to.
+    #[test]
+    fn a_changed_environment_reseeds_a_single_home_and_stops_a_lifetime() {
+        let root = std::env::temp_dir().join(format!("mecha-exp-reseed-{}", uuid::Uuid::new_v4()));
+        let store = ExperimentStore::open(&root, "reseed").unwrap();
+        // Laid out as `prepare` builds them: `<digest>/tree`.
+        let (one, two) = (root.join("d1/tree"), root.join("d2/tree"));
+        for (dir, text) in [(&one, "# one\n"), (&two, "# two\n")] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("charter.toml"), text).unwrap();
+        }
+        let home = store.arm_home("a", &one).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(home.join("charter.toml")).unwrap(),
+            "# one\n"
+        );
+        // A trial's own learning, and the same environment again: kept.
+        std::fs::write(home.join("charter.toml"), "# one, still\n").unwrap();
+        store.arm_home("a", &one).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(home.join("charter.toml")).unwrap(),
+            "# one, still\n"
+        );
+        // The environment changed: re-seeded from the new one.
+        store.arm_home("a", &two).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(home.join("charter.toml")).unwrap(),
+            "# two\n"
+        );
+        // A lifetime: seeded once, refused on a change.
+        store.lifetime_home("l", &one).unwrap();
+        assert!(store.lifetime_home("l", &one).is_ok());
+        assert!(store.lifetime_home("l", &two).is_err());
+        // The same build reached through another spelling of its path is the
+        // same world: a lifetime resumes.
+        let respelled = root.join("d1/../d1/tree");
+        assert!(store.lifetime_home("l", &respelled).is_ok());
+        // A home from before the record: adopts its world, neither
+        // re-seeded nor refused.
+        let old = store.lifetime_home("m", &one).unwrap();
+        std::fs::remove_file(old.join(SEEDED_FROM)).unwrap();
+        std::fs::write(old.join("charter.toml"), "# learned in place\n").unwrap();
+        assert!(store.lifetime_home("m", &two).is_ok());
+        assert_eq!(
+            std::fs::read_to_string(old.join("charter.toml")).unwrap(),
+            "# learned in place\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An arm's own environment is its own hash term and its own grouping:
+    /// two arms that differ only in environment are two conditions, and an
+    /// arm with no environment of its own falls back to the manifest's.
+    #[test]
+    fn an_arms_environment_is_part_of_its_condition() {
+        let m = Manifest::parse(
+            r#"
+name = "envs"
+control = "base"
+split_seed = 1
+[tasks]
+cases = "c.jsonl"
+fixture = "w"
+[arms.base]
+[arms.same]
+[arms.same.prediction]
+metric = "failure"
+rationale = "r"
+[arms.prompt-b]
+environment = { dir = "eval/envs/prompt-b" }
+[arms.prompt-b.prediction]
+metric = "failure"
+rationale = "r"
+"#,
+        )
+        .unwrap();
+        assert_eq!(m.environment_for("same"), m.environment);
+        assert_eq!(
+            m.environment_for("prompt-b").dir.as_deref(),
+            Some(Path::new("eval/envs/prompt-b"))
+        );
+        let digests = BTreeMap::from([
+            ("base".to_string(), "e-default".to_string()),
+            ("same".to_string(), "e-default".to_string()),
+            ("prompt-b".to_string(), "e-prompt-b".to_string()),
+        ]);
+        let rows = m.trials_with_world(&["t".into()], "p", "m", None, Some(&digests));
+        let h = |arm: &str| {
+            rows.iter()
+                .find(|t| t.arm == arm)
+                .unwrap()
+                .condition_hash
+                .clone()
+        };
+        assert_eq!(h("base"), h("same"));
+        assert_ne!(h("base"), h("prompt-b"));
+        assert_eq!(
+            m.identical_arms("p", "m", Some(&digests)),
+            vec![vec!["base".to_string(), "same".to_string()]],
+            "prompt-b differs only in its environment, and is its own condition"
+        );
+    }
+
+    /// An arm's environment overrides the manifest's field by field: an arm
+    /// naming only `live_servers` keeps the manifest's `dir`, one naming
+    /// only `dir` keeps the manifest's `live_servers`, and one naming
+    /// neither is refused.
+    #[test]
+    fn an_arms_environment_overrides_field_by_field() {
+        let text = |arm_env: &str| {
+            format!(
+                r#"
+name = "fields"
+control = "base"
+split_seed = 1
+[environment]
+dir = "eval/envs/lab"
+live_servers = ["graph"]
+[tasks]
+cases = "c.jsonl"
+fixture = "w"
+[arms.base]
+[arms.x]
+environment = {arm_env}
+[arms.x.prediction]
+metric = "failure"
+rationale = "r"
+"#
+            )
+        };
+        let m = Manifest::parse(&text(r#"{ live_servers = ["mail"] }"#)).unwrap();
+        let env = m.environment_for("x");
+        assert_eq!(
+            env.dir.as_deref(),
+            Some(Path::new("eval/envs/lab")),
+            "the manifest's dir kept"
+        );
+        assert_eq!(env.live_servers, ["mail"]);
+        let m = Manifest::parse(&text(r#"{ dir = "eval/envs/other" }"#)).unwrap();
+        let env = m.environment_for("x");
+        assert_eq!(env.dir.as_deref(), Some(Path::new("eval/envs/other")));
+        assert_eq!(
+            env.live_servers,
+            ["graph"],
+            "the manifest's live servers kept"
+        );
+        assert!(
+            Manifest::parse(&text("{}")).is_err(),
+            "an environment naming nothing"
+        );
     }
 
     /// Pairs that ran under different `--jobs` limits hold the verdict at
@@ -5657,8 +5933,20 @@ seed = "seed"
         assert_ne!(with_charter, world(&["mail__mail_send".into()]));
         let rows2 = m.trials_with_world(&["a".into()], "p", "m", Some("abc"), None);
         // And the environment's digest, only when there is one.
-        let in_env = m.trials_with_world(&["a".into()], "p", "m", Some("abc"), Some("e1"));
-        let other_env = m.trials_with_world(&["a".into()], "p", "m", Some("abc"), Some("e2"));
+        let in_env = m.trials_with_world(
+            &["a".into()],
+            "p",
+            "m",
+            Some("abc"),
+            Some(&BTreeMap::from([("full".to_string(), "e1".to_string())])),
+        );
+        let other_env = m.trials_with_world(
+            &["a".into()],
+            "p",
+            "m",
+            Some("abc"),
+            Some(&BTreeMap::from([("full".to_string(), "e2".to_string())])),
+        );
         assert_ne!(in_env[0].condition_hash, rows2[0].condition_hash);
         assert_ne!(in_env[0].condition_hash, other_env[0].condition_hash);
         assert_eq!(rows2[0].condition_hash, with_charter);

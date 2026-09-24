@@ -195,9 +195,14 @@ arm moves that knob, because the arm is the treatment.
 **Stage levers** apply to [lifetimes](#lifetimes) only: `reflect`, `learn`,
 `validate`, `retire`, `ruminate`, `sensors_in_brief`, named in `stages_off`.
 
-**The world** is the manifest's [environment](#environments), `[fixtures]`
-and `[tasks]` rather than any one arm's. It is the same for every arm, and it
-is part of the hash too.
+**The environment.** An arm may name its own
+[environment](#arm-environments), which is how it varies anything the list
+above can't: the system prompt, the tool list, the charter, the graph's
+contents, or any other setting an environment's `config.toml` can hold. The
+environment's resolved contents are part of the arm's condition hash.
+
+**The rest of the world**, `[fixtures]` and `[tasks]`, is the manifest's and
+the same for every arm, and it is part of the hash too.
 
 ## Environments
 
@@ -274,6 +279,73 @@ environment directory is part of every row's condition hash, by content.
 Editing a file between two runs makes a new condition, and its stores are
 built fresh beside the old ones. `[fixtures]` servers, when a manifest names
 any, replace the environment's servers entirely.
+
+### Arm environments
+
+An arm can run in its own environment, in place of the manifest's:
+
+```toml
+[arms.no-shell]
+environment = { dir = "eval/envs/no-shell" }
+[arms.no-shell.prediction]
+metric = "failure"
+rationale = "without shell, the shell tasks fail"
+```
+
+Usually that environment **extends** another and holds only what differs.
+Its `environment.toml` names the base:
+
+```toml
+# eval/envs/no-shell/environment.toml
+extends = "eval/envs/default"
+```
+
+```toml
+# eval/envs/no-shell/config.toml: merged over the default's
+[tools]
+disabled = ["shell"]
+```
+
+How a variant combines with its base:
+
+- **Any file** in the variant replaces the base's file at the same path, such
+  as a different `charter.toml` or a different `stores/graph.calls.jsonl`
+  for a richer graph. A file that `config.toml` names by path (the system
+  prompt, a server's script) is read from the checkout, not from the built
+  environment, so to vary one, point the setting at the variant's own file
+  by its checkout-relative path, as the table below shows. Overlaying a file
+  at the base's path changes nothing but the hash.
+- **`config.toml`** merges key by key. Tables combine; a single value or a
+  list replaces the base's. So a variant's `[agent] max_turns = 6` keeps the
+  rest of the base's `[agent]`, while a variant's `[[mcp]]` list is its whole
+  server list, not an addition.
+- **Chains** are allowed: a variant can extend a variant, up to eight deep.
+  A loop, a link anywhere in the chain, or a chain that reaches your mecha
+  home is refused.
+
+Some variations, and where each goes:
+
+| To vary | In the variant |
+|---|---|
+| The system prompt | `config.toml`: `[agent] system_prompt_file = "eval/envs/x/agent.md"` |
+| Which tools exist | `config.toml`: `[tools] disabled = ["shell"]` (or `enabled = [...]`) |
+| Any agent setting | `config.toml`: under `[agent]` |
+| The charter | `charter.toml` |
+| What the graph knows | `stores/graph.calls.jsonl` |
+| The servers a trial reaches | `config.toml`: its own `[[mcp]]` list |
+
+`mecha exp run` resolves each distinct environment once, builds it into the
+experiment's directory, and runs every trial of the arm from that build. The
+arm's condition hash takes the resolved files' digest, so editing the base
+also moves every variant that extends it, since that edit changes what the
+variant runs. Arms whose environments resolve the same share a condition
+and are flagged as identical like any other.
+
+If you edit an arm's environment between two sittings, a `single` arm's home
+is re-seeded from the new build (its charter, skills and learning store), since
+each trial starts from the seed anyway. A lifetime refuses to resume instead:
+re-seeding halfway through would discard what the loop learned and splice two
+worlds into one sequence, so start a new experiment for the new environment.
 
 ## Running
 
@@ -682,6 +754,7 @@ axis the arms vary and which trial kind the question needs.
 | Does the learning loop improve later runs? | `lifetime` | `full` against `stages_off = ["learn"]` (or `ruminate`, …) | `failure`, read as a slope |
 | Does the interlock stop an injected send, and what does it cost? | `single`, task source | `full` on `eval/dojo-workspace.toml` | the source's `security` and `utility` checks |
 | Does the run behave with an owner in the loop? | `lifetime`, principal | `eval/home-lifetime.toml` | `failure` |
+| Does prompt B, tool set B, or charter B do better? | `single` | the default against an arm whose `environment` extends it with the change | `failure`, `turns` |
 
 Shipped manifests to copy from: `eval/dojo-workspace.toml` (task source,
 fixture servers), `eval/home-lifetime.toml` and `eval/assistant-lifetime.toml`
@@ -710,10 +783,9 @@ holds the plans for each one.
 - **Lifetimes run one at a time.** `--jobs` covers `single` designs only. A
   lifetime's stages must not compete with its tasks for the model, and
   running lifetimes side by side needs that rule restated first.
-- **Four knobs.** There is no arm field for the system prompt, the tool list,
-  the sandbox or the security settings. A variation outside the lever set and
-  the four knobs is a separate experiment with a different base config, and
-  its rows do not pair with the first one's.
+- **The sandbox, security and approval rules can't vary by arm.** They are
+  machine facts, taken from your config for every arm, and an environment is
+  refused if it sets them.
 - **Judging is pairwise, on one metric.** Each treatment is judged against
   the control only, by win/loss/tie counts. `report` shows the rest (per-task
   results, cost, pass^k, lifetime curves), but as a readout, not a test:

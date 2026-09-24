@@ -348,6 +348,40 @@ fn provider_and_model(cfg: &mecha_core::config::Config) -> Result<(String, Strin
     ))
 }
 
+/// Each arm's world, by arm name.
+type Worlds = std::collections::BTreeMap<String, mecha_core::trial_env::World>;
+
+/// Prepare every arm's world — its own environment or the manifest's —
+/// each distinct environment resolved and built once, under the
+/// experiment's own directory.
+fn prepare_worlds(
+    store: &ExperimentStore,
+    manifest: &Manifest,
+    loaded: &mecha_core::config::Config,
+    base: &Path,
+) -> Result<Worlds> {
+    let mut seen: Vec<(
+        mecha_core::trial_env::Environment,
+        mecha_core::trial_env::World,
+    )> = Vec::new();
+    let mut out = Worlds::new();
+    for arm in manifest.arms.keys() {
+        let env = manifest.environment_for(arm);
+        let world = match seen.iter().find(|(e, _)| *e == env) {
+            Some((_, w)) => w.clone(),
+            None => {
+                let w = env
+                    .prepare(loaded, base, &store.environments())
+                    .with_context(|| format!("arm `{arm}`'s environment"))?;
+                seen.push((env, w.clone()));
+                w
+            }
+        };
+        out.insert(arm.clone(), world);
+    }
+    Ok(out)
+}
+
 async fn run(name: &str, limit: Option<usize>, dry_run: bool, jobs: u32) -> Result<()> {
     let store = ExperimentStore::open_default(name)?;
     let manifest = store.manifest()?;
@@ -377,7 +411,8 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool, jobs: u32) -> Resu
         .filter(|t| matches!(t.status, TrialStatus::Pending | TrialStatus::Running))
         .collect();
     let done = planned.len() - todo.len();
-    for group in manifest.identical_arms(&provider, &model) {
+    let env_digests = manifest.env_digests(&base)?;
+    for group in manifest.identical_arms(&provider, &model, Some(&env_digests)) {
         eprintln!(
             "mecha exp: arms {} run under one condition (the same hash on every row) — every difference between them is noise; fine for an A/A design, a mistake otherwise",
             group
@@ -393,13 +428,13 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool, jobs: u32) -> Resu
         todo.len(),
         limit.map(|l| format!(" (limit {l})")).unwrap_or_default()
     );
-    // The world every home is rendered from (`trial_env`): the
-    // environment's harness with this machine's facts. From here on `real`
-    // is that, never the operator's file — whose servers and hooks, copied
-    // into trial homes, once wrote trials into the owner's live graph.
-    // Loaded before the dry-run returns, so a plan check refuses a bad
-    // environment rather than the real run (found on review).
-    let real = manifest.environment.base_config(&loaded, &base)?;
+    // The worlds homes are rendered from (`trial_env`), one per arm — its
+    // own environment or the manifest's — each the environment's harness
+    // with this machine's facts, never the operator's file, whose servers
+    // and hooks, copied into trial homes, once wrote trials into the
+    // owner's live graph. Prepared before the dry-run returns, so a plan
+    // check refuses a bad environment rather than the real run.
+    let worlds = prepare_worlds(&store, &manifest, &loaded, &base)?;
     if dry_run {
         if manifest.kind == TrialKind::Lifetime {
             let s = &manifest.schedule;
@@ -423,27 +458,34 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool, jobs: u32) -> Resu
         return Ok(());
     }
     if manifest.fixtures.is_empty() {
-        let digest = manifest.environment.digest(&base)?;
-        mecha_core::trial_env::build_stores(
-            &manifest.environment.dir(&base),
-            &real,
-            &store.stores_cache(&digest),
-        )
-        .await
-        .context("building the experiment environment's server stores")?;
+        let mut built = std::collections::BTreeSet::new();
+        for world in worlds.values() {
+            if built.insert(world.digest.clone()) {
+                mecha_core::trial_env::build_stores(
+                    &world.dir,
+                    &world.config,
+                    &store.stores_cache(&world.digest),
+                )
+                .await
+                .context("building the experiment environment's server stores")?;
+            }
+        }
     }
     if cases.iter().any(|c| c.expect.judge.is_some()) {
-        let judge = experiment_judge(&manifest, &real)?;
+        let judge = experiment_judge(&manifest, &loaded)?;
         eprintln!("  rubric judge: {} (model verdicts require transcript review; a shared model is not independent)", judge.model());
         judge.preflight().await?;
     }
     let mecha = std::env::current_exe().context("locating this binary")?;
     let ran = match manifest.kind {
         TrialKind::Single => {
-            run_single_trials(&store, &manifest, &mecha, &real, &cases, &todo, limit, jobs).await?
+            run_single_trials(
+                &store, &manifest, &mecha, &worlds, &cases, &todo, limit, jobs,
+            )
+            .await?
         }
         TrialKind::Lifetime => {
-            run_lifetimes(&store, &manifest, &mecha, &real, &cases, &planned, limit).await?
+            run_lifetimes(&store, &manifest, &mecha, &worlds, &cases, &planned, limit).await?
         }
     };
     eprintln!("mecha exp `{name}`: {ran} trial(s) run this invocation");
@@ -468,7 +510,7 @@ async fn run_single_trials(
     store: &ExperimentStore,
     manifest: &Manifest,
     mecha: &Path,
-    real: &mecha_core::config::Config,
+    worlds: &Worlds,
     cases: &[mecha_core::eval::EvalCase],
     todo: &[&Trial],
     limit: Option<usize>,
@@ -499,7 +541,7 @@ async fn run_single_trials(
         _ => jobs,
     };
     schedule(&pending, jobs, permits.as_ref(), &manifest.name, |t| {
-        drive_single(store, manifest, mecha, real, cases, t, jobs)
+        drive_single(store, manifest, mecha, worlds, cases, t, jobs)
     })
     .await
 }
@@ -658,7 +700,7 @@ async fn drive_single(
     store: &ExperimentStore,
     manifest: &Manifest,
     mecha: &Path,
-    real: &mecha_core::config::Config,
+    worlds: &Worlds,
     cases: &[mecha_core::eval::EvalCase],
     planned_trial: &Trial,
     jobs: u32,
@@ -674,11 +716,9 @@ async fn drive_single(
     // unwritable is the driver's error — start no more, drain, and leave
     // this row pending for a later `run` — never a terminal `failed` that
     // would drop the cell from the design (found on review).
-    let seed_from = manifest
-        .environment
-        .dir(&std::env::current_dir().context("cannot determine the working directory")?);
-    let home = store.arm_home(&trial.arm, &seed_from)?;
-    let outcome = run_one(store, manifest, mecha, real, arm, case, &home, &mut trial).await;
+    let world = &worlds[&trial.arm];
+    let home = store.arm_home(&trial.arm, &world.dir)?;
+    let outcome = run_one(store, manifest, mecha, world, arm, case, &home, &mut trial).await;
     if let Err(e) = outcome {
         trial.status = TrialStatus::Failed;
         trial.error = Some(format!("{e:#}"));
@@ -703,7 +743,7 @@ async fn run_lifetimes(
     store: &ExperimentStore,
     manifest: &Manifest,
     mecha: &Path,
-    real: &mecha_core::config::Config,
+    worlds: &Worlds,
     cases: &[mecha_core::eval::EvalCase],
     planned: &[Trial],
     limit: Option<usize>,
@@ -742,10 +782,8 @@ async fn run_lifetimes(
         let first = rows[0];
         let arm = &manifest.arms[&first.arm];
         let stages_off = arm.resolve_stages()?;
-        let seed_from = manifest
-            .environment
-            .dir(&std::env::current_dir().context("cannot determine the working directory")?);
-        let home = store.lifetime_home(&lifetime, &seed_from)?;
+        let world = &worlds[&first.arm];
+        let home = store.lifetime_home(&lifetime, &world.dir)?;
         let (mut ledger, torn) = store.stage_runs(&lifetime)?;
         if torn > 0 {
             eprintln!(
@@ -759,7 +797,7 @@ async fn run_lifetimes(
         // review).
         let ChildInvocation {
             flags, passthrough, ..
-        } = mecha_core::experiment::child_invocation(real, arm, first.seed)?;
+        } = mecha_core::experiment::child_invocation(&world.config, arm, first.seed)?;
         for planned_trial in rows.iter().copied() {
             let position = planned_trial
                 .position
@@ -804,7 +842,7 @@ async fn run_lifetimes(
                     // stages running against a home with no config for the
                     // position (found on review).
                     if let Err(e) = render_home(
-                        store, manifest, real, arm, trial.seed, &home, false,
+                        store, manifest, world, arm, trial.seed, &home, false,
                     )
                     .and_then(|r| {
                         manifest.fixtures.apply_clock(&home, &case.id)?;
@@ -875,7 +913,7 @@ async fn run_lifetimes(
                         }
                     }
                     if world_ready {
-                        match run_one(store, manifest, mecha, real, arm, case, &home, &mut trial)
+                        match run_one(store, manifest, mecha, world, arm, case, &home, &mut trial)
                             .await
                         {
                             Ok(()) => {}
@@ -1782,7 +1820,7 @@ struct Rendered {
 fn render_home(
     store: &ExperimentStore,
     manifest: &Manifest,
-    real: &mecha_core::config::Config,
+    world: &mecha_core::trial_env::World,
     arm: &mecha_core::experiment::Arm,
     seed: Option<u64>,
     home: &Path,
@@ -1792,7 +1830,7 @@ fn render_home(
         mut config,
         flags,
         passthrough,
-    } = mecha_core::experiment::child_invocation(real, arm, seed)?;
+    } = mecha_core::experiment::child_invocation(&world.config, arm, seed)?;
     // What the home's own stages accepted rides into the next task, under
     // the arm's pins — or a lifetime's `ruminate` would measure as nothing.
     // A single runs no stage and folds nothing.
@@ -1807,8 +1845,12 @@ fn render_home(
     // The environment's servers keep their state under the home, from the
     // store `run` built — unless fixture servers replace them all.
     if manifest.fixtures.is_empty() {
-        let digest = manifest.environment.digest(&base)?;
-        mecha_core::trial_env::place_stores(&config, &store.stores_cache(&digest), home, fresh)?;
+        mecha_core::trial_env::place_stores(
+            &config,
+            &store.stores_cache(&world.digest),
+            home,
+            fresh,
+        )?;
         mecha_core::trial_env::bind_stores(&mut config, home);
     }
     manifest.fixtures.apply(&mut config, home, &base, fresh)?;
@@ -1845,7 +1887,7 @@ async fn run_one(
     store: &ExperimentStore,
     manifest: &Manifest,
     mecha: &Path,
-    real: &mecha_core::config::Config,
+    world: &mecha_core::trial_env::World,
     arm: &mecha_core::experiment::Arm,
     case: &mecha_core::eval::EvalCase,
     home: &Path,
@@ -1866,7 +1908,7 @@ async fn run_one(
     } = render_home(
         store,
         manifest,
-        real,
+        world,
         arm,
         trial.seed,
         &home,
@@ -2047,7 +2089,7 @@ async fn run_one(
                 &transcript.convo.messages,
                 &transcript.configs,
             )?;
-            let judge = experiment_judge(manifest, real)?;
+            let judge = experiment_judge(manifest, &world.config)?;
             Ok::<_, anyhow::Error>(
                 judge
                     .check_with_evidence(case, &result.text, &evidence)

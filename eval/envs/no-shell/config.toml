@@ -1,0 +1,4 @@
+# Merged over eval/envs/default/config.toml: tables combine, arrays and
+# single values replace. The rest of the default's harness stands.
+[tools]
+disabled = ["shell"]
