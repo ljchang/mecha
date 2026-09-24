@@ -1,7 +1,8 @@
 //! Closing or reopening a board task is one recorded event (S8,
 //! `docs/APPRAISAL-WIRING-DESIGN.md`), exercised through the real binary
 //! against the fixture board server — no provider, no network.
-use mecha_core::closure::{Actor, ClosureStore, Entry, Move, Surface};
+use mecha_core::closure::{Actor, ClosureStore, Entry, Move, RunPosture, Surface};
+use mecha_core::shell_registry::{Registration, ShellRegistry};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -77,6 +78,20 @@ impl Fixture {
         )
         .unwrap();
         board["tasks"][0]["status"].as_str().unwrap().to_string()
+    }
+
+    /// The fixture home's shell registry (`MECHA_HOME/runs/shells`).
+    fn shells(&self) -> ShellRegistry {
+        ShellRegistry::open(self.root.join("home/runs/shells")).unwrap()
+    }
+
+    /// Register *this test process* as a `shell` the harness spawned, with
+    /// `posture` — so every `mecha` this test then spawns has a registered
+    /// shell as its parent, exactly as a command a run's `shell` tool ran.
+    fn under_shell(&self, posture: Option<RunPosture>) -> Registration {
+        self.shells()
+            .register(std::process::id(), posture, Some("call-test"))
+            .unwrap()
     }
 
     fn store(&self) -> ClosureStore {
@@ -164,24 +179,28 @@ fn a_closure_and_its_reopen_are_recorded_and_joined() {
 
 /// The residue `closure_guard.rs` named: a run with nobody present used to be
 /// able to close its own task through `shell: mecha tasks set`. It is refused
-/// now, before anything is recorded or moved.
+/// now, before anything is recorded or moved — the posture read from the
+/// harness's shell registry, not from the command's environment (1b-2).
 #[test]
 fn a_run_with_nobody_present_cannot_close_through_the_shell() {
     let Some(f) = Fixture::new("") else { return };
-    for posture in ["delegated", "unattended", "unknown"] {
+    for (posture, stamp) in [
+        (Some(RunPosture::Delegated), "delegated"),
+        (Some(RunPosture::Unattended), "unattended"),
+        (None, "unknown"),
+    ] {
+        let _shell = f.under_shell(posture);
         refused(
-            &f.command(
-                &["tasks", "set", "task-1", "--status", "done"],
-                Some(posture),
-            ),
+            &f.command(&["tasks", "set", "task-1", "--status", "done"], Some(stamp)),
             "owner",
         );
-        assert_eq!(f.status(), "next", "{posture}: the board must not move");
+        assert_eq!(f.status(), "next", "{stamp}: the board must not move");
     }
     assert!(records(&f.root).is_empty(), "a refusal records nothing");
 
     // A chat the owner is in may, behind its approver — recorded as such,
     // and the surface cannot be claimed.
+    let _shell = f.under_shell(Some(RunPosture::Interactive));
     ok(&f.command(
         &[
             "tasks",
@@ -199,6 +218,70 @@ fn a_run_with_nobody_present_cannot_close_through_the_shell() {
         (closed.actor, closed.surface),
         (Actor::OwnerApproved, Surface::Chat)
     );
+}
+
+/// #293's review: a delegated run's command could set the posture variable
+/// itself — `MECHA_RUN_POSTURE=interactive mecha tasks set …` — and be
+/// recorded `owner-approved`. The registered shell's posture wins over the
+/// variable, so it is refused. Fails on #293's code, which read the variable.
+#[test]
+fn a_delegated_shell_that_sets_the_variable_itself_is_still_refused() {
+    let Some(f) = Fixture::new("") else { return };
+    let _shell = f.under_shell(Some(RunPosture::Delegated));
+    refused(
+        &f.command(
+            &["tasks", "set", "task-1", "--status", "done"],
+            Some("interactive"),
+        ),
+        "delegated run's shell",
+    );
+    assert_eq!(f.status(), "next");
+    assert!(records(&f.root).is_empty());
+}
+
+/// The variable with no registered shell behind it is a claim no marker
+/// confirms, and refuses in every value — `interactive` first.
+#[test]
+fn a_claimed_posture_with_no_registered_shell_is_refused() {
+    let Some(f) = Fixture::new("") else { return };
+    for stamp in ["interactive", "delegated"] {
+        refused(
+            &f.command(&["tasks", "set", "task-1", "--status", "done"], Some(stamp)),
+            "no registered mecha shell",
+        );
+    }
+    assert_eq!(f.status(), "next");
+    assert!(records(&f.root).is_empty());
+}
+
+/// Registering the *shell child*, not the hosting process: the owner's own
+/// close — a `serve` board tap, whose parent is no registered shell — goes
+/// through as the owner even while another run's delegated shell is live
+/// and registered elsewhere.
+#[test]
+fn an_owner_close_is_unaffected_by_another_runs_registered_shell() {
+    let Some(f) = Fixture::new("") else { return };
+    let mut other = Command::new("sleep").arg("30").spawn().unwrap();
+    let _elsewhere = f
+        .shells()
+        .register(other.id(), Some(RunPosture::Delegated), None)
+        .unwrap();
+    ok(&f.command(
+        &[
+            "tasks",
+            "set",
+            "task-1",
+            "--status",
+            "done",
+            "--surface",
+            "web",
+        ],
+        None,
+    ));
+    let closed = f.store().latest_closure("task-1").unwrap().unwrap();
+    assert_eq!((closed.actor, closed.surface), (Actor::Owner, Surface::Web));
+    let _ = other.kill();
+    let _ = other.wait();
 }
 
 #[test]
