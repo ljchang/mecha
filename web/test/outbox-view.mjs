@@ -6,7 +6,7 @@
 // a key the form does not show dropped on save, an empty attendee field sent
 // as `[""]`. Each of those looks fine in the form and is wrong on the
 // calendar.
-import { kindOf, stampIn, wallIn, eventFields, eventArgs, inclusiveEnd, whenLabel, attendeesOf, editsAsEvent, unreadableAccounts, unreadableNote, threadOf, threadMessages, answeredMessage, rowSummary, docEdit, tooSoon } from '../src/lib/outbox-view.js';
+import { kindOf, stampIn, wallIn, eventFields, eventArgs, inclusiveEnd, whenLabel, attendeesOf, editsAsEvent, unreadableAccounts, unreadableNote, threadOf, threadMessages, answeredMessage, rowSummary, docEdit, tooSoon, replySubject, liveThread, sinceDrafted } from '../src/lib/outbox-view.js';
 
 let pass = 0;
 let fail = 0;
@@ -207,6 +207,27 @@ t('attendees accept objects', attendeesOf({ attendees: [{ email: 'a@x.edu' }] })
 {
   t('a press right after a draft opens is refused', tooSoon(1000, 1500) === true);
   t('a press after a look is not', tooSoon(1000, 1900) === false);
+}
+
+{
+  t('a subject that already says RE is not prefixed twice', replySubject('RE: Review') === 'RE: Review' && replySubject('Review') === 'Re: Review' && replySubject('') === '');
+  const cut = '--- [work] From: A <a@x> · T\nCalendar date: Thu\nSubject: S\nMessage id (for mail_reply): M1\n\nlong\n\n… truncated; `mecha sessions show` has the whole result.';
+  t('a clipped read is caught by its note even without the flag', threadMessages(cut)?.verified === false);
+
+  const msg = (who, id) => `--- [work] From: ${who} <${id}@x> · 2026-09-2${id.slice(1)}T10:00:00Z\nCalendar date: x\nSubject: S\nMessage id (for mail_reply): ${id}\n\nbody ${id}`;
+  const read = (ids, n = ids.length) => [...ids.map(([w, id]) => msg(w, id)), `--- end of thread · ${n} message${n === 1 ? '' : 's'}`].join('\n\n');
+  const recorded = threadMessages(read([['Courtney', 'M1']]));
+  const liveText = 'account:   work\nfrom:      Courtney <c@x>\n\n' + read([['Courtney', 'M1'], ['Luke', 'M2'], ['Courtney', 'M3']]);
+  const live = liveThread(liveText);
+  t('a live read parses past the triage block', live?.verified === true && live.messages.length === 3);
+  const since = sinceDrafted(recorded, live);
+  t('messages written after the draft are found by id', since?.added.map((m) => m.replyId).join() === 'M2,M3' && since.newest.replyId === 'M3');
+  t('nothing new is an empty list, not null', sinceDrafted(recorded, threadMessages(read([['Courtney', 'M1']])))?.added.length === 0);
+  t('an unverified live read knows nothing', sinceDrafted(recorded, liveThread(read([['A', 'M1'], ['B', 'M2']], 1))) === null);
+  const legacy = threadMessages([msg('A', 'M1'), msg('B', 'M2')].join('\n\n'));
+  const grown = sinceDrafted(legacy, live);
+  t('an unverified recorded read still says the thread grew', legacy.verified === false && grown?.added === null && grown.grew === 1 && grown.newest.replyId === 'M3');
+  t('but never claims nothing is new', sinceDrafted(legacy, threadMessages(read([['A', 'M1'], ['B', 'M2']]))) === null);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

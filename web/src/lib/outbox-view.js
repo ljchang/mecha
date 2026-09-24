@@ -323,6 +323,7 @@ export function threadOf(sources) {
 export const ROUTING_KEYS = ['thread_id', 'message_id', 'reply_all'];
 
 const MSG_HEAD = /^--- \[([^\]]+)\] From: (.*) <([^<>]*)> · (\S+)$/;
+const CLIPPED_LINE = /^… truncated; `mecha sessions show` has the whole result\.$/;
 
 /**
  * The thread a drafting run read, as messages — `{ account, messages: [{
@@ -341,9 +342,16 @@ const MSG_HEAD = /^--- \[([^\]]+)\] From: (.*) <([^<>]*)> · (\S+)$/;
  */
 export function threadMessages(text, clipped = false) {
   const lines = (text ?? '').replace(/\s+$/, '').split('\n');
-  // A read cut at the source's length cap (the detail's `clipped`) ends on
-  // the cap's note, not on the count, and is missing whatever came after.
-  if (clipped) lines.pop();
+  // A read cut at the source's length cap ends on the cap's note
+  // (`outbox_source::CLIPPED_NOTE`), not on the count, and is missing whatever
+  // came after. The detail's `clipped` says so; the note is also recognised
+  // here, so a missing flag — an older server behind a newer page — is not
+  // read as "whole" (review of #272). A body typing the note only costs a
+  // verification, which is the safe direction.
+  if (clipped || CLIPPED_LINE.test(lines[lines.length - 1] ?? '')) {
+    clipped = true;
+    lines.pop();
+  }
   // mecha-mail's closing count (`thread_footer`): the one line after every
   // body, so a body cannot forge it. Reads staged before it existed have none.
   const foot = /^--- end of thread · (\d+) messages?$/.exec(lines[lines.length - 1] ?? '');
@@ -418,8 +426,7 @@ export function rowSummary(detail) {
   const read = (detail.sources ?? []).find((s) => toolSuffix(s.tool) === 'mail_get_thread');
   const thread = read ? threadMessages(read.text, read.clipped) : null;
   const answered = answeredMessage(thread, args);
-  const first = thread?.messages[0]?.subject ?? '';
-  const subject = detail.headline || (first ? (/^re:/i.test(first) ? first : `Re: ${first}`) : '');
+  const subject = detail.headline || replySubject(thread?.messages[0]?.subject);
   return { who: answered && thread.verified ? answered.name || answered.address : '', subject };
 }
 
@@ -458,3 +465,61 @@ export const REJECT_REASONS = ['Already handled', 'No longer needed', "Not right
  */
 export const JUST_OPENED_MS = 800;
 export const tooSoon = (openedAt, now = Date.now()) => now - openedAt < JUST_OPENED_MS;
+
+/** A reply's subject from its thread's: "Re: " once, never "Re: RE: ". */
+export function replySubject(subject) {
+  const s = (subject ?? '').trim();
+  if (!s) return '';
+  return /^re:/i.test(s) ? s : `Re: ${s}`;
+}
+
+/**
+ * The thread as it is **now**, from `/api/mail/read` — `mecha mail show`,
+ * whose text is an optional block of the triage record's `key: value` lines
+ * and then mail_get_thread's own read, ending on its count. Parsed from the
+ * first header on; a header-shaped line in the block ahead of it (the
+ * classifier's reasoning is model text) adds a split, and the count catches
+ * it like any other forgery.
+ */
+export function liveThread(text) {
+  const lines = (text ?? '').split('\n');
+  const at = lines.findIndex((l) => MSG_HEAD.test(l));
+  return at < 0 ? null : threadMessages(lines.slice(at).join('\n'));
+}
+
+/**
+ * What arrived in a thread after the draft was written — `{ added, grew,
+ * newest }` — or null when nothing can be said. With both reads verified,
+ * `added` is the new messages, matched by the provider's own ids (which a
+ * stranger cannot predict). With the recorded read unverified, only `grew`
+ * — how many more the live thread holds — and only when it is positive.
+ * The live read must be verified either way: it names the newest sender.
+ */
+export function sinceDrafted(recorded, live) {
+  if (!recorded || !live?.verified) return null;
+  const newest = live.messages[live.messages.length - 1] ?? null;
+  if (!recorded.verified) {
+    // Which messages are new cannot be said, but *that* the thread grew can:
+    // a forged header only ever adds to the recorded count, so a live count
+    // above it is never an overstatement. `added: null` — the count, not the
+    // messages.
+    const grew = live.messages.length - recorded.messages.length;
+    return grew > 0 ? { added: null, grew, newest } : null;
+  }
+  const seen = new Set(recorded.messages.map((m) => m.replyId));
+  const added = live.messages.filter((m) => !seen.has(m.replyId));
+  return { added, grew: added.length, newest };
+}
+
+/**
+ * The thread read a mail draft shows as messages — `{ source, ...parsed }` —
+ * or null. The **first** mail_get_thread read, the same one `threadOf` names
+ * the account from and `rowSummary` names the sender from, so the card, the
+ * from line and the row never describe two different reads (review of #272).
+ */
+export function readOf(detail) {
+  if (kindOf(detail?.tool) !== 'mail') return null;
+  const source = (detail?.sources ?? []).find((s) => toolSuffix(s.tool) === 'mail_get_thread');
+  const parsed = source ? threadMessages(source.text, source.clipped) : null;
+  return parsed?.messages.length ? { source, ...parsed } : null;
+}
