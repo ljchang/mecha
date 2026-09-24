@@ -367,6 +367,16 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool, jobs: u32) -> Resu
         .filter(|t| matches!(t.status, TrialStatus::Pending | TrialStatus::Running))
         .collect();
     let done = planned.len() - todo.len();
+    for group in manifest.identical_arms(&provider, &model) {
+        eprintln!(
+            "mecha exp: arms {} run under one condition (the same hash on every row) — every difference between them is noise; fine for an A/A design, a mistake otherwise",
+            group
+                .iter()
+                .map(|a| format!("`{a}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     eprintln!(
         "mecha exp `{name}`: {} trials planned, {done} finished, {} to run{} · {provider} ({model})",
         planned.len(),
@@ -506,7 +516,7 @@ where
     let mut busy: std::collections::BTreeSet<String> = Default::default();
     let mut inflight = FuturesUnordered::new();
     let mut ran = 0usize;
-    let mut announced_at: Option<std::time::Instant> = None;
+    let mut announced: Option<(std::time::Instant, Vec<String>)> = None;
     // A row that could not be saved stops new starts but not the rows in
     // flight: returning at once would drop their futures while their
     // children run on, orphaned, with rows saved as `running`.
@@ -539,14 +549,24 @@ where
                         Ok(held) => Some(held),
                         Err(holders) => {
                             seat_short = true;
-                            // Said again every five minutes, naming who
-                            // holds the seats then: one line and a silent
-                            // poll reads as a hang (found on review).
-                            let due = announced_at.is_none_or(|at| {
-                                at.elapsed() >= std::time::Duration::from_secs(300)
+                            // Said when the *other* holders change — a new
+                            // stall — and every five minutes of the same
+                            // one, naming who holds the seats then. One
+                            // line then a silent poll reads as a hang;
+                            // saying it after every start of our own spams
+                            // a partly contended pool (both found on review).
+                            let ours = format!("exp {experiment} ");
+                            let others: Vec<String> = holders
+                                .iter()
+                                .filter_map(|p| p.what.clone())
+                                .filter(|w| !w.starts_with(&ours))
+                                .collect();
+                            let due = announced.as_ref().is_none_or(|(at, before)| {
+                                *before != others
+                                    || at.elapsed() >= std::time::Duration::from_secs(300)
                             });
                             if due {
-                                announced_at = Some(std::time::Instant::now());
+                                announced = Some((std::time::Instant::now(), others));
                                 eprintln!(
                                 "mecha exp: all {} background model seat(s) are held ({}); waiting",
                                 pool.capacity(),
@@ -562,7 +582,6 @@ where
                     }
                 }
             };
-            announced_at = None;
             let planned_trial = pending.remove(at).expect("found above");
             busy.insert(planned_trial.arm.clone());
             ran += 1;
@@ -2409,6 +2428,11 @@ fn judge_cmd(name: &str, json: bool) -> Result<()> {
             println!(
                 "  --jobs differed across this arm's pairs ({:?}): held at propose",
                 v.jobs_seen
+            );
+        }
+        if v.same_condition_as_control {
+            println!(
+                "  same condition as `{control}`: every row carries the control's hash, so this arm measures noise"
             );
         }
         if manifest.kind == TrialKind::Lifetime {

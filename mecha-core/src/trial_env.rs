@@ -289,9 +289,21 @@ fn resolve_existing_prefix(p: &Path) -> Result<PathBuf> {
     }
 }
 
+/// Every file under the environment, relative to it. **A symlink anywhere
+/// in it is refused**: the directory is copied into homes (`seed_home`,
+/// the store build), and a `learning -> ~/.mecha/learning` link would carry
+/// the operator's store in past `refuse_operator_home`, which sees only the
+/// directory itself (found on review). This walk runs first, in `digest`,
+/// so nothing is copied before it refuses.
 fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
+        anyhow::ensure!(
+            !std::fs::symlink_metadata(&path)?.file_type().is_symlink(),
+            "the experiment environment contains a symlink, {} — an environment is \
+             copied into trial homes, so it holds files, never links",
+            path.display()
+        );
         if path.is_dir() {
             collect_files(root, &path, out)?;
         } else {
@@ -697,6 +709,19 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
             resolve_existing_prefix(Path::new("no-such-dir/x/../y")).unwrap(),
             cwd.join("no-such-dir/y")
         );
+    }
+
+    /// A link inside an environment is refused before anything is copied.
+    #[test]
+    fn an_environment_holds_no_symlinks() {
+        let tmp = Scratch::new();
+        let env = env_at(tmp.path(), "");
+        env.digest(tmp.path()).unwrap();
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, tmp.path().join("env/learning")).unwrap();
+        let err = env.digest(tmp.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("symlink"), "{err:#}");
     }
 
     /// A server's name is a store directory and a `remove_dir_all` target:
