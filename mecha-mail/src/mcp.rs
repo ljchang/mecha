@@ -213,7 +213,7 @@ fn is_private_write_claim(tool: &Value) -> bool {
 ///   cannot take the exemption unseen, and a listed one cannot quietly
 ///   leave it.
 /// - **The schema is judged by an allowlist.** A property is allowed only if
-///   it is one of the content fields in [`check_private_write_schemas`]. A
+///   it is one of *that tool's* content fields in [`check_private_write_schemas`]. A
 ///   name nobody anticipated — `folder_id`, `parents`, `documentId` — fails
 ///   until someone reads it and adds it there in a diff. A denylist of bad
 ///   names failed open on exactly those (found in review of #274).
@@ -247,21 +247,55 @@ pub(crate) fn assert_private_writes(tools: &[Value], expected: &[&str]) {
 /// [`assert_tool_surface`] so every surface inspects its claimants.
 #[cfg(test)]
 fn check_private_write_schemas(tools: &[Value], names: &[&str]) {
-    // What a private write may say: the content of the new thing. Nothing
-    // here names a party or an existing object. A name is added in the diff
-    // that adds the verb needing it, so its schema is read where it lands.
-    const CONTENT: &[&str] = &["title", "body"];
+    // What each private write may say. Per tool, because a name that is
+    // innocent on one verb is the escape on another: `location` is a place
+    // on a calendar event and could be a Drive folder on a document, and a
+    // crate-wide list let one verb's vocabulary widen every other's (found
+    // in review of #277). A verb not named here gets the narrow default, so a
+    // new private write is read before it can declare anything else.
+    fn content_fields(tool: &str) -> &'static [&'static str] {
+        match tool {
+            // Read in #277. `description` and `location` are the event's
+            // text; the four time fields say when. `account` picks which of
+            // the owner's own configured accounts holds the hold — an enum
+            // over those names, so it names nobody else.
+            "calendar_hold" => &[
+                "title",
+                "description",
+                "location",
+                "start_time",
+                "end_time",
+                "all_day",
+                "timezone",
+                "account",
+            ],
+            _ => &["title", "body"],
+        }
+    }
     for name in names {
         let tool = tools.iter().find(|t| t["name"] == *name).unwrap();
         let props = tool["inputSchema"]["properties"]
             .as_object()
             .unwrap_or_else(|| panic!("{name} has no properties"));
-        for prop in props.keys() {
+        for (prop, spec) in props {
+            // Scalars only: an allowed name must not smuggle a structure in.
+            // `body: {"type": "object", "properties": {"share_with": …}}`
+            // passed a names-only check (found in review of #274).
+            let scalar = matches!(
+                spec["type"].as_str(),
+                Some("string" | "boolean" | "integer" | "number")
+            ) && spec.get("properties").is_none()
+                && spec.get("items").is_none();
             assert!(
-                CONTENT.contains(&prop.as_str()),
+                scalar,
+                "{name}.{prop} is not a flat scalar; a private write's fields carry content, \
+                 never a structure that could hold a recipient"
+            );
+            assert!(
+                content_fields(name).contains(&prop.as_str()),
                 "{name}.{prop} is not a content field. A private write may name no party \
-                 and no existing object; if this one names neither, add it to CONTENT \
-                 with the reason"
+                 and no existing object; if this one names neither, add it to \
+                 content_fields for {name} with the reason"
             );
         }
     }
@@ -332,6 +366,30 @@ mod guard_tests {
             json!({"openWorldHint": false}),
         )];
         assert_tool_surface(&tools, &[], &[], &[]);
+    }
+
+    /// One verb's vocabulary must not widen another's: `location` is a place
+    /// on a hold and could be a shared folder on a document.
+    #[test]
+    #[should_panic(expected = "not a content field")]
+    fn a_calendar_field_does_not_pass_on_another_verb() {
+        let tools = vec![create(
+            json!({"title": {"type": "string"}, "location": {"type": "string"}}),
+            json!({"openWorldHint": false}),
+        )];
+        assert_private_writes(&tools, &["thing_create"]);
+    }
+
+    /// An allowed name must not carry a structure a recipient could hide in.
+    #[test]
+    #[should_panic(expected = "not a flat scalar")]
+    fn a_nested_shape_under_an_allowed_name_fails() {
+        let tools = vec![create(
+            json!({"title": {"type": "string"},
+                   "body": {"type": "object", "properties": {"share_with": {"type": "string"}}}}),
+            json!({"openWorldHint": false}),
+        )];
+        assert_private_writes(&tools, &["thing_create"]);
     }
 
     #[test]

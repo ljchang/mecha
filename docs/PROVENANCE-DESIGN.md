@@ -1,6 +1,6 @@
 # Provenance decides the class — design
 
-**Status: 2026-09-24, designed; P1 building on `feat/provenance-security`.**
+**Status: 2026-09-24, designed. P1 is built (#274 documents, `calendar_hold` stacked on it); P3's `web_open` is built (#276).**
 The owner approved the four directions and their revised shape the same day,
 and ruled R-P1 to R-P4 (§7) the same afternoon.
 
@@ -93,8 +93,15 @@ and it gets tests that fail on the dangerous shape:
 
 **Accepted residuals:**
 
-- A private event on a calendar the owner shares with a delegate still shows
-  as *busy* at that time, never its title. That is timing, not content.
+- A private event on a calendar the owner shares at a reader level still
+  shows as *busy* at that time, never its title. That is timing, not
+  content.
+- **Private is not secret.** A sharee who can make changes to the calendar
+  reads a private event as the owner does, and so does an Outlook delegate
+  granted "view private items". Those are people the owner chose to give
+  that access; the destination is still fixed by the owner's own sharing,
+  never named by a model, so the class does not change. It is the prose
+  that must not overstate it.
 - A new Doc holds whatever private text the model put in it. That is the
   owner's data in the owner's Drive, which is where it already was.
 - **What the review used to catch, named.** With the `allow` rule, a

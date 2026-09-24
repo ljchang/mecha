@@ -46,6 +46,11 @@ pub struct CreateEventRequest {
     pub attendees: Vec<String>,
     pub all_day: bool,
     pub timezone: Option<String>,
+    /// `visibility: private`: someone the calendar is shared with at a
+    /// reader level sees "busy", not the title. A sharee who can *make
+    /// changes* reads it as the owner does and sees everything.
+    /// `calendar_hold` sets it (`docs/PROVENANCE-DESIGN.md` §2, ruling R-P1).
+    pub private: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -168,49 +173,15 @@ impl CalendarProvider {
         calendar_id: &str,
         event: &CreateEventRequest,
     ) -> Result<CalendarEvent, MailError> {
-        let (start_json, end_json) = if event.all_day {
-            // All-day events use "date", not "dateTime".
-            (
-                json!({"date": date_part(&event.start_time)}),
-                json!({"date": date_part(&event.end_time)}),
-            )
-        } else {
-            let tz = event.timezone.as_deref().unwrap_or("UTC");
-            (
-                json!({"dateTime": event.start_time, "timeZone": tz}),
-                json!({"dateTime": event.end_time, "timeZone": tz}),
-            )
-        };
-
-        let mut body = json!({
-            "summary": event.title,
-            "start": start_json,
-            "end": end_json,
-        });
-        if let Some(ref desc) = event.description {
-            body["description"] = json!(desc);
-        }
-        if let Some(ref loc) = event.location {
-            body["location"] = json!(loc);
-        }
-        if !event.attendees.is_empty() {
-            body["attendees"] = json!(event
-                .attendees
-                .iter()
-                .map(|a| json!({"email": a}))
-                .collect::<Vec<_>>());
-        }
+        let body = create_body(event);
+        let send_updates = sends_updates(event);
 
         let url = format!(
             "https://www.googleapis.com/calendar/v3/calendars/{}/events",
             urlencode(calendar_id)
         );
-        // Google's default is sendUpdates=none, so attendees were silently
-        // NOT invited despite the tool schema saying they would be — Graph
-        // always mails attendees, and the surface has one behaviour. Set
-        // only when there are attendees: the parameter is about them.
         let mut request = self.client.post(&url).bearer_auth(&self.access_token);
-        if !event.attendees.is_empty() {
+        if send_updates {
             request = request.query(&[("sendUpdates", "all")]);
         }
         let resp = send_with_retry(request.json(&body)).await?;
@@ -427,8 +398,89 @@ fn parse_event(item: &Value, calendar_id: &str) -> CalendarEvent {
     }
 }
 
+/// Whether an insert asks Google to mail the attendees (`sendUpdates=all`).
+///
+/// Google's default is `sendUpdates=none`, so attendees were silently NOT
+/// invited despite the tool schema saying they would be — Graph always mails
+/// attendees, and the surface has one behaviour. Set only when there are
+/// attendees: the parameter is about them. Pure, beside [`create_body`], so a
+/// hold's "mails nobody" is asserted rather than inferred (found in review
+/// of #277).
+pub(crate) fn sends_updates(event: &CreateEventRequest) -> bool {
+    !event.attendees.is_empty()
+}
+
+/// The JSON body of an event insert. Pure, so what a hold sends is testable
+/// without a network: no `attendees` key unless there are attendees, and
+/// `visibility: private` when the request is private.
+pub(crate) fn create_body(event: &CreateEventRequest) -> Value {
+    let (start_json, end_json) = if event.all_day {
+        // All-day events use "date", not "dateTime".
+        (
+            json!({"date": date_part(&event.start_time)}),
+            json!({"date": date_part(&event.end_time)}),
+        )
+    } else {
+        let tz = event.timezone.as_deref().unwrap_or("UTC");
+        (
+            json!({"dateTime": event.start_time, "timeZone": tz}),
+            json!({"dateTime": event.end_time, "timeZone": tz}),
+        )
+    };
+
+    let mut body = json!({
+        "summary": event.title,
+        "start": start_json,
+        "end": end_json,
+    });
+    if let Some(ref desc) = event.description {
+        body["description"] = json!(desc);
+    }
+    if let Some(ref loc) = event.location {
+        body["location"] = json!(loc);
+    }
+    if !event.attendees.is_empty() {
+        body["attendees"] = json!(event
+            .attendees
+            .iter()
+            .map(|a| json!({"email": a}))
+            .collect::<Vec<_>>());
+    }
+    if event.private {
+        body["visibility"] = json!("private");
+    }
+    body
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// What a hold sends: nobody invited, details private. The provider
+    /// half of `docs/PROVENANCE-DESIGN.md` §2's guard.
+    #[test]
+    fn a_private_request_with_no_attendees_invites_nobody_and_hides_its_details() {
+        let hold = CreateEventRequest {
+            title: "Focus".into(),
+            description: Some("draft the aims".into()),
+            start_time: "2026-09-25T09:00:00-04:00".into(),
+            end_time: "2026-09-25T10:00:00-04:00".into(),
+            location: None,
+            attendees: Vec::new(),
+            all_day: false,
+            timezone: Some("America/New_York".into()),
+            private: true,
+        };
+        let body = create_body(&hold);
+        assert!(body.get("attendees").is_none(), "{body}");
+        assert!(!sends_updates(&hold), "a hold mails nobody");
+        assert_eq!(body["visibility"], "private");
+
+        let open = CreateEventRequest {
+            private: false,
+            ..hold
+        };
+        assert!(create_body(&open).get("visibility").is_none());
+    }
     use super::*;
     use serde_json::json;
 

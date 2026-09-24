@@ -43,6 +43,10 @@ untrusted_input = true
 # conversations; `assistant-tal-replied` is the second one's world.
 [outbox]
 tools = [
+  # `mail__calendar_hold` is deliberately absent: a private hold on the
+  # owner's own calendar reaches nobody (`docs/PROVENANCE-DESIGN.md` §2), so
+  # it is not open-world, is not refused, and executes as it does on the
+  # owner's machine rather than staging.
   "mail__mail_send",
   "mail__mail_reply",
   "mail__calendar_create_event",
