@@ -1,6 +1,6 @@
 # Appraisal wiring — design
 
-**Status: proposed 2026-09-24, nothing built.** The rulings each phase
+**Status: designed and ruled 2026-09-24, nothing built.** The rulings each phase
 waits on are in here §6. The evidence behind every claim here — what exists, what
 reads it, what has been measured — is
 [`APPRAISAL-INVENTORY-RESEARCH.md`](APPRAISAL-INVENTORY-RESEARCH.md)
@@ -420,28 +420,28 @@ widening.
 | R19 | 2 | A text appraisal may reach learning, memory retrieval, the owner's surfaces, and credit and tenure — clean runs only for all but the surfaces | **ruled** |
 | R2 | — | A one-tap verdict | **declined** |
 | R7 | — | Draft expiry | **deferred** until the system stabilises |
-| R20 | 2 | The guard on credit and tenure from text: the owner's verdict overrides; grounded claims from clean runs only; a measured lever with a revert first | proposed |
-| R25 | 2 | I1 is the distiller extended; the counts-only appraiser is retired into it; the reflector folds in only after its lessons measure no worse; the graph episode's text stays unchanged | proposed |
-| R26 | 2 | Point-wise comparison at informative decision points, decided by the owner's recorded verdicts, is added **beside** the existing whole-session numeric comparison, which stays; behaviour-changing policies are also measured on fixtures. How the two combine for acceptance is proposed in O1: a candidate is accepted when the point-wise comparison decides for it and the numeric comparison shows no regression (`WORK_FLOOR` intact) | **ruled 2026-09-24: both** (combination proposed) |
+| R20 | 2 | The guard on credit and tenure from text: the owner's verdict overrides; grounded claims from clean runs only; a measured lever with a revert first | **ruled 2026-09-24** |
+| R25 | 2 | I1 is the distiller extended; the counts-only appraiser is retired into it; the reflector folds in only after its lessons measure no worse; the graph episode's text stays unchanged | **ruled 2026-09-24** |
+| R26 | 2 | Point-wise comparison at informative decision points, decided by the owner's recorded verdicts, is added **beside** the existing whole-session numeric comparison, which stays; behaviour-changing policies are also measured on fixtures. They combine as O1 sets out: a candidate is accepted when the point-wise comparison decides for it and the numeric comparison shows no regression (`WORK_FLOOR` intact) | **ruled 2026-09-24: both, combined as O1 proposes** |
 | R21 | 3 | State reaches the agent as described state, on the user-turn or tool-result slot, never the prefix. Budget *facts* may be numbers — turns left, context remaining; anything a model could treat as a *score to move* stays words: sensor readings against setpoints, per-commitment guilt, valence, priorities | **ruled 2026-09-24** |
-| R22 | 3 | An in-run situation appraisal is part of the run: it inherits its taint, shapes the plan, and never widens a permission or chooses an action | proposed |
-| R27 | 3, 5 | Policies are compared only where a structural validator decides; a model judge at most breaks a tie between candidates that passed every structural check | proposed |
+| R22 | 3 | An in-run situation appraisal is part of the run: it inherits its taint, shapes the plan, and never widens a permission or chooses an action | **ruled 2026-09-24** |
+| R27 | 3, 5 | Policies are compared only where a structural validator decides; a model judge at most breaks a tie between candidates that passed every structural check | **ruled 2026-09-24** |
 | R4 | 3 | The completion certificate: template only first; a `Verify` re-prompt only later, as its own measured arm | **ruled 2026-09-24** |
 | R11 | 3 | Acceptance criteria the agent declares, from a closed set the harness executes; frozen; one-sided until the owner confirms them; never a charter sensor | **ruled 2026-09-24** |
-| R23 | 4 | Confirmation of an interpretation or plan only for irreversible or outward acts (on the existing review), a delegated task whose interpretation departs from its anchor, and charter conflicts rank cannot settle | proposed |
-| R10 | 4 | Promises in released drafts recorded as commitments automatically; dismissing one drops it | proposed |
-| R5 | 5 | Desperation brake: refuse writes to a frozen check's read set; withhold `Complete` after two failures | proposed |
-| R6 | 5 | A recipient that does not trace to a confirmed goal is staged | proposed |
-| R13 | 5 | Stored comparisons may narrow a matching call before dispatch | proposed |
+| R23 | 4 | Confirmation of an interpretation or plan only for irreversible or outward acts (on the existing review), a delegated task whose interpretation departs from its anchor, and charter conflicts rank cannot settle | **ruled 2026-09-24** |
+| R10 | 4 | Promises in released drafts recorded as commitments automatically; dismissing one drops it | **ruled 2026-09-24** |
+| R5 | 5 | Desperation brake: refuse writes to a frozen check's read set; withhold `Complete` after two failures | **ruled 2026-09-24** |
+| R6 | 5 | A recipient that does not trace to a confirmed goal is staged | **ruled 2026-09-24** |
+| R13 | 5 | Stored comparisons may narrow a matching call before dispatch | **ruled 2026-09-24** |
 | R28 | 5 | Mid-run counterfactual branching is built, on bubblewrap overlays: each dry branch gets a kernel overlay of the workspace (`--tmp-overlay`), so shell and file tools alike write to the branch. Prerequisite: bubblewrap ≥ 0.10 (Ubuntu 24.04 ships 0.9.0; built from upstream and installed alongside), with the sandbox preflight checking for overlay support and refusing to branch — never falling back silently — where it is missing | **ruled 2026-09-24** (the upgrade itself is an ops step, not yet done) |
 | R3 | parked | Inferring an anchor for un-anchored runs onto a closed list of pointers | parked |
 | R8 | parked | The harness may *propose* per-region autonomy grants | parked |
 | R29 | — | Sending transcripts to a cloud model for interpretation or rollouts | not proposed; the owner's privacy decision |
 | R9 | — | The charter line `be-the-best`: unboundedness is fine (lines are attractors); §15's narrower worry is a line whose object is the harness, held by the `Security` class | flagged once |
 
-**Phase 1 has every ruling it needs.** Phase 2 still needs R20 and R25 (and
-the R26 combination); phase 3 still needs R22 and R27; phase 5's R28 is ruled
-and waits on the bubblewrap upgrade.
+**Every ruling is settled** (2026-09-24), except the parked items (R3, R8), the
+flag (R9), the deferred R7, the declined R2 and R29, which is not proposed.
+Phase 5's R28 waits on the bubblewrap upgrade, an ops step.
 
 ---
 
@@ -912,7 +912,7 @@ diagnostician's proposals and `learn`'s validation, and stays inside the
 nightly headroom.
 
 **Both, per R26.** The existing whole-session numeric comparison stays; this
-runs beside it. Proposed combination for accepting a candidate: the
+runs beside it. The combination for accepting a candidate (ruled): the
 point-wise comparison decides for it, and the numeric comparison shows no
 regression with `WORK_FLOOR` intact — the new evidence decides, the old
 guards against a candidate that wins a verdict by doing less.
