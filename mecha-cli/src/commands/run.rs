@@ -68,6 +68,24 @@ pub struct Args {
 /// each a pointer the harness holds from a store the owner authored or
 /// configured, never one a model named. `None` leaves the conversation as it
 /// was, which is how a resumed session keeps the anchor it saved.
+/// Parse a structural pointer the harness spelled from a store id, saying so
+/// when it does not parse rather than leaving the run silently un-anchored —
+/// the empty-anchor symptom S1 exists to fix, with nothing saying why. A
+/// trigger's name (`Trigger::valid_name`) and a request's `seq` (an integer)
+/// always parse; a task id is the graph's uid, which nothing here constrains.
+pub(crate) fn structural_pointer(spelled: String) -> Option<mecha_core::goal::GoalRef> {
+    match spelled.parse() {
+        Ok(g) => Some(g),
+        Err(e) => {
+            eprintln!(
+                "mecha: `{spelled}` is not a goal pointer ({e}); this run is recorded \
+                 without a goal anchor"
+            );
+            None
+        }
+    }
+}
+
 pub(crate) fn seed_goal_anchor(
     convo: &mut mecha_core::agent::Conversation,
     goal: Option<mecha_core::goal::GoalRef>,

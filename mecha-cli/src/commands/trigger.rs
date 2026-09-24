@@ -1004,7 +1004,7 @@ async fn run_agent(
     // `serves` — stays on the trigger file and is read from there.
     super::run::seed_goal_anchor(
         &mut convo,
-        format!("trigger:{}", t.name).parse().ok(),
+        super::run::structural_pointer(format!("trigger:{}", t.name)),
         Some(&session),
     )?;
     let user = Message::user(&t.prompt);

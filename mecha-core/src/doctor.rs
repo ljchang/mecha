@@ -193,7 +193,7 @@ pub fn examine(home: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     findings.extend(check_outbox(&home.join("outbox"), now, charter));
     findings.extend(check_questions(&home.join("questions"), now, charter));
     findings.extend(check_frontdoor(&home.join("requests"), now, charter));
-    findings.extend(check_triggers(&home.join("triggers"), now));
+    findings.extend(check_triggers(&home.join("triggers"), now, charter));
     findings.extend(check_charter(&home.join("charter.toml")));
     findings.extend(check_runs(&home.join("sessions"), charter));
     findings.extend(check_harness(&home.join("learning").join("harness"), now));
@@ -1117,7 +1117,15 @@ const HEALTH_ERROR_RATE: f64 = 1.0 / 3.0;
 
 /// Read the trigger files and the ledger directly — same reason as above:
 /// [`crate::trigger::TriggerStore::open`] creates and re-chmods the root.
-fn check_triggers(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
+/// `charter` is the one `check` loaded; a trigger's optional `serves` is
+/// checked against it exactly as `TriggerStore` checks it at load, because a
+/// trigger refused there silently stops firing while a bare TOML parse here
+/// would call it healthy (found on review of the structural-anchor PR).
+fn check_triggers(
+    root: &Path,
+    now: DateTime<Utc>,
+    charter: Option<&crate::charter::Charter>,
+) -> Vec<Finding> {
     let mut out = Vec::new();
     if !root.is_dir() {
         return out;
@@ -1149,6 +1157,20 @@ fn check_triggers(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
         {
             Ok(Ok(mut trigger)) => {
                 trigger.name = name;
+                if let Err(e) = trigger.check_serves(charter.ok_or("the charter could not be read"))
+                {
+                    out.push(Finding {
+                        component: "triggers".to_string(),
+                        severity: Severity::Attention,
+                        summary: format!(
+                            "trigger `{}` will not load, so it will not fire",
+                            trigger.name
+                        ),
+                        detail: format!("{e:#}"),
+                        remedy: None,
+                    });
+                    continue;
+                }
                 triggers.push(trigger);
             }
             _ => out.push(Finding::unreadable(
@@ -3856,6 +3878,34 @@ mod tests {
         );
         assert!(of(&examine(&home, utc(NOW)), "triggers").is_empty());
 
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A trigger whose optional `serves` names a charter line that no longer
+    /// exists is refused by `TriggerStore` at load and so never fires; the
+    /// doctor must say so. On the old tree the bare TOML parse accepted it
+    /// and reported nothing.
+    #[test]
+    fn a_trigger_serving_a_missing_charter_line_is_reported_as_not_firing() {
+        let home = home("trigger-serves-missing");
+        std::fs::write(
+            home.join("charter.toml"),
+            "[[line]]\nid = \"protect-my-attention\"\ntext = \"Protect my attention.\"\n",
+        )
+        .unwrap();
+        trigger_file(&home, "morning", "serves = \"charter:no-such-line\"\n");
+        trigger_file(
+            &home,
+            "evening",
+            "serves = \"charter:protect-my-attention\"\n",
+        );
+        let findings = examine(&home, utc(NOW));
+        let broken: Vec<_> = of(&findings, "triggers")
+            .into_iter()
+            .filter(|f| f.summary.contains("will not load"))
+            .collect();
+        assert_eq!(broken.len(), 1, "{findings:#?}");
+        assert!(broken[0].summary.contains("morning"), "{findings:#?}");
         let _ = std::fs::remove_dir_all(&home);
     }
 
