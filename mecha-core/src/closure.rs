@@ -211,8 +211,12 @@ pub fn posture_from_env() -> PostureReading {
 /// the harness registered, and the posture it recorded for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellReading {
-    /// No registered shell among this process's ancestors.
+    /// No registered shell among this process and its ancestors, in a
+    /// registry that exists and could be read (or does not exist yet).
     NotRegistered,
+    /// The registry, or a registration on this process's chain, could not
+    /// be read. Refused: unknown is never clean (review of #294).
+    Unreadable(String),
     /// A registered shell; `posture` is `Err` with the recorded word when
     /// this build cannot read it (including `unknown`).
     Registered {
@@ -223,15 +227,23 @@ pub enum ShellReading {
 
 impl ShellReading {
     /// Read the registry at its default location. A registry that does not
-    /// exist yet holds no registration.
+    /// exist yet holds no registration; one that exists and cannot be read,
+    /// or a registration on this process's chain that cannot be parsed, is
+    /// [`ShellReading::Unreadable`].
     pub fn from_registry() -> Self {
-        crate::shell_registry::ShellRegistry::open_existing_default()
-            .and_then(|r| crate::shell_registry::nearest_registered_ancestor(&r))
-            .map(|e| ShellReading::Registered {
-                pid: e.pid,
-                posture: e.posture(),
-            })
-            .unwrap_or(ShellReading::NotRegistered)
+        use crate::shell_registry::{nearest_registered_ancestor, Lookup, ShellRegistry};
+        match ShellRegistry::open_existing_default() {
+            Err(why) => ShellReading::Unreadable(why),
+            Ok(None) => ShellReading::NotRegistered,
+            Ok(Some(registry)) => match nearest_registered_ancestor(&registry) {
+                Lookup::Absent => ShellReading::NotRegistered,
+                Lookup::Unreadable(why) => ShellReading::Unreadable(why),
+                Lookup::Registered(e) => ShellReading::Registered {
+                    pid: e.pid,
+                    posture: e.posture(),
+                },
+            },
+        }
     }
 }
 
@@ -258,6 +270,11 @@ const OWNERS_ACT: &str = "closing or reopening a task is the owner's act — clo
 /// 4. No registered shell and no [`POSTURE_ENV`]: not in a run at all — the
 ///    owner's own terminal or a surface's child — `owner`, on the flagged
 ///    surface.
+///
+///    Checked before 4 and 5: a registry, or a registration on this
+///    process's chain, that cannot be read is refused whatever the variable
+///    says — an I/O fault must not read as the owner's terminal (review of
+///    #294: unknown is never clean).
 /// 5. No registered shell but [`POSTURE_ENV`] set: a process claiming a run
 ///    no registration confirms. Refused: the legitimate way to carry the
 ///    variable is to be a registered shell's descendant, so its presence
@@ -317,6 +334,10 @@ pub fn decide(
             "this command was run by a shell (process {pid}) whose run posture is {word:?}, \
              which is not one this build can read; refusing to close or reopen a task on its \
              behalf — {OWNERS_ACT}"
+        )),
+        (ShellReading::Unreadable(why), _) => Err(format!(
+            "the harness's shell registry could not be read ({why}), so this command's run \
+             posture is unknown; refusing to close or reopen a task — {OWNERS_ACT}"
         )),
         (ShellReading::NotRegistered, PostureReading::NotInRun) => {
             Ok((Actor::Owner, flagged.unwrap_or(Surface::Cli)))
@@ -892,6 +913,15 @@ mod tests {
             assert!(decide(&P::NotInRun, &shell(Ok(p)), None, None).is_err());
         }
         assert!(decide(&P::NotInRun, &shell(Err("unknown".into())), None, None).is_err());
+        // An unreadable registry refuses even with no variable —
+        // it must not read as the owner's terminal (review of #294).
+        assert!(decide(
+            &P::NotInRun,
+            &S::Unreadable("EACCES".into()),
+            None,
+            Some(Surface::Cli)
+        )
+        .is_err());
         // Rule 5: the variable with no registration behind it refuses, in
         // every value, `interactive` first.
         for env in [
