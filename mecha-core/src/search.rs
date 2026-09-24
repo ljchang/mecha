@@ -1060,7 +1060,11 @@ fn provenance(query: &str, url: &str) -> Provenance {
         let token = raw
             .trim_matches(|c: char| matches!(c, '"' | '\'' | '(' | ')' | '<' | '>' | ',' | ';'))
             .to_lowercase();
-        if !token.contains('.') {
+        // A dotted name, a scheme, or a bracketed IPv6 literal: anything
+        // that can parse as a destination. An IPv6 literal has no dot, and
+        // skipping it let a verbatim echo mint a handle (found in review of
+        // #286).
+        if !token.contains('.') && !token.contains("://") && !token.contains('[') {
             continue;
         }
         let with_scheme = if token.contains("://") {
@@ -1094,13 +1098,21 @@ fn provenance(query: &str, url: &str) -> Provenance {
         if bare && host == t_host {
             return Provenance::Echoed;
         }
-        // The token's host appears in the result's path or query — a
-        // wrapper pointing at an address the model wrote.
+        // The token's host appears past the result's own host *as a
+        // destination* — after `//` or `=`, the shape of a wrapper carrying
+        // an address in its query. A bare substring test also matched
+        // `Cargo.toml` inside `/blob/master/Cargo.toml` and stripped the
+        // handle off the page the search was for (found in review of #286).
         let beyond_host = decoded
             .split_once(&host)
             .map(|(_, rest)| rest)
             .unwrap_or("");
-        if t_host != host && (beyond_host.contains(&t_host) || beyond_host.contains(&t_raw)) {
+        let as_destination = |needle: &str| {
+            ["//", "="]
+                .iter()
+                .any(|lead| beyond_host.contains(&format!("{lead}{needle}")))
+        };
+        if t_host != host && (as_destination(&t_host) || as_destination(&t_raw)) {
             return Provenance::Echoed;
         }
     }
@@ -1735,6 +1747,24 @@ mod tests {
             provenance("rust tracing crate", "https://docs.rs/tracing"),
             Supplied
         );
+        // A dotted file name in the query is not a destination in the path.
+        assert_eq!(
+            provenance(
+                "Cargo.toml features",
+                "https://github.com/rust-lang/cargo/blob/master/Cargo.toml"
+            ),
+            Supplied
+        );
+        // A query parameter whose value *is* the token is the wrapper shape
+        // itself (`?u=s3cr3t.evil.example`), and cannot be told apart from an
+        // honest `?q=package.json` — refused, on purpose.
+        assert_eq!(
+            provenance("package.json", "https://search.example/r?u=package.json"),
+            Echoed
+        );
+        // An IPv6 literal has no dot, and is still a destination.
+        let v6 = "http://[2001:db8::1]/?d=SECRET";
+        assert_eq!(provenance(v6, v6), Echoed);
         assert_eq!(provenance("anything", "//no-scheme.example/x"), Unparseable);
         // A `%` before a multi-byte character decodes as itself, never panics.
         assert_eq!(percent_decode("a%ı%4"), "a%ı%4");

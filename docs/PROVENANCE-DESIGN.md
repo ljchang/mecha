@@ -217,7 +217,10 @@ handle to a result whose URL *carries bytes the query wrote*, and says why.
 Both sides are normalised by the same parser, and the result is
 percent-decoded twice, so the model cannot pick a spelling that slips past
 (found in review of #284 and #286). A query that only mentions a domain keeps
-that domain's real pages.
+that domain's real pages. One asymmetry is chosen, not missed. The guard
+sees only the query, never your own message, so a URL you pasted and asked
+about loses its handle if a search echoes it back. That page is reached
+through `http_fetch`'s owner-typed-URL case instead, the second half of P3.
 
 **Where this lives.** It lives in the tool, not the loop. `web_open` takes an
 index, so it is `Blind` by schema. `http_fetch` gains a dispatch-time check,
