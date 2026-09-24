@@ -1,0 +1,18 @@
+# Multi-step email, first conversation: plan three questions, answer two from the charter or graph and an old email, and stage the question only a colleague can answer.
+#
+# A baseline measurement: one arm, no control, three seeds. Staged writes are
+# graded by the arguments of the staged call. Run from the checkout root.
+name = "suite-multitask-ask"
+split_seed = 1
+seeds = [1, 2, 3]
+
+[environment]
+dir = "eval/envs/assistant"
+
+[tasks]
+cases = "eval/suites/assistant.jsonl"
+fixture = "eval/workspace"
+tags = ["multitask-ask"]
+
+[arms.full]
+preset = "full"

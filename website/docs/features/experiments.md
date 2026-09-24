@@ -341,6 +341,17 @@ also moves every variant that extends it, since that edit changes what the
 variant runs. Arms whose environments resolve the same share a condition
 and are flagged as identical like any other.
 
+The digest covers the files *inside* the environment, not files its config
+points to elsewhere in the checkout. The default's `system_prompt_file =
+"prompts/agent.md"` is one: editing that file changes what every arm runs
+without changing any hash. Each session still records its resolved system
+prompt, but the condition hash doesn't see it. The fixture servers an
+environment runs are the same: `eval/fixtures/mail_server.py`,
+`docs_server.py` and `polls_server.py` live outside every environment, so
+editing one changes the world each arm meets without moving a hash. To vary a
+prompt as an arm's condition, keep the prompt file inside the variant's
+environment.
+
 If you edit an arm's environment between two sittings, a `single` arm's home
 is re-seeded from the new build (its charter, skills and learning store), since
 each trial starts from the seed anyway. A lifetime refuses to resume instead:
@@ -786,6 +797,44 @@ it was added. Two were rewritten during that pass because the fixture
 calendar dates its events by the UTC day while "tomorrow" is asked in your
 time zone, so a one-day window graded a correct answer wrong for part of
 every day. Cases that depend on a date use a window of several days.
+
+### Assistant suites
+
+Five more suites cover the work an assistant does across your other tools.
+They run in `eval/envs/assistant`, which extends the default with a fixture
+Google Docs server and a fixture poll server (both mirroring your real tools'
+names and arguments), your outbox routing, and more seeded data: a letter
+template, a student's CV and statement, a finished meeting poll and a
+recommendation-request form.
+
+| Suite | What it checks |
+|---|---|
+| `docs.toml` | Creating a doc from an email, drafting a project update from the graph and your notes, adding to an existing doc without creating a new one |
+| `polls.toml` | A meeting poll for named people, booking the time everyone can make with all of them invited and closing the poll, and a request form written as a spec file first |
+| `recletter.toml` | Drafting a recommendation letter from your template, the form's answers and the student's docs, and reporting exactly what the student wrote in the form's free-text answer |
+| `multitask-ask.toml` | Planning a three-part email, answering two parts from the charter or graph and an old email, and staging the question only a colleague can answer |
+| `multitask-finish.toml` | The next conversation, once the colleague has replied (`eval/envs/assistant-tal-replied`): one staged reply with all three answers |
+
+Writes are staged in the outbox, as on your machine, so a case grades the
+arguments of the staged call. Three things calibration showed are worth
+knowing beyond the tests:
+
+- **Asking someone and waiting for the answer takes two conversations.** Once
+  a run has read your mail, a send to an address the model chooses is
+  refused by the trifecta interlock. Only a staged send goes out, after you
+  approve it, and the answer arrives later. That's why the multi-step task is
+  two suites.
+- **Free-text form answers arrive as untrusted text.** `poll_status` quotes
+  them apart from the counts, under `text_answers`, with a warning to treat
+  them as data. They're other people's words, and from a link poll anyone's,
+  so they arm the trifecta interlock the way a mail body does. That's why the
+  environment marks the poll server `untrusted_input`, as your own config
+  does.
+- **The web isn't part of these tasks yet.** An MCP tool can't be classed as
+  having no destination the model picks, so a fixture search server would be
+  refused where your real `web_search` is allowed. Testing web lookups
+  faithfully means letting an experiment substitute a local search backend,
+  which isn't built.
 
 Shipped manifests to copy from: `eval/dojo-workspace.toml` (task source,
 fixture servers), `eval/home-lifetime.toml` and `eval/assistant-lifetime.toml`
