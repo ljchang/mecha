@@ -415,6 +415,7 @@ pub const HELP: &str = "\
   /polls                 open polls on the gate: tallies, close, export
   /doctor                what is silently wrong across the stores, and the way out
   /docs                  documents in scope, and how to put one there
+  /entity                who is who in the graph: rename, alias, add a person
   /review [now|later|auto]      what happens when a run stages drafts
   /model [id]            show or switch the model
   /provider [name]       show or switch the provider
@@ -432,6 +433,19 @@ pub const HELP: &str = "\
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A command you can Tab to is one `/help` must name: `/entity`
+    /// completed and opened its modal while `/help` left it out, so the
+    /// only way to find it was to already know it.
+    #[test]
+    fn every_completable_command_is_in_help() {
+        for name in NAMES {
+            assert!(
+                HELP.contains(&format!("/{name} ")) || HELP.contains(&format!("/{name}\n")),
+                "/{name} completes but /help does not list it"
+            );
+        }
+    }
 
     #[test]
     fn completion_only_fires_while_the_name_is_still_being_typed() {
