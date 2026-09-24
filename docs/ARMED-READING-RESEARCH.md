@@ -21,6 +21,18 @@ operator permission); **R2 and R3 are still open** — §7 notes that R2 would
 compose with P2 (default untrusted, trust earned per tool or per result by
 proof). Read §7 below as the questions as first asked, not as pending.
 
+**§3.2 is the proposal as first drafted, not what shipped.** The built
+`web_open` (#284, #286) is described by `PROVENANCE-DESIGN.md` §4 and the
+`WebOpen` doc comment, which are the authority: it takes an opaque handle,
+not an integer index; it dereferences against `ResultLedger`, not
+`grounding::calls`; and it follows HTTP redirects but no page links, so the
+link cap below is a proposal for a feature that does not exist. **The
+blind-call counter and budget that §3.2's residuals lean on are unbuilt.** And
+§4 adds a residual this document missed, one of reach rather than bandwidth:
+a backend that echoes a URL-shaped query back as a result, or wraps results
+in its own redirect, mints a handle to a model-composed destination.
+`search::provenance` guards it; the budget would not.
+
 ---
 
 ## 1. What is refused today, measured
@@ -143,7 +155,8 @@ fetches that URL, exactly as it was received.
    token the model searched for from which page it then opened. That is the
    D4/§6 residual of blind search itself, turned into a read receipt: real,
    slow, and requiring the attacker to win an indexing race per token.
-3. Both are **bandwidth, not reach**, and both are bounded by one number: a
+3. Both are **bandwidth, not reach** (the echo channel found since is reach,
+   and is not in this list — see the status note), and both are bounded by one number: a
    per-conversation budget of blind *calls*. A budget bounds bandwidth only
    because bits per call are bounded — at most ~3.3 for a result and 4 for
    a capped link — so the product is a real ceiling. It needs **its own
