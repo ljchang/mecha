@@ -417,3 +417,29 @@ fn an_uncertain_closure_that_did_not_land_is_withdrawn_by_the_next_status_change
         .any(|e| matches!(e, Entry::Aborted { of, .. } if *of == id)));
     assert!(f.store().transitions().unwrap().is_empty());
 }
+
+/// A board at neither end of the uncertain move is evidence of nothing —
+/// something else moved the row — so the record stays uncertain rather than
+/// being withdrawn as a move that did not happen (review of #293: the
+/// earlier two-way read withdrew it).
+#[test]
+fn an_uncertain_closure_with_the_board_at_neither_end_stays_uncertain() {
+    let Some(f) = Fixture::new("") else {
+        return;
+    };
+    let id = seed_uncertain(&f, "next", "done");
+    set_board_status(&f, "waiting");
+    let out = f.command(&["tasks", "set", "task-1", "--status", "next"], None);
+    ok(&out);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("still unsettled"));
+    assert!(!records(&f.root)
+        .iter()
+        .any(|e| matches!(e, Entry::Aborted { of, .. } if *of == id)));
+    assert_eq!(
+        f.store()
+            .unresolved_uncertain("task-1")
+            .unwrap()
+            .map(|t| t.id),
+        Some(id)
+    );
+}
