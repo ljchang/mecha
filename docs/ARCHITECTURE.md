@@ -934,6 +934,34 @@ and models retry broken tools. With no blind backend configured there is no
 armed path, so the tool declares `Chosen` and its `denial_remedy` names
 `kind = "searxng"`.
 
+**Opening a result: `web_open`** (`docs/PROVENANCE-DESIGN.md` §4). It is
+registered with `web_search` and never without it, sharing one
+`ResultLedger`. The ledger is process-wide, and each search gets a random
+token, so a handle has to be held and can't be derived. `web_search` prints a
+handle beside each result, and `web_open`'s only argument is that handle.
+That makes it `Blind` by schema, under the same rule as the query: the page
+it fetches is one a backend returned, never a URL the model wrote. The
+invariants:
+
+- **A handle this ledger didn't issue opens nothing.** That covers a URL, a
+  guessed handle, and one from before a restart. The tests assert it on the
+  wire, not on a return value.
+- **Every hop is vetted.** Redirects are followed, because the far end
+  chooses them, but each hop goes back through `fetch_vetted` (`check_url`
+  plus a pinned resolve). A 3xx with no location is an error, not a request
+  to a placeholder path.
+- **Every result is `from_outside`, refusals included.** Each URL came from a
+  backend or a `location` header. Only the "no such handle" refusal is clean,
+  because it quotes the model's own argument.
+- **An approval card shows the URL.** `Tool::review_input` puts the URL
+  beside the handle, because a handle is the whole argument and none of the
+  decision.
+
+What it leaks is which result was picked (`log2(N)` bits per call) to
+whoever serves that page. A per-conversation budget of blind calls is the
+bound, and it has not shipped yet. `http_fetch` is unchanged: a URL from
+anywhere else goes through it and is refused when armed.
+
 ## mecha-mail
 
 `mecha-mail/` is a **library plus four thin MCP binaries**, and it is how
