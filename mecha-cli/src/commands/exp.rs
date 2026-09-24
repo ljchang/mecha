@@ -367,6 +367,16 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool, jobs: u32) -> Resu
         .filter(|t| matches!(t.status, TrialStatus::Pending | TrialStatus::Running))
         .collect();
     let done = planned.len() - todo.len();
+    for group in manifest.identical_arms(&provider, &model) {
+        eprintln!(
+            "mecha exp: arms {} run under one condition (the same hash on every row) — every difference between them is noise; fine for an A/A design, a mistake otherwise",
+            group
+                .iter()
+                .map(|a| format!("`{a}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     eprintln!(
         "mecha exp `{name}`: {} trials planned, {done} finished, {} to run{} · {provider} ({model})",
         planned.len(),
@@ -562,7 +572,6 @@ where
                     }
                 }
             };
-            announced_at = None;
             let planned_trial = pending.remove(at).expect("found above");
             busy.insert(planned_trial.arm.clone());
             ran += 1;
@@ -2409,6 +2418,11 @@ fn judge_cmd(name: &str, json: bool) -> Result<()> {
             println!(
                 "  --jobs differed across this arm's pairs ({:?}): held at propose",
                 v.jobs_seen
+            );
+        }
+        if v.same_condition_as_control {
+            println!(
+                "  same condition as `{control}`: every row carries the control's hash, so this arm measures noise"
             );
         }
         if manifest.kind == TrialKind::Lifetime {

@@ -268,8 +268,9 @@ trial your real graph, reads and writes. The names are part of the condition
 hash, so a live-world row never pairs with a sandboxed one. Leave the list
 empty unless the question is about your real world.
 
-The whole environment directory is part of every row's condition hash, by
-content. Editing a file between two runs makes a new condition, and its
+An environment holds files, never links: a symlink anywhere in it is
+refused, since the directory is copied into trial homes. The whole
+environment directory is part of every row's condition hash, by content. Editing a file between two runs makes a new condition, and its
 stores are built fresh beside the old ones. `[fixtures]` servers, when a
 manifest names any, replace the environment's servers entirely.
 
@@ -326,6 +327,14 @@ Six tasks × two seeds gives twelve pairs. With a control and three treatments
 that is 48 trials, each a full child run. Use `--dry-run` to count them and
 `--limit N` to spread a large design across sittings. `run` resumes, and
 never reruns a finished trial.
+
+**Two arms with the same condition hash are one condition under two
+names**, so every difference between them is noise. That is what an A/A
+design wants, and a mistake anywhere else: `levers_on = ["learned_rules"]`
+over `full` is `full`, since `full` already has it on. `run` warns about
+identical arms when it plans, and `judge` marks such an arm
+`same condition as <control>`, which is `same_condition_as_control` in
+`--json`. Neither refuses, and the verdict is left as it is.
 
 Each treatment arm is judged against the control only, on its own predicted
 metric. Tasks with more room to differ make better pairs: a task every arm
