@@ -34,10 +34,11 @@ status reopens it, and nothing is deleted. The full flag list is in the
 
 ### Only you close a task
 
-A model cannot move a task to `done` or `dropped`. Every model-facing copy of
-`kg_task_update` is wrapped so that it refuses those two statuses and names
-`mecha tasks set` as the command to use. It can still change due dates,
-contexts and the other fields. The wrapper is applied before subagents are
+A model cannot change a task's status. Every model-facing copy of
+`kg_task_update` is wrapped so that it refuses any `status` write — closing
+and reopening a task are recorded acts with their own appraisal and hooks —
+and names `mecha tasks set` as the command to use. It can still change due
+dates, contexts and the other fields. The wrapper is applied before subagents are
 built, so a run cannot get around it by delegating to a subagent. Delegated runs
 go further: `kg_task_update` is removed from their tool surface entirely, and
 `tasks work` refuses to start if a configured subagent allowlists it.

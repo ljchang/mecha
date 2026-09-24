@@ -2163,9 +2163,15 @@ now makes the move one recorded event:
   `Sandbox::command_with_env`, from `ToolCtx::run_posture`, which
   `setup::posture_for` and `serve::chat::web_posture` set); only
   `interactive` may close, recorded as `owner-approved` on surface `chat`,
-  and an unstamped run reads `unknown`, which refuses. Independently, a
+  and an unstamped run reads `unknown`, which refuses. **`interactive` means
+  the approver asks a person**, not only that one is present: `posture_for`
+  reads the resolved permission mode, so `-y`, `permission_mode = "allow"`
+  and a TUI switched out of `ask` (by `/mode`, or restored after a `/model`
+  rebuild) stamp `unattended`, as `web_posture` already did for an
+  approvals-off web chat (found on review of #293). Independently, a
   process descended from a live task-run or trigger-run marker's pid is
-  refused whatever its environment. **The residue is wider than it looks,
+  refused whatever its environment — **on Linux only**: the ancestry is
+  read from `/proc`, and elsewhere this second check finds nothing. **The residue is wider than it looks,
   and is named on `decide`:** the posture is an environment variable the
   command string can set, so `MECHA_RUN_POSTURE=interactive mecha tasks set …`
   in a delegated or unattended run's `shell` overrides the stamp; where the

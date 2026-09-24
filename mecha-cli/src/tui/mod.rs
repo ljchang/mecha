@@ -1071,6 +1071,20 @@ fn approver_for(mode: PermissionMode, retained: &Arc<dyn Approver>) -> Arc<dyn A
     }
 }
 
+/// Stamp the posture a permission mode means on the agent's own context
+/// (S8, review of #293): the TUI is a surface with a person present, but
+/// only `ask` asks them, so a session switched to `allow` or `read-only` is
+/// `unattended` from its next command on — whether by `/mode` or by a
+/// `/model` rebuild, which prepares from config and would otherwise restore
+/// the file's mode instead of the session's.
+fn stamp_posture(agent: &mut mecha_core::agent::Agent, mode: PermissionMode) {
+    agent.ctx_mut().run_posture = Some(crate::setup::posture_for(
+        Some(mecha_core::session::SessionKind::Tui),
+        true,
+        mode,
+    ));
+}
+
 /// The tools that belong to this *front-end* rather than to the agent's
 /// configuration.
 ///
@@ -3024,6 +3038,7 @@ async fn apply_switch(
             return Ok(());
         };
         agent.set_approver(approver_for(mode, approver));
+        stamp_posture(agent, mode);
         app.mode = mode;
         app.transcript
             .push(Entry::Notice(format!("mode {}", mode_name(mode))));
@@ -3109,6 +3124,7 @@ async fn apply_switch(
     // for rather than a tool call an hour later.
     let max_upload_mb = prepared.config.slack.max_upload_mb;
     install_frontend_tools(&mut prepared.agent, asker, session, max_upload_mb);
+    stamp_posture(&mut prepared.agent, app.mode);
     let tools_changed = prepared.agent.registry().len() != live.agent.registry().len();
     *live = Live::new(prepared, opts);
     app.mcp_on = !live.opts.no_mcp;
@@ -5078,12 +5094,21 @@ fn closure_readout(task: &str, to: &str, began: chrono::DateTime<chrono::Utc>) -
         Some(Entry::Readout {
             readout: Some(r),
             follow_up_staged,
+            project,
             ..
-        }) => Some(if follow_up_staged {
-            format!("{r} — a follow-up was staged")
-        } else {
-            r
-        }),
+        }) => {
+            let mut line = r;
+            if follow_up_staged {
+                line.push_str(" — a follow-up was staged");
+            }
+            // The project's reading, when this closure closed one (carried
+            // on the record since S8; review of #293: it was written and
+            // never shown).
+            if let Some(p) = project {
+                line.push_str(&format!(" · {p}"));
+            }
+            Some(line)
+        }
         _ => None,
     }
 }

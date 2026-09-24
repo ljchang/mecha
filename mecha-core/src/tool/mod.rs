@@ -466,6 +466,18 @@ pub trait Tool: Send + Sync {
         false
     }
 
+    /// The tool a guard wraps, for the **harness's own** hand — never the
+    /// model's, which calls `call` and nothing else. `None` for every tool
+    /// that is not a guard. Exists because the closure guard refuses every
+    /// `status` write from a model (review of #293: a reopen is a deniable
+    /// event too), while the harness still moves a delegated task to
+    /// `waiting` and back on the handle it withheld from the model
+    /// (`tasks::move_task`, which checks for itself that it never carries a
+    /// closing status).
+    fn unguarded(&self) -> Option<std::sync::Arc<dyn Tool>> {
+        None
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: self.name().to_string(),

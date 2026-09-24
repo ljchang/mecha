@@ -111,19 +111,29 @@ pub struct PreparedTools {
 /// The posture a front-end's run gets, unless it names one
 /// (`GlobalOpts::run_posture`). A delegated task is always `delegated`,
 /// whatever its approver: a closure is the owner's verdict on it. A chat,
-/// the TUI or `mecha run` with a person at the approver is `interactive`.
-/// Everything else — triggers, the front door, mail, Slack, voice, and the
-/// web before a session says otherwise (`serve::chat` stamps its own) — is
-/// `unattended`, the direction that refuses.
+/// the TUI or `mecha run` with a person at the approver is `interactive` —
+/// and only while the approver actually **asks** them: `mode` is the
+/// resolved permission mode, so `-y`, `permission_mode = "allow"` or a TUI
+/// switched out of `ask` is `unattended`, as `serve::chat::web_posture`
+/// already treats a web chat with approvals off (found on review of #293:
+/// `interactive` alone said a prompt *could* reach a person, not that it
+/// would). Everything else — triggers, the front door, mail, Slack, voice,
+/// and the web before a session says otherwise (`serve::chat` stamps its
+/// own) — is `unattended`, the direction that refuses.
 pub fn posture_for(
     surface: Option<mecha_core::session::SessionKind>,
     interactive: bool,
+    mode: PermissionMode,
 ) -> mecha_core::closure::RunPosture {
     use mecha_core::closure::RunPosture;
     use mecha_core::session::SessionKind as K;
     match surface {
         Some(K::Task) => RunPosture::Delegated,
-        Some(K::Chat | K::Tui | K::Run | K::Test) | None if interactive => RunPosture::Interactive,
+        Some(K::Chat | K::Tui | K::Run | K::Test) | None
+            if interactive && mode == PermissionMode::Ask =>
+        {
+            RunPosture::Interactive
+        }
         _ => RunPosture::Unattended,
     }
 }
@@ -1382,6 +1392,11 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
             .context("sandbox preflight failed — refusing to run `shell` unconfined")?;
     }
 
+    // `cfg` is final here: `-y` and `--read-only` were folded into
+    // `cfg.tools.permission_mode` above.
+    let posture = opts
+        .run_posture
+        .unwrap_or_else(|| posture_for(opts.surface, interactive, cfg.tools.permission_mode));
     Ok(PreparedTools {
         registry,
         denials,
@@ -1393,9 +1408,7 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         skill,
         mailbox,
         compact_requested,
-        posture: opts
-            .run_posture
-            .unwrap_or_else(|| posture_for(opts.surface, interactive)),
+        posture,
         _mcp: clients,
     })
 }
@@ -1951,12 +1964,24 @@ mod tests {
     #[test]
     fn a_run_is_interactive_only_with_a_person_at_the_approver() {
         use mecha_core::closure::RunPosture as P;
+        use mecha_core::config::PermissionMode;
         use mecha_core::session::SessionKind as K;
-        assert_eq!(posture_for(Some(K::Task), true), P::Delegated);
-        assert_eq!(posture_for(Some(K::Task), false), P::Delegated);
+        let ask = PermissionMode::Ask;
+        assert_eq!(posture_for(Some(K::Task), true, ask), P::Delegated);
+        assert_eq!(posture_for(Some(K::Task), false, ask), P::Delegated);
         for k in [K::Chat, K::Tui, K::Run] {
-            assert_eq!(posture_for(Some(k), true), P::Interactive, "{k:?}");
-            assert_eq!(posture_for(Some(k), false), P::Unattended, "{k:?}");
+            assert_eq!(posture_for(Some(k), true, ask), P::Interactive, "{k:?}");
+            assert_eq!(posture_for(Some(k), false, ask), P::Unattended, "{k:?}");
+            // Approvals off: nobody is asked, so nobody is present (review
+            // of #293 — `-y`, `permission_mode = "allow"`, a TUI switched
+            // out of `ask`). On the old tree these read `interactive`.
+            for mode in [PermissionMode::Allow, PermissionMode::ReadOnly] {
+                assert_eq!(
+                    posture_for(Some(k), true, mode),
+                    P::Unattended,
+                    "{k:?} {mode:?}"
+                );
+            }
         }
         for k in [
             K::Trigger,
@@ -1966,10 +1991,14 @@ mod tests {
             K::Voice,
             K::Web,
         ] {
-            assert_eq!(posture_for(Some(k), true), P::Unattended, "{k:?}");
+            assert_eq!(posture_for(Some(k), true, ask), P::Unattended, "{k:?}");
         }
-        assert_eq!(posture_for(None, true), P::Interactive);
-        assert_eq!(posture_for(None, false), P::Unattended);
+        assert_eq!(posture_for(None, true, ask), P::Interactive);
+        assert_eq!(posture_for(None, false, ask), P::Unattended);
+        assert_eq!(
+            posture_for(None, true, PermissionMode::Allow),
+            P::Unattended
+        );
     }
     use mecha_core::config::Config;
     use mecha_core::harness::Lever;
