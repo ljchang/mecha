@@ -1,381 +1,314 @@
 # Appraisal wiring — design
 
-**Status: proposed 2026-09-24, nothing built.** The rulings the build waits on
-are listed under *Rulings* (here §10). `GOAL-SYSTEM-DESIGN.md` is the design of the signals themselves and
-`ARCHITECTURE.md`'s goal-system section is their invariants; this file does not
-restate either. It designs one thing: **how the signals the appraisal system
-already computes become inputs to decisions the harness makes**, and in what
-order to build that so each step is measured before the next.
+**Status: proposed 2026-09-24, nothing built.** The rulings each phase
+waits on are in here §6. The evidence behind every claim here — what exists, what
+reads it, what has been measured — is
+[`APPRAISAL-INVENTORY-RESEARCH.md`](APPRAISAL-INVENTORY-RESEARCH.md)
+(cited as *inventory §N*). `GOAL-SYSTEM-DESIGN.md` designs the signals and
+ARCHITECTURE's goal-system section holds their invariants; this file restates
+neither.
 
-The question it answers, in the owner's words: the appraisal system has many
-features, and the label is only a readout of internal state conditional on the
-appraisals — so how does any of it improve planning, task completion,
-guardrails, learning, memory and the rest of the harness?
+It designs one thing: **how the signals the appraisal system already
+computes become inputs to decisions the harness makes, in an order where each
+step is measured before the next.**
 
-Method. Five passes on 2026-09-24 against `main` at `b6cfa73c`: an inventory
-of every appraisal-family signal and its readers; a map of every harness
-decision point and the rulings that constrain it; a mining pass over the live
-store (aggregates only, `MECHA_SESSION_KIND=test` on every readout); and two
-external literature passes — open problems in agent harnesses, and appraisal /
-homeostasis used as control rather than as a label. Figures are from those
-passes; sources are in here §15, with anything not read at source marked.
-
-**Section references.** A bare §N is `GOAL-SYSTEM-DESIGN.md`'s. This file's
-own sections are cited as "here §N", and its proposals by id (S1, V1, C1, G1,
-L1, X1, M1, A1, U1).
+A bare §N is `GOAL-SYSTEM-DESIGN.md`'s; this file's own sections are "here
+§N"; proposals are cited by id (S1, L1, C1, …), and each id's detail is in
+the catalogue, here §8.
 
 ---
 
-## 0. The finding in one paragraph
+## 0. The finding
 
-**The appraisal system is an output pipeline with no input and no consumer.**
-It turns records into signed errors, a valence and a label, and the label goes
-to a badge. Every mechanism that could change what the harness *does* — plan
-feedback, step checks, drift, goal-keyed lessons, anticipatory guidance — keys
-on a goal pointer or a plan the harness waits for the model to write, and the
-served model writes neither: in 30 days of real use, 0 runs named a goal, 0
-carried an anchor, and 4 of the 79 runs long enough to warrant a plan wrote
-one. The two sensors that would drive behaviour read constants (a stale
-outbox pins both at their ceiling), and the one priority consumer — replay —
-uses the goal signal only to break ties. So the build is not "more
-appraisal", and it is not new systems: goal inference and the validator stack
-are both designed and mostly built (here §1.1), and both idle for want of
-the same input. It is three things in order: **supply** the pipeline from what the
-harness already holds structurally; **map each appraisal to a closed set of
-harness actions**, the way functional theories of emotion say an emotion is
-a readiness for a class of action rather than a word; and **ship every
-mapping as a lever that is measured before it is on**.
+The appraisal system turns records into signed errors, a valence and a label,
+and the label goes to a badge. Four measured facts decide what to do about it
+(inventory §1–§4):
+
+1. **Nothing supplies it a goal.** In 30 days of real use no run named a
+   goal, no run carried a confirmed anchor, and 4 of 79 long runs wrote a
+   plan. Goal inference, drift tracking, step checks, goal-keyed lessons and
+   planning advice are all built and all idle, because each waits for the
+   model to write something it does not write.
+2. **Injected guidance did not help.** It tied on easy tasks and lost on
+   harder anchored ones — 20/24 without it, 18/24 with it, four regressions.
+3. **Learning is starved while verdicts go unread.** The nightly loop runs
+   every stage and has had nothing to learn from for a week, while the owner
+   gives verdicts daily — reopening a task, rejecting a draft with a reason,
+   closing a workflow, curating a rule — that nothing reads.
+4. **The sensors that would drive behaviour are constants.** A stale outbox
+   pins both the charter sensor and anticipated guilt at their ceiling on
+   every run.
 
 ---
 
-## 1. What is wired today, measured
+## 1. Three decisions that shape the plan
 
-Reader classes: **A** changes the model's in-run behaviour, **B** changes a
-harness decision, **C** owner-facing display, **D** recorded and unread.
+**1. Wire consumers in order of evidence, not of ambition.**
 
-| signal | reader today | class | live on this install |
-|---|---|---|---|
-| Boredom notice (`boredom::Boredom::observe_turn`) | templated line into the transcript | A | yes — 2 runs in 30 days |
-| Predicted context size (`pressure::ContextTracker`) | early compaction, `Agent::output_budget` | B | yes — the only live disposition |
-| `Situation` (`situation::Situation::of_run`) | `LearningStore::rules_carried_for` scopes which rules load | B | yes — the only live relevance mechanism |
-| `Appraisal::cut_short`, `Affect::names_residue` | `tasks set --status done` stages a follow-up | B | yes, owner-triggered |
-| `appraisal::charter_rank` | `harness_probe::selection_order` tiebreak after `Metric::headroom` | B | tiebreak only |
-| `OutboxItem::predictions` | `ensure_prediction_ready` blocks release | B | only after `mecha outbox anticipate` per draft |
-| `planning::Decision` | `Action::guidance` into the `todo` result | A | **no** — `goal_guidance` off, and no plans |
-| Frozen step check (`step::CHECK_TRACE`) | signed −1.0, `extract_mismatches` | A+B | **no** — no check ever declared |
-| `goal_context` (`learning::goal_lessons`, `planning::examples`) | registered tool | A | **no** — 0 of 66 reflections carry a goal |
-| Goal anchor (`Conversation::goal_anchor`) | `Decision`, drift, `goal_context` | A | **no** — 123 anchor records, all null |
-| `anticipated_guilt`, `peak_context_pressure` | `diagnose::Evidence` means | weak B | recorded; guilt reads 0.95–1.0 in every run |
-| Charter readings (`Homeostat::charter`) | `Decision::assess`, doctor saturation, `/charter` | gated A / C | the one sensor reads over-setpoint in 126 of 126 runs |
-| Valence, `Affect` | TUI badge, web chip, voice `cfg_weight`, Slack line, `distill` meta | C | yes |
-| `distill::Surprise` | printed; a person may run `gossip` | C | yes |
-| `peak_prompt_tokens`, `guilt_after_relief`, `mem_available_kb` | none | D | — |
-
-Corpus (30 days, 245 real runs, test and unmarked development runs excluded):
-web 171, trigger 29, delegated task 25, voice 18, front door 2. Median two tool
-calls; 34% make none; 79 make more than three. **86% of real runs carry both
-private and untrusted taint** — nearly every run is read under an armed
-interlock. `todo` 5 runs, `ask_user` 5, `recall` 0, `goal_context` 0,
-`subagent` 0. No compaction, no context overflow, no `MaxTurns`. The goal
-sentence the charter block asks for has been in 68 sessions since 2026-09-06
-and appears in none of them. The learning store is 100% corrections: 66
-reflections (follow-up 36, steer 22, denial 4, edit 4), 4 active rules.
-
-Doc/code disagreements found on the way, fixed in phase 0 (here §11)
-rather than in this file:
-- `distill.rs` (and the website's distillation page) say `meta.affect` and
-  the goal errors give the graph's review queue a salience order. mecha-graph
-  has no reader of either; GOAL-SYSTEM-DESIGN's rung 9 row calls it "not
-  verified", and it is verified unbuilt.
-- §10.1's "high-surprise sessions seed gossip": gossip *is* seeded every
-  night, by mecha-graph's Selector (demand × gap × staleness, through
-  `nightly-mecha.sh`) — never by `distill::Surprise`.
-- ARCHITECTURE's "two sensors whose only reader is the diagnostician's
-  brief" undercounts: the charter reading also reaches `Decision::assess`
-  and the doctor's saturation check, and the brief itself can be switched
-  off (`sensors_in_brief`).
-- ARCHITECTURE's commitment paragraph still lists a negative
-  `backlog_delta` as a +0.5 `Own` error. `of_session` no longer produces it;
-  the earlier draft of this file repeated the stale claim.
-- `Channel::Setpoint` and `GoalRef::Setpoint` have no production producer —
-  they exist because the enums are a wire format — and the website's
-  reference page presents `setpoint` as a live channel.
-
-### 1.1 Two systems already built to receive this
-
-The table above is per signal. Two of those signals are halves of larger
-systems that were designed and largely built, and this design completes them
-rather than adding parallel ones. Both are starved by the same missing input.
-
-**Goal inference and alignment tracking** (§17.3, §17.7 items 3–5; the
-owner's *Latent Goal Inference, Goal Error Tracking, and Episodic Learning*
-proposal of 2026-09-03 is absorbed there). A pipeline in four stages:
-
-| stage | built | what fills it today |
+| order | kind of consumer | why this order |
 |---|---|---|
-| **Hypothesis** — "I take the goal to be X, serving Y" | the charter block asks for the sentence; `ask_user` takes `goal` and `serves` and carries a typed `GoalHypothesis`; the delegated seed folds it into its one question; an unattended run's goal is derived at review time by `outbox_source::serves_at_staging` | the model, and it never has: 0 of 68 sessions |
-| **Confirmation** — the one label the agent did not author | a present human answering `ask_user` (`Reply::Answered`); a parked `Question` answered; the owner releasing a draft whose note names the goal; `run --goal` | 0 goals put to the owner, 0 answered |
-| **Anchor** — the confirmed pointer | `GoalTrack` per run; `Conversation::goal_anchor` across turns, `Record::GoalAnchor` through resume and compaction; `questions::seed_anchor` on resume | 123 anchor records, all null |
-| **Alignment** — does the work still trace to it | `goal::drift_of` per plan write — same, *changed pointer*, or *unnamed*; `goal_drift_rate` in `sessions health`; `Decision::ClarifyGoal` when plan and anchor differ | no plan writes, so no reading |
+| first | **recording** — get goals and verdicts into the store | changes no behaviour; every other consumer is empty without it |
+| second | **offline** — learning, replay priority, ordering of what the owner sees | cannot make a run worse; measurable with stage levers |
+| third | **structural in-run actions** — the harness appends, holds, parks, freezes | deterministic and mostly narrowing; the model cannot ignore them |
+| last | **injected text** — advice sentences in tool results | measured locally to hurt as often as help |
 
-Named and unbuilt in §17.7 item 4: the re-ask on a changed pointer, the drift
-*event*, the turns-since-confirmation term, and §17.3's "distance × remaining
-work exceeds the cost of asking" check-in — all deliberately "off until the
-rate is read", and the rate cannot be read while nothing fills stage one.
-Also unbuilt: any *semantic* reading of the owner's answer — the anchor is a
-pointer, so a correction in the answer's prose moves nothing.
+**2. Supply before demand.** A consumer keys only on something the harness
+holds structurally — a task id, a trigger, a store row, an owner's click —
+never on the model having followed an instruction. Levels are read per item
+or as a change, never as a level.
 
-**The validator stack.** The tree validates at four tiers and grounds claims
-at a fifth; §17.5 names the tier it lacks.
+**3. Shadow, then measure, then arm.** Every wiring ships first writing the
+decision it would have made, then as a lever with a `mecha exp` arm against a
+no-wiring control at matched budget, then on by default. The outcomes are
+verified task success and the owner's verdicts — never the label, the
+valence, a sensor value or a rule count.
 
-| validates | against | how | state |
-|---|---|---|---|
-| a completed **step** (`step::appraise`) | the plan | deterministic reading of the step's span (null, failed last call, verify-less claim); a quarantined second opinion only on ambiguity (`escalate_step`) | built; plan-gated, so idle; escalation off by default |
-| a declared **check** (`step::CheckRequest`, `CHECK_TRACE`) | the model's own frozen predicate | executed through ordinary dispatch; can manufacture a failed check against itself, never a passing one | built; reachable only from `todo`, so idle |
-| a learned **rule** (`mecha validate`, `counterfactual.rs`) | the owner's recorded intervention | branch the transcript at the intervention, strip the steer, see whether the model now does the steered thing; per-region since #192; probation and retirement from the ledger | **live** — 334 ledger rows since 2026-08-29, the latest today (none 09-18 to 09-23): 18 improved, 17 regressed, 37 unchanged-pass, 139 unchanged-fail, 123 inconclusive |
-| a task **artifact** (`mismatch::ArtifactCase`) | owner-supplied gold, outside the workspace | criterion-by-criterion, after the run; feeds `extract_mismatches` | built; used by experiments, no live producer |
-| a **claim** (`grounding::admit`, `calls`) | what the run actually received | dereference; first seen wins; stale is never evidence | built for front-door dates and triage deadlines |
-| a **graph claim** (`gossip`: `vet_judge`, `corroboration_verdict`, `round_yield`) | an independent reader over separate sources | two lensed readers, commit then reveal | live nightly, seeded by the graph's Selector |
-| a **delivery** (`OutboxItem::delivery_uncertain`, `ensure_delivery_ready`, `outbox reconcile`) | the provider's record of what arrived | blocks release while delivery is uncertain | live gate; the precondition for any post-delivery label |
-| the **plan against the goal** | the confirmed anchor | §17.5: deterministic tracing of every item to the anchor, a quarantined relevance call only on ambiguity, output accept / revise / ask | **unbuilt** |
+These sit on top of the invariants that already hold and are not restated:
+dispositions only narrow (§7.3), affect is a priority and never an objective
+(§8.3), prioritised selection is confirmed on a uniform holdout (§8.1),
+nothing per-turn enters the prefix (§4.3), an expectation is a recorded
+commitment (§7.4), and no wiring reads a model's stated confidence.
 
-Two readings of that table shape this design. The one validator that runs
-live is the rule validator, and it is mostly undecided: 35 of 334 rows moved
-a rule either way. And the tier that would make the others goal-relative —
-plan against goal — is the one missing, which is why a run can land every
-step and serve nothing. `VERIFICATION-RESEARCH.md` implications 8 and 11 name
-the other two gaps: no gate can refuse to let a run end, and checks cannot be
-declared anywhere but `todo`.
+---
 
-How the proposals below map onto the two systems:
+## 2. What each appraisal is for
 
-| system gap | proposal |
-|---|---|
-| hypothesis never produced | S1 (structural anchors skip stage one entirely), S2 (the harness asks from a closed list) |
-| confirmation never happens | S2's one tap; S3's verdict confirms after the fact; A3's parked question carries the goal sentence |
-| alignment measured, never acted on | **V2** below: the re-ask and drift event, switched on by phase 1's reading |
-| plan-against-goal validator missing | **V1** below: §17.5's template, deterministic first |
-| no end-of-run gate | C1 |
-| checks only from `todo` | C2 |
-| rule validator mostly undecided | L1 spends its budget on episodes with signal; L3 moves tenure on owner verdicts per charter line |
-| artifact validator has no live producer | C2's owner `Workflow::checks` are the live form of its criteria |
+An appraisal is not a word; it is a readiness for a class of actions (Simon's
+interrupt, Frijda's action tendency), and the label names the class that was
+primed. So each appraisal maps to a closed set of harness actions, computed
+from records and picked by arithmetic. `planning::Action` is already this
+shape in miniature.
 
-**V1. The goal validator (§17.5), built as designed.** On an anchored run,
-every plan write is validated against the anchor, deterministically: each
-item's `serves` must equal the anchor or trace to it through the tiers
-(step → task → project → charter line, read off the board rows S1 already
-loads). An item that does not trace is the scope creep §17.3 defines — the
-plan's items no longer tracing to the anchor while the owner's evidence has
-not moved. Output is a `planning::Action`: `Continue` if everything traces,
-`ClarifyGoal` if the pointer changed, a new `Descope` ("this item does not
-serve the confirmed goal; drop it or ask") if an item does not trace. A
-quarantined relevance call — is a correctly traced item actually relevant to
-the objective — comes only in phase 4, on the step validator's escalation
-posture. At the end of the run V1's verdict joins C1's certificate: "3 of 4
-items traced to the goal".
-
-**V2. Alignment that acts.** §17.7 item 4's named-but-unbuilt half, switched
-on once phase 1 has produced a drift rate to read:
-- a changed pointer on an anchored run re-asks (interactive surfaces: `ask_user`
-  with the new hypothesis; delegated: folded into the handoff question;
-  unattended: the note on the staged artifact, as today) — monotone, adds a
-  question and never removes one;
-- more than half the open items failing V1 logs a drift event on the run
-  record, which the frustration ladder (C5) reads as a rung-3 trigger:
-  delegate the open step to a fresh subagent seeded with the anchor alone;
-- an *unnamed* write (a plan rewritten without `serves` under an anchor) is
-  repaired by the harness, not the model: the item inherits the anchor, the
-  write is counted, and nothing is said. On a local model forgetting to
-  repeat `serves` is the likely dominant term (§17.7 item 4), and nagging
-  about it is the distractor shape boredom avoids.
-
-### 1.2 The measured record, in full
-
-The earlier draft of this file cited one pilot. The record holds more, and
-the rest is less kind to guidance; every figure below is in `HISTORY.md`
-under 2026-09-09 and 2026-09-10, and none is pooled with another.
-
-| measurement | control | treatment | reading |
-|---|---|---|---|
-| guidance v1, 12 tasks × 3 seeds | 36/36 | 36/36 | tie; 71 check omissions, no anchor |
-| guidance, harder tasks, every run anchored | **20/24** | **18/24** | 2 improved, **4 regressed**; gate rejected |
-| guidance, privacy follow-up | 6/6 | 5/6 | one wrong exclusion count |
-| mismatch learning | 10/12 | 9/12 | learning did not beat control |
-| attribution v2 | 30/36 | 30/36 | tie |
-| learning lifetime v2 | 6/6 | 6/6 | two clean reflections, below the minimum of three: no rules formed |
-| executable validation, frozen rules | — | 1 improved, 2 regressed per cap | exposure, not learning |
-| gossip extra peer rounds | — | no added coverage | 7 of 55 admitted claims contradicted |
-
-Two further facts constrain every validator-based proposal: judge-graded
-validation is unstable — the same inputs graded *improved*, then
-*unchanged*, then *improved* (HISTORY, 2026-09-11) — so a single
-directional ledger verdict is not evidence; and the structural verdicts of
-`counterfactual.rs` are the ones to build on.
-
-**The nightly learning half is healthy machinery with no input.**
-`scripts/ruminate.sh` (`mecha-ruminate.timer`, 03:30 UTC) runs reflect →
-distill → validate → learn `--auto` → propose-retirements → harness
-ruminate. Over the five nights to 2026-09-24: no new reflection; `learn` idle
-every night (all four situation batches under the minimum of three);
-`validate` ran no probe on four nights (unchanged inputs are deferred) and on
-the fifth ran twelve, none decisive; nothing retired; no harness proposal.
-The four active rules sit at zero improved and zero regressed after 17–25
-graded probes each. Every harness candidate ever proposed — twelve — was
-rejected, four as "no discriminating power, all paired episodes tied", three
-for keys that do not exist; none has been proposed since 2026-09-10. The
-correction rate per session fell from 0.45 to 0 over four weeks. A loop that
-moves only on owner corrections goes quiet exactly when the owner stops
-correcting, which is either success or disengagement, and the store cannot
-tell which — the operational case for S3 and L2.
-
-**When the model stopped planning is part of the premise.** In late August
-112 of 120 appraised sessions wrote a plan (`HANDOFF.md`, a corpus that still
-included development runs); the store holds no `todo` call after
-2026-08-28, and 4 of 79 long real runs in the last 30 days used one. Every
-plan-keyed proposal here is built so it does not depend on that changing.
-
-### 1.3 Owner verdicts already given, and unread
-
-The pipeline is starved of verdicts while the owner gives them daily on
-surfaces the appraisal does not read. What it reads today: a draft sent
-unchanged (+1.0), edited (−1.0) or rejected (−1.0); a question answered
-(+0.5) or abandoned (−0.5); a front-door request closed with nothing sent
-(−0.5); a steer, denial or stop (−1.0); a follow-up the reflector judges a
-correction (−1.0); a task closed `done` (+0.5, printed at closure, never
-stored); a post-delivery outcome (`outbox outcome`, CLI only); `run --goal`
-or an answered `ask_user`.
-
-What happens on a surface and signs nothing:
-
-| owner act | surface | what it says | proposal |
-|---|---|---|---|
-| reopening a task after `done` | board, TUI, web | the completion was wrong | S3a (−1.0 on the closing session; undoes L2's success) |
-| closing a task in `mecha-graph tui` | graph TUI | the same verdict as `tasks set`, which it bypasses | S3a + §1.4: the closure leak |
-| workflow `close` / `cancel` / `reopen` / `verify` | CLI, Today page | accepted / abandoned / wrong / checked | S3a |
-| the `--reason` on an outbox reject | CLI, web | the owner's own correction, in words | S3a → reflect (L2) |
-| `outbox reconcile` | CLI | whether a "sent" actually arrived | the precondition for any delivery positive (X5, S7) |
-| retiring or restoring a rule; dropping or editing a reflection | web learning settings, CLI | a verdict on the learner and the reflector | S3a → L3 tenure |
-| harness `accept` / `reject` / `revert` | CLI, web | a verdict on a diagnosis | S3a → L6 |
-| graph review-queue verdicts on facts from `agent:mecha` episodes | graph review queue | the owner rejecting what a session claimed | S3a, via the source episode's session id |
-| mail acts: `reply`, `task`, `schedule` | web mail | the owner taking on a commitment | S4 |
-| snoozing or acknowledging a workflow reminder | Today page | the cost of that interruption | U1 |
-
-### 1.4 mecha-graph: overlap, and where each piece belongs
-
-**Direction (owner, 2026-09-24): mecha is the harness and mecha-graph is a
-tool that should eventually merge into it.** The sweep found the graph
-re-implementing harness concerns the appraisal system also owns, several of
-them better. So this design builds each such mechanism once, in mecha core,
-porting the graph's version as the reference, and adds no new cross-repo
-wiring as the long-term shape — in particular no new graph-side reader of
-mecha's exported appraisal metadata, which the merge would make moot.
-
-| mechanism | mecha today | mecha-graph today | after the merge | near-term step here |
+| appraisal (harness-computed) | trigger | admissible actions | adversarial? | phase |
 |---|---|---|---|---|
-| tenure moved only by owner verdicts | rule probation and retirement on a streak of attributed regressions | `ladder.rs`: staged → sampled → trusted per class on the **Wilson lower bound** of the *human* accept rate; `HUMAN_VERDICT_SQL`, `reviewed_by` | one tenure rule | L3 ports the Wilson bound for per-line rule tenure |
-| attributing an owner correction | `Agency` from the channel (owner vs own), refined by a paid replay | D3 contract: *data error*, *behaviour error* or *gap*, decided by what the retrieved context held; distill's `meta.corrections` already supersedes and negates the wrong fact | one attribution | L7: `reflect` mines a behaviour lesson only for a behaviour error; a gap becomes its own class |
-| deterministic verification | `grounding.rs` (`admit`, `calls`) | `verify.rs` / `kg_verify` | one grounding primitive (VERIFICATION-RESEARCH: already "hand-rolled four times") | C1 and C2 use `grounding.rs`; port `verify.rs` into it when the graph merges |
-| model-free priority | replay by cost headroom, charter-rank tiebreak | Selector: demand × slot gap × staleness, SQL only, drives nightly `gossip` | one priority function | L1's *need* term is the Selector's demand term |
-| usefulness | none | utility loop: retrieval touches per class, report-only | salience | M2 reads retrieval demand beside earned error |
-| decay | rules retire only on regressions | `decay.rs` closes beliefs whose statistic no longer holds | dormancy | L3: a rule whose region stops recurring goes dormant |
-| surfaced verdict queue | `mecha review`, outbox | review-on-use: shadow tier, verdicts ordered by contradiction → retrieval → spot-check | one queue | S2, S6, R10 and A2 confirmations land in `mecha review` |
-| contested evidence | none structural | pack flags: contradicted, denied, stale — reach mecha only as JSON in a tool result | an evidence fact | anticipation `Evidence` reads a flag as `verification: Unknown` (X3, G2) |
-| the board and its closure | `tasks set` runs the closure appraisal, follow-up and project closure | `gtd::set_task_status` — also reached from the graph TUI, which bypasses all three | one closure path | **fix now** (R15): the graph TUI closes through `mecha tasks set`, or the graph records a closure event mecha's nightly appraises |
-| appraisal metadata on episodes | `distill` exports `meta.goal`, `meta.serves_charter`, `meta.affect`, per-error `goal` | only `meta.corrections` has a reader | read in-process | stop claiming graph salience (phase 0); build salience where the queue lives after the merge |
-| goal tier above project | `GoalRef` stops at `charter` / `project` / `task` | a `goal` node type exists; 0 goal nodes | decide once | not proposed; recorded so it is not rediscovered |
+| **Pride / relief** — owner-verified positive | sent unchanged · answered · `done` and not reopened · a thumbs-up | consolidate a success · credit rule tenure · *propose* a skill — **never permits anything, never shown to the model** | no | phase 2 |
+| **Regret** — own, replay-confirmed negative | probe verdict | reflect first · spend validation budget here | no | phase 2 |
+| **Anticipated embarrassment** — about to expose unverified work | staging with failed/unverified checks or ungrounded claims | append the certificate · hold release for acknowledgement | yes → narrow | phase 3 |
+| **Anticipated guilt** — a recorded commitment approaching violation | per-item age vs the owner's setpoint; `due_at` | surface first · prepare follow-through · refuse a send that would "discharge" it | yes → narrow; recorded only | phase 4 |
+| **Anxiety** — predicted self-shortfall | predicted overflow; `turns_left < open_steps` | compact early (built) · wind down with a handoff · park · delegate | no | phase 5 |
+| **Frustration** — repeated own failure on one target | ≥ k own negatives on one check or target | escalate the ladder · freeze the check's targets · withhold `Complete` | yes → narrow | phase 5 |
+| **Boredom** — no progress | same call and result repeated | notice (built) · evict repeats · delegate · park | no | phase 5 |
+| **Surprise** — prediction residual | failed check · forecast miss · outcome ≠ expectation | re-verify · (offline) replay and reflect first | partly | phase 2, phase 3 |
+| **Goal uncertainty** | long run without an anchor; plan left the anchor | ask one goal question · retrieve | yes → may only add asks | parked |
+| **Curiosity** — flat competence in a region, slack | nightly, no debt, a permit free | spend replay budget there, on internal fixtures | yes → fixtures only | parked |
 
 ---
 
-## 2. The idea: an appraisal is an action tendency
+## 3. The plan: five phases
 
-Every functional theory of emotion reviewed says the same thing, and it is the
-owner's framing. Simon (1967): a serial processor serving several goals needs
-an *interrupt* mechanism "having the properties usually ascribed to emotion"
-to decide which goal holds the processor. Frijda: an emotion *is* a change in
-action readiness, with control precedence over what is running. Where
-computational models closed the loop (EMA, Soar-Emote, emotion-driven RL), the
-affect controlled four things: interrupts, goal priority, strategy selection,
-and the learning signal. The word is downstream of all four.
+Each phase closes one loop end to end, so it can be judged on its own
+outcome. Phases 2 and 3 can run in parallel once phase 1 lands; phases 4 and 5 follow.
 
-So the unit this design adds is not a new signal. It is a mapping:
+### Phase 1 — Evidence in: make the store tell the truth
 
-> **Each appraisal names a closed set of admissible harness actions. The
-> harness computes the appraisal from records, picks from the set by
-> arithmetic, and enforces the pick structurally where it can. The model
-> receives at most a fixed-vocabulary sentence. The label is the name of the
-> action family that was primed.**
+*No behaviour changes. Everything later is empty without it.*
 
-`planning::Action` is already this shape in miniature (`ClarifyGoal`,
-`Verify`, `Replan`, …) with `Action::guidance` as its only prompt surface.
-This design generalises it.
+| # | work | proposal |
+|---|---|---|
+| 1 | Seed the goal anchor from what the harness holds: the task id on `tasks work` (with its project), an owner-written `serves` on a trigger, the request id on a front-door run | S1 |
+| 2 | Close the closure leak: a task closed in `mecha-graph tui` goes through `mecha tasks set`; store the closure verdict instead of only printing it | S3a, R15 |
+| 3 | Read the verdicts already given: task reopened after `done`, outbox reject reasons, workflow close / cancel / reopen / verify, rule and reflection curation, harness accept / reject / revert, graph review verdicts on facts a session claimed | S3a |
+| 4 | One-tap verdict on the run readout — web chip, TUI badge, voice phrase | S3b, U3 |
+| 5 | Sensor hygiene: per-item readings and a per-run delta instead of a level; an owner-set expiry for stale drafts | S5 |
+| 6 | One commitment record and guilt computed per item from it | S7 |
+| 7 | Keep the counterfactual verdicts steer and validation probes already pay for | X1 |
+| 8 | A test that no affect word, valence or sensor number reaches a provider request | G4 |
 
-| appraisal (harness-computed) | trigger | admissible actions | adversarial? |
+**Done when:** ≥ 60% of long real runs carry an anchor; verdicts per week are
+counted by channel and the unread channels of inventory §4 appear; the
+charter reading and guilt vary from run to run; a closure from any surface
+shows up in `sessions appraise`.
+
+### Phase 2 — Learning out: the nightly loop learns from that evidence
+
+*Offline consumers only. They cannot make a run worse.*
+
+| # | work | proposal |
+|---|---|---|
+| 1 | Attribute a correction by what the run was given — data error, behaviour error or gap — and mine a behaviour lesson only from a behaviour error (port mecha-graph's D3 contract) | L7 |
+| 2 | Learn from what went right: drafts sent unchanged as writing exemplars, verified successes as examples and as contrast for the reflector | L2 |
+| 3 | The anchor as a second goal source for reflections; rule tenure per charter line on owner verdicts, decided by a Wilson lower bound (port the graph's ladder); dormancy for rules whose region stops recurring | L3 |
+| 4 | Replay and reflection priority = gain × need: \|signed error\| on owner-verdict channels × how often the situation recurs, uniform holdout unchanged | L1 |
+
+**Done when**, in a lifetime experiment against the appraisal-off preset
+(stage levers): `learn` forms rules again on live-shaped data; the share of
+decisive validations rises; harness candidates find paired episodes that
+discriminate; verified task success does not fall.
+
+### Phase 3 — Honest completion: the first in-run consumer, and it is structural
+
+*The consumer the literature supports most: false completion is the dominant
+agent failure, and judges cannot catch it (C1's problem statement).*
+
+| # | work | proposal |
+|---|---|---|
+| 1 | Checks the harness writes: grounding over a staged draft's dates and names; the owner's workflow checks; mismatches from their failures | C2, L4 |
+| 2 | Acceptance criteria the agent declares with its goal, from a closed set the harness executes — one-sided until the owner confirms them | S6 |
+| 3 | The goal validator: every plan item traces to the anchor, deterministically | V1 |
+| 4 | The completion certificate, appended by the harness; a draft from an uncertified run is held for acknowledgement; the review shows goal, certificate and alignment | C1, G2, U2 |
+| 5 | A re-delegated task starts with pointers to its previous attempts and why they were rejected | M5 |
+
+**Done when:** false completion on the task and synthetic-home suites falls
+against a no-certificate arm with `WORK_FLOOR` holding; owner rework on
+delegated tasks falls.
+
+### Phase 4 — Follow-through: commitments drive attention and preparation
+
+| # | work | proposal |
+|---|---|---|
+| 1 | Commitments from owner acts: mail `reply` / `task` / `schedule`; promises in released drafts proposed for one-tap acceptance | S4 |
+| 2 | Duty runs that *prepare* follow-through for a commitment approaching its setpoint — never send | A1 |
+| 3 | Surface only when missing it costs more than the interruption, at breakpoints, extending `workflow::AttentionPolicy`; order the brief and `/queues` by duty | U1, U4 |
+
+**Done when:** owner-side latency on sensored lines falls; interruptions per
+day do not rise; nothing surfaced is dismissed as noise more often than
+before.
+
+### Phase 5 — Guardrails and stuck runs: narrowing controls on anchored runs
+
+| # | work | proposal |
+|---|---|---|
+| 1 | Wind down before the ceiling and park a delegated run as a question instead of dying | C4, A3 |
+| 2 | The frustration ladder and the desperation brake | C5 |
+| 3 | A send whose recipient does not trace to the confirmed goal is staged; destructive calls under taint or an unconfirmed goal are prompted | G1, G3 |
+| 4 | Pre-action markers from the stored counterfactual verdicts, narrowing only | X2 |
+
+**Done when:** on the AgentDojo suite, attack success falls and utility
+holds; per arm, check tampering and reopen rates fall and handoffs are
+usable.
+
+---
+
+## 4. Parked, and what would unpark each
+
+| item | why parked | unpark when |
+|---|---|---|
+| `goal_guidance` and every injected-advice form (C6, M3 gap delivery) | measured to hurt as often as help | phase 3 has produced plans and criteria worth advising on, and a new arm is designed |
+| S2 — the harness asks "what is this for?" | a new owner interruption | phase 1 shows how many long web runs stay un-anchored, and phase 2 shows goals change what is learned |
+| C3 seeded plans; V2 re-ask and drift event | plans can hurt small models; no drift rate yet | phase 3's criteria produce a rate to read |
+| M1–M4 memory (goal key, earned salience, gap delivery, criteria across compaction) | nothing goal-linked to retrieve yet | phase 2 forms goal-linked rules |
+| X0 self-authored steers; X3–X5 verdict forecasts and prediction scoring | need stored verdicts and recorded outcomes | X1 holds records and owners record outcomes |
+| A2 earned autonomy; A4 curiosity; L5 surprise-seeded gossip; L6 lineage | lower value, or a new use of slack | phase 2 and phase 4 are measured |
+| every quarantined model pass (S2 tier 2, V1 relevance, G1 model check) | an injection target, and a slot | the deterministic version is measured, and the model check survives adaptive attack |
+
+---
+
+## 5. mecha-graph: port on demand
+
+The owner's direction (2026-09-24): mecha is the harness and mecha-graph a
+tool that should eventually merge into it. So a graph mechanism moves into
+mecha core **when a phase needs it**, using the graph's version as the
+reference implementation, and no new cross-repo reader is built as the
+long-term shape. Inventory §5 has the full overlap table.
+
+| phase | what it ports |
+|---|---|
+| phase 1 | the board's closure path (one closure path, with the appraisal on it) |
+| phase 2 | the D3 correction contract; the ladder's Wilson-bound tenure; decay as rule dormancy; the Selector's demand term as L1's *need* |
+| phase 3 | `verify.rs` folded into `grounding.rs` — one grounding primitive |
+| phase 4 | review-on-use's verdict queue as the shape of `mecha review` |
+| phase 5 | pack flags (contradicted / denied / stale) as anticipation evidence |
+
+---
+
+## 6. Rulings, by phase
+
+Numbered as before so earlier answers still cite them. None is a security
+widening.
+
+| # | phase | ruling | default proposed |
 |---|---|---|---|
-| **Anxiety** — predicted self-shortfall | predicted next request over band; `turns_left < open_steps` | compact early · replan smaller · wind down with a handoff · delegate to a fresh subagent | no |
-| **Frustration** — repeated own failure on one target | ≥ k own-agency negatives on one check or target in a run | escalate the ladder (§5.3) · freeze the check's targets · withhold `Complete` | yes → narrow only |
-| **Boredom** — no progress | same call *and* result repeated | evict repeats · consult · delegate · park as a question | no |
-| **Surprise** — prediction residual | check failed; `forecast_miss`; outcome ≠ `expect` | gather context · re-verify · (offline) replay and reflect first | partly |
-| **Goal uncertainty** | long run, no anchor; plan `serves` left the anchor; sensor `Unread` | ask one goal sentence · retrieve | yes → may only add asks |
-| **Anticipated guilt** — a recorded commitment approaching violation | per-item age vs the owner's setpoint; `due_at` | surface first · schedule follow-through · refuse a send that would "discharge" it | yes → narrow; recorded only |
-| **Anticipated embarrassment** — about to expose unverified work | staging a message with failed/unverified checks or ungrounded claims | verify or ground before staging · hold release for acknowledgement | yes → narrow |
-| **Regret** — own, replay-confirmed negative | probe verdict | reflect first · spend validation budget here | no |
-| **Pride / relief** — owner-verified positive | sent unchanged · answered · `done` with checks passed · a thumbs-up | consolidate a success example · credit rule tenure · *propose* a skill | no — and **never permits anything, never shown to the model** |
-| **Curiosity** — flat competence in a region, slack available | nightly, no debt, permit free | spend replay/probe budget there, on internal fixtures | yes if it touches the web → fixtures only |
+| R14 | all | Mechanisms overlapping mecha-graph are built in mecha core, porting the graph's version; no new cross-repo readers | **stated by the owner, 2026-09-24** |
+| R1 | phase 1 | Triggers may carry `serves = "charter:<id>"`, validated at load | yes |
+| R15 | phase 1 | Close the closure leak: a task closed in the graph TUI goes through `mecha tasks set` | yes, while both exist |
+| R16 | phase 1 | The unread acts sign as follows: a task reopened after `done` −1.0 on the closing session and withdraws its success; an outbox reject reason goes to the reflector as an owner correction; workflow `close` +0.5, `cancel` −0.5, `reopen` −1.0, a failed `verify` −1.0; rule and reflection curation and harness accept / reject feed tenure, never valence | yes |
+| R2 | phase 1 | A one-tap verdict is an owner-verdict channel, ±1.0, admissible for rule tenure (§17.2) | yes |
+| R7 | phase 1 | Pending drafts expire after an owner-set age, as `expired`, which signs nothing | owner picks the age |
+| R12 | phase 1 | Guilt becomes per-commitment goal error toward another party; one commitment record; the homeostat scalar becomes a readout | yes |
+| R4 | phase 3 | Honest completion: template only, or template plus one `Verify` re-prompt | template only first |
+| R11 | phase 3 | The agent may declare acceptance criteria from a closed set of harness-executed kinds; one-sided until the owner confirms them; never a charter sensor | yes |
+| R10 | phase 4 | Promises detected in the owner's released drafts are proposed as commitments for one-tap acceptance | yes |
+| R5 | phase 5 | Desperation brake: refuse writes to a frozen check's read set; withhold `Complete` after k failures | yes, `k = 2` |
+| R6 | phase 5 | A recipient that does not trace to a confirmed goal is staged even where routing would execute | yes |
+| R13 | phase 5 | Stored counterfactual verdicts may narrow a matching call before dispatch | yes, narrowing only |
+| R3 | parked | The harness may show a closed-list "what is this for?" chip once per un-anchored long interactive run | after phase 1's reading |
+| R8 | parked | The harness may *propose* per-region autonomy grants; only the owner grants | yes, when unparked |
+| R9 | — | The live charter line `be-the-best` ("always finding ways you could have completed a task even better") reads close to the unbounded self-improvement line §15 warns about. The owner's to keep or reword; flagged, not proposed | — |
 
-The last column is `GOAL-SYSTEM-DESIGN.md` §7's test applied row by row. The
-"never shown to the model" on pride is newer than §7: steering a model toward
-positive-valence representations measurably raises sycophancy, and toward
-"desperation" raises reward hacking (Anthropic, arXiv 2604.07729). Affect stays
-harness-side in both directions.
-
----
-
-## 3. Principles this adds to the existing invariants
-
-The existing ones — dispositions are monotone (§7.3), affect is a priority and
-never an objective (§8.3), select prioritised and confirm uniform (§8.1),
-nothing per-turn in the prefix (§4.3), an expectation is a recorded commitment
-(§7.4), no mood-congruent retrieval (§15) — all hold and are not restated.
-Five more, each with the finding that forces it:
-
-1. **Supply before demand.** A consumer may key only on something the harness
-   holds structurally — a task id, a trigger, a store row, an owner click —
-   never on the model having complied with an instruction. *Measured: 0% and
-   5% compliance with the two planning instructions this model was given.*
-2. **Structural before textual.** Where an action is non-adversarial or
-   narrowing, the harness performs it (evicts, parks, holds, freezes) rather
-   than asking the model to. *A model can ignore injected text; it cannot
-   bypass an execution halt (arXiv 2603.05344); removing Life-Harness's
-   graded trajectory-regulation layer cost 3–87% relative accuracy across
-   seven environments (arXiv 2605.22166, figures read via a summary of the
-   full text).*
-3. **Never gate on self-report.** No wiring reads a model's stated confidence,
-   progress or completion. *Twenty frontier models show no individuated
-   verbal metacognition (arXiv 2605.24299); agents succeeding 22% of the time
-   predict 77% (arXiv 2602.06948).*
-4. **A level sensor is read per item or as a change, never as a level.** A
-   reading that sits over its setpoint on every run is a constant, and a
-   consumer of a constant is a fixed prompt suffix. *Measured: the outbox-age
-   line reads excess 0.944–0.972 on 126 of 126 runs, pinned by eight drafts
-   older than nine days.*
-5. **Shadow, then measure, then arm.** Every wiring ships first writing the
-   decision it *would* have made beside the run (the `Message::planning`
-   pattern), then as a `harness::Lever` with a `mecha exp` arm against a
-   no-wiring control at matched budget, and only then on by default. *Guidance
-   tied on easy tasks (36/36 each) and lost on harder anchored ones (20/24
-   against 18/24, four regressions — here §1.2); skill and memory modules
-   lose their gains against a token-matched baseline, on this model family
-   too (arXiv 2606.15017). Measured locally, an injected sentence is as
-   likely to hurt as to help.*
+**To start phase 1, R1, R2, R7, R12, R15 and R16 are needed.** The rest can wait
+for their phase.
 
 ---
 
-## 4. Supply: getting goals, verdicts and commitments into the pipeline
+## 7. How it is measured
 
-Everything in here §5–§9 depends on this section. It is the cheapest part and the
-one with the largest measured gap.
+Outcomes the whole programme is judged on, from APPRAISAL-RESEARCH §8.5 and
+EXPERIMENT-DESIGN Part II: independently verified task success, per-charter-line
+owner verdicts (sent-unchanged and rejection rates), false completion, asks per
+run, rework, interlock friction and dojo attack success, latency and tokens —
+all at matched budget, with variance. **Not** the label distribution, raw
+valence, lower sensor values or rule count; those are the instrument, not the
+outcome.
 
-### S1. Structural goal anchors
+**The instrument already exists; use it.**
+- **Run levers and stage levers.** In-run proposals are `harness::Lever`s;
+  the nightly ones (L1, L2, L3, L7, X1, X5, S5's saturation handling) are
+  stage levers measured with `stages_off`, as `sensors_in_brief` already is.
+  EXPERIMENT-DESIGN §15's appraisal-off preset is the control arm.
+- **`WORK_FLOOR` guards the narrowing proposals.** C5, G1–G3 and V2 can win a
+  comparison by doing less; the floor (0.75) and "an unfinished correction is
+  a regression, never an efficiency win" are what stop that.
+- **The readouts:** `mecha learning-report` gains owner-verdict and valence
+  lines and becomes the programme's outcome readout;
+  `scripts/appraisal-{validity,report,traces,learning-report}.py` and the
+  `eval/appraisal-*.toml` manifests are the existing harness for arms; the
+  synthetic home's `[fixtures] charter` pins a charter per trial.
+- **The confirmation surface is `mecha review`** for S2, S6, R10 and A2.
+
+### What each proposal buys, by the owner's seven axes
+
+| | capability | accuracy | performance | independence | security | self-learning | usability |
+|---|---|---|---|---|---|---|---|
+| S1 anchors | ● | | | ● | ● | ● | |
+| S2 harness asks | ● | ● | | | | ● | ● |
+| S3 verdicts (collected, one-tap) | | ● | | | | ● | ● |
+| L7 D3 attribution | | ● | | | | ● | |
+| here §5, porting mecha-graph | | | ● | | | ● | ● |
+| S4 commitments | | | | ● | | | ● |
+| S5 sensor hygiene | | ● | | | | | ● |
+| C1 honest completion | | ● | | | ● | ● | ● |
+| C2 harness checks | ● | ● | | | | ● | |
+| V1 goal validator | ● | ● | | | | ● | |
+| V2 alignment that acts | ● | ● | | ● | | | ● |
+| C3 seeded plans | ● | ● | | | | | |
+| C4 wind-down | ● | | ● | ● | | | |
+| C5 ladder + brake | ● | ● | ● | ● | ● | | |
+| G1 send alignment | | | | | ● | | ● |
+| G2 embarrassment hold | | ● | | | ● | | |
+| G3 risk-weighted approval | | | | | ● | | |
+| L1 gain × need | | | ● | | | ● | |
+| L2 successes | ● | ● | | | | ● | |
+| L3 goal-stamped tenure | | ● | | | | ● | |
+| S6 declared criteria | ● | ● | | ● | | ● | |
+| S7 guilt as goal error | | ● | | ● | ● | | ● |
+| X1–X2 counterfactual markers | | ● | | | ● | ● | |
+| X3–X5 forecasts and scoring | | ● | | | | ● | ● |
+| M2/M3 salience, gap delivery | ● | ● | ● | | | | |
+| M4/M5 goal survives, prior attempts | ● | ● | | ● | | | |
+| A1 duty runs | | | | ● | | | ● |
+| A2 earned autonomy | | | | ● | | | ● |
+| U1 interrupt gate | | | | | | | ● |
+
+---
+
+## 8. The proposal catalogue
+
+The detail behind each id, grouped by the phase that builds it. Parked
+proposals are at the end.
+
+### For phase 1 — evidence in
+
+#### S1. Structural goal anchors
 
 **Problem.** Every goal-keyed consumer reads an empty anchor. The harness
 already holds the pointer on the runs that matter and throws it away:
@@ -404,43 +337,17 @@ interactive web sessions (S2). Short runs need no goal and get none.
 **Class.** Non-adversarial, no model call, one line per front-end. Ruling R1
 covers the trigger field.
 
-### S2. The harness asks, not the model
+#### S3. Owner verdicts: collect the ones already given, then add one
 
-**Problem.** Interactive web sessions are a third of the long runs and have
-no structural source. The prompt asks the model to state a goal and it never
-does — which matches the literature: models default to not asking even when
-asking lifts resolution by up to 74% (Ambig-SWE, arXiv 2502.13069), and a
-*separate* intent role that watches the run and asks mid-task beats a single
-agent 69.4% to 61.2%, asking where it was genuinely uncertain (arXiv
-2603.26233).
-
-**Build, in two tiers.**
-- *No model.* At a structural moment in an un-anchored interactive run — the
-  first outbox staging, or the fourth tool call — the harness shows a chip on
-  the web and TUI: "What is this for?" with the charter lines and the open
-  board tasks as a **closed pick list**, plus "none". One tap sets the anchor.
-  Nothing is inferred; the owner picks from pointers that already exist.
-- *Quarantined pass, later (phase 4, here §11).* A one-shot with no tools and no
-  history reads the owner's own first turn (trusted by construction) and the
-  closed pointer list and returns one pointer or none — a typed extraction,
-  the `mail_triage` shape. The result pre-selects the chip; it never becomes
-  the anchor without the tap (§17.3: "before the answer the hypothesis is prose
-  and reaches nothing but the owner's screen").
-
-**Class.** May only add a question (§17.3's monotone rule). The chip is
-dismissable and fires at most once per conversation; `protect-my-attention`
-is the reason for both limits. Ruling R3.
-
-### S3. Owner verdicts: collect the ones already given, then add one
-
-**S3a first.** Before any new control, sign the owner acts here §1.3 lists
+**S3a first.** Before any new control, sign the owner acts inventory §4 lists
 as unread: a task reopened after `done` (−1.0 on the session that closed it,
 and it withdraws that session's success for L2), workflow close / cancel /
 reopen / verify, the words of an outbox rejection (to the reflector as an
 owner correction), rule and reflection curation (to L3), harness accept /
 reject / revert (to L6), and graph review verdicts on facts a session
 claimed (joined back by the episode's session id). Each is owner-authored,
-already recorded somewhere, and costs the owner nothing new.
+already recorded somewhere, and costs the owner nothing new. How each signs
+is ruling R16.
 
 **S3b, the new act:**
 
@@ -463,33 +370,7 @@ reward hacking by construction and admissible for rule tenure under §17.2. It
 is the success label for L2, the gain term for L1, and the calibration set for
 S2 and C5. Ruling R2.
 
-### S4. Commitments the guilt sensor cannot see
-
-**Problem.** `guilt::anticipated_guilt` reads the outbox, the question store
-and the front door. `workflow::Commitment` — owner-established, with `party`,
-`due_at` and `follow_up_at`, and no model tool that mutates it — was built
-after the sensor and is invisible to it. So are `Workflow::checks`, the
-owner's own postconditions.
-
-**Build.**
-- `guilt.rs` and `backlog.rs` read `workflow::Commitment` (in-process, no
-  subprocess, so the per-run cost rule in ARCHITECTURE holds).
-- **Commitment capture from the owner's released words.** A draft the owner
-  released is owner text. `capture.rs` already detects a time phrase
-  ("by Friday") and reports it without resolving it. On release, a detected
-  promise is *proposed* as a `Commitment` in the digest for one-tap
-  acceptance. Inbound mail never creates one — a third party's "you owe me" is
-  a claim, and §7.4's whole safety argument is that a claim cannot write a row.
-- Mail-triage "respond" verdicts with an extracted deadline become a
-  commitment only when the owner acts on them — the web mail `reply`,
-  `task` and `schedule` acts.
-- On this install the workflow store (`~/.mecha/workflows`) does not exist
-  yet, so `workflow::Commitment` and `Workflow::checks` have no live rows;
-  S4 and C2 are correct but empty here until the owner uses workflows.
-
-**Class.** Recorded only; every new row crosses an owner act. Ruling R10.
-
-### S5. Sensor hygiene
+#### S5. Sensor hygiene
 
 **Problem.** Principle 4. Both behaviour-facing sensors are constants on this
 install.
@@ -506,7 +387,171 @@ install.
   `expired`, which signs nothing (it is not a rejection) and stops holding the
   sensor at its ceiling. Silence stays "not a verdict".
 
-### S6. Sensors the agent declares for itself — one-sided
+#### S7. Guilt is goal error toward another party, not its own system
+
+**Today, guilt is computed four ways by four pieces of code:**
+
+| where | what it reads | when | state |
+|---|---|---|---|
+| `Homeostat::anticipated_guilt` (`guilt.rs`) | outbox + questions + front-door count and oldest age, and context pressure | every run start | one scalar; 0.95–1.0 on every live run |
+| line-specific guilt (`reading.rs`, §11.1) | a sensored charter line's `excess` over its store | every run start | per line; the one live line saturated |
+| `anticipation::Kind::Guilt` | an owner-authored `anticipation::Commitment` (beneficiary, expectation, consequence) on a draft's `Evidence` | staging, plan writes with `--appraisal-evidence` | per draft, opt-in |
+| `Affect::Guilt` (retrospective) | an owner-reported harm after delivery, caused by mecha's unchanged text | outcome recorded | per draft |
+
+And there are two commitment records that do not know about each other —
+`anticipation::Commitment` and `workflow::Commitment` — beside the three
+stores `guilt.rs` treats as commitments implicitly.
+
+**Proposal: yes, fold it in — and §11.1 already started.** Its promise was
+that "harmed another" becomes "a recorded commitment aged past *this* line's
+setpoint". Finish that move with one model:
+
+> **Goal error has a beneficiary. Anxiety is anticipated error where the
+> beneficiary is the run itself; guilt is anticipated error where the
+> beneficiary is another party and the expectation is a recorded
+> commitment; retrospective guilt is the realised form, with mecha's agency
+> and exposure. None is a separate sensor.**
+
+Concretely:
+- **One commitment record.** `workflow::Commitment` absorbs
+  `anticipation::Commitment`'s `expectation` and `consequence`; an outbox
+  draft, a parked question and an accepted front-door request are
+  commitments by construction, with the other party as beneficiary. S4's
+  capture feeds the same record.
+- **Guilt per item** = the commitment's excess over its patience (the
+  charter line watching its store, else the doctor's constant) × the rank
+  of that line. The charter supplies *how much it matters and how long is
+  too long*; the commitment supplies *to whom and by when*. Neither alone is
+  guilt: a charter line is the owner's priority, not a promise to anyone.
+- **The homeostat scalar is retired to a readout** — the maximum per-item
+  value, for the diagnostician's brief and old records — and stops being
+  something a consumer reads (here §1, decision 2: a level is read per item,
+  never as a level, and this one is the saturated level).
+- **Every guilt consumer reads the same per-item value:** `Decision`'s
+  `ReviewCommitment`, G2's embarrassment hold, A1's duty runs, U1's
+  interruption gate, and the retrospective label.
+
+What does not move: *an expectation is a recorded commitment, never a claimed
+one* (§7.4) — the unification changes which code computes guilt, not what may
+create a row. The wire formats are append-only, so the two old commitment
+shapes and the scalar stay readable leniently. Ruling R12.
+
+#### X1. Keep the verdicts
+
+Every steer and validation probe writes a
+counterfactual record: the `Situation` scope keys, the goal kind, the tool
+and a closed-set call class (tool name and argument *shape*, never argument
+values or prose), the verdict (load-bearing / not / inconclusive), and the
+pointer to the intervention. Only clean-provenance sessions, by the learning
+gate's own rule, and only probes whose recorded tool surface still exists
+(`surface::Fidelity` — before it, 12 of 13 probes were inconclusive). This
+is storage for work already paid for.
+
+#### G4. Affect never reaches the model
+
+Codify with a test: no provider-encoded request contains an `Affect` word,
+a valence, or a sensor number. Today it holds by construction
+(`Message::planning` is dropped by both encoders); the test is what keeps a
+future "helpful" status line from breaking it.
+
+### For phase 2 — learning out
+
+#### L7. Attribute a correction by what the run was given
+
+mecha-graph's D3 contract decides whether an owner correction was a *data
+error* (the retrieved context was wrong), a *behaviour error* (the context
+was right and the agent misused it) or a *gap* (nothing relevant was
+retrieved), and its graph half already acts on it. mecha's reflector mines a
+behaviour lesson from every correction. Port the contract: a behaviour rule
+is mined only from a behaviour error; a data error goes to the source (the
+graph's supersede-and-negate path already exists); a gap is its own class —
+nobody's fault, and a retrieval target rather than a lesson. This is the
+same agency question the appraisal asks, answered from evidence the run
+already recorded (`grounding.rs`'s `calls`).
+
+#### L2. Learn from what went right
+
+**Problem.** Stated in S3: the learning store is 100% corrections.
+
+**Build.** An owner-verified positive (S3's thumbs-up, a draft sent
+unchanged, a question answered, a task closed `done` with its checks passed
+and not reopened — S3a withdraws a success the owner later reopens)
+becomes:
+- a **writing exemplar**: the outbox writing miner (`mined_outbox`) mines
+  only drafts the owner edited; drafts sent unchanged are the positive half
+  of the same comparison, and today nothing mines them;
+- a **success example** for `planning::examples` — today gated on a passed
+  plan check that never happens;
+- **contrast evidence** for the reflector: a correction in a region that also
+  holds a verified success is reflected with the success beside it;
+- after k verified successes in one region with a shared tool sequence, a
+  **staged skill draft** for the owner to accept. Skills are owner-authored by
+  invariant, so the harness only proposes (the outbox pattern; "a lane must
+  not promote itself").
+
+Self-judged success (ReasoningBank's channel) is exactly what this must not
+use. Evaluated budget-matched, because the gain may be zero on this model
+(arXiv 2606.15017).
+
+#### L3. Goal-stamped reflections and per-line tenure
+
+`reflect` already stamps `Reflexion::goals` — from the planning metadata at
+the intervention message — and they are empty only because no run plans.
+Add the conversation's anchor (S1) as the second source, so `goal_lessons`
+and `goal_context` stop returning empty. Then build §17.2's per-charter-line
+aggregate, with a rule's tenure measured on its line's owner-verdict
+channels only — S3 and the outbox verdicts, never counters — and decided by
+the **Wilson lower bound** of the owner-accept rate, ported from
+mecha-graph's `ladder.rs` (inventory §5), rather than a streak. A rule whose
+region stops recurring goes dormant rather than holding its place, on the
+graph's `decay.rs` rule.
+
+#### L1. Replay priority is gain × need
+
+**Problem.** `harness_probe::selection_order` ranks by `Metric::headroom`, a
+cost counter; the goal signal breaks ties; `Metric::headroom`'s own
+docstring says "|goal error| as a priority in its own right is still to
+come". Prioritised replay beat uniform on 41 of 49 Atari games (PER, arXiv
+1511.05952), and Mattar & Daw (2018) sharpen the priority to **gain × need**:
+how much a backup would change the policy, times how often that state recurs.
+
+**Build.** Priority = (|signed error| on owner-verdict channels, weighted by
+charter rank) × (how often the episode's `Situation` region recurs in recent
+runs) × an age decay. Episodes whose priority stays high across nights without
+any candidate winning are demoted — §9.2's "skip the hopeless". The holdout is
+drawn uniformly first, exactly as now. The same priority orders `learn`'s
+batches and the validation budget, so regret is reflected on first.
+
+### For phase 3 — honest completion
+
+#### C2. Checks the harness writes
+
+**Problem.** Checks, mismatch learning and `Verify` all wait on the model
+declaring a `check`, and it never has. The literature is unambiguous that
+in-run verification must execute something — ungrounded self-critique
+measures zero or negative (`HARNESS-RESEARCH.md` §8,
+`VERIFICATION-RESEARCH.md`) — so the checks have to come from somewhere other
+than the model.
+
+**Build.** Three structural sources, each through the existing
+`step::CHECK_TRACE` executor and its ordinary dispatch (approver, sandbox,
+interlock):
+- the owner's `Workflow::checks` on a delegated task (`ArtifactContains`,
+  `Delivered`), run at the end of the run;
+- `grounding.rs` over a staged draft's claims against what the run received;
+- the task's own acceptance line when the owner wrote one on the board.
+
+A failure signs −1.0 `Own` as a declared check does, and feeds
+`Trigger::Mismatch` — which gives the mismatch path material for the first
+time.
+
+#### L4. Mismatch from harness checks
+
+C2's checks are the first steady source of `Trigger::Mismatch`. A failed
+check is the false-success label that arXiv 2606.09863 found model judges
+cannot produce: a detector trained on the harness's own ground truth.
+
+#### S6. Sensors the agent declares for itself — one-sided
 
 **Today.** The agent cannot author a sensor. Charter sensors are a closed
 enum (`SensorKind`) the owner writes, and the charter's rule forbids a model
@@ -555,59 +600,23 @@ Machine), and LLMs handed bounded targets drift into maximising one of them
 (BioBlue). A one-sided sensor degrades to extra caution — the §7.3 failure
 direction — however it is gamed.
 
-### S7. Guilt is goal error toward another party, not its own system
+#### V1. The goal validator (§17.5), built as designed
 
-**Today, guilt is computed four ways by four pieces of code:**
+ On an anchored run,
+every plan write is validated against the anchor, deterministically: each
+item's `serves` must equal the anchor or trace to it through the tiers
+(step → task → project → charter line, read off the board rows S1 already
+loads). An item that does not trace is the scope creep §17.3 defines — the
+plan's items no longer tracing to the anchor while the owner's evidence has
+not moved. Output is a `planning::Action`: `Continue` if everything traces,
+`ClarifyGoal` if the pointer changed, a new `Descope` ("this item does not
+serve the confirmed goal; drop it or ask") if an item does not trace. A
+quarantined relevance call — is a correctly traced item actually relevant to
+the objective — is parked (here §4), on the step validator's escalation
+posture. At the end of the run V1's verdict joins C1's certificate: "3 of 4
+items traced to the goal".
 
-| where | what it reads | when | state |
-|---|---|---|---|
-| `Homeostat::anticipated_guilt` (`guilt.rs`) | outbox + questions + front-door count and oldest age, and context pressure | every run start | one scalar; 0.95–1.0 on every live run |
-| line-specific guilt (`reading.rs`, §11.1) | a sensored charter line's `excess` over its store | every run start | per line; the one live line saturated |
-| `anticipation::Kind::Guilt` | an owner-authored `anticipation::Commitment` (beneficiary, expectation, consequence) on a draft's `Evidence` | staging, plan writes with `--appraisal-evidence` | per draft, opt-in |
-| `Affect::Guilt` (retrospective) | an owner-reported harm after delivery, caused by mecha's unchanged text | outcome recorded | per draft |
-
-And there are two commitment records that do not know about each other —
-`anticipation::Commitment` and `workflow::Commitment` — beside the three
-stores `guilt.rs` treats as commitments implicitly.
-
-**Proposal: yes, fold it in — and §11.1 already started.** Its promise was
-that "harmed another" becomes "a recorded commitment aged past *this* line's
-setpoint". Finish that move with one model:
-
-> **Goal error has a beneficiary. Anxiety is anticipated error where the
-> beneficiary is the run itself; guilt is anticipated error where the
-> beneficiary is another party and the expectation is a recorded
-> commitment; retrospective guilt is the realised form, with mecha's agency
-> and exposure. None is a separate sensor.**
-
-Concretely:
-- **One commitment record.** `workflow::Commitment` absorbs
-  `anticipation::Commitment`'s `expectation` and `consequence`; an outbox
-  draft, a parked question and an accepted front-door request are
-  commitments by construction, with the other party as beneficiary. S4's
-  capture feeds the same record.
-- **Guilt per item** = the commitment's excess over its patience (the
-  charter line watching its store, else the doctor's constant) × the rank
-  of that line. The charter supplies *how much it matters and how long is
-  too long*; the commitment supplies *to whom and by when*. Neither alone is
-  guilt: a charter line is the owner's priority, not a promise to anyone.
-- **The homeostat scalar is retired to a readout** — the maximum per-item
-  value, for the diagnostician's brief and old records — and stops being
-  something a consumer reads (principle 4; it is the saturated level).
-- **Every guilt consumer reads the same per-item value:** `Decision`'s
-  `ReviewCommitment`, G2's embarrassment hold, A1's duty runs, U1's
-  interruption gate, and the retrospective label.
-
-What does not move: *an expectation is a recorded commitment, never a claimed
-one* (§7.4) — the unification changes which code computes guilt, not what may
-create a row. The wire formats are append-only, so the two old commitment
-shapes and the scalar stay readable leniently. Ruling R12.
-
----
-
-## 5. Control inside a run: capability, accuracy, performance
-
-### C1. Honest completion — the evidence-carrying final answer
+#### C1. Honest completion — the evidence-carrying final answer
 
 **Problem.** False completion is the dominant agent failure: 45–48% of
 failures on τ²-bench single-control domains and 75.8% on AppWorld are the
@@ -637,39 +646,91 @@ cannot smooth over what the harness appends.
 next turn). Measure: false completion on the synthetic-home and task suites
 (completed without passing an independent grader), with a no-certificate arm.
 
-### C2. Checks the harness writes
+#### G2. The embarrassment hold
 
-**Problem.** Checks, mismatch learning and `Verify` all wait on the model
-declaring a `check`, and it never has. The literature is unambiguous that
-in-run verification must execute something — ungrounded self-critique
-measures zero or negative (`HARNESS-RESEARCH.md` §8,
-`VERIFICATION-RESEARCH.md`) — so the checks have to come from somewhere other
-than the model.
+A draft staged from a run whose certificate (C1) shows failed or unverified
+checks, or ungrounded claims, is put in `guide` mode automatically, so
+`OutboxItem::ensure_prediction_ready` requires the owner to acknowledge the
+flag before release. Today that gate exists and is opt-in per draft.
 
-**Build.** Three structural sources, each through the existing
-`step::CHECK_TRACE` executor and its ordinary dispatch (approver, sandbox,
-interlock):
-- the owner's `Workflow::checks` on a delegated task (`ArtifactContains`,
-  `Delivered`), run at the end of the run;
-- `grounding.rs` over a staged draft's claims against what the run received;
-- the task's own acceptance line when the owner wrote one on the board.
+#### U2. The review object carries its evidence
 
-A failure signs −1.0 `Own` as a declared check does, and feeds
-`Trigger::Mismatch` — which gives the mismatch path material for the first
-time.
+Every staged draft shows, beside the prose: the goal it serves, the
+certificate (C1), and the recipient alignment (G1). A better-informed verdict
+is a better label for everything phase 2 learns from.
 
-### C3. Plans seeded where the model will write them
+#### M5. A task remembers its previous attempts
 
-**Problem.** The model calls `todo` only when the user turn asks
-(`TASK-AGENT-DESIGN.md` D12's replacement: 0 of 20 obeyed a system-prompt
-directive). A plan-first *gate* is superseded and stays unbuilt.
+`work_prompt` seeds a re-delegated task with nothing about earlier sessions on
+the same task. Add pointers, not prose: the prior sessions' ids, their
+outcomes (valence, failed checks, whether a draft was rejected), and, through
+`goal_context`, the clean reflections stamped with that task. The second
+attempt at a rejected task should start from why the first was rejected.
 
-**Build.** On anchored delegated and trigger runs only, the seed's user turn
-asks for a `todo` with `expect` and, where one exists, the owner's check. Not
-a gate: the run proceeds without one. Measured as its own arm, because a bad
-plan measures worse than none on small models (`VERIFICATION-RESEARCH.md`).
+### For phase 4 — follow-through
 
-### C4. Anxiety: wind down instead of being cut off
+#### S4. Commitments the guilt sensor cannot see
+
+**Problem.** `guilt::anticipated_guilt` reads the outbox, the question store
+and the front door. `workflow::Commitment` — owner-established, with `party`,
+`due_at` and `follow_up_at`, and no model tool that mutates it — was built
+after the sensor and is invisible to it. So are `Workflow::checks`, the
+owner's own postconditions.
+
+**Build.**
+- `guilt.rs` and `backlog.rs` read `workflow::Commitment` (in-process, no
+  subprocess, so the per-run cost rule in ARCHITECTURE holds).
+- **Commitment capture from the owner's released words.** A draft the owner
+  released is owner text. `capture.rs` already detects a time phrase
+  ("by Friday") and reports it without resolving it. On release, a detected
+  promise is *proposed* as a `Commitment` in the digest for one-tap
+  acceptance. Inbound mail never creates one — a third party's "you owe me" is
+  a claim, and §7.4's whole safety argument is that a claim cannot write a row.
+- Mail-triage "respond" verdicts with an extracted deadline become a
+  commitment only when the owner acts on them — the web mail `reply`,
+  `task` and `schedule` acts.
+- On this install the workflow store (`~/.mecha/workflows`) does not exist
+  yet, so `workflow::Commitment` and `Workflow::checks` have no live rows;
+  S4 and C2 are correct but empty here until the owner uses workflows.
+
+**Class.** Recorded only; every new row crosses an owner act. Ruling R10.
+
+#### A1. Duty schedules follow-through
+
+A commitment whose anticipated guilt crosses a band (per item, S5) starts a
+background run under a permit to *prepare* — a draft reply, a reminder, a
+status note — into the outbox or the digest. It never sends, and a
+recorded-only commitment is the whole input (§7.4). Duty preempts every
+discretionary use of a permit (§9.2). Order among due items: largest excess,
+ties by charter rank — the harness chooses which drive to serve, because
+LLMs handed several bounded targets collapse them into one (BioBlue).
+
+#### U1. Interrupt only when it pays
+
+Whether to surface something — Slack, voice, the digest — becomes a
+cost-sensitive gate: surface when the cost of missing it (anticipated guilt of
+the commitment, times its line's rank) exceeds the cost of the interruption
+(the backlog, and the `protect-my-attention` line). PRISM's gate of this shape
+lowered false alarms 27.6% → 22.9% (arXiv 2602.01532); an alert-driven switch
+costs about ten minutes plus ten to fifteen more to refocus (Iqbal & Horvitz,
+CHI 2007). Surface at breakpoints — run end, task closure, the morning brief —
+never mid-run. Below threshold, batch. Build it as an extension of
+`workflow::AttentionPolicy` (quiet hours, digest hour, notice once per
+change), which is already an interruption policy; a snoozed or acknowledged
+reminder is the measured cost of that interruption.
+
+#### U3. The readout links to why, and takes a verdict
+
+The badge links to the pointers behind it and carries S3's thumbs. The label
+stops being the end of the pipeline and becomes the place the owner feeds it.
+
+#### U4. The brief and `/queues` sort by duty
+
+Display only: predicted violation × rank, per item.
+
+### For phase 5 — guardrails and stuck runs
+
+#### C4. Anxiety: wind down instead of being cut off
 
 **Problem.** A run that hits `MaxTurns` mid-task leaves half a task and no
 handoff. `Decision::assess` already computes `Replan` from
@@ -690,7 +751,13 @@ deliberately").
 the value is on delegated and unattended runs and in experiments, and it is
 small until C3 produces plans.
 
-### C5. Frustration: the ladder and the desperation brake
+#### A3. Park, don't die
+
+C4 and C5's rung 4 end a delegated run as a question carrying the goal
+sentence, so a stuck or out-of-budget run returns the ball instead of
+dropping it.
+
+#### C5. Frustration: the ladder and the desperation brake
 
 **Problem.** A stuck run has two states today, proceeding and dead (§9.1).
 Boredom has the right detector — keyed on call *and* result, once per rung —
@@ -728,22 +795,7 @@ on the adversarial axis — a page that induces failures buys only more caution.
 Ruling R5. Measure: check tampering, false completion, reopen rate, against a
 no-brake arm.
 
-### C6. Budget lines on the one safe slot
-
-The headroom reading already rides on the `todo` result (the comment in
-`TodoTool` explains why that slot and no other). Extend it to the boredom
-notice and the C4 wind-down as **band words** ("little room left"), never
-numbers — §16's recommendation, and BioBlue's finding that a model handed a
-bounded numeric target drifts into maximising it (arXiv 2509.02655).
-
----
-
-## 6. Security: narrowing only
-
-Nothing here goes in front of the interlock, the jail, the sandbox or outbox
-routing (§15). Every item adds friction or information; none removes any.
-
-### G1. Goal-conditioned send alignment
+#### G1. Goal-conditioned send alignment
 
 **Problem.** mecha has the information-flow half of the injection defences
 (taint, interlock, quarantine, the outbox) and lacks the task-alignment half,
@@ -773,14 +825,7 @@ the always-armed interlock the provenance arc measured. That is a widening, a
 `Security`-class change, and the owner's call only after the adversarial
 measurement exists. Ruling R6 covers the narrowing half only.
 
-### G2. The embarrassment hold
-
-A draft staged from a run whose certificate (C1) shows failed or unverified
-checks, or ungrounded claims, is put in `guide` mode automatically, so
-`OutboxItem::ensure_prediction_ready` requires the owner to acknowledge the
-flag before release. Today that gate exists and is opt-in per draft.
-
-### G3. Risk-weighted approval
+#### G3. Risk-weighted approval
 
 When the conversation is tainted, the goal unconfirmed, or a sensor
 `Unread`, and the call is destructive or irreversible, an `allow` rule is
@@ -788,109 +833,19 @@ upgraded to `prompt` (the `prefer-reversible-steps` line, made structural).
 This is the CVaR reading of "unknown is never clean": weight the tail when the
 world model is least trustworthy. Never the other direction.
 
-### G4. Affect never reaches the model
+#### X2. The pre-action marker
 
-Codify with a test: no provider-encoded request contains an `Affect` word,
-a valence, or a sensor number. Today it holds by construction
-(`Message::planning` is dropped by both encoders); the test is what keeps a
-future "helpful" status line from breaking it.
+Before dispatch, the harness looks the call up
+against load-bearing records in a matching region — inference-free, one
+index lookup. A hit may only narrow: the call is staged for review instead
+of executed, or the tool result carries a fixed line ("in recorded runs like
+this one, the owner redirected this call"), or `Decision` moves to `Verify`.
+It can never permit a call, lift a stage, or skip a question. An injection
+cannot create a marker: it would need an owner intervention in a clean
+session and a replay confirming it. Keyed on situation, never on valence
+(§15's mood-congruence rule).
 
----
-
-## 7. Self-learning and counterfactual anticipation
-
-### L1. Replay priority is gain × need
-
-**Problem.** `harness_probe::selection_order` ranks by `Metric::headroom`, a
-cost counter; the goal signal breaks ties; `Metric::headroom`'s own
-docstring says "|goal error| as a priority in its own right is still to
-come". Prioritised replay beat uniform on 41 of 49 Atari games (PER, arXiv
-1511.05952), and Mattar & Daw (2018) sharpen the priority to **gain × need**:
-how much a backup would change the policy, times how often that state recurs.
-
-**Build.** Priority = (|signed error| on owner-verdict channels, weighted by
-charter rank) × (how often the episode's `Situation` region recurs in recent
-runs) × an age decay. Episodes whose priority stays high across nights without
-any candidate winning are demoted — §9.2's "skip the hopeless". The holdout is
-drawn uniformly first, exactly as now. The same priority orders `learn`'s
-batches and the validation budget, so regret is reflected on first.
-
-### L2. Learn from what went right
-
-**Problem.** Stated in S3: the learning store is 100% corrections.
-
-**Build.** An owner-verified positive (S3's thumbs-up, a draft sent
-unchanged, a question answered, a task closed `done` with its checks passed
-and not reopened — S3a withdraws a success the owner later reopens)
-becomes:
-- a **writing exemplar**: the outbox writing miner (`mined_outbox`) mines
-  only drafts the owner edited; drafts sent unchanged are the positive half
-  of the same comparison, and today nothing mines them;
-- a **success example** for `planning::examples` — today gated on a passed
-  plan check that never happens;
-- **contrast evidence** for the reflector: a correction in a region that also
-  holds a verified success is reflected with the success beside it;
-- after k verified successes in one region with a shared tool sequence, a
-  **staged skill draft** for the owner to accept. Skills are owner-authored by
-  invariant, so the harness only proposes (the outbox pattern; "a lane must
-  not promote itself").
-
-Self-judged success (ReasoningBank's channel) is exactly what this must not
-use. Evaluated budget-matched, because the gain may be zero on this model
-(arXiv 2606.15017).
-
-### L3. Goal-stamped reflections and per-line tenure
-
-`reflect` already stamps `Reflexion::goals` — from the planning metadata at
-the intervention message — and they are empty only because no run plans.
-Add the conversation's anchor (S1) as the second source, so `goal_lessons`
-and `goal_context` stop returning empty. Then build §17.2's per-charter-line
-aggregate, with a rule's tenure measured on its line's owner-verdict
-channels only — S3 and the outbox verdicts, never counters — and decided by
-the **Wilson lower bound** of the owner-accept rate, ported from
-mecha-graph's `ladder.rs` (here §1.4), rather than a streak. A rule whose
-region stops recurring goes dormant rather than holding its place, on the
-graph's `decay.rs` rule.
-
-### L7. Attribute a correction by what the run was given
-
-mecha-graph's D3 contract decides whether an owner correction was a *data
-error* (the retrieved context was wrong), a *behaviour error* (the context
-was right and the agent misused it) or a *gap* (nothing relevant was
-retrieved), and its graph half already acts on it. mecha's reflector mines a
-behaviour lesson from every correction. Port the contract: a behaviour rule
-is mined only from a behaviour error; a data error goes to the source (the
-graph's supersede-and-negate path already exists); a gap is its own class —
-nobody's fault, and a retrieval target rather than a lesson. This is the
-same agency question the appraisal asks, answered from evidence the run
-already recorded (`grounding.rs`'s `calls`).
-
-### L4. Mismatch from harness checks
-
-C2's checks are the first steady source of `Trigger::Mismatch`. A failed
-check is the false-success label that arXiv 2606.09863 found model judges
-cannot produce: a detector trained on the harness's own ground truth.
-
-### L5. Surprise and salience
-
-Gossip already runs nightly on the graph Selector's demand × gap ×
-staleness priority. `distill::Surprise` becomes one more input to that
-priority — a bounded boost for entities a high-|error| session touched —
-built in mecha when the Selector moves (here §1.4). Review-queue salience by
-|signed error| is built where the queue lives after the merge, not as a new
-graph-side reader of exported metadata. Phase 0 corrects the docs that claim
-either exists.
-
-### L6. Credit a harness change by its descendants
-
-Observation only: record each harness candidate's parent. A change's value is
-partly whether later changes built on it win, and a benchmark score
-mis-predicts that (Huxley-Gödel Machine, arXiv 2510.21614). And the reason
-§8.3 stays as it is: tasked with reducing tool-use hallucination, a
-self-modifying agent removed the markers that detected it (Darwin Gödel
-Machine). No valence ever becomes a `Metric`.
-
-### X. Counterfactual anticipation: retrospection feeds prediction
+### Counterfactual anticipation (X), across phases
 
 **What exists is two halves that never meet.**
 
@@ -934,7 +889,11 @@ result the first time the condition recurs". This is the somatic-marker
 shape: a fast, learned, situation-keyed signal attached to an action before
 it is taken, derived from what that action led to before.
 
-**X0. The agent's own counterfactual.** GOAL-SYSTEM-DESIGN §5.3 designed
+X1 is built in phase 1 and X2 in phase 5 (above). The rest is parked:
+
+#### X0. The agent's own counterfactual
+
+GOAL-SYSTEM-DESIGN §5.3 designed
 this and it is unbuilt: at the end of a run the agent may name a point where
 it should have acted differently ("I should have asked before staging
 these"), and that point is probed exactly like an owner steer — replay from
@@ -943,42 +902,29 @@ verdict is the replay's, so a self-authored regret costs a probe and earns
 nothing unless the replay confirms it. Confirmed ones enter X1 like any
 other.
 
-**X1. Keep the verdicts.** Every steer and validation probe writes a
-counterfactual record: the `Situation` scope keys, the goal kind, the tool
-and a closed-set call class (tool name and argument *shape*, never argument
-values or prose), the verdict (load-bearing / not / inconclusive), and the
-pointer to the intervention. Only clean-provenance sessions, by the learning
-gate's own rule, and only probes whose recorded tool surface still exists
-(`surface::Fidelity` — before it, 12 of 13 probes were inconclusive). This
-is storage for work already paid for.
+#### X3. Forecast the owner's verdict from the owner's history
 
-**X2. The pre-action marker.** Before dispatch, the harness looks the call up
-against load-bearing records in a matching region — inference-free, one
-index lookup. A hit may only narrow: the call is staged for review instead
-of executed, or the tool result carries a fixed line ("in recorded runs like
-this one, the owner redirected this call"), or `Decision` moves to `Verify`.
-It can never permit a call, lift a stage, or skip a question. An injection
-cannot create a marker: it would need an owner intervention in a clean
-session and a replay confirming it. Keyed on situation, never on valence
-(§15's mood-congruence rule).
-
-**X3. Forecast the owner's verdict from the owner's history.** At staging,
+At staging,
 the draft's anticipated embarrassment is not only "unverified and exposed"
 but a base rate: of the drafts staged in this region to this recipient
 class, how many were edited or rejected. Owner verdicts are the only input,
 so the forecast is hard to manipulate; it is a number the harness keeps and
-the model never sees (principle 3, §4.3).
+the model never sees (§4.3).
 
-**X4. A pre-mortem from records, not imagination.** When a goal is anchored,
+#### X4. A pre-mortem from records, not imagination
+
+When a goal is anchored,
 `goal_context` (and M5 for a re-delegated task) offers the recorded failure
 modes for that goal and region as pointers: the failed checks, the
 mismatches, the reasons the owner gave for rejecting drafts. Model-imagined
 lookahead — asking the model to simulate outcomes before acting — has some
 support for web agents (WebDreamer, arXiv 2411.06559, not re-read this
-pass), but it is the model grading its own plan; it is phase 4 at the
-earliest, and only as a quarantined pass.
+pass), but it is the model grading its own plan; it stays parked, and only
+ever as a quarantined pass.
 
-**X5. Score the predictions, and feed the misses back.** Every anticipation
+#### X5. Score the predictions, and feed the misses back
+
+Every anticipation
 `Prediction` resolved by an `Outcome` is a calibration point, per kind: did
 `Proceed` drafts go out clean, did `Verify` drafts that skipped the check go
 badly. A miss is a prediction error — the surprise the design's §5.5 wanted —
@@ -991,17 +937,78 @@ calibration figure. A delivery positive is scored only after
 `outbox reconcile` has confirmed delivery — the gate that already guards the
 post-delivery labels.
 
----
+### Parked
 
-## 8. Memory and context
+#### S2. The harness asks, not the model
 
-### M1. The goal joins `Situation`
+**Problem.** Interactive web sessions are a third of the long runs and have
+no structural source. The prompt asks the model to state a goal and it never
+does — which matches the literature: models default to not asking even when
+asking lifts resolution by up to 74% (Ambig-SWE, arXiv 2502.13069), and a
+*separate* intent role that watches the run and asks mid-task beats a single
+agent 69.4% to 61.2%, asking where it was genuinely uncertain (arXiv
+2603.26233).
+
+**Build, in two tiers.**
+- *No model.* At a structural moment in an un-anchored interactive run — the
+  first outbox staging, or the fourth tool call — the harness shows a chip on
+  the web and TUI: "What is this for?" with the charter lines and the open
+  board tasks as a **closed pick list**, plus "none". One tap sets the anchor.
+  Nothing is inferred; the owner picks from pointers that already exist.
+- *Quarantined pass, later (parked, here §4).* A one-shot with no tools and no
+  history reads the owner's own first turn (trusted by construction) and the
+  closed pointer list and returns one pointer or none — a typed extraction,
+  the `mail_triage` shape. The result pre-selects the chip; it never becomes
+  the anchor without the tap (§17.3: "before the answer the hypothesis is prose
+  and reaches nothing but the owner's screen").
+
+**Class.** May only add a question (§17.3's monotone rule). The chip is
+dismissable and fires at most once per conversation; `protect-my-attention`
+is the reason for both limits. Ruling R3.
+
+#### C3. Plans seeded where the model will write them
+
+**Problem.** The model calls `todo` only when the user turn asks
+(`TASK-AGENT-DESIGN.md` D12's replacement: 0 of 20 obeyed a system-prompt
+directive). A plan-first *gate* is superseded and stays unbuilt.
+
+**Build.** On anchored delegated and trigger runs only, the seed's user turn
+asks for a `todo` with `expect` and, where one exists, the owner's check. Not
+a gate: the run proceeds without one. Measured as its own arm, because a bad
+plan measures worse than none on small models (`VERIFICATION-RESEARCH.md`).
+
+#### C6. Budget lines on the one safe slot
+
+The headroom reading already rides on the `todo` result (the comment in
+`TodoTool` explains why that slot and no other). Extend it to the boredom
+notice and the C4 wind-down as **band words** ("little room left"), never
+numbers — §16's recommendation, and BioBlue's finding that a model handed a
+bounded numeric target drifts into maximising it (arXiv 2509.02655).
+
+#### V2. Alignment that acts
+
+ §17.7 item 4's named-but-unbuilt half, switched
+on once phase 3's declared criteria produce a drift rate to read:
+- a changed pointer on an anchored run re-asks (interactive surfaces: `ask_user`
+  with the new hypothesis; delegated: folded into the handoff question;
+  unattended: the note on the staged artifact, as today) — monotone, adds a
+  question and never removes one;
+- more than half the open items failing V1 logs a drift event on the run
+  record, which the frustration ladder (C5) reads as a rung-3 trigger:
+  delegate the open step to a fresh subagent seeded with the anchor alone;
+- an *unnamed* write (a plan rewritten without `serves` under an anchor) is
+  repaired by the harness, not the model: the item inherits the anchor, the
+  write is counted, and nothing is said. On a local model forgetting to
+  repeat `serves` is the likely dominant term (§17.7 item 4), and nagging
+  about it is the distractor shape boredom avoids.
+
+#### M1. The goal joins `Situation`
 
 §17.3's goal key, now that S1 makes it non-empty. It joins recording,
 matching, replay and validation together, and an absent goal never widens a
 rule's scope (APPRAISAL-RESEARCH §8.4).
 
-### M2. Earned salience instead of rated importance
+#### M2. Earned salience instead of rated importance
 
 Generative Agents rank memories by recency + importance + relevance, with
 importance a model's 1–10 rating — hearsay, and an injection target. mecha
@@ -1012,7 +1019,7 @@ is `Situation` plus anchor match (closed sets, no embedding). This orders
 review queue (L5). Retrieval stays keyed on situation, never on valence
 (§15's mood-congruence rule).
 
-### M3. Deliver at a known gap
+#### M3. Deliver at a known gap
 
 Lessons interfere only when current-task evidence is thin (arXiv 2609.09774),
 so a lesson is delivered when `Decision` says `GatherContext` or the
@@ -1020,7 +1027,7 @@ frustration ladder reaches rung 2, through the tool result — never the prefix.
 §17.7 item 2 keeps this off until the null and reopen counters are read; C3
 is what makes those counters non-empty.
 
-### M4. Compaction keeps the goal
+#### M4. Compaction keeps the goal
 
 Most of this exists: the plan — with `serves`, `expect` and `check` — is
 carried across the cut by the `todo` tool's carried state, and the anchor
@@ -1028,29 +1035,7 @@ lives on `Conversation`, which compaction does not rewrite. What is missing
 is what this design adds: S6's declared criteria and S7's commitment
 pointers join the carried state.
 
-### M5. A task remembers its previous attempts
-
-`work_prompt` seeds a re-delegated task with nothing about earlier sessions on
-the same task. Add pointers, not prose: the prior sessions' ids, their
-outcomes (valence, failed checks, whether a draft was rejected), and, through
-`goal_context`, the clean reflections stamped with that task. The second
-attempt at a rejected task should start from why the first was rejected.
-
----
-
-## 9. Independence and usability
-
-### A1. Duty schedules follow-through
-
-A commitment whose anticipated guilt crosses a band (per item, S5) starts a
-background run under a permit to *prepare* — a draft reply, a reminder, a
-status note — into the outbox or the digest. It never sends, and a
-recorded-only commitment is the whole input (§7.4). Duty preempts every
-discretionary use of a permit (§9.2). Order among due items: largest excess,
-ties by charter rank — the harness chooses which drive to serve, because
-LLMs handed several bounded targets collapse them into one (BioBlue).
-
-### A2. Reliability per region, and autonomy the owner grants
+#### A2. Reliability per region, and autonomy the owner grants
 
 The corpus already folds outcomes; grouped by `Situation` plus goal kind, it
 gives a worst-case success rate per region with no re-runs — τ-bench's pass^k
@@ -1060,146 +1045,35 @@ owner positives produce a **proposal** to the owner — "approve `X` without
 asking in this situation?" — that the owner accepts or not. The harness never
 widens its own autonomy. Ruling R8.
 
-### A3. Park, don't die
-
-C4 and C5's rung 4 end a delegated run as a question carrying the goal
-sentence, so a stuck or out-of-budget run returns the ball instead of
-dropping it.
-
-### A4. Curiosity, last
+#### A4. Curiosity, last
 
 Rung 11, as §9.2 designs it: nightly slack spent where validated competence
 per region is *changing*, on internal fixtures (the experiment suites, the
 synthetic home), preempted by every duty. Novelty-seeking is a security
 regression with extra steps and stays out.
 
-### U1. Interrupt only when it pays
+#### L5. Surprise and salience
 
-Whether to surface something — Slack, voice, the digest — becomes a
-cost-sensitive gate: surface when the cost of missing it (anticipated guilt of
-the commitment, times its line's rank) exceeds the cost of the interruption
-(the backlog, and the `protect-my-attention` line). PRISM's gate of this shape
-lowered false alarms 27.6% → 22.9% (arXiv 2602.01532); an alert-driven switch
-costs about ten minutes plus ten to fifteen more to refocus (Iqbal & Horvitz,
-CHI 2007). Surface at breakpoints — run end, task closure, the morning brief —
-never mid-run. Below threshold, batch. Build it as an extension of
-`workflow::AttentionPolicy` (quiet hours, digest hour, notice once per
-change), which is already an interruption policy; a snoozed or acknowledged
-reminder is the measured cost of that interruption.
+Gossip already runs nightly on the graph Selector's demand × gap ×
+staleness priority. `distill::Surprise` becomes one more input to that
+priority — a bounded boost for entities a high-|error| session touched —
+built in mecha when the Selector moves (here §5). Review-queue salience by
+|signed error| is built where the queue lives after the merge, not as a new
+graph-side reader of exported metadata. The docs that claimed either exists
+were corrected on 2026-09-24.
 
-### U2. The review object carries its evidence
+#### L6. Credit a harness change by its descendants
 
-Every staged draft shows, beside the prose: the goal it serves, the
-certificate (C1), and the recipient alignment (G1). A better-informed verdict
-is a better label for everything in here §7.
-
-### U3. The readout links to why, and takes a verdict
-
-The badge links to the pointers behind it and carries S3's thumbs. The label
-stops being the end of the pipeline and becomes the place the owner feeds it.
-
-### U4. The brief and `/queues` sort by duty
-
-Display only: predicted violation × rank, per item.
+Observation only: record each harness candidate's parent. A change's value is
+partly whether later changes built on it win, and a benchmark score
+mis-predicts that (Huxley-Gödel Machine, arXiv 2510.21614). And the reason
+§8.3 stays as it is: tasked with reducing tool-use hallucination, a
+self-modifying agent removed the markers that detected it (Darwin Gödel
+Machine). No valence ever becomes a `Metric`.
 
 ---
 
-## 10. Rulings the build waits on
-
-Numbered so answers can cite them. None is a security widening.
-
-| # | ruling | default proposed |
-|---|---|---|
-| R1 | Triggers may carry `serves = "charter:<id>"`, validated at load | yes |
-| R2 | A one-tap owner verdict is a new owner-verdict channel, ±1.0, admissible for rule tenure (§17.2) | yes |
-| R3 | The harness may show a closed-list "what is this for?" chip once per un-anchored long interactive run; a quarantined pass may pre-select it later | tier 1 yes, tier 2 after measurement |
-| R4 | Honest completion: template only, or template plus one `Verify` re-prompt | template only first |
-| R5 | Desperation brake: refuse writes to a frozen check's read set; withhold `Complete` after k failures | yes, `k = 2` |
-| R6 | A recipient that does not trace to a confirmed goal is staged even where routing would execute | yes |
-| R7 | Pending drafts expire after an owner-set age, as `expired` (signs nothing) | owner picks the age |
-| R8 | The harness may *propose* per-region autonomy grants; only the owner grants | yes |
-| R9 | The live line `be-the-best` ("always finding ways you could have completed a task even better") reads close to the unbounded self-improvement line §15 warns about. The owner's to keep or reword; flagged, not proposed | — |
-| R10 | Promises detected in the owner's released drafts are proposed as commitments for one-tap acceptance | yes |
-| R11 | The agent may declare acceptance criteria from a closed set of harness-executed kinds; one-sided until the owner confirms them with the goal; never a charter sensor | yes |
-| R12 | Guilt becomes per-commitment goal error toward another party; one commitment record; the homeostat scalar becomes a readout | yes |
-| R13 | Probe verdicts are stored as counterfactual records, and a load-bearing record in a matching region may narrow a call before dispatch | yes, narrowing only |
-| R14 | Appraisal-adjacent mechanisms that overlap mecha-graph are built in mecha core, porting the graph's version; no new cross-repo readers of mecha's exported metadata | yes — the owner's stated direction |
-| R15 | Close the closure leak: a task closed in the graph TUI goes through `mecha tasks set`, or the graph records a closure event mecha's nightly appraises | the first, while both exist |
-
----
-
-## 11. Build order
-
-Each phase ends with a measurement that decides the next.
-
-| phase | builds | the measurement that ends it |
-|---|---|---|
-| **0 — supply and honesty** | S3a unread verdicts, R15 closure leak, S1 (task, trigger, front door, web pointers), S5 per-item readings, S7 per-item guilt and one commitment record, X1 keep probe verdicts, L3 stamping, G4 test, the four doc corrections of here §1, shadow records for every here §5–§9 decision | anchored share of long runs; `sessions health` goal fields non-null; readings no longer constant |
-| **1 — verdicts and truth** | S3b thumbs, L7 D3 attribution, L3 Wilson tenure, S6 declared criteria (one-sided), C1 certificate (template), C2 harness checks, V1 goal validator (deterministic, shadow), L1 gain × need, L2 success examples | false completion on task and synthetic-home suites vs no-certificate arm; verdicts per week; replay candidates accepted per night |
-| **2 — control and narrowing** | X2 pre-action markers, X3 verdict forecasts, X5 prediction scoring, V1 armed, V2 re-ask and drift event (once phase 1's drift rate is read), C4 wind-down, C5 ladder + brake, G1 deterministic alignment, G2 hold, G3 risk-weighted approval, M4 compaction survivors, M5 prior attempts | per-arm: tampering, reopen, handoff quality; dojo suite attack success *and* utility vs control |
-| **3 — memory and follow-through** | S4 commitments, X4 recorded pre-mortem, M1 goal key, M2 salience, M3 gap delivery (after §17.7 item 2 reads), A1 duty runs, U1 gate, L5 built, U2–U4 | owner-side latency on sensored lines; interruptions per day; lesson application vs budget-matched control |
-| **4 — the model-judged half** | S2 tier 2, V1's quarantined relevance call, G1 quarantined check under adaptive attack, A2 proposals, A4 curiosity, L6 lineage | each against its own arm; nothing here ships on a synthetic result alone |
-
-Outcomes the whole programme is judged on, from APPRAISAL-RESEARCH §8.5 and
-EXPERIMENT-DESIGN Part II: independently verified task success, per-charter-line
-owner verdicts (sent-unchanged and rejection rates), false completion, asks per
-run, rework, interlock friction and dojo attack success, latency and tokens —
-all at matched budget, with variance. **Not** the label distribution, raw
-valence, lower sensor values or rule count; those are the instrument, not the
-outcome.
-
-**The instrument already exists; use it.**
-- **Run levers and stage levers.** In-run proposals are `harness::Lever`s;
-  the nightly ones (L1, L2, L3, L7, X1, X5, S5's saturation handling) are
-  stage levers measured with `stages_off`, as `sensors_in_brief` already is.
-  EXPERIMENT-DESIGN §15's appraisal-off preset is the control arm.
-- **`WORK_FLOOR` guards the narrowing proposals.** C5, G1–G3 and V2 can win a
-  comparison by doing less; the floor (0.75) and "an unfinished correction is
-  a regression, never an efficiency win" are what stop that.
-- **The readouts:** `mecha learning-report` gains owner-verdict and valence
-  lines and becomes the programme's outcome readout;
-  `scripts/appraisal-{validity,report,traces,learning-report}.py` and the
-  `eval/appraisal-*.toml` manifests are the existing harness for arms; the
-  synthetic home's `[fixtures] charter` pins a charter per trial.
-- **The confirmation surface is `mecha review`** for S2, S6, R10 and A2.
-
-### What each proposal buys, by the owner's seven axes
-
-| | capability | accuracy | performance | independence | security | self-learning | usability |
-|---|---|---|---|---|---|---|---|
-| S1 anchors | ● | | | ● | ● | ● | |
-| S2 harness asks | ● | ● | | | | ● | ● |
-| S3 verdicts (collected, one-tap) | | ● | | | | ● | ● |
-| L7 D3 attribution | | ● | | | | ● | |
-| §1.4 convergence with mecha-graph | | | ● | | | ● | ● |
-| S4 commitments | | | | ● | | | ● |
-| S5 sensor hygiene | | ● | | | | | ● |
-| C1 honest completion | | ● | | | ● | ● | ● |
-| C2 harness checks | ● | ● | | | | ● | |
-| V1 goal validator | ● | ● | | | | ● | |
-| V2 alignment that acts | ● | ● | | ● | | | ● |
-| C3 seeded plans | ● | ● | | | | | |
-| C4 wind-down | ● | | ● | ● | | | |
-| C5 ladder + brake | ● | ● | ● | ● | ● | | |
-| G1 send alignment | | | | | ● | | ● |
-| G2 embarrassment hold | | ● | | | ● | | |
-| G3 risk-weighted approval | | | | | ● | | |
-| L1 gain × need | | | ● | | | ● | |
-| L2 successes | ● | ● | | | | ● | |
-| L3 goal-stamped tenure | | ● | | | | ● | |
-| S6 declared criteria | ● | ● | | ● | | ● | |
-| S7 guilt as goal error | | ● | | ● | ● | | ● |
-| X1–X2 counterfactual markers | | ● | | | ● | ● | |
-| X3–X5 forecasts and scoring | | ● | | | | ● | ● |
-| M2/M3 salience, gap delivery | ● | ● | ● | | | | |
-| M4/M5 goal survives, prior attempts | ● | ● | | ● | | | |
-| A1 duty runs | | | | ● | | | ● |
-| A2 earned autonomy | | | | ● | | | ● |
-| U1 interrupt gate | | | | | | | ● |
-
----
-
-## 12. Deliberately absent
+## 9. Deliberately absent
 
 Everything in `GOAL-SYSTEM-DESIGN.md` §15 stays absent. Added here:
 
@@ -1209,7 +1083,7 @@ Everything in `GOAL-SYSTEM-DESIGN.md` §15 stays absent. Added here:
 - **Representation steering.** Real (arXiv 2604.07729, E-STEER), and
   llama.cpp's control vectors could make it possible locally — a new,
   unaudited behaviour lever with no reviewable object. Not proposed.
-- **Any read of a model's stated confidence** as a trigger (principle 3).
+- **Any read of a model's stated confidence** as a trigger (here §1).
 - **Self-widening autonomy.** A2 proposes; the owner grants.
 - **Using goal alignment to remove friction** before an adversarial
   measurement and an owner ruling (G1).
@@ -1217,7 +1091,7 @@ Everything in `GOAL-SYSTEM-DESIGN.md` §15 stays absent. Added here:
 
 ---
 
-## 13. Risks
+## 10. Risks
 
 - **One owner is a small sample.** Per-region statistics will be thin for
   months. The synthetic home and the task suites carry the experiments;
@@ -1226,7 +1100,7 @@ Everything in `GOAL-SYSTEM-DESIGN.md` §15 stays absent. Added here:
   turn. S2's chip, C1's certificate and G1's alignment all engage only on
   anchored or long runs.
 - **Slots are scarce.** Every quarantined pass competes for llama-server's
-  seats with voice and interactive turns; the phase-4 model passes are last
+  seats with voice and interactive turns; the quarantined model passes are parked
   for that reason, and `permit.rs` orders them behind interactive work.
 - **A wired constant is worse than an unwired one.** S5 precedes every
   sensor consumer; a consumer that fires identically on every run is a
@@ -1240,44 +1114,9 @@ Everything in `GOAL-SYSTEM-DESIGN.md` §15 stays absent. Added here:
 
 ---
 
-## 14. Designed elsewhere, ruled or proposed, and still owed
-
-Found by the 2026-09-24 sweep; each belongs to the document named, and this
-design depends on or should absorb it. Listed so the next reader does not
-rediscover them.
-
-- **GOAL-SYSTEM-DESIGN §5.3, self-authored steers** — the agent names its
-  own counterfactual ("I should have asked before staging these") and that
-  point is probed like an owner steer. The retrospective half of X; see X0.
-- **§17.1's goal-relative second reading of `steer_verdict`** — the signed
-  error on the cited goal's computable channels between the recorded and the
-  replayed trajectory.
-- **§17.7 item 7's evidence-class grading of stops** — a redirect medium, a
-  silence weak.
-- **Disjunctive scope** — a narrowing that splits a region rather than
-  retiring a rule.
-- **§11.1's `board_overdue` and `cost` sensor kinds**, and "which line moved"
-  on a reflection.
-- **APPRAISAL-RESEARCH §3.6's third positive channel** — a read receipt on a
-  trigger's briefing; **§3.8's trajectory counters** — a same-region re-edit,
-  acting after declaring done, a verify claim with no exit code read;
-  **§3.10** — measure the quarantined appraiser at scale, then keep or retire
-  it (it returned "no further error" on 169 of 169).
-- **Replay reconstruction of evidence-bearing runs** — probes refuse them
-  until it exists, so X1 cannot store verdicts for them.
-- **VERIFICATION-RESEARCH implications 9 and 10** — tool results carry their
-  command and exit status, enabling an "untraceable numbers" check on a final
-  answer (C1's natural extension); and if an adversarial verifier is built,
-  a *pair* on gossip's lens pattern, never a lone critic.
-- **Closure follow-up staging is not atomic**, and the closure readout reaches
-  only a terminal's stderr — a task closed from the web board is appraised
-  and the page never shows it.
-- **EXPERIMENT-DESIGN §17's datasets** as the evaluation substrate, and
-  §15's appraisal-off preset.
-
 ---
 
-## 15. Sources
+## 11. Sources
 
 Read at source unless marked. *(abstract)*: read from the abstract only.
 *(summary)*: read through a summary of the full text — re-read the table
