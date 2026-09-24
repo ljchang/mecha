@@ -72,17 +72,20 @@ genuinely needed. So no one-tap verdict (S3b declined) and no "what is this
 for?" chip (S2's asking tier declined); the evidence is the acts in
 inventory §4, read.
 
-**5. The appraisal is an interpretation, and good/bad is its one scalar**
-(ruled 2026-09-24). The owner: appraisals "are subjective interpretations
-given the context that includes goals, homeostatic states, past
-experiences… text, which is much richer and useful than ±1"; valence is "a
-small feature of appraisals", and good/bad is the part of it worth keeping.
-So an appraisal is **text** — what happened relative to what the run was for,
-why, what it means for the goal and the owner, what to do differently, what to
-expect next time, what the owner's reactions say about their goals — beside a
-small structured core: good/bad, the goal it bears on, and pointers to the
-evidence. The emotion labels become incidental words. How the numeric-only
-shape came about, and why it is safe to leave: here §2.1.
+**5. An appraisal is an interpretation of meaning** (ruled 2026-09-24).
+The owner: appraisal "is not a set of dimensions that can be reduced to a
+scalar or an 'action tendency', but an interpretation of meaning with respect
+to goals, homeostatic states, and past experiences"; it "should really be
+text, which is much richer and useful than ±1", and valence is "a small
+feature of appraisals". So an appraisal is **text** — what happened relative
+to what the run was for, why, what it means for the goal and for the owner,
+what to do differently, what to expect next time, what the owner's reactions
+say about their goals. Beside it the record keeps a few **judgments read out
+of** the interpretation — good/bad, the goal it bears on, the pointers its
+claims rest on — because arithmetic (priority, ordering, a line's trend) needs
+them. They are read out of the appraisal, not the appraisal reduced to them;
+the emotion labels become incidental words. How the numeric-only shape came
+about, and why it is safe to leave: here §2.1.
 
 These sit on top of the invariants that already hold and are not restated:
 dispositions only narrow (§7.3), affect is a priority and never an objective
@@ -92,7 +95,7 @@ commitment (§7.4), and no wiring reads a model's stated confidence.
 
 ---
 
-## 2. What each appraisal is for
+## 2. Goals, and what the harness does after an appraisal
 
 **Two kinds of goal, and they are measured differently** (the owner,
 2026-09-24: charter goals "will often be unbounded, but will still serve as
@@ -114,15 +117,17 @@ only a direction. Achievement goals serve attractors (task → project →
 charter line, the V1 trace), which is how a finished task counts toward a
 line that is never finished.
 
-An appraisal is not a word; it is a readiness for a class of actions (Simon's
-interrupt, Frijda's action tendency), and the label names the class that was
-primed. So each appraisal maps to a closed set of harness actions. The
-interpretation (here §1, decision 5) says *what* the situation is; the
-table says which actions that situation may prime, picked by arithmetic on
-the structured core so no prose ever chooses an action. `planning::Action` is already this
-shape in miniature.
+**What the harness does next is policy, downstream of the appraisal — not
+the appraisal.** The appraisal interprets what a situation means (decision
+5). Separately, the harness detects a small set of conditions from records —
+a shortfall, a repeated failure, an aging commitment — and each condition has
+a closed set of responses it may take, chosen by arithmetic on recorded facts
+so that no prose ever selects an action, and so that an injected sentence in
+an appraisal cannot trigger one. The shorthand names in the first column are
+the conditions' old names, kept so earlier proposals still read; they are
+not appraisals. `planning::Action` is this shape in miniature.
 
-| appraisal (harness-computed) | trigger | admissible actions | adversarial? | phase |
+| condition (harness-detected) | trigger | admissible responses | adversarial? | phase |
 |---|---|---|---|---|
 | **Pride / relief** — owner-verified positive | sent unchanged · answered · `done` and not reopened | consolidate a success · credit rule tenure · *propose* a skill — **never permits anything, never shown to the model** | no | phase 2 |
 | **Regret** — own, replay-confirmed negative | probe verdict | reflect first · spend validation budget here | no | phase 2 |
@@ -338,7 +343,7 @@ widening.
 | R5 | phase 5 | Desperation brake: refuse writes to a frozen check's read set; withhold `Complete` after k failures | yes, `k = 2` |
 | R6 | phase 5 | A recipient that does not trace to a confirmed goal is staged even where routing would execute | yes |
 | R13 | phase 5 | Stored counterfactual verdicts may narrow a matching call before dispatch | yes, narrowing only |
-| R17 | phase 2 | An appraisal is text beside a structured core of good/bad, goal and pointers; the emotion labels are incidental | **ruled 2026-09-24** |
+| R17 | phase 2 | An appraisal is an interpretation of meaning, in text, with respect to goals, homeostatic states and past experience — not dimensions reducible to a scalar or an action tendency; good/bad, goal and pointers are judgments read out of it; the emotion labels are incidental | **ruled 2026-09-24** |
 | R18 | phase 2 | The appraiser reads the full transcript; the appraisal inherits the run's taint | **ruled 2026-09-24** |
 | R19 | phase 2 | A text appraisal may reach learning, memory retrieval into runs, the owner's surfaces, and credit and rule tenure — clean runs only for all but the surfaces, by the unchanged provenance gate | **ruled 2026-09-24** |
 | R20 | phase 2 | The guard on credit and tenure from text: the owner's verdict overrides; grounded claims from clean runs only; a measured lever with a revert before it is on | proposed with R19 |
