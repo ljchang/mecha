@@ -1510,6 +1510,84 @@ mod tests {
             .any(|ch| ch.name == "well-formed arguments"));
     }
 
+    /// Every suite under `eval/suites/` parses, validates and selects
+    /// something: each case file's lines as cases, each manifest as a
+    /// `Manifest` whose `ids` all exist and whose `tags` match at least one
+    /// case. A mistyped key is otherwise a green `cargo test` and a failed
+    /// `mecha exp new` (found on review). And the suites' copy of
+    /// `chain-total-compacted` keeps that case's grading exactly.
+    #[test]
+    fn shipped_suites_parse_and_select_cases() {
+        let checkout = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        let load = |rel: &str| -> Vec<EvalCase> {
+            let text = std::fs::read_to_string(checkout.join(rel))
+                .unwrap_or_else(|e| panic!("{rel}: {e}"));
+            text.lines()
+                .enumerate()
+                .filter(|(_, l)| !l.trim().is_empty() && !l.trim_start().starts_with("//"))
+                .map(|(i, l)| {
+                    let c: EvalCase =
+                        serde_json::from_str(l).unwrap_or_else(|e| panic!("{rel}:{}: {e}", i + 1));
+                    c.validate()
+                        .unwrap_or_else(|e| panic!("{rel}:{}: {e}", i + 1));
+                    c
+                })
+                .collect()
+        };
+        let dir = checkout.join("eval/suites");
+        let mut manifests = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let m = crate::experiment::Manifest::parse(&text)
+                .unwrap_or_else(|e| panic!("{}: {e:#}", path.display()));
+            let cases_rel = m
+                .tasks
+                .cases
+                .as_ref()
+                .unwrap_or_else(|| panic!("{}: a suite reads a case file", path.display()));
+            let cases = load(&cases_rel.to_string_lossy());
+            let selected = if !m.tasks.ids.is_empty() {
+                for id in &m.tasks.ids {
+                    assert!(
+                        cases.iter().any(|c| &c.id == id),
+                        "{}: `{id}` is not in {}",
+                        path.display(),
+                        cases_rel.display()
+                    );
+                }
+                m.tasks.ids.len()
+            } else {
+                cases
+                    .iter()
+                    .filter(|c| {
+                        m.tasks.tags.is_empty() || c.tags.iter().any(|t| m.tasks.tags.contains(t))
+                    })
+                    .count()
+            };
+            assert!(selected > 0, "{} selects no case", path.display());
+            manifests += 1;
+        }
+        assert!(manifests > 0, "no suite manifests found under eval/suites");
+        let suite = load("eval/suites/functionality.jsonl");
+        let copy = suite.iter().find(|c| c.id == "compaction-chain").unwrap();
+        let original = load("eval/cases.jsonl")
+            .into_iter()
+            .find(|c| c.id == "chain-total-compacted")
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&copy.expect).unwrap(),
+            serde_json::to_value(&original.expect).unwrap(),
+            "the suite's copy must grade as the original does"
+        );
+        assert_eq!(copy.compact_at_tokens, original.compact_at_tokens);
+    }
+
     /// The shipped case set must stay loadable — a typo in one line would
     /// otherwise only surface partway through a paid eval run.
     #[test]
