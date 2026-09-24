@@ -19,6 +19,7 @@ import {
   tickedGroups,
   splitSender,
   verbWorksOn,
+  batchKeyVerb,
 } from '../src/lib/mail-desk.js';
 
 let pass = 0;
@@ -257,6 +258,19 @@ const row = (id) => ({ account: 'acct', thread_id: id });
   t('a refused commit is reported with its reason', failures.join() === '9: provider said no');
   t('and its row is no longer hidden as if it went', !p.hiddenKeys().has(keyOf(row('9'))));
 }
+
+console.log('batch keys with the selecting modifier still held');
+// Reported: a range built with ⇧-click, or a toggle with ⌘-click, then e with
+// the modifier still down — ⇧E was bound to nothing, and ⌘E was dropped whole.
+t('⇧E archives', batchKeyVerb('E', { shift: true }, 3) === 'archive');
+t('⇧D dismisses, ⇧T makes tasks', batchKeyVerb('D', { shift: true }) === 'dismiss' && batchKeyVerb('T', { shift: true }) === 'task');
+t('⇧S, ⇧A, ⇧J, ⇧K keep their own meanings', ['S', 'A', 'J', 'K'].every((k) => batchKeyVerb(k, { shift: true }, 3) === null));
+t('⌘E archives a multi-selection', batchKeyVerb('e', { meta: true }, 2) === 'archive');
+t('Ctrl-D dismisses a multi-selection', batchKeyVerb('d', { ctrl: true }, 5) === 'dismiss');
+t('⌘E with one or no thread selected stays the browser\'s', batchKeyVerb('e', { meta: true }, 1) === null && batchKeyVerb('e', { meta: true }, 0) === null);
+t('⌘T is never claimed', batchKeyVerb('t', { meta: true }, 5) === null);
+t('⌘⇧E and ⌥ combinations are left alone', batchKeyVerb('E', { meta: true, shift: true }, 5) === null && batchKeyVerb('e', { alt: true }, 5) === null);
+t('plain e is not this path (the ordinary switch handles it)', batchKeyVerb('e', {}, 5) === null);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

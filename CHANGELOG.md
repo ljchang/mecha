@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   doctor` sees it — when the model server does not answer, answers with a
   slot list it cannot read, or has been stuck loading for three hours.
 
+### Fixed
+
+- The mail desk's batch keys work with the selecting modifier still held.
+  A selection is built with ⇧-click or ⌘/Ctrl-click, and the hand is often
+  still on that key when `e` goes down: ⇧E was bound to nothing and ⌘E was
+  dropped whole, so the batch button worked while its hotkey did nothing.
+  ⇧E, ⇧D and ⇧T now mean e, d and t; ⌘/Ctrl-E and -D archive or dismiss
+  while more than one thread is selected, and stay the browser's otherwise.
+
 ## [0.1.21] - 2026-09-18
 
 ### Added
