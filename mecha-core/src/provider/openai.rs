@@ -12,20 +12,13 @@
 //! `reasoning_content`, which decodes into a `Block::Thinking` so it can be
 //! shown and recorded. It is never *output* — see `produced_output`.
 //!
-//! It is currently one-way, and that is a **known gap, not a decision**.
-//! `reasoning_content` is a request field too: measured against llama-server
-//! on 2026-08-10 via `/apply-template`, an assistant message carrying it
-//! renders back into the prompt as a `<think>` block, and without it the same
-//! turn renders as a bare `<tool_call>` with no thinking at all. So every
-//! prior assistant turn in a mecha conversation shows this model calling
-//! tools without reasoning — which is both a lost prior and the suspected
-//! cause of the empty-turn bug, since the malformation reproduced 7/7 was a
-//! bare tool call emitted with no think block.
-//!
-//! `anthropic.rs` already replays thinking (signature-gated, see
-//! `encode_block`); this backend has simply never had the code. Fixing it
-//! needs care about context cost — reasoning runs to thousands of tokens a
-//! turn — and about servers in this dialect that reject the field.
+//! And it goes back: `encode_message` folds an assistant turn's thinking into
+//! `reasoning_content` on the next request. Measured against llama-server on
+//! 2026-08-10, a turn sent without it renders into the prompt as a bare
+//! `<tool_call>`, so every prior turn showed the model calling tools without
+//! reasoning, which is what produced the empty turns. It is self-gating: on
+//! this path a thinking block exists only because a server sent
+//! `reasoning_content`, so it returns only to servers that speak it.
 
 use crate::config::ProviderConfig;
 use crate::message::*;

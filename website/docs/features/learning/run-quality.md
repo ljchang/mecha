@@ -30,10 +30,8 @@ downstream ever heard about it. The corpus is the sensor that was missing.
 transcript, written by every front-end — `run`, `chat`, the TUI, Slack, a
 trigger.
 
-The gap it closed: `RunOutcome` carries fifteen fields and the transcript kept
-two of them, so an interactive run was measurably **less** observable than an
-unattended one, whose trigger ledger recorded the rest. The signal was already
-computed and thrown away at the end of every run a human was watching.
+That is deliberate: a run you watched interactively is as observable as one a
+trigger ran unattended.
 
 | Field | What it says |
 |---|---|

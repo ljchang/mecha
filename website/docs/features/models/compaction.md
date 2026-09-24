@@ -16,9 +16,7 @@ It is **on wherever the provider declares a context window**: the threshold
 derives from that window (two thirds of it) unless `compact_at_tokens` sets one
 directly, and only a provider with no declared window runs uncompacted.
 Compaction is lossy, which is why it is validated and recorded rather than
-left off — for a while this page said "off by default" while the code derived a
-threshold, and a page that contradicts the code is the drift the docs exist to
-prevent.
+left off.
 
 ```toml
 [agent]
@@ -56,17 +54,8 @@ The forecast is on by default. `predictive_compaction = false` in `[agent]`, or
 threshold itself stays. It needs a first response to anchor on, so it starts
 empty on every run, which in `mecha chat` and the TUI means every user turn.
 
-You can set it directly, or let it derive:
-
-```rust
-pub const COMPACT_FRACTION: f64 = 0.66;
-
-pub fn compact_at(&self, context_window: Option<u64>) -> Option<u64> {
-    self.compact_at_tokens.or_else(|| {
-        context_window.map(|w| (w as f64 * Self::COMPACT_FRACTION) as u64)
-    })
-}
-```
+You can set it directly with `compact_at_tokens`, or let it derive: unset, the
+threshold is 0.66 of the provider's `context_window`.
 
 `[providers.X] context_window` is how many tokens the model's context holds —
 for llama-server, **`-c / -np`**, confirmed by `n_ctx_slot` at startup.
@@ -92,10 +81,9 @@ it keys on the server's refusal — but with no window and no
 change the server's `-c`, change `context_window` to match — a stale value is
 worse than none, because the derived threshold trusts it.
 
-A per-run override exists (`RunContext::with_compact_at`) for the same reason
-the budget and the path jail are per-run: one agent serves many runs, and an
-eval case that means to exercise compaction cannot ask every other case to
-compact too.
+An [eval case](/docs/features/experiments/evaluation) can set its own
+`compact_at_tokens`, so a case that means to exercise compaction does not ask
+every other case to compact too.
 
 ## The model can ask for it
 
@@ -130,10 +118,6 @@ When the threshold is crossed, the loop does the cheap and lossless things
 first and only pays for a summary if they were not enough.
 
 ### 1. Evict superseded results
-
-```rust
-let evicted = crate::compact::evict_superseded_results(messages);
-```
 
 This runs first at both compaction sites — the threshold check and overflow
 recovery — because it is **the only pass that removes damage rather than
@@ -174,10 +158,6 @@ this content is needed.]
 The marker also lets a second pass tell it has already been here.
 
 ### 2. Collapse repeated failures
-
-```rust
-let collapsed = crate::compact::collapse_repeated_failures(messages);
-```
 
 Eviction's error exemption is right for one failure and inverts for eight. A
 model is measurably likelier to fail a step when the context holds its own
@@ -228,14 +208,8 @@ there is anything to stop.
 
 ### 3. Thin old results, keep the calls
 
-```rust
-let thinned = crate::compact::thin_old_results(
-    messages,
-    self.cfg.compact_keep_recent.max(1) * 2,
-    crate::compact::THINNED_RESULT_CHARS,   // 240
-);
-```
-
+Older tool results — everything before the last `compact_keep_recent` turns —
+are cut to their first 240 characters; the calls themselves are kept whole.
 A call and its result differ enormously in both size and value:
 
 ```text
@@ -273,24 +247,13 @@ that asked for them, so the only safe place to resume is at an **assistant
 message**. Cutting there drops each `tool_use` together with the results
 answering it.
 
-```rust
-fn is_safe_cut(messages: &[Message], i: usize) -> bool {
-    messages.get(i).is_some_and(|m| m.role == Role::Assistant)
-}
-```
-
-`cut_point` searches forward from the target for the first legal index, and
-returns `None` when there is none — normal for a short conversation, and it
-means "do not compact" rather than "something is wrong". Index 0 is the
-original task and is kept regardless. `worth_compacting` refuses a cut that
-drops fewer than four messages, below which the summary is likely longer than
+When there is no legal cut — normal for a short conversation — nothing is
+compacted, and that means "not yet" rather than "something is wrong". The
+original task is always kept, and a cut that would drop fewer than four
+messages is not made, because below that the summary is likely longer than
 what it replaces.
 
-`compact.rs` is deliberately pure and provider-free, and unit-tested for
-exactly this. Getting the boundary wrong produces a 400 from a real API twenty
-turns into a real session, which is the worst possible place to discover it.
-
-`rebuild` appends the summary to the *original task message* rather than
+The summary is appended the summary to the *original task message* rather than
 inserting a message of its own — two user messages in a row are rejected by some
 providers, and the task and the summary of what happened to it belong together:
 
@@ -299,18 +262,8 @@ providers, and the task and the summary of what happened to it belong together:
 …
 ```
 
-And the rebuilt transcript is checked **before it is installed**, not after:
-
-```rust
-let orphans = crate::compact::orphaned_tool_results(&rebuilt);
-anyhow::ensure!(
-    orphans.is_empty(),
-    "refusing to compact: it would have orphaned {} tool result(s)",
-    orphans.len()
-);
-```
-
-A guard that fires once the damage is done is not a guard. The caller treats an
+And the rebuilt transcript is checked for orphaned tool results **before it is
+installed**, not after. A guard that fires once the damage is done is not a guard. The caller treats an
 error here as "carry on uncompacted", which is survivable; carrying on with a
 transcript the API will reject is not.
 
@@ -326,8 +279,8 @@ the echo in the last `todo` result, which is a message, and therefore precisely
 what a compaction summarises away — so the plan evaporated in the one situation
 where a long run needs it most.
 
-`Tool::carried_state` lets any tool hand state to the compaction to be kept
-**verbatim**. `rebuild` places it after the summary, because it is the one part
+Any tool can hand state to the compaction to be kept **verbatim**. It is
+placed after the summary, because it is the one part
 of the rebuilt head known to be current rather than paraphrased, and last is
 where a model reads most carefully:
 
@@ -340,8 +293,8 @@ anything about it in the summaries above:]
 2. [ ] write the report
 ```
 
-That header is a sentinel, not a convention. `rebuild` finds the previous
-carried block by it and **replaces** it, so exactly one copy survives a second
+That header is a sentinel, not a convention. The next compaction finds the
+previous carried block by it and **replaces** it, so exactly one copy survives a second
 compaction: there is only ever one *current* state, and keeping the old copy
 would be keeping a wrong one. The summary is replaced the same way. The
 summariser is shown the whole stretch it is compacting, the earlier summary
@@ -356,11 +309,8 @@ installs, the plan just does not ride across it. See
 
 ## The summariser gets prose, not a replay
 
-```rust
-let rendered = crate::compact::render_for_summary(&messages[..cut], 2_000);
-```
-
-Sending the real messages means sending `tool_result`s on a request that
+The stretch being compacted is rendered as labelled prose, not sent as
+messages. Sending the real messages means sending `tool_result`s on a request that
 declares no tools, and llama-server answers that with an empty completion.
 Found by running it, not by reading the spec. Prose has no such failure mode on
 any provider, and it also removes any chance of the summariser deciding to call
@@ -466,14 +416,6 @@ error is clearer than looping on it.
 
 ## A compaction arms the loop guard
 
-```rust
-Ok(Some(spent)) => {
-    usage.add(&spent);
-    compactions += 1;
-    loop_guard.arm();
-}
-```
-
 An identical tool call with an identical result, repeated within a window of
 three calls after any compaction, stops the run with `StopCause::Loop`.
 
@@ -502,9 +444,8 @@ asserts an outcome it may never exercise is worse than no case. See
 Summarising away the *text* of a hostile page does not un-read it, and the
 model's context is still downstream of it.
 
-Taint lives on `Conversation`, alongside the messages. The compaction code
-operates on `&mut Vec<Message>` and never sees the `Conversation` at all — the
-type is doing the work, not a rule someone has to remember. There is a test.
+Taint belongs to the conversation, not to its messages, so rewriting the
+messages cannot drop it.
 
 The same is true in the other direction for the session record: the taint
 checkpoint written after a run reflects everything that entered the
@@ -514,32 +455,20 @@ conversation, compacted or not. See
 
 ## What a rewrite replaced is still recorded
 
-Compaction (and eviction, and thinning) rewrite the message list in place,
-and the front-end records a run only when it finishes — so for a long time a
-run that compacted *itself* lost its own head: the rewrite record carried
-only what survived. The states a rewrite replaces now ride on the
-`Conversation` (`rewritten`, cleared at run start), and the session
-recording walks them before the final state. A run long enough to compact
-itself still gets its whole history into the file, where the `recall` tool
-can search it — see [Sessions and replay](/docs/features/memory/sessions-and-replay).
+Compaction, eviction and thinning rewrite the conversation in place, but the
+session file still gets everything: what each rewrite replaced is recorded
+alongside the rewritten state. A run long enough to compact itself keeps its
+whole history on disk, where the `recall` tool can search it — see
+[Sessions and replay](/docs/features/memory/sessions-and-replay).
 
 ## The cache lens
 
-Prompt caching is a prefix match, and everything protecting the prefix is an
-invariant somewhere else: the registry's ordering, the append-only
-transcript, the fixed system prompt. A regression in any of them presents as
-nothing at all — requests succeed, answers arrive, and every turn quietly
-re-pays for the whole history. The bill is the only symptom.
-
-So each run carries a pure observer: it fingerprints every request as
-actually sent, compares it with the one before, and names the reason when
-cache reuse legitimately breaks (tool surface changed, transcript rewritten
-by compaction). The one remaining shape — a large re-payment with nothing
-changed — is a warning in the logs. Two honesty rules keep the warnings
-believable: a provider that has never reported a cache figure is never
-accused (zeros are silence, not a miss), and small re-payments stay below
-the alarm. Verdicts go to tracing only; the model and the loop never see
-them.
+Prompt caching only pays if every request is a prefix of the next, and a
+regression there is invisible — requests succeed and every turn quietly
+re-pays for the whole history. So each run watches its own cache reuse and
+logs a warning when a large part of the previous prompt had to be paid for
+again with nothing — tools, system prompt, or transcript — having changed. A provider that has never reported a cache figure
+is never accused. The model and the loop never see these verdicts.
 
 ## When a compaction fails
 

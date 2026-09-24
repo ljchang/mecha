@@ -40,6 +40,30 @@ from or which provider is behind it.** Both are trait objects. If you find
 yourself matching on provider name inside `agent.rs`, the abstraction is
 leaking.
 
+**The partial turn lives outside the future being cancelled.** Mid-turn,
+`Agent::complete` `select!`s the provider future against `cx.cancel`; losing
+the race drops it, so the streamed text and usage so far are accumulated in
+shared buffers beside the stream and returned as `Completion::Interrupted`.
+Ctrl-C in `run`/`chat` is watched in a spawned task by
+`run_interruptible_watching`, never selected against the run — selecting would
+drop the run future and discard the partial answer cancellation exists to keep;
+the first Ctrl-C cancels as `CancelReason::Stopped` (recorded `StopCause::Stopped`,
+the owner's verdict — a bare token cancel records the unknown-which
+`Interrupted`), and a second is left to the default handler so a wedged run
+stays killable.
+
+**A steer is drained, and lands in the last user message.**
+`RunContext::take_queued_input` drains the queue (so each steer is delivered
+once, never re-sent every turn; blank entries are dropped) and
+`append_user_text` appends it to the last message when that is a user message
+— the tool results — or pushes a new user message otherwise (text queued
+before any tool call). The TUI's `submit` handles `!` escapes and slash
+commands *before* steering, so a mid-run `/clear` never reaches the transcript.
+Any caller owning its input gets the same behaviour from
+`RunContext::with_queued_input`; `Agent::run_in` takes the caller's
+`RunContext`, which is how one agent serves the web surface's concurrent
+conversations under different jails and permission modes.
+
 ## Provider notes (Claude 5 family)
 
 **Two HTTP clients per provider, chosen per request by whether the body
@@ -113,6 +137,33 @@ selects the tested endpoint dialect. The encoders refuse unsupported requests,
 one-message boundary. A schema controls syntax; typed/semantic validation and
 untrusted-content handling still apply. Compatible HTTP is not proof that a server
 enforces the schema.
+
+**Split the stream on bytes, decode only complete frames.** Both backends feed
+chunks into `provider::sse::SseBuffer` and take `next_segment` on an ASCII
+delimiter before decoding; a network chunk can end mid-character, and decoding
+each chunk with `from_utf8_lossy` turns the split character into replacement
+characters in both the live deltas and the transcript. A multi-byte UTF-8
+sequence never contains an ASCII newline, so a complete segment is complete
+UTF-8.
+
+**The OpenAI-compatible backend sends reasoning back.** `openai::encode_message`
+folds an assistant turn's `Block::Thinking` into `reasoning_content` on the
+next request (signature dropped — it is Anthropic's echo token; `anthropic.rs`'s
+`encode_block` conversely drops an *unsigned* thinking block, which the API
+rejects). Self-gating: on this path a thinking block exists only because a
+server sent `reasoning_content`, so it returns only to servers that speak it;
+no provider name is tested. Stripping it is what caused the empty turns — the
+model was shown itself calling tools without thinking and emitted bare tool
+calls before `</think>` closed, which the server filed as reasoning (6 of 6
+empty without it, 0 of 6 with it, measured 2026-08-10 against llama-server).
+Such a turn never reaches a transcript — the loop nudges before pushing it —
+so `log_dropped_reasoning` is its only durable record: `warn` with length,
+`TOOL_CALL_MARKERS` match, finish reason and a 400-char tail; the full trace at
+`debug`.
+
+**The retry boundary has a name.** `provider::retry::send_with_retry` retries
+the send and the status line and returns the unread `reqwest::Response`; nothing
+after it — body decoding, deltas, tool dispatch — is inside any retry.
 
 ## The local model server
 
@@ -637,6 +688,38 @@ or the owner retires. Fail-safe, and the refusal writes a
 untraced refusal re-paid a learner call every pass); the steady state to
 watch for is `mecha proposals` filling with them.
 
+**The ledger key is a hash written out longhand.** `learning::rules_hash` is
+FNV-1a over the rendered block, not the std hasher, because the std hasher is
+deliberately unstable across Rust releases and a ledger key that drifts with
+the toolchain would silently split every tally in `validations.jsonl`.
+
+**Re-derivation matching is conservative, because a false match retires a good
+rule.** `finalize_rules` carries identity forward on exact text only;
+`normalized_rule_key` (case, punctuation, spacing, `-ise`/`-ize` — no stemming,
+no stopwords, no synonyms) is consulted only against *retired* rules, only to
+carry `retired_at` onto a reworded re-derivation. Its one other caller,
+`near_restatements`, compares against active rules and *reports* near copies,
+never merges them. `normalisation_does_not_collide_distinct_rules` pins the
+collision side. A genuine paraphrase is not caught, on purpose: closing it
+needs a judge or model-attributed sources — a model deciding tenure — and a
+`sources` intersection would match everything from an overlapping batch,
+since a consolidation assigns the same batch sources to every new rule. The
+residual is one measurement cycle: a harmful re-derivation regresses the same
+probes that retired it.
+
+**The triage exemption keys on a proxy for its consumer, and the gap is
+written down rather than enforced.** `Reflexion::learnable` admits an
+`Untrusted` reflection only for `TRIAGE_DOMAIN`, only while `triage` is absent
+from `RUN_DOMAINS` — so routing triage into ordinary runs disables it
+(`an_untrusted_triage_reflection_stops_being_learnable_if_it_reaches_a_run`).
+It does not catch a future tool-having caller of
+`LearningStore::rules_prompt_block_for` with `triage` directly; "this domain
+has exactly one load site" is not cheaply expressible in the type system and
+a registry would cost more than it protects. A new consumer of triage rules
+that has tools, a network or a way to send must re-argue the exemption
+(`LEARNING-AUTONOMY-DESIGN.md` §4), never inherit it. `Origin::Derived` is
+never exempt: the argument is about third-party content, not authorship.
+
 **Distillation is not learning, and its provenance rule differs on purpose.**
 `mecha distill` (`distill.rs`) summarises each closed session into an episode
 staged to the knowledge graph through the graph's `kg_upsert` — evidence, not
@@ -898,6 +981,17 @@ structurally, and unknown fields are preserved on write because the writer on
 the other side may know things this one does not. The store is owner-only like
 every other directory under `~/.mecha` — it holds the least of the user's own
 data and the most of someone else's.
+
+**What crosses is narrow on purpose, beyond "no prose".**
+`Record::for_privileged_run` names `reply_to` on its own — the one value a
+stranger chose *and* proved by clicking — rather than leaving it among
+`fields`, because a run hunting for the address in a map keyed by whatever
+the form called it will sometimes pick the advisor's. Attachments cross as
+**measurements only** (`field`, `size`, the content type mecha derived,
+`sha256`): never the stranger's filename (their characters), the path (a road
+to the bytes), or the bytes, which no model has read. It returns `None` for
+any record that is invalid or not yet extracted — a run is never handed a
+request whose prose nothing has looked at.
 
 ## Web search
 
@@ -1879,6 +1973,31 @@ Docker on a full progress-output pipe. This is normal-lifetime ownership, not
 crash recovery: an unavailable daemon, host crash, or forced termination can
 still leave resources.
 
+**A raw-bytes route states its content type rather than inheriting one.**
+`serve::settings::voice_clone` takes the WAV as the whole body, so it has no
+`Json` extractor to refuse a simple-form POST; it requires `content-type:
+audio/wav`, which is not a CORS "simple" type, so a cross-origin caller is
+forced through a preflight the server never answers — a second fence behind
+`owner_guard`'s `X-Mecha-Request`, not a replacement for it. Browser writes
+that land a file other processes read (the charter via
+`serve/settings.rs::charter_save`, a cloned voice) are temp-sibling-and-rename
+in the same directory, so a crash or dropped connection leaves the old file
+whole rather than half a new one. `voice_clone` refuses an existing name with
+an `exists()` check ahead of the rename, not an exclusive create, so it does
+not hold against two concurrent uploads of one name.
+
+## Voice preferences in the browser
+
+**One preference store, read and written only through `voice-core.js`.**
+Voice and rate are preferences, not call controls: the settings page
+(`SettingsVoice.svelte`) and the call overlay both go through
+`readVoicePrefs` / `writeVoicePrefs` in `scripts/voice/voice-core.js`, which
+own the `localStorage` key `mecha-voice-prefs`; the pre-move key
+`mecha.voice.prefs` is read only as a fallback when the current one is absent,
+and never written. The chat page once kept a second copy of this machinery
+under a different key while claiming to share the first, so a voice picked
+mid-call was saved where nothing else looked.
+
 ## Hooks
 
 `[[hook]]` commands run at `pre_tool`, `post_tool` and `session_end`, with the
@@ -2379,8 +2498,9 @@ it, and four decisions carry it:
   would have matched every mail call in the session. Provider ids are
   high-entropy because they have to be, and no tool name is special-cased
   anywhere, so a Slack thread or a quoted document joins on the same rule.
-- **The walk stops at the staging call**, found by exact `(name, args_before)`
-  match. Without it the `mail_reply` joins to itself on its own `thread_id` and
+- **The walk stops at the staging call**, found by the item's recorded
+  `call_id` (an exact `(name, args_before)` match only for a draft staged
+  before that field existed). Without it the `mail_reply` joins to itself on its own `thread_id` and
   the reviewer is shown the harness's `"Drafted, not sent…"` notice as the
   message being answered — the failure mode that looks most like the feature
   working, so it has a test named on it.
@@ -2795,6 +2915,45 @@ is for, and giving one a home here would mean re-answering how it gets
 confined and which environment it sees. `scripts/ruminate.sh` therefore stays
 its own systemd timer.
 
+**The store follows the outbox's rules.** One TOML file per trigger (so
+`$EDITOR` and `git diff` work on it), temp-sibling-and-rename for every
+rewrite, an advisory flock for read-modify-write, and `runs.jsonl` as an
+append-only ledger beside the definitions (`trigger.rs`, `TriggerStore`).
+The per-trigger run lock (`TriggerStore::try_claim`) is a separate,
+non-blocking flock, so a hand edit never contends with a fire.
+
+## Session records and replay
+
+`session.rs` writes append-only JSONL transcripts; `replay.rs` re-drives them.
+
+- **Anything that shapes the request or constrains the run is a confound if
+  it is not recorded** (`RunConfig`). Compaction on versus off measured 1/5
+  against 5/5 on the same task, so a replay blind to that setting would report
+  a model regression. The system prompt is stored as text, not a hash — a hash
+  says only *that* something differed. The sampler is recorded only as far as
+  it was pinned: `temperature`/`seed` of `None` means the server chose, and
+  replay against such a run is pass@k-shaped, not exact-match. `clock` is per
+  run, because one `mecha serve` session held runs on both sides of midnight.
+- **One `config` record per attach, never a header field.** A resumed session
+  may run under different flags; within one process the config cannot change,
+  so per attach is exactly the granularity that can differ.
+- **`tools_hash: None` must never read as a match** (`surface::Fidelity::Unknown`).
+  Tool names alone missed re-descriptions — 49 commits touched tool
+  definitions in three weeks — and replays rebuilt the tool half of the prefix
+  from today's registry: 12 of 13 counterfactual probes went inconclusive, a
+  median of one call in.
+- **Listing reads the header line only** (`Session::peek_meta`), so `mecha
+  sessions list` is O(sessions), not O(transcript bytes); with reflect-on-close
+  recording every interaction, a full `load` per file re-read the whole store to
+  print one line each. A file whose first record is not `Meta` is skipped, as
+  `load` skips it.
+- **`Divergence::Arguments` is reported apart from `Divergence::Tool`, and does
+  not stop a replay.** A model reading the same file by another path spelling
+  has not regressed, and grading it as though it had makes replay useless
+  within a week; whether changed arguments are a different action is left to
+  the reviewer, never asserted as equivalence. `Extra` and `Missing` are the
+  replay outrunning or falling short of the recording.
+
 ## The run-quality corpus
 
 `Record::Outcome(RunStats)` is written once per finished run by every
@@ -2811,6 +2970,10 @@ The design decisions, each of which is a bug if undone:
   file would be faster and would be a second source of truth that can disagree
   with the first — the same reasoning that has the TUI read a trigger's last
   answer back from the session record instead of caching it.
+- **Every front-end writes the outcome record** — `run`, `chat`, the TUI, web,
+  Slack, triggers. Before `Record::Outcome` existed the transcript kept two of
+  `RunOutcome`'s fields while a trigger's ledger kept the rest, so a run a
+  human watched was measurably less observable than an unattended one.
 - **Every scan is bounded** (`Scan { max_sessions, since }`), because reading
   the whole store to answer one question is how a reader becomes one nobody
   runs. Doctor's constraint — one pass, no network, no model — is the bar.
@@ -4791,9 +4954,13 @@ The things that decide the design:
   is related to the current state and wrong about it, which the distractor
   literature puts at 25–68% harm where unrelated bulk is near-free. Errors
   neither supersede nor get evicted — a failed call says nothing about the
-  target, and "what failed" is what stops it being retried. If eviction (or
-  thinning) freed anything, the summary is deferred a turn to see if it was
-  enough.
+  target, and "what failed" is what stops it being retried. After the passes
+  rewrite the list, `pressure.invalidate()` retires the reported size and the
+  forecast re-asks *in the same turn* against the transcript as it now is, so
+  whatever a pass genuinely freed counts; with `predictive_compaction` off
+  there is no fresh reading and the summary runs. (It used to `continue` to
+  "defer a turn", which never worked: the re-entered check saw the same stale
+  `prompt_tokens`.)
 - **And a pile of identical failures collapses onto its newest member.**
   `collapse_repeated_failures` runs beside eviction at both sites. The error
   exemption above is right for one failure and inverts for eight: a model is
@@ -4807,10 +4974,8 @@ The things that decide the design:
   "permission denied" on one path are two facts, and collapsing either loses a
   diagnosis — collapsing too little costs tokens, collapsing too much destroys
   information, so narrow is the fail-safe direction. Nothing is removed
-  (dropping a `tool_result` block is a 400), and it is deliberately *not*
-  counted toward the "freed enough, defer the summary" decision — it removes
-  repetition rather than bulk, so treating it as freed space would spend a turn
-  arriving back at the same threshold. Distinct from the loop guard, which
+  (dropping a `tool_result` block is a 400), and what it frees counts toward
+  the same-turn re-ask like any other pass's. Distinct from the loop guard, which
   stops a run that has already gone wrong and only after a compaction; this
   runs before there is anything to stop.
 - **The cut has to be legal, not convenient.** A `tool_result` whose `tool_use`
@@ -4900,6 +5065,25 @@ The things that decide the design:
   it is for state the tool *owns*, because a tool returning prose here would be
   smuggling an unvalidated second summariser into the loop. The loop learns that
   some tools have state, never which — `registry.carried_state()`, never a name.
+
+- **The cache lens watches the prefix the other invariants protect.**
+  `cache_lens::CacheLens`, one per run and fed from `Agent::run_in` when
+  `cache_prompt` is on, hashes each request *as sent* (system, tools, one hash
+  per message — hashes, never content) and compares it with the previous one,
+  so the append-only check is a prefix comparison. A reuse break is named when
+  it is legitimate (`Verdict::SurfaceChanged`, `Verdict::TranscriptRewritten`
+  after compaction, eviction, thinning or overflow recovery — it judges the
+  request after recovery reassigned it), leaving `Verdict::Drop` — nothing
+  changed and the previous prompt still re-paid — as the one anomaly, logged
+  at `warn` (downgraded to `info` when `cache_contended`, where interleaved
+  conversations evict each other's slots by design). Two honesty rules: until
+  a nonzero cache figure has been reported the verdict is `Unobservable`, never
+  a drop (a backend without cache accounting reports zeros that read as a total
+  miss), and a drop is only called above `DROP_FLOOR_TOKENS` (1,024) and
+  `DROP_FRACTION` (a quarter of the previous prompt), below which a server's
+  tokenizer-boundary trim lives. Verdicts go to tracing only; the model and the
+  loop never see them, because a regression here otherwise presents as nothing
+  but the bill.
 
 ## The eval rig
 
