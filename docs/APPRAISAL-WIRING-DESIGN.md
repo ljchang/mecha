@@ -82,6 +82,26 @@ commitment (§7.4), and no wiring reads a model's stated confidence.
 
 ## 2. What each appraisal is for
 
+**Two kinds of goal, and they are measured differently** (the owner,
+2026-09-24: charter goals "will often be unbounded, but will still serve as
+attractors in the control system to drive behavior towards the goal even if
+the goal can never be achieved").
+
+| | achievement goal | attractor goal |
+|---|---|---|
+| examples | a board task, a project, a delegated run's acceptance criteria | a charter line — "tell me the truth early", "protect my attention" |
+| can it be finished? | yes — it closes, and the closure is a verdict | never; there is no checkbox |
+| its error signal | what remains: unmet criteria, open steps (C1, C2, V1) | direction: each outcome attributed to the line moves toward it (+) or away (−); the per-line sum over time is the reading |
+| a sensor on it | — | adds a homeostatic band (a setpoint the owner chose) to stay inside, still not an end point |
+| what it drives | finishing, verifying, handing off | choosing among admissible actions, ordering attention and replay, which lessons stand (L1, L3, U1) |
+
+So nothing in this design ever marks a charter line done, and no consumer
+reads a charter line as "remaining distance". The per-line reading is a
+trend of signed outcomes, and a line with no sensor has no setpoint at all —
+only a direction. Achievement goals serve attractors (task → project →
+charter line, the V1 trace), which is how a finished task counts toward a
+line that is never finished.
+
 An appraisal is not a word; it is a readiness for a class of actions (Simon's
 interrupt, Frijda's action tendency), and the label names the class that was
 primed. So each appraisal maps to a closed set of harness actions, computed
@@ -242,7 +262,7 @@ widening.
 | R13 | phase 5 | Stored counterfactual verdicts may narrow a matching call before dispatch | yes, narrowing only |
 | R3 | parked | The harness may infer an anchor from the owner's first turn onto a closed list of pointers; inferred anchors key retrieval, tracing and the certificate, never credit or tenure; confirmation comes from acts the owner already performs | yes, when unparked (the asking chip was declined) |
 | R8 | parked | The harness may *propose* per-region autonomy grants; only the owner grants | yes, when unparked |
-| R9 | — | The live charter line `be-the-best` ("always finding ways you could have completed a task even better") reads close to the unbounded self-improvement line §15 warns about. The owner's to keep or reword; flagged, not proposed | — |
+| R9 | — | The live charter line `be-the-best` ("always finding ways you could have completed a task even better"). Unboundedness is not the issue — charter lines are attractors (here §2). §15's narrower worry is an unbounded line whose *object is the harness itself*, beside a loop that proposes harness changes; that pressure is held structurally, because no lane can accept a `Security`-class change. Flagged once; the owner's to keep or reword | — |
 
 **To start phase 1, R12, R15 and R16 are still needed** (R1 ruled, R2
 declined, R7 deferred). The rest can wait
