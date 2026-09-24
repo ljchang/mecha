@@ -38,16 +38,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   — rather than on every sweep, so it costs one model call a day instead of
   one per daytime tick and no longer keeps the daytime unit failed. A
   provider-wide failure (transport, server error, overload, an expired key
-  or a lapsed account), or a sweep where several threads failed and the
-  model also failed a canary as long as the longest of them, is not counted
-  against any thread: those threads are retried every sweep as before and
+  or a lapsed account), or a failure at least as long as the length where
+  the model is found to start failing a canary (searched among the sweep's
+  own failure lengths, a few calls at most), is not counted against any
+  thread: those threads are retried every sweep as before and
   caught up as soon as the server is back. A failed thread that has left the
   newest-N window the sweep reads is retried from the store when due (up to
   10 a sweep), so the long waits of a busy mailbox never strand it, and each
   failure is on disk the moment it happens rather than at the end of the
   sweep. A re-read of a stored thread that fails is the thread's own unless
-  every re-read in the sweep failed and a re-read of a thread the sweep's
-  own read just returned failed too — the mail surface's (a lapsed token, a
+  every re-read for that account failed and a re-read of a thread the sweep's
+  own read just returned from it failed too — the mail surface's (a lapsed token, a
   503), counted against none. Dead threads (deleted, moved) therefore back
   off rather than fail the unit on every tick. `mecha mail list` shows the count
   and when the next retry is due; `classify --force` still retries at once,
