@@ -40,7 +40,7 @@ is a claim the sandbox is making on its behalf, and it should be inspectable
 without reading source.
 
 On a fresh install you should see the built-ins: `fs_read`, `fs_write`,
-`fs_edit`, `fs_list`, `shell`, `http_fetch`, and `todo`. `web_search` is absent
+`fs_edit`, `fs_list`, `shell`, `http_fetch`, `todo`, and `goal_context`. `web_search` is absent
 until a search backend is configured, because a search tool that always errors
 is worse than no search tool.
 
@@ -133,16 +133,27 @@ compares that against your config:
 · Mail and calendar  [not set up]
     → mecha-mail auth personal --provider google
 
+· Google Docs, Sheets and Slides  [not set up]
+    → mecha-docs auth
+
 · Slack as a remote control  [not set up]
     → mecha slack auth
 
 ✓ The personal knowledge graph  [ok]
 
-4 step(s) outstanding.
+· The owner's timezone  [not set up]
+    No [agent] timezone, so an MCP server is handed no MECHA_TZ, and the mail
+    servers refuse `today`, `tomorrow` and the other relative windows …
+
+· Your charter  [not set up]
+    → mecha charter edit
+
+6 step(s) outstanding.
 ```
 
-At a terminal it then offers each fix as a `y/N`; anything you decline is simply
-skipped. `--json` prints the plan and never prompts, and exits 1 while anything
+That closing count is what you see when stdin is not a terminal — piped, or run
+from a script — and it exits 1. At a terminal it instead offers each fix as a
+`y/N`; anything you decline is simply skipped. `--json` prints the plan and never prompts, and exits 1 while anything
 is outstanding, so a script can act on it.
 
 ### Letting it write the settings
@@ -185,6 +196,21 @@ makes it the default. Every value comes off `/props`, which is the only way
 by `-np` — rather than the number people write down by hand. It shows you the
 lines and asks before writing, and keeps the previous file as `config.toml.bak`.
 
+If your default provider is hosted and already has a key, nothing is stuck, so
+nothing is probed — `mecha setup --write` says no local server was checked. To
+record one anyway, add the table yourself with just its address, then let setup
+fill in the rest:
+
+```toml
+[providers.local]
+kind = "local"
+base_url = "http://127.0.0.1:8080"
+```
+
+```bash
+mecha setup --write --provider local
+```
+
 ### If nothing is running
 
 Then you need an API key, and `mecha setup` will not write one. mecha stores the
@@ -219,20 +245,28 @@ list — a declined step is **not outstanding**, so `mecha setup` exits 0 and is
 usable as your own health check. `mecha setup --undecline <step>` (or `all`)
 asks again.
 
-Two things you cannot decline, deliberately: a provider that can answer, and
-anything that is *broken* rather than merely absent. "I don't want mail" is a
-preference; "stop telling me my mail is broken" is not one a setup tool should
-be able to record.
+Only the integrations and the charter can be declined — mail, documents,
+Slack, the graph, and the charter. Everything else is not a preference but
+something the install needs: a config file, a provider that can answer, a local
+server that agrees with its config, the timezone once a server is wired, and a
+scheduler once triggers exist. Nor can you decline anything that is *broken*
+rather than merely absent. "I don't want mail" is a preference; "stop telling me
+my mail is broken" is not one a setup tool should be able to record.
 
 | | What it gives you | Start with |
 |---|---|---|
 | **Mail and calendar** | Gmail and Outlook behind one surface. The model names an *account*, never a provider. | `mecha-mail auth personal --provider google` |
-| **Documents** | Google Docs, Sheets and Slides under `drive.file` — only files it created or you handed it in Google's own picker. | `mecha-docs auth personal` |
+| **Documents** | Google Docs, Sheets and Slides under `drive.file` — only files it created or you handed it in Google's own picker. | `mecha-docs auth` (the account is `--account`, default `personal`) |
 | **Slack** | A remote control: watch a run from a phone, approve sends, pass files both ways. | `mecha slack auth` |
 | **Knowledge graph** | Memory — who people are, what happened when. A separate project, wired in over MCP. | `cargo install mecha-graph-mcp` |
 
-Two things worth knowing before you start:
+Three things worth knowing before you start:
 
+- **The first mail account needs an OAuth client.** On a fresh install there is
+  no stored login to borrow one from, so pass `--client-id` (and, for Google,
+  `--client-secret`) or set `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` —
+  `OUTLOOK_CLIENT_ID` and `OUTLOOK_TENANT_ID` for Outlook. A second mailbox on
+  the same registration needs no flags.
 - **Mail and documents are separate crates.** `cargo install mecha-mail`
   installs `mecha-mail`, `mecha-docs`, `mecha-google` and `mecha-outlook`.
 - **The knowledge graph's own sources** — ambient conversations, a calendar
@@ -240,6 +274,19 @@ Two things worth knowing before you start:
   mecha reaches the graph only through its MCP tools and deliberately knows
   nothing else about it, so `mecha setup` names those sources and never drives
   them.
+
+### Set the timezone once a server is wired
+
+As soon as any MCP server is configured, `mecha setup` asks for `[agent]
+timezone`, and this one cannot be declined: the mail servers resolve `today` and
+`tomorrow` in that zone and never the machine's, so without it they refuse every
+relative window rather than guess the day. It is an edit, not a command — add an
+IANA name under `[agent]` in `~/.mecha/config.toml`:
+
+```toml
+[agent]
+timezone = "America/New_York"
+```
 
 Reading mail or the graph marks the conversation as holding third-party
 content, which is what arms [the trifecta interlock](/docs/features/security).

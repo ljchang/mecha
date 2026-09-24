@@ -126,6 +126,20 @@ always a cost — the task outcome enters as `failure` (`1 − passed`), the res
 are the gate's own (`turns`, `tool_error_rate`, `cut_short`, `compactions`,
 `ended_on_failed_call`, `malformed_args`).
 
+A few more top-level keys, all optional: `description` is free text kept with
+the design; `holdout_in` holds out every *n*th pair (default 3, at least 2);
+and a `[judge]` table with `provider` and `model` names the grader for cases
+that carry an `expect.judge`, explicitly and on the record.
+
+```toml
+description = "does the boredom notice earn its turns?"
+holdout_in = 3
+
+[judge]
+provider = "local"
+model = "qwen3.6-35b-a3b"
+```
+
 ## What an arm can vary
 
 The set is closed. Anything an arm could change without the record naming it
@@ -522,7 +536,7 @@ ruminate = 10
 [tasks]
 cases = "eval/cases.jsonl"
 fixture = "eval/workspace"
-ids = ["hello", "files-read", "files-write", "shell-ls"]   # the sequence, in order (required)
+ids = ["read-readme", "list-notes", "cross-file", "chain-total"]   # the sequence, in order (required)
 
 [arms.full]
 preset = "full"
@@ -582,11 +596,24 @@ command = ["/home/me/mecha/scripts/principal-gold.py", "/home/me/mecha/eval/prin
 timeout_secs = 600
 ```
 
+A principal may also carry `postconditions`: per-case artifact checks run
+against the fixture store after the owner's acts, which count toward the
+trial's pass. Each names a `file` under the trial's `fixtures/`, the exact
+row `count` expected, and JSON-pointer `equals` / `contains` matches:
+
+```toml
+[[principal.postconditions.assistant-reply]]
+file = "mail/sent.jsonl"
+count = 1
+[principal.postconditions.assistant-reply.equals]
+"/tool" = "mail_reply"
+```
+
 The principal must read its whole state before answering; one that exits
 without draining stdin is a failed call, recorded on the ledger. The
 principal is pure: it never runs a verb itself. The driver runs each one
 as a child `mecha` against the trial home, from a closed set — `tasks
-set|steer|stop`, `outbox reject|edit`, `questions answer|abandon`,
+set|steer|stop`, `outbox approve|reject|edit`, `questions answer|abandon`,
 never a session, a reflection or a rule — and records the call and every act
 with its exit status on the lifetime's ledger, so a principal that could not
 act holds the verdict like a failed stage. Refusals it scripts before a task
@@ -715,6 +742,18 @@ args = ["eval/fixtures/mail_server.py"]
 seed = "eval/fixtures/home/mail"
 [fixtures.mcp.capabilities]
 untrusted_input = true
+```
+
+A `[fixtures.clock]` table pins the world's time: one UTC instant per task
+id, shared by the model's prompt and the fixture servers (audit timestamps
+and run budgets still use the real clock). It needs fixture servers and
+explicit task `ids`, must cover exactly the scheduled tasks, and must not move
+backwards.
+
+```toml
+[fixtures.clock]
+assistant-reply = "2026-10-12T12:00:00Z"
+assistant-next-day = "2026-10-13T12:00:00Z"
 ```
 
 Two fixture servers ship with the repository, stateful where the eval

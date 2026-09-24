@@ -142,7 +142,7 @@ invisible in the answer text.
 
 | Expectation | Shape | Semantics |
 |---|---|---|
-| `stop_cause` | string | exact match: `completed`, `max_turns`, `output_token_budget`, `cost_budget`, `interrupted`, `loop` |
+| `stop_cause` | string | exact match: `completed`, `max_turns`, `output_token_budget`, `cost_budget`, `interrupted`, `parked`, `stopped`, `shutdown`, `loop`, `no_output` |
 | `taint` | `{"private": bool, "untrusted": bool}` | each leg optional; an omitted leg is not asserted |
 | `blocked_sends` | number | **exact** equality, not a minimum |
 | `min_compactions` | number | at least this many summaries were taken |
@@ -266,6 +266,8 @@ line, because its fixture workspaces are what make that defensible.
 | [Provider fallbacks](/docs/features/models/providers) | a case silently answered by a fallback model is a measurement of nothing |
 | The `compact` tool | **the one that was missed.** It is registered from local `context_window` / `compact_at_tokens` and sits at the front of the cached prefix, so two differently-configured boxes graded different prefixes — it changes the *tool list*, not merely what a run may do |
 | Step escalation | off by default, but a machine's own `config.toml` could turn it on, and a scorecard must not depend on that either |
+| Step checks | on by default: the loop executes a plan's declared post-condition checks through ordinary tool dispatch, and whether it does is this machine's config to say |
+| Goal guidance | opt-in: fixed guidance from goal, charter and planning discrepancies is text in the model's context, decided by this machine's config and this owner's goals |
 | Boredom, compact validation | the two `[agent]` switches that ship *on*: a notice in the model's context and a second model call per compaction, each decided by this machine's config. Forced since the lever set named them; a scorecard taken before that ran with whatever the box said |
 | Predictive compaction, carried state | the two in-run dispositions that had no off position until the lever set gave them one: the compaction trigger firing on the forecast of the next request (the threshold stays, and so does the forecast-sized tool-output budget), and the plan riding verbatim across a compaction. Both ship on; a scorecard grades the model without either |
 | [Approval rules](/docs/features/tools#approval) | a `forbid` in this box's rules file would score a case's `shell` call as `Blocked by policy:` here and not there |

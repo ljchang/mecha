@@ -46,12 +46,25 @@ computed and thrown away at the end of every run a human was watching.
 | `malformed_tool_args` | arguments the model produced that did not parse |
 | `blocked_sends` | sends the trifecta interlock refused |
 | `compactions` | summaries taken |
+| `context_overflows` | prompts refused as too large that the run recovered from |
+| `boredom_notices` | times the harness told the run an approach had stopped teaching it anything |
+| `step_escalations_attempted`, `step_escalations_revised` | ambiguous completed steps sent to a quarantined call, and how many came back `revise_plan` |
+| `step_completions`, `step_measured`, `step_nulls`, `step_reopens` | plan steps completed, those whose span could be measured, those completed with no call behind them, and completed steps set back to in progress |
+| `goal_anchor`, `goal_plan_writes`, `goal_drift_writes`, `goal_unnamed_writes` | the goal the owner confirmed, and plan writes judged against it |
+| `checks_declared`, `checks_passed` | declared post-condition checks the loop ran, and how many passed |
+| `duration_secs` | wall-clock seconds |
 | `taint` | what had entered the conversation by the end |
+
+The fields from `context_overflows` down to `duration_secs` are newer than
+the record and optional: **absent is not zero.** A row written before a
+sensor existed omits it, and reading that as a run with none would dilute the
+very rate the field was added to establish.
 
 Two properties make this usable as an input to automated grading, and both are
 structural rather than conventional:
 
-- **Every field is a deterministic count**, and none is derived from the
+- **Every field is a count, a timing or a pointer the harness minted**
+  (`goal_anchor`), and none is derived from the
   *content* of a tool result. A counter carries no instructions, so a corpus of
   them cannot be an injection surface the way excerpts would be. This is the
   same shape as [the front door's](/docs/features/public-surface/frontdoor) rule that the privileged run

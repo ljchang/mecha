@@ -68,8 +68,15 @@ version still on disk as evidence.
 ```bash
 factory-publish list                 # every bundle, versions, where each alias points
 factory-publish status <id>          # one bundle's versions and what each was rendered from
-factory-publish alias <id> --version 3
+factory-publish alias <id> 3          # the version is positional
 ```
+
+Moving the alias on the box takes the **release** credential. A paired machine
+has none by default (see
+[onboarding](/docs/features/public-surface/onboarding#3-what-the-keys-are-and-why-there-are-several)),
+so there `alias` moves only this machine's record and says so — "the box was not
+told … its share URL is exactly as it was" — and names where to make the move
+instead: your account page at the gate.
 
 Two consequences worth knowing before they surprise you:
 
@@ -88,7 +95,7 @@ no window between "published" and "decided who may see it".
 
 ```bash
 factory-publish publish <id> <dir> --visibility public
-factory-publish alias <id> --version 3 --visibility private   # visibility travels with the alias
+factory-publish alias <id> 3 --visibility private   # visibility travels with the alias
 ```
 
 Omitting `--visibility` keeps whatever the bundle already was, so a routine
@@ -127,7 +134,12 @@ the only way a private URL is not also a directory of what exists.
 factory-publish unpublish <id>
 ```
 
-The share URL stops resolving. **Nothing is deleted** — every version stays on
+With a release key on this machine, the share URL stops resolving. Without
+one — the ordinary paired machine — the takedown happens in the local store
+only, and the command says so: `taken down on this machine only`, with the
+reminder that anything already released is still being served, and a pointer
+to your account page at the gate, which is where a person takes it down.
+Either way, **nothing is deleted** — every version stays on
 disk and can be aliased again. Unpublishing is the alias pointing at nothing,
 not a removal, and that is deliberate: the common reason to take something down
 is that it was wrong or premature, and both of those are states you may need the

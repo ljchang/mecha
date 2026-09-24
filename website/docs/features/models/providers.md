@@ -21,6 +21,24 @@ pub trait Provider: Send + Sync {
     /// Model used when the caller doesn't name one.
     fn default_model(&self) -> &str;
 
+    /// Whether this provider will actually put an image in front of a model.
+    /// Defaults to `false`: a provider added later is text-only until
+    /// somebody says otherwise.
+    fn vision(&self) -> bool {
+        false
+    }
+
+    /// Whether this endpoint is configured to enforce a response schema.
+    fn structured_output(&self) -> bool {
+        false
+    }
+
+    /// Whether changing `CompletionRequest::effort` changes the wire request.
+    /// Unknown adapters opt out so a measurement cannot compare identical arms.
+    fn supports_effort(&self) -> bool {
+        false
+    }
+
     /// Run one turn. With `sink`, stream and emit deltas as they arrive; the
     /// accumulated response is still returned.
     async fn complete(
@@ -42,6 +60,7 @@ default_provider = "anthropic"
 kind = "anthropic"
 model = "claude-opus-5"
 api_key_env = "ANTHROPIC_API_KEY"
+context_window = 200000               # your model's window; unset means no compaction
 
 [providers.local]                     # llama-server, vLLM, Ollama
 kind = "local"
@@ -320,19 +339,25 @@ itself, is a startup error rather than a surprise during an outage.
 
 ## Context window and cost
 
-Two provider fields exist because nothing can discover them.
+Two provider fields exist because no response carries them.
 
 ```toml
 [providers.local]
-context_window = 32768            # the `-c` the server was started with
+context_window = 32768            # per slot: the server's -c divided by -np
+
+[providers.anthropic]
 input_price_per_mtok = 5.0
 output_price_per_mtok = 25.0
 ```
 
 A provider reports what a prompt *cost*, never what is left, so
-`context_window` has to be told. Four things depend on it — the derived
-compaction threshold, the per-turn tool-output budget, the TUI's fuel gauge,
-and overflow recovery — and without it all four degrade silently. See
+`context_window` has to be told (`mecha setup` can read it off a local
+server's `/props`). Three things derive from it — the compaction threshold
+(and with it whether the model is offered the `compact` tool), the per-turn
+tool-output budget, and the TUI's fuel gauge — and without it all three
+degrade silently: no threshold means no compaction until the server refuses
+a request, and overflow recovery, which keys on that refusal rather than on
+the window, is left as the only thing that compacts. See
 [Compaction](/docs/features/models/compaction), and
 [Serving a local model](/docs/features/models/serving) for how `context_window`
 relates to the `-c` and `-np` a local server was actually started with.

@@ -76,7 +76,9 @@ Blind is decided per backend **and per depth**, in code, never in config:
 | any backend added later | not blind until someone reads its API and says so in code | same |
 
 In a conversation holding both private data and untrusted content, a search is
-served only by blind backends, at `quick` depth, and the result says so. **So
+served only by blind backends, at `quick` depth, and the result says so —
+unless `trifecta = "allow"`, which waives this narrowing along with the
+interlock. **So
 configure at least one blind backend**, or web search stops working in those
 conversations. With none configured, the tool is treated as choosing its
 destination, and its refusal names `kind = "searxng"` as the fix.
