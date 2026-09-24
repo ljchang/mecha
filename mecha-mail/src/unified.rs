@@ -309,7 +309,7 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
                 "type": "object",
                 "properties": {
                     "thread_id": {"type": "string"},
-                    "account": item_account("The account the thread_id came from; required when several accounts are configured.")
+                    "account": item_account("The account the thread_id came from. Omit it and the account holding this thread_id is looked up.")
                 },
                 "required": ["thread_id"]
             },
@@ -334,13 +334,13 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
         },
         {
             "name": "mail_reply",
-            "description": "Reply within an existing conversation so it threads, quoting/threading per provider automatically. Pass the thread_id and its `account` (both are in every search row). Replies to the newest message in the thread unless message_id names one. Set reply_all to include everyone on the original.",
+            "description": "Reply within an existing conversation so it threads, quoting/threading per provider automatically. The reply goes out from the account the thread lives in; `account` may be omitted and is then looked up from the thread_id. Replies to the newest message in the thread unless message_id names one. Set reply_all to include everyone on the original.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "thread_id": {"type": "string"},
                     "body_markdown": {"type": "string"},
-                    "account": item_account("The account the thread lives in; required when several accounts are configured."),
+                    "account": item_account("The account the thread lives in. Omit it and the account holding this thread_id is looked up."),
                     "message_id": {"type": "string", "description": "Reply to this specific message instead of the newest one."},
                     "reply_all": {"type": "boolean", "default": false}
                 },
@@ -359,7 +359,7 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
                         "type": "string",
                         "enum": ["archive", "read", "unread", "spam", "trash"]
                     },
-                    "account": item_account("The account the thread lives in; required when several accounts are configured.")
+                    "account": item_account("The account the thread lives in. Omit it and the account holding this thread_id is looked up.")
                 },
                 "required": ["thread_id", "action"]
             },
@@ -524,6 +524,45 @@ async fn thread_one(a: &Account, thread_id: &str) -> Result<Vec<Email>, MailErro
         }
     })
     .await
+}
+
+/// Which account a thread lives in, from one read of it in every account.
+///
+/// A thread id is account-scoped, so the account a thread-scoped call acts
+/// in is not a choice — a reply goes out from the mailbox the thread arrived
+/// in, and naming it only repeats what the id already says. Every staged
+/// reply that left it out used to be refused at send time with "pass
+/// `account`", after the owner had approved it. So an omitted account is
+/// looked up rather than demanded.
+///
+/// Exactly one account holding the thread settles it, whatever the others
+/// answered: a thread the owner holds in `a`, replied to from `a`, reaches
+/// that thread's own correspondents, and no id collision in another mailbox
+/// could redirect it to anyone else. Two holders is ambiguous and none is
+/// not a thread — both are refused, with every account's answer.
+fn thread_home(thread_id: &str, answers: &[(&str, Result<(), String>)]) -> Result<usize, String> {
+    let held: Vec<usize> = (0..answers.len())
+        .filter(|&i| answers[i].1.is_ok())
+        .collect();
+    match held.as_slice() {
+        [one] => Ok(*one),
+        [] => Err(format!(
+            "no configured account could read thread {thread_id}: {}",
+            answers
+                .iter()
+                .map(|(name, r)| format!("{name}: {}", r.as_ref().err().map_or("", String::as_str)))
+                .collect::<Vec<_>>()
+                .join("; ")
+        )),
+        several => Err(format!(
+            "thread {thread_id} was found in several accounts ({}) — pass `account`",
+            several
+                .iter()
+                .map(|&i| answers[i].0)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
 }
 
 /// What `mail_triage` may do. A **closed enum**, on the reasoning
@@ -1154,6 +1193,44 @@ impl MailTools {
             .map(|idx| idx.into_iter().map(|i| &self.accounts[i]).collect())
     }
 
+    /// The account a thread lives in, and the thread itself: the named
+    /// account when there is one (or only one to name), else whichever
+    /// account holds it — see [`thread_home`]. The read is returned because
+    /// every caller needed it anyway.
+    async fn locate_thread(
+        &self,
+        arg: Option<&str>,
+        thread_id: &str,
+    ) -> Result<(&Account, Vec<Email>), String> {
+        if arg.is_some() || self.accounts.len() == 1 {
+            let account = self.pick(arg, Mode::Item)?[0];
+            let emails = thread_one(account, thread_id)
+                .await
+                .map_err(|e| format!("{e}"))?;
+            return Ok((account, emails));
+        }
+        let mut reads = futures::future::join_all(
+            self.accounts
+                .iter()
+                .map(|a| async move { thread_one(a, thread_id).await }),
+        )
+        .await;
+        let answers: Vec<(&str, Result<(), String>)> = self
+            .accounts
+            .iter()
+            .zip(&reads)
+            .map(|(a, r)| {
+                (
+                    a.name.as_str(),
+                    r.as_ref().map(|_| ()).map_err(|e| format!("{e}")),
+                )
+            })
+            .collect();
+        let i = thread_home(thread_id, &answers)?;
+        let emails = reads.swap_remove(i).map_err(|e| format!("{e}"))?;
+        Ok((&self.accounts[i], emails))
+    }
+
     async fn dispatch(&self, name: &str, args: &Value) -> Option<(String, bool)> {
         let str_arg = |key: &str| args.get(key).and_then(Value::as_str).map(|s| s.to_string());
         let account_arg = str_arg("account");
@@ -1218,16 +1295,12 @@ impl MailTools {
                 let Some(thread_id) = str_arg("thread_id") else {
                     return missing("thread_id");
                 };
-                let account = match self.pick(account_arg.as_deref(), Mode::Item) {
-                    Ok(p) => p[0],
-                    Err(e) => return fail(e),
-                };
-                match thread_one(account, &thread_id).await {
-                    Ok(emails) => Some((
+                match self.locate_thread(account_arg.as_deref(), &thread_id).await {
+                    Ok((account, emails)) => Some((
                         render_thread(account.provider, &account.name, &emails),
                         false,
                     )),
-                    Err(e) => fail(format!("{e}")),
+                    Err(e) => fail(e),
                 }
             }
             "mail_triage" => {
@@ -1246,12 +1319,12 @@ impl MailTools {
                         all.join(", ")
                     ));
                 };
-                // Mode::Item, like every other id-carrying call: a thread_id
+                // One account, like every other id-carrying call: a thread_id
                 // is account-scoped, so this never fans out. Triaging "the
                 // same thread" across every account is not a thing that can
-                // be meant.
-                let account = match self.pick(account_arg.as_deref(), Mode::Item) {
-                    Ok(p) => p[0],
+                // be meant — the thread's own account is looked up instead.
+                let account = match self.locate_thread(account_arg.as_deref(), &thread_id).await {
+                    Ok((account, _)) => account,
                     Err(e) => return fail(e),
                 };
                 match triage_one(account, &thread_id, action).await {
@@ -1322,22 +1395,19 @@ impl MailTools {
                 else {
                     return missing("thread_id and body_markdown");
                 };
-                let account = match self.pick(account_arg.as_deref(), Mode::Item) {
-                    Ok(p) => p[0],
-                    Err(e) => return fail(e),
-                };
+                // The thread read finds the account the reply goes out from —
+                // the one the thread arrived in — the target message, and, for
+                // Gmail, the addressing to synthesize the reply from.
+                let (account, emails) =
+                    match self.locate_thread(account_arg.as_deref(), &thread_id).await {
+                        Ok(found) => found,
+                        Err(e) => return fail(e),
+                    };
                 let reply_all = args
                     .get("reply_all")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
                 let wanted = str_arg("message_id");
-
-                // The thread read finds the target message and, for Gmail,
-                // the addressing to synthesize the reply from.
-                let emails = match thread_one(account, &thread_id).await {
-                    Ok(e) => e,
-                    Err(e) => return fail(format!("{e}")),
-                };
                 let target = match &wanted {
                     Some(mid) => emails
                         .iter()
@@ -1964,6 +2034,42 @@ mod tests {
     fn item_ops_with_several_accounts_demand_the_account() {
         let err = resolve(&names(&["a", "b"]), None, None, Mode::Item).unwrap_err();
         assert!(err.contains("pass `account`"), "{err}");
+    }
+
+    #[test]
+    fn a_thread_with_no_account_named_goes_to_the_one_account_holding_it() {
+        // The staged-reply case: several accounts, no `account`, and the
+        // reply must leave from the mailbox the thread arrived in — even
+        // when the other account's read failed for some unrelated reason.
+        let answers = [
+            (
+                "personal",
+                Err("API error (400): Invalid id value".to_string()),
+            ),
+            ("dartmouth", Ok(())),
+        ];
+        assert_eq!(thread_home("T", &answers).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_thread_no_account_holds_or_two_accounts_hold_is_refused() {
+        let none = [
+            ("a", Err("API error (404): not found".to_string())),
+            ("b", Err("HTTP request failed: timeout".to_string())),
+        ];
+        let err = thread_home("T", &none).unwrap_err();
+        // Every account's answer, so a dead token is not read as "no thread".
+        assert!(
+            err.contains("a: API error (404)") && err.contains("b: HTTP request failed"),
+            "{err}"
+        );
+
+        let both = [("a", Ok(())), ("b", Ok(()))];
+        let err = thread_home("T", &both).unwrap_err();
+        assert!(
+            err.contains("a, b") && err.contains("pass `account`"),
+            "{err}"
+        );
     }
 
     #[test]
