@@ -1784,6 +1784,7 @@ mod tests {
             stats: None,
             position: None,
             lifetime: None,
+            jobs: None,
         };
         let runs = [graded(1, true, 3), graded(2, false, 5)];
         let t = trial_of(&planned, &runs.iter().collect::<Vec<_>>());

@@ -67,6 +67,12 @@ pub enum Cmd {
         /// Plan and print the trials without spawning anything.
         #[arg(long)]
         dry_run: bool,
+        /// Trials in flight at once, never two of one arm (they share its
+        /// home). Above 1, each trial holds one of the background model
+        /// seats and waits for one when none is free, so a fan-out never
+        /// makes the owner's own turn queue. `single` only.
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
+        jobs: u32,
     },
     /// Where the trials stand, per arm.
     Status {
@@ -91,7 +97,8 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
             name,
             limit,
             dry_run,
-        } => run(&name, limit, dry_run).await,
+            jobs,
+        } => run(&name, limit, dry_run, jobs).await,
         Cmd::Status { name, json } => status(&name, json).await,
         Cmd::Judge { name, json } => judge_cmd(&name, json),
         Cmd::Export { name } => export(&name),
@@ -331,9 +338,17 @@ fn provider_and_model(cfg: &mecha_core::config::Config) -> Result<(String, Strin
     ))
 }
 
-async fn run(name: &str, limit: Option<usize>, dry_run: bool) -> Result<()> {
+async fn run(name: &str, limit: Option<usize>, dry_run: bool, jobs: u32) -> Result<()> {
     let store = ExperimentStore::open_default(name)?;
     let manifest = store.manifest()?;
+    // A lifetime walks its sequence with stages between tasks, and §18 keeps
+    // a stage from contending with a task for the server's seats; running
+    // lifetimes side by side needs that rule restated, so it is refused
+    // until it is, rather than half-honoured.
+    anyhow::ensure!(
+        jobs == 1 || manifest.kind == TrialKind::Single,
+        "--jobs above 1 runs `single` trials only; a lifetime's stages must not contend with its tasks for the model's seats, and running lifetimes side by side is not built"
+    );
     let cases = cases_for(&manifest).await?;
     let loaded = mecha_core::config::Config::load_global()?;
     let (provider, model) = provider_and_model(&loaded)?;
@@ -358,6 +373,13 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool) -> Result<()> {
         todo.len(),
         limit.map(|l| format!(" (limit {l})")).unwrap_or_default()
     );
+    // The world every home is rendered from (`trial_env`): the
+    // environment's harness with this machine's facts. From here on `real`
+    // is that, never the operator's file — whose servers and hooks, copied
+    // into trial homes, once wrote trials into the owner's live graph.
+    // Loaded before the dry-run returns, so a plan check refuses a bad
+    // environment rather than the real run (found on review).
+    let real = manifest.environment.base_config(&loaded, &base)?;
     if dry_run {
         if manifest.kind == TrialKind::Lifetime {
             let s = &manifest.schedule;
@@ -380,11 +402,6 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool) -> Result<()> {
         }
         return Ok(());
     }
-    // The world every home is rendered from (`trial_env`): the
-    // environment's harness with this machine's facts. From here on `real`
-    // is that, never the operator's file — whose servers and hooks, copied
-    // into trial homes, once wrote trials into the owner's live graph.
-    let real = manifest.environment.base_config(&loaded, &base)?;
     if manifest.fixtures.is_empty() {
         let digest = manifest.environment.digest(&base)?;
         mecha_core::trial_env::build_stores(
@@ -403,7 +420,7 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool) -> Result<()> {
     let mecha = std::env::current_exe().context("locating this binary")?;
     let ran = match manifest.kind {
         TrialKind::Single => {
-            run_single_trials(&store, &manifest, &mecha, &real, &cases, &todo, limit).await?
+            run_single_trials(&store, &manifest, &mecha, &real, &cases, &todo, limit, jobs).await?
         }
         TrialKind::Lifetime => {
             run_lifetimes(&store, &manifest, &mecha, &real, &cases, &planned, limit).await?
@@ -414,6 +431,19 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool) -> Result<()> {
 }
 
 /// The `single` driver: each pending row is one child run in its arm's home.
+///
+/// Up to `jobs` rows in flight, and **never two of one arm**: a single
+/// trial re-renders its arm's home — config, fixture stores, the clock —
+/// before its child starts, so two of one arm at once would each run in
+/// the other's world. Rows are taken in plan order, skipping any whose arm
+/// is busy, which interleaves arms rather than running them in blocks.
+///
+/// Above one job every trial holds a background seat (`permit.rs`), the
+/// pool detached task runs share, and the driver waits for one rather than
+/// failing: it holds no slot in anyone else's queue while it waits, which
+/// is the reason `Permits::take` never blocks. One job is an attended run
+/// from a terminal and takes no seat, as `mecha tasks work` does not.
+#[allow(clippy::too_many_arguments)]
 async fn run_single_trials(
     store: &ExperimentStore,
     manifest: &Manifest,
@@ -422,36 +452,209 @@ async fn run_single_trials(
     cases: &[mecha_core::eval::EvalCase],
     todo: &[&Trial],
     limit: Option<usize>,
+    jobs: u32,
 ) -> Result<usize> {
+    let pending: Vec<&Trial> = todo
+        .iter()
+        .copied()
+        .take(limit.unwrap_or(usize::MAX))
+        .collect();
+    let permits = if jobs > 1 {
+        Some(super::tasks::permits()?)
+    } else {
+        None
+    };
+    // More jobs than seats would hold every seat and then report waiting on
+    // itself; the pool is the real limit, so it is the one used (found on
+    // review), and the one each row records.
+    let jobs = match &permits {
+        Some(pool) if (jobs as usize) > pool.capacity() => {
+            eprintln!(
+                "mecha exp: --jobs {jobs} is above the {} background model seat(s); running at most {}",
+                pool.capacity(),
+                pool.capacity()
+            );
+            pool.capacity() as u32
+        }
+        _ => jobs,
+    };
+    schedule(&pending, jobs, permits.as_ref(), &manifest.name, |t| {
+        drive_single(store, manifest, mecha, real, cases, t, jobs)
+    })
+    .await
+}
+
+/// The scheduler, apart from what a trial does: up to `jobs` rows in
+/// flight, never two of one arm, each holding a seat when `permits` is
+/// given, and a `drive` error — or a seat that cannot be taken — stopping
+/// new starts while the rows in flight finish. Taking `drive` as a closure
+/// is what lets that drain be tested with a scripted failure; it was the
+/// one guarantee here nothing measured (found on review).
+async fn schedule<'a, F, Fut>(
+    rows: &[&'a Trial],
+    jobs: u32,
+    permits: Option<&mecha_core::permit::Permits>,
+    experiment: &str,
+    drive: F,
+) -> Result<usize>
+where
+    F: Fn(&'a Trial) -> Fut,
+    Fut: std::future::Future<Output = Result<()>> + 'a,
+{
+    use futures::stream::{FuturesUnordered, StreamExt};
+    let mut pending: std::collections::VecDeque<&'a Trial> = rows.iter().copied().collect();
+    let mut busy: std::collections::BTreeSet<String> = Default::default();
+    let mut inflight = FuturesUnordered::new();
     let mut ran = 0usize;
-    for planned_trial in todo {
-        if limit.is_some_and(|l| ran >= l) {
-            break;
+    let mut announced_at: Option<std::time::Instant> = None;
+    // A row that could not be saved stops new starts but not the rows in
+    // flight: returning at once would drop their futures while their
+    // children run on, orphaned, with rows saved as `running`.
+    let mut first_err: Option<anyhow::Error> = None;
+    loop {
+        let mut seat_short = false;
+        while inflight.len() < jobs as usize {
+            let Some(at) = next_startable(&pending, &busy) else {
+                break;
+            };
+            let held = match &permits {
+                None => None,
+                Some(pool) => {
+                    // A seat that could not be taken (the pool's directory
+                    // unwritable, a full disk) is the save failure's shape:
+                    // start no more, drain what is in flight. A `?` here
+                    // dropped the running trials' futures (found on review).
+                    let taken = match pool.take(&format!("exp {experiment} {}", pending[at].id)) {
+                        Ok(taken) => taken,
+                        Err(e) => {
+                            eprintln!(
+                                "mecha exp: {e:#}; finishing the trials in flight, starting no more"
+                            );
+                            first_err.get_or_insert(e);
+                            pending.clear();
+                            break;
+                        }
+                    };
+                    match taken {
+                        Ok(held) => Some(held),
+                        Err(holders) => {
+                            seat_short = true;
+                            // Said again every five minutes, naming who
+                            // holds the seats then: one line and a silent
+                            // poll reads as a hang (found on review).
+                            let due = announced_at.is_none_or(|at| {
+                                at.elapsed() >= std::time::Duration::from_secs(300)
+                            });
+                            if due {
+                                announced_at = Some(std::time::Instant::now());
+                                eprintln!(
+                                "mecha exp: all {} background model seat(s) are held ({}); waiting",
+                                pool.capacity(),
+                                holders
+                                    .iter()
+                                    .map(|p| p.what.as_deref().unwrap_or("unnamed"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            );
+                            }
+                            break;
+                        }
+                    }
+                }
+            };
+            announced_at = None;
+            let planned_trial = pending.remove(at).expect("found above");
+            busy.insert(planned_trial.arm.clone());
+            ran += 1;
+            eprintln!("· {} ({ran})", planned_trial.id);
+            let run = drive(planned_trial);
+            inflight.push(async move {
+                let out = run.await;
+                drop(held);
+                (planned_trial.arm.clone(), out)
+            });
         }
-        let mut trial = (*planned_trial).clone();
-        let case = cases
-            .iter()
-            .find(|c| c.id == trial.task)
-            .expect("planned from these cases");
-        let arm = &manifest.arms[&trial.arm];
-        ran += 1;
-        eprintln!("· {} ({ran})", trial.id);
-        let seed_from = manifest
-            .environment
-            .dir(&std::env::current_dir().context("cannot determine the working directory")?);
-        let home = store.arm_home(&trial.arm, &seed_from)?;
-        match run_one(store, manifest, mecha, real, arm, case, &home, &mut trial).await {
-            Ok(()) => {}
-            Err(e) => {
-                trial.status = TrialStatus::Failed;
-                trial.error = Some(format!("{e:#}"));
-                trial.finished_at = Some(chrono::Utc::now().to_rfc3339());
-                eprintln!("  failed: {e:#}");
+        if inflight.is_empty() {
+            if pending.is_empty() {
+                break;
             }
+            // Nothing running and nothing startable: only a seat can free
+            // us, and seats are other processes' — look again shortly.
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            continue;
         }
-        store.save_trial(&trial)?;
+        let retry = async {
+            if seat_short {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        };
+        tokio::select! {
+            Some((arm, out)) = inflight.next() => {
+                busy.remove(&arm);
+                if let Err(e) = out {
+                    eprintln!("mecha exp: {e:#}; finishing the trials in flight, starting no more");
+                    first_err.get_or_insert(e);
+                    pending.clear();
+                }
+            }
+            _ = retry => {}
+        }
     }
-    Ok(ran)
+    match first_err {
+        Some(e) => {
+            eprintln!("mecha exp: stopped after starting {ran} trial(s) this invocation");
+            Err(e)
+        }
+        None => Ok(ran),
+    }
+}
+
+/// The first pending row, in plan order, whose arm has nothing in flight:
+/// the scheduler's one decision, kept pure so it is tested apart from the
+/// children it starts.
+fn next_startable(
+    pending: &std::collections::VecDeque<&Trial>,
+    busy: &std::collections::BTreeSet<String>,
+) -> Option<usize> {
+    pending.iter().position(|t| !busy.contains(&t.arm))
+}
+
+/// One `single` row, start to saved: a failure of the run is the row's
+/// `failed` status; only a failure to save it is the driver's error.
+async fn drive_single(
+    store: &ExperimentStore,
+    manifest: &Manifest,
+    mecha: &Path,
+    real: &mecha_core::config::Config,
+    cases: &[mecha_core::eval::EvalCase],
+    planned_trial: &Trial,
+    jobs: u32,
+) -> Result<()> {
+    let mut trial = planned_trial.clone();
+    trial.jobs = Some(jobs);
+    let case = cases
+        .iter()
+        .find(|c| c.id == trial.task)
+        .expect("planned from these cases");
+    let arm = &manifest.arms[&trial.arm];
+    // The arm's home is the environment's, not the row's: a home refused or
+    // unwritable is the driver's error — start no more, drain, and leave
+    // this row pending for a later `run` — never a terminal `failed` that
+    // would drop the cell from the design (found on review).
+    let seed_from = manifest
+        .environment
+        .dir(&std::env::current_dir().context("cannot determine the working directory")?);
+    let home = store.arm_home(&trial.arm, &seed_from)?;
+    let outcome = run_one(store, manifest, mecha, real, arm, case, &home, &mut trial).await;
+    if let Err(e) = outcome {
+        trial.status = TrialStatus::Failed;
+        trial.error = Some(format!("{e:#}"));
+        trial.finished_at = Some(chrono::Utc::now().to_rfc3339());
+        eprintln!("  {}: failed: {e:#}", trial.id);
+    }
+    store.save_trial(&trial)
 }
 
 /// The `lifetime` driver (Part II §14): one home per arm × seed ×
@@ -1877,7 +2080,8 @@ async fn run_one(
     trial.status = TrialStatus::Done;
     trial.finished_at = Some(chrono::Utc::now().to_rfc3339());
     eprintln!(
-        "  {} · {} turns · {}",
+        "  {}: {} · {} turns · {}",
+        trial.id,
         if graded.passed { "pass" } else { "FAIL" },
         result.turns,
         trial
@@ -2201,6 +2405,12 @@ fn judge_cmd(name: &str, json: bool) -> Result<()> {
             j.holdout.losses,
             j.holdout.ties
         );
+        if v.jobs_seen.len() > 1 {
+            println!(
+                "  --jobs differed across this arm's pairs ({:?}): held at propose",
+                v.jobs_seen
+            );
+        }
         if manifest.kind == TrialKind::Lifetime {
             println!(
                 "  stages: treatment {} ok · {} failed · {} interrupted · {} skipped · {} unknown    control {} ok · {} failed · {} interrupted · {} skipped · {} unknown{}",
@@ -2270,6 +2480,147 @@ fn export(name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Never two of one arm: a row whose arm is busy waits, and the next
+    /// arm's row starts in its place — which interleaves the arms.
+    #[test]
+    fn the_scheduler_starts_the_first_row_of_a_free_arm() {
+        let row = |arm: &str, task: &str| -> Trial {
+            serde_json::from_value(serde_json::json!({
+                "id": format!("{arm}__{task}"),
+                "arm": arm,
+                "task": task,
+                "repetition": 1,
+                "condition_hash": "h",
+                "status": "pending",
+            }))
+            .unwrap()
+        };
+        let (a1, a2, b1) = (row("a", "t1"), row("a", "t2"), row("b", "t1"));
+        let pending: std::collections::VecDeque<&Trial> = [&a1, &a2, &b1].into_iter().collect();
+        let mut busy = std::collections::BTreeSet::new();
+        assert_eq!(next_startable(&pending, &busy), Some(0));
+        busy.insert("a".to_string());
+        assert_eq!(
+            next_startable(&pending, &busy),
+            Some(2),
+            "a's second row waits"
+        );
+        busy.insert("b".to_string());
+        assert_eq!(next_startable(&pending, &busy), None, "every arm busy");
+    }
+
+    fn fake_row(arm: &str, task: &str) -> Trial {
+        serde_json::from_value(serde_json::json!({
+            "id": format!("{arm}__{task}"),
+            "arm": arm,
+            "task": task,
+            "repetition": 1,
+            "condition_hash": "h",
+            "status": "pending",
+        }))
+        .unwrap()
+    }
+
+    /// A trial that fails stops new starts, but the trial already in flight
+    /// finishes before the error is returned — dropping it would orphan a
+    /// child with its row saved as `running`.
+    #[tokio::test]
+    async fn a_failure_drains_the_trials_in_flight_and_starts_no_more() {
+        use std::sync::{Arc, Mutex};
+        let rows = [
+            fake_row("a", "t1"),
+            fake_row("b", "t1"),
+            fake_row("c", "t1"),
+            fake_row("a", "t2"),
+        ];
+        let refs: Vec<&Trial> = rows.iter().collect();
+        let started = Arc::new(Mutex::new(Vec::<String>::new()));
+        let finished = Arc::new(Mutex::new(Vec::<String>::new()));
+        let out = schedule(&refs, 2, None, "x", |t| {
+            let (started, finished) = (started.clone(), finished.clone());
+            let id = t.id.clone();
+            async move {
+                started.lock().unwrap().push(id.clone());
+                if id == "b__t1" {
+                    anyhow::bail!("the store is full");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                finished.lock().unwrap().push(id);
+                Ok(())
+            }
+        })
+        .await;
+        assert!(format!("{:#}", out.unwrap_err()).contains("the store is full"));
+        assert_eq!(
+            *started.lock().unwrap(),
+            ["a__t1", "b__t1"],
+            "no new starts"
+        );
+        assert_eq!(
+            *finished.lock().unwrap(),
+            ["a__t1"],
+            "the one in flight finished"
+        );
+    }
+
+    /// A seat that cannot be taken while another trial is in flight stops
+    /// new starts and lets that trial finish before the error returns —
+    /// the drain a `?` at the seat-take site once skipped. The first seat
+    /// is taken; starting its trial replaces the pool's directory with a
+    /// file (the closure body runs when the trial starts, before any
+    /// await), so the second arm's seat fails with the first in flight.
+    #[tokio::test]
+    async fn a_seat_that_cannot_be_taken_drains_the_trial_in_flight() {
+        use std::sync::{Arc, Mutex};
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-exp-seat-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let pool = mecha_core::permit::Permits::new(&dir, 3);
+        let rows = [fake_row("a", "t1"), fake_row("b", "t1")];
+        let refs: Vec<&Trial> = rows.iter().collect();
+        let finished = Arc::new(Mutex::new(Vec::<String>::new()));
+        let out = schedule(&refs, 2, Some(&pool), "x", |t| {
+            if t.id == "b__t1" {
+                panic!("started without a seat");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::write(&dir, b"a file where the pool's directory was").unwrap();
+            let finished = finished.clone();
+            let id = t.id.clone();
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                finished.lock().unwrap().push(id);
+                Ok(())
+            }
+        })
+        .await;
+        assert!(out.is_err(), "the seat failure is the run's error");
+        assert_eq!(
+            *finished.lock().unwrap(),
+            ["a__t1"],
+            "the one in flight finished"
+        );
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    /// `--jobs 0` would start nothing and wait forever; it is a parse error.
+    #[test]
+    fn jobs_is_at_least_one() {
+        use clap::Parser;
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            cmd: Cmd,
+        }
+        assert!(Cli::try_parse_from(["t", "run", "x", "--jobs", "0"]).is_err());
+        let ok = Cli::try_parse_from(["t", "run", "x", "--jobs", "3"]).unwrap();
+        assert!(matches!(ok.cmd, Cmd::Run { jobs: 3, .. }));
+        let default = Cli::try_parse_from(["t", "run", "x"]).unwrap();
+        assert!(matches!(default.cmd, Cmd::Run { jobs: 1, .. }));
+    }
+
     use super::*;
 
     /// A position whose home could not be rendered leaves the principal's
