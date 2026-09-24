@@ -2846,15 +2846,22 @@ async fn draft(
     };
     if let Err(e) = outcome {
         if holds > 0 {
-            store.mark(
-                &account,
-                thread_id,
-                kind.verb(),
-                mecha_core::mail_triage::ACTED,
-            )?;
+            // The mark is bookkeeping and the hold cannot be taken back, so a
+            // failed mark must not swallow the report of the hold (found in
+            // review of #281).
+            let marked = store
+                .mark(
+                    &account,
+                    thread_id,
+                    kind.verb(),
+                    mecha_core::mail_triage::ACTED,
+                )
+                .err()
+                .map(|m| format!(" (and the thread could not be marked handled: {m:#})"))
+                .unwrap_or_default();
             bail!(
                 "the {} run failed after adding {holds} private hold(s) to your calendar \
-                 — check the calendar before running it again: {e:#}",
+                 — check the calendar before running it again{marked}: {e:#}",
                 kind.verb()
             );
         }
@@ -2871,16 +2878,23 @@ async fn draft(
     // `mark`, like every other action that finishes a thread, so the record
     // says which verb closed it.
     if holds > 0 && staged.is_empty() {
-        store.mark(
-            &account,
-            thread_id,
-            kind.verb(),
-            mecha_core::mail_triage::ACTED,
-        )?;
+        // Reported before the store write, for the same reason as above: the
+        // hold is already on the calendar whatever the store does next.
         println!(
             "added {holds} private hold(s) to your calendar for {} — nobody was invited",
             handle(thread_id)
         );
+        if let Err(e) = store.mark(
+            &account,
+            thread_id,
+            kind.verb(),
+            mecha_core::mail_triage::ACTED,
+        ) {
+            eprintln!(
+                "warning: the hold was made but the thread could not be marked handled \
+                 — don't run schedule on it again: {e:#}"
+            );
+        }
         return Ok(());
     }
     if staged.is_empty() {

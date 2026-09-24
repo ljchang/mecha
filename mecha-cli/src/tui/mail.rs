@@ -364,7 +364,7 @@ pub const KEYS: &[Key] = &[
     Key {
         key: 'e',
         short: "e schedule",
-        note: "draft a calendar reply — lands in /outbox",
+        note: "add to your calendar — a private hold, made directly; invitations land in /outbox",
     },
     Key {
         key: '?',

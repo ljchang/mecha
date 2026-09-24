@@ -436,7 +436,10 @@ Everything here that reaches a third party **stages rather than sends**: a
 reply, a forward, and a `schedule` whose note names people to invite. A
 `schedule` with no invitees reaches nobody. It makes a private hold on your
 own calendar (`calendar_hold`), which needs the allow rule above to run
-without asking.
+without asking. Without that rule the hold is refused, and the run falls back
+to a staged `calendar_create_event` with no invitees. That is today's
+behaviour: an ordinary, visible event you release from the outbox, not a
+private hold.
 `reply` is the one action here that needs an agent rather than a tool call — a
 model has to read the thread and write prose — and the run that does so reads
 the thread, which arms both interlock legs. So the draft arrives in `/outbox`
