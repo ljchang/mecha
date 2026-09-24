@@ -1410,6 +1410,15 @@ fn health(
             goals.anchored,
             goals.sensed
         );
+    } else if goals.anchored > 0 && goals.planned_unjudged > 0 {
+        // Planned, but only under anchors a plan cannot name: "none wrote a
+        // plan" would report *not judged* as *did not happen* (review).
+        println!(
+            "  goal drift          — ({} run(s) had a goal anchor; the {} that planned did so \
+             under a trigger or request anchor, which a plan cannot name, so drift is not \
+             judged)",
+            goals.anchored, goals.planned_unjudged
+        );
     } else if goals.anchored > 0 {
         println!(
             "  goal drift          — ({} run(s) had a goal anchor; none wrote a plan under it)",
@@ -1422,6 +1431,13 @@ fn health(
         );
     } else {
         println!("  goal drift          — (no run in this corpus recorded the sensor)");
+    }
+    if goals.planned > 0 && goals.planned_unjudged > 0 {
+        println!(
+            "                      ({} more run(s) planned under a trigger or request anchor; \
+             counted, not judged)",
+            goals.planned_unjudged
+        );
     }
     // Whether each anchor was structural (task, trigger, request) or
     // confirmed (charter, a question answered) is the question the
@@ -1544,6 +1560,8 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
     // from — a structural seed (task, trigger, request) or an owner's
     // confirmation (charter, project, or a task named in an answer).
     out["runs_anchored_by_kind"] = serde_json::json!(corpus.anchored_by_kind());
+    // Planned under a trigger or request anchor: counted, never judged.
+    out["runs_planned_under_an_unjudged_anchor"] = serde_json::json!(goals.planned_unjudged);
     out
 }
 

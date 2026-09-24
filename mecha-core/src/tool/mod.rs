@@ -711,12 +711,14 @@ impl GoalTrack {
         let Some(anchor) = self.anchor() else {
             return;
         };
+        self.plan_writes.fetch_add(1, Relaxed);
         // An anchor no plan can name (a trigger, a request) has no drift to
-        // measure: every named goal would read as a changed pointer.
+        // judge — every named goal would read as a changed pointer — but the
+        // write still happened: counting it keeps "planned under an anchor it
+        // cannot judge" apart from "never planned" (found on review).
         if !anchor.a_plan_can_name() {
             return;
         }
-        self.plan_writes.fetch_add(1, Relaxed);
         match crate::goal::drift_of(&anchor, serves) {
             crate::goal::Drift::Same => {}
             crate::goal::Drift::Changed => {
@@ -2291,8 +2293,10 @@ mod jail_tests {
     }
 
     /// A trigger- or request-anchored run's plan cannot name its anchor, so
-    /// its plan writes are not judged: on the old tree every named goal here
-    /// counted as a changed pointer (review of #292).
+    /// its plan writes are counted but not judged: on the old tree every
+    /// named goal here counted as a changed pointer (review of #292), and a
+    /// later cut that skipped the count made a planning run read as one that
+    /// never planned (the review after).
     #[test]
     fn a_plan_under_an_anchor_no_plan_can_name_is_not_judged() {
         use crate::goal::GoalRef;
@@ -2301,6 +2305,6 @@ mod jail_tests {
         track.note_plan(None);
         let (anchor, writes, drifted, unnamed) = track.snapshot();
         assert_eq!(anchor, Some(GoalRef::Trigger("morning".into())));
-        assert_eq!((writes, drifted, unnamed), (0, 0, 0));
+        assert_eq!((writes, drifted, unnamed), (2, 0, 0));
     }
 }
