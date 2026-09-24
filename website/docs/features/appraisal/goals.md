@@ -11,6 +11,27 @@ is what lets an [appraisal](/docs/features/appraisal) say what an
 outcome was an error *against*. Standing priorities live in
 [the charter](/docs/features/appraisal/charter); this page covers the pointer itself.
 
+## How a goal is established and tracked
+
+Goal inference in mecha is a four-stage pipeline, and only one stage is ever
+decided by the model:
+
+| Stage | What happens | Who decides |
+|---|---|---|
+| **Hypothesis** | A run states what it takes the goal to be: `serves:` on a plan, or `goal` and `serves` on a question to you. | the model |
+| **Confirmation** | You answer the question, run with `--goal`, or release a draft whose note names the goal. | you |
+| **Anchor** | The confirmed pointer. It belongs to the conversation, so it carries across chat turns, and it survives resume and compaction. | recorded by the harness |
+| **Alignment** | Each later plan write is compared with the anchor; see [measuring goal drift](#measuring-goal-drift). | computed by the harness |
+
+**What happens today.** Every stage above the hypothesis depends on a run
+stating one, and the served local model rarely does: it writes a plan only when
+your own message asks for one, and none of the sessions recorded since the
+charter began asking for a goal sentence contains one. A delegated board task is handed its task id in the prompt, but
+today that id does not set the anchor; only `mecha run --goal`, an answered
+question, a question resume, and an owner-authored artifact case
+(`mecha run --mismatch-case`) do. Most runs therefore carry no confirmed goal,
+and their appraisal records no goal rather than guessing one.
+
 
 A `GoalRef` is a **pointer, never a copy**, and renders on the wire as
 `kind:id`:
@@ -65,7 +86,9 @@ text; the harness does not infer a new goal pointer from its wording.
 
 Outbox review shows the goal the plan served **at the staging call**, with the
 charter line's text when it resolves. This lets the owner review the purpose
-alongside the draft. `sessions appraise --json` reports `goal_put_to_owner` and
+alongside the draft. For a run that had nobody to ask, releasing the draft is
+how you confirm the goal it assumed; the release is recorded on the draft, but it
+is not yet counted as a confirmation in the numbers below. `sessions appraise --json` reports `goal_put_to_owner` and
 `goal_confirmed` for sessions with stored goal questions; these are not a count
 of every informal confirmation in chat.
 

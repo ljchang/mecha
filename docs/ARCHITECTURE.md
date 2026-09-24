@@ -3871,8 +3871,7 @@ drafts, plus the question store, the front-door records and the learning
 store's reflections, filtered by session id inside — and signs: a question
 answered whose run then finished (`+0.5`, `Own`), a question abandoned
 (`-0.5`, `Owner`), a triaged request the owner closed with nothing sent
-(`-0.5`, `Owner`), a run whose `backlog_delta` came out negative (`+0.5`,
-`Own`), and a follow-up the reflector judged a correction (`-1.0`, `Owner`,
+(`-0.5`, `Owner`), and a follow-up the reflector judged a correction (`-1.0`, `Owner`,
 `Channel::Intervention`, only where `Reflexion::provenance()` is clean —
 the learning loop's own gate, by the owner's ruling, because a reflection
 written from a tainted session is already clean by construction and a
@@ -3882,7 +3881,21 @@ be read costs its channel and is reported as unreadable, never folded into
 empty — the readouts carry `questions_read` / `frontdoor_read` /
 `learning_read` beside `outbox_read`. The live readout and `distill` pass
 drafts only: a store read on every turn end is the cost the closure
-appraisal pays once.
+appraisal pays once. A negative `backlog_delta` no longer signs anything:
+another session or the owner may have cleared the queue, so a global delta
+is context, never credit ("Attribution follows the event", below). This
+paragraph listed it as `+0.5`, `Own` after the code had stopped producing it
+(found by the 2026-09-24 inventory sweep).
+
+**`Channel::Setpoint` has no production producer, and nothing in the
+harness mints a `GoalRef::Setpoint`.** Both exist because the enums are a
+wire format written to append-only stores; only tests construct a
+`Channel::Setpoint`. A `GoalRef::Setpoint` can still arrive from outside the
+harness — `GoalRef::from_str` accepts `setpoint:<id>`, so `mecha run --goal
+setpoint:x` records one as an anchor and a model's `serves: setpoint:x`
+mints one through `parse_lenient` — which is why `distill` never lets a
+setpoint name cross whole. A surface or a document must not present the
+setpoint channel as live.
 
 **Owner-bound anticipatory appraisal is separate from the backlog sensor.**
 `anticipation::Evidence` accepts an explicit owner commitment and check/cost
@@ -3914,9 +3927,17 @@ page cannot write a row into `OutboxStore`. Do not widen this to the graph's
 `due_at` without also paying for a subprocess in the path of every run.
 
 **Two sensors have a reader and no behavioural consumer, on purpose** — the
-homeostat and `anticipated_guilt` are recorded on every run and rendered into
-the diagnostician's brief (`diagnose::Evidence`: peak pressure, mean guilt),
-and nothing narrows a run on either. Boredom's notices do reach the model,
+homeostat's recorded pressure and `anticipated_guilt` are recorded on every
+run and rendered into the diagnostician's brief (`diagnose::Evidence`: peak
+pressure, mean guilt; withheld when `[agent] sensors_in_brief` is off, a
+stage lever), and nothing narrows a run on either. **Keep the two guilts
+apart.** `anticipated_guilt` is one scalar over the whole backlog's count
+and oldest age, and on a store with stale drafts it saturates (0.95–1.0 on
+every live run as of 2026-09-24). The charter reading (`Homeostat::charter`,
+`reading.rs`'s line-specific guilt) is per sensored line against the owner's
+setpoint, and it has more readers than the brief: `Decision::assess`, whose
+advice reaches the model only with `goal_guidance`, the doctor's saturation
+finding, and the owner's charter surfaces. Boredom's notices do reach the model,
 in-run, as a templated line; they are the one sensor here with a consumer.
 An earlier version of this paragraph said all three shipped with no consumer,
 which was false against the tree by the time it was written. `runlog`'s rule

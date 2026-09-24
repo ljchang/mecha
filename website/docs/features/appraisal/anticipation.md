@@ -136,7 +136,17 @@ The supported verdicts are `error_exposed`, `harm`, `expectation_missed`,
 `no_issue` and `withdrawn`. `harm` additionally requires a recorded commitment on
 the prediction. Attributing an outcome to mecha currently requires an unchanged,
 model-authored message; an owner's rewritten message is not attributed to mecha.
-Uncertain delivery must be reconciled before feedback can establish an outcome.
+Uncertain delivery must be reconciled before feedback can establish an outcome:
+`mecha outbox outcome` requires a draft that is `sent` with no unknown delivery
+attempt. When a send's result was unknown, check the destination and record what
+you found, which never resends:
+
+```bash
+mecha outbox reconcile DRAFT_ID --outcome delivered --evidence "Appears in Sent at 14:02"
+```
+
+The web outbox offers the same reconcile action. Confirmed delivery is therefore
+the precondition for the retrospective `embarrassment` and `guilt` labels below.
 
 A linked exposed error can produce retrospective `embarrassment`; an attributable
 impact can produce `guilt`. An expectation miss is a negative owner verdict; it
@@ -154,6 +164,14 @@ have `delivery_unknown`, await feedback, or become `observed`. Changing a messag
 or checking before proceeding does not establish that the original forecast was
 wrong. Silence after delivery is not evidence of success. Retrospective guilt
 and embarrassment can occur even when the earlier check passed.
+
+## Where this is available
+
+Supplying evidence (`mecha run --appraisal-evidence`), assessing a draft
+(`mecha outbox anticipate`) and recording an outcome (`mecha outbox outcome`) are
+command-line only today. The TUI, the web outbox and Slack show and release
+drafts but have no control for predictions or outcomes; an outcome you want
+counted has to be recorded from a terminal.
 
 ## Current measurement limits
 
