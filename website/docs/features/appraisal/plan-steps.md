@@ -126,7 +126,11 @@ and keeps the owner's completion verdict alongside execution evidence.
 
 `goal_context` retrieves up to four applicable goal-linked rules and two recent
 examples with passing checks. It preserves scope and provenance and runs only
-when requested by the agent. Failed checks, changes to frozen checks and
+when requested by the agent. It returns nothing until those links exist: a
+reflection takes its goal from the plan (or the named goal) at the moment of the
+intervention, and an example needs a completed step whose check passed, so on an
+install where runs rarely write a plan the lists stay empty. An empty answer means
+no recorded evidence, not a proven approach. Failed checks, changes to frozen checks and
 verified task-criterion failures can supply bounded mismatch reflections to
 `mecha reflect`. Estimate overruns remain observations; they do not establish a
 behavioral lesson. Unknown or tainted mismatch evidence is excluded.
@@ -139,9 +143,17 @@ goal_guidance = false  # opt in to fixed planning advice
 
 With `goal_guidance = true`, plan updates receive advice based on confirmed-goal
 alignment, remaining work, verification gaps and ordered charter sensor readings.
-The sensor numbers stay outside model prompts. Guidance is experimental: the initial Qwen 3.6 35B pilot passed 36/36 tasks
-in each arm and found no task-success gain.
+The sensor numbers stay outside model prompts. Guidance is experimental and has
+not shown a benefit: the first Qwen 3.6 35B pilot tied at 36/36, and on harder
+tasks with a confirmed goal it did worse (see [the full pilot record](#the-pilot-record)).
 Use `--no-goal-guidance` to disable it for a comparison run.
+
+**The headroom line.** When the run has a compaction threshold and has sent at
+least one request, a plan write's result ends with one line such as
+`context: 42k of 170k before compaction (25%)`, with a pace and an approximate
+number of turns left when those are known. It is a statement of fact with no
+instruction in it, and it appears only on plan writes, so it costs nothing on a
+turn that does not touch the plan.
 
 
 ## Comparing guidance on real runs
@@ -192,6 +204,28 @@ default. The 2026-09-09 Qwen pilot tied on every task outcome, so the gate rejec
 promotion. It exposed completion-time check omissions and no confirmed-goal-anchor
 coverage; guidance remains opt-in. Results and limits are recorded in
 `results/appraisal-guidance-qwen36-35b-20260909/README.md` in the checkout.
+
+### The pilot record
+
+Six pilots completed on 2026-09-09, all on the local Qwen 3.6 35B model. Each
+directory under `results/` in the checkout holds the method, the raw records and
+the gate's verdict.
+
+| Pilot | Control | Treatment | Paired outcome |
+|---|---|---|---|
+| Guidance, first design (`appraisal-guidance`) | 36/36 | 36/36 | all tied |
+| Guidance, harder tasks with a confirmed goal (`appraisal-guidance-v2`) | 20/24 | 18/24 | 2 improved, 4 regressed, 18 tied |
+| Guidance, privacy follow-up (`appraisal-privacy`) | 6/6 | 5/6 | 1 regressed, 5 tied |
+| Attribution and learning (`appraisal-attribution-v2`) | 30/36 | 30/36 | all tied; no learned rule was exposed |
+| Sequential learning (`appraisal-learning-v2`) | 6/6 | 6/6 | tied; too few reflections to learn a rule |
+| Learning from verified mismatches (`appraisal-mismatch`) | 10/12 | 9/12 | learning did not improve |
+
+The gate rejected promotion in every case. Two further designs did not produce
+a result: the first attribution pilot was stopped because post-run diagnostics
+were being mined as invented owner corrections, and the first learning design
+ran only as a dry run. The honest reading is that neither guidance nor the
+learning arm has shown a task-success benefit on this model, and guidance lost on
+the harder tasks. The dated entries in `docs/HISTORY.md` carry the detail.
 
 ## Independent validation of planning lessons
 

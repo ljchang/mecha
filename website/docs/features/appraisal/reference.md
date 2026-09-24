@@ -169,14 +169,14 @@ Each `GoalError` records one signed outcome with these fields:
 | `controllable` | Could it have gone otherwise? Unfilled until a counterfactual probe says. |
 | `cite` | **A pointer, never prose** — a turn index, a draft id, a counter name, a setpoint name. |
 
-The six channels keep the source of each signal explicit:
+Six channels keep the source of each signal explicit. Five have a producer today; `setpoint` is reserved:
 
 | Channel | Source |
 |---|---|
 | `intervention` | A human steered, denied, or explicitly stopped a run; a later turn contributes only when a retained, clean reflection identifies it as a correction. |
 | `edit` | A message draft sent unchanged, sent with edits, or rejected. Pending drafts carry no verdict. |
 | `counter` | A counter on [the run's own record](/docs/features/learning/run-quality). |
-| `setpoint` | A homeostatic variable outside the range it is kept in. |
+| `setpoint` | Reserved for a homeostatic variable outside the range it is kept in. Nothing produces it yet: charter sensor readings are recorded on the run's conditions and attribute other errors to a line, but they are not signed errors themselves. |
 | `commitment` | Answered or abandoned questions, closed unanswered requests, and linked post-delivery owner outcomes. |
 | `appraisal` | An additional signed error proposed by the quarantined appraiser, distinguishable from deterministic evidence. |
 
@@ -207,6 +207,7 @@ from.
 | A declared step check that did not pass | `−1.0`, self agency; the model wrote both the claim and the check. |
 | A follow-up the reflector judged a correction | `−1.0`, owner agency; clean-provenance reflections only. |
 | A turn/token/cost ceiling or boredom notice | `−0.5`; ceilings are attributed to the owner's limit. |
+| The owner closing a board task as `done` | `+0.5`, owner agency, on the `commitment` channel; `dropped` adds a zero-signed entry. Added only by [closure appraisal](#closing-a-task-appraises-it), printed there, and not stored. |
 
 A change in the owner's queue size does **not** contribute. The queue is a
 global before/after reading, so it would credit a run for drafts the owner
@@ -216,9 +217,9 @@ A linked negative owner outcome replaces the draft contribution with one `−1.0
 it does not add another penalty for the same incident. See
 [outcome evidence](/docs/features/appraisal/anticipation).
 
-A still-pending draft or unanswered question has no verdict yet. Process shutdown,
-parking for an answer, and legacy `interrupted` stops do not count as the owner
-rejecting the work. An explicit owner stop does: a stop followed by a re-prompt
+A still-pending draft or unanswered question has no verdict yet. Process shutdown
+(`shutdown`), parking for an answer (`parked`), and legacy `interrupted` stops do
+not count as the owner rejecting the work. An explicit owner stop (`stopped`) does: a stop followed by a re-prompt
 is a redirect, and one never resumed is an abandonment signal, counted once.
 
 Offline appraisal reads the question, front-door, and reflection stores as well
@@ -479,6 +480,13 @@ a classifier's paraphrase and then to the raw subject line of somebody else's
 mail), so copying it verbatim into a new record the harness is signing would
 launder exactly that provenance. Citing the id costs the reader one lookup and
 costs nothing here.
+
+**Where the readout appears depends on where you close the task.** In a
+terminal it is printed as above. A task closed from the web board runs the
+same closure appraisal, and any follow-up it stages appears on the board, but
+the readout line itself is not shown on the page today. A task closed from
+`mecha-graph tui` changes the board directly and does not run closure
+appraisal at all.
 
 **And the trigger itself is owner-only, structurally.** A model cannot close a
 board task: on every model-facing registry the graph's task tool is wrapped so
