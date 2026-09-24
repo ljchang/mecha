@@ -353,5 +353,5 @@ a measured win to an arbitrary edit.
 
 **No signal that a run went *well*.** Every metric here is phrased as a cost by
 deliberate constraint, so this corpus can rank two bad runs and cannot rank two
-good ones. That is the gap [goals and appraisal](/docs/features/appraisal)
+good ones. That is the gap [appraisal](/docs/features/appraisal-overview)
 exists to close, on the other side of the same records.

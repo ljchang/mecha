@@ -2206,14 +2206,12 @@ pub fn live(
 /// run the probe; this passes no charter either, so nothing is attributed
 /// here.
 ///
-/// **Accepted, and said here because it is visible:** the delta is a
-/// global before/after diff of the stores, not a join on what this session
-/// touched, so on a machine running several sessions at once the owner
-/// answering session B's question mid-run puts the `+0.5` on session A's
-/// badge with nothing on the surface to explain it (found on review). The
-/// queue arm's own comment names the by-id attribution that closes this;
-/// until the stores record which session resolved an item, a live positive
-/// means "the owner's queue got shorter while this ran", no more.
+/// So a live readout has no positive channel at all. It used to sign `+0.5`
+/// off the homeostat's global backlog delta, which put the owner answering
+/// session B's question on session A's badge (found on review); that arm
+/// was removed in `fba6de53`, and
+/// `attribution_is_by_the_pointers_store_and_never_by_the_queue_delta`
+/// pins its absence.
 ///
 /// On a compacted run the label is `Neutral` outright, for the reason
 /// [`live`]'s body gives, and the valence is computed from the counters
