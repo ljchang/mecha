@@ -46,6 +46,8 @@ tools = [
   "mail__mail_send",
   "mail__mail_reply",
   "mail__calendar_create_event",
+  "mail__calendar_update_event",
+  "mail__calendar_delete_event",
   "docs__docs_create",
   "docs__docs_append",
   "docs__docs_replace",
