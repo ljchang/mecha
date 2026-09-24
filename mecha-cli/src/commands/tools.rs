@@ -51,6 +51,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             .iter()
             .any(|s| s.prefix_tools != Some(false) && name.starts_with(&format!("{}__", s.name)))
     };
+    // With a vouched server whose tools are unprefixed, a tool not
+    // attributable to a prefixed one *might* be that server's: its answer is
+    // unknown, and `--json` says `null` rather than a `false` a script would
+    // read as "no" (review of #290 — a dash is never zero).
+    let unattributable = vouched.iter().any(|s| s.prefix_tools == Some(false));
 
     if args.json {
         let specs: Vec<_> = registry
@@ -68,7 +73,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     "outbox_routed": outbox_routed(t.name()),
                     // This tool's server is believed when it says a failed
                     // call dispatched nothing — see `trust_result_claims`.
-                    "result_claims_believed": claims_believed(t.name()),
+                    "result_claims_believed": if claims_believed(t.name()) {
+                        serde_json::Value::Bool(true)
+                    } else if unattributable {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::Value::Bool(false)
+                    },
                     "capabilities": {
                         "private_data": caps.private_data,
                         "untrusted_input": caps.untrusted_input,
