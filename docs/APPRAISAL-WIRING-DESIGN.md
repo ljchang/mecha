@@ -63,6 +63,15 @@ no-wiring control at matched budget, then on by default. The outcomes are
 verified task success and the owner's verdicts — never the label, the
 valence, a sensor value or a rule count.
 
+**4. No added work for the owner** (ruled 2026-09-24). The system infers
+goals, reflects, anticipates and measures from what the owner already does;
+it does not ask for ratings, confirmations or goal statements the owner
+would not otherwise give. Confirmation comes from acts the owner already
+performs — releasing a draft, closing a task, answering a question the run
+genuinely needed. So no one-tap verdict (S3b declined) and no "what is this
+for?" chip (S2's asking tier declined); the evidence is the acts in
+inventory §4, read.
+
 These sit on top of the invariants that already hold and are not restated:
 dispositions only narrow (§7.3), affect is a priority and never an objective
 (§8.3), prioritised selection is confirmed on a uniform holdout (§8.1),
@@ -81,7 +90,7 @@ shape in miniature.
 
 | appraisal (harness-computed) | trigger | admissible actions | adversarial? | phase |
 |---|---|---|---|---|
-| **Pride / relief** — owner-verified positive | sent unchanged · answered · `done` and not reopened · a thumbs-up | consolidate a success · credit rule tenure · *propose* a skill — **never permits anything, never shown to the model** | no | phase 2 |
+| **Pride / relief** — owner-verified positive | sent unchanged · answered · `done` and not reopened | consolidate a success · credit rule tenure · *propose* a skill — **never permits anything, never shown to the model** | no | phase 2 |
 | **Regret** — own, replay-confirmed negative | probe verdict | reflect first · spend validation budget here | no | phase 2 |
 | **Anticipated embarrassment** — about to expose unverified work | staging with failed/unverified checks or ungrounded claims | append the certificate · hold release for acknowledgement | yes → narrow | phase 3 |
 | **Anticipated guilt** — a recorded commitment approaching violation | per-item age vs the owner's setpoint; `due_at` | surface first · prepare follow-through · refuse a send that would "discharge" it | yes → narrow; recorded only | phase 4 |
@@ -105,14 +114,13 @@ outcome. Phases 2 and 3 can run in parallel once phase 1 lands; phases 4 and 5 f
 
 | # | work | proposal |
 |---|---|---|
-| 1 | Seed the goal anchor from what the harness holds: the task id on `tasks work` (with its project), an owner-written `serves` on a trigger, the request id on a front-door run | S1 |
+| 1 | Seed the goal anchor from what the harness holds: the task id on `tasks work` (with its project), the trigger's own name on a trigger run, the request id on a front-door run | S1 |
 | 2 | Close the closure leak: a task closed in `mecha-graph tui` goes through `mecha tasks set`; store the closure verdict instead of only printing it | S3a, R15 |
 | 3 | Read the verdicts already given: task reopened after `done`, outbox reject reasons, workflow close / cancel / reopen / verify, rule and reflection curation, harness accept / reject / revert, graph review verdicts on facts a session claimed | S3a |
-| 4 | One-tap verdict on the run readout — web chip, TUI badge, voice phrase | S3b, U3 |
-| 5 | Sensor hygiene: per-item readings and a per-run delta instead of a level; an owner-set expiry for stale drafts | S5 |
-| 6 | One commitment record and guilt computed per item from it | S7 |
-| 7 | Keep the counterfactual verdicts steer and validation probes already pay for | X1 |
-| 8 | A test that no affect word, valence or sensor number reaches a provider request | G4 |
+| 4 | Sensor hygiene: per-item readings and a per-run delta instead of a level; a saturated reading withdrawn from consumers and reported once | S5 |
+| 5 | One commitment record and guilt computed per item from it | S7 |
+| 6 | Keep the counterfactual verdicts steer and validation probes already pay for | X1 |
+| 7 | A test that no affect word, valence or sensor number reaches a provider request | G4 |
 
 **Done when:** ≥ 60% of long real runs carry an anchor; verdicts per week are
 counted by channel and the unread channels of inventory §4 appear; the
@@ -156,7 +164,7 @@ delegated tasks falls.
 
 | # | work | proposal |
 |---|---|---|
-| 1 | Commitments from owner acts: mail `reply` / `task` / `schedule`; promises in released drafts proposed for one-tap acceptance | S4 |
+| 1 | Commitments from owner acts: mail `reply` / `task` / `schedule`; promises in released drafts recorded automatically (dismissing one drops it) | S4 |
 | 2 | Duty runs that *prepare* follow-through for a commitment approaching its setpoint — never send | A1 |
 | 3 | Surface only when missing it costs more than the interruption, at breakpoints, extending `workflow::AttentionPolicy`; order the brief and `/queues` by duty | U1, U4 |
 
@@ -184,7 +192,8 @@ usable.
 | item | why parked | unpark when |
 |---|---|---|
 | `goal_guidance` and every injected-advice form (C6, M3 gap delivery) | measured to hurt as often as help | phase 3 has produced plans and criteria worth advising on, and a new arm is designed |
-| S2 — the harness asks "what is this for?" | a new owner interruption | phase 1 shows how many long web runs stay un-anchored, and phase 2 shows goals change what is learned |
+| S2 — the harness *infers* a goal for un-anchored runs, from a closed list | goes beyond §17.3's confirmation rule; a model pass | phase 1 shows how many long web runs stay un-anchored, and phase 2 shows goals change what is learned |
+| R7 draft expiry | owner ruling: not until the system has stabilised | the owner says so |
 | C3 seeded plans; V2 re-ask and drift event | plans can hurt small models; no drift rate yet | phase 3's criteria produce a rate to read |
 | M1–M4 memory (goal key, earned salience, gap delivery, criteria across compaction) | nothing goal-linked to retrieve yet | phase 2 forms goal-linked rules |
 | X0 self-authored steers; X3–X5 verdict forecasts and prediction scoring | need stored verdicts and recorded outcomes | X1 holds records and owners record outcomes |
@@ -219,23 +228,24 @@ widening.
 | # | phase | ruling | default proposed |
 |---|---|---|---|
 | R14 | all | Mechanisms overlapping mecha-graph are built in mecha core, porting the graph's version; no new cross-repo readers | **stated by the owner, 2026-09-24** |
-| R1 | phase 1 | Triggers may carry `serves = "charter:<id>"`, validated at load | yes |
+| R1 | phase 1 | A trigger run is anchored to the trigger itself (`trigger:<name>`); an owner-written `serves` link to a charter line is optional, never required | **ruled 2026-09-24: optional only** |
 | R15 | phase 1 | Close the closure leak: a task closed in the graph TUI goes through `mecha tasks set` | yes, while both exist |
 | R16 | phase 1 | The unread acts sign as follows: a task reopened after `done` −1.0 on the closing session and withdraws its success; an outbox reject reason goes to the reflector as an owner correction; workflow `close` +0.5, `cancel` −0.5, `reopen` −1.0, a failed `verify` −1.0; rule and reflection curation and harness accept / reject feed tenure, never valence | yes |
-| R2 | phase 1 | A one-tap verdict is an owner-verdict channel, ±1.0, admissible for rule tenure (§17.2) | yes |
-| R7 | phase 1 | Pending drafts expire after an owner-set age, as `expired`, which signs nothing | owner picks the age |
+| R2 | — | A one-tap verdict channel | **declined 2026-09-24**: no added owner work (here §1, decision 4) |
+| R7 | parked | Pending drafts expire after an owner-set age, as `expired` | **deferred 2026-09-24** until the system has stabilised |
 | R12 | phase 1 | Guilt becomes per-commitment goal error toward another party; one commitment record; the homeostat scalar becomes a readout | yes |
 | R4 | phase 3 | Honest completion: template only, or template plus one `Verify` re-prompt | template only first |
 | R11 | phase 3 | The agent may declare acceptance criteria from a closed set of harness-executed kinds; one-sided until the owner confirms them; never a charter sensor | yes |
-| R10 | phase 4 | Promises detected in the owner's released drafts are proposed as commitments for one-tap acceptance | yes |
+| R10 | phase 4 | Promises detected in the owner's released drafts are recorded as commitments automatically — the words are the owner's own; a false detection only adds a reminder, and dismissing it drops it | yes |
 | R5 | phase 5 | Desperation brake: refuse writes to a frozen check's read set; withhold `Complete` after k failures | yes, `k = 2` |
 | R6 | phase 5 | A recipient that does not trace to a confirmed goal is staged even where routing would execute | yes |
 | R13 | phase 5 | Stored counterfactual verdicts may narrow a matching call before dispatch | yes, narrowing only |
-| R3 | parked | The harness may show a closed-list "what is this for?" chip once per un-anchored long interactive run | after phase 1's reading |
+| R3 | parked | The harness may infer an anchor from the owner's first turn onto a closed list of pointers; inferred anchors key retrieval, tracing and the certificate, never credit or tenure; confirmation comes from acts the owner already performs | yes, when unparked (the asking chip was declined) |
 | R8 | parked | The harness may *propose* per-region autonomy grants; only the owner grants | yes, when unparked |
 | R9 | — | The live charter line `be-the-best` ("always finding ways you could have completed a task even better") reads close to the unbounded self-improvement line §15 warns about. The owner's to keep or reword; flagged, not proposed | — |
 
-**To start phase 1, R1, R2, R7, R12, R15 and R16 are needed.** The rest can wait
+**To start phase 1, R12, R15 and R16 are still needed** (R1 ruled, R2
+declined, R7 deferred). The rest can wait
 for their phase.
 
 ---
@@ -271,7 +281,7 @@ outcome.
 |---|---|---|---|---|---|---|---|
 | S1 anchors | ● | | | ● | ● | ● | |
 | S2 harness asks | ● | ● | | | | ● | ● |
-| S3 verdicts (collected, one-tap) | | ● | | | | ● | ● |
+| S3a verdicts already given | | ● | | | | ● | ● |
 | L7 D3 attribution | | ● | | | | ● | |
 | here §5, porting mecha-graph | | | ● | | | ● | ● |
 | S4 commitments | | | | ● | | | ● |
@@ -320,10 +330,14 @@ already holds the pointer on the runs that matter and throws it away:
   task's project as the parent — the same seeding `questions::seed_anchor`
   does on a resume. A board row is owner-created (`kg_task_create`), so this
   is an owner-authored goal, not a model's.
-- `Trigger` gains an optional `serves = "charter:<id>"`, validated against the
-  loaded charter at trigger load and refused if the line does not exist. The
-  trigger store is owner-only and has no configurable path, so it inherits
-  the charter's author rule.
+- A trigger run is anchored to **the trigger itself** — a new `GoalRef`
+  kind, `trigger:<name>`, lenient on read like the others. No owner work:
+  the trigger is owner-written, recurs, and so gives the goal its own
+  history the way a board task does. A trigger *may* also carry an optional
+  `serves = "charter:<id>"` where the owner wants that link; it is never
+  required, is validated against the loaded charter at load, and inherits
+  the charter's author rule because the trigger store is owner-only with no
+  configurable path.
 - The front-door drain seeds `request:<id>` for the privileged run it starts;
   a mail-draft run seeded from a triage verdict carries the thread pointer.
 - Web surfaces that start work from an object (a board task, a triage row, an
@@ -349,7 +363,9 @@ claimed (joined back by the episode's session id). Each is owner-authored,
 already recorded somewhere, and costs the owner nothing new. How each signs
 is ruling R16.
 
-**S3b, the new act:**
+**S3b — declined 2026-09-24 (here §1, decision 4).** A one-tap verdict
+asks the owner for work the system is meant to infer. Kept below for the
+record, with why it was proposed.
 
 **Problem.** The positive channels are starved. Web sessions are 70% of runs
 and produce an owner verdict only when they stage a draft; 5 of 120 appraised
@@ -383,9 +399,10 @@ install.
 - A reading saturated for `reading::SATURATED_AFTER_RUNS` rows is withdrawn
   from in-run consumers and handed to the owner as one doctor finding naming
   the items — the saturation guard already exists and today only reports.
-- An owner-set expiry for drafts (ruling R7): past it, a pending draft moves to
-  `expired`, which signs nothing (it is not a rejection) and stops holding the
-  sensor at its ceiling. Silence stays "not a verdict".
+- *Deferred (R7):* an owner-set expiry for drafts, past which a pending
+  draft moves to `expired`, signing nothing. Not until the system has
+  stabilised; until then the saturation withdrawal above is what keeps a
+  stale queue from becoming a constant input.
 
 #### S7. Guilt is goal error toward another party, not its own system
 
@@ -473,7 +490,7 @@ already recorded (`grounding.rs`'s `calls`).
 
 **Problem.** Stated in S3: the learning store is 100% corrections.
 
-**Build.** An owner-verified positive (S3's thumbs-up, a draft sent
+**Build.** An owner-verified positive (a draft sent
 unchanged, a question answered, a task closed `done` with its checks passed
 and not reopened — S3a withdraws a success the owner later reopens)
 becomes:
@@ -683,8 +700,9 @@ owner's own postconditions.
 - **Commitment capture from the owner's released words.** A draft the owner
   released is owner text. `capture.rs` already detects a time phrase
   ("by Friday") and reports it without resolving it. On release, a detected
-  promise is *proposed* as a `Commitment` in the digest for one-tap
-  acceptance. Inbound mail never creates one — a third party's "you owe me" is
+  promise is recorded as a `Commitment` — the words are the owner's own,
+  so no confirmation is asked (here §1, decision 4); a false detection only
+  adds a reminder, and dismissing it drops the row. Inbound mail never creates one — a third party's "you owe me" is
   a claim, and §7.4's whole safety argument is that a claim cannot write a row.
 - Mail-triage "respond" verdicts with an extracted deadline become a
   commitment only when the owner acts on them — the web mail `reply`,
@@ -721,8 +739,8 @@ reminder is the measured cost of that interruption.
 
 #### U3. The readout links to why, and takes a verdict
 
-The badge links to the pointers behind it and carries S3's thumbs. The label
-stops being the end of the pipeline and becomes the place the owner feeds it.
+The badge links to the pointers behind it, so the owner can see why it reads
+what it reads. (The thumbs it was to carry were declined with S3b.)
 
 #### U4. The brief and `/queues` sort by duty
 
@@ -949,22 +967,21 @@ asking lifts resolution by up to 74% (Ambig-SWE, arXiv 2502.13069), and a
 agent 69.4% to 61.2%, asking where it was genuinely uncertain (arXiv
 2603.26233).
 
-**Build, in two tiers.**
-- *No model.* At a structural moment in an un-anchored interactive run — the
-  first outbox staging, or the fourth tool call — the harness shows a chip on
-  the web and TUI: "What is this for?" with the charter lines and the open
-  board tasks as a **closed pick list**, plus "none". One tap sets the anchor.
-  Nothing is inferred; the owner picks from pointers that already exist.
-- *Quarantined pass, later (parked, here §4).* A one-shot with no tools and no
-  history reads the owner's own first turn (trusted by construction) and the
-  closed pointer list and returns one pointer or none — a typed extraction,
-  the `mail_triage` shape. The result pre-selects the chip; it never becomes
-  the anchor without the tap (§17.3: "before the answer the hypothesis is prose
-  and reaches nothing but the owner's screen").
-
-**Class.** May only add a question (§17.3's monotone rule). The chip is
-dismissable and fires at most once per conversation; `protect-my-attention`
-is the reason for both limits. Ruling R3.
+**Revised 2026-09-24: infer, don't ask.** The asking tier — a "what is this
+for?" chip — is declined (here §1, decision 4). What remains is inference:
+- A quarantined one-shot, with no tools and no history, reads the owner's own
+  first turn (trusted by construction) and the closed list of pointers
+  (charter lines, open board tasks, triggers) and returns one pointer or
+  none — a typed extraction, the `mail_triage` shape. Nothing it returns is
+  prose, and nothing outside the closed list can be named.
+- The result is an **inferred** anchor, kept distinct from a confirmed one.
+  It may key retrieval, V1's tracing and C1's certificate; it may never earn
+  credit, move tenure or attribute a positive. It becomes confirmed only
+  through an act the owner already performs: releasing a draft whose note
+  names it, or closing the task it points at.
+- This goes further than §17.3 ("before the answer the hypothesis is prose and
+  reaches nothing but the owner's screen"), which is why it is a ruling (R3,
+  revised) and parked until phase 1 shows how many long runs stay un-anchored.
 
 #### C3. Plans seeded where the model will write them
 
