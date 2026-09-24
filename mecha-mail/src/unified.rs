@@ -429,7 +429,7 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
         },
         {
             "name": "calendar_hold",
-            "description": "Block time on the owner's own primary calendar: a private hold that invites nobody, and whose details only the owner can see. Use it for reminders, focus time, or an event the owner is attending that has no invite to accept. To invite anyone, use calendar_create_event instead. Times are RFC 3339 (or YYYY-MM-DD with all_day).",
+            "description": "Block time on the owner's own primary calendar: a private hold that invites nobody, and that anyone the calendar is shared with at a reader level sees only as busy. Use it for reminders, focus time, or an event the owner is attending that has no invite to accept. To invite anyone, use calendar_create_event instead. Times are RFC 3339 (or YYYY-MM-DD with all_day).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1811,8 +1811,10 @@ impl MailTools {
 /// The whole create request for `calendar_create_event` or `calendar_hold`,
 /// and the calendar it goes to — `None` when a required field is missing.
 ///
-/// Pure, and the only place a create request is built, so the path from a
-/// tool name to what a provider is sent is one testable function. A hold's
+/// Pure, and the only place a *tool call* builds a create request (the
+/// poll-booking path and the single-provider servers build their own, all
+/// `private: false`), so the path from a tool name to what a provider is sent
+/// is one testable function. A hold's
 /// one security property is that `private` reaches the provider body, and
 /// with the request built inside the dispatch closure nothing failed if it
 /// stopped doing so (found in review of #277).
