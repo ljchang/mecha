@@ -345,8 +345,12 @@ The digest covers the files *inside* the environment, not files its config
 points to elsewhere in the checkout. The default's `system_prompt_file =
 "prompts/agent.md"` is one: editing that file changes what every arm runs
 without changing any hash. Each session still records its resolved system
-prompt, but the condition hash doesn't see it. To vary a prompt as an
-arm's condition, keep the prompt file inside the variant's environment.
+prompt, but the condition hash doesn't see it. The fixture servers an
+environment runs are the same: `eval/fixtures/mail_server.py`,
+`docs_server.py` and `polls_server.py` live outside every environment, so
+editing one changes the world each arm meets without moving a hash. To vary a
+prompt as an arm's condition, keep the prompt file inside the variant's
+environment.
 
 If you edit an arm's environment between two sittings, a `single` arm's home
 is re-seeded from the new build (its charter, skills and learning store), since
@@ -796,7 +800,7 @@ every day. Cases that depend on a date use a window of several days.
 
 ### Assistant suites
 
-Four more suites cover the work an assistant does across your other tools.
+Five more suites cover the work an assistant does across your other tools.
 They run in `eval/envs/assistant`, which extends the default with a fixture
 Google Docs server and a fixture poll server (both mirroring your real tools'
 names and arguments), your outbox routing, and more seeded data: a letter

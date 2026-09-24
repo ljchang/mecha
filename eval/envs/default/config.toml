@@ -39,4 +39,7 @@ env = { MECHA_FIXTURE_DIR = "${STORE}" }
 untrusted_input = true
 
 [outbox]
-tools = ["mail__mail_send", "mail__mail_reply"]
+# The owner's documented default routes event creation too: an unrouted
+# create after any MCP read is refused by the interlock, and a refused call
+# still reads as "called" to the grader.
+tools = ["mail__mail_send", "mail__mail_reply", "mail__calendar_create_event"]
