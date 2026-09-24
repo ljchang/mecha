@@ -679,89 +679,122 @@ impl Tool for HttpFetch {
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let url = arg_str(&input, "url")?;
-        let vetted = match check_url(url, ctx).await {
-            Ok(v) => v,
-            Err(e) => return Ok(ToolOutput::err(e.to_string())),
-        };
-
-        let mut builder = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            // Following a redirect re-opens everything check_url just closed:
-            // a public host can 302 straight to 169.254.169.254.
-            .redirect(reqwest::redirect::Policy::none());
-        // Pin the connection to the addresses that passed the private-IP
-        // check. Without this the client re-resolves the hostname itself, and
-        // a DNS answer with TTL 0 can hand the check a public address and the
-        // connection 169.254.169.254 — the classic rebinding TOCTOU.
-        if let Some((host, addrs)) = &vetted {
-            builder = builder.resolve_to_addrs(host, addrs);
-        }
-        let client = builder.build()?;
-        // Every failure past this point is `from_outside`: the redirect
-        // target is a header the remote server chose, and a transport error's
-        // text can carry what the far end said. An error built clean let
-        // attacker-chosen text enter the conversation untainted.
-        //
-        // Chosen, not overlooked: a DNS failure or a refused connection is
-        // reqwest's own words with no packet from the far end, and marking it
-        // external over-taints — one fetch at an unreachable host arms the
-        // untrusted leg for the rest of the conversation. It stays marked
-        // because a TLS alert *can* carry server-chosen strings and the two are
-        // not told apart from `reqwest::Error` without matching on its kinds,
-        // and over-taint fails closed. The loop's own errors follow the other
-        // rule (`run_tools`: an `Err` before the wire is never external);
-        // this tool touched the wire, so it marks.
-        let resp = match client.get(url).send().await {
-            Ok(r) => r,
-            Err(e) => return Ok(ToolOutput::err(format!("request failed: {e}")).from_outside()),
-        };
-
-        if resp.status().is_redirection() {
-            let target = resp
-                .headers()
-                .get("location")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("(no location header)");
-            return Ok(ToolOutput::err(format!(
-                "{} redirect to {target} — not followed. Call http_fetch again with that URL if you want it.",
-                resp.status()
+        Ok(match fetch_vetted(url, ctx).await? {
+            Fetched::Done(out) => out,
+            Fetched::Redirect { status, target } => ToolOutput::err(format!(
+                "{status} redirect to {target} — not followed. Call http_fetch again with that URL if you want it."
             ))
-            .from_outside());
-        }
-
-        let status = resp.status();
-        // Read at most one byte past the cap, then stop — `.text()` buffers
-        // however much the server chooses to send, and the server is the
-        // untrusted side of this call. `truncate` below marks the cut.
-        let mut raw: Vec<u8> = Vec::new();
-        let mut body_stream = resp.bytes_stream();
-        while let Some(chunk) = body_stream.next().await {
-            match chunk {
-                Ok(c) => raw.extend_from_slice(&c),
-                Err(e) => {
-                    // A body that broke partway is still what the far end
-                    // sent — a malformed chunk, a bad encoding — and the
-                    // conversation may already hold part of a hostile page.
-                    return Ok(
-                        ToolOutput::err(format!("reading the response body failed: {e}"))
-                            .from_outside(),
-                    );
-                }
-            }
-            if raw.len() > MAX_OUTPUT_BYTES {
-                break;
-            }
-        }
-        let body = String::from_utf8_lossy(&raw);
-        // The body is third-party content even on a 4xx — an injection hides
-        // just as well in an error page.
-        Ok(ToolOutput {
-            content: truncate(format!("HTTP {status}\n\n{body}"), "body"),
-            is_error: !status.is_success(),
-            external: true,
-            refusal: false,
+            .from_outside(),
         })
     }
+}
+
+/// What one vetted GET came back with.
+pub(crate) enum Fetched {
+    /// A body, or a failure — either way the answer to give the model.
+    Done(ToolOutput),
+    /// The server asked to be fetched somewhere else, and nothing followed
+    /// it. The target is the server's words, not a vetted URL: whoever
+    /// follows it must vet it again, hop by hop.
+    Redirect {
+        status: reqwest::StatusCode,
+        target: String,
+    },
+}
+
+/// One GET of `url`, vetted by `check_url` and pinned to the addresses that
+/// passed it, with redirects reported rather than followed.
+///
+/// Shared by `http_fetch`, which hands a redirect back to the model, and
+/// `web_open`, which follows it — each hop through this function again, so
+/// every hop is vetted and pinned like the first.
+pub(crate) async fn fetch_vetted(url: &str, ctx: &ToolCtx) -> Result<Fetched> {
+    let vetted = match check_url(url, ctx).await {
+        Ok(v) => v,
+        Err(e) => return Ok(Fetched::Done(ToolOutput::err(e.to_string()))),
+    };
+
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        // Following a redirect re-opens everything check_url just closed:
+        // a public host can 302 straight to 169.254.169.254.
+        .redirect(reqwest::redirect::Policy::none());
+    // Pin the connection to the addresses that passed the private-IP
+    // check. Without this the client re-resolves the hostname itself, and
+    // a DNS answer with TTL 0 can hand the check a public address and the
+    // connection 169.254.169.254 — the classic rebinding TOCTOU.
+    if let Some((host, addrs)) = &vetted {
+        builder = builder.resolve_to_addrs(host, addrs);
+    }
+    let client = builder.build()?;
+    // Every failure past this point is `from_outside`: the redirect
+    // target is a header the remote server chose, and a transport error's
+    // text can carry what the far end said. An error built clean let
+    // attacker-chosen text enter the conversation untainted.
+    //
+    // Chosen, not overlooked: a DNS failure or a refused connection is
+    // reqwest's own words with no packet from the far end, and marking it
+    // external over-taints — one fetch at an unreachable host arms the
+    // untrusted leg for the rest of the conversation. It stays marked
+    // because a TLS alert *can* carry server-chosen strings and the two are
+    // not told apart from `reqwest::Error` without matching on its kinds,
+    // and over-taint fails closed. The loop's own errors follow the other
+    // rule (`run_tools`: an `Err` before the wire is never external);
+    // this tool touched the wire, so it marks.
+    let resp = match client.get(url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            return Ok(Fetched::Done(
+                ToolOutput::err(format!("request failed: {e}")).from_outside(),
+            ))
+        }
+    };
+
+    if resp.status().is_redirection() {
+        let target = resp
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("(no location header)")
+            .to_string();
+        return Ok(Fetched::Redirect {
+            status: resp.status(),
+            target,
+        });
+    }
+
+    let status = resp.status();
+    // Read at most one byte past the cap, then stop — `.text()` buffers
+    // however much the server chooses to send, and the server is the
+    // untrusted side of this call. `truncate` below marks the cut.
+    let mut raw: Vec<u8> = Vec::new();
+    let mut body_stream = resp.bytes_stream();
+    while let Some(chunk) = body_stream.next().await {
+        match chunk {
+            Ok(c) => raw.extend_from_slice(&c),
+            Err(e) => {
+                // A body that broke partway is still what the far end
+                // sent — a malformed chunk, a bad encoding — and the
+                // conversation may already hold part of a hostile page.
+                return Ok(Fetched::Done(
+                    ToolOutput::err(format!("reading the response body failed: {e}"))
+                        .from_outside(),
+                ));
+            }
+        }
+        if raw.len() > MAX_OUTPUT_BYTES {
+            break;
+        }
+    }
+    let body = String::from_utf8_lossy(&raw);
+    // The body is third-party content even on a 4xx — an injection hides
+    // just as well in an error page.
+    Ok(Fetched::Done(ToolOutput {
+        content: truncate(format!("HTTP {status}\n\n{body}"), "body"),
+        is_error: !status.is_success(),
+        external: true,
+        refusal: false,
+    }))
 }
 
 /// Refuse a URL before any packet leaves. Model output decides where this

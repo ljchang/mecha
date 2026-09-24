@@ -123,6 +123,11 @@ three, classified 2026-09-17 against vendor documentation:
 | tavily | Blind | Blind | `search_depth` ranks and extracts; crawling is a separate API mecha never calls |
 | exa | Blind | **Chosen** | `deep-reasoning` is agentic research that *fetches pages the query steers it towards* |
 
+`web_open` is the same class by the same argument, one step on: its only
+argument is the handle `web_search` printed beside a result, so the page it
+fetches is one the backend returned and the model never writes a URL
+(`PROVENANCE-DESIGN.md` §4). What it leaks is which result was chosen.
+
 An armed conversation is served by the blind backends only, at quick depth
 (`SearchChain::search_blind`), and the result says so rather than silently
 answering shallower. With no blind backend configured there is no armed path

@@ -6132,6 +6132,76 @@ mod tests {
         }
     }
 
+    /// The complaint `PROVENANCE-DESIGN.md` §4 exists for, through the real
+    /// interlock with the real tools: in a conversation holding private data
+    /// and a stranger's words, `http_fetch` is refused and `web_open` of a
+    /// search result is not. Measured on the wire, because "executed" is the
+    /// claim. Fails on the old behaviour, where opening a result meant
+    /// composing a URL for `http_fetch`.
+    #[tokio::test]
+    async fn an_armed_conversation_can_open_a_search_result_but_not_fetch_a_url() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut tmp = [0u8; 4096];
+                let _ = sock.read(&mut tmp).await;
+                let _ = sock
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-length: 4\r\nconnection: close\r\n\r\npage",
+                    )
+                    .await;
+            }
+        });
+        let url = format!("http://{addr}/r");
+        let ledger = Arc::new(crate::search::ResultLedger::new());
+        let handle = ledger.record_for_test(&url);
+
+        for (tool, input, should_run) in [
+            ("web_open", json!({"result": handle}), true),
+            ("http_fetch", json!({"url": url}), false),
+        ] {
+            let before = hits.load(std::sync::atomic::Ordering::SeqCst);
+            let (mut agent, _) = agent_with(
+                vec![
+                    assistant(
+                        vec![Block::ToolUse {
+                            id: "c".into(),
+                            name: tool.into(),
+                            input,
+                        }],
+                        StopReason::ToolUse,
+                    ),
+                    assistant(vec![Block::text("done")], StopReason::EndTurn),
+                ],
+                PermissionMode::Allow,
+            );
+            agent
+                .registry
+                .insert(Arc::new(crate::search::WebOpen::new(Arc::clone(&ledger))));
+            agent
+                .registry
+                .insert(Arc::new(crate::tool::builtin::HttpFetch));
+            agent.ctx_mut().security.trifecta = TrifectaPolicy::Block;
+            agent.ctx_mut().security.block_private_ips = false;
+            let mut convo = Conversation::resumed(
+                vec![Message::user("open it")],
+                Taint {
+                    private: true,
+                    untrusted: true,
+                },
+            );
+            let outcome = agent.run(&mut convo, None).await.unwrap();
+            let ran = hits.load(std::sync::atomic::Ordering::SeqCst) > before;
+            assert_eq!(ran, should_run, "{tool}: reached the wire = {ran}");
+            assert_eq!(outcome.blocked_sends, u32::from(!should_run), "{tool}");
+        }
+    }
+
     /// Run one armed call to `web_search` and say whether it executed.
     async fn armed_blind_send(block_sends_after_private: bool, taint: Taint) -> (bool, u32) {
         let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
