@@ -25,19 +25,34 @@ proof). Read §7 below as the questions as first asked, not as pending.
 
 ## 1. What is refused today, measured
 
-Over the owner's 578 non-test sessions (`~/.mecha/sessions`, `meta.kind` not
-`test` or `experiment`, read-only, 2026-09-24):
+Over the owner's 582 non-test sessions (`~/.mecha/sessions`, `meta.kind` not
+`test` or `experiment`, read-only, recounted 2026-09-24T17:15Z). "Armed" at a
+point in a session is the latest `taint` record before it having both legs;
+an interlock refusal is a tool result carrying the interlock's refusal text.
+Units are stated on every line, because they differ.
 
-- **198 (34%) became armed**, both legs set. Median first arming: the 5th
-  message; 13 armed within the first exchange. Taint never disarms, so from
-  then on the conversation is armed for good.
-- **65 interlock refusals**: `web_search` 33, `http_fetch` 17, `shell` 8, the
-  `research` subagent 4, `factory__type_list` 2, `factory__surface_list` 1.
-- **`web_search` refusals stopped on 2026-09-17.** 15 armed searches before
-  that date (11 refused), 1 after (served, blind, at quick depth). D5 works.
-- After a refusal, the model **told the owner and stopped** 25 times, asked a
-  question 11, delegated to `research` 10 (which is itself refused from an
-  armed parent), retried 3, and tried another tool 5.
+- **201 sessions (35%) became armed**, both legs set. Median first arming:
+  the 6th message record; 16 sessions were armed by their 2nd. Taint never
+  disarms, so from then on the conversation is armed for good.
+- **65 interlock refusals (tool calls)**: `web_search` 33, `http_fetch` 17,
+  `shell` 8, the `research` subagent 4, `factory__type_list` 2,
+  `factory__surface_list` 1.
+- **`web_search` refusals stopped on 2026-09-17.** Before that date, 34
+  `web_search` calls were made while armed, across 18 sessions: 33 refused,
+  1 served (2026-08-13). After it, 1 armed call, served (blind, at quick
+  depth). D5 works.
+- **`research` from an armed parent: 17 calls, 13 served and 4 refused**,
+  and the split is a date. All 13 served calls, in 6 sessions, predate
+  `0073c007` (2026-09-02, "delegation stops laundering the send leg"); all 4
+  refusals follow it. Until then, delegating was an open door to `http_fetch`
+  from an armed conversation — channel 4's laundering, observed rather than
+  hypothetical. Since then the subagent derives `Chosen` from the
+  `http_fetch` it holds, and is refused.
+- **The 65 refusals were answered in 54 assistant turns**, because 6 turns
+  answered several refusals at once. Per turn, classified mechanically by
+  what the turn did: called another tool 17, delegated to `research` 15,
+  **told the owner and stopped** 14, asked the owner 6 (an `ask_user` call,
+  or a text-only turn ending in a question), retried a refused tool 2.
 
 And on the machine as configured now (`mecha tools --json`, 64 tools): 39
 have no egress and are never refused, 20 are routed to the outbox and are
@@ -104,10 +119,18 @@ fetches that URL, exactly as it was received.
   URL was written by the search backend, not composed.
 - **The record is `grounding::calls`**: first seen wins, and a stale
   (compacted) result is never evidence. The walk that makes this safe
-  already exists and has four callers.
-- **Following links** extends the same way: a fetched page's links are
-  numbered in its result, and `{page, link}` opens one. Still selection,
-  never composition.
+  already exists, with two production callers today (`outbox_source`,
+  `gossip`).
+- **Following links** is selection too, but **not the same channel**, and
+  it only works capped. For `{result}`, N is the search backend's (about
+  ten). For `{page, link}`, the link set is authored by the page just
+  fetched — in the case the interlock exists for, by the attacker — who
+  chooses both N and the mapping from link to token (`evil/a`,
+  `evil/b`, …). Uncapped, a page of 1,024 links is 10 bits per call and an
+  alphabet rather than an incidental leak. So `{page, link}` numbers **at
+  most 16 links per page, same-origin only**: at most 4 bits per call, and
+  no second host for the payload to reach. The cap is what lets residual 3's
+  budget bound anything.
 - `http_fetch` stays exactly as it is, `Chosen` (D9). A URL the owner
   typed, or one from mail, goes through it, and is refused when armed.
 
@@ -121,15 +144,22 @@ fetches that URL, exactly as it was received.
    D4/§6 residual of blind search itself, turned into a read receipt: real,
    slow, and requiring the attacker to win an indexing race per token.
 3. Both are **bandwidth, not reach**, and both are bounded by one number: a
-   per-conversation budget of blind calls. That is EGRESS-DESIGN §6 item 1's
-   phase 2, and it needs the `RunStats` counter that item names first.
+   per-conversation budget of blind *calls*. A budget bounds bandwidth only
+   because bits per call are bounded — at most ~3.3 for a result and 4 for
+   a capped link — so the product is a real ceiling. It needs **its own
+   counter**, blind calls per conversation. EGRESS-DESIGN §6 item 1's
+   `RunStats` counter measures blind-egress *bytes*, and `web_open`
+   composes no bytes — that is its whole claim — so that counter reads zero
+   for every call and a byte budget would never fire on it.
 
 ### 3.3 The owner's own question: a clean research child
 
 `research` is refused from an armed parent because the parent *composes*
 the child's prompt, so the child inherits the parent's taint (channel 4).
 But when the question is the **owner's words verbatim** (typed in the TUI,
-web chat, or Slack as `/research …`), no model composed it. A child started
+web chat, or Slack as `/research …` — where `mecha-slack`'s
+`Binding::gate` is what makes a message the owner's rather than anyone's in
+the workspace), no model composed it. A child started
 from exactly those bytes, and nothing else, is honestly clean. It gets the
 full chain, deep search and `http_fetch`, and its answer returns to the
 parent as untrusted content.
