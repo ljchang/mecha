@@ -1,5 +1,6 @@
 <script>
   import { apiFetch as fetch } from './api.js';
+  import { rowSummary, ROUTING_KEYS } from './outbox-view.js';
   // The chat view: a rendering of the conversation the server owns, plus a
   // live SSE feed of the run in flight. Sending during a run steers it —
   // the server folds the text into the tool-results turn.
@@ -1213,6 +1214,7 @@
         <div class="notice">{entry.text}</div>
       {:else if entry.kind === 'draft'}
         {@const d = entry.draft}
+        {@const sum = rowSummary(d)}
         <div class="qcard dcard">
           <div class="qhead">
             <span class="qkicker">drafted — send it?</span>
@@ -1227,14 +1229,32 @@
               addressing carefully.
             </div>
           {/if}
-          {#if d.headline}<div class="dheadline">{d.headline}</div>{/if}
+          <!-- A reply's arguments are a thread id and prose: say who and what
+               from the thread it read, as the outbox does — a sender only
+               from a verified read (outbox-view.js, rowSummary). -->
+          {#if d.headline || sum?.subject}<div class="dheadline">{d.headline || sum.subject}</div>{/if}
+          {#if sum?.who && !d.headers.some(([k]) => k === 'to')}
+            <div class="dfield"><span class="dkey">replying to</span><span>{sum.who}</span></div>
+          {/if}
           {#each d.headers as [name, value]}
             <div class="dfield"><span class="dkey">{name}</span><span>{value}</span></div>
           {/each}
           {#if d.body}<div class="dbody">{d.body}</div>{/if}
-          {#each d.other as [name, value]}
+          {#each d.other.filter(([k, v]) => !ROUTING_KEYS.includes(k) || (k === 'reply_all' && v === 'true')) as [name, value]}
             <div class="dfield"><span class="dkey">{name}</span><span>{value}</span></div>
           {/each}
+          <!-- Every argument stays reachable (DraftView's guarantee): the
+               routing ids folded above are one click away, as in the outbox. -->
+          {#if d.other.some(([k]) => ROUTING_KEYS.includes(k))}
+            <button class="dtoggle" onclick={() => (entry.showArgs = !entry.showArgs)}>
+              {entry.showArgs ? 'hide' : 'show'} the exact arguments
+            </button>
+            {#if entry.showArgs}
+              {#each d.other.filter(([k, v]) => ROUTING_KEYS.includes(k) && !(k === 'reply_all' && v === 'true')) as [name, value]}
+                <div class="dfield"><span class="dkey">{name}</span><span>{value}</span></div>
+              {/each}
+            {/if}
+          {/if}
           <!-- A reply's reviewable object includes what it replies to, and
                these bytes are third-party text: every line is marked, because
                a heading scrolls off and a per-line gutter cannot. -->

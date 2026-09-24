@@ -323,6 +323,7 @@ export function threadOf(sources) {
 export const ROUTING_KEYS = ['thread_id', 'message_id', 'reply_all'];
 
 const MSG_HEAD = /^--- \[([^\]]+)\] From: (.*) <([^<>]*)> · (\S+)$/;
+const CLIPPED_LINE = /^… truncated; `mecha sessions show` has the whole result\.$/;
 
 /**
  * The thread a drafting run read, as messages — `{ account, messages: [{
@@ -341,9 +342,16 @@ const MSG_HEAD = /^--- \[([^\]]+)\] From: (.*) <([^<>]*)> · (\S+)$/;
  */
 export function threadMessages(text, clipped = false) {
   const lines = (text ?? '').replace(/\s+$/, '').split('\n');
-  // A read cut at the source's length cap (the detail's `clipped`) ends on
-  // the cap's note, not on the count, and is missing whatever came after.
-  if (clipped) lines.pop();
+  // A read cut at the source's length cap ends on the cap's note
+  // (`outbox_source::CLIPPED_NOTE`), not on the count, and is missing whatever
+  // came after. The detail's `clipped` says so; the note is also recognised
+  // here, so a missing flag — an older server behind a newer page — is not
+  // read as "whole" (review of #272). A body typing the note only costs a
+  // verification, which is the safe direction.
+  if (clipped || CLIPPED_LINE.test(lines[lines.length - 1] ?? '')) {
+    clipped = true;
+    lines.pop();
+  }
   // mecha-mail's closing count (`thread_footer`): the one line after every
   // body, so a body cannot forge it. Reads staged before it existed have none.
   const foot = /^--- end of thread · (\d+) messages?$/.exec(lines[lines.length - 1] ?? '');
@@ -418,8 +426,7 @@ export function rowSummary(detail) {
   const read = (detail.sources ?? []).find((s) => toolSuffix(s.tool) === 'mail_get_thread');
   const thread = read ? threadMessages(read.text, read.clipped) : null;
   const answered = answeredMessage(thread, args);
-  const first = thread?.messages[0]?.subject ?? '';
-  const subject = detail.headline || (first ? (/^re:/i.test(first) ? first : `Re: ${first}`) : '');
+  const subject = detail.headline || replySubject(thread?.messages[0]?.subject);
   return { who: answered && thread.verified ? answered.name || answered.address : '', subject };
 }
 
@@ -458,3 +465,92 @@ export const REJECT_REASONS = ['Already handled', 'No longer needed', "Not right
  */
 export const JUST_OPENED_MS = 800;
 export const tooSoon = (openedAt, now = Date.now()) => now - openedAt < JUST_OPENED_MS;
+
+/** A reply's subject from its thread's: "Re: " once, never "Re: RE: ". */
+export function replySubject(subject) {
+  const s = (subject ?? '').trim();
+  if (!s) return '';
+  return /^re:/i.test(s) ? s : `Re: ${s}`;
+}
+
+/**
+ * The thread as it is **now**, from `/api/mail/read` — `mecha mail show`,
+ * whose text is an optional block of the triage record's `key: value` lines
+ * and then mail_get_thread's own read, ending on its count. Parsed from the
+ * first header naming `account` — **the account the page asked about, never
+ * one read out of the text**. The block ahead of the thread carries the
+ * classifier's reasoning, model prose over a stranger's mail: a header there
+ * naming another account would otherwise become the anchor and hide every
+ * real message, and a one-message thread would verify under the forged
+ * sender (review of #275). Naming the asked account instead, it adds a
+ * split, and the count catches it.
+ */
+export function liveThread(text, account) {
+  const lines = (text ?? '').split('\n');
+  const at = lines.findIndex((l) => MSG_HEAD.exec(l)?.[1] === account);
+  return at < 0 ? null : threadMessages(lines.slice(at).join('\n'));
+}
+
+/**
+ * What arrived in a thread after the draft was written — `{ added, grew,
+ * newest }` — or null when nothing can be said. With both reads verified,
+ * `added` is the new messages, matched by the provider's own ids (which a
+ * stranger cannot predict). With the recorded read unverified, only `grew`
+ * — how many more the live thread holds — and only when it is positive.
+ * The live read must be verified either way: it names the newest sender.
+ */
+export function sinceDrafted(recorded, live) {
+  if (!recorded || !live?.verified) return null;
+  const newest = live.messages[live.messages.length - 1] ?? null;
+  // Matching by id needs every message on both sides to carry one; a read in
+  // the older format can lack them, and a missing id would mark every live
+  // message new. Without ids, only the count is said (review of #275).
+  const idless = (t) => t.messages.some((m) => !m.replyId);
+  if (!recorded.verified || idless(recorded) || idless(live)) {
+    // A *clipped* read runs the other way: the cap dropped whatever came
+    // after it, so its count undercounts what the run read, and a live count
+    // above it would invent new mail (review of #275). It says nothing.
+    if (recorded.clipped) return null;
+    // Which messages are new cannot be said, but *that* the thread grew can:
+    // a forged header only ever adds to the recorded count, so a live count
+    // above it is never an overstatement. `added: null` — the count, not the
+    // messages.
+    const grew = live.messages.length - recorded.messages.length;
+    return grew > 0 ? { added: null, grew, newest } : null;
+  }
+  const seen = new Set(recorded.messages.map((m) => m.replyId));
+  const added = live.messages.filter((m) => !seen.has(m.replyId));
+  return { added, grew: added.length, newest };
+}
+
+/**
+ * The thread read a mail draft shows as messages — `{ source, ...parsed }` —
+ * or null. The **first** mail_get_thread read, the same one `threadOf` names
+ * the account from and `rowSummary` names the sender from, so the card, the
+ * from line and the row never describe two different reads (review of #272).
+ */
+export function readOf(detail) {
+  if (kindOf(detail?.tool) !== 'mail') return null;
+  const source = (detail?.sources ?? []).find((s) => toolSuffix(s.tool) === 'mail_get_thread');
+  const parsed = source ? threadMessages(source.text, source.clipped) : null;
+  return parsed?.messages.length ? { source, ...parsed } : null;
+}
+
+/**
+ * How often an open reply's thread is reread. Each reread is a `mecha mail
+ * show` subprocess and a provider round-trip under a 120 s timeout, so the
+ * cadence is a cost, and it lives here where a test holds it — the component
+ * once let a failing read retry on every 30 s poll, forever (review of #275).
+ */
+export const LIVE_FRESH_MS = 120_000; // a good read is reused this long
+export const LIVE_RETRY_MS = 60_000; // a failed one waits this long to retry
+export const LIVE_STUCK_MS = 180_000; // a read in flight longer than this is given up on
+
+/** Whether the thread should be reread now, given the last attempt `had`. */
+export function shouldReread(had, now = Date.now()) {
+  if (!had) return true;
+  const age = now - had.at;
+  if (had.status === 'loading') return age >= LIVE_STUCK_MS; // never double a read in flight
+  if (had.status === 'error') return age >= LIVE_RETRY_MS;
+  return age >= LIVE_FRESH_MS;
+}
