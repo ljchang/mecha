@@ -94,6 +94,12 @@ and it gets tests that fail on the dangerous shape:
   as *busy* at that time, never its title. That is timing, not content.
 - A new Doc holds whatever private text the model put in it. That is the
   owner's data in the owner's Drive, which is where it already was.
+- **What the review used to catch, named.** With the `allow` rule, a
+  conversation armed by a stranger's mail can create a Drive file or a hold
+  whose title and body an injection wrote, and nobody looks at it first,
+  headless triggers included. That is clutter and a misleading entry, not a
+  leak: nobody else can read it, and `docs_trash` and deleting the hold undo
+  it. It is the cost of the change, and the owner took it with R-P1.
 
 **Why not a per-call argument test** (for example, "`calendar_create_event`
 with empty `attendees` is `None`")? That puts a predicate over a

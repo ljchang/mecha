@@ -120,9 +120,9 @@ untrusted_input = true
 |---|---|
 | `docs_list` | everything mecha can reach |
 | `docs_read`, `sheets_read`, `slides_read` | read |
-| `docs_create`, `docs_append`, `docs_replace` | write a Doc |
-| `sheets_create`, `sheets_write` | write a Sheet |
-| `slides_create` | new deck (editing slide content is not yet supported) |
+| `docs_create`, `sheets_create`, `slides_create` | a new Doc, Sheet or deck, private to you (editing slide content is not yet supported) |
+| `docs_append`, `docs_replace` | edit a Doc |
+| `sheets_write` | edit a Sheet |
 | `docs_trash` | move to the Drive trash |
 
 `docs_replace` is the surgical edit — replace text by quoting it, rather than
@@ -159,14 +159,24 @@ is no sharing verb — and they take no `file_id`, so they cannot write into a
 document someone else already reads. They say `openWorldHint: false`
 outright, which keeps them out of the interlock even in a conversation that
 has read your mail, and they sit with the approver like any other write. To
-have them run without asking, allow them by rule:
+have them run without asking, allow each by rule — rules are per tool:
 
 ```toml
+# An `allow` must carry an example; these calls have no command to match,
+# so any plain word proves the rule loads.
 [[rule]]
 tool = "docs__docs_create"
 decision = "allow"
-# An `allow` must carry an example; the call has no command to match, so
-# any plain word proves the rule loads.
+match = ["create"]
+
+[[rule]]
+tool = "docs__sheets_create"
+decision = "allow"
+match = ["create"]
+
+[[rule]]
+tool = "docs__slides_create"
+decision = "allow"
 match = ["create"]
 ```
 

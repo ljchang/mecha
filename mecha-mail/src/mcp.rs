@@ -158,34 +158,95 @@ pub(crate) fn assert_tool_surface(
         let name = tool["name"].as_str().unwrap();
         assert_eq!(tool["inputSchema"]["type"], "object", "{name}");
         assert!(tool["description"].as_str().unwrap().len() > 20, "{name}");
+        // Exhaustive: a tool in none of the three lists is either a private
+        // write, whose schema is then inspected, or a mistake. Before this, a
+        // verb listed nowhere was checked only for its schema type and the
+        // length of its description — and executed unstaged if it carried no
+        // `openWorldHint` (found in review of #274).
+        let listed = reads.contains(&name) || writes.contains(&name) || triage.contains(&name);
+        assert!(
+            listed || is_private_write_claim(tool),
+            "{name} is in no quadrant: list it as a read, a write or a triage verb, or \
+             declare it a private write with openWorldHint: false"
+        );
     }
+    let claimants: Vec<&str> = tools
+        .iter()
+        .filter(|t| is_private_write_claim(t))
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    check_private_write_schemas(tools, &claimants);
+}
+
+/// Does this tool claim the fourth quadrant? It does when it would execute
+/// unstaged and is not a read or a destructive triage verb. mecha-core gives
+/// `Egress::None` to an *absent* `openWorldHint` as much as to `false`
+/// (`hint()` is `unwrap_or(false)`), so both spellings claim it, and both
+/// are inspected (found in review of #274).
+#[cfg(test)]
+fn is_private_write_claim(tool: &Value) -> bool {
+    let a = &tool["annotations"];
+    a["openWorldHint"] != Value::Bool(true)
+        && a["readOnlyHint"] != Value::Bool(true)
+        && a["destructiveHint"] != Value::Bool(true)
 }
 
 /// Assert the fourth quadrant: a **private write**, which creates something
 /// only the owner can read.
 ///
-/// These tools carry no `openWorldHint`, so they execute instead of staging
-/// (`docs/PROVENANCE-DESIGN.md` §2). The input schema is therefore the whole
-/// guard: the outbox's "exact arguments, one click away" review no longer
-/// applies. The schema must name nobody, and must not point at anything that
-/// already exists — a `file_id` could name a document someone else can
-/// already read, and a `folder_id` could put the new one in a shared folder.
-/// Writing into either is a publish.
+/// These tools execute instead of staging, because nothing marks them
+/// `openWorldHint` (`docs/PROVENANCE-DESIGN.md` §2). The input schema is
+/// therefore the whole guard: the outbox's "exact arguments, one click away"
+/// review no longer applies. The schema must name nobody, and must not point
+/// at anything that already exists — a `file_id` could name a document
+/// someone else can already read, and a `folder_id` could put the new one in
+/// a shared folder. Writing into either is a publish. A private write says
+/// `openWorldHint: false` outright, so the label reads as a decision.
 ///
 /// Two things make this a guard rather than a checklist:
 ///
-/// - **Membership is derived, not listed.** Every tool that says
-///   `openWorldHint: false` outright and is not a read is *claiming* this
-///   quadrant, and every claimant is inspected. `expected` is checked against
-///   the claimants, so a new verb cannot take the exemption without its
-///   schema being read, and a listed one cannot quietly leave it.
+/// - **Membership is derived, not listed.** Every tool that would execute
+///   unstaged and is neither a read nor a destructive triage verb claims this
+///   quadrant, whether `openWorldHint` is `false` or absent, and every
+///   claimant is inspected — here, and by [`assert_tool_surface`] on every
+///   surface that calls it. `expected` pins the claimants, so a new verb
+///   cannot take the exemption unseen, and a listed one cannot quietly
+///   leave it.
 /// - **The schema is judged by an allowlist.** A property is allowed only if
-///   it is one of the content fields below. A name nobody anticipated —
-///   `folder_id`, `parents`, `documentId` — fails until someone reads it and
-///   adds it here in a diff. A denylist of bad names failed open on exactly
-///   those (found in review of #274).
+///   it is one of the content fields in [`check_private_write_schemas`]. A
+///   name nobody anticipated — `folder_id`, `parents`, `documentId` — fails
+///   until someone reads it and adds it there in a diff. A denylist of bad
+///   names failed open on exactly those (found in review of #274).
 #[cfg(test)]
 pub(crate) fn assert_private_writes(tools: &[Value], expected: &[&str]) {
+    let mut have: Vec<&str> = tools
+        .iter()
+        .filter(|t| is_private_write_claim(t))
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    let mut want: Vec<&str> = expected.to_vec();
+    want.sort_unstable();
+    have.sort_unstable();
+    assert_eq!(
+        have, want,
+        "the tools that would execute unstaged without being a read or a triage verb \
+         must be exactly the private writes this test inspects"
+    );
+    for name in &have {
+        let a = &tools.iter().find(|t| t["name"] == *name).unwrap()["annotations"];
+        assert_eq!(
+            a["openWorldHint"],
+            Value::Bool(false),
+            "{name} is a private write; it must say openWorldHint: false outright"
+        );
+    }
+    check_private_write_schemas(tools, &have);
+}
+
+/// The allowlist half of [`assert_private_writes`], shared with
+/// [`assert_tool_surface`] so every surface inspects its claimants.
+#[cfg(test)]
+fn check_private_write_schemas(tools: &[Value], names: &[&str]) {
     // What a private write may say: the content of the new thing, and when.
     // Nothing here names a party or an existing object. `account` picks which
     // of the owner's own accounts holds the new thing, among the ones the
@@ -201,30 +262,8 @@ pub(crate) fn assert_private_writes(tools: &[Value], expected: &[&str]) {
         "timezone",
         "account",
     ];
-    let claimants: Vec<&str> = tools
-        .iter()
-        .filter(|t| {
-            let a = &t["annotations"];
-            a["openWorldHint"] == Value::Bool(false) && a["readOnlyHint"] != Value::Bool(true)
-        })
-        .map(|t| t["name"].as_str().unwrap())
-        .collect();
-    let mut want: Vec<&str> = expected.to_vec();
-    let mut have = claimants.clone();
-    want.sort_unstable();
-    have.sort_unstable();
-    assert_eq!(
-        have, want,
-        "the tools claiming the private-write quadrant (openWorldHint: false, not a read) \
-         must be exactly the ones this test inspects"
-    );
-    for name in claimants {
-        let tool = tools.iter().find(|t| t["name"] == name).unwrap();
-        assert_ne!(
-            tool["annotations"]["destructiveHint"],
-            Value::Bool(true),
-            "{name} creates; it must not destroy"
-        );
+    for name in names {
+        let tool = tools.iter().find(|t| t["name"] == *name).unwrap();
         let props = tool["inputSchema"]["properties"]
             .as_object()
             .unwrap_or_else(|| panic!("{name} has no properties"));

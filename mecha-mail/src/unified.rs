@@ -1979,6 +1979,13 @@ mod tests {
             ],
             &["mail_triage"],
         );
+        crate::mcp::assert_private_writes(
+            &tool_definitions(
+                &names(&["dartmouth", "personal"]),
+                &conf(Some("dartmouth"), None, None),
+            ),
+            &[],
+        );
     }
 
     /// The action set is closed, and the closure is what stops `spam` being
