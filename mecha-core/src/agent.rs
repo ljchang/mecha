@@ -3693,12 +3693,23 @@ impl Agent {
         }
 
         for (i, (id, name, input)) in calls.iter().enumerate() {
+            // What a person watching should see: `Tool::review_input`, not
+            // the raw input, which is still what executes. A read-only call
+            // like `web_open` reaches no approver, so the transcript is where
+            // it is seen — and a handle alone there names no host at all
+            // (found in review of #284). Events are display-only by contract,
+            // so nothing downstream acts on the enriched copy.
+            let shown = self
+                .registry
+                .get(name)
+                .map(|t| t.review_input(input))
+                .unwrap_or_else(|| input.clone());
             emit(
                 events,
                 AgentEvent::ToolCall {
                     id: id.clone(),
                     name: name.clone(),
-                    input: input.clone(),
+                    input: shown,
                 },
             );
 
@@ -6195,8 +6206,23 @@ mod tests {
                     untrusted: true,
                 },
             );
-            let outcome = agent.run(&mut convo, None).await.unwrap();
+            let (tx, mut rx) = unbounded_channel::<AgentEvent>();
+            let outcome = agent.run(&mut convo, Some(tx)).await.unwrap();
             let ran = hits.load(std::sync::atomic::Ordering::SeqCst) > before;
+            // The transcript shows where a handle leads: a read-only call
+            // reaches no approver, so this event is where it is seen.
+            if tool == "web_open" {
+                let mut shown = None;
+                while let Ok(ev) = rx.try_recv() {
+                    if let AgentEvent::ToolCall { name, input, .. } = ev {
+                        if name == "web_open" {
+                            shown = Some(input);
+                        }
+                    }
+                }
+                let shown = shown.expect("a ToolCall event for web_open");
+                assert_eq!(shown["url"], url.as_str(), "{shown}");
+            }
             assert_eq!(ran, should_run, "{tool}: reached the wire = {ran}");
             assert_eq!(outcome.blocked_sends, u32::from(!should_run), "{tool}");
         }

