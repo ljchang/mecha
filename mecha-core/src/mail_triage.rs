@@ -976,7 +976,7 @@ pub fn canary_thread(min_chars: usize) -> ThreadInput {
 /// store instead — a store walk, not a mailbox read. `seen` is the
 /// (account, thread id) pairs the read returned; `account` narrows as the
 /// sweep's own `--account` does, and `force` takes every failure whatever
-/// its wait and however many, as `classify --force` does in the window.
+/// its wait, as `classify --force` does in the window.
 pub fn due_outside_window<'a>(
     records: &'a [Record],
     seen: &std::collections::HashSet<(String, String)>,
@@ -992,12 +992,10 @@ pub fn due_outside_window<'a>(
         .filter(|r| !seen.contains(&(r.account.clone(), r.thread_id.clone())))
         .collect();
     due.sort_by(|a, b| a.classified_at.cmp(&b.classified_at));
-    // `max` paces the automatic sweep; `--force` is an operator asking for
-    // all of them — a 17-thread backlog (2026-08-19's shape) must not leave
-    // seven behind without a word.
-    if !force {
-        due.truncate(max);
-    }
+    // The caller sets `max`: small to pace the automatic sweep, large under
+    // `--force` (an operator asking for all of them — a 17-thread backlog must
+    // not leave seven behind), and bounded either way.
+    due.truncate(max);
     due
 }
 
@@ -2386,9 +2384,9 @@ mod tests {
             "--force takes a failure still on its wait, as it does in the window"
         );
         assert_eq!(
-            due_outside_window(&records, &seen, None, now, true, 1).len(),
+            due_outside_window(&records, &seen, None, now, true, 10).len(),
             4,
-            "and every one of them — the per-sweep cap paces the automatic sweep only"
+            "and every one of them, within the cap the caller sets"
         );
     }
 

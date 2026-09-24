@@ -1065,7 +1065,11 @@ async fn classify(
             account,
             chrono::Utc::now(),
             force,
-            REQUEUE_MAX,
+            if force {
+                REQUEUE_FORCE_MAX
+            } else {
+                REQUEUE_MAX
+            },
         )
     } else {
         Vec::new()
@@ -1085,6 +1089,12 @@ async fn classify(
         },
         if dry_run { " (dry run)" } else { "" }
     );
+    if force && requeue.len() == REQUEUE_FORCE_MAX {
+        eprintln!(
+            "--force: retrying the oldest {REQUEUE_FORCE_MAX} failures outside the window; \
+             run again for the rest, or dismiss what should not be retried"
+        );
+    }
     if (todo.is_empty() && requeue.is_empty()) || dry_run {
         for r in &todo {
             println!("  would classify {} — {}", r["thread_id"], r["subject"]);
@@ -1160,7 +1170,9 @@ async fn classify(
     // mail surface's own common-mode failure, which the model canary cannot
     // see (`reread_was_outage`).
     let mut reread_failures: Vec<(ThreadInput, Option<Record>, anyhow::Error)> = Vec::new();
-    let mut reread_ok = 0u32;
+    // Successful re-reads per account: the mail surface is judged per
+    // account, since one account's token lapsing says nothing of another's.
+    let mut reread_ok: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     // Requeued threads that classified — the summary's count, which is not
     // `reread_ok` (a body read that the prefilter took, or the model failed).
     let mut requeued_ok = 0u32;
@@ -1188,7 +1200,7 @@ async fn classify(
                 };
                 match body {
                     Ok(b) => {
-                        reread_ok += 1;
+                        *reread_ok.entry(t.account.clone()).or_default() += 1;
                         t.body = b;
                         (t, false, true)
                     }
@@ -1213,6 +1225,8 @@ async fn classify(
             if let Err(e) = store.put(&record(&thread, Some(v), None)) {
                 eprintln!("  ! {} — {e}", thread.thread_id);
                 failed += 1;
+                // Fails the run at the end, like every other write here.
+                write_error.get_or_insert(e);
             } else {
                 prefiltered += 1;
                 if global.verbose {
@@ -1329,86 +1343,109 @@ async fn classify(
         && failures
             .iter()
             .any(|(_, _, e)| !mecha_core::mail_triage::failure_is_outage(e));
-    let canary_answered = if need_canary {
-        let longest = failures
+    // Where the model starts failing, by length. The server failure this
+    // exists for is length-dependent (a reasoning budget eating `max_tokens`
+    // fails long threads and answers short ones), and one canary cannot say
+    // which failures it covers: padded to the longest, its failure would
+    // excuse two genuinely stuck short threads on every sweep for ever;
+    // padded to the shortest, its answer would charge the long ones for a
+    // server flag. So find the shortest failing length among the failures'
+    // own (`first_failing_length`, a few calls at most), and excuse exactly
+    // the failures at least that long. Every length answering: all the
+    // threads' own. Even the shortest failing: the server's, all of them.
+    let failing_from = if need_canary {
+        let mut lens: Vec<usize> = failures
             .iter()
-            .map(|(t, _, _)| t.body.chars().count())
-            .max()
-            .unwrap_or(0)
-            .min(BODY_CHARS_MAX);
-        let answered = mecha_core::mail_triage::classify_with(
-            provider.as_ref(),
-            &model,
-            &mecha_core::mail_triage::canary_thread(longest),
-            &today,
-            &examples,
-            learned.as_deref(),
-        )
-        .await
-        .is_ok();
+            .map(|(t, _, _)| t.body.chars().count().min(BODY_CHARS_MAX))
+            .collect();
+        lens.sort_unstable();
+        lens.dedup();
+        let from = first_failing_length(&lens, |n| {
+            let canary = mecha_core::mail_triage::canary_thread(n);
+            let (provider, model, today, examples, learned) = (
+                provider.as_ref(),
+                &model,
+                &today,
+                &examples,
+                learned.as_deref(),
+            );
+            async move {
+                mecha_core::mail_triage::classify_with(
+                    provider, model, &canary, today, examples, learned,
+                )
+                .await
+                .is_ok()
+            }
+        })
+        .await;
         eprintln!(
             "  {}",
-            if answered {
-                "the model answered a canary as long as the longest failure — \
-                 these failures are the threads' own"
-            } else {
-                "the model failed a canary of the same length — the server's, \
-                 counted against no thread"
+            match from {
+                None => "the model answered canaries as long as every failure — these failures are the threads' own".to_string(),
+                Some(n) => format!(
+                    "the model fails from {n} characters — failures that long are the server's, counted against no thread"
+                ),
             }
         );
-        answered
+        from
     } else {
-        true
+        None
     };
-    // Several re-reads failing with none succeeding is either the mail
-    // surface (a lapsed token, a 503) or several threads the mailbox no
-    // longer has — and the two need opposite answers: an outage charged puts
-    // every thread on the day-long wait, and dead threads uncharged are due
-    // again next sweep, failing the unit every tick for ever. The counts
-    // cannot tell them apart, so ask the surface, as the model canary asks
-    // the model: re-read a thread this sweep's own read just returned, which
-    // therefore exists. It answering means the failures are the threads'.
-    let surface_answered = if reread_failures.len() >= 2 && reread_ok == 0 {
-        let probe = rows.iter().find(|r| {
-            r["account"].as_str() == Some(reread_failures[0].0.account.as_str())
-                && r["thread_id"].as_str().is_some()
-        });
-        match (probe, &get_thread) {
-            (Some(row), Some(tool)) => {
-                let answered = fetch_body(tool.as_ref(), &ctx, &row_to_input(row))
-                    .await
-                    .is_ok();
-                eprintln!(
-                    "  {}",
-                    if answered {
-                        "the mailbox answered a re-read of a thread it has — these threads are gone"
-                    } else {
-                        "the mailbox failed a re-read of a thread it has too — the mail \
-                         surface's, counted against no thread"
-                    }
-                );
-                answered
-            }
-            // Nothing to probe with: unknown, so the side that backs off —
-            // the other side is the loop that fails the unit every tick.
-            _ => true,
+    // The mail surface, per account: several re-reads failing with none
+    // succeeding is either that account's surface (a lapsed token, a 503) or
+    // several threads its mailbox no longer has — opposite answers: an outage
+    // charged puts every thread on the day-long wait, and dead threads
+    // uncharged are due again next sweep, failing the unit every tick for
+    // ever. The counts cannot tell them apart, so ask the surface, as the
+    // canary asks the model: re-read a thread this sweep's own read just
+    // returned from that account, which therefore exists.
+    let mut accounts: Vec<String> = reread_failures
+        .iter()
+        .map(|(t, _, _)| t.account.clone())
+        .collect();
+    accounts.sort_unstable();
+    accounts.dedup();
+    let mut surface_down: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for acct in accounts {
+        let failed_here = reread_failures
+            .iter()
+            .filter(|(t, _, _)| t.account == acct)
+            .count();
+        let ok_here = reread_ok.get(&acct).copied().unwrap_or(0);
+        if failed_here < 2 || ok_here > 0 {
+            continue;
         }
-    } else {
-        true
-    };
-    if reread_was_outage(reread_failures.len(), reread_ok, surface_answered) {
-        eprintln!(
-            "  every re-read of a stored thread failed — the mail surface's, counted against no thread"
-        );
-        for (thread, prev, e) in &reread_failures {
+        let probe = rows.iter().find(|r| {
+            r["account"].as_str() == Some(acct.as_str()) && r["thread_id"].as_str().is_some()
+        });
+        // Nothing to probe with: unknown, so the side that backs off — the
+        // other side is the loop that fails the unit every tick.
+        let answered = match (probe, &get_thread) {
+            (Some(row), Some(tool)) => fetch_body(tool.as_ref(), &ctx, &row_to_input(row))
+                .await
+                .is_ok(),
+            _ => true,
+        };
+        if reread_was_outage(failed_here, ok_here, answered) {
+            eprintln!("  {acct}: a re-read of a thread it has failed too — the mail surface's, counted against no thread");
+            surface_down.insert(acct);
+        } else {
+            eprintln!("  {acct}: the mailbox answered a re-read of a thread it has — these threads are gone");
+        }
+    }
+    for (thread, prev, e) in &reread_failures {
+        if surface_down.contains(&thread.account) {
             if let Err(err) = store.put(&failed_record(thread, prev.as_ref(), e, true)) {
                 write_error.get_or_insert(err);
             }
         }
     }
-    // Already written as the threads' own; an outage takes the charge back.
-    if sweep_was_outage(failures.len(), canary_answered) {
-        for (thread, prev, e) in &failures {
+    // Already written as the threads' own; the server's take the charge back.
+    for (thread, prev, e) in &failures {
+        if excused_by_length(
+            thread.body.chars().count().min(BODY_CHARS_MAX),
+            failing_from,
+        ) {
             if let Err(err) = store.put(&failed_record(thread, prev.as_ref(), e, true)) {
                 write_error.get_or_insert(err);
             }
@@ -1490,6 +1527,11 @@ async fn fetch_body(
 /// window, so a backlog after a long outage is worked off over several
 /// sweeps rather than in one that runs past the unit's timeout.
 const REQUEUE_MAX: usize = 10;
+
+/// `--force` asks for every failure, and a 17-thread backlog after an outage
+/// must not leave seven behind — but a store holding a year of undismissed
+/// failures, at ~30 s each, would be an hours-long run. Bounded, and said.
+const REQUEUE_FORCE_MAX: usize = 200;
 
 /// One unit of a sweep's work: a row the mailbox read returned, or a failed
 /// thread retried from the store (`due_outside_window`).
@@ -1576,23 +1618,32 @@ fn failed_record(
     r
 }
 
-/// Whether a sweep's failures were the server's, whatever their error type:
-/// more than one thread failed, and the model could not answer a canary as
-/// long as the longest of them either (`mail_triage::canary_thread`) — how
-/// many threads it DID answer is not the test, because the failure this
-/// catches is length-dependent and answers the short ones.
-///
-/// `failure_is_outage` reads the error, and a server-wide failure need not
-/// carry a `ProviderError` — llama-server answering HTTP 200 with empty
-/// content when `--reasoning-budget` eats `max_tokens` fails every thread
-/// through a plain error. Counting that against each thread would walk the
-/// whole mailbox up the backoff after one bad server flag. But the counts
-/// alone cannot tell that from two threads stuck at once on a quiet tick —
-/// which, treated as an outage, would never back off, the very bug the
-/// backoff fixes — so the canary decides. A single failure is always the
-/// thread's own; no canary is asked.
-fn sweep_was_outage(failures: usize, canary_answered: bool) -> bool {
-    failures >= 2 && !canary_answered
+/// The shortest of `lens` (sorted, deduplicated) at which `ask` — a canary
+/// of that length — fails, or `None` when every one answers. A binary
+/// search, assuming longer fails whenever shorter does, which is the shape
+/// of the length-dependent server failure it exists for: a handful of calls
+/// for a whole sweep's failures.
+async fn first_failing_length<F, Fut>(lens: &[usize], mut ask: F) -> Option<usize>
+where
+    F: FnMut(usize) -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let (mut lo, mut hi) = (0, lens.len());
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if ask(lens[mid]).await {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lens.get(lo).copied()
+}
+
+/// Whether a failure of `len` characters is the server's, given where the
+/// model was found to start failing.
+fn excused_by_length(len: usize, failing_from: Option<usize>) -> bool {
+    failing_from.is_some_and(|from| len >= from)
 }
 
 /// Whether a sweep's failed re-reads of stored threads were the mail
@@ -2865,7 +2916,8 @@ fn draft_prompt(
 #[cfg(test)]
 mod classify_exit_tests {
     use super::{
-        failed_record, parse_recent, reread_was_outage, run_accomplished_nothing, sweep_was_outage,
+        excused_by_length, failed_record, first_failing_length, parse_recent, reread_was_outage,
+        run_accomplished_nothing,
     };
     use mecha_core::mail_triage::{ThreadInput, FAILED};
     use mecha_core::provider::retry::ProviderError;
@@ -2988,31 +3040,53 @@ mod classify_exit_tests {
         );
     }
 
-    #[test]
-    fn a_sweep_is_an_outage_only_when_the_model_also_fails_a_canary() {
-        assert!(
-            sweep_was_outage(25, false),
-            "every thread failed, and so did the canary"
+    /// The failure the canary exists for is length-dependent, and one canary
+    /// could not say which failures it covered. Review findings, both ways:
+    /// padded to the longest, it excused two stuck snippet threads on every
+    /// sweep for ever; padded to the shortest, it charged long threads for a
+    /// server flag. The search finds where the model starts failing.
+    #[tokio::test]
+    async fn the_canary_finds_where_the_model_starts_failing() {
+        let lens = [120, 400, 2_000, 8_000];
+        let calls = std::cell::Cell::new(0);
+        let server_fails_from = |limit: usize| {
+            let calls = &calls;
+            move |n: usize| {
+                calls.set(calls.get() + 1);
+                async move { n < limit }
+            }
+        };
+        assert_eq!(
+            first_failing_length(&lens, server_fails_from(1_000)).await,
+            Some(2_000)
         );
-        // Review finding: two threads stuck at once on a quiet tick look like
-        // an outage by their counts; treated as one, they never backed off.
         assert!(
-            !sweep_was_outage(2, true),
-            "two stuck threads, a healthy model"
+            calls.get() <= 3,
+            "a search, not a canary per failure: {}",
+            calls.get()
+        );
+        assert_eq!(
+            first_failing_length(&lens, server_fails_from(usize::MAX)).await,
+            None,
+            "all answer"
+        );
+        assert_eq!(
+            first_failing_length(&lens, server_fails_from(0)).await,
+            Some(120),
+            "even the shortest fails"
+        );
+        assert_eq!(first_failing_length(&[], server_fails_from(0)).await, None);
+
+        // Excused are exactly the failures at least that long.
+        assert!(excused_by_length(8_000, Some(2_000)));
+        assert!(excused_by_length(2_000, Some(2_000)));
+        assert!(
+            !excused_by_length(400, Some(2_000)),
+            "a short stuck thread is its own"
         );
         assert!(
-            !sweep_was_outage(1, false),
-            "one failure is the thread's own"
-        );
-        assert!(!sweep_was_outage(0, false));
-        // Review finding: the server failure the canary exists for is
-        // length-dependent — it answers the short threads and fails the long
-        // ones — so "the model worked for others" is not the test. Eighteen
-        // answered and four long ones failed, and a canary as long as them
-        // failed too: the server's, not theirs.
-        assert!(
-            sweep_was_outage(4, false),
-            "a length-matched canary failing is the server's, however many short threads it answered"
+            !excused_by_length(8_000, None),
+            "every length answered: all the threads' own"
         );
     }
 
