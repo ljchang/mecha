@@ -51,4 +51,5 @@ tools = [
   "docs__docs_replace",
   "factory__poll_create",
   "factory__poll_meeting_create",
+  "factory__poll_close",
 ]

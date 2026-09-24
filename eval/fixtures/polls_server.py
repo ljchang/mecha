@@ -275,6 +275,7 @@ TOOLS = [
             },
             "required": ["instrument", "poll_id", "spec"],
         },
+        "annotations": {"openWorldHint": True},
     },
     {
         "name": "poll_meeting_create",
@@ -295,17 +296,19 @@ TOOLS = [
             },
             "required": ["title", "participants", "duration_minutes"],
         },
+        "annotations": {"openWorldHint": True},
     },
     {
         "name": "poll_status",
         "description": "Who has answered, and the tally. A meeting poll comes back ranked with the auto-book verdict; a general poll comes back as per-question counts. Free-text answers are counted but never quoted — they are other people's words, and a run holding the mailbox is the wrong place for them. Ask the user to read those with `factory-publish polls status`.",
         "inputSchema": {"type": "object", "properties": {"instrument": {"type": "string"}, "poll_id": {"type": "string"}}, "required": ["instrument", "poll_id"]},
-        "annotations": {"readOnlyHint": True},
+        "annotations": {"readOnlyHint": True, "openWorldHint": True},
     },
     {
         "name": "poll_close",
         "description": "Freeze a poll's answers. A `resolution` is rendered at the top of the closed page, so the links people already hold answer \"so what happened?\" — write one whenever there is an outcome to state.",
         "inputSchema": {"type": "object", "properties": {"instrument": {"type": "string"}, "poll_id": {"type": "string"}, "resolution": {"type": "string"}}, "required": ["instrument", "poll_id"]},
+        "annotations": {"openWorldHint": True},
     },
 ]
 HANDLERS = {"poll_create": poll_create, "poll_meeting_create": poll_meeting_create, "poll_status": poll_status, "poll_close": poll_close}
