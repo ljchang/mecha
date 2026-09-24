@@ -98,7 +98,16 @@ impl ShellRegistry {
                 return Ok(PathBuf::from(dir));
             }
         }
-        Ok(crate::work::mecha_home()?.join("runs").join("shells"))
+        // mecha-core's own unit tests run the `shell` tool in-process, and
+        // each spawn registers here: they must never write to the owner's
+        // real `~/.mecha`. A per-process temp root, chosen at compile time
+        // rather than by setting `MECHA_SHELLS_DIR` — tests run on parallel
+        // threads, and a process-global env write would race them.
+        #[cfg(test)]
+        let root = std::env::temp_dir().join(format!("mecha-shells-test-{}", std::process::id()));
+        #[cfg(not(test))]
+        let root = crate::work::mecha_home()?.join("runs").join("shells");
+        Ok(root)
     }
 
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
