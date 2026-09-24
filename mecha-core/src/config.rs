@@ -2370,6 +2370,12 @@ mod tests {
             .expect("ConfigLayer::expand_home moved")
             .1;
         let expand = &expand[..expand.find("\n    }\n").expect("unterminated expand_home")];
+        let config_layer = src
+            .split_once("struct ConfigLayer {")
+            .expect("ConfigLayer moved")
+            .1;
+        let config_layer =
+            &config_layer[..config_layer.find("\n}").expect("unterminated ConfigLayer")];
 
         let mut checked = 0;
         for (pos, _) in src.match_indices("Layer {") {
@@ -2390,10 +2396,43 @@ mod tests {
                     continue;
                 }
                 let field = field.trim().trim_start_matches("pub ");
+                // On its own layer's binding, not by bare name: a second
+                // layer's `dir` must not pass because `o.dir` is expanded
+                // (found on review). ConfigLayer names the table the layer
+                // sits under; expand_home names the binding it opens it as.
+                let table = config_layer
+                    .lines()
+                    .find_map(|l| {
+                        let (t, ty) = l.trim().split_once(':')?;
+                        (ty.trim() == format!("Option<{name}Layer>,")).then(|| t.trim())
+                    })
+                    .unwrap_or_else(|| panic!("`{name}Layer` is not a table of ConfigLayer"));
+                let open = format!("= self.{table}.as_mut()");
+                let binding = expand
+                    .lines()
+                    .find_map(|l| {
+                        let l = l.trim();
+                        l.contains(&open).then(|| {
+                            l.trim_start_matches("if let Some(")
+                                .split(')')
+                                .next()
+                                .unwrap_or("")
+                                .to_string()
+                        })
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("`ConfigLayer::expand_home` never opens `[{table}]`, so `{name}Layer::{field}` is read literally")
+                    });
+                let needle = format!("{binding}.{field}");
+                let ident = |c: char| c.is_alphanumeric() || c == '_';
+                let reads = expand.match_indices(&needle).any(|(i, _)| {
+                    !expand[..i].chars().next_back().is_some_and(ident)
+                        && !expand[i + needle.len()..].chars().next().is_some_and(ident)
+                });
                 assert!(
-                    apply_reads_field(expand, field),
+                    reads,
                     "`{name}Layer::{field}` is a path a config file can set, and \
-                     `ConfigLayer::expand_home` never expands it, so a `~` there is read literally"
+                     `ConfigLayer::expand_home` never expands `{binding}.{field}`, so a `~` there is read literally"
                 );
                 checked += 1;
             }
