@@ -110,7 +110,7 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
         } => run(&name, limit, dry_run, jobs).await,
         Cmd::Status { name, json } => status(&name, json).await,
         Cmd::Judge { name, json } => judge_cmd(&name, json),
-        Cmd::Report { name, json } => report_cmd(&name, json),
+        Cmd::Report { name, json } => report_cmd(&name, json).await,
         Cmd::Export { name } => export(&name),
     }
 }
@@ -2386,11 +2386,34 @@ fn lifetime_readout(
     Ok(out)
 }
 
-fn report_cmd(name: &str, json: bool) -> Result<()> {
+async fn report_cmd(name: &str, json: bool) -> Result<()> {
     let store = ExperimentStore::open_default(name)?;
     let manifest = store.manifest()?;
-    let (trials, skipped) = store.trials()?;
-    let trials: Vec<Trial> = trials.into_values().collect();
+    // The plan, as `status` reads it, so a trial not yet started counts as
+    // pending rather than as nothing; then every stored row the plan does
+    // not name (an arm since dropped from the manifest), so no row goes
+    // uncounted. The store alone when the design cannot be planned.
+    let planned: Result<_> = async {
+        let cases = cases_for(&manifest).await?;
+        let real = mecha_core::config::Config::load_global()?;
+        let (provider, model) = provider_and_model(&real)?;
+        let ids: Vec<String> = cases.iter().map(|c| c.id.clone()).collect();
+        let base = std::env::current_dir().context("cannot determine the working directory")?;
+        store.plan(&manifest, &ids, &provider, &model, &base)
+    }
+    .await;
+    let (stored, stored_skipped) = store.trials()?;
+    let (mut trials, skipped): (Vec<Trial>, usize) = match planned {
+        Ok((planned, skipped)) => (planned, skipped),
+        Err(e) => {
+            eprintln!(
+                "mecha exp: the design's tasks could not be planned ({e:#}); reporting the store's rows only"
+            );
+            (Vec::new(), stored_skipped)
+        }
+    };
+    let seen: std::collections::BTreeSet<String> = trials.iter().map(|t| t.id.clone()).collect();
+    trials.extend(stored.into_values().filter(|t| !seen.contains(&t.id)));
     let r = mecha_core::exp_report::build(&manifest, &trials);
     if json {
         println!("{}", serde_json::to_string_pretty(&r)?);
@@ -2427,13 +2450,13 @@ fn render_report(r: &mecha_core::exp_report::Report, skipped: usize) -> String {
             "  {skipped} trial file(s) could not be read and are not counted"
         );
     }
-    let _ = writeln!(
-        out,
-        "\n{:<16} {:>5} {:>6} {:>7} {:>11} {:>7} {:>7} {:>6} {:>14} {:>7} {:>11} {:>5}",
+    let cols = [
         "arm",
         "done",
         "failed",
         "pending",
+        "running",
+        "unknown",
         "pass",
         "pass^k",
         "pass@k",
@@ -2441,8 +2464,26 @@ fn render_report(r: &mecha_core::exp_report::Report, skipped: usize) -> String {
         "tokens in/out",
         "wall",
         "tools (err)",
-        "jobs"
-    );
+        "jobs",
+    ];
+    let widths = [16usize, 5, 6, 7, 7, 7, 11, 7, 7, 6, 14, 7, 11, 5];
+    let line = |cells: &[String]| {
+        cells
+            .iter()
+            .zip(widths)
+            .enumerate()
+            .map(|(i, (c, w))| {
+                if i == 0 {
+                    format!("{c:<w$}")
+                } else {
+                    format!("{c:>w$}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let head: Vec<String> = cols.iter().map(|c| c.to_string()).collect();
+    let _ = writeln!(out, "\n{}", line(&head));
     for a in &r.arms {
         let jobs = if a.jobs_seen.is_empty() {
             "—".to_string()
@@ -2453,13 +2494,18 @@ fn render_report(r: &mecha_core::exp_report::Report, skipped: usize) -> String {
                 .collect::<Vec<_>>()
                 .join(",")
         };
-        let _ = writeln!(
-            out,
-            "{:<16} {:>5} {:>6} {:>7} {:>11} {:>7} {:>7} {:>6} {:>14} {:>7} {:>11} {:>5}",
-            a.arm,
-            a.done,
-            a.failed,
-            a.pending,
+        let arm = if a.off_manifest {
+            format!("{}*", a.arm)
+        } else {
+            a.arm.clone()
+        };
+        let row = [
+            arm,
+            a.done.to_string(),
+            a.failed.to_string(),
+            a.pending.to_string(),
+            a.running.to_string(),
+            a.unknown.to_string(),
             format!("{}/{} {}", a.passed, a.graded, pct(a.pass_rate)),
             format!("{}/{}", a.tasks_always, a.tasks_graded),
             format!("{}/{}", a.tasks_ever, a.tasks_graded),
@@ -2467,13 +2513,26 @@ fn render_report(r: &mecha_core::exp_report::Report, skipped: usize) -> String {
             format!("{} / {}", k(a.input_tokens), k(a.output_tokens)),
             num(a.mean_wall_secs, "s"),
             format!("{} ({})", a.tool_calls, a.tool_errors),
-            jobs
-        );
+            jobs,
+        ];
+        let _ = writeln!(out, "{}", line(&row));
     }
     let _ = writeln!(
         out,
         "  pass^k: tasks passed on every run; pass@k: on at least one (across seeds and repetitions).\n  turns and wall are means per done trial; tokens and tool calls are totals"
     );
+    if r.arms.iter().any(|a| a.off_manifest) {
+        let _ = writeln!(
+            out,
+            "  * an arm the manifest no longer names, whose rows are still stored"
+        );
+    }
+    if r.arms.iter().any(|a| a.unknown > 0) {
+        let _ = writeln!(
+            out,
+            "  unknown: a status this build cannot read, neither rerun nor judged; a lifetime stops at one"
+        );
+    }
     if !r.tasks.is_empty() {
         let arms: Vec<&String> = r.arms.iter().map(|a| &a.arm).collect();
         let _ = write!(out, "\n{:<28}", "task");

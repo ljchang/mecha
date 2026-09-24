@@ -38,7 +38,15 @@ pub struct ArmReport {
     pub rows: usize,
     pub done: usize,
     pub failed: usize,
+    /// Planned and not yet started.
     pub pending: usize,
+    /// Started and not finished: in flight, or a crashed runner's row.
+    pub running: usize,
+    /// A status this build cannot read: neither rerun nor judged, and a
+    /// lifetime stops at one, so it is a finding, never "pending".
+    pub unknown: usize,
+    /// An arm the manifest no longer names, whose rows are still stored.
+    pub off_manifest: bool,
     /// Done rows with a grade, and how many of them passed.
     pub graded: usize,
     pub passed: usize,
@@ -102,23 +110,45 @@ fn wall_secs(t: &Trial) -> Option<f64> {
 /// Build the readout from a manifest and its rows (the store's, as `judge`
 /// reads them).
 pub fn build(manifest: &Manifest, trials: &[Trial]) -> Report {
+    // One pass for the task × arm cells, which both the per-task table and
+    // each arm's pass^k / pass@k read, so the two cannot disagree.
+    let mut cells: BTreeMap<(&str, &str), Cell> = BTreeMap::new();
+    for t in trials.iter().filter(|t| t.status == TrialStatus::Done) {
+        if let Some(p) = t.passed {
+            let c = cells.entry((t.arm.as_str(), t.task.as_str())).or_default();
+            c.runs += 1;
+            c.passed += usize::from(p);
+        }
+    }
+    // The manifest's arms, then any arm a stored row names that the
+    // manifest does not: rows are never dropped from the count.
+    let mut names: Vec<(String, bool)> = manifest.arms.keys().map(|a| (a.clone(), false)).collect();
+    let stray: BTreeSet<&str> = trials
+        .iter()
+        .map(|t| t.arm.as_str())
+        .filter(|a| !manifest.arms.contains_key(*a))
+        .collect();
+    names.extend(stray.into_iter().map(|a| (a.to_string(), true)));
+
     let mut arms = Vec::new();
-    for name in manifest.arms.keys() {
+    for (name, off_manifest) in &names {
         let rows: Vec<&Trial> = trials.iter().filter(|t| &t.arm == name).collect();
         let mut a = ArmReport {
             arm: name.clone(),
             rows: rows.len(),
+            off_manifest: *off_manifest,
             ..ArmReport::default()
         };
         let (mut turns, mut with_stats) = (0u64, 0usize);
         let (mut wall, mut with_wall) = (0f64, 0usize);
         let mut jobs = BTreeSet::new();
-        let mut per_task: BTreeMap<&str, Cell> = BTreeMap::new();
         for t in &rows {
             match t.status {
                 TrialStatus::Done => a.done += 1,
                 TrialStatus::Failed => a.failed += 1,
-                _ => a.pending += 1,
+                TrialStatus::Pending => a.pending += 1,
+                TrialStatus::Running => a.running += 1,
+                TrialStatus::Unknown => a.unknown += 1,
             }
             if t.status != TrialStatus::Done {
                 continue;
@@ -127,9 +157,6 @@ pub fn build(manifest: &Manifest, trials: &[Trial]) -> Report {
             if let Some(p) = t.passed {
                 a.graded += 1;
                 a.passed += usize::from(p);
-                let cell = per_task.entry(t.task.as_str()).or_default();
-                cell.runs += 1;
-                cell.passed += usize::from(p);
             }
             if let Some(s) = &t.stats {
                 with_stats += 1;
@@ -148,9 +175,14 @@ pub fn build(manifest: &Manifest, trials: &[Trial]) -> Report {
         a.pass_rate = rate(a.passed, a.graded);
         a.mean_turns = (with_stats > 0).then(|| turns as f64 / with_stats as f64);
         a.mean_wall_secs = (with_wall > 0).then(|| wall / with_wall as f64);
-        a.tasks_graded = per_task.len();
-        a.tasks_always = per_task.values().filter(|c| c.passed == c.runs).count();
-        a.tasks_ever = per_task.values().filter(|c| c.passed > 0).count();
+        let mine: Vec<&Cell> = cells
+            .iter()
+            .filter(|((arm, _), _)| arm == name)
+            .map(|(_, c)| c)
+            .collect();
+        a.tasks_graded = mine.len();
+        a.tasks_always = mine.iter().filter(|c| c.passed == c.runs).count();
+        a.tasks_ever = mine.iter().filter(|c| c.passed > 0).count();
         a.jobs_seen = jobs.into_iter().collect();
         arms.push(a);
     }
@@ -163,25 +195,20 @@ pub fn build(manifest: &Manifest, trials: &[Trial]) -> Report {
     }
     let tasks = order
         .into_iter()
-        .map(|task| {
-            let mut cells = BTreeMap::new();
-            for name in manifest.arms.keys() {
-                let mut c = Cell::default();
-                for t in trials
-                    .iter()
-                    .filter(|t| &t.arm == name && t.task == task && t.status == TrialStatus::Done)
-                {
-                    if let Some(p) = t.passed {
-                        c.runs += 1;
-                        c.passed += usize::from(p);
-                    }
-                }
-                cells.insert(name.clone(), c);
-            }
-            TaskRow {
-                task: task.to_string(),
-                cells,
-            }
+        .map(|task| TaskRow {
+            task: task.to_string(),
+            cells: names
+                .iter()
+                .map(|(arm, _)| {
+                    (
+                        arm.clone(),
+                        cells
+                            .get(&(arm.as_str(), task))
+                            .copied()
+                            .unwrap_or_default(),
+                    )
+                })
+                .collect(),
         })
         .collect();
 
@@ -297,6 +324,14 @@ rationale = "r"
         pending.status = TrialStatus::Pending;
         pending.stats = None;
         rows.push(pending);
+        let mut running = row("b", "t2", 2, None, 0);
+        running.status = TrialStatus::Running;
+        rows.push(running);
+        let mut unknown = row("a", "t3", 1, None, 0);
+        unknown.status = TrialStatus::Unknown;
+        rows.push(unknown);
+        // A row from an arm the manifest no longer names.
+        rows.push(row("old", "t1", 1, Some(true), 1));
         let r = build(&m, &rows);
         let a = &r.arms[0];
         assert_eq!((a.done, a.graded, a.passed), (4, 4, 3));
@@ -306,8 +341,21 @@ rationale = "r"
         assert_eq!(a.mean_wall_secs, Some(10.0));
         assert_eq!((a.tasks_graded, a.tasks_always, a.tasks_ever), (2, 1, 2));
         assert_eq!(a.jobs_seen, vec![1]);
+        assert_eq!(
+            (a.unknown, a.pending, a.running),
+            (1, 0, 0),
+            "unknown is never pending"
+        );
         let b = &r.arms[1];
-        assert_eq!((b.done, b.pending, b.passed), (2, 1, 0));
+        assert_eq!((b.done, b.pending, b.running, b.passed), (2, 1, 1, 0));
+        let old = &r.arms[2];
+        assert!(old.off_manifest && !r.arms[0].off_manifest);
+        assert_eq!(
+            (old.done, old.passed),
+            (1, 1),
+            "a stray arm's rows are counted"
+        );
+        assert_eq!(r.tasks[0].cells["old"], Cell { runs: 1, passed: 1 });
         assert_eq!(b.pass_rate, Some(0.0), "nothing passed is a zero");
         assert_eq!((b.tasks_graded, b.tasks_always, b.tasks_ever), (1, 0, 0));
         assert_eq!(r.tasks[0].task, "t1");
