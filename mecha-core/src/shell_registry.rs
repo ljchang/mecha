@@ -14,8 +14,11 @@
 //! the command can run a single instruction, keyed by the pid of the direct
 //! child it spawned (`bash`, `bwrap` or `docker`), removed when that child is
 //! gone. `mecha tasks set` walks its own ancestry and takes the posture of
-//! the nearest registered shell ([`nearest_registered_ancestor`]); nothing
-//! the command text can say reaches that file.
+//! the nearest registered shell ([`nearest_registered_ancestor`]). The
+//! directory is fixed — `MECHA_HOME/runs/shells`, with no override of its
+//! own — so no variable the command text sets can point the reader at a
+//! registry it wrote itself (found on review of #294: a `MECHA_SHELLS_DIR`
+//! override the reader honoured did exactly that).
 //!
 //! **The shell child, not the hosting process.** `serve` hosts both the
 //! owner's web board and a delegated web chat's model; registering `serve`
@@ -32,8 +35,17 @@
 //!
 //! **What it does not see, named.** A command that detaches from its shell
 //! (so it is reparented away from the registered pid) escapes the ancestry
-//! walk; and an unconfined shell can edit `~/.mecha` directly. The answer to
-//! both is the sandbox — under bwrap and docker the command runs in a pid
+//! walk; an unconfined shell can edit `~/.mecha` directly; and `MECHA_HOME`
+//! itself is the one environment input left. Redirecting it moves the config,
+//! the closure store and this registry together — but not the board: the
+//! graph server resolves its database from its own environment
+//! (`XDG_DATA_HOME`, `MECHA_GRAPH_DB`, or its default), not from
+//! `MECHA_HOME`. So a command that writes a config naming the real graph
+//! server under a fresh `MECHA_HOME` lands the move on the real board, reads
+//! as rule 4, and records it in the fake store — which needs the owner's
+//! config contents or the server's path, both within an unconfined shell's
+//! reach and neither within a confined one's. The answer to all three is the
+//! sandbox — under bwrap and docker the command runs in a pid
 //! namespace without `~/.mecha` mounted, and landlock does not grant it the
 //! owner's home at all (`mecha doctor` reports a `shell` that runs unconfined).
 use crate::closure::RunPosture;
@@ -81,27 +93,42 @@ pub struct ShellRegistry {
 /// for as long as the child it names can still be running.
 pub struct Registration {
     path: PathBuf,
+    pid: u32,
+    proc_start: Option<u64>,
 }
 
 impl Drop for Registration {
+    /// Removes the entry only while it still names *this* registration — the
+    /// same pid and the same process start. A pid reused by a newer
+    /// registered shell between this child being reaped and the drop must
+    /// keep its entry, or its command would read as unregistered (review of
+    /// #294). An entry that cannot be read is left: `lookup` skips it.
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        let Ok(text) = std::fs::read_to_string(&self.path) else {
+            return;
+        };
+        let Ok(entry) = serde_json::from_str::<Entry>(&text) else {
+            return;
+        };
+        if entry.pid == self.pid && entry.proc_start == self.proc_start {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
 impl ShellRegistry {
-    /// `MECHA_SHELLS_DIR` overrides it (tests, trial homes), like the
-    /// closure store's `MECHA_CLOSURES_DIR`.
+    /// `MECHA_HOME/runs/shells`, with **no environment override**: the
+    /// `mecha tasks set` that reads it is a descendant of the model's shell
+    /// and inherits whatever the command string exports, so a reader that
+    /// honoured a variable would be a reader the command text can redirect —
+    /// the forgery this module exists to stop (found on review of #294).
+    /// Tests that need a separate registry set `MECHA_HOME`, as
+    /// `mecha-cli/tests/closure_event.rs` does.
     pub fn default_root() -> Result<PathBuf> {
-        if let Ok(dir) = std::env::var("MECHA_SHELLS_DIR") {
-            if !dir.is_empty() {
-                return Ok(PathBuf::from(dir));
-            }
-        }
         // mecha-core's own unit tests run the `shell` tool in-process, and
         // each spawn registers here: they must never write to the owner's
         // real `~/.mecha`. A per-process temp root, chosen at compile time
-        // rather than by setting `MECHA_SHELLS_DIR` — tests run on parallel
+        // rather than by an environment variable — tests run on parallel
         // threads, and a process-global env write would race them.
         #[cfg(test)]
         let root = std::env::temp_dir().join(format!("mecha-shells-test-{}", std::process::id()));
@@ -156,7 +183,11 @@ impl ShellRegistry {
         std::fs::write(&tmp, serde_json::to_vec(&entry)?)
             .with_context(|| format!("writing {}", tmp.display()))?;
         std::fs::rename(&tmp, &path).with_context(|| format!("writing {}", path.display()))?;
-        Ok(Registration { path })
+        Ok(Registration {
+            path,
+            pid,
+            proc_start: entry.proc_start,
+        })
     }
 
     /// The live entry for `pid`, if there is one: the file parses, the
@@ -218,6 +249,30 @@ mod tests {
         assert_eq!(entry.call_id.as_deref(), Some("call-1"));
         drop(held);
         assert!(reg.lookup(me).is_none());
+        let _ = std::fs::remove_dir_all(reg.root());
+    }
+
+    /// A registration dropped after its pid was reused by a newer
+    /// registered shell must not delete the newer entry (review of #294).
+    #[test]
+    fn dropping_a_registration_leaves_a_newer_entry_for_its_pid_alone() {
+        let reg = registry();
+        let me = std::process::id();
+        let old = reg.register(me, Some(RunPosture::Delegated), None).unwrap();
+        // Simulate the pid's reuse: a newer registration, from a process
+        // that started at a different tick, now owns the file.
+        let newer = Entry {
+            pid: me,
+            posture: "interactive".into(),
+            call_id: Some("newer".into()),
+            started_at: Utc::now(),
+            proc_start: old.proc_start.map(|t| t + 1).or(Some(1)),
+        };
+        std::fs::write(reg.path_of(me), serde_json::to_vec(&newer).unwrap()).unwrap();
+        drop(old);
+        let kept: Entry =
+            serde_json::from_str(&std::fs::read_to_string(reg.path_of(me)).unwrap()).unwrap();
+        assert_eq!(kept.call_id.as_deref(), Some("newer"));
         let _ = std::fs::remove_dir_all(reg.root());
     }
 

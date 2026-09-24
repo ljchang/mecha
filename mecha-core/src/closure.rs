@@ -266,8 +266,13 @@ const OWNERS_ACT: &str = "closing or reopening a task is the owner's act — clo
 ///
 /// **What this does not close, named.** A command that detaches from its
 /// shell, so it is reparented away from the registered pid, *and* clears
-/// the variable reads as rule 4. An unconfined `shell` can do that, and can
-/// edit `~/.mecha` directly besides; the answer to both is the sandbox —
+/// the variable reads as rule 4. The registry's location has no environment
+/// override (review of #294), so the command cannot point this reader at a
+/// registry of its own; `MECHA_HOME` is the one input left, and redirecting
+/// it with a hand-written config can land a move on the real board while
+/// recording it elsewhere (`shell_registry`'s module doc). An unconfined
+/// `shell` can do these, and can edit `~/.mecha` directly besides; the
+/// answer to all of them is the sandbox —
 /// bwrap and docker run the command in a pid namespace with no `~/.mecha`
 /// mounted, and landlock does not grant the owner's home (`mecha doctor`
 /// reports an unconfined `shell`).
