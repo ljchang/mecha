@@ -12,6 +12,15 @@ restrictive".
 document is about the half it left: **opening what you found**, and reads
 that are refused because they were labelled as sends.
 
+**Status (2026-09-24, after #274).** The owner's rulings on this document
+were made in `PROVENANCE-DESIGN.md` §7, which is the authority for them:
+**R1 is absorbed by R-P3** (a tool's class may vary per call, narrowing only
+on a proof the loop checks), so `web_open` is a case of that rule, built in
+#276; **R4 follows R-P2** (a server's claim is believed only with explicit
+operator permission); **R2 and R3 are still open** — §7 notes that R2 would
+compose with P2 (default untrusted, trust earned per tool or per result by
+proof). Read §7 below as the questions as first asked, not as pending.
+
 ---
 
 ## 1. What is refused today, measured
@@ -198,9 +207,12 @@ fetched.
 
 ## 7. Rulings wanted from the owner
 
+As first asked; where each stands is in the status note at the top, from
+`PROVENANCE-DESIGN.md` §7.
+
 - **R1:** is `log2(N)` per call, under a per-conversation budget, an
-  acceptable residual for `web_open`? (§3.2)
-- **R2:** should MCP results default to untrusted? (§3.5)
-- **R3:** which door gets owner-authored research first? (§3.3)
+  acceptable residual for `web_open`? (§3.2) — *absorbed by R-P3.*
+- **R2:** should MCP results default to untrusted? (§3.5) — *open.*
+- **R3:** which door gets owner-authored research first? (§3.3) — *open.*
 - **R4:** is a schema-pinned ruling acceptable in principle, to be built
-  when first needed? (§3.4)
+  when first needed? (§3.4) — *follows R-P2.*
