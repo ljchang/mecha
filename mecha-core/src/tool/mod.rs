@@ -45,6 +45,18 @@ pub struct ToolOutput {
     /// explicitly `false`, and no wire byte reaches it — so a third-party
     /// server cannot launder its failures into "the harness working".
     pub refusal: bool,
+    /// The server says it refused this call **before any provider request**,
+    /// so nothing it could have sent went anywhere.
+    ///
+    /// Only an MCP server can know this, and only one the operator's config
+    /// names with `[[mcp]] trust_result_claims` is believed:
+    /// `McpClient::call_tool` is the one place it is set, from the result's
+    /// `_meta` (`docs/PROVENANCE-DESIGN.md` §3). From any other server the
+    /// claim is ignored and this stays `false` — which fails closed, because
+    /// `false` means "unclaimed", and an unclaimed failed send is an unknown
+    /// delivery the owner reconciles by hand. Its one reader is the outbox's
+    /// release path, which resolves the attempt as not delivered instead.
+    pub not_dispatched: bool,
 }
 
 impl ToolOutput {
@@ -54,6 +66,7 @@ impl ToolOutput {
             is_error: false,
             external: false,
             refusal: false,
+            not_dispatched: false,
         }
     }
 
@@ -63,6 +76,7 @@ impl ToolOutput {
             is_error: true,
             external: false,
             refusal: false,
+            not_dispatched: false,
         }
     }
 
@@ -74,6 +88,7 @@ impl ToolOutput {
             is_error: true,
             external: false,
             refusal: true,
+            not_dispatched: false,
         }
     }
 
