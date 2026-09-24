@@ -572,6 +572,7 @@ mod tests {
     /// test belongs.
     #[test]
     fn the_draw_is_scoped_to_the_same_workspace_the_diagnosis_was() {
+        mecha_core::session::ignore_kind_env_for_tests();
         use mecha_core::message::{Block, Message};
         use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
 
@@ -674,6 +675,7 @@ mod tests {
     /// holds out, the selection's order is the charter's.
     #[test]
     fn a_signed_error_against_the_top_line_replays_before_one_against_the_fifth() {
+        mecha_core::session::ignore_kind_env_for_tests();
         use mecha_core::message::{Block, Message};
         use mecha_core::session::{Record, RunConfig, RunStats, Session, SessionMeta};
 
