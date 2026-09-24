@@ -42,6 +42,8 @@ A `GoalRef` is a **pointer, never a copy**, and renders on the wire as
 | `task:<uid>` | A task on [the graph's board](/docs/reference/cli#tasks), by its node ID. |
 | `project:<uid>` | A parent project on the graph, by `project_id`, not its display name. |
 | `setpoint:<name>` | A homeostatic setpoint. Named so the wire format survives its arrival; no store yet. |
+| `trigger:<name>` | A [scheduled trigger](/docs/features/automation/triggers), by its file name. Set by the harness on every trigger run. |
+| `request:<seq>` | A front-door request, by its record number. Set by the harness on the triage run it starts. |
 
 A flat string rather than a nested object because the **model** writes it: it is
 one field on the `todo` and `ask_user` schemas, and malformed arguments are a metric the
@@ -91,6 +93,34 @@ how you confirm the goal it assumed; the release is recorded on the draft, but i
 is not yet counted as a confirmation in the numbers below. `sessions appraise --json` reports `goal_put_to_owner` and
 `goal_confirmed` for sessions with stored goal questions; these are not a count
 of every informal confirmation in chat.
+
+## Anchors the harness sets itself
+
+Some runs are handed their goal by a store you own, and the harness records it
+before the run starts, with no model involved:
+
+| Run | Anchor |
+|---|---|
+| A board task handed over with `mecha tasks work`, or opened from the web board | `task:<id>` |
+| A scheduled trigger | `trigger:<name>` |
+| A front-door triage run | `request:<seq>` |
+
+A hand-over or resume keeps the anchor its session already saved. What each of
+these serves further up stays where it lives: a task's project is on the board
+row, and a trigger may name the charter line it serves in its own file:
+
+```toml
+# ~/.mecha/triggers/morning.toml
+schedule = "0 7 * * 1-5"
+prompt = "Brief me on today."
+serves = "charter:protect-my-attention"   # optional
+```
+
+`serves` is never required. When present it must be a `charter:` line that
+exists in your charter; a missing line, or a charter that cannot be read,
+refuses the trigger at load, and `mecha trigger list` says why.
+`mecha sessions health --json` counts anchored runs by kind in
+`runs_anchored_by_kind`.
 
 ## Explicit goal confirmation for one-shot runs
 

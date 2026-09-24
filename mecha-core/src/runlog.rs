@@ -510,6 +510,21 @@ impl Corpus {
         )
     }
 
+    /// Anchored rows by the anchor's kind — `task`, `trigger`, `request`,
+    /// `charter`, `project` — so the share a structural seed supplies
+    /// (`APPRAISAL-WIRING-DESIGN.md` S1) is readable beside the share an
+    /// owner confirmed by hand. Only kinds that occur appear; an anchor this
+    /// build cannot read is not in `anchored` either, so the two agree.
+    pub fn anchored_by_kind(&self) -> BTreeMap<&'static str, usize> {
+        let mut out = BTreeMap::new();
+        for row in self.anchored() {
+            if let Some(goal) = &row.stats.goal_anchor {
+                *out.entry(goal.kind()).or_insert(0) += 1;
+            }
+        }
+        out
+    }
+
     /// The totals [`goal_drift_rate`](Self::goal_drift_rate) is over, each
     /// denominator named: see [`GoalTotals`].
     pub fn goal_totals(&self) -> GoalTotals {
@@ -1045,6 +1060,38 @@ mod tests {
     /// an anchor stood *and* a plan was written under it — and totals
     /// beside it. An anchored run that never planned is not in the
     /// denominator; a sensed run with no anchor is not either.
+    /// `APPRAISAL-WIRING-DESIGN.md` S1's readout: anchored runs counted by
+    /// the store the anchor came from, agreeing with `anchored`.
+    #[test]
+    fn anchored_runs_are_counted_by_the_kind_of_their_anchor() {
+        use crate::goal::GoalRef;
+        let dir = tmpdir();
+        let with = |anchor: Option<GoalRef>| {
+            let mut st = stats(4, 0, false, StopCause::Completed);
+            st.goal_anchor = anchor;
+            st.goal_plan_writes = Some(0);
+            st
+        };
+        session_with(
+            &dir,
+            "20260924T000000-kinds",
+            "opus",
+            vec![
+                with(Some(GoalRef::Task("t1".into()))),
+                with(Some(GoalRef::Trigger("morning".into()))),
+                with(Some(GoalRef::Trigger("morning".into()))),
+                with(Some(GoalRef::Request("12".into()))),
+                with(None),
+            ],
+        );
+        let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
+        let kinds = corpus.anchored_by_kind();
+        assert_eq!(kinds.get("task"), Some(&1));
+        assert_eq!(kinds.get("trigger"), Some(&2));
+        assert_eq!(kinds.get("request"), Some(&1));
+        assert_eq!(kinds.values().sum::<usize>(), corpus.goal_totals().anchored);
+    }
+
     #[test]
     fn goal_drift_reads_unknown_before_the_sensor_and_over_anchored_planned_runs_after() {
         use crate::goal::GoalRef;

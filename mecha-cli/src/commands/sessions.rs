@@ -1411,9 +1411,15 @@ fn health(
             goals.sensed
         );
     } else if goals.anchored > 0 {
+        let kinds: Vec<String> = corpus
+            .anchored_by_kind()
+            .iter()
+            .map(|(kind, n)| format!("{kind} {n}"))
+            .collect();
         println!(
-            "  goal drift          — ({} run(s) had a confirmed goal; none wrote a plan under it)",
-            goals.anchored
+            "  goal drift          — ({} run(s) had a goal anchor [{}]; none wrote a plan under it)",
+            goals.anchored,
+            kinds.join(", ")
         );
     } else if goals.sensed > 0 {
         println!(
@@ -1461,7 +1467,7 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
     let (overflows, sensed) = corpus.context_overflows();
     let steps = corpus.step_totals();
     let goals = corpus.goal_totals();
-    serde_json::json!({
+    let mut out = serde_json::json!({
         "runs": corpus.len(),
         "sessions_read": corpus.sessions_read,
         // Store-wide, like the scan that produced it — a skipped file has no
@@ -1521,7 +1527,13 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
                 })
             })
             .collect::<Vec<_>>(),
-    })
+    });
+    // Beside `runs_with_a_goal_anchor`, added after the literal because the
+    // `json!` macro is at its recursion limit: which store each anchor came
+    // from — a structural seed (task, trigger, request) or an owner's
+    // confirmation (charter, project, or a task named in an answer).
+    out["runs_anchored_by_kind"] = serde_json::json!(corpus.anchored_by_kind());
+    out
 }
 
 /// A rate as a percentage, or `—` when it has no denominator. Never `0%`:
