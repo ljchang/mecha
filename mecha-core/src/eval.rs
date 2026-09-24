@@ -1515,7 +1515,9 @@ mod tests {
     /// `Manifest` whose `ids` all exist and whose `tags` match at least one
     /// case. A mistyped key is otherwise a green `cargo test` and a failed
     /// `mecha exp new` (found on review). And the suites' copy of
-    /// `chain-total-compacted` keeps that case's grading exactly.
+    /// `chain-total-compacted` keeps that case's prompt and grading exactly.
+    /// The selection here approximates the CLI's `cases_for`, which filters
+    /// tags before looking up ids; no shipped manifest sets both.
     #[test]
     fn shipped_suites_parse_and_select_cases() {
         let checkout = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1586,6 +1588,11 @@ mod tests {
             "the suite's copy must grade as the original does"
         );
         assert_eq!(copy.compact_at_tokens, original.compact_at_tokens);
+        // The prompt decides whether `847` and `16` are still the answers.
+        assert_eq!(
+            serde_json::to_value(&copy.prompt).unwrap(),
+            serde_json::to_value(&original.prompt).unwrap()
+        );
     }
 
     /// The shipped case set must stay loadable — a typo in one line would
