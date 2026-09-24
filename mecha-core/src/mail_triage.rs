@@ -962,17 +962,19 @@ pub fn canary_thread(min_chars: usize) -> ThreadInput {
 /// lands again is the cap it was written to avoid. These are retried from the
 /// store instead — a store walk, not a mailbox read. `seen` is the
 /// (account, thread id) pairs the read returned; `account` narrows as the
-/// sweep's own `--account` does.
+/// sweep's own `--account` does, and `force` takes every failure whatever
+/// its wait, as `classify --force` does in the window.
 pub fn due_outside_window<'a>(
     records: &'a [Record],
     seen: &std::collections::HashSet<(String, String)>,
     account: Option<&str>,
     now: chrono::DateTime<chrono::Utc>,
+    force: bool,
     max: usize,
 ) -> Vec<&'a Record> {
     let mut due: Vec<&Record> = records
         .iter()
-        .filter(|r| r.retry_due(now))
+        .filter(|r| r.state == FAILED && (force || r.retry_due(now)))
         .filter(|r| account.is_none_or(|a| r.account == a))
         .filter(|r| !seen.contains(&(r.account.clone(), r.thread_id.clone())))
         .collect();
@@ -2274,9 +2276,6 @@ mod tests {
         );
     }
 
-    /// The backoff: an hour after the first failure, doubling, capped at a
-    /// day — so an outage recovers within the hour, and a thread that always
-    /// fails costs one attempt a day instead of one a sweep.
     #[test]
     fn a_due_failure_outside_the_window_is_retried_from_the_store() {
         // Review finding: the sweep reads the newest N messages, and a thread
@@ -2304,18 +2303,37 @@ mod tests {
                 .collect();
         let ids = |v: Vec<&Record>| v.iter().map(|r| r.thread_id.clone()).collect::<Vec<_>>();
         assert_eq!(
-            ids(due_outside_window(&records, &seen, None, now, 10)),
+            ids(due_outside_window(&records, &seen, None, now, false, 10)),
             vec!["older", "old", "home"],
             "due, outside the window, oldest first"
         );
         assert_eq!(
-            ids(due_outside_window(&records, &seen, Some("work"), now, 10)),
+            ids(due_outside_window(
+                &records,
+                &seen,
+                Some("work"),
+                now,
+                false,
+                10
+            )),
             vec!["older", "old"],
             "narrowed like the sweep's --account"
         );
         assert_eq!(
-            ids(due_outside_window(&records, &seen, None, now, 1)),
+            ids(due_outside_window(&records, &seen, None, now, false, 1)),
             vec!["older"]
+        );
+        assert_eq!(
+            ids(due_outside_window(
+                &records,
+                &seen,
+                Some("work"),
+                now,
+                true,
+                10
+            )),
+            vec!["older", "old", "waiting"],
+            "--force takes a failure still on its wait, as it does in the window"
         );
     }
 
@@ -2330,6 +2348,9 @@ mod tests {
         }
     }
 
+    /// The backoff: an hour after the first failure, doubling, capped at a
+    /// day — so an outage recovers within the hour, and a thread that always
+    /// fails costs one attempt a day instead of one a sweep.
     #[test]
     fn retries_back_off_to_once_a_day_and_never_stop() {
         let h = |n| retry_after(n).num_hours();

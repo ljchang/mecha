@@ -612,10 +612,17 @@ fn list(all: bool, aged: bool, aged_hours: i64, surface: bool, as_json: bool) ->
                 "",
                 match (r.attempts, r.next_retry()) {
                     (0, _) => String::new(),
-                    (n, Some(due)) if due > chrono::Utc::now() => format!(
-                        " ({n} times; next try in {}h)",
-                        (due - chrono::Utc::now()).num_hours().max(1)
-                    ),
+                    (n, Some(due)) if due > chrono::Utc::now() => {
+                        let left = due - chrono::Utc::now();
+                        format!(
+                            " ({n} times; next try in {})",
+                            if left.num_hours() >= 1 {
+                                format!("{}h", left.num_hours())
+                            } else {
+                                format!("{}m", left.num_minutes().max(1))
+                            }
+                        )
+                    }
                     (n, _) => format!(" ({n} times; due now)"),
                 },
                 r.error.as_deref().unwrap_or("no reason recorded")
@@ -1048,13 +1055,21 @@ async fn classify(
         })
         .collect();
     let stored = store.list()?;
-    let requeue = mecha_core::mail_triage::due_outside_window(
-        &stored,
-        &seen,
-        account,
-        chrono::Utc::now(),
-        REQUEUE_MAX,
-    );
+    let get_thread = find_tool(&prepared.registry, "mail_get_thread");
+    // Without a way to re-read a thread there is nothing to retry it from —
+    // a missing tool is configuration, never the threads' fault.
+    let requeue = if get_thread.is_some() {
+        mecha_core::mail_triage::due_outside_window(
+            &stored,
+            &seen,
+            account,
+            chrono::Utc::now(),
+            force,
+            REQUEUE_MAX,
+        )
+    } else {
+        Vec::new()
+    };
 
     println!(
         "{} thread(s) read, {} to classify{}{}",
@@ -1106,7 +1121,7 @@ async fn classify(
     // What this recipient has corrected before, newest first. Bounded, because
     // this rides on every classification of every thread — the cheap half of
     // the correction loop only stays cheap if it stays small.
-    let examples = mecha_core::mail_triage::select_examples(&store.list()?);
+    let examples = mecha_core::mail_triage::select_examples(&stored);
     // **The rules the triage domain learns have to reach the classifier, or
     // the whole loop writes into a file nothing reads.** `PASS_DOMAINS` claims
     // this domain is routed; this is the load site that makes the claim true,
@@ -1129,7 +1144,6 @@ async fn classify(
     }
     eprintln!("classifying with {model} ({provider_name})");
 
-    let get_thread = find_tool(&prepared.registry, "mail_get_thread");
     let (mut ok, mut failed, mut escalated) = (0u32, 0u32, 0u32);
     let mut prefiltered = 0u32;
     // Every failure is written the moment it happens, counted against its
@@ -1142,6 +1156,11 @@ async fn classify(
     // Every write is attempted even if one errors, so a bad file does not cost
     // the other threads their record; the first error is returned at the end.
     let mut write_error: Option<anyhow::Error> = None;
+    // Re-reads of stored threads that failed, and how many succeeded: the
+    // mail surface's own common-mode failure, which the model canary cannot
+    // see (`reread_was_outage`).
+    let mut reread_failures: Vec<(ThreadInput, Option<Record>, anyhow::Error)> = Vec::new();
+    let mut reread_ok = 0u32;
     let work = todo
         .into_iter()
         .map(Work::Row)
@@ -1155,25 +1174,27 @@ async fn classify(
                 row["bulk"].as_bool().unwrap_or(false),
                 false,
             ),
+            // `bulk` is not kept on the record, so a requeued bulk thread
+            // costs the model call the prefilter would have saved in-window —
+            // rare enough not to be worth a stored field.
             Work::Stored(r) => {
                 let mut t = stored_to_input(r);
                 let body = match &get_thread {
                     Some(tool) => fetch_body(tool.as_ref(), &ctx, &t).await,
-                    None => Err(anyhow::anyhow!(
-                        "no mail_get_thread tool to re-read a thread outside the window"
-                    )),
+                    None => Err(anyhow::anyhow!("no mail_get_thread tool")),
                 };
                 match body {
                     Ok(b) => {
+                        reread_ok += 1;
                         t.body = b;
                         (t, false, true)
                     }
-                    // Unreadable now (moved, deleted): the thread's own, and
-                    // paced like any other failure of it.
+                    // Written now as the thread's own (moved, deleted); taken
+                    // back after the loop if every re-read failed.
                     Err(e) => {
                         failed += 1;
                         eprintln!("  ! {} — {e:#}", t.thread_id);
-                        fail_now(&store, t, e, &mut failures, &mut write_error);
+                        fail_now(&store, t, e, &mut reread_failures, &mut write_error);
                         continue;
                     }
                 }
@@ -1268,7 +1289,10 @@ async fn classify(
                 ok += 1;
                 print_line(&thread, &v, from_bucket.as_deref());
                 let mut r = record(&thread, Some(v), None);
-                r.escalated = did_escalate;
+                // A requeued thread was read whole, which is what the
+                // escalation measurement counts; no second pass ran, which
+                // an empty `escalated_changed` already records.
+                r.escalated = did_escalate || full_body;
                 r.escalated_changed = changed;
                 r.escalated_from = from_bucket;
                 r
@@ -1323,6 +1347,20 @@ async fn classify(
     } else {
         true
     };
+    // Several re-reads failing with none succeeding is the mail surface (a
+    // lapsed token, a 503), not ten threads at once — which the model canary
+    // cannot see. Charged, they would all reach the day-long wait in two
+    // hours and lag a day behind the mailbox coming back.
+    if reread_was_outage(reread_failures.len(), reread_ok) {
+        eprintln!(
+            "  every re-read of a stored thread failed — the mail surface's, counted against no thread"
+        );
+        for (thread, prev, e) in &reread_failures {
+            if let Err(err) = store.put(&failed_record(thread, prev.as_ref(), e, true)) {
+                write_error.get_or_insert(err);
+            }
+        }
+    }
     // Already written as the threads' own; an outage takes the charge back.
     if sweep_was_outage(failures.len(), canary_answered) {
         for (thread, prev, e) in &failures {
@@ -1502,6 +1540,14 @@ fn failed_record(
 /// thread's own; no canary is asked.
 fn sweep_was_outage(failures: usize, canary_answered: bool) -> bool {
     failures >= 2 && !canary_answered
+}
+
+/// Whether a sweep's failed re-reads of stored threads were the mail
+/// surface's: more than one failed and none succeeded. One failure alone,
+/// or failures beside successes, are the threads' own (moved, deleted) and
+/// back off — or dead threads would hold every requeue slot each sweep.
+fn reread_was_outage(failures: usize, succeeded: u32) -> bool {
+    failures >= 2 && succeeded == 0
 }
 
 fn record(t: &ThreadInput, verdict: Option<Verdict>, error: Option<String>) -> Record {
@@ -2762,7 +2808,9 @@ fn draft_prompt(
 
 #[cfg(test)]
 mod classify_exit_tests {
-    use super::{failed_record, parse_recent, run_accomplished_nothing, sweep_was_outage};
+    use super::{
+        failed_record, parse_recent, reread_was_outage, run_accomplished_nothing, sweep_was_outage,
+    };
     use mecha_core::mail_triage::{ThreadInput, FAILED};
     use mecha_core::provider::retry::ProviderError;
     use serde_json::Value;
@@ -2847,6 +2895,23 @@ mod classify_exit_tests {
 
     /// Nothing classified, several failures, and the model cannot answer a
     /// canary either: the server's. Everything else is the threads' own.
+    /// Review finding: a requeued thread's re-read failing was charged to
+    /// the thread, but a lapsed token or a 503 fails every re-read at once —
+    /// the mail surface's, which the model canary cannot see.
+    #[test]
+    fn every_re_read_failing_is_the_mail_surface_not_the_threads() {
+        assert!(reread_was_outage(10, 0), "all ten failed, none read");
+        assert!(
+            !reread_was_outage(1, 0),
+            "one alone is the thread's own (moved, deleted)"
+        );
+        assert!(
+            !reread_was_outage(3, 7),
+            "failures beside successes are the threads' own — or dead threads hold every slot"
+        );
+        assert!(!reread_was_outage(0, 0));
+    }
+
     #[test]
     fn a_sweep_is_an_outage_only_when_the_model_also_fails_a_canary() {
         assert!(
