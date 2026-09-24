@@ -1016,19 +1016,17 @@ pub fn failure_is_outage(e: &anyhow::Error) -> bool {
 }
 
 /// Whether a failure is one the provider has ruled the thread's own, beyond
-/// any sweep-wide judgement: a body that will not fit (`ContextOverflow`) or
-/// a request the provider rejects (`Invalid`). Only these override
-/// `sweep_was_outage` — a length-matched canary overflows exactly as two
-/// oversized threads do, and taking that as an outage would retry them on
-/// every sweep for ever, the loop the backoff exists to end.
+/// any sweep-wide judgement: a body that will not fit (`ContextOverflow`).
+/// Only this overrides the canary — a length-matched canary overflows
+/// exactly as oversized threads do, and taking that as an outage would retry
+/// them on every sweep for ever, the loop the backoff exists to end.
+/// `Invalid` is deliberately not here: it is the catch-all for any other 4xx
+/// — a mistyped model name, an unsupported parameter — which fails every
+/// thread alike, and there the canary is right.
 pub fn failure_is_threads_own(e: &anyhow::Error) -> bool {
     use crate::provider::retry::ProviderError;
-    e.downcast_ref::<ProviderError>().is_some_and(|c| {
-        matches!(
-            c,
-            ProviderError::ContextOverflow | ProviderError::Invalid(_)
-        )
-    })
+    e.downcast_ref::<ProviderError>()
+        .is_some_and(|c| matches!(c, ProviderError::ContextOverflow))
 }
 
 /// How long a thread that has failed `attempts` times in a row waits before
