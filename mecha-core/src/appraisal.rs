@@ -1243,12 +1243,10 @@ pub fn of_session(
                 .is_some_and(|c| c.lines().iter().any(|l| &l.id == id)),
             // The board owns task and project ids, and the closure appraisal
             // supplies its own; nothing here can check them and nothing
-            // labels on them alone. A trigger or request pointer is the same
-            // case: usually the harness's own seed, but `for_transcript` can
-            // also read one from a model's `serves` (the plan, or an ask)
-            // when no anchor is set — so nothing here vouches for it, and
-            // `distill` resolves every one against its store before it
-            // crosses a wire.
+            // labels on them alone. A trigger or request pointer is the
+            // harness's own seed: `for_transcript` takes neither from a
+            // model's `serves`, and `distill` still resolves every one
+            // against its store before it crosses a wire.
             GoalRef::Task(_)
             | GoalRef::Project(_)
             | GoalRef::Setpoint(_)
@@ -1914,16 +1912,24 @@ pub fn for_transcript(
     // asked — the same claim in the run's own words either way, and never
     // the owner's answer, which is prose no reader here interprets. The last
     // hypothesis asked wins over an earlier one, as a later plan would.
+    //
+    // Both producers are the model's, so only kinds a plan can name are
+    // taken from them: a `trigger:` or `request:` pointer is the harness's
+    // seed alone, and one a model wrote — before the tools refused it, or
+    // in a record written since — is a guessable slug that `distill` would
+    // resolve and cross whole (review of #292).
     let fallback = goal.clone();
     let goal = goal
         .or_else(|| {
-            crate::tool::todo::TodoTool::plan_from_transcript(messages).and_then(|p| p.goal)
+            crate::tool::todo::TodoTool::plan_from_transcript(messages)
+                .and_then(|p| p.goal)
+                .filter(GoalRef::a_plan_can_name)
         })
         .or_else(|| {
             crate::tool::ask::AskUserTool::goals_named(messages)
                 .into_iter()
                 .rev()
-                .find_map(|h| h.serves)
+                .find_map(|h| h.serves.filter(GoalRef::a_plan_can_name))
         });
     let goals: Vec<_> = goal.into_iter().collect();
     let end_taint = transcript
@@ -5575,6 +5581,48 @@ text = "Tell me the truth early."
             .unwrap()
             .appraisal;
         assert!(a.goals.is_empty(), "{:?}", a.goals);
+
+        // A model never names what only the harness seeds: a recorded plan
+        // or ask whose `serves` is a trigger or a front-door request —
+        // guessable slugs `distill` would resolve and cross whole — names
+        // nothing here (review of #292). The tools refuse both now; the
+        // records written before they did are read the same way.
+        for (id, serves) in [("trig", "trigger:morning"), ("req", "request:1")] {
+            let planned = write(
+                &format!("20260906T000000-plan-{id}"),
+                serde_json::json!({"question": "which?"}),
+                Some(serves),
+            );
+            let a = for_session(&planned, id, "t".into(), SessionRecords::default(), None)
+                .unwrap()
+                .appraisal;
+            assert!(a.goals.is_empty(), "{serves} from a plan: {:?}", a.goals);
+            let asked = write(
+                &format!("20260906T000000-ask-{id}"),
+                serde_json::json!({"question": "which?", "goal": "ship it", "serves": serves}),
+                None,
+            );
+            let a = for_session(&asked, id, "t".into(), SessionRecords::default(), None)
+                .unwrap()
+                .appraisal;
+            assert!(a.goals.is_empty(), "{serves} from an ask: {:?}", a.goals);
+        }
+        // The harness's own seed still stands.
+        let seeded = write(
+            "20260906T000000-seeded",
+            serde_json::json!({"question": "which?"}),
+            None,
+        );
+        let a = for_session(
+            &seeded,
+            "seeded",
+            "t".into(),
+            SessionRecords::default(),
+            Some(GoalRef::Trigger("morning".into())),
+        )
+        .unwrap()
+        .appraisal;
+        assert_eq!(a.goals, vec![GoalRef::Trigger("morning".into())]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -197,13 +197,10 @@ pub async fn charter_save(State(_state): St, Json(body): Json<CharterSave>) -> R
         tokio::task::spawn_blocking(move || mecha_core::trigger::triggers_broken_by(&parsed))
             .await
             .unwrap_or_else(|e| {
-                vec![mecha_core::trigger::BrokenLink {
-                    trigger: "(unchecked)".to_string(),
-                    reason: format!(
-                        "could not check the triggers against the saved charter ({e}); \
-                         `mecha trigger list` shows any that no longer load"
-                    ),
-                }]
+                vec![mecha_core::trigger::BrokenLink::unchecked(format!(
+                    "the check did not finish ({e}); \
+                     `mecha trigger list` shows any that no longer load"
+                ))]
             });
     let Json(mut state) = charter_state().await;
     if let Some(obj) = state.as_object_mut() {
@@ -211,10 +208,7 @@ pub async fn charter_save(State(_state): St, Json(body): Json<CharterSave>) -> R
             "trigger_warnings".into(),
             serde_json::json!(broken
                 .iter()
-                .map(|b| format!(
-                    "trigger `{}` will not fire: {} — `mecha trigger edit {}` fixes it",
-                    b.trigger, b.reason, b.trigger
-                ))
+                .map(mecha_core::trigger::BrokenLink::warning)
                 .collect::<Vec<_>>()),
         );
     }

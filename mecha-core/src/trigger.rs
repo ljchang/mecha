@@ -616,6 +616,34 @@ pub struct BrokenLink {
     pub reason: String,
 }
 
+impl BrokenLink {
+    /// The name a row carries when the walk itself could not finish — no
+    /// trigger was checked, so none can be named.
+    pub const UNCHECKED: &'static str = "(unchecked)";
+
+    pub fn unchecked(reason: String) -> Self {
+        BrokenLink {
+            trigger: Self::UNCHECKED.to_string(),
+            reason,
+        }
+    }
+
+    /// The one line every charter-save surface prints for this row.
+    pub fn warning(&self) -> String {
+        if self.trigger == Self::UNCHECKED {
+            format!(
+                "triggers not checked against the saved charter: {}",
+                self.reason
+            )
+        } else {
+            format!(
+                "trigger `{}` will not fire: {} — `mecha trigger edit {}` fixes it",
+                self.trigger, self.reason, self.trigger
+            )
+        }
+    }
+}
+
 /// [`TriggerStore::broken_by`] over the owner's trigger store — called after
 /// every successful charter save, on every surface that saves one. An absent
 /// store has no triggers to break.
@@ -737,10 +765,20 @@ impl TriggerStore {
     /// that fails *only* there is reported; one that fails to parse for any
     /// other reason is already refused and reported by `list` and the
     /// doctor, and is not this function's business. A store that cannot be
-    /// listed yields nothing here for the same reason.
+    /// listed is different: nothing else on the charter-save path would say
+    /// so, and an empty answer reads as "nothing broken" on all three
+    /// surfaces, so it comes back as one `(unchecked)` row naming the failure
+    /// (unknown is never clean; review of #292).
     pub fn broken_by(&self, charter: &crate::charter::Charter) -> Vec<BrokenLink> {
-        let Ok(entries) = std::fs::read_dir(&self.root) else {
-            return Vec::new();
+        let entries = match std::fs::read_dir(&self.root) {
+            Ok(entries) => entries,
+            Err(e) => {
+                return vec![BrokenLink::unchecked(format!(
+                    "could not read the trigger store {} ({e}); \
+                     `mecha trigger list` shows any that no longer load",
+                    self.root.display()
+                ))];
+            }
         };
         let mut out = Vec::new();
         for entry in entries.flatten() {
@@ -1512,6 +1550,36 @@ mod tests {
             "{broken:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_unreadable_trigger_store_is_unchecked_not_clean() {
+        // A root that is a file, not a directory: `read_dir` fails the way
+        // an unreadable store does, without depending on permission bits the
+        // test user might override.
+        let root = std::env::temp_dir().join(format!(
+            "mecha-trigger-unreadable-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&root, "not a directory").unwrap();
+        let store = TriggerStore {
+            root: root.clone(),
+            charter: None,
+        };
+        let charter = crate::charter::Charter::parse(
+            "[[line]]\nid = \"guard-my-attention\"\ntext = \"Protect my attention.\"\n",
+        )
+        .unwrap();
+        let broken = store.broken_by(&charter);
+        assert_eq!(broken.len(), 1, "{broken:?}");
+        assert_eq!(broken[0].trigger, BrokenLink::UNCHECKED);
+        assert!(broken[0].warning().starts_with("triggers not checked"));
+        assert!(broken[0].reason.contains("could not read"), "{broken:?}");
+        let _ = std::fs::remove_file(&root);
     }
 
     #[test]

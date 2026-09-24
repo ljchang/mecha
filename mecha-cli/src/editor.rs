@@ -183,13 +183,8 @@ pub fn charter_trigger_warnings(path: &std::path::Path) -> Vec<String> {
         return Vec::new();
     };
     mecha_core::trigger::triggers_broken_by(&charter)
-        .into_iter()
-        .map(|b| {
-            format!(
-                "trigger `{}` will not fire: {} — `mecha trigger edit {}` fixes it",
-                b.trigger, b.reason, b.trigger
-            )
-        })
+        .iter()
+        .map(mecha_core::trigger::BrokenLink::warning)
         .collect()
 }
 
