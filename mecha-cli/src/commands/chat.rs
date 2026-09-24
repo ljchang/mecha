@@ -7,6 +7,7 @@ use mecha_core::message::{Message, Usage};
 use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+use std::io::IsTerminal;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -24,7 +25,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         surface: Some(mecha_core::session::SessionKind::Chat),
         ..global.clone()
     };
-    let mut prepared = setup::prepare(&opts, true).await?;
+    // A person is at the approver only when stdin is a terminal: a piped
+    // `mecha chat` would read `y` from the pipe (review of #294), as `run`
+    // already knew.
+    let mut prepared = setup::prepare(&opts, std::io::stdin().is_terminal()).await?;
     let session_dir = Session::default_dir()?;
 
     // One conversation for the whole session: the taint travels with it, so a

@@ -33,8 +33,10 @@
 //! even an ancestor of the owner's terminal. Each entry therefore carries the
 //! process's start time (`/proc/<pid>/stat` field 22), and a reader accepts an
 //! entry only when the live process with that pid started at the same tick.
-//! A start time that cannot be read on either side is taken as a match: that
-//! direction refuses a closure, never permits one.
+//! Where `/proc` exists a start time that cannot be read on either side is
+//! [`Lookup::Unreadable`], refused: taking it as a match would *permit* a
+//! closure whenever the unverified entry says `interactive` (review of #294
+//! found this paragraph claiming the opposite).
 //!
 //! **Unknown is never clean.** A registry directory that exists but cannot
 //! be read, or an entry for a live ancestor that cannot be parsed, is
@@ -48,20 +50,40 @@
 //! practice `mecha tasks set` spends far longer starting its graph client
 //! before it consults the registry, but that is timing, not a guarantee). A
 //! command that detaches from its shell (so it is reparented away from the
-//! registered pid) escapes the ancestry walk; an unconfined shell can edit
-//! `~/.mecha` directly; and `MECHA_HOME` itself is the one environment input
-//! left. Redirecting it moves the config,
-//! the closure store and this registry together — but not the board: the
-//! graph server resolves its database from its own environment
-//! (`XDG_DATA_HOME`, `MECHA_GRAPH_DB`, or its default), not from
-//! `MECHA_HOME`. So a command that writes a config naming the real graph
-//! server under a fresh `MECHA_HOME` lands the move on the real board, reads
-//! as rule 4, and records it in the fake store — which needs the owner's
-//! config contents or the server's path, both within an unconfined shell's
-//! reach and neither within a confined one's. The answer to all three is the
-//! sandbox — under bwrap and docker the command runs in a pid
+//! registered pid) escapes the ancestry walk; and an unconfined shell can
+//! edit `~/.mecha` directly. The answer to both is the sandbox — under bwrap
+//! and docker the command runs in a pid
 //! namespace without `~/.mecha` mounted, and landlock does not grant it the
 //! owner's home at all (`mecha doctor` reports a `shell` that runs unconfined).
+//!
+//! **`MECHA_HOME` does not hide a registration.** Registration writes under
+//! `MECHA_HOME`, but the reader ([`guard_roots`]) also reads the registry
+//! under the owner's real home, taken from the password database for the
+//! current uid — never from `HOME` or `MECHA_HOME`, which the command sets.
+//! A registration found only there means the command redirected its own
+//! home, and `closure::decide` refuses it whatever the posture; the run
+//! markers are read the same way. Before this, `MECHA_HOME=/tmp/x mecha
+//! tasks set …` read an empty registry and landed on rule 4 — and the graph
+//! server resolves the board from its own environment, not `MECHA_HOME`, so
+//! the move could land on the real board and be recorded in the fake store
+//! (review of #293).
+//!
+//! **Off Linux** there is no `/proc`: the walk sees only this process's own
+//! pid and no start time can be compared. A reader there that finds no
+//! registration for itself while any live one exists refuses
+//! ([`Lookup::Unreadable`]) rather than reading as the owner's terminal — the
+//! price is that the owner's own terminal cannot close a task on macOS while
+//! a run's shell is live.
+//!
+//! **A nested front-end is a posture the harness cannot see through.** A
+//! registered shell that runs `mecha chat` or `mecha tui` starts a new front
+//! end whose own `shell` tool registers its children with that front end's
+//! posture. `mecha chat` stamps `interactive` only when its stdin is a
+//! terminal, so a piped chat from a delegated run is unattended; `mecha tui`
+//! stamps it unconditionally, because it cannot start without a terminal —
+//! but a run that allocates a pty (`script -qc 'mecha tui'`) and types into
+//! it would get `interactive` children. That is named residue; the sandbox
+//! is again the answer (the confined command has no `~/.mecha` to run from).
 use crate::closure::RunPosture;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -316,8 +338,71 @@ impl ShellRegistry {
         }
         match (entry.proc_start, proc_start(pid)) {
             (Some(recorded), Some(now)) if recorded != now => Lookup::Absent,
+            (Some(_), Some(_)) => Lookup::Registered(entry),
+            // Where `/proc` exists, `register` always records a start time
+            // (the child is at worst a zombie when it is read), so a missing
+            // one on either side is an entry this reader cannot verify —
+            // and a `Registered { interactive }` it could not verify would
+            // *permit* a closure. Unknown is never clean (review of #294:
+            // the earlier doc said this direction only ever refused).
+            _ if ancestry_walkable() => Lookup::Unreadable(format!(
+                "{}: the process start of pid {pid} could not be verified",
+                path.display()
+            )),
+            // Off Linux there is no start time to compare at all; see
+            // `nearest_registered_ancestor_among` for what that platform
+            // can and cannot check.
             _ => Lookup::Registered(entry),
         }
+    }
+
+    /// Whether any entry names a live process — what the off-Linux walk uses
+    /// to decide that it cannot tell (see `nearest_registered_ancestor_among`).
+    fn holds_live_entries(&self) -> std::result::Result<bool, String> {
+        let dir =
+            std::fs::read_dir(&self.root).map_err(|e| format!("{}: {e}", self.root.display()))?;
+        Ok(dir.flatten().any(|e| {
+            e.path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_suffix(".json"))
+                .and_then(|stem| stem.parse::<u32>().ok())
+                .is_some_and(crate::process_alive)
+        }))
+    }
+}
+
+/// Whether this platform lets a process walk its ancestry and read process
+/// start times — `/proc`, i.e. Linux.
+pub fn ancestry_walkable() -> bool {
+    std::path::Path::new("/proc/self/stat").exists()
+}
+
+/// Where a command's shell registrations are read from: the registry under
+/// [`crate::work::mecha_home`], and the one under the owner's real home
+/// ([`crate::work::owner_mecha_home`]) when that differs. The second is what
+/// makes `MECHA_HOME=/tmp/x mecha tasks set …` useless as a hiding place: a
+/// command inside a real run still finds its registration there (review of
+/// #293). Registration writes only under `mecha_home`, so a trial home and a
+/// test's fixture home keep their own registry. Under `cfg(test)`, the
+/// hermetic per-process root alone.
+pub fn guard_roots() -> std::result::Result<Vec<PathBuf>, String> {
+    #[cfg(test)]
+    {
+        ShellRegistry::default_root()
+            .map(|r| vec![r])
+            .map_err(|e| format!("{e:#}"))
+    }
+    #[cfg(not(test))]
+    {
+        crate::work::guard_homes()
+            .map(|homes| {
+                homes
+                    .into_iter()
+                    .map(|h| h.join("runs").join("shells"))
+                    .collect()
+            })
+            .map_err(|e| format!("{e:#}"))
     }
 }
 
@@ -343,6 +428,61 @@ pub enum Lookup {
     Unreadable(String),
 }
 
+/// [`nearest_registered_ancestor`] over several registries at once, nearest
+/// pid first and every registry at each pid; returns which registry answered.
+///
+/// **Off Linux** there is no `/proc`, so the ancestry cannot be walked past
+/// this process and a start time cannot be verified. There the walk checks
+/// this process's own pid (the exec-in-place case) and otherwise, if any
+/// registry holds a live entry, answers [`Lookup::Unreadable`] — a shell may
+/// be registered above this process and nothing here can say whether it is,
+/// so the closure is refused rather than read as the owner's terminal (review
+/// of #294: a compound command that dropped the variable used to land on
+/// rule 4). With nothing registered anywhere, it is [`Lookup::Absent`].
+pub fn nearest_registered_ancestor_among(registries: &[ShellRegistry]) -> (Lookup, Option<usize>) {
+    let me = std::process::id();
+    if !ancestry_walkable() {
+        for (i, registry) in registries.iter().enumerate() {
+            match registry.lookup_checked(me) {
+                Lookup::Absent => {}
+                found => return (found, Some(i)),
+            }
+        }
+        for registry in registries {
+            match registry.holds_live_entries() {
+                Ok(false) => {}
+                Ok(true) => {
+                    return (
+                        Lookup::Unreadable(
+                            "shells are registered, and this platform cannot walk a \
+                             process's ancestry to say whether one of them is this \
+                             command's"
+                                .into(),
+                        ),
+                        None,
+                    )
+                }
+                Err(why) => return (Lookup::Unreadable(why), None),
+            }
+        }
+        return (Lookup::Absent, None);
+    }
+    let mut pid = me;
+    for _ in 0..64 {
+        for (i, registry) in registries.iter().enumerate() {
+            match registry.lookup_checked(pid) {
+                Lookup::Absent => {}
+                found => return (found, Some(i)),
+            }
+        }
+        pid = match crate::closure::parent_of(pid) {
+            Some(parent) => parent,
+            None => return (Lookup::Absent, None),
+        };
+    }
+    (Lookup::Absent, None)
+}
+
 /// The nearest registered shell among this process **and** its ancestors,
 /// this process first — `bash -lc '<one simple command>'` execs the command
 /// in place, so the pid the `shell` tool registered is then the reader's own
@@ -351,18 +491,7 @@ pub enum Lookup {
 /// Stops at the first pid whose entry is registered *or* unreadable: an
 /// unreadable registration nearer than any readable one is not skipped.
 pub fn nearest_registered_ancestor(registry: &ShellRegistry) -> Lookup {
-    let mut pid = std::process::id();
-    for _ in 0..64 {
-        match registry.lookup_checked(pid) {
-            Lookup::Absent => {}
-            found => return found,
-        }
-        pid = match crate::closure::parent_of(pid) {
-            Some(parent) => parent,
-            None => return Lookup::Absent,
-        };
-    }
-    Lookup::Absent
+    nearest_registered_ancestor_among(std::slice::from_ref(registry)).0
 }
 
 #[cfg(test)]
@@ -460,6 +589,35 @@ mod tests {
             assert!(reg.lookup(me).is_none(), "reused pid");
         }
         let _ = std::fs::remove_dir_all(reg.root());
+    }
+
+    /// A live entry whose start time was never recorded cannot be told from
+    /// a reused pid. Where `/proc` exists that is unreadable — refused — not
+    /// a match: the old reader took it as one, and an `interactive` entry
+    /// then *permitted* a closure (review of #294).
+    #[test]
+    fn an_unverifiable_start_time_is_unreadable_where_proc_exists() {
+        let reg = registry();
+        let me = std::process::id();
+        std::fs::write(
+            reg.path_of(me),
+            serde_json::to_vec(&Entry {
+                pid: me,
+                posture: "interactive".into(),
+                call_id: None,
+                started_at: Utc::now(),
+                proc_start: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let found = reg.lookup_checked(me);
+        let _ = std::fs::remove_dir_all(reg.root());
+        if ancestry_walkable() {
+            assert!(matches!(found, Lookup::Unreadable(_)), "{found:?}");
+        } else {
+            assert!(matches!(found, Lookup::Registered(_)), "{found:?}");
+        }
     }
 
     /// The walk crosses unregistered processes to find a registered shell

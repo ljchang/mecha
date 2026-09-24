@@ -884,16 +884,28 @@ fn hook_dir() -> std::path::PathBuf {
 
 /// The pids of every delegated or scheduled run in flight — what
 /// `closure::run_ancestor` walks this process's ancestry against.
+///
+/// Read under every home [`mecha_core::work::guard_homes`] names — this
+/// process's `MECHA_HOME` and the owner's real home — so a command inside a
+/// run cannot hide its run's marker by pointing `MECHA_HOME` at an empty
+/// directory (review of #293). Read-only: nothing here creates a directory.
 fn live_run_pids() -> std::collections::HashSet<u32> {
-    let mut pids: std::collections::HashSet<u32> = markers()
-        .map(|m| m.live_pids().into_iter().collect())
-        .unwrap_or_default();
-    if let Ok(store) = mecha_core::trigger::TriggerStore::default_root()
-        .and_then(mecha_core::trigger::TriggerStore::open)
-    {
-        pids.extend(store.live_run_pids());
+    let mut dirs = Vec::new();
+    for home in mecha_core::work::guard_homes().unwrap_or_default() {
+        dirs.push(home.join("taskruns"));
+        dirs.push(home.join("triggers").join("locks"));
     }
-    pids
+    if let Ok(root) = mecha_core::trigger::TriggerStore::default_root() {
+        dirs.push(root.join("locks"));
+    }
+    live_run_pids_in(&dirs)
+}
+
+/// The live pids across every marker directory in `dirs`.
+fn live_run_pids_in(dirs: &[std::path::PathBuf]) -> std::collections::HashSet<u32> {
+    dirs.iter()
+        .flat_map(|d| mecha_core::runmarker::RunMarkers::new(d.clone()).live_pids())
+        .collect()
 }
 
 /// Decide who is making a move, run the `pre_task_close` hooks, and write
@@ -3410,6 +3422,26 @@ fn work_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A run's marker under the owner's home is seen from a process whose
+    /// `MECHA_HOME` is an empty directory: the union, not the first home.
+    #[test]
+    fn run_markers_are_read_under_every_home() {
+        let base = std::env::temp_dir().join(format!(
+            "mecha-markers-homes-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let (redirected, owner) = (base.join("redirected"), base.join("owner"));
+        mecha_core::runmarker::RunMarkers::new(owner.join("taskruns"))
+            .mark_running("task-1a2b3c4d", None)
+            .unwrap();
+        let only_redirected = live_run_pids_in(&[redirected.join("taskruns")]);
+        let both = live_run_pids_in(&[redirected.join("taskruns"), owner.join("taskruns")]);
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(only_redirected.is_empty());
+        assert!(both.contains(&std::process::id()), "{both:?}");
+    }
 
     fn task() -> Value {
         json!({
