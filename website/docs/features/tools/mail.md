@@ -437,18 +437,11 @@ reply, a forward, and a `schedule` whose note names people to invite. A
 `schedule` with no invitees reaches nobody. It makes a private hold on your
 own calendar (`calendar_hold`), which needs the allow rule above to run
 without asking. Without that rule the hold is refused, and the run is told to
-fall back to a staged `calendar_create_event` with no invitees. That's an
-instruction to the model, not a mechanism: a run that doesn't follow it adds
-nothing and leaves the thread alone. That is today's
-behaviour: an ordinary, visible event you release from the outbox, not a
-private hold.
-`reply` is the one action here that needs an agent rather than a tool call — a
-model has to read the thread and write prose — and the run that does so reads
-the thread, which arms both interlock legs. So the draft arrives in `/outbox`
-flagged tainted, which is correct: it was written after reading a stranger's
-words. Drafting from the classifier's one-line summary instead would produce
-*clean* drafts written from a paraphrase, which is worse exactly where it
-matters.
+fall back to a staged `calendar_create_event` with no invitees. That is
+today's behaviour: an ordinary, visible event you release from the outbox,
+not a private hold. The fallback is an instruction to the model, not a
+mechanism. A run that doesn't follow it adds nothing and leaves the thread
+alone.
 
 `archive` and `spam` reach nobody outside your own mailbox, so they are not
 staged — staging them would make triage circular, reviewing a queue in order to
