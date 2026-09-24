@@ -801,10 +801,15 @@ pub async fn voice_clone(
 /// A hard link is the atomic "create, or fail with `AlreadyExists`", and it
 /// keeps the whole-file property the temp sibling exists for. The caller
 /// removes `tmp` either way. A filesystem that cannot hard-link falls back
-/// to the rename, with only the fast path's protection.
+/// to the rename, with only the fast path's protection. Linux reports that as
+/// `EPERM` (`PermissionDenied`) — exFAT, FUSE, WSL's DrvFs — and macOS as
+/// `EOPNOTSUPP` (`Unsupported`), so both fall back (found on review: keying on
+/// `Unsupported` alone turned those uploads into 500s where the rename had
+/// worked). A real permission problem fails the rename the same way.
 fn place_new(tmp: &std::path::Path, path: &std::path::Path) -> std::io::Result<()> {
+    use std::io::ErrorKind::{PermissionDenied, Unsupported};
     match std::fs::hard_link(tmp, path) {
-        Err(e) if e.kind() == std::io::ErrorKind::Unsupported => std::fs::rename(tmp, path),
+        Err(e) if matches!(e.kind(), Unsupported | PermissionDenied) => std::fs::rename(tmp, path),
         other => other,
     }
 }

@@ -497,8 +497,8 @@ fn write_verified(provider: &str, hosted: bool, facts: &Facts) -> Result<()> {
         // `api_key_env` (found on the second review).
         if matches!(facts.local_probe, onboarding::LocalProbe::NotAttempted) && hosted {
             anyhow::bail!(
-                "no local server was checked: `{provider}` is a hosted provider with its \
-                 credential, so nothing was probed. To record a llama-server, run \
+                "no local server was checked: `{provider}` is a hosted provider, so \
+                 nothing was probed. To record a llama-server, run \
                  `mecha setup --write --provider <name>` for your local provider — adding a \
                  `[providers.<name>]` with `kind = \"local\"` and its `base_url` first if \
                  there is none."
