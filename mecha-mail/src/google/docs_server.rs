@@ -432,4 +432,44 @@ mod tests {
             assert!(!(read && world), "{name} cannot be both a read and a sink");
         }
     }
+
+    /// The experiment fixture (`eval/fixtures/docs_server.py`) serves these
+    /// definitions verbatim: every tool it lists is one of ours, field for
+    /// field. A fixture that describes or annotates a tool differently from
+    /// this server measures a harness nobody runs — its writes once lacked
+    /// `openWorldHint`, so the interlock could never refuse them there.
+    #[test]
+    fn the_docs_fixture_serves_the_real_definitions() {
+        use std::io::Write;
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../eval/fixtures/docs_server.py");
+        let store = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new("python3")
+            .arg(&fixture)
+            .arg("--store")
+            .arg(store.path())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("python3 runs the fixture");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n")
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "the fixture exited {}", out.status);
+        let reply: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let served = reply["result"]["tools"].as_array().unwrap();
+        let real = tool_definitions();
+        assert!(!served.is_empty());
+        for tool in served {
+            let name = tool["name"].as_str().unwrap();
+            let ours = real.iter().find(|t| t["name"] == name).unwrap_or_else(|| {
+                panic!("the fixture serves `{name}`, which this server does not")
+            });
+            assert_eq!(tool, ours, "`{name}` drifted from tool_definitions()");
+        }
+    }
 }

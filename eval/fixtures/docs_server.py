@@ -139,29 +139,17 @@ def docs_trash(store, args):
     return f"moved \"{doc['title']}\" ({doc['id']}) to the trash"
 
 
+# Verbatim from `mecha-mail/src/google/docs_server.rs::tool_definitions()`
+# for the six docs tools; `mecha-mail`'s `the_docs_fixture_serves_the_real_definitions`
+# fails on any drift, because a fixture described differently from the real
+# server measures a harness nobody runs.
 FILE_ID = {"type": "string"}
 TOOLS = [
     {
-        "name": "docs_create",
-        "description": "Create a new Google Doc with a title, and optionally an initial body. Returns its file id. Anything mecha creates is reachable from then on with no further permission step.",
-        "inputSchema": {"type": "object", "properties": {"title": {"type": "string"}, "body": {"type": "string"}}, "required": ["title"]},
-        "annotations": {"openWorldHint": True},
-    },
-    {
-        "name": "docs_append",
-        "description": "Append text to the end of a Google Doc.",
-        "inputSchema": {"type": "object", "properties": {"file_id": FILE_ID, "text": {"type": "string"}}, "required": ["file_id", "text"]},
-        "annotations": {"openWorldHint": True},
-    },
-    {
-        "name": "docs_replace",
-        "description": "Replace every occurrence of `find` with `replace` in a Google Doc. Returns how many were replaced.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"file_id": FILE_ID, "find": {"type": "string"}, "replace": {"type": "string"}, "match_case": {"type": "boolean"}},
-            "required": ["file_id", "find", "replace"],
-        },
-        "annotations": {"openWorldHint": True},
+        "name": "docs_list",
+        "description": "List every Google Doc, Sheet, Slides deck and folder mecha can reach. This is the whole of what it can touch: files it created, plus files the user added with `mecha-docs pick`. A document not listed here is not reachable and cannot be made reachable from inside a run.",
+        "inputSchema": {"type": "object", "properties": {}},
+        "annotations": {"readOnlyHint": True},
     },
     {
         "name": "docs_read",
@@ -170,14 +158,30 @@ TOOLS = [
         "annotations": {"readOnlyHint": True},
     },
     {
-        "name": "docs_list",
-        "description": "List the Google Docs mecha can reach: file id and title.",
-        "inputSchema": {"type": "object", "properties": {}},
-        "annotations": {"readOnlyHint": True},
+        "name": "docs_create",
+        "description": "Create a new Google Doc with a title, and optionally an initial body. Returns its file id. Anything mecha creates is reachable from then on with no further permission step.",
+        "inputSchema": {"type": "object", "properties": {"title": {"type": "string"}, "body": {"type": "string"}}, "required": ["title"]},
+        "annotations": {"openWorldHint": True},
+    },
+    {
+        "name": "docs_append",
+        "description": "Append text to the end of a Google Doc. Use for adding a section or a note; use docs_replace to change text that is already there.",
+        "inputSchema": {"type": "object", "properties": {"file_id": FILE_ID, "text": {"type": "string"}}, "required": ["file_id", "text"]},
+        "annotations": {"openWorldHint": True},
+    },
+    {
+        "name": "docs_replace",
+        "description": "Replace every occurrence of some text in a Google Doc. This is the surgical edit: quote enough of the surrounding wording in `find` to be unambiguous. Reports how many occurrences changed, and zero means the anchor text was not found and nothing was edited.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"file_id": FILE_ID, "find": {"type": "string"}, "replace": {"type": "string"}, "match_case": {"type": "boolean", "default": True}},
+            "required": ["file_id", "find", "replace"],
+        },
+        "annotations": {"openWorldHint": True},
     },
     {
         "name": "docs_trash",
-        "description": "Move a Google Doc to the trash.",
+        "description": "Move a file mecha can reach to the user's Drive trash, where they can restore it. There is deliberately no permanent-delete verb.",
         "inputSchema": {"type": "object", "properties": {"file_id": FILE_ID}, "required": ["file_id"]},
         "annotations": {"destructiveHint": True},
     },
