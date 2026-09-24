@@ -4085,8 +4085,8 @@ comparison over a chosen set**, with the design written before the run.
   the earliest point that reads the directory at all. **Every store path in the rendered config
   is the home's**: an operator's `[outbox] dir`, skills or messages
   directory is cleared, or a trial's drafts would stage into the real
-  outbox (found on review). The child's
-  environment is an **allowlist** on `Sandbox::child_env`'s shape: the
+  outbox (found on review). The child's environment is an **allowlist** on
+  `Sandbox::child_env`'s shape: the
   base set, the provider key variables, and the three that name the trial
   — `MECHA_HOME` is not the only variable that moves a store, and an
   exported `MECHA_LEARNING_DIR` would have pointed a trial at the real
@@ -4096,9 +4096,9 @@ comparison over a chosen set**, with the design written before the run.
   a workspace. Nothing in a trial home is ever copied back: a rule learned
   inside a trial that landed in `~/.mecha/learning/` would ride every real
   run's cached prefix from then on.
-- **Two arms under one condition are named, never refused.** An arm that
-  shares a condition hash with the control is the same condition under two
-  names — deliberate in an A/A design, a defect otherwise
+- **Two arms under one condition are named, never refused.** An arm whose
+  hashes agree with the control's on every seed both have run is the same
+  condition under two names — deliberate in an A/A design, a defect otherwise
   (`levers_on = ["learned_rules"]` over `full` is `full`). `exp run` warns
   at plan time (`Manifest::identical_arms`, computed through `trials` so
   its grouping cannot drift from the store's hashes), and `judge` flags the

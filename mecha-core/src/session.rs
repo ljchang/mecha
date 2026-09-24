@@ -1106,7 +1106,11 @@ static KIND_ENV_IGNORED: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 /// override, so a session keeps its surface kind and is *admitted* to the
 /// corpus where the mark would have hidden it as `test`. That is the
 /// dangerous direction for a live binary, which is why it is hidden, named
-/// for tests, and called by nothing but test code.
+/// for tests, and called by nothing but test code. One bit for the whole
+/// test binary, latched by whichever test calls it first: a test that
+/// reads a session's kind must call it at its own top, never rely on
+/// another test having done so — or the CI leg that exports the mark sees
+/// a scheduling race rather than a deterministic failure.
 #[doc(hidden)]
 pub fn ignore_kind_env_for_tests() {
     KIND_ENV_IGNORED.store(true, std::sync::atomic::Ordering::Relaxed);
