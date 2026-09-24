@@ -1205,6 +1205,39 @@ door's own rule is that a paraphrase of an injection is the injection
 rearranged. The name has to reach the run, so this is not fixable by
 withholding; it is a question about what capture should default to, and it is
 named in HANDOFF rather than papered over here.
+
+**A thread whose classification keeps failing is retried on a backoff, and an
+outage never counts against it.** A `failed` record is retried — a transient
+failure must not be permanent, or a night's outage buries a manuscript
+invitation for good (2026-08-19) — but not on every sweep: `Record::attempts`
+counts the thread's own consecutive failures, and `mail_triage::retry_after`
+waits an hour, doubling, at most a day. Without it, one thread that always
+fails called the model on every 20-minute daytime tick and failed the unit on
+the quiet ones, keeping `mecha doctor` red. What counts is the thread's own
+failure only: `failure_is_outage` (a transient `ProviderError`, or `Auth` /
+`Billing`) keeps the previous count *and* clock (`Record::carry_failure`), and
+a sweep that failed several threads asks the model canaries — synthetic
+messages padded to the failures' own lengths — to find where it starts
+failing (`first_failing_length`, a binary search: a few calls at most).
+Failures at least that long are the server's and count against no thread;
+shorter ones are the threads' own. One canary could not say which failures
+it covered: the server failure that matters here (`--reasoning-budget`
+eating `max_tokens`) is length-dependent, failing long threads and answering
+short ones. A body too long for the model (`ContextOverflow`,
+`failure_is_threads_own`) stays the thread's own whatever the canary says,
+since a length-matched canary overflows just as those threads do. The sweep
+reads the newest N messages, a count and not a time, so a due failure that
+has left that window is retried from the store (`due_outside_window`,
+capped per sweep) — otherwise the 16–24h waits of a busy mailbox would
+strand it, and the backoff would be a cap. A failed re-read of such a
+thread is the thread's own (moved, deleted) unless the mail surface is down
+for that account: the sweep's own read could not reach it (named in its
+note), or several re-reads failed and a re-read of a thread the read just
+returned failed too (`reread_was_outage`). Each failure is written when it
+happens (and rewritten if it proves the server's), so a sweep that dies late
+still leaves it `failed` in front of a person. `mail list` shows a failure's count and when it is next due;
+`classify --force` retries everything at once.
+
 **A deadline the classifier reports must cite the words it came from, and the
 harness checks them rather than trusts them.** The prompt asks for
 `deadline_quote` — the exact words, copied verbatim — and `ground_deadline`

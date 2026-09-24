@@ -102,9 +102,9 @@ skip() {
         exit 255
     fi
     if [ -n "$stuck" ]; then
-        echo "model-idle: $why — skipping this run ($s in a row)"
+        echo "model-idle: $why — skipping this run ($s in a row, $d skipped today)"
     else
-        echo "model-idle: $why — skipping this run"
+        echo "model-idle: $why — skipping this run ($d skipped today)"
     fi
     exit 1
 }

@@ -603,9 +603,11 @@ through the working day (07:30–21:50), so a thread is sorted within about half
 an hour of arriving. The daytime timer names its zone (`America/New_York`) so
 the window follows daylight saving; set the zone on its two `OnCalendar=` lines
 to your own before installing. A zone in a calendar spec needs a recent systemd
-(this was written on 255); check yours accepts it first with
-`systemd-analyze calendar '*-*-* 08..21:10/20:00 America/New_York'`, because a
-spec it cannot parse leaves the timer never firing rather than failing:
+(this was written on 255); check yours accepts the spec with your zone in it —
+`systemd-analyze calendar '*-*-* 08..21:10/20:00 Your/Zone'` — before
+installing. A fresh `enable --now` of a timer with no valid `OnCalendar=`
+fails loudly, but editing an installed one and running `daemon-reload` only
+logs the parse error, and the timer then silently stops firing:
 
 ```bash
 cp scripts/mecha-mail-classify.{service,timer} ~/.config/systemd/user/
@@ -646,6 +648,13 @@ server down overnight left 17 threads recorded `failed`, among them a manuscript
 review invitation, and every later sweep would have reported "0 to classify"
 like any quiet morning. A transient infrastructure failure must not become a
 permanent editorial one.
+
+A thread that keeps failing for its own reason is retried on a backoff — an
+hour, doubling, at most a day — rather than every sweep, and an outage never
+counts against it. Because a sweep reads only the newest messages, a failed
+thread that has scrolled out of that window is retried from the store when it
+comes due, so a busy inbox cannot strand it. `mecha mail list` shows when each
+failure is next tried.
 
 ## Microsoft signs in with device code
 

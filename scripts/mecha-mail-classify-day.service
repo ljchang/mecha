@@ -18,20 +18,19 @@
 # roughly 25–30 s per model-classified thread, with most mail disposed of
 # without a model at all.
 #
-# **One exception to "quiet ticks are free".** A `failed` record is retried
-# on every sweep while it is inside the recent window
-# (`TriageStore::needs_classifying` has no attempt counter), so a thread that
-# fails for a reason that does not go away — a body that trips the provider,
-# a verdict that will not parse — makes every tick build a provider and call
-# the model — and since a quiet tick is the common case, *most* ticks then
-# consist of that thread alone, which `run_accomplished_nothing` reports as
-# a failed run. So one stuck thread leaves this unit failed nearly all day,
-# drowning the alarm the idle check spends exit 255 to raise. At one sweep
-# a night that was one retry a day; at this cadence it is ~43. A retry cap
-# or a `last_attempt` on `Record` is the fix, and it is a Rust change, like
-# the permit below. Until then, `mecha doctor` showing this unit failed with
-# the model server healthy points at a stuck thread: `mecha mail list` shows
-# it, `mecha mail dismiss` clears it.
+# **A thread that keeps failing is retried on a backoff, not every tick.**
+# Before `Record::attempts`, a `failed` record was retried on every sweep, so
+# one thread that fails for a reason that does not go away (a body that trips
+# the provider, a verdict that will not parse) called the model 43 times a
+# day and, on the quiet ticks where it was the only work, failed this unit
+# (`run_accomplished_nothing`) — keeping `mecha doctor` red and drowning the
+# alarms the idle check spends exit 255 on. Now a thread's own failure waits
+# an hour, then two, four, … up to a day (`mail_triage::retry_after`), so a
+# stuck thread costs one attempt a day. A provider outage is not counted
+# against any thread (`failure_is_outage`), so those are retried every sweep
+# and caught up once the server is back. A stuck thread stays `failed` in the
+# queue for a person: `mecha mail list` shows it with its next retry, `mecha
+# mail dismiss` clears it.
 #
 # **It stands down rather than competing.** `ExecCondition=` runs
 # model-idle.sh first (installed as ~/.local/bin/mecha-model-idle, so the

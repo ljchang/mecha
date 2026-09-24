@@ -851,8 +851,15 @@ pub struct Record {
     /// is the one behaviour that would make this layer decorative.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// For a `failed` record, when the attempt was made; otherwise when the
+    /// verdict was written. [`Self::retry_due`] reads it as the last attempt.
     #[serde(default)]
     pub classified_at: String,
+    /// Consecutive failed attempts to classify this thread; 0 once one
+    /// succeeds (a success writes a fresh record). Paces retries — see
+    /// [`retry_after`]. Absent from older records, which read as 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub attempts: u32,
     /// Whether a second pass over the full body ran at all.
     ///
     /// The denominator, and it has to be stored separately from
@@ -887,6 +894,19 @@ pub struct Record {
     /// that only ever fires and never reports cannot be wrong out loud.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub escalated_from: Option<String>,
+    /// Classified from the whole thread in one pass, with no snippet pass
+    /// before it — a failure retried from the store after leaving the
+    /// mailbox window ([`due_outside_window`]), which has no snippet to
+    /// start from.
+    ///
+    /// **Outside the escalation measurement on both sides.** Such a record
+    /// is not "escalated" (no second pass ran, so it could never reach the
+    /// numerator) and not "never escalated" (the rule never judged a snippet
+    /// of it): counted either way it biases the ratio, and these are
+    /// systematically the awkward threads. Grade the rule over records
+    /// without this flag.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_whole: bool,
     /// Every field a human corrected, oldest first.
     ///
     /// **Appended, never overwritten.** A correction that was itself wrong is
@@ -910,6 +930,136 @@ pub const CLASSIFIED: &str = "classified";
 pub const ACTED: &str = "acted";
 pub const DISMISSED: &str = "dismissed";
 pub const FAILED: &str = "failed";
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// A message nothing about which can make a working classifier fail: asked
+/// when a sweep failed several threads, to tell a model that cannot answer
+/// (the server's fault) from threads it cannot answer about (their own). No
+/// real mailbox, no real person.
+///
+/// Padded to at least `min_chars` of neutral text, because the server-side
+/// failure it exists to catch is **length-dependent**: llama-server's
+/// `--reasoning-budget` eating `max_tokens` fails the long threads and
+/// answers the short ones, so a one-line canary would answer, and those
+/// threads would be charged for a server flag. Asked at the length of the
+/// longest thread that failed, the canary can only answer if a message that
+/// long is answerable at all.
+pub fn canary_thread(min_chars: usize) -> ThreadInput {
+    let mut body = String::from("Are you free for lunch tomorrow at noon? No worries if not.");
+    const FILLER: &str = " The rest of this note is the usual chatter about the \
+                          week, the weather, and nothing that needs a reply.";
+    while body.chars().count() < min_chars {
+        body.push_str(FILLER);
+    }
+    ThreadInput {
+        thread_id: "mecha-canary".into(),
+        account: "canary".into(),
+        from: "colleague@example.org".into(),
+        from_name: "A colleague".into(),
+        subject: "Lunch tomorrow?".into(),
+        date: chrono::Utc::now().to_rfc3339(),
+        body,
+    }
+}
+
+/// Stored `failed` threads that are due for a retry but that the sweep's
+/// mailbox read did not return — oldest first, at most `max`.
+///
+/// **The retry window is a count, not a time.** A sweep reads the newest N
+/// messages per account, and [`retry_after`] reaches 16 and then 24 hours: in
+/// a mailbox taking more than N messages in that span, a backed-off thread
+/// has left the window before its retry comes due, and a backoff that never
+/// lands again is the cap it was written to avoid. These are retried from the
+/// store instead — a store walk, not a mailbox read. `seen` is the
+/// (account, thread id) pairs the read returned; `account` narrows as the
+/// sweep's own `--account` does, and `force` takes every failure whatever
+/// its wait, as `classify --force` does in the window.
+pub fn due_outside_window<'a>(
+    records: &'a [Record],
+    seen: &std::collections::HashSet<(String, String)>,
+    account: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+    force: bool,
+    max: usize,
+) -> Vec<&'a Record> {
+    let mut due: Vec<&Record> = records
+        .iter()
+        .filter(|r| r.state == FAILED && (force || r.retry_due(now)))
+        .filter(|r| account.is_none_or(|a| r.account == a))
+        .filter(|r| !seen.contains(&(r.account.clone(), r.thread_id.clone())))
+        .collect();
+    due.sort_by(|a, b| a.classified_at.cmp(&b.classified_at));
+    // The caller sets `max`: small to pace the automatic sweep, large under
+    // `--force` (an operator asking for all of them — a 17-thread backlog must
+    // not leave seven behind), and bounded either way.
+    due.truncate(max);
+    due
+}
+
+/// Whether a classification failure is the provider's rather than the
+/// thread's. Those fail every thread in a sweep alike, so they must not pace
+/// any one of them (see [`retry_after`]): a transport failure, a server
+/// error, overload or a rate limit (`ProviderError::transient`) — and an
+/// expired key or a lapsed account (`Auth`, `Billing`), which `transient`
+/// leaves out only because re-sending the request is pointless, not because
+/// the thread is at fault. Counting those would put the whole mailbox on the
+/// day-long wait within a few ticks of a key expiring. Anything else — a
+/// refusal, a verdict that will not parse, a request the provider rejects
+/// (`Invalid`), a body that will not fit (`ContextOverflow`) — is the thread's.
+pub fn failure_is_outage(e: &anyhow::Error) -> bool {
+    use crate::provider::retry::ProviderError;
+    e.downcast_ref::<ProviderError>()
+        .is_some_and(|c| c.transient() || matches!(c, ProviderError::Auth | ProviderError::Billing))
+}
+
+/// Whether a failure is one the provider has ruled the thread's own, beyond
+/// any sweep-wide judgement: a body that will not fit (`ContextOverflow`).
+/// Only this overrides the canary — a length-matched canary overflows
+/// exactly as oversized threads do, and taking that as an outage would retry
+/// them on every sweep for ever, the loop the backoff exists to end.
+/// `Invalid` is deliberately not here: it is the catch-all for any other 4xx
+/// — a mistyped model name, an unsupported parameter — which fails every
+/// thread alike, and there the canary is right.
+pub fn failure_is_threads_own(e: &anyhow::Error) -> bool {
+    use crate::provider::retry::ProviderError;
+    e.downcast_ref::<ProviderError>()
+        .is_some_and(|c| matches!(c, ProviderError::ContextOverflow))
+}
+
+/// How long a thread that has failed `attempts` times in a row waits before
+/// the next sweep tries it again: an hour after the first failure, doubling,
+/// never more than a day.
+///
+/// **Why a backoff and not a cap.** A cap would bring back the bug
+/// [`TriageStore::needs_classifying`] exists to prevent: on 2026-08-19 the
+/// model server was down for a night and 17 threads failed, and a sweep that
+/// gave up on them would have buried a manuscript review invitation for good.
+/// A backoff keeps retrying, while a thread that fails for a reason that does
+/// not go away (a verdict that will not parse, a refusal, a request the
+/// provider rejects) is tried about once a day instead of on every sweep.
+///
+/// **Only the thread's own failures count** ([`failure_is_outage`]). A dead
+/// or overloaded model server fails every thread at once and says nothing
+/// about any of them, so it neither advances the count nor restarts the clock:
+/// through an outage a fresh thread is retried every sweep as before, and is
+/// caught up within a sweep of the server coming back. Counting outages would
+/// have pushed every thread in a day-long outage onto the long waits, stale
+/// until the next morning — the incident this backoff exists to avoid.
+///
+/// The pacing matters since the daytime sweep: every 20 minutes, a thread
+/// that keeps failing for its own reason called the model 43 times a day and,
+/// on the quiet ticks where it was the only work, failed the unit
+/// (`run_accomplished_nothing`), which kept `mecha doctor` red and drowned
+/// the alarms that mean something.
+/// The thread stays `failed` throughout, so the queue still shows it to a
+/// person, and `classify --force` still retries it at once.
+pub fn retry_after(attempts: u32) -> chrono::Duration {
+    let hours = 1i64 << attempts.saturating_sub(1).min(5);
+    chrono::Duration::hours(hours.min(24))
+}
 
 /// Waiting on somebody else, and **not the same as dismissed**.
 ///
@@ -943,6 +1093,46 @@ pub const PARKED_FOR: &str = "parked_for";
 pub const SURFACED_AT: &str = "surfaced_at";
 
 impl Record {
+    /// When a `failed` record is next due: [`retry_after`] its attempt count,
+    /// from its last counted attempt. `None` means due at once — a failure
+    /// with no count (written before the count existed, or failed only by
+    /// outages) or an unreadable timestamp. Unknown is never clean, and
+    /// "retry" is the side that cannot bury a thread.
+    pub fn next_retry(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        if self.attempts == 0 {
+            return None;
+        }
+        chrono::DateTime::parse_from_rfc3339(&self.classified_at)
+            .ok()
+            .map(|at| at.with_timezone(&chrono::Utc) + retry_after(self.attempts))
+    }
+
+    /// Carry a new failure's pacing forward from the thread's previous record.
+    ///
+    /// The thread's own consecutive failures advance the count; a success in
+    /// between (any non-`failed` previous record) starts it over. An outage
+    /// ([`failure_is_outage`]) is not the thread's failure: it keeps the
+    /// previous count *and* its clock, so it neither pushes the thread onto a
+    /// longer wait nor restarts the one it was on — and a thread that has
+    /// only ever failed by outage stays at 0, due every sweep.
+    pub fn carry_failure(&mut self, prev: Option<&Record>, outage: bool) {
+        let prev = prev.filter(|p| p.state == FAILED);
+        if outage {
+            if let Some(p) = prev.filter(|p| p.attempts > 0) {
+                self.attempts = p.attempts;
+                self.classified_at = p.classified_at.clone();
+            }
+        } else {
+            self.attempts = prev.map_or(0, |p| p.attempts) + 1;
+        }
+    }
+
+    /// Whether a sweep at `now` should try this record again: a `failed`
+    /// record whose [`Self::next_retry`] has come.
+    pub fn retry_due(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        self.state == FAILED && self.next_retry().is_none_or(|due| now >= due)
+    }
+
     /// The verdict **as the classifier produced it**, with the user's
     /// corrections undone.
     ///
@@ -1159,9 +1349,11 @@ impl TriageStore {
             verdict: None,
             error: None,
             classified_at: String::new(),
+            attempts: 0,
             escalated: false,
             escalated_changed: Vec::new(),
             escalated_from: None,
+            read_whole: false,
             corrections: Vec::new(),
             acted: None,
             acted_at: None,
@@ -1191,11 +1383,22 @@ impl TriageStore {
     ///
     /// A transient outage must not be permanent. `dismissed` is excluded
     /// because that is a person's decision rather than an accident, and
-    /// `classified` because it is done.
+    /// `classified` because it is done. A `failed` record is retried on the
+    /// [`retry_after`] schedule rather than on every sweep.
     pub fn needs_classifying(&self, account: &str, thread_id: &str) -> bool {
+        self.needs_classifying_at(account, thread_id, chrono::Utc::now())
+    }
+
+    /// [`Self::needs_classifying`] with the clock passed in.
+    pub fn needs_classifying_at(
+        &self,
+        account: &str,
+        thread_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> bool {
         match self.get(account, thread_id) {
             None => true,
-            Some(r) => r.state == FAILED,
+            Some(r) => r.retry_due(now),
         }
     }
 
@@ -1299,9 +1502,11 @@ mod tests {
             }),
             error: None,
             classified_at: "2026-08-18T09:05:00Z".into(),
+            attempts: 0,
             escalated: false,
             escalated_changed: Vec::new(),
             escalated_from: None,
+            read_whole: false,
             corrections: Vec::new(),
             acted: None,
             acted_at: None,
@@ -1844,6 +2049,20 @@ mod tests {
         // still a reading of a stranger's prose.
         let blob = serde_json::to_string(&got.for_privileged_run()).unwrap();
         assert!(!blob.contains("escalated_from"), "{blob}");
+
+        // A thread retried from the store is read whole with no snippet pass:
+        // a third state, outside the measurement, that must survive the store
+        // and stay off every record that is not one.
+        let mut whole = rec("dartmouth", "t3", Bucket::Respond);
+        whole.read_whole = true;
+        store.put(&whole).unwrap();
+        let got = store.get("dartmouth", "t3").unwrap();
+        assert!(
+            got.read_whole && !got.escalated,
+            "read whole, and not escalated"
+        );
+        let plain = serde_json::to_string(&confirmed).unwrap();
+        assert!(!plain.contains("read_whole"), "{plain}");
     }
 
     /// A confirmed misclassification from the 2026-08-18 sweep: a high school
@@ -2103,6 +2322,176 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_due_failure_outside_the_window_is_retried_from_the_store() {
+        // Review finding: the sweep reads the newest N messages, and a thread
+        // on a 16–24h wait in a busy mailbox has left that window before its
+        // retry is due — a backoff that never lands again is a cap.
+        let now = chrono::Utc::now();
+        let failed = |id: &str, acct: &str, attempts: u32, hours_ago: i64| {
+            let mut r = rec(acct, id, Bucket::Ignore);
+            r.state = FAILED.into();
+            r.attempts = attempts;
+            r.classified_at = (now - chrono::Duration::hours(hours_ago)).to_rfc3339();
+            r
+        };
+        let records = vec![
+            failed("old", "work", 6, 30),        // due (24h wait, 30h ago)
+            failed("older", "work", 6, 40),      // due, and older
+            failed("waiting", "work", 6, 2),     // not yet due
+            failed("inwin", "work", 6, 30),      // due, but the read returned it
+            failed("home", "home", 6, 30),       // due, other account
+            rec("work", "done", Bucket::Ignore), // not failed
+        ];
+        let seen: std::collections::HashSet<(String, String)> =
+            [("work".to_string(), "inwin".to_string())]
+                .into_iter()
+                .collect();
+        let ids = |v: Vec<&Record>| v.iter().map(|r| r.thread_id.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            ids(due_outside_window(&records, &seen, None, now, false, 10)),
+            vec!["older", "old", "home"],
+            "due, outside the window, oldest first"
+        );
+        assert_eq!(
+            ids(due_outside_window(
+                &records,
+                &seen,
+                Some("work"),
+                now,
+                false,
+                10
+            )),
+            vec!["older", "old"],
+            "narrowed like the sweep's --account"
+        );
+        assert_eq!(
+            ids(due_outside_window(&records, &seen, None, now, false, 1)),
+            vec!["older"]
+        );
+        assert_eq!(
+            ids(due_outside_window(
+                &records,
+                &seen,
+                Some("work"),
+                now,
+                true,
+                10
+            )),
+            vec!["older", "old", "waiting"],
+            "--force takes a failure still on its wait, as it does in the window"
+        );
+        assert_eq!(
+            due_outside_window(&records, &seen, None, now, true, 10).len(),
+            4,
+            "and every one of them, within the cap the caller sets"
+        );
+    }
+
+    #[test]
+    fn the_canary_is_as_long_as_it_is_asked_to_be() {
+        assert!(canary_thread(0).body.chars().count() > 0);
+        for n in [100, 2_000, 12_000] {
+            assert!(
+                canary_thread(n).body.chars().count() >= n,
+                "a length-dependent server failure fails a short canary's long twins"
+            );
+        }
+    }
+
+    /// The backoff: an hour after the first failure, doubling, capped at a
+    /// day — so an outage recovers within the hour, and a thread that always
+    /// fails costs one attempt a day instead of one a sweep.
+    #[test]
+    fn retries_back_off_to_once_a_day_and_never_stop() {
+        let h = |n| retry_after(n).num_hours();
+        assert_eq!(
+            [h(1), h(2), h(3), h(4), h(5), h(6), h(40)],
+            [1, 2, 4, 8, 16, 24, 24]
+        );
+        // attempts 0 is a record from before the count existed: due at once.
+        assert_eq!(h(0), 1);
+        let mut r = rec("a", "t", Bucket::Ignore);
+        r.state = FAILED.into();
+        let now = chrono::Utc::now();
+        r.attempts = 0;
+        assert!(r.retry_due(now), "an uncounted failure is retried at once");
+        r.attempts = 50;
+        r.classified_at = (now - chrono::Duration::hours(25)).to_rfc3339();
+        assert!(
+            r.retry_due(now),
+            "however many failures, a day later it is tried again"
+        );
+        r.classified_at = "not a time".into();
+        assert!(
+            r.retry_due(now),
+            "an unreadable timestamp is due, not buried"
+        );
+        r.state = CLASSIFIED.into();
+        assert!(!r.retry_due(now), "only failures are retried");
+    }
+
+    /// Only the thread's own failures pace it. An outage fails every thread
+    /// and says nothing about any of them; counting it pushed a day-long
+    /// outage's threads onto the long waits, stale until the next morning.
+    #[test]
+    fn an_outage_does_not_advance_the_count_or_restart_the_clock() {
+        let failure = |attempts: u32, at: &str| {
+            let mut r = rec("a", "t", Bucket::Ignore);
+            r.state = FAILED.into();
+            r.attempts = attempts;
+            r.classified_at = at.into();
+            r
+        };
+        let fresh = || failure(0, "2026-09-23T18:00:00Z");
+
+        // The thread's own failures count up, and a success starts over.
+        let mut r = fresh();
+        r.carry_failure(Some(&failure(2, "2026-09-23T10:00:00Z")), false);
+        assert_eq!(r.attempts, 3);
+        let mut r = fresh();
+        r.carry_failure(Some(&rec("a", "t", Bucket::Ignore)), false);
+        assert_eq!(r.attempts, 1, "a success in between starts the count over");
+
+        // Outage: the count and the clock stay where the thread's own
+        // failures left them.
+        let mut r = fresh();
+        r.carry_failure(Some(&failure(2, "2026-09-23T10:00:00Z")), true);
+        assert_eq!(
+            (r.attempts, r.classified_at.as_str()),
+            (2, "2026-09-23T10:00:00Z")
+        );
+        // A thread that has only ever failed by outage stays due every sweep.
+        let mut r = fresh();
+        r.carry_failure(Some(&failure(0, "2026-09-23T17:40:00Z")), true);
+        assert_eq!(r.attempts, 0);
+        assert!(r.retry_due(chrono::Utc::now()));
+        let mut r = fresh();
+        r.carry_failure(None, true);
+        assert_eq!(r.attempts, 0);
+    }
+
+    /// The outage/thread line is the provider's own `transient`, found through
+    /// the context the provider wraps it in.
+    #[test]
+    fn a_transport_or_server_failure_is_an_outage_and_a_bad_verdict_is_not() {
+        use crate::provider::retry::ProviderError;
+        let wrapped = |e: ProviderError| anyhow::Error::new(e).context("local: connection refused");
+        assert!(failure_is_outage(&wrapped(ProviderError::Transport)));
+        assert!(failure_is_outage(&wrapped(ProviderError::ServerError)));
+        assert!(failure_is_outage(&wrapped(ProviderError::Overloaded)));
+        // A key or an account fails every thread alike, too.
+        assert!(failure_is_outage(&wrapped(ProviderError::Auth)));
+        assert!(failure_is_outage(&wrapped(ProviderError::Billing)));
+        assert!(!failure_is_outage(&wrapped(ProviderError::ContextOverflow)));
+        assert!(!failure_is_outage(&wrapped(ProviderError::Invalid(
+            "bad".into()
+        ))));
+        assert!(!failure_is_outage(&anyhow::anyhow!(
+            "classification failed after a retry: no JSON object"
+        )));
+    }
+
     /// A failed classification must be retried; anything else must not.
     /// Fails on `is_known`, which is the call this replaced.
     #[test]
@@ -2123,6 +2512,23 @@ mod tests {
             "dismissal is a person's decision, not an accident"
         );
         assert!(store.needs_classifying("a", "never-seen"));
+
+        // A failure with a count waits out its backoff, and is due after it.
+        let mut backed = rec("a", "b", Bucket::Ignore);
+        backed.state = FAILED.into();
+        backed.attempts = 3;
+        backed.classified_at = "2026-09-23T12:00:00Z".into();
+        store.put(&backed).unwrap();
+        let at = |s: &str| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        };
+        assert!(
+            !store.needs_classifying_at("a", "b", at("2026-09-23T15:59:00Z")),
+            "the third failure waits four hours"
+        );
+        assert!(store.needs_classifying_at("a", "b", at("2026-09-23T16:00:00Z")));
 
         // The old filter could not tell any of these apart, which is the bug.
         for id in ["f", "c", "d"] {
