@@ -1167,7 +1167,23 @@ fn check_triggers(
                             trigger.name
                         ),
                         detail: format!("{e:#}"),
-                        remedy: None,
+                        // `show`, `enable`/`disable` and `run` all load the
+                        // file through `check_serves` and refuse it too; `edit`
+                        // reads by path and still opens it (found on review).
+                        remedy: Some(Remedy {
+                            description: format!(
+                                "fix or remove `serves` — `{}` cannot be shown, run or \
+                                 disabled while it will not load",
+                                trigger.name
+                            ),
+                            argv: vec![
+                                "mecha".into(),
+                                "trigger".into(),
+                                "edit".into(),
+                                trigger.name.clone(),
+                            ],
+                            needs_terminal: true,
+                        }),
                     });
                     continue;
                 }
@@ -3906,6 +3922,11 @@ mod tests {
             .collect();
         assert_eq!(broken.len(), 1, "{findings:#?}");
         assert!(broken[0].summary.contains("morning"), "{findings:#?}");
+        let remedy = broken[0]
+            .remedy
+            .as_ref()
+            .expect("names the one verb that still opens it");
+        assert_eq!(remedy.argv, ["mecha", "trigger", "edit", "morning"]);
         let _ = std::fs::remove_dir_all(&home);
     }
 
