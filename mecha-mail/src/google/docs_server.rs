@@ -454,12 +454,13 @@ mod tests {
         assert!(description.contains("no permanent-delete"));
     }
 
-    /// Every write is named in the deployment's `[outbox] tools`, so this
-    /// list is what a config has to cover. A write added without an
-    /// annotation would execute unstaged, which is the silently-degrading
-    /// shape.
+    /// Every edit verb is named in the deployment's `[outbox] tools`, so
+    /// that list is what a config has to cover; the three create verbs are
+    /// private writes and execute (`docs/PROVENANCE-DESIGN.md` §2). A write
+    /// added with no annotation at all would execute unstaged unread, which
+    /// is the silently-degrading shape.
     #[test]
-    fn every_non_read_is_either_a_staged_write_or_the_trash_verb() {
+    fn every_non_read_is_a_staged_edit_a_private_write_or_the_trash_verb() {
         for tool in tool_definitions() {
             let name = tool["name"].as_str().unwrap().to_string();
             let a = &tool["annotations"];
