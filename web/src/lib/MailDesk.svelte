@@ -720,7 +720,7 @@
               <button onclick={() => run('archive')}><kbd>e</kbd>Archive</button>
               <button onclick={() => ask('reply', 'Steer the reply (optional) — Enter to draft', 'decline politely; ask for the deadline')}><kbd>r</kbd>Reply</button>
               <button onclick={() => run('task')}><kbd>t</kbd>Task</button>
-              <button onclick={() => run('schedule')} title="Drafts an event on your calendar from the thread's date and time; ⇧S to add instructions"><kbd>s</kbd>Add to calendar</button>
+              <button onclick={() => run('schedule')} title="Adds the thread's date and time to your calendar as a private hold, made directly; name people with ⇧S and it drafts an invitation for review instead"><kbd>s</kbd>Add to calendar</button>
               <button onclick={() => ask('forward', 'Forward to, and a covering line', 'FYI — the one I mentioned', { wantTo: true })}><kbd>f</kbd>Forward</button>
               <button onclick={() => ask('needs-info', 'What are you waiting for?', 'their dates, before I can book', { required: true })}><kbd>p</kbd>Park</button>
               <button onclick={() => run('dismiss')}><kbd>d</kbd>Dismiss</button>
@@ -819,7 +819,7 @@
           <p><kbd>z</kbd> undo (within {HOLD_MS / 1000}s)</p>
           <p><kbd>!</kbd> spam — confirms first</p></div>
       </div>
-      <p class="helpnote">Actions wait {HOLD_MS / 1000} seconds before they reach the server, so <kbd>z</kbd> can take one back. Replies, forwards and invites stage in the outbox; nothing sends from here.</p>
+      <p class="helpnote">Actions wait {HOLD_MS / 1000} seconds before they reach the server, so <kbd>z</kbd> can take one back. Replies, forwards and invites stage in the outbox; a private hold on your own calendar is made directly, and nothing sends from here.</p>
     </div>
   {/if}
 

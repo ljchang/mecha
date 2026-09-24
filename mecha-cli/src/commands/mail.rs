@@ -2741,7 +2741,10 @@ impl Draft {
 ///   stranger's mail with both legs clear.
 /// - **A failed run stages nothing and leaves the thread alone.** A thread
 ///   whose draft failed is a thread nobody has answered, which is what
-///   `classified` already means.
+///   `classified` already means. The one exception is a schedule run that
+///   made a hold before failing: a hold is made, not staged, so the calendar
+///   has changed, and the thread is marked acted and the failure says so,
+///   rather than inviting a re-run that makes a second hold.
 async fn draft(
     global: &GlobalOpts,
     thread_id: &str,
@@ -2821,7 +2824,25 @@ async fn draft(
     session.record_run(&recorded, &convo)?;
     session.append(&mecha_core::session::Record::Taint(convo.taint))?;
 
+    // Counted before the failure exit, not after: a hold is made, not
+    // staged, so a run that made one and then failed has changed the
+    // calendar. Reporting "nothing staged" there left the thread unhandled
+    // and invited a re-run that made a second hold (found in review of #281).
+    let holds = holds_made(&convo.messages);
     if let Err(e) = outcome {
+        if holds > 0 {
+            store.mark(
+                &account,
+                thread_id,
+                kind.verb(),
+                mecha_core::mail_triage::ACTED,
+            )?;
+            bail!(
+                "the {} run failed after adding {holds} private hold(s) to your calendar \
+                 — check the calendar before running it again: {e:#}",
+                kind.verb()
+            );
+        }
         bail!("the {} run failed, nothing staged: {e:#}", kind.verb());
     }
 
@@ -2830,13 +2851,17 @@ async fn draft(
         .filter(|id| !staged_before.contains(id))
         .collect();
     // A hold is made, not staged (`docs/PROVENANCE-DESIGN.md` §2), so it
-    // never shows up in the outbox. Counted from the run's own record: a
-    // `calendar_hold` call whose result came back clean.
-    let holds = holds_made(&convo.messages);
+    // never shows up in the outbox. Counted above from the run's own record:
+    // a `calendar_hold` call whose result came back clean. Marked through
+    // `mark`, like every other action that finishes a thread, so the record
+    // says which verb closed it.
     if holds > 0 && staged.is_empty() {
-        let mut rec = rec;
-        rec.state = mecha_core::mail_triage::ACTED.to_string();
-        store.put(&rec)?;
+        store.mark(
+            &account,
+            thread_id,
+            kind.verb(),
+            mecha_core::mail_triage::ACTED,
+        )?;
         println!(
             "added {holds} private hold(s) to your calendar for {} — nobody was invited",
             handle(thread_id)

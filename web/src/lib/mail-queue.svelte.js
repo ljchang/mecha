@@ -45,7 +45,7 @@ export const VERB_PAST = {
   task: 'Task created',
   spam: 'Marked spam',
   reply: 'Reply drafting',
-  schedule: 'Calendar event drafting',
+  schedule: 'Adding to your calendar',
   forward: 'Forward drafting',
   'needs-info': 'Parked',
 };
