@@ -2828,7 +2828,22 @@ async fn draft(
     // staged, so a run that made one and then failed has changed the
     // calendar. Reporting "nothing staged" there left the thread unhandled
     // and invited a re-run that made a second hold (found in review of #281).
-    let holds = holds_made(&convo.messages);
+    // Over every state the transcript held, not just the live list:
+    // compaction rewrites `messages` in place and keeps the old copies in
+    // `rewritten`, so a hold made before a summary would vanish from the
+    // count and the run would report nothing (found in review of #281).
+    // Only a schedule run counts: a hold from any other kind of run is not
+    // what that run was asked to do, and must not close its thread.
+    let holds = match kind {
+        Draft::Schedule => holds_made(
+            convo
+                .rewritten
+                .iter()
+                .map(Vec::as_slice)
+                .chain(std::iter::once(convo.messages.as_slice())),
+        ),
+        _ => 0,
+    };
     if let Err(e) = outcome {
         if holds > 0 {
             store.mark(
@@ -2892,42 +2907,55 @@ async fn draft(
     );
     store.put(&rec)?;
 
+    // A hold beside a staged invitation is already on the calendar; say so,
+    // or an owner who discards the draft is left with a hold nobody reported.
+    let also = if holds > 0 {
+        format!(" (and {holds} private hold(s) are already on your calendar)")
+    } else {
+        String::new()
+    };
     println!(
-        "{} draft(s) staged for {} — `mecha outbox` to review, nothing has been sent",
+        "{} draft(s) staged for {} — `mecha outbox` to review, nothing has been sent{also}",
         staged.len(),
         handle(thread_id)
     );
     Ok(())
 }
 
-/// How many `calendar_hold` calls in a run came back clean.
+/// How many distinct `calendar_hold` calls in a run came back clean.
 ///
 /// The run's record rather than the model's final words, because a model
 /// saying "added" is hearsay: a refused hold (no `allow` rule, a read-only
 /// surface) comes back `is_error`, and a hold that failed at the provider
-/// does too.
-fn holds_made(messages: &[mecha_core::message::Message]) -> usize {
+/// does too. Taken over every snapshot of the transcript, since compaction
+/// rewrites it; one hold appears in each snapshot from before its rewrite,
+/// so calls are counted by id, once.
+fn holds_made<'a>(
+    snapshots: impl IntoIterator<Item = &'a [mecha_core::message::Message]>,
+) -> usize {
     use mecha_core::message::Block;
-    let calls: std::collections::HashSet<&str> = messages
-        .iter()
-        .flat_map(|m| &m.content)
-        .filter_map(|b| match b {
-            Block::ToolUse { id, name, .. }
-                if name.rsplit("__").next() == Some("calendar_hold") =>
-            {
-                Some(id.as_str())
+    let mut calls = std::collections::HashSet::new();
+    let mut clean = std::collections::HashSet::new();
+    for messages in snapshots {
+        for block in messages.iter().flat_map(|m| &m.content) {
+            match block {
+                Block::ToolUse { id, name, .. }
+                    if name.rsplit("__").next() == Some("calendar_hold") =>
+                {
+                    calls.insert(id.clone());
+                }
+                Block::ToolResult {
+                    tool_use_id,
+                    is_error: false,
+                    ..
+                } => {
+                    clean.insert(tool_use_id.clone());
+                }
+                _ => {}
             }
-            _ => None,
-        })
-        .collect();
-    messages
-        .iter()
-        .flat_map(|m| &m.content)
-        .filter(|b| {
-            matches!(b, Block::ToolResult { tool_use_id, is_error: false, .. }
-                if calls.contains(tool_use_id.as_str()))
-        })
-        .count()
+        }
+    }
+    calls.intersection(&clean).count()
 }
 
 /// What the drafting run is asked to do.
@@ -3324,14 +3352,25 @@ mod draft_prompt_tests {
             call("b", "mail__calendar_create_event"),
             result("b", false),
         ];
-        assert_eq!(holds_made(&run), 0);
+        assert_eq!(holds_made([run.as_slice()]), 0);
         let run = vec![call("c", "mail__calendar_hold"), result("c", false)];
-        assert_eq!(holds_made(&run), 1);
+        assert_eq!(holds_made([run.as_slice()]), 1);
         let bare = vec![call("d", "calendar_hold"), result("d", false)];
         assert_eq!(
-            holds_made(&bare),
+            holds_made([bare.as_slice()]),
             1,
             "an unprefixed server's tool counts too"
+        );
+
+        // Compaction: the hold lives only in pre-rewrite snapshots, repeated
+        // in two of them, and the live list is a summary. Counted once, not
+        // zero and not twice.
+        let before = vec![call("h", "mail__calendar_hold"), result("h", false)];
+        let also_before = before.clone();
+        let after = vec![Message::user("summary of what happened")];
+        assert_eq!(
+            holds_made([before.as_slice(), also_before.as_slice(), after.as_slice()]),
+            1
         );
     }
     use mecha_core::mail_triage::Record;

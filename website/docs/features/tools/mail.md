@@ -425,14 +425,18 @@ label argument would put `spam` inside a verb that reads as harmless.
 |---|---|---|
 | `reply` | a model reads the thread and composes an answer | **staged in the [outbox](/docs/features/security/outbox)** |
 | `forward --to <addrs>` | passes it on with a covering line | **staged in the outbox** |
-| `schedule` | turns it into a calendar event | **staged in the outbox** |
+| `schedule` | turns it into a calendar event | **your calendar, directly** — a private hold that invites nobody; **staged in the outbox** only when your note names people to invite |
 | `archive` | out of the inbox — reversible, nobody notified | the mailbox |
 | `spam` | trains the provider's filter | the mailbox |
 | `task` | tracks it on the knowledge graph's board | the graph |
 | `needs-info --missing <what>` | parks it until somebody answers | the store |
 | `dismiss` | drops it from the queue without acting | the store |
 
-Three of these reach a third party, and all three **stage rather than send**.
+Everything here that reaches a third party **stages rather than sends**: a
+reply, a forward, and a `schedule` whose note names people to invite. A
+`schedule` with no invitees reaches nobody. It makes a private hold on your
+own calendar (`calendar_hold`), which needs the allow rule above to run
+without asking.
 `reply` is the one action here that needs an agent rather than a tool call — a
 model has to read the thread and write prose — and the run that does so reads
 the thread, which arms both interlock legs. So the draft arrives in `/outbox`
