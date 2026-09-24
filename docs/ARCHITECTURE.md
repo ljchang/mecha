@@ -2433,6 +2433,18 @@ nothing. Editor shell-outs from the TUI go through `self_cli_interactive`,
 which inherits the real terminal — `.output()` hands `$EDITOR` a pipe for a
 screen and a closed stdin for a keyboard, which was a real bug.
 
+**The web outbox sends in one press, armed or not — the TUI still confirms.**
+The two review surfaces differ in what "reviewed" costs, deliberately. Every
+draft the assistant writes is armed (it read the owner's mail to write it), so
+the web's armed-only confirm sheet of raw JSON sat in front of every draft and
+taught clicking through; the queue clogged behind it (#272). What the sheet
+showed that the page did not — a link's real destination — the page now draws
+beside the link, query string included (`hiddenTarget`). The reply's recipient
+is shown from the thread the run read *only when the split is proven*:
+mecha-mail ends every thread read with `--- end of thread · N messages`, the
+one line no body can reach, and a read that is clipped, or whose count does
+not match (a header forged inside a body adds a split), names nobody.
+
 **`review now` reaches the web page and the call too, and the call is where
 it gets interesting.** `mecha serve` was the one surface with no release
 policy at all — every draft went silently to the outbox and the badge — so a
