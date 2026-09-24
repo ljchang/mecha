@@ -641,17 +641,21 @@ impl SearchChain {
 /// page.
 ///
 /// Process-wide rather than per conversation, on purpose. A handle issued to
-/// one conversation opens only a URL some search already returned, so sharing
-/// the ledger widens nothing. The random epoch in every handle means a handle
-/// from before a restart is refused rather than silently naming a different
-/// result under the same number.
+/// one conversation opens only a URL some search already returned, and each
+/// search's token is random, so a handle has to be *held* to be used: one
+/// run cannot derive another's. The random epoch in every handle means a
+/// handle from before a restart is refused rather than silently naming a
+/// different result.
 pub struct ResultLedger {
     state: std::sync::Mutex<LedgerState>,
 }
 
 struct LedgerState {
     epoch: String,
-    next_search: u64,
+    /// Live search tokens, oldest first, so a new one never reuses a token
+    /// whose handles are still held. Capped like the handles: a token more
+    /// than `LEDGER_CAP` searches old has had every handle evicted.
+    tokens: std::collections::VecDeque<String>,
     order: std::collections::VecDeque<String>,
     urls: std::collections::HashMap<String, String>,
 }
@@ -667,7 +671,7 @@ impl ResultLedger {
         ResultLedger {
             state: std::sync::Mutex::new(LedgerState {
                 epoch,
-                next_search: 1,
+                tokens: std::collections::VecDeque::new(),
                 order: std::collections::VecDeque::new(),
                 urls: std::collections::HashMap::new(),
             }),
@@ -680,8 +684,22 @@ impl ResultLedger {
         let Ok(mut st) = self.state.lock() else {
             return urls.iter().map(|_| None).collect();
         };
-        let search = st.next_search;
-        st.next_search += 1;
+        // A random token per search, not a counter: a handle has to be *held*
+        // to be used. With a counter, one search taught a conversation the
+        // epoch and every other run's handles followed by arithmetic —
+        // batch items, eval cases, a `/clear`ed chat, a front-door run all
+        // share this ledger (found in review of #276). Retried on the
+        // vanishing chance of a collision with a token still held.
+        let search = loop {
+            let t = uuid::Uuid::new_v4().simple().to_string()[..6].to_string();
+            if !st.tokens.contains(&t) {
+                break t;
+            }
+        };
+        st.tokens.push_back(search.clone());
+        while st.tokens.len() > LEDGER_CAP {
+            st.tokens.pop_front();
+        }
         let mut handles = Vec::with_capacity(urls.len());
         for (i, url) in urls.iter().enumerate() {
             if url.is_empty() {
@@ -1025,6 +1043,23 @@ impl Tool for WebOpen {
         Capabilities::default().untrusted().sends_blind()
     }
 
+    /// The URL the handle opens, beside the handle, so an approval card shows
+    /// the page and not a pointer to it.
+    fn review_input(&self, input: &Value) -> Value {
+        let mut shown = input.clone();
+        let url = input
+            .get("result")
+            .and_then(Value::as_str)
+            .and_then(|h| self.ledger.resolve(h))
+            .unwrap_or_else(|| {
+                "(no search result has this handle; nothing would be fetched)".into()
+            });
+        if let Some(obj) = shown.as_object_mut() {
+            obj.insert("url".into(), Value::String(url));
+        }
+        shown
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let Some(handle) = input.get("result").and_then(Value::as_str) else {
             return Ok(ToolOutput::err("missing required string argument `result`"));
@@ -1043,7 +1078,15 @@ impl Tool for WebOpen {
             match crate::tool::builtin::fetch_vetted(&url, ctx).await? {
                 crate::tool::builtin::Fetched::Done(mut out) => {
                     out.content = format!("{url}\n{}", out.content);
-                    return Ok(out);
+                    // Every URL here is third-party text: the first came from
+                    // the search backend, every later one from a `location`
+                    // header the far end chose. `fetch_vetted` leaves a
+                    // vetting refusal unmarked, which is right for
+                    // `http_fetch`, whose URL the model wrote — but a refusal
+                    // quoting `https://<payload>.invalid/` back into the
+                    // conversation unmarked would put a stranger's bytes in
+                    // without arming `untrusted` (found in review of #276).
+                    return Ok(out.from_outside());
                 }
                 crate::tool::builtin::Fetched::Redirect { status, target } => {
                     let base = match reqwest::Url::parse(&url) {
@@ -1315,6 +1358,27 @@ mod tests {
             .unwrap();
         assert!(out.is_error);
         assert!(out.content.contains("blocked-domain"), "{}", out.content);
+        // The refusal quotes a URL the far end chose, so it arms `untrusted`
+        // like any other third-party text. Fails on the first cut, which
+        // returned it unmarked.
+        assert!(out.external, "a refused hop quotes the far end's location");
+    }
+
+    /// An approval card for `web_open` shows where the handle leads: a
+    /// handle alone is the whole argument and none of the decision.
+    #[test]
+    fn a_review_shows_the_url_a_handle_opens() {
+        let ledger = Arc::new(ResultLedger::new());
+        let h = ledger.record_for_test("https://example.org/article");
+        let tool = WebOpen::new(ledger);
+        let shown = tool.review_input(&json!({"result": h}));
+        assert_eq!(shown["url"], "https://example.org/article");
+        assert_eq!(shown["result"], h.as_str());
+        let unknown = tool.review_input(&json!({"result": "zzz-000000.1"}));
+        assert!(unknown["url"]
+            .as_str()
+            .unwrap()
+            .contains("nothing would be fetched"));
     }
 
     /// `web_search` prints the handle only when a `web_open` shares its
