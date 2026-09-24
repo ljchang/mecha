@@ -144,6 +144,23 @@ A result earns trust in two ways, and both are proved by code:
   Step 3 is the one place a server's claim lowers a label per *result*
   rather than per tool. That is ruling **R-P2** (§7).
 
+**The convention for any server claim a result carries.** One namespace,
+one parse point, one rule for who is believed, so a second claim does not
+invent a second convention:
+
+- **Keys** live in the result's MCP `_meta`, under the project's domain
+  prefix, as the MCP spec reserves prefixed keys for: `mecha-factory.ai/`.
+  This design's key is `mecha-factory.ai/provenance` (value `"owner"`, or
+  absent). The outbox's "nothing was dispatched" signal (mecha-8a's lane)
+  is `mecha-factory.ai/dispatched` (`false`, or absent).
+- **Parsed in one place:** `McpClient::call_tool` in `mcp.rs`, into typed
+  `ToolOutput` fields. Nothing downstream reads raw `_meta`.
+- **Believed only from a server the operator config names** — a per-server
+  `[[mcp]] trust_result_claims = true`, operator layer only, stripped from
+  a project layer like `[slack]`. Any other server's claim is ignored, and
+  the result is handled as today. An ignored claim always fails closed:
+  untrusted, not dispatched unknown.
+
 **Estimated yield before building:** most graph reads touch calendar
 (13,452 episodes), Bee and Slack content, which stays untrusted. The win is
 owner tasks, notes and the CV. Measure how many arming reads were owner-only
