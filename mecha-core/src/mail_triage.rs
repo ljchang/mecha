@@ -1017,6 +1017,22 @@ pub fn failure_is_outage(e: &anyhow::Error) -> bool {
         .is_some_and(|c| c.transient() || matches!(c, ProviderError::Auth | ProviderError::Billing))
 }
 
+/// Whether a failure is one the provider has ruled the thread's own, beyond
+/// any sweep-wide judgement: a body that will not fit (`ContextOverflow`) or
+/// a request the provider rejects (`Invalid`). Only these override
+/// `sweep_was_outage` — a length-matched canary overflows exactly as two
+/// oversized threads do, and taking that as an outage would retry them on
+/// every sweep for ever, the loop the backoff exists to end.
+pub fn failure_is_threads_own(e: &anyhow::Error) -> bool {
+    use crate::provider::retry::ProviderError;
+    e.downcast_ref::<ProviderError>().is_some_and(|c| {
+        matches!(
+            c,
+            ProviderError::ContextOverflow | ProviderError::Invalid(_)
+        )
+    })
+}
+
 /// How long a thread that has failed `attempts` times in a row waits before
 /// the next sweep tries it again: an hour after the first failure, doubling,
 /// never more than a day.
