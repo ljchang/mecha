@@ -357,6 +357,45 @@ pub fn relative_time_schema(what: &str) -> serde_json::Value {
     })
 }
 
+/// Every window-taking tool in `tools` carries [`relative_time_schema`] on
+/// both bounds — and at least one such tool exists, so a server that lost its
+/// calendar tools cannot pass by having nothing to check.
+///
+/// A test helper because the guarantee spans three files: the vocabulary
+/// once sat on the unified server's schema only, while all three resolved it
+/// through [`window`], and nothing noticed (#243's review, #267's).
+#[cfg(test)]
+pub(crate) fn assert_window_schema(server: &str, tools: &[serde_json::Value]) {
+    let windowed: Vec<_> = tools
+        .iter()
+        .filter(|t| {
+            matches!(
+                t["name"].as_str(),
+                Some("calendar_list_events" | "calendar_freebusy")
+            )
+        })
+        .collect();
+    assert!(
+        !windowed.is_empty(),
+        "{server}: no window-taking tool to check"
+    );
+    for tool in windowed {
+        let props = &tool["inputSchema"]["properties"];
+        assert_eq!(
+            props["time_min"],
+            relative_time_schema("Start of the window."),
+            "{server}: {}'s time_min",
+            tool["name"]
+        );
+        assert_eq!(
+            props["time_max"],
+            relative_time_schema("End of the window."),
+            "{server}: {}'s time_max",
+            tool["name"]
+        );
+    }
+}
+
 /// A weekday/date pair computed from the source instant, in the configured
 /// mailbox zone when present. Unknown timestamps stay unknown, never guessed.
 pub fn calendar_date(raw: &str, tz: Option<Tz>) -> Option<String> {

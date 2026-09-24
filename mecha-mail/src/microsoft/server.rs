@@ -436,6 +436,13 @@ fn render_thread(emails: &[Email]) -> String {
 mod tests {
     use super::*;
 
+    /// The relative vocabulary is on this server's window parameters, not
+    /// only the unified server's — see `time::assert_window_schema`.
+    #[test]
+    fn window_parameters_name_the_relative_vocabulary() {
+        crate::time::assert_window_schema("mecha-outlook", &tool_definitions());
+    }
+
     #[test]
     fn the_tool_surface_is_labelled_correctly() {
         crate::mcp::assert_tool_surface(
