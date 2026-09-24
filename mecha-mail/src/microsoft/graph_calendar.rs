@@ -54,8 +54,9 @@ pub struct CreateEventRequest {
     pub attendees: Vec<String>,
     pub all_day: bool,
     pub timezone: Option<String>,
-    /// Details visible to the owner only (`sensitivity: private`); see the
-    /// Google twin.
+    /// `sensitivity: private`: hidden from a delegate unless the delegate
+    /// was granted "view private items"; full mailbox access is not
+    /// filtered by it. See the Google twin.
     pub private: bool,
 }
 

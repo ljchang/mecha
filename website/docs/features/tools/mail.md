@@ -101,8 +101,10 @@ Twelve tools — `mail_search`, `mail_recent`, `mail_get_thread`, `mail_send`,
 `calendar_delete_event` — and three resolution modes.
 
 `calendar_hold` is the one write that is not a send. It blocks time on your
-own primary calendar, invites nobody, and marks the event private, so anyone
-the calendar is shared with sees "busy" and not the title. It has no
+own primary calendar, invites nobody, and marks the event private, so someone
+you share the calendar with at a *reader* level sees "busy" and not the
+title. Private is not secret: a person who can make changes to your calendar,
+or an Outlook delegate you allowed to see private items, sees the details. It has no
 `attendees` or `calendar_id` field, and the server ignores both if a model
 sends them anyway. Because it reaches nobody it does not need the outbox:
 leave it out of `[outbox] tools` and allow it by rule, and a reminder or a
@@ -113,6 +115,8 @@ uses `calendar_create_event`, which still stages.
 [[rule]]
 tool = "mail__calendar_hold"
 decision = "allow"
+# An `allow` must carry an example; the call has no command to match, so
+# any plain word proves the rule loads.
 match = ["hold"]
 ```
 
