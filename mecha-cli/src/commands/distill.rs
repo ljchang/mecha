@@ -192,17 +192,49 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // `trigger:` or `request:` pointer crosses whole only if its own store
     // still holds it. A store that cannot be read admits nothing of its kind
     // — the pointer drops to its kind word, never a guess.
+    // An absent store holds nothing to resolve — a true zero, said nowhere;
+    // one that cannot be read, or a trigger file that did not load, is a
+    // finding and is said, on the board's own wording above, because the
+    // pointers it would have admitted now cross as bare kind words.
     .with_triggers(
-        mecha_core::trigger::TriggerStore::open_existing_default()
-            .and_then(|s| s.list().ok())
-            .map(|(triggers, _problems)| triggers.into_iter().map(|t| t.name).collect::<Vec<_>>())
-            .unwrap_or_default(),
+        match mecha_core::trigger::TriggerStore::open_existing_default() {
+            None => Vec::new(),
+            Some(store) => match store.list() {
+                Ok((triggers, problems)) => {
+                    if !problems.is_empty() {
+                        eprintln!(
+                            "mecha: {} trigger file(s) did not load — runs anchored to them \
+                         cross as the kind word `trigger` this run: {}",
+                            problems.len(),
+                            problems.join("; ")
+                        );
+                    }
+                    triggers.into_iter().map(|t| t.name).collect()
+                }
+                Err(e) => {
+                    eprintln!(
+                        "mecha: could not read the trigger store for goal pointers — trigger \
+                     ids cross as kind words this run: {e:#}"
+                    );
+                    Vec::new()
+                }
+            },
+        },
     )
     .with_requests(
-        mecha_core::frontdoor::Frontdoor::open_existing_default()
-            .and_then(|f| f.records().ok())
-            .map(|records| records.into_iter().map(|r| r.seq).collect::<Vec<_>>())
-            .unwrap_or_default(),
+        match mecha_core::frontdoor::Frontdoor::open_existing_default() {
+            None => Vec::new(),
+            Some(frontdoor) => match frontdoor.records() {
+                Ok(records) => records.into_iter().map(|r| r.seq).collect(),
+                Err(e) => {
+                    eprintln!(
+                        "mecha: could not read the front-door store for goal pointers — \
+                     request ids cross as kind words this run: {e:#}"
+                    );
+                    Vec::new()
+                }
+            },
+        },
     );
 
     let mut distilled = 0usize;

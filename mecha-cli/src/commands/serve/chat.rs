@@ -1097,7 +1097,7 @@ fn ensure_session_as<'a>(
             if let Some(id) = init.task.as_ref().and_then(|t| t["id"].as_str()) {
                 crate::commands::run::seed_goal_anchor(
                     &mut conversation,
-                    format!("task:{id}").parse().ok(),
+                    crate::commands::run::structural_pointer(format!("task:{id}")),
                     Some(&session),
                 )?;
             }

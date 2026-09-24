@@ -1411,15 +1411,9 @@ fn health(
             goals.sensed
         );
     } else if goals.anchored > 0 {
-        let kinds: Vec<String> = corpus
-            .anchored_by_kind()
-            .iter()
-            .map(|(kind, n)| format!("{kind} {n}"))
-            .collect();
         println!(
-            "  goal drift          — ({} run(s) had a goal anchor [{}]; none wrote a plan under it)",
-            goals.anchored,
-            kinds.join(", ")
+            "  goal drift          — ({} run(s) had a goal anchor; none wrote a plan under it)",
+            goals.anchored
         );
     } else if goals.sensed > 0 {
         println!(
@@ -1428,6 +1422,23 @@ fn health(
         );
     } else {
         println!("  goal drift          — (no run in this corpus recorded the sensor)");
+    }
+    // Whether each anchor was structural (task, trigger, request) or
+    // confirmed (charter, a question answered) is the question the
+    // structural seeds exist to answer, and it keeps mattering once plans
+    // are written — so it is its own line, not one branch of the drift
+    // readout (found on review).
+    if goals.anchored > 0 {
+        let kinds: Vec<String> = corpus
+            .anchored_by_kind()
+            .iter()
+            .map(|(kind, n)| format!("{kind} {n}"))
+            .collect();
+        println!(
+            "  goal anchors        {} run(s): {}",
+            goals.anchored,
+            kinds.join(", ")
+        );
     }
 
     let by_model = corpus.by_model();

@@ -2184,11 +2184,14 @@ async fn work(
     // only where the conversation carries none, so a hand-over keeps the
     // anchor its session saved. The project above the task is the board
     // row's `project_id`, read from the board when needed, never copied
-    // onto the pointer.
+    // onto the pointer. Knowingly accepted: `--resume` with a session
+    // anchored to task A while handing over task B keeps A — the saved
+    // anchor is the owner's earlier confirmation, and the board row, not the
+    // anchor, is what this run was handed.
     if convo.goal_anchor.is_none() {
         super::run::seed_goal_anchor(
             &mut convo,
-            format!("task:{task_id}").parse().ok(),
+            super::run::structural_pointer(format!("task:{task_id}")),
             Some(&session),
         )?;
     }

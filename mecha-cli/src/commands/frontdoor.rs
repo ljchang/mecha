@@ -765,7 +765,7 @@ async fn triage(
         // record, never anything the stranger wrote.
         super::run::seed_goal_anchor(
             &mut convo,
-            format!("request:{}", record.seq).parse().ok(),
+            super::run::structural_pointer(format!("request:{}", record.seq)),
             Some(&session),
         )?;
         let user = Message::user(triage_prompt(&brief));
