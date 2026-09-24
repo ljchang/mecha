@@ -1989,10 +1989,11 @@ not hold against two concurrent uploads of one name.
 ## Voice preferences in the browser
 
 **One preference store, read and written only through `voice-core.js`.**
-Voice and rate are preferences, not call controls: the settings page
-(`SettingsVoice.svelte`) and the call overlay both go through
-`readVoicePrefs` / `writeVoicePrefs` in `scripts/voice/voice-core.js`, which
-own the `localStorage` key `mecha-voice-prefs`; the pre-move key
+Voice and rate are preferences, not call controls, and `scripts/voice/voice-core.js`
+alone owns the `localStorage` key `mecha-voice-prefs`: the settings page
+(`SettingsVoice.svelte`) goes through the exported `readVoicePrefs` /
+`writeVoicePrefs`, and the call overlay through `createVoiceSession`, whose
+module-private `readPrefs` / `writePrefs` read and write the same key; the pre-move key
 `mecha.voice.prefs` is read only as a fallback when the current one is absent,
 and never written. The chat page once kept a second copy of this machinery
 under a different key while claiming to share the first, so a voice picked

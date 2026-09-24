@@ -253,7 +253,7 @@ original task is always kept, and a cut that would drop fewer than four
 messages is not made, because below that the summary is likely longer than
 what it replaces.
 
-The summary is appended the summary to the *original task message* rather than
+The summary is appended to the *original task message* rather than
 inserting a message of its own — two user messages in a row are rejected by some
 providers, and the task and the summary of what happened to it belong together:
 
