@@ -22,7 +22,7 @@ passes; sources are in here §14, with anything not read at source marked.
 
 **Section references.** A bare §N is `GOAL-SYSTEM-DESIGN.md`'s. This file's
 own sections are cited as "here §N", and its proposals by id (S1, V1, C1, G1,
-L1, M1, A1, U1).
+L1, X1, M1, A1, U1).
 
 ---
 
@@ -381,6 +381,103 @@ install.
   `expired`, which signs nothing (it is not a rejection) and stops holding the
   sensor at its ceiling. Silence stays "not a verdict".
 
+### S6. Sensors the agent declares for itself — one-sided
+
+**Today.** The agent cannot author a sensor. Charter sensors are a closed
+enum (`SensorKind`) the owner writes, and the charter's rule forbids a model
+even *suggesting* a line. The one agent-authored predicate is a plan step's
+frozen `check` (`step::CheckRequest`), and its safety property is the
+template for everything here: *it can manufacture a failed check against
+itself, never a passing one.*
+
+**Proposal.** Generalise that property from a step to a goal. When a run
+states its goal — in the delegated seed's one question, on `ask_user`'s
+`goal`, or on a structural anchor (S1) — it may also declare **acceptance
+criteria**: a small list from a closed set of kinds the *harness* executes,
+never a free-form judgement.
+- `check`: a command whose exit code decides (the existing `CheckRequest`);
+- `artifact`: a file in the workspace contains / does not contain a literal
+  (`Workflow::checks`' `ArtifactContains`, reused);
+- `delivered`: a named outbox item reaches `sent` (`Workflow::checks`'
+  `Delivered`);
+- `answered`: a named question is answered;
+- `count`: a store count relation (`mismatch::CountConstraint`'s shape).
+
+Three rules keep this from being self-grading:
+1. **Frozen at declaration.** Criteria are hashed on the write that declares
+   them; a later write that changes them is a tamper, counted and refused,
+   as `TodoTool::tampered_in` does for checks.
+2. **One-sided until the owner endorses them.** A failed criterion is an
+   own-agency negative error and feeds V1, C1 and `Trigger::Mismatch`. A
+   passing one records that its predicate held — no positive error, no
+   `pride`, no tenure credit. The model cannot author its own success.
+3. **The owner's confirmation upgrades them.** Criteria that ride on the goal
+   question are confirmed with it; confirmed criteria are owner-endorsed
+   acceptance criteria, and passing all of them is verified completion for
+   C1's certificate — still not a positive verdict, which only the owner's
+   act (S3, a release, a closure) supplies.
+
+**Standing sensors stay the owner's.** An agent-proposed *charter* sensor is
+a model suggesting a line, which the charter's invariant refuses at every
+privilege level. What the agent may do is what the doctor already does:
+report an observed level ("drafts to this address wait a median of three
+days") with no proposed setpoint, and leave the line to the owner. Ruling R11.
+
+**Why the line sits there.** A model that authors the sensor it is graded on
+optimises the sensor: tasked with reducing tool-use hallucination, a
+self-modifying agent removed the markers that detected it (Darwin Gödel
+Machine), and LLMs handed bounded targets drift into maximising one of them
+(BioBlue). A one-sided sensor degrades to extra caution — the §7.3 failure
+direction — however it is gamed.
+
+### S7. Guilt is goal error toward another party, not its own system
+
+**Today, guilt is computed four ways by four pieces of code:**
+
+| where | what it reads | when | state |
+|---|---|---|---|
+| `Homeostat::anticipated_guilt` (`guilt.rs`) | outbox + questions + front-door count and oldest age, and context pressure | every run start | one scalar; 0.95–1.0 on every live run |
+| line-specific guilt (`reading.rs`, §11.1) | a sensored charter line's `excess` over its store | every run start | per line; the one live line saturated |
+| `anticipation::Kind::Guilt` | an owner-authored `anticipation::Commitment` (beneficiary, expectation, consequence) on a draft's `Evidence` | staging, plan writes with `--appraisal-evidence` | per draft, opt-in |
+| `Affect::Guilt` (retrospective) | an owner-reported harm after delivery, caused by mecha's unchanged text | outcome recorded | per draft |
+
+And there are two commitment records that do not know about each other —
+`anticipation::Commitment` and `workflow::Commitment` — beside the three
+stores `guilt.rs` treats as commitments implicitly.
+
+**Proposal: yes, fold it in — and §11.1 already started.** Its promise was
+that "harmed another" becomes "a recorded commitment aged past *this* line's
+setpoint". Finish that move with one model:
+
+> **Goal error has a beneficiary. Anxiety is anticipated error where the
+> beneficiary is the run itself; guilt is anticipated error where the
+> beneficiary is another party and the expectation is a recorded
+> commitment; retrospective guilt is the realised form, with mecha's agency
+> and exposure. None is a separate sensor.**
+
+Concretely:
+- **One commitment record.** `workflow::Commitment` absorbs
+  `anticipation::Commitment`'s `expectation` and `consequence`; an outbox
+  draft, a parked question and an accepted front-door request are
+  commitments by construction, with the other party as beneficiary. S4's
+  capture feeds the same record.
+- **Guilt per item** = the commitment's excess over its patience (the
+  charter line watching its store, else the doctor's constant) × the rank
+  of that line. The charter supplies *how much it matters and how long is
+  too long*; the commitment supplies *to whom and by when*. Neither alone is
+  guilt: a charter line is the owner's priority, not a promise to anyone.
+- **The homeostat scalar is retired to a readout** — the maximum per-item
+  value, for the diagnostician's brief and old records — and stops being
+  something a consumer reads (principle 4; it is the saturated level).
+- **Every guilt consumer reads the same per-item value:** `Decision`'s
+  `ReviewCommitment`, G2's embarrassment hold, A1's duty runs, U1's
+  interruption gate, and the retrospective label.
+
+What does not move: *an expectation is a recorded commitment, never a claimed
+one* (§7.4) — the unification changes which code computes guilt, not what may
+create a row. The wire formats are append-only, so the two old commitment
+shapes and the scalar stay readable leniently. Ruling R12.
+
 ---
 
 ## 5. Control inside a run: capability, accuracy, performance
@@ -570,7 +667,7 @@ future "helpful" status line from breaking it.
 
 ---
 
-## 7. Self-learning
+## 7. Self-learning and counterfactual anticipation
 
 ### L1. Replay priority is gain × need
 
@@ -637,6 +734,94 @@ mis-predicts that (Huxley-Gödel Machine, arXiv 2510.21614). And the reason
 §8.3 stays as it is: tasked with reducing tool-use hallucination, a
 self-modifying agent removed the markers that detected it (Darwin Gödel
 Machine). No valence ever becomes a `Metric`.
+
+### X. Counterfactual anticipation: retrospection feeds prediction
+
+**What exists is two halves that never meet.**
+
+*Retrospective counterfactuals — built, and live in part:*
+- **Rule validation** (`mecha validate`, `counterfactual.rs`): branch the
+  transcript at an owner intervention, strip the steer, replay with and
+  without the rule; the verdict is structural (did the model now do the
+  steered thing; did it repeat the refused call). Ledgered per rule and
+  region; drives probation and retirement.
+- **Steer probes** (`sessions appraise --probe`, `appraisal_probe.rs`): the
+  same branch, asking whether the steer was load-bearing — `regret` if the
+  unsteered replay went elsewhere, `disappointment` if it got there anyway.
+  **Computed on demand and discarded**: the appraisal is never stored, so a
+  verdict that cost a model run lives only in one readout.
+- **Harness rumination**: paired replay of a config candidate against the
+  current harness, gated by `candidate::judge`.
+- **Artifact probes** (`probe::prepare_mismatch`): a reflection's lesson
+  re-tested on the whole task against pinned gold.
+- **Reflection** turns interventions and mismatches into `Reflexion`s, and
+  `learn` consolidates them into region-scoped rules.
+
+*Anticipatory appraisal — built, opt-in:* `anticipation::assess` is a pure
+function from `Evidence` (commitment, verification state, whether a check
+exists and fits the time, budget shortfall) to a set of concern kinds and one
+`Response` (`Proceed`, `Verify`, `Clarify`, `Replan`). It runs at outbox
+staging (a `Prediction` on the draft, which in `guide` mode blocks release
+until the response is `Proceed`) and on plan writes when the owner supplied
+evidence. Owner-recorded `Outcome`s resolve predictions later. Its one
+counterfactual is `Kind::Regret`: *a named, affordable check exists and you
+have not run it* — a comparison of exactly two actions, proceed and check,
+with no model of what either leads to.
+
+**The gap.** Every retrospective probe produces the datum anticipation
+lacks — in *this* situation, the agent did *A*, the owner wanted *B*, and a
+replay showed whether *A* would have led to *B* anyway — and nothing carries
+it forward. The design named the bridge and did not build it: §7.4's "fast
+pre-action marker: one cheap lookup with two keys — the homeostat for
+predicted state, the appraisal store for recorded situations", and §17.4's
+"a rule scoped to a tool and a condition renders as one line on that tool's
+result the first time the condition recurs". This is the somatic-marker
+shape: a fast, learned, situation-keyed signal attached to an action before
+it is taken, derived from what that action led to before.
+
+**X1. Keep the verdicts.** Every steer and validation probe writes a
+counterfactual record: the `Situation` scope keys, the goal kind, the tool
+and a closed-set call class (tool name and argument *shape*, never argument
+values or prose), the verdict (load-bearing / not / inconclusive), and the
+pointer to the intervention. Only clean-provenance sessions, by the learning
+gate's own rule. This is storage for work already paid for.
+
+**X2. The pre-action marker.** Before dispatch, the harness looks the call up
+against load-bearing records in a matching region — inference-free, one
+index lookup. A hit may only narrow: the call is staged for review instead
+of executed, or the tool result carries a fixed line ("in recorded runs like
+this one, the owner redirected this call"), or `Decision` moves to `Verify`.
+It can never permit a call, lift a stage, or skip a question. An injection
+cannot create a marker: it would need an owner intervention in a clean
+session and a replay confirming it. Keyed on situation, never on valence
+(§15's mood-congruence rule).
+
+**X3. Forecast the owner's verdict from the owner's history.** At staging,
+the draft's anticipated embarrassment is not only "unverified and exposed"
+but a base rate: of the drafts staged in this region to this recipient
+class, how many were edited or rejected. Owner verdicts are the only input,
+so the forecast is hard to manipulate; it is a number the harness keeps and
+the model never sees (principle 3, §4.3).
+
+**X4. A pre-mortem from records, not imagination.** When a goal is anchored,
+`goal_context` (and M5 for a re-delegated task) offers the recorded failure
+modes for that goal and region as pointers: the failed checks, the
+mismatches, the reasons the owner gave for rejecting drafts. Model-imagined
+lookahead — asking the model to simulate outcomes before acting — has some
+support for web agents (WebDreamer, arXiv 2411.06559, not re-read this
+pass), but it is the model grading its own plan; it is phase 4 at the
+earliest, and only as a quarantined pass.
+
+**X5. Score the predictions, and feed the misses back.** Every anticipation
+`Prediction` resolved by an `Outcome` is a calibration point, per kind: did
+`Proceed` drafts go out clean, did `Verify` drafts that skipped the check go
+badly. A miss is a prediction error — the surprise the design's §5.5 wanted —
+and it raises the episode's replay priority (L1) and queues a reflection.
+That closes the loop the two halves were built for: **predict → act →
+observe → replay the counterfactual → mark the situation → predict**. The
+live store holds six predictions and no outcomes, so X5 waits on S3 and on
+the owner recording outcomes; until then it reports coverage, never a
+calibration figure.
 
 ---
 
@@ -763,6 +948,9 @@ Numbered so answers can cite them. None is a security widening.
 | R8 | The harness may *propose* per-region autonomy grants; only the owner grants | yes |
 | R9 | The live line `be-the-best` ("always finding ways you could have completed a task even better") reads close to the unbounded self-improvement line §15 warns about. The owner's to keep or reword; flagged, not proposed | — |
 | R10 | Promises detected in the owner's released drafts are proposed as commitments for one-tap acceptance | yes |
+| R11 | The agent may declare acceptance criteria from a closed set of harness-executed kinds; one-sided until the owner confirms them with the goal; never a charter sensor | yes |
+| R12 | Guilt becomes per-commitment goal error toward another party; one commitment record; the homeostat scalar becomes a readout | yes |
+| R13 | Probe verdicts are stored as counterfactual records, and a load-bearing record in a matching region may narrow a call before dispatch | yes, narrowing only |
 
 ---
 
@@ -772,10 +960,10 @@ Each phase ends with a measurement that decides the next.
 
 | phase | builds | the measurement that ends it |
 |---|---|---|
-| **0 — supply and honesty** | S1 (task, trigger, front door, web pointers), S5 per-item readings, L3 stamping, G4 test, the four doc corrections of here §1, shadow records for every here §5–§9 decision | anchored share of long runs; `sessions health` goal fields non-null; readings no longer constant |
-| **1 — verdicts and truth** | S3 thumbs, C1 certificate (template), C2 harness checks, V1 goal validator (deterministic, shadow), L1 gain × need, L2 success examples | false completion on task and synthetic-home suites vs no-certificate arm; verdicts per week; replay candidates accepted per night |
-| **2 — control and narrowing** | V1 armed, V2 re-ask and drift event (once phase 1's drift rate is read), C4 wind-down, C5 ladder + brake, G1 deterministic alignment, G2 hold, G3 risk-weighted approval, M4 compaction survivors, M5 prior attempts | per-arm: tampering, reopen, handoff quality; dojo suite attack success *and* utility vs control |
-| **3 — memory and follow-through** | S4 commitments, M1 goal key, M2 salience, M3 gap delivery (after §17.7 item 2 reads), A1 duty runs, U1 gate, L5 built, U2–U4 | owner-side latency on sensored lines; interruptions per day; lesson application vs budget-matched control |
+| **0 — supply and honesty** | S1 (task, trigger, front door, web pointers), S5 per-item readings, S7 per-item guilt and one commitment record, X1 keep probe verdicts, L3 stamping, G4 test, the four doc corrections of here §1, shadow records for every here §5–§9 decision | anchored share of long runs; `sessions health` goal fields non-null; readings no longer constant |
+| **1 — verdicts and truth** | S3 thumbs, S6 declared criteria (one-sided), C1 certificate (template), C2 harness checks, V1 goal validator (deterministic, shadow), L1 gain × need, L2 success examples | false completion on task and synthetic-home suites vs no-certificate arm; verdicts per week; replay candidates accepted per night |
+| **2 — control and narrowing** | X2 pre-action markers, X3 verdict forecasts, X5 prediction scoring, V1 armed, V2 re-ask and drift event (once phase 1's drift rate is read), C4 wind-down, C5 ladder + brake, G1 deterministic alignment, G2 hold, G3 risk-weighted approval, M4 compaction survivors, M5 prior attempts | per-arm: tampering, reopen, handoff quality; dojo suite attack success *and* utility vs control |
+| **3 — memory and follow-through** | S4 commitments, X4 recorded pre-mortem, M1 goal key, M2 salience, M3 gap delivery (after §17.7 item 2 reads), A1 duty runs, U1 gate, L5 built, U2–U4 | owner-side latency on sensored lines; interruptions per day; lesson application vs budget-matched control |
 | **4 — the model-judged half** | S2 tier 2, V1's quarantined relevance call, G1 quarantined check under adaptive attack, A2 proposals, A4 curiosity, L6 lineage | each against its own arm; nothing here ships on a synthetic result alone |
 
 Outcomes the whole programme is judged on, from APPRAISAL-RESEARCH §8.5 and
@@ -808,6 +996,10 @@ outcome.
 | L1 gain × need | | | ● | | | ● | |
 | L2 successes | ● | ● | | | | ● | |
 | L3 goal-stamped tenure | | ● | | | | ● | |
+| S6 declared criteria | ● | ● | | ● | | ● | |
+| S7 guilt as goal error | | ● | | ● | ● | | ● |
+| X1–X2 counterfactual markers | | ● | | | ● | ● | |
+| X3–X5 forecasts and scoring | | ● | | | | ● | ● |
 | M2/M3 salience, gap delivery | ● | ● | ● | | | | |
 | M4/M5 goal survives, prior attempts | ● | ● | | ● | | | |
 | A1 duty runs | | | | ● | | | ● |
