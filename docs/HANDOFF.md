@@ -34,8 +34,10 @@ is refused by name, never guessed. And the zone is set once: every `[[mcp]]`
 server is handed `[agent] timezone` as `MECHA_TZ` (`McpServerConfig::owner_zone`,
 filled by `Config::hand_zone_to_servers`, set in `McpClient::build_command`
 beneath the server's own `env`). **Deployed 2026-09-24** (dated machine state
-below). Nothing is owed for the arc itself; its minors are under *Mail* in
-*What to do next*.
+below). **Only the calendar half shipped:** `mail_search` still has the model
+write `after:YYYY/MM/DD` itself and answers with no `as_of`, so the
+2026-09-14 shape survives one tool over — the first item under *Mail* in
+*What to do next*, with the arc's minors.
 
 **2026-09-18 — the grounding arc merged and released as v0.1.21; what is left
 is a measurement and a ruling.** #244 (`569d4952`) is `grounding.rs`: one walk
@@ -56,9 +58,10 @@ passes across the three; the defects were at seams, not in the check
 (HISTORY, *Review process*). `docs/VERIFICATION-RESEARCH.md`'s second pass is
 the survey that led here. Released as `a5275980` and deployed the same
 evening (dated machine state below). `mecha-voice-worker`, held back then
-because the shared checkout sat on PR #243's branch, needed no restart after
-all: the checkout is back on `main` since 2026-09-24, and the running worker
-(started 2026-09-17) already runs `main`'s `worker.py`, last changed by #231. **Unmeasured, and deciding whether either
+because the shared checkout sat on PR #243's branch, needed no restart
+after all: the checkout is back on `main` since 2026-09-24, and the running
+worker (started 2026-09-17) already runs `main`'s `worker.py`, last changed
+by #231. **Unmeasured, and deciding whether either
 new label is ever read:** how often the local model quotes verbatim rather
 than paraphrasing; the mail section under *What to do next* says what to read
 first. Workspace: 2,781 passed, 0 failed, 3 ignored (2026-09-18, without
@@ -4700,6 +4703,16 @@ What is missing beyond that is refinement:
   authentication.
 
 ### Mail as a surface you work — built; what is open is judgement
+
+**The mail half of the tool-boundary clock work is unbuilt.** #243 made a
+stale date inexpressible in `calendar_list_events` and `calendar_freebusy`;
+`mail_search` still asks the model to write the date itself (`after:YYYY/MM/DD`
+for Gmail, `received>=YYYY-MM-DD` for Outlook, per its tool description) and
+its answer carries no `as_of`, so "what came in today" from a run with a
+stale date is answered faithfully for the wrong day. The pieces exist:
+`time::resolve_bound` for the terms, `time::window_zone` for the zone,
+`time::as_of` for the stamp. What is new is translating a resolved day into
+each provider's query syntax, which is why it was not folded into #243.
 
 **The calendar window's owed minors (#243/#267's last passes, none at the
 fix-and-push bar).** A seven-day default window across a DST change now reads
