@@ -320,6 +320,24 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// What a person reviewing this call should see: the input, plus
+    /// anything the call dereferences that the input alone does not show.
+    ///
+    /// Every approver renders this, never the raw input, and the raw input
+    /// is still what executes. The default is the input unchanged. A tool
+    /// whose argument is a *pointer* overrides it: `web_open` takes a result
+    /// handle, and a card reading `web_open a3f-7.1` shows the whole argument
+    /// and none of the decision, because nobody can tell from a handle
+    /// whether the page is a newspaper or one an injection planted three
+    /// results down. A prompt that hides the evidence is a consent ritual,
+    /// not a check (found in review of #276). Same division of labour as
+    /// [`denial_remedy`](Tool::denial_remedy): the tool knows what its
+    /// argument points at, and the approver never learns what kind of tool
+    /// it is showing.
+    fn review_input(&self, input: &Value) -> Value {
+        input.clone()
+    }
+
     /// The root this tool's relative paths actually resolve against, when the
     /// tool was constructed over a fixed directory rather than following the
     /// per-run [`ToolCtx`] workspace.

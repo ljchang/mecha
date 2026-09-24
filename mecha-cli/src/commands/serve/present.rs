@@ -201,6 +201,24 @@ impl Approver for WebApprover {
     }
 }
 
+/// What an approval card shows: the whole call, and the essentials a
+/// reviewer reads first. Both come from `Tool::review_input`, never the raw
+/// input — the page renders `draft` up front and hides `args` behind a
+/// toggle, so enriching only `args` left `web_open`'s card reading
+/// `result a3f-9c01de.2` with the URL a tap away (found in review of #276).
+/// A reviewer who cannot read what they are approving approves it anyway,
+/// which is the failure this card exists to prevent.
+fn card_view(
+    tool: &dyn Tool,
+    input: &serde_json::Value,
+) -> (String, Option<super::chat::WireDraft>) {
+    let shown = tool.review_input(input);
+    (
+        super::chat::clip_args(&shown),
+        super::chat::WireDraft::of(&shown),
+    )
+}
+
 impl WebApprover {
     async fn ask(
         &self,
@@ -209,16 +227,13 @@ impl WebApprover {
         question: Option<String>,
     ) -> Decision {
         let (qid, rx) = self.questions.open();
+        let (args, draft) = card_view(tool, input);
         let card = WireEvent::Question {
             qid,
             kind: "approval".into(),
             tool: Some(tool.name().to_string()),
-            args: Some(super::chat::clip_args(input)),
-            // The essentials, with the whole call still beside them. A
-            // reviewer who cannot read what they are approving approves it
-            // anyway — which is the failure this card exists to prevent,
-            // not a cosmetic complaint about JSON.
-            draft: super::chat::WireDraft::of(input),
+            args: Some(args),
+            draft,
             question,
             options: Vec::new(),
             timeout_secs: self.timeout.as_secs(),
@@ -370,6 +385,56 @@ impl Asker for WebAsker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tool whose argument is a pointer, as `web_open`'s handle is.
+    struct Pointer;
+    #[async_trait]
+    impl Tool for Pointer {
+        fn name(&self) -> &str {
+            "web_open"
+        }
+        fn description(&self) -> &str {
+            "opens a result"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn review_input(&self, input: &serde_json::Value) -> serde_json::Value {
+            let mut shown = input.clone();
+            shown["url"] = serde_json::json!("https://example.org/page");
+            shown
+        }
+        async fn call(
+            &self,
+            _: serde_json::Value,
+            _: &mecha_core::tool::ToolCtx,
+        ) -> anyhow::Result<mecha_core::tool::ToolOutput> {
+            unreachable!()
+        }
+    }
+
+    /// The part of the card a reviewer sees first carries the URL, not only
+    /// the handle. Fails on the first cut, which built `draft` from the raw
+    /// input.
+    #[test]
+    fn the_visible_half_of_a_card_shows_what_the_call_points_at() {
+        let (args, draft) = card_view(&Pointer, &serde_json::json!({"result": "a3f-9c01de.2"}));
+        assert!(args.contains("https://example.org/page"), "{args}");
+        let draft = draft.expect("a card with fields has essentials");
+        let visible: Vec<&str> = draft
+            .headers
+            .iter()
+            .chain(&draft.other)
+            .map(|(_, v)| v.as_str())
+            .chain(draft.body.as_deref())
+            .collect();
+        assert!(
+            visible
+                .iter()
+                .any(|v| v.contains("https://example.org/page")),
+            "{visible:?}"
+        );
+    }
 
     #[tokio::test]
     async fn shutdown_drops_pending_questions_and_refuses_later_ones() {
