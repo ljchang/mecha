@@ -262,6 +262,10 @@ fn a_surface_the_build_cannot_name_is_refused_before_anything_moves() {
 /// still that run's child: the ancestry check refuses it. The test process
 /// stands in for the run — its own pid in a live task-run marker makes it an
 /// ancestor of the `mecha` it spawns.
+// The ancestry check reads `/proc`, so it is Linux-only by construction
+// (documented on `closure::parent_of` and in ARCHITECTURE); off Linux this
+// test would assert a protection the platform cannot give (macOS CI).
+#[cfg(target_os = "linux")]
 #[test]
 fn a_command_descended_from_a_live_task_run_is_refused_without_the_variable() {
     let Some(f) = Fixture::new("") else { return };
