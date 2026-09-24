@@ -8,8 +8,12 @@
 //! a later reopen, or observed by the owner's own tooling.
 //!
 //! **The store is append-only, one JSON object per line**, in
-//! `~/.mecha/closures/closures.jsonl` (`MECHA_CLOSURES_DIR` overrides it, the
-//! question store's convention). Three kinds of line:
+//! `~/.mecha/closures/closures.jsonl`. There is deliberately no environment
+//! override for its location: the `mecha tasks set` that writes it can be a
+//! descendant of a model's `shell`, and a location the command text could
+//! redirect is a record the command text could hide while the real board
+//! moves (found on review of #293). Tests reach a scratch store through
+//! `MECHA_HOME` or [`ClosureStore::open`]. The kinds of line:
 //!
 //! - a [`Transition`] — written **before** the board row moves. It names the
 //!   task, the move (`from` → `to`), who made it and on which surface, the
@@ -19,6 +23,13 @@
 //!   write-behind: a closure whose record cannot be written does not happen
 //!   (the silently-degrading guard), and a record whose closure did not happen
 //!   is withdrawn rather than left standing.
+//! - an [`Entry::Uncertain`] line naming a transition whose board write
+//!   ended with an *unknown* outcome — the transport failed, or the answer
+//!   did not parse — so the board may or may not have moved. The transition
+//!   stands (unknown is never withdrawn as if it were a known failure), and
+//!   the next status change that reads the row settles it: an
+//!   [`Entry::Confirmed`] line if the board shows the move, an `aborted`
+//!   line if it does not ([`ClosureStore::unresolved_uncertain`]).
 //! - an [`Entry::Readout`] line carrying what the closure appraisal said, so a
 //!   surface that is not a terminal — the web board — can show it.
 //!
@@ -201,10 +212,15 @@ pub fn posture_from_env() -> PostureReading {
 /// unattended run's `bash -lc` overrides the stamp, and where the run holds
 /// no marker (a web task chat, an approvals-off chat, a front-door or mail
 /// run) the ancestry check has nothing to find — so the move is allowed and
-/// recorded `owner-approved`. Detaching also escapes the ancestry check for
-/// a marked run. This guard stops a run that follows the refusal text; it
-/// does not stop one that names the variable. A confined `shell` without the
-/// owner's `~/.mecha` or the graph cannot reach the store at all.
+/// recorded `owner-approved`. The stripping direction is the worse forgery:
+/// `env -u MECHA_RUN_POSTURE mecha tasks set …` from an unmarked lane reads
+/// [`PostureReading::NotInRun`] and records `owner` on surface `cli`, as if a
+/// person had typed it into a terminal. Detaching also escapes the ancestry
+/// check for a marked run. This guard stops a run that follows the refusal
+/// text; it does not stop one that names the variable. A confined `shell`
+/// without the owner's `~/.mecha` or the graph cannot reach the store at
+/// all. PR #294 (stacked on this one) replaces the variable with a
+/// harness-written shell registry the command text cannot set.
 pub fn decide(
     posture: &PostureReading,
     ancestor_run: Option<u32>,
@@ -323,6 +339,20 @@ pub enum Entry {
         at: DateTime<Utc>,
         error: String,
     },
+    /// The board write for transition `of` ended with an unknown outcome
+    /// (transport failure, unparseable answer): it may have landed. The
+    /// transition stands until a later read settles it.
+    Uncertain {
+        of: String,
+        at: DateTime<Utc>,
+        error: String,
+    },
+    /// A later read of the board showed the uncertain transition `of` had
+    /// landed.
+    Confirmed {
+        of: String,
+        at: DateTime<Utc>,
+    },
     /// What the closure appraisal said about transition `of`.
     Readout {
         of: String,
@@ -355,12 +385,8 @@ pub struct ClosureLock {
 }
 
 impl ClosureStore {
+    /// `~/.mecha/closures` — no environment override (module doc).
     pub fn default_root() -> Result<PathBuf> {
-        if let Ok(dir) = std::env::var("MECHA_CLOSURES_DIR") {
-            if !dir.is_empty() {
-                return Ok(PathBuf::from(dir));
-            }
-        }
         Ok(crate::work::mecha_home()?.join("closures"))
     }
 
@@ -442,7 +468,14 @@ impl ClosureStore {
     /// The transitions that happened, oldest first — every transition line
     /// not withdrawn by a later `aborted` line.
     pub fn transitions(&self) -> Result<Vec<Transition>> {
-        let entries = self.entries()?;
+        Ok(self.transitions_from(&self.entries()?))
+    }
+
+    /// [`Self::transitions`] over entries already read — one pass for a
+    /// caller that also needs the other lines. An `uncertain` transition is
+    /// included: it may have happened, and only a later `aborted` line
+    /// withdraws it.
+    pub fn transitions_from(&self, entries: &[Entry]) -> Vec<Transition> {
         let aborted: std::collections::HashSet<&str> = entries
             .iter()
             .filter_map(|e| match e {
@@ -450,13 +483,40 @@ impl ClosureStore {
                 _ => None,
             })
             .collect();
-        Ok(entries
+        entries
             .iter()
             .filter_map(|e| match e {
                 Entry::Transition(t) if !aborted.contains(t.id.as_str()) => Some(t.clone()),
                 _ => None,
             })
-            .collect())
+            .collect()
+    }
+
+    /// The latest transition of `task` whose board write ended with an
+    /// unknown outcome and that no later line has settled — what the next
+    /// status change on the task must confirm or withdraw before it records
+    /// anything of its own. Only the latest transition of the task is
+    /// considered: an older uncertain one has been superseded by a later
+    /// recorded move.
+    pub fn unresolved_uncertain(&self, task: &str) -> Result<Option<Transition>> {
+        let entries = self.entries()?;
+        let Some(t) = self
+            .transitions_from(&entries)
+            .into_iter()
+            .rev()
+            .find(|t| t.task == task)
+        else {
+            return Ok(None);
+        };
+        let mut uncertain = false;
+        for e in &entries {
+            match e {
+                Entry::Uncertain { of, .. } if *of == t.id => uncertain = true,
+                Entry::Confirmed { of, .. } if *of == t.id => uncertain = false,
+                _ => {}
+            }
+        }
+        Ok(uncertain.then_some(t))
     }
 
     /// The latest closure of `task` that happened, if any — what a reopen
@@ -474,7 +534,7 @@ impl ClosureStore {
     pub fn latest_with_readout(&self, task: &str) -> Result<Option<(Transition, Option<Entry>)>> {
         let entries = self.entries()?;
         let Some(t) = self
-            .transitions()?
+            .transitions_from(&entries)
             .into_iter()
             .rev()
             .find(|t| t.task == task)
@@ -489,9 +549,106 @@ impl ClosureStore {
     }
 }
 
+/// One line for a surface, built from whichever parts a readout carries —
+/// the task's own appraisal, whether a follow-up was staged, the project's
+/// reading — and `None` only when all three are empty. The project's line
+/// stands on its own: closing the last open task of a project that was never
+/// delegated has no task readout but does have a project reading (found on
+/// review of #293, where it was written and shown nowhere).
+pub fn readout_line(entry: Option<&Entry>) -> Option<String> {
+    let Some(Entry::Readout {
+        readout,
+        follow_up_staged,
+        project,
+        ..
+    }) = entry
+    else {
+        return None;
+    };
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(r) = readout {
+        parts.push(r.clone());
+    }
+    if *follow_up_staged {
+        parts.push("a follow-up was staged".to_string());
+    }
+    if let Some(p) = project {
+        parts.push(p.clone());
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_readout_line_is_built_from_whichever_parts_exist() {
+        let r = |readout: Option<&str>, staged: bool, project: Option<&str>| Entry::Readout {
+            of: "c".into(),
+            task: "t".into(),
+            at: Utc::now(),
+            readout: readout.map(str::to_string),
+            follow_up_staged: staged,
+            project: project.map(str::to_string),
+        };
+        assert_eq!(readout_line(None), None);
+        assert_eq!(readout_line(Some(&r(None, false, None))), None);
+        assert_eq!(
+            readout_line(Some(&r(None, false, Some("project P closed: pride")))),
+            Some("project P closed: pride".to_string())
+        );
+        assert_eq!(
+            readout_line(Some(&r(
+                Some("distress −0.5"),
+                true,
+                Some("project P closed")
+            ))),
+            Some("distress −0.5 · a follow-up was staged · project P closed".to_string())
+        );
+    }
+
+    #[test]
+    fn an_uncertain_transition_stands_until_a_later_read_settles_it() {
+        let s = store();
+        let a = close("t1");
+        s.append(&Entry::Transition(a.clone())).unwrap();
+        s.append(&Entry::Uncertain {
+            of: a.id.clone(),
+            at: Utc::now(),
+            error: "connection reset".into(),
+        })
+        .unwrap();
+        // Counted as recorded: it may have happened.
+        assert_eq!(s.transitions().unwrap(), vec![a.clone()]);
+        assert_eq!(s.latest_closure("t1").unwrap(), Some(a.clone()));
+        assert_eq!(s.unresolved_uncertain("t1").unwrap(), Some(a.clone()));
+        s.append(&Entry::Confirmed {
+            of: a.id.clone(),
+            at: Utc::now(),
+        })
+        .unwrap();
+        assert_eq!(s.unresolved_uncertain("t1").unwrap(), None);
+        assert_eq!(s.transitions().unwrap(), vec![a.clone()]);
+
+        // The other settlement: a later read shows it did not land.
+        let b = close("t2");
+        s.append(&Entry::Transition(b.clone())).unwrap();
+        s.append(&Entry::Uncertain {
+            of: b.id.clone(),
+            at: Utc::now(),
+            error: "not JSON".into(),
+        })
+        .unwrap();
+        s.append(&Entry::Aborted {
+            of: b.id.clone(),
+            at: Utc::now(),
+            error: "a later read did not show it".into(),
+        })
+        .unwrap();
+        assert_eq!(s.unresolved_uncertain("t2").unwrap(), None);
+        assert_eq!(s.transitions().unwrap(), vec![a]);
+    }
 
     fn store() -> ClosureStore {
         let dir = std::env::temp_dir().join(format!("closures-{}", uuid::Uuid::new_v4()));

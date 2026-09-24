@@ -528,9 +528,14 @@
       // page never saw the child's stderr, where it used to be printed.
       const answer = await res.json().catch(() => null);
       const c = answer?.closure;
-      closureNote = c?.readout
-        ? `${task}: ${c.readout}${c.follow_up_staged ? ' — a follow-up was staged' : ''}${c.project ? ` · ${c.project}` : ''}`
-        : null;
+      // Whichever parts the record carries: a project's reading stands on its
+      // own when the closed task had no appraisal of its own.
+      const parts = [
+        c?.readout,
+        c?.follow_up_staged ? 'a follow-up was staged' : null,
+        c?.project,
+      ].filter(Boolean);
+      closureNote = parts.length ? `${task}: ${parts.join(' · ')}` : null;
       selected = null;
       await load();
     } catch (e) {

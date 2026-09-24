@@ -418,14 +418,15 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // (`tasks set` itself is unaffected: it calls through `prepare_tools`'s
     // registry directly, which this — the model-facing build — never touches.)
     //
-    // One handle downstream of here is guarded on purpose, not by accident:
-    // the copy `tasks work` and `questions` later pull back off this
-    // registry via `withhold_tool` — D5's "the harness's hand" — is the
-    // wrapped one, so `move_task` cannot perform a closure either. That is
-    // the rule, not a limitation: the harness moves a task to `waiting` or
-    // back to its pre-run status, and a closure is the *owner's* act on
-    // every path — the day `move_task` is asked to carry `done`, the guard's
-    // refusal is the correct answer and `tasks set` is the correct caller.
+    // The guard refuses *every* status write through the wrapped
+    // `kg_task_update` (review of #293: a model could otherwise reopen a
+    // closed task with nothing recorded). The copy `tasks work` and
+    // `questions` pull back off this registry via `withhold_tool` — D5's
+    // "the harness's hand" — is the wrapped one, and `move_task` reaches
+    // past the guard through `Tool::unguarded` to move a task to `waiting`
+    // or back to its pre-run status. It enforces the closure rule itself:
+    // a closing status is refused there too, because a closure is the
+    // *owner's* act on every path and `tasks set` is its one caller.
     crate::closure_guard::guard(&mut registry);
     for profile in &cfg.subagents {
         if opts.tool_profile.is_some() {
