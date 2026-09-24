@@ -4078,9 +4078,10 @@ comparison over a chosen set**, with the design written before the run.
   symlink anywhere in the directory, since `refuse_operator_home` sees only
   the directory itself and a `learning -> ~/.mecha/learning` link would
   carry the operator's store past it. `refuse_operator_home` runs in
-  `digest` as well as `base_config`, because `ExperimentStore::plan` digests
-  first and `status` never reaches `base_config`; the symlink walk lives in
-  `digest`, the earliest point that reads the directory at all. **Every
+  `resolve`, on every directory of an `extends` chain, as well as in
+  `base_config`, because `ExperimentStore::plan` digests (through `resolve`)
+  first and `status` never reaches a config; the symlink walk lives in the
+  same walk, the earliest point that reads a directory at all. **Every
   store path in the rendered config is the home's**: an operator's `[outbox]
   dir`, skills or messages directory is cleared, or a trial's drafts would
   stage into the real outbox (found on review). The child's environment is
@@ -4107,6 +4108,23 @@ comparison over a chosen set**, with the design written before the run.
   arm-major), and not any shared hash (a resumed experiment keeps a finished
   row's stored hash, so one arm can carry an old hash that coincides with
   the control's beside a new one that does not).
+- **An arm may run in its own environment** (`[arms.x] environment`,
+  `Manifest::environment_for`), and an environment may **extend** another
+  (`environment.toml`: `extends`). `Environment::resolve` walks the chain —
+  each directory guarded by `refuse_operator_home` and the symlink refusal,
+  a loop refused, eight deep at most — overlaying files by relative path
+  and merging `config.toml` key by key (tables recurse, scalars and arrays
+  replace, so `[[mcp]]` in a variant is its whole server list). The digest
+  is over the *resolved* files, so an edit to a base moves every variant
+  that extends it, as it should: it changed what the variant runs. `prepare`
+  builds the resolved tree once per digest under the experiment store
+  (`environment/<digest>/tree`, beside `stores/`), and every trial of the
+  arm reads its config, seeds and stores from there. The home guard is not
+  applied to that built tree — it lives in the experiment store, under the
+  home by construction — only to the authored directories it came from
+  (found live: the first cut refused its own build). Each arm's digest is
+  its own hash term, and `identical_arms` takes the per-arm digests, or two
+  arms differing only in environment would be named identical.
 - **A session in a trial home is `SessionKind::Experiment`** (D13), set by
   the runner through `MECHA_SESSION_KIND` — the second and last kind an
   environment may set, beside `test`. `runlog::Scan` hides it in the real
