@@ -147,6 +147,26 @@ counted by channel and the unread channels of inventory §4 appear; the
 charter reading and guilt vary from run to run; a closure from any surface
 shows up in `sessions appraise`.
 
+#### Phase 1 as pull requests
+
+Each is independently reviewable and lands behind its own tests; none
+changes what a run does. Dependencies are the only ordering.
+
+| PR | scope | proposals | depends on | acceptance |
+|---|---|---|---|---|
+| **1a** | **Goal anchors from structure.** `GoalRef` gains `trigger` and `request` kinds (lenient on read — a closed enum in an append-only store is a wire format). `tasks work` seeds the anchor to `task:<id>` with the project as parent; a trigger run anchors to `trigger:<name>`; a trigger's optional `serves` is validated against the loaded charter at load; the front-door drain seeds `request:<id>`. | S1, R1 | — | a delegated and a trigger run each record a non-null anchor; `sessions health` shows them; a `serves` naming a missing line refuses the trigger at load |
+| **1b** | **Task closure as a recorded event, core half.** One closure function; the append-only closure record (transition, actor, surface, sessions, time, reason); `pre_task_close` (may deny, fails closed), `task_closed`, `task_reopened` hook events; the CLI, TUI and web board call it; the web shows the readout from the record; an unattended or delegated run cannot close. | S8, R15 | — | every direct surface writes one record per transition; a reopen is recorded and joined to its closure; a denying `pre_task_close` blocks; an unattended close is refused on every route |
+| **1c** | **Closure from Slack and the graph TUI.** `TaskDone` / `TaskDrop` in Slack's closed `Action` enum, through 1b; the graph TUI's status change calls mecha's closure (a mecha-graph PR). | S8, here §5 | 1b | a Slack and a graph-TUI closure each produce a record with the right surface |
+| **1d** | **Read the verdicts already given.** Reopen signs per R16 from 1b's record; the reject reason reaches the reflector as an owner correction; workflow close / cancel / reopen / verify sign per R16b–e; rule and reflection curation and harness accept / reject / revert are recorded against the rule, reflection or candidate (R16f–h); graph review rejections of facts from `agent:mecha` episodes are recorded for L7. | S3a, R16 | 1b | `sessions appraise` shows each new channel on a fixture; none of R16f–h moves a run's valence |
+| **1e** | **Readings per item.** Charter and backlog readings carry per-item age and count beside the level, and each run's delta; a line saturated for `SATURATED_AFTER_RUNS` is withdrawn from in-run consumers and reported once by the doctor. | S5 | — | on the live store the per-item reading varies run to run while the level stays saturated |
+| **1f** | **One commitment record, guilt per commitment.** `workflow::Commitment` absorbs `anticipation::Commitment`; drafts, parked questions and accepted front-door requests are commitments by construction; guilt per item = excess over patience × line rank; `anticipated_guilt` becomes a readout (the maximum), with old records still readable. | S7, R12 | 1e | each pending commitment has its own value; the homeostat readout matches the maximum; no consumer reads the scalar |
+| **1g** | **Keep the counterfactual verdicts.** Steer-probe and validation verdicts write a counterfactual record keyed by situation, goal kind and call class, from clean sessions with a readable tool surface only. | X1 | — | a `--probe` run leaves records a second read returns; tainted sessions leave none |
+| **1h** | **Affect never reaches the model.** A test over both provider encoders: no `Affect` word, valence or sensor number in any request. | G4 | — | the test fails when a status line carrying a valence is injected |
+
+1a, 1b, 1e, 1g and 1h can proceed in parallel. The phase-1 readout — anchored
+share of long runs, verdicts per week by channel, per-item reading variance —
+is added to `sessions health` by the PR that first produces each number.
+
 ### Phase 2 — Learning out: the nightly loop learns from that evidence
 
 *Offline consumers only. They cannot make a run worse.*
@@ -250,7 +270,7 @@ widening.
 | R14 | all | Mechanisms overlapping mecha-graph are built in mecha core, porting the graph's version; no new cross-repo readers | **stated by the owner, 2026-09-24** |
 | R1 | phase 1 | A trigger run is anchored to the trigger itself (`trigger:<name>`); an owner-written `serves` link to a charter line is optional, never required | **ruled 2026-09-24: optional only** |
 | R15 | phase 1 | Closing or reopening a task, on any surface, is one recorded event with hooks | **ruled 2026-09-24** (S8) |
-| R16 | phase 1 | How the unread acts sign. **Ruled 2026-09-24:** a task reopened after `done`, at any age, signs −1.0 on the session that closed it and withdraws its success; a graph review rejection of a fact a session extracted goes to L7's attribution only and signs nothing directly. **Open, item by item:** R16a–R16h in S3 | partly ruled |
+| R16 | phase 1 | How the unread acts sign: a task reopened after `done`, at any age, −1.0 on the closing session, withdrawing its success; a rejected graph fact to L7's attribution only; R16a–R16h as tabled in S3 | **ruled 2026-09-24**, every item as proposed |
 | R2 | — | A one-tap verdict channel | **declined 2026-09-24**: no added owner work (here §1, decision 4) |
 | R7 | parked | Pending drafts expire after an owner-set age, as `expired` | **deferred 2026-09-24** until the system has stabilised |
 | R12 | phase 1 | Guilt becomes per-commitment goal error toward another party; one commitment record; the homeostat scalar becomes a readout | **ruled 2026-09-24: per commitment** |
@@ -264,8 +284,8 @@ widening.
 | R8 | parked | The harness may *propose* per-region autonomy grants; only the owner grants | yes, when unparked |
 | R9 | — | The live charter line `be-the-best` ("always finding ways you could have completed a task even better"). Unboundedness is not the issue — charter lines are attractors (here §2). §15's narrower worry is an unbounded line whose *object is the harness itself*, beside a loop that proposes harness changes; that pressure is held structurally, because no lane can accept a `Security`-class change. Flagged once; the owner's to keep or reword | — |
 
-**To start phase 1, only R16 is still needed** (R1, R12 and R15 ruled, R2
-declined, R7 deferred). The rest can wait
+**Phase 1 has every ruling it needs** (R1, R12, R15 and R16 ruled 2026-09-24;
+R2 declined; R7 deferred). The rest can wait
 for their phase.
 
 ---
@@ -383,7 +403,7 @@ claimed (joined back by the episode's session id). Each is owner-authored,
 already recorded somewhere, and costs the owner nothing new. How each signs
 is ruling R16. Ruled: a reopened task (any age) −1.0 on the closing session,
 withdrawing its success; a rejected graph fact goes to L7's attribution only.
-Proposed, awaiting a ruling item by item:
+The rest, ruled 2026-09-24 as proposed:
 
 | # | owner act | proposed signal |
 |---|---|---|
