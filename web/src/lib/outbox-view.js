@@ -498,7 +498,10 @@ export function liveThread(text) {
 export function sinceDrafted(recorded, live) {
   if (!recorded || !live?.verified) return null;
   const newest = live.messages[live.messages.length - 1] ?? null;
-  if (!recorded.verified) {
+  // Matching by id needs every recorded message to carry one; a read in the
+  // older format can lack them, and a missing id would mark every live
+  // message new. Without ids, only the count is said (review of #275).
+  if (!recorded.verified || recorded.messages.some((m) => !m.replyId)) {
     // Which messages are new cannot be said, but *that* the thread grew can:
     // a forged header only ever adds to the recorded count, so a live count
     // above it is never an overstatement. `added: null` — the count, not the

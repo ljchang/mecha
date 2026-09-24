@@ -196,6 +196,17 @@
       live[d.id] = { status: 'error', at: Date.now() };
     }
   }
+  // Only for a draft that stays selected: `show` runs on every j/k, held
+  // keys included, and each reread is a `mecha mail show` subprocess and a
+  // provider round-trip (review of #275).
+  const LIVE_SETTLE_MS = 300;
+  let settleTimer = null;
+  function settleThenCheck(d) {
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => {
+      if (selectedId === d.id) checkLive(d);
+    }, LIVE_SETTLE_MS);
+  }
   const liveNow = $derived(detail ? live[detail.id] : null);
   const since = $derived(liveNow?.status === 'ok' ? sinceDrafted(readThread, liveNow.thread) : null);
 
@@ -212,7 +223,7 @@
     // Only a mail draft draws its thread as messages; an event or a doc edit
     // written from a mail has no other rendering of it (found on review).
     showSources = !readOf(d);
-    checkLive(d);
+    settleThenCheck(d);
     showArgs = false;
     rejectReason = '';
     if (!keepError) error = null;
@@ -747,7 +758,9 @@
                 {:else if liveNow?.status === 'loading'}
                   <div class="hint">Checking the thread for new messages…</div>
                 {:else if readThread.verified}
-                  <div class="hint">The newest message when this was drafted. If anyone has written since, the reply goes to them instead{liveNow?.status === 'error' ? " — the thread couldn't be reread just now" : ''}.</div>
+                  <!-- A reread that failed, or came back unverifiable, is not a
+                       reread that found nothing: say which (review of #275). -->
+                  <div class="hint">The newest message when this was drafted. If anyone has written since, the reply goes to them instead{liveNow?.status === 'error' ? " — the thread couldn't be reread just now" : liveNow?.status === 'ok' ? " — the thread was reread, but mecha couldn't confirm what is new in it" : ''}.</div>
                 {/if}
               {/if}
               {#if !readThread.verified}
