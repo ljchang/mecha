@@ -13,8 +13,9 @@
   //
   // Same contract as the phone: the list is a store read, the reader is
   // `mecha mail show`'s text, every action is a `mecha mail …` verb through
-  // /api/mail/act, and drafting verbs stage into the outbox — nothing sends
-  // from here. Spam still confirms, for the phone's reason: it is the one
+  // /api/mail/act, and drafting verbs stage into the outbox — except a
+  // schedule with no invitees, which makes a private hold directly. Nothing
+  // sends from here. Spam still confirms, for the phone's reason: it is the one
   // verb whose effect leaves the mailbox.
   //
   // What is new is timing. Each verb is a CLI child that starts the mail
@@ -810,9 +811,9 @@
           <p><kbd>t</kbd> make a task on the board</p>
           <p><kbd>⇧E</kbd> <kbd>⇧D</kbd> <kbd>⇧T</kbd> also work — and <kbd>⌘E</kbd> <kbd>⌘D</kbd> once more than one thread is selected</p></div>
         <div><div class="kicker">Draft (to the outbox)</div>
-          <p><kbd>r</kbd> reply · <kbd>s</kbd> add to calendar</p>
-          <p><kbd>⇧S</kbd> add to calendar, with instructions</p>
-          <p><kbd>f</kbd> forward · <kbd>c</kbd> compose new</p></div>
+          <p><kbd>r</kbd> reply · <kbd>f</kbd> forward · <kbd>c</kbd> compose new</p>
+          <p><kbd>s</kbd> add to calendar — a private hold, made directly</p>
+          <p><kbd>⇧S</kbd> add to calendar, with instructions; naming people drafts an invitation</p></div>
         <div><div class="kicker">Batch and recover</div>
           <p><kbd>x</kbd> select · <kbd>⇧↓</kbd> <kbd>J</kbd> <kbd>K</kbd> extend</p>
           <p><kbd>⌘A</kbd> <kbd>A</kbd> select the lane · <kbd>⌘</kbd>/<kbd>⇧</kbd>-click</p>
