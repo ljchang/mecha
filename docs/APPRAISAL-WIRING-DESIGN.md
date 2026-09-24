@@ -36,86 +36,111 @@ and completes tasks." The appraisal system is a core part of three things:
    joint optimization problem of all of these complex and competing needs,
    which can dynamically change as priorities evolve, resources get tighter."
 
-For some actions the owner is asked to confirm the interpretation or the
-plan; overall, the meaning is the agent's own. Every section below serves one
-of the three.
+The means are two: **interpretation** — the agent's own reading of what a
+situation means — and **counterfactual evaluation** — "different policies
+evaluated and the validator decides which is better or more accurate", online
+during planning or mid-task, and offline to reflect and ruminate. For some
+actions the owner is asked to confirm the interpretation or the plan;
+overall, the meaning is the agent's own. Every section below serves one of
+the three roles through one of the two means.
 
 ---
 
 ## 0. The finding
 
 The appraisal system turns records into signed errors, a valence and a label,
-and the label goes to a badge. Four measured facts decide what to do about it
-(inventory §1–§4):
+and the label goes to a badge. Six measured facts decide what to do about it
+(inventory §1–§10):
 
 1. **Nothing supplies it a goal.** In 30 days of real use no run named a
    goal, no run carried a confirmed anchor, and 4 of 79 long runs wrote a
    plan. Goal inference, drift tracking, step checks, goal-keyed lessons and
-   planning advice are all built and all idle, because each waits for the
-   model to write something it does not write.
-2. **Injected guidance did not help.** It tied on easy tasks and lost on
-   harder anchored ones — 20/24 without it, 18/24 with it, four regressions.
+   planning advice are built and idle, each waiting for the model to write
+   something it does not write.
+2. **Injected advice did not help.** Fixed guidance sentences tied on easy
+   tasks and lost on harder anchored ones — 20/24 without, 18/24 with.
 3. **Learning is starved while verdicts go unread.** The nightly loop runs
    every stage and has had nothing to learn from for a week, while the owner
-   gives verdicts daily — reopening a task, rejecting a draft with a reason,
-   closing a workflow, curating a rule — that nothing reads.
-4. **The sensors that would drive behaviour are constants.** A stale outbox
-   pins both the charter sensor and anticipated guilt at their ceiling on
-   every run.
+   gives verdicts daily that nothing reads.
+4. **The sensors that would drive behaviour are constants** — a stale outbox
+   pins both the charter sensor and anticipated guilt at their ceiling.
+5. **Each session is interpreted three times, blind.** The distiller, the
+   reflector and the counts-only appraiser read the same session in the same
+   nightly job for different consumers; none sees the owner's goals, the
+   system's state, the owner's later acts, or the others' conclusions
+   (inventory §7).
+6. **Offline evaluation compares policies where nothing differs.** Every
+   evaluator replays against the recording, so a genuinely different policy
+   leaves it within a call or two and the pair is dropped or ties; all twelve
+   harness changes ever proposed were rejected, four as "all paired episodes
+   tied" (inventory §10).
 
 ---
 
 ## 1. The decisions that shape the plan
 
-**1. Wire consumers in order of evidence, not of ambition.**
-
-| order | kind of consumer | why this order |
-|---|---|---|
-| first | **recording** — get goals and verdicts into the store | changes no behaviour; every other consumer is empty without it |
-| second | **offline** — learning, replay priority, ordering of what the owner sees | cannot make a run worse; measurable with stage levers |
-| third | **structural in-run actions** — the harness appends, holds, parks, freezes | deterministic and mostly narrowing; the model cannot ignore them |
-| last | **fixed advice text** — templated advice sentences in tool results | measured locally to hurt as often as help; distinct from the agent's own situation appraisal (I3), which carries meaning rather than instructions and is the core in-run consumer |
-
-**2. Supply before demand.** A consumer keys only on something the harness
-holds structurally — a task id, a trigger, a store row, an owner's click —
-never on the model having followed an instruction. Levels are read per item
-or as a change, never as a level.
-
-**3. Shadow, then measure, then arm.** Every wiring ships first writing the
-decision it would have made, then as a lever with a `mecha exp` arm against a
-no-wiring control at matched budget, then on by default. The outcomes are
-verified task success and the owner's verdicts — never the label, the
-valence, a sensor value or a rule count.
-
-**4. No added work for the owner** (ruled 2026-09-24). The system infers
-goals, reflects, anticipates and measures from what the owner already does;
-it does not ask for ratings, confirmations or goal statements the owner
-would not otherwise give. Confirmation comes from acts the owner already
-performs — releasing a draft, closing a task, answering a question the run
-genuinely needed. So no one-tap verdict (S3b declined) and no "what is this
-for?" chip (S2's asking tier declined); the evidence is the acts in
-inventory §4, read.
-
-**5. An appraisal is an interpretation of meaning** (ruled 2026-09-24).
-The owner: appraisal "is not a set of dimensions that can be reduced to a
+**1. An appraisal is an interpretation of meaning** (R17, ruled). In the
+owner's words, appraisal "is not a set of dimensions that can be reduced to a
 scalar or an 'action tendency', but an interpretation of meaning with respect
 to goals, homeostatic states, and past experiences"; it "should really be
-text, which is much richer and useful than ±1", and valence is "a small
-feature of appraisals". So an appraisal is **text** — what happened relative
-to what the run was for, why, what it means for the goal and for the owner,
-what to do differently, what to expect next time, what the owner's reactions
-say about their goals. Beside it the record keeps a few **judgments read out
-of** the interpretation — good/bad, the goal it bears on, the pointers its
-claims rest on — because arithmetic (priority, ordering, a line's trend) needs
-them. They are read out of the appraisal, not the appraisal reduced to them;
-the emotion labels become incidental words. How the numeric-only shape came
-about, and why it is safe to leave: here §2.1.
+text". It says what happened relative to what the run was for, why, what it
+means for the goal and for the owner, what to do differently, what to expect
+next time, and what the owner's reactions say about their goals. A few
+judgments are **read out of** it — good/bad per goal, the goal, the pointers
+its claims rest on — because arithmetic (priority, ordering, a line's trend)
+needs them; the emotion labels become incidental words.
+
+**2. No added work for the owner** (ruled). The system infers from what the
+owner already does and asks for no ratings, confirmations or goal statements
+they would not otherwise give. Confirmation comes from acts the owner already
+performs — releasing a draft, closing a task — and, for a small set of actions
+(I5), from the review that already happens. So no one-tap verdict and no
+"what is this for?" chip.
+
+**3. Supply before demand.** A consumer keys only on something the harness
+holds structurally — a task id, a trigger, a store row, an owner's act — never
+on the model having followed an instruction. A level is read per item or as a
+change, never as a level.
+
+**4. One informed interpretation per session — converge, don't add.** The
+per-session appraisal (I1) is the distiller, extended with the owner's
+context and new output fields; the counts-only appraiser is retired into it;
+the reflector folds in once its lessons measure no worse. One read per
+session instead of three blind ones, at no extra model call (inventory §7,
+§9).
+
+**5. Meaning enters the run as situation, not advice.** What failed was
+templated advice. What the run lacks is meaning: what its goal is for, what
+state the owner and the system are in, what happened last time. So the
+harness gives the run a **situation brief** and, at a few boundaries, the
+agent's own **situation appraisal** — in the run's own slot, reusing its
+cached prefix (the only affordable shape, here §2.2) — and the agent does the
+joint optimization across goals and state in its own reasoning, with charter
+rank resolving conflicts (R24, ruled). State reaches it as words and bands,
+never numbers or setpoints (R21).
+
+**6. Policies are compared only where a structural validator can decide.**
+Counterfactual evaluation — the owner's example: "different policies
+evaluated and the validator decides which is better" — runs offline at the
+informative decision points of recorded sessions and on fixtures, and online
+in dry branches at plan time or mid-run. The deciding vote is always
+structural: the owner's recorded verdict, an owner check, grounding, tracing
+to the goal, budget fit. A model judge never decides alone — measured
+unstable here, and an imperfect verifier's false positives grow with the
+number of candidates (inventory §10).
+
+**7. Shadow, then measure, then arm.** Every wiring ships first writing what
+it would have done, then as a lever with a `mecha exp` arm against a
+no-wiring control at matched budget, then on by default. The outcomes are
+verified task success and the owner's verdicts — never the label, a valence,
+a sensor value or a rule count.
 
 These sit on top of the invariants that already hold and are not restated:
 dispositions only narrow (§7.3), affect is a priority and never an objective
 (§8.3), prioritised selection is confirmed on a uniform holdout (§8.1),
 nothing per-turn enters the prefix (§4.3), an expectation is a recorded
-commitment (§7.4), and no wiring reads a model's stated confidence.
+commitment (§7.4), the provenance gate on learning has no knob, and no wiring
+reads a model's stated confidence.
 
 ---
 
@@ -206,118 +231,121 @@ What protects a text appraisal instead, each a ruling:
   salient episodes, never per turn — each appraisal is a model call competing
   for llama-server's seats.
 
+### 2.2 What the box affords
+
+Measured 2026-09-24 (inventory §9): one local model (Qwen 3.6 35B) on four
+llama-server slots, three of them available to background work so one is
+always free for the owner; prefill about 1,750 tok/s, generation about 93
+tok/s single-stream and about 45 per stream when three run at once; real runs
+p50 11 s (web 10 s, trigger 50 s); the prefix cache is per slot, so a
+follow-up turn prefills in about 0.3 s where a cold 15k-token prompt takes
+about 8 s. What that allows:
+
+| work | cost | affordable as |
+|---|---|---|
+| I1, one interpretation per session | 20–75 s of one background seat | at session end or nightly for every session (about 5–10 min a day); the nightly window has about 10× headroom |
+| I3, a situation appraisal at a boundary | 5–15 s in the run's own slot; 20–50 s as a separate cold pass | in-slot only, 2–3 boundaries on long delegated or trigger runs; none on short web or voice turns |
+| the run-start situation brief | no model call — assembly | every anchored or long run |
+| online comparison of K policies | 1.5–3 min per decision point at K = 2–3, holding every background seat | delegated or unattended runs only, 1–2 decision points, dry branches; never interactive or voice |
+| offline point-wise comparison | a short continuation per arm per point | nightly, within the existing headroom |
+
+Everything new takes a permit, yields to the owner's turn and to a voice
+call, and stays gated by the model-idle check during the day. A cloud model
+could absorb interpretation or rollouts only by an explicit per-pass choice
+that sends transcripts off the box — a privacy and trifecta decision for the
+owner, not a capacity setting (R29).
+
 ---
 
 ## 3. The plan: five phases
 
 Each phase closes one loop end to end, so it can be judged on its own
-outcome. Phases 2 and 3 can run in parallel once phase 1 lands; phases 4 and 5 follow.
+outcome. Phases 2 and 3 can run in parallel once phase 1 lands; phases 4 and
+5 follow.
 
-### Phase 1 — Evidence in: make the store tell the truth
+### Phase 1 — Foundation: evidence and context in
 
 *No behaviour changes. Everything later is empty without it.*
 
 | # | work | proposal |
 |---|---|---|
-| 1 | Seed the goal anchor from what the harness holds: the task id on `tasks work` (with its project), the trigger's own name on a trigger run, the request id on a front-door run | S1 |
-| 2 | Task closure and reopening become one recorded lifecycle event, from every surface — CLI, TUI, web, Slack, chat, and the graph TUI — with hook events beside `pre_tool` / `post_tool` / `session_end` | S8, R15 |
-| 3 | Read the verdicts already given: task reopened after `done`, outbox reject reasons, workflow close / cancel / reopen / verify, rule and reflection curation, harness accept / reject / revert, graph review verdicts on facts a session claimed | S3a |
-| 4 | Sensor hygiene: per-item readings and a per-run delta instead of a level; a saturated reading withdrawn from consumers and reported once | S5 |
-| 5 | One commitment record and guilt computed per item from it | S7 |
-| 6 | Keep the counterfactual verdicts steer and validation probes already pay for | X1 |
-| 7 | A test that no affect word, valence or sensor number reaches a provider request | G4 |
+| 1a | Seed the goal anchor from what the harness holds: the task id on `tasks work` (with its project), the trigger's own name on a trigger run, the request id on a front-door run | S1 |
+| 1b | Task closure and reopening become one recorded lifecycle event, with `pre_task_close` / `task_closed` / `task_reopened` hooks; CLI, TUI and web call it; unattended runs cannot close | S8 |
+| 1c | Closure from Slack and from the graph TUI through the same event | S8 |
+| 1d | Read the verdicts already given — reopen, reject reasons, workflow acts, rule and reflection curation, harness decisions, graph fact rejections — each as R16 rules | S3a |
+| 1e | Readings per item and per run, not as a level; a saturated reading withdrawn and reported once | S5 |
+| 1f | One commitment record; guilt per commitment | S7 |
+| 1g | Every counterfactual comparison stored — steer and validation probes today, the new comparisons of phases 2, 3 and 5 later — keyed by situation, goal kind and call class | X1, O4 |
+| 1h | The **situation brief** assembled and recorded, not yet delivered: the goal chain (task → project → charter lines), a harness-side board read reduced to counts and pointers, per-commitment readings, local time and quiet hours, seats and runs in flight, budget | B1 |
+| 1i | A test that no sensor number, setpoint or numeric valence reaches a provider request | G4 |
 
-**Done when:** ≥ 60% of long real runs carry an anchor; verdicts per week are
-counted by channel and the unread channels of inventory §4 appear; the
-charter reading and guilt vary from run to run; a closure from any surface
-shows up in `sessions appraise`.
+**Done when:** most long real runs carry an anchor; verdicts per week are
+counted by channel; readings vary run to run; a closure from any surface
+appears in `sessions appraise`; the recorded brief is complete on a sample of
+runs.
 
-#### Phase 1 as pull requests
+### Phase 2 — One interpretation, and learning from it
 
-Each is independently reviewable and lands behind its own tests; none
-changes what a run does. Dependencies are the only ordering.
-
-| PR | scope | proposals | depends on | acceptance |
-|---|---|---|---|---|
-| **1a** | **Goal anchors from structure.** `GoalRef` gains `trigger` and `request` kinds (lenient on read — a closed enum in an append-only store is a wire format). `tasks work` seeds the anchor to `task:<id>` with the project as parent; a trigger run anchors to `trigger:<name>`; a trigger's optional `serves` is validated against the loaded charter at load; the front-door drain seeds `request:<id>`. | S1, R1 | — | a delegated and a trigger run each record a non-null anchor; `sessions health` shows them; a `serves` naming a missing line refuses the trigger at load |
-| **1b** | **Task closure as a recorded event, core half.** One closure function; the append-only closure record (transition, actor, surface, sessions, time, reason); `pre_task_close` (may deny, fails closed), `task_closed`, `task_reopened` hook events; the CLI, TUI and web board call it; the web shows the readout from the record; an unattended or delegated run cannot close. | S8, R15 | — | every direct surface writes one record per transition; a reopen is recorded and joined to its closure; a denying `pre_task_close` blocks; an unattended close is refused on every route |
-| **1c** | **Closure from Slack and the graph TUI.** `TaskDone` / `TaskDrop` in Slack's closed `Action` enum, through 1b; the graph TUI's status change calls mecha's closure (a mecha-graph PR). | S8, here §5 | 1b | a Slack and a graph-TUI closure each produce a record with the right surface |
-| **1d** | **Read the verdicts already given.** Reopen signs per R16 from 1b's record; the reject reason reaches the reflector as an owner correction; workflow close / cancel / reopen / verify sign per R16b–e; rule and reflection curation and harness accept / reject / revert are recorded against the rule, reflection or candidate (R16f–h); graph review rejections of facts from `agent:mecha` episodes are recorded for L7. | S3a, R16 | 1b | `sessions appraise` shows each new channel on a fixture; none of R16f–h moves a run's valence |
-| **1e** | **Readings per item.** Charter and backlog readings carry per-item age and count beside the level, and each run's delta; a line saturated for `SATURATED_AFTER_RUNS` is withdrawn from in-run consumers and reported once by the doctor. | S5 | — | on the live store the per-item reading varies run to run while the level stays saturated |
-| **1f** | **One commitment record, guilt per commitment.** `workflow::Commitment` absorbs `anticipation::Commitment`; drafts, parked questions and accepted front-door requests are commitments by construction; guilt per item = excess over patience × line rank; `anticipated_guilt` becomes a readout (the maximum), with old records still readable. | S7, R12 | 1e | each pending commitment has its own value; the homeostat readout matches the maximum; no consumer reads the scalar |
-| **1g** | **Keep the counterfactual verdicts.** Steer-probe and validation verdicts write a counterfactual record keyed by situation, goal kind and call class, from clean sessions with a readable tool surface only. | X1 | — | a `--probe` run leaves records a second read returns; tainted sessions leave none |
-| **1h** | **Affect never reaches the model.** A test over both provider encoders: no `Affect` word, valence or sensor number in any request. | G4 | — | the test fails when a status line carrying a valence is injected |
-
-1a, 1b, 1e, 1g and 1h can proceed in parallel. The phase-1 readout — anchored
-share of long runs, verdicts per week by channel, per-item reading variance —
-is added to `sessions health` by the PR that first produces each number.
-
-### Phase 2 — Interpret and learn: the appraiser, and the nightly loop that learns from it
-
-*Offline consumers only. They cannot make a run worse.*
+*Offline. Serves self-learning, and produces the goal hypotheses alignment
+needs.*
 
 | # | work | proposal |
 |---|---|---|
-| 0 | **The interpretive appraiser.** Re-feed the quarantined appraiser (APPRAISAL-RESEARCH §3.10's retire-or-re-feed, decided: re-feed) with the transcript and its context — goals, homeostatic state, the commitments it touched, past appraisals in the same situation and goal — and store a text appraisal with its good/bad, goal, pointers and inherited taint, for salient episodes. The reflector converges on it: a reflection is an appraisal of a correction | I1 |
-| 1 | Attribute a correction by what the run was given — data error, behaviour error or gap — and mine a behaviour lesson only from a behaviour error (port mecha-graph's D3 contract) | L7 |
-| 2 | Learn from what went right: drafts sent unchanged as writing exemplars, verified successes as examples and as contrast for the reflector | L2 |
-| 3 | The anchor as a second goal source for reflections; rule tenure per charter line on owner verdicts — and, behind R20's guard, clean grounded appraisals — decided by a Wilson lower bound (port the graph's ladder); dormancy for rules whose region stops recurring | L3 |
-| 5 | Retrieve past clean appraisals by situation and goal, on demand through `goal_context` — episodic memory with its meaning attached — measured against a control | I2, M1 |
-| 4 | Replay and reflection priority = gain × need: \|signed error\| on owner-verdict channels × how often the situation recurs, uniform holdout unchanged | L1 |
-| 6 | The nightly diagnostician reads clean appraisals beside its counters | L8 |
+| 2a | **The distiller, extended, becomes the appraisal.** New inputs: the goal chain and charter text, the situation brief at start and finish, the owner's acts on the output (release, edit diff, reject reason, closure, reopen), signed errors, step findings and probe verdicts, up to three past clean appraisals of the same situation and goal. New outputs, in `appraisals.jsonl` beside the unchanged graph episode: the interpretation, good/bad per goal with pointers, lessons, a prediction for next time, goal hypotheses. The counts-only appraiser is retired into it | I1, I4 |
+| 2b | Predictions scored when next time comes; a miss is a surprise that raises the episode's priority | X5 |
+| 2c | Past clean appraisals retrieved by situation and goal through `goal_context`, with the goal as a `Situation` key | I2, M1 |
+| 2d | **Point-wise counterfactual comparison replaces whole-session rumination**: at the informative decision points of recorded sessions (a steer, a denial, a failed check, an edited or rejected draft, a surprise), drive K policies a short horizon from the point and let the owner's recorded verdict decide; the losing arms' confirmed outcomes are written into that session's appraisal | O1, O3 |
+| 2e | Learning from appraisals: the reflector's lessons measured against I1's on the same interventions, then `learn` fed clean appraisals — successes included, corrections attributed data / behaviour / gap, tenure by a Wilson bound on the owner's verdicts behind R20's guard, priority from I1's judgments × how often the situation recurs | L2, L7, L3, L1 |
+| 2f | The nightly diagnostician reads clean appraisals beside its counters | L8 |
 
-**Done when**, in a lifetime experiment against the appraisal-off preset
-(stage levers): `learn` forms rules again on live-shaped data; the share of
-decisive validations rises; harness candidates find paired episodes that
-discriminate; verified task success does not fall.
+**Done when**, in a lifetime experiment on fixtures against the
+appraisal-off preset: lessons from appraisals validate more often than
+reflector lessons; predictions score above chance; point-wise comparisons
+reach decisions where whole-session pairs tied; verified task success does
+not fall.
 
-### Phase 3 — Appraise while working: plans, reasoning and honest completion
+### Phase 3 — Meaning in the run
 
-*The consumer the literature supports most: false completion is the dominant
-agent failure, and judges cannot catch it (C1's problem statement).*
-
-| # | work | proposal |
-|---|---|---|
-| 1 | Checks the harness writes: grounding over a staged draft's dates and names; the owner's workflow checks; mismatches from their failures | C2, L4 |
-| 2 | Acceptance criteria the agent declares with its goal, from a closed set the harness executes — one-sided until the owner confirms them | S6 |
-| 3 | The goal validator: every plan item traces to the anchor, deterministically | V1 |
-| 4 | The completion certificate, appended by the harness; a draft from an uncertified run is held for acknowledgement; the review shows goal, certificate and alignment | C1, G2, U2 |
-| 5 | A re-delegated task starts with pointers to its previous attempts and why they were rejected | M5 |
-| 6 | The agent appraises its situation while working: at the start, after a surprise, before a consequential act — goals, described system state, past appraisals | I3 |
-| 7 | Planning as joint optimization across every live goal and the system's state, reasoned in the appraisal | P1 |
-
-**Done when:** false completion on the task and synthetic-home suites falls
-against a no-certificate arm with `WORK_FLOOR` holding; owner rework on
-delegated tasks falls; and, separately, runs with I3 beat the same runs
-without it on verified success at matched budget.
-
-### Phase 4 — Alignment and follow-through: the owner's goals, commitments, and one scheduler
+*Serves planning, reasoning and completion.*
 
 | # | work | proposal |
 |---|---|---|
-| 1 | Commitments from owner acts: mail `reply` / `task` / `schedule`; promises in released drafts recorded automatically (dismissing one drops it) | S4 |
-| 2 | Duty runs that *prepare* follow-through for a commitment approaching its setpoint — never send | A1 |
-| 3 | Surface only when missing it costs more than the interruption, at breakpoints, extending `workflow::AttentionPolicy`; order the brief and `/queues` by duty | U1, U4 |
-| 4 | The harness's scheduler as one objective over permits, surfacing, duty runs and replay budget, recomputed as state moves | P2 |
-| 5 | The owner's goals inferred from their acts and kept as hypotheses, retrieved into planning | I4 |
-| 6 | Confirmation of an interpretation or plan for the few actions that warrant it, riding on existing review objects | I5 |
+| 3a | The situation brief delivered at run start, folded into the seed or first user turn — including a re-delegated task's previous attempts and why they were rejected | B1, I3, M5 |
+| 3b | The agent's situation appraisal, in the run's own slot, after a surprise and before a consequential act | I3 |
+| 3c | Planning as joint optimization in the agent's reasoning, over every live goal and the described state; charter rank resolves conflicts | P1 |
+| 3d | **Plan-time comparison**: on anchored delegated and trigger runs, two candidate plans as text, validated deterministically — tracing to the goal, coverage of declared criteria, budget fit, charter conflicts, what won at similar points before; the loser kept as the fallback | N1 |
+| 3e | Honest completion: checks the harness writes, criteria the agent declares (one-sided), the goal validator, the certificate appended by the harness, drafts from uncertified runs held, the review showing appraisal and plan beside the draft | C2, L4, S6, V1, C1, G2, U2 |
 
-**Done when:** owner-side latency on sensored lines falls; interruptions per
-day do not rise; nothing surfaced is dismissed as noise more often than
-before.
+**Done when:** at matched budget, runs with 3a–3b beat the same runs
+without; runs with 3d beat single-plan runs; false completion falls with
+`WORK_FLOOR` holding.
 
-### Phase 5 — Guardrails and stuck runs: narrowing controls on anchored runs
+### Phase 4 — Alignment and the scheduler
 
 | # | work | proposal |
 |---|---|---|
-| 1 | Wind down before the ceiling and park a delegated run as a question instead of dying | C4, A3 |
-| 2 | The frustration ladder and the desperation brake | C5 |
-| 3 | A send whose recipient does not trace to the confirmed goal is staged; destructive calls under taint or an unconfirmed goal are prompted | G1, G3 |
-| 4 | Pre-action markers from the stored counterfactual verdicts, narrowing only | X2 |
+| 4a | The owner's goals, as hypotheses from phase 2, retrieved into planning as "the owner seems to want", confirmed or contradicted by later acts, and shown beside the charter | I4 |
+| 4b | Confirmation of an interpretation or a plan for the small set of actions that warrant it, riding on the existing review | I5 |
+| 4c | Commitments from owner acts: mail `reply` / `task` / `schedule`; promises in released drafts recorded automatically | S4 |
+| 4d | **One scheduler**: permits, what to surface and when, duty runs that prepare follow-through, the nightly budget — one objective recomputed as state moves, replacing four rules | P2, A1, U1, U4 |
+
+**Done when:** owner-side latency on commitments falls; interruptions per day
+do not rise; goal hypotheses the owner's acts confirm outnumber those they
+contradict.
+
+### Phase 5 — Guardrails and mid-run policy change
+
+| # | work | proposal |
+|---|---|---|
+| 5a | Wind down before the ceiling; park a delegated run as a question instead of dying | C4, A3 |
+| 5b | The frustration ladder and the desperation brake | C5 |
+| 5c | A send whose recipient does not trace to the goal is staged; destructive calls under taint or an unconfirmed goal are prompted | G1, G3 |
+| 5d | Pre-action markers from the stored comparisons, narrowing only | X2 |
+| 5e | **Mid-run policy change**: on a harness-computed trigger (a failed check, frustration, a surprise, a budget shortfall), branch two dry continuations for a bounded horizon — reads live, writes to a scratch copy of the workspace, sends to a scratch outbox, un-stageable egress ending the branch — validate structurally, commit the winner, and write the loser into the appraisal | N2 |
 
 **Done when:** on the AgentDojo suite, attack success falls and utility
-holds; per arm, check tampering and reopen rates fall and handoffs are
-usable.
+holds; per arm, tampering and reopen rates fall; N2 beats no-branching on the
+fixtures where a structural validator exists.
 
 ---
 
@@ -325,70 +353,73 @@ usable.
 
 | item | why parked | unpark when |
 |---|---|---|
-| `goal_guidance` and every injected-advice form (C6, M3 gap delivery) | measured to hurt as often as help | phase 3 has produced plans and criteria worth advising on, and a new arm is designed |
-| S2 — the harness *infers* a goal for un-anchored runs, from a closed list | goes beyond §17.3's confirmation rule; a model pass | phase 1 shows how many long web runs stay un-anchored, and phase 2 shows goals change what is learned |
-| R7 draft expiry | owner ruling: not until the system has stabilised | the owner says so |
-| C3 seeded plans; V2 re-ask and drift event | plans can hurt small models; no drift rate yet | phase 3's criteria produce a rate to read |
-| M2–M4 memory (earned salience, gap delivery, criteria across compaction) — M1 and appraisal retrieval moved into phase 2 | nothing goal-linked to retrieve yet | phase 2's retrieval is measured |
-| X0 self-authored steers; X3–X5 verdict forecasts and prediction scoring | need stored verdicts and recorded outcomes | X1 holds records and owners record outcomes |
-| A2 earned autonomy; A4 curiosity; L5 surprise-seeded gossip; L6 lineage | lower value, or a new use of slack | phase 2 and phase 4 are measured |
-| every quarantined model pass (S2 tier 2, V1 relevance, G1 model check) | an injection target, and a slot | the deterministic version is measured, and the model check survives adaptive attack |
+| fixed advice text (`goal_guidance`, C6, M3 gap delivery) | measured to hurt as often as help | phase 3's situation appraisal is measured and a place for advice is argued |
+| S2 — inferring a goal for un-anchored interactive runs | goes beyond §17.3; a model pass | phase 1 shows how many long web runs stay un-anchored and phase 2's goal hypotheses prove useful |
+| C3 seeded plans; V2 re-ask and drift event | plans can hurt small models; no drift rate yet | phase 3's criteria and plan comparison produce plans to read |
+| M2–M4 memory (earned salience, gap delivery, criteria across compaction) | covered for now by I2's retrieval | I2 is measured |
+| X0 as a separate pass; X3 verdict forecasts; X4 recorded pre-mortem | X0 is subsumed by O3's counterfactual reflection; X3–X4 need stored comparisons | phase 2 holds comparisons and scored predictions |
+| N3 — world-model lookahead (the model imagines outcomes); speculative execution | no structural validator for imagined futures; speculation is a latency tool | a structural validator exists for the decision, or latency becomes the problem |
+| A2 earned autonomy; A4 curiosity; L5 surprise-seeded gossip; L6 lineage | lower value, or a new use of slack | phases 2 and 4 are measured |
 
 ---
 
 ## 5. mecha-graph: port on demand
 
 The owner's direction (2026-09-24): mecha is the harness and mecha-graph a
-tool that should eventually merge into it. So a graph mechanism moves into
+tool that should eventually merge into it. A graph mechanism moves into
 mecha core **when a phase needs it**, using the graph's version as the
-reference implementation, and no new cross-repo reader is built as the
-long-term shape. Inventory §5 has the full overlap table.
+reference; no new cross-repo reader is built as the long-term shape.
+Inventory §5 has the overlap table.
 
 | phase | what it ports |
 |---|---|
-| phase 1 | the board's closure path — the graph TUI closes through mecha's one closure event (S8) |
-| phase 2 | the D3 correction contract; the ladder's Wilson-bound tenure; decay as rule dormancy; the Selector's demand term as L1's *need* |
-| phase 3 | `verify.rs` folded into `grounding.rs` — one grounding primitive |
-| phase 4 | review-on-use's verdict queue as the shape of `mecha review` |
-| phase 5 | pack flags (contradicted / denied / stale) as anticipation evidence |
+| 1 | the board's closure path, onto the one closure event (S8) |
+| 2 | the D3 correction contract; the ladder's Wilson-bound tenure; decay as rule dormancy; the Selector's demand term as L1's *need* |
+| 3 | `verify.rs` folded into `grounding.rs` — one grounding primitive |
+| 4 | review-on-use's verdict queue as the shape of `mecha review` |
+| 5 | pack flags (contradicted / denied / stale) as evidence for the brief and the markers |
 
 ---
 
-## 6. Rulings, by phase
+## 6. Rulings
 
-Numbered as before so earlier answers still cite them. None is a security
+Numbered as before, so earlier answers still cite them. None is a security
 widening.
 
-| # | phase | ruling | default proposed |
+| # | phase | ruling | status |
 |---|---|---|---|
-| R14 | all | Mechanisms overlapping mecha-graph are built in mecha core, porting the graph's version; no new cross-repo readers | **stated by the owner, 2026-09-24** |
-| R1 | phase 1 | A trigger run is anchored to the trigger itself (`trigger:<name>`); an owner-written `serves` link to a charter line is optional, never required | **ruled 2026-09-24: optional only** |
-| R15 | phase 1 | Closing or reopening a task, on any surface, is one recorded event with hooks | **ruled 2026-09-24** (S8) |
-| R16 | phase 1 | How the unread acts sign: a task reopened after `done`, at any age, −1.0 on the closing session, withdrawing its success; a rejected graph fact to L7's attribution only; R16a–R16h as tabled in S3 | **ruled 2026-09-24**, every item as proposed |
-| R2 | — | A one-tap verdict channel | **declined 2026-09-24**: no added owner work (here §1, decision 4) |
-| R7 | parked | Pending drafts expire after an owner-set age, as `expired` | **deferred 2026-09-24** until the system has stabilised |
-| R12 | phase 1 | Guilt becomes per-commitment goal error toward another party; one commitment record; the homeostat scalar becomes a readout | **ruled 2026-09-24: per commitment** |
-| R4 | phase 3 | Honest completion: template only, or template plus one `Verify` re-prompt | template only first |
-| R11 | phase 3 | The agent may declare acceptance criteria from a closed set of harness-executed kinds; one-sided until the owner confirms them; never a charter sensor | yes |
-| R10 | phase 4 | Promises detected in the owner's released drafts are recorded as commitments automatically — the words are the owner's own; a false detection only adds a reminder, and dismissing it drops it | yes |
-| R5 | phase 5 | Desperation brake: refuse writes to a frozen check's read set; withhold `Complete` after k failures | yes, `k = 2` |
-| R6 | phase 5 | A recipient that does not trace to a confirmed goal is staged even where routing would execute | yes |
-| R13 | phase 5 | Stored counterfactual verdicts may narrow a matching call before dispatch | yes, narrowing only |
-| R17 | phase 2 | An appraisal is an interpretation of meaning, in text, with respect to goals, homeostatic states and past experience — not dimensions reducible to a scalar or an action tendency; good/bad, goal and pointers are judgments read out of it; the emotion labels are incidental | **ruled 2026-09-24** |
-| R18 | phase 2 | The appraiser reads the full transcript; the appraisal inherits the run's taint | **ruled 2026-09-24** |
-| R19 | phase 2 | A text appraisal may reach learning, memory retrieval into runs, the owner's surfaces, and credit and rule tenure — clean runs only for all but the surfaces, by the unchanged provenance gate | **ruled 2026-09-24** |
-| R20 | phase 2 | The guard on credit and tenure from text: the owner's verdict overrides; grounded claims from clean runs only; a measured lever with a revert before it is on | proposed with R19 |
-| R21 | phase 3 | The system's state (context, owner attention and backlog, priority, resources, competing tasks) reaches the agent's planning as *described state* — words and bands — never numbers or setpoints, on the user-turn or tool-result slot, never the prefix | yes |
-| R22 | phase 3 | An in-run situation appraisal is part of the run, inherits its taint, shapes the plan, and never widens a permission or chooses an action | yes |
-| R23 | phase 4 | Confirmation of an interpretation or plan only for: irreversible or outward acts (on the existing review), a delegated task whose interpretation departs from its anchor, and charter conflicts rank cannot settle | yes |
-| R24 | phase 3–4 | Charter rank inside the joint optimization. **Ruled 2026-09-24:** the optimization is joint over every need, dynamically; charter rank is what resolves a conflict — when goals pull against each other the higher line wins, so conflicting goals "cannot lead to a stalemate", and prioritization is forced. A side benefit the design already relied on: a lower goal made salient (the injection's method) cannot outrank a higher one | **ruled** |
-| R3 | parked | The harness may infer an anchor from the owner's first turn onto a closed list of pointers; inferred anchors key retrieval, tracing and the certificate, never credit or tenure; confirmation comes from acts the owner already performs | yes, when unparked (the asking chip was declined) |
-| R8 | parked | The harness may *propose* per-region autonomy grants; only the owner grants | yes, when unparked |
-| R9 | — | The live charter line `be-the-best` ("always finding ways you could have completed a task even better"). Unboundedness is not the issue — charter lines are attractors (here §2). §15's narrower worry is an unbounded line whose *object is the harness itself*, beside a loop that proposes harness changes; that pressure is held structurally, because no lane can accept a `Security`-class change. Flagged once; the owner's to keep or reword | — |
+| R14 | all | Mechanisms overlapping mecha-graph are built in mecha core, porting the graph's version | **stated by the owner** |
+| R17 | all | An appraisal is an interpretation of meaning, in text; good/bad, goal and pointers are judgments read out of it; labels incidental | **ruled** |
+| R24 | 3–4 | The optimization is joint over every need; charter rank resolves conflicts, so goals cannot stalemate | **ruled** |
+| R1 | 1 | A trigger run anchors to the trigger itself; a charter `serves` link is optional | **ruled** |
+| R12 | 1 | Guilt per commitment, one commitment record | **ruled** |
+| R15 | 1 | Task closure and reopening, on any surface, are one recorded event with hooks | **ruled** |
+| R16 | 1 | How the unread acts sign: reopen −1.0 at any age; graph fact rejections to attribution only; R16a–h as tabled in S3 | **ruled** |
+| R18 | 2 | The appraiser reads the full transcript; the appraisal inherits the run's taint | **ruled** |
+| R19 | 2 | A text appraisal may reach learning, memory retrieval, the owner's surfaces, and credit and tenure — clean runs only for all but the surfaces | **ruled** |
+| R2 | — | A one-tap verdict | **declined** |
+| R7 | — | Draft expiry | **deferred** until the system stabilises |
+| R20 | 2 | The guard on credit and tenure from text: the owner's verdict overrides; grounded claims from clean runs only; a measured lever with a revert first | proposed |
+| R25 | 2 | I1 is the distiller extended; the counts-only appraiser is retired into it; the reflector folds in only after its lessons measure no worse; the graph episode's text stays unchanged | proposed |
+| R26 | 2 | Whole-session harness rumination is replaced by point-wise comparison at informative decision points, and behaviour-changing policies are measured on fixtures | proposed |
+| R21 | 3 | State reaches the agent as described state — words and bands — never numbers or setpoints, on the user-turn or tool-result slot | proposed |
+| R22 | 3 | An in-run situation appraisal is part of the run: it inherits its taint, shapes the plan, and never widens a permission or chooses an action | proposed |
+| R27 | 3, 5 | Policies are compared only where a structural validator decides; a model judge at most breaks a tie between candidates that passed every structural check | proposed |
+| R4 | 3 | The completion certificate: template only first | proposed |
+| R11 | 3 | Acceptance criteria the agent declares, from a closed set the harness executes; one-sided until the owner confirms them | proposed |
+| R23 | 4 | Confirmation of an interpretation or plan only for irreversible or outward acts (on the existing review), a delegated task whose interpretation departs from its anchor, and charter conflicts rank cannot settle | proposed |
+| R10 | 4 | Promises in released drafts recorded as commitments automatically; dismissing one drops it | proposed |
+| R5 | 5 | Desperation brake: refuse writes to a frozen check's read set; withhold `Complete` after two failures | proposed |
+| R6 | 5 | A recipient that does not trace to a confirmed goal is staged | proposed |
+| R13 | 5 | Stored comparisons may narrow a matching call before dispatch | proposed |
+| R28 | 5 | A per-branch scratch copy of the workspace, so a mid-run branch can write without side effects — reverses ARCHITECTURE's "branching a filesystem snapshot that was never captured is deliberately not done" | owner's call |
+| R3 | parked | Inferring an anchor for un-anchored runs onto a closed list of pointers | parked |
+| R8 | parked | The harness may *propose* per-region autonomy grants | parked |
+| R29 | — | Sending transcripts to a cloud model for interpretation or rollouts | not proposed; the owner's privacy decision |
+| R9 | — | The charter line `be-the-best`: unboundedness is fine (lines are attractors); §15's narrower worry is a line whose object is the harness, held by the `Security` class | flagged once |
 
-**Phase 1 has every ruling it needs** (R1, R12, R15 and R16 ruled 2026-09-24;
-R2 declined; R7 deferred). The rest can wait
-for their phase.
+**Phase 1 has every ruling it needs.** Phase 2 needs R20, R25, R26; phase 3
+needs R21, R22, R27, R4, R11.
 
 ---
 
@@ -450,6 +481,13 @@ outcome.
 | A1 duty runs | | | | ● | | | ● |
 | A2 earned autonomy | | | | ● | | | ● |
 | U1 interrupt gate | | | | | | | ● |
+| B1 situation brief | ● | ● | | ● | | | ● |
+| I1 one informed interpretation | ● | ● | ● | | | ● | ● |
+| I3 appraisal while working | ● | ● | | ● | | | |
+| O1–O4 point-wise comparison, stored | | ● | ● | | | ● | |
+| N1 plan-time comparison | ● | ● | | ● | | | |
+| N2 mid-run policy change | ● | ● | | ● | ● | | |
+| P2 one scheduler | | | ● | ● | | | ● |
 
 ---
 
@@ -458,7 +496,51 @@ outcome.
 The detail behind each id, grouped by the phase that builds it. Parked
 proposals are at the end.
 
-### For phase 1 — evidence in
+### Background: counterfactual reasoning today
+
+**What exists is two halves that never meet.**
+
+*Retrospective counterfactuals — built, and live in part:*
+- **Rule validation** (`mecha validate`, `counterfactual.rs`): branch the
+  transcript at an owner intervention, strip the steer, replay with and
+  without the rule; the verdict is structural (did the model now do the
+  steered thing; did it repeat the refused call). Ledgered per rule and
+  region; drives probation and retirement.
+- **Steer probes** (`sessions appraise --probe`, `appraisal_probe.rs`): the
+  same branch, asking whether the steer was load-bearing — `regret` if the
+  unsteered replay went elsewhere, `disappointment` if it got there anyway.
+  **Computed on demand and discarded**: the appraisal is never stored, so a
+  verdict that cost a model run lives only in one readout.
+- **Harness rumination**: paired replay of a config candidate against the
+  current harness, gated by `candidate::judge`.
+- **Artifact probes** (`probe::prepare_mismatch`): a reflection's lesson
+  re-tested on the whole task against pinned gold.
+- **Reflection** turns interventions and mismatches into `Reflexion`s, and
+  `learn` consolidates them into region-scoped rules.
+
+*Anticipatory appraisal — built, opt-in:* `anticipation::assess` is a pure
+function from `Evidence` (commitment, verification state, whether a check
+exists and fits the time, budget shortfall) to a set of concern kinds and one
+`Response` (`Proceed`, `Verify`, `Clarify`, `Replan`). It runs at outbox
+staging (a `Prediction` on the draft, which in `guide` mode blocks release
+until the response is `Proceed`) and on plan writes when the owner supplied
+evidence. Owner-recorded `Outcome`s resolve predictions later. Its one
+counterfactual is `Kind::Regret`: *a named, affordable check exists and you
+have not run it* — a comparison of exactly two actions, proceed and check,
+with no model of what either leads to.
+
+**The gap.** Every retrospective probe produces the datum anticipation
+lacks — in *this* situation, the agent did *A*, the owner wanted *B*, and a
+replay showed whether *A* would have led to *B* anyway — and nothing carries
+it forward. The design named the bridge and did not build it: §7.4's "fast
+pre-action marker: one cheap lookup with two keys — the homeostat for
+predicted state, the appraisal store for recorded situations", and §17.4's
+"a rule scoped to a tool and a condition renders as one line on that tool's
+result the first time the condition recurs". This is the somatic-marker
+shape: a fast, learned, situation-keyed signal attached to an action before
+it is taken, derived from what that action led to before.
+
+### For phase 1 — foundation
 
 #### S1. Structural goal anchors
 
@@ -492,54 +574,6 @@ interactive web sessions (S2). Short runs need no goal and get none.
 
 **Class.** Non-adversarial, no model call, one line per front-end. Ruling R1
 covers the trigger field.
-
-#### S3. Owner verdicts: collect the ones already given, then add one
-
-**S3a first.** Before any new control, sign the owner acts inventory §4 lists
-as unread: a task reopened after `done` (−1.0 on the session that closed it,
-and it withdraws that session's success for L2), workflow close / cancel /
-reopen / verify, the words of an outbox rejection (to the reflector as an
-owner correction), rule and reflection curation (to L3), harness accept /
-reject / revert (to L6), and graph review verdicts on facts a session
-claimed (joined back by the episode's session id). Each is owner-authored,
-already recorded somewhere, and costs the owner nothing new. How each signs
-is ruling R16. Ruled: a reopened task (any age) −1.0 on the closing session,
-withdrawing its success; a rejected graph fact goes to L7's attribution only.
-The rest, ruled 2026-09-24 as proposed:
-
-| # | owner act | proposed signal |
-|---|---|---|
-| R16a | reject a draft **with a reason** | the reason goes to the reflector as an owner correction (the reject already signs −1.0) |
-| R16b | workflow `close` | +0.5, the owner accepted the work |
-| R16c | workflow `cancel` | −0.5, owner agency — abandoned, like an abandoned question |
-| R16d | workflow `reopen` | −1.0 on the closing session, any age — the task-reopen ruling |
-| R16e | workflow `verify` fails / passes | fails: −1.0, mecha's agency; passes: evidence for the certificate, no sign |
-| R16f | retire / restore a learned rule | tenure only: retire counts against the rule, restore for it; never a run's score |
-| R16g | drop / edit a reflection | a verdict on the reflector: a dropped reflection never becomes a rule, an edited one carries the owner's text; never a run's score |
-| R16h | harness change `accept` / `reject` / `revert` | credit for that change and the diagnosis behind it (L6); never a run's score |
-
-**S3b — declined 2026-09-24 (here §1, decision 4).** A one-tap verdict
-asks the owner for work the system is meant to infer. Kept below for the
-record, with why it was proposed.
-
-**Problem.** The positive channels are starved. Web sessions are 70% of runs
-and produce an owner verdict only when they stage a draft; 5 of 120 appraised
-sessions reached `pride`. Every reuse-from-experience method with a measured
-gain stores successes as well as failures (Agent Workflow Memory +24.6% /
-+51.1% relative, arXiv 2409.07429; Contextual Experience Replay +51% relative,
-arXiv 2506.06698; ReasoningBank). Those papers grade success with a model
-judge; mecha has something better and is not asking for it.
-
-**Build.** A thumbs-up / thumbs-down on the run-end readout (web chip, TUI
-badge; voice as "that was right" / "that's wrong" after a turn), recorded as a
-new owner-verdict channel on the appraisal record, cited by message index.
-Optional, never prompted for, and silence is not a verdict (the rule pending
-drafts already follow).
-
-**Why it matters beyond the label.** It is owner-authored, so it is immune to
-reward hacking by construction and admissible for rule tenure under §17.2. It
-is the success label for L2, the gain term for L1, and the calibration set for
-S2 and C5. Ruling R2.
 
 #### S8. Closing a task is a recorded lifecycle event, with hooks
 
@@ -592,6 +626,54 @@ directly can be told apart; and no surface where a verdict is lost.
 **Not in this item:** turn-level and session-start hook events. The owner's
 ruling names them as the model to follow; they do not exist yet, and adding
 them is a separate change to `hooks.rs`.
+
+#### S3. Owner verdicts: collect the ones already given, then add one
+
+**S3a first.** Before any new control, sign the owner acts inventory §4 lists
+as unread: a task reopened after `done` (−1.0 on the session that closed it,
+and it withdraws that session's success for L2), workflow close / cancel /
+reopen / verify, the words of an outbox rejection (to the reflector as an
+owner correction), rule and reflection curation (to L3), harness accept /
+reject / revert (to L6), and graph review verdicts on facts a session
+claimed (joined back by the episode's session id). Each is owner-authored,
+already recorded somewhere, and costs the owner nothing new. How each signs
+is ruling R16. Ruled: a reopened task (any age) −1.0 on the closing session,
+withdrawing its success; a rejected graph fact goes to L7's attribution only.
+The rest, ruled 2026-09-24 as proposed:
+
+| # | owner act | proposed signal |
+|---|---|---|
+| R16a | reject a draft **with a reason** | the reason goes to the reflector as an owner correction (the reject already signs −1.0) |
+| R16b | workflow `close` | +0.5, the owner accepted the work |
+| R16c | workflow `cancel` | −0.5, owner agency — abandoned, like an abandoned question |
+| R16d | workflow `reopen` | −1.0 on the closing session, any age — the task-reopen ruling |
+| R16e | workflow `verify` fails / passes | fails: −1.0, mecha's agency; passes: evidence for the certificate, no sign |
+| R16f | retire / restore a learned rule | tenure only: retire counts against the rule, restore for it; never a run's score |
+| R16g | drop / edit a reflection | a verdict on the reflector: a dropped reflection never becomes a rule, an edited one carries the owner's text; never a run's score |
+| R16h | harness change `accept` / `reject` / `revert` | credit for that change and the diagnosis behind it (L6); never a run's score |
+
+**S3b — declined 2026-09-24 (here §1, decision 2).** A one-tap verdict
+asks the owner for work the system is meant to infer. Kept below for the
+record, with why it was proposed.
+
+**Problem.** The positive channels are starved. Web sessions are 70% of runs
+and produce an owner verdict only when they stage a draft; 5 of 120 appraised
+sessions reached `pride`. Every reuse-from-experience method with a measured
+gain stores successes as well as failures (Agent Workflow Memory +24.6% /
++51.1% relative, arXiv 2409.07429; Contextual Experience Replay +51% relative,
+arXiv 2506.06698; ReasoningBank). Those papers grade success with a model
+judge; mecha has something better and is not asking for it.
+
+**Build.** A thumbs-up / thumbs-down on the run-end readout (web chip, TUI
+badge; voice as "that was right" / "that's wrong" after a turn), recorded as a
+new owner-verdict channel on the appraisal record, cited by message index.
+Optional, never prompted for, and silence is not a verdict (the rule pending
+drafts already follow).
+
+**Why it matters beyond the label.** It is owner-authored, so it is immune to
+reward hacking by construction and admissible for rule tenure under §17.2. It
+is the success label for L2, the gain term for L1, and the calibration set for
+S2 and C5. Ruling R2.
 
 #### S5. Sensor hygiene
 
@@ -649,7 +731,7 @@ Concretely:
   guilt: a charter line is the owner's priority, not a promise to anyone.
 - **The homeostat scalar is retired to a readout** — the maximum per-item
   value, for the diagnostician's brief and old records — and stops being
-  something a consumer reads (here §1, decision 2: a level is read per item,
+  something a consumer reads (here §1, decision 3: a level is read per item,
   never as a level, and this one is the saturated level).
 - **Every guilt consumer reads the same per-item value:** `Decision`'s
   `ReviewCommitment`, G2's embarrassment hold, A1's duty runs, U1's
@@ -660,7 +742,7 @@ one* (§7.4) — the unification changes which code computes guilt, not what may
 create a row. The wire formats are append-only, so the two old commitment
 shapes and the scalar stay readable leniently. Ruling R12.
 
-#### X1. Keep the verdicts
+#### X1. Keep the verdicts — extended by O4
 
 Every steer and validation probe writes a
 counterfactual record: the `Situation` scope keys, the goal kind, the tool
@@ -671,14 +753,50 @@ gate's own rule, and only probes whose recorded tool surface still exists
 (`surface::Fidelity` — before it, 12 of 13 probes were inconclusive). This
 is storage for work already paid for.
 
-#### G4. Affect never reaches the model
+#### O4. Every comparison is stored
 
-Codify with a test: no provider-encoded request contains an `Affect` word,
-a valence, or a sensor number. Today it holds by construction
-(`Message::planning` is dropped by both encoders); the test is what keeps a
-future "helpful" status line from breaking it.
+X1 extended: each comparison — offline point-wise (O1), plan-time (N1),
+mid-run (N2), steer and validation probes — writes one record: situation
+keys, goal kind, call class, the arms, the deciding validator, the verdict,
+the pointers. Clean sessions only, and only probes whose tool surface still
+exists. The pre-action markers (X2) and plan-time comparison (N1) read it.
 
-### For phase 2 — interpret and learn
+#### B1. The situation brief
+
+**What it is.** A short block, assembled by the harness with no model call,
+that tells a run what situation it is in: the goal chain (task → project →
+the charter lines it serves, with their text); the commitments waiting on the
+owner, per item, as words ("eight drafts have waited over a week"); local
+time and whether it is inside the owner's quiet hours; how many runs are in
+flight and whether a seat is free; the run's own budget; up to three past
+clean appraisals of the same situation and goal (I2); and, for a re-delegated
+task, its previous attempts and why they were rejected (M5).
+
+**Where it comes from** (inventory §8): the anchor and `GoalTrack`, the
+delegated task row, the charter, the trigger, the question and front-door
+stores' typed fields, `Backlog` and the per-item readings (1e, 1f),
+`workflow::AttentionPolicy`, `Clock` with `[agent] timezone`,
+`Permits::live()` and the run markers. **The board is read by the harness
+before the run and reduced to counts and pointers**: a model fetching the
+same rows through `kg_*` inside the run would arm taint. Missing today, and
+built as small readers: `/slots` occupancy, a voice-call-in-progress signal,
+and the owner's recent activity across surfaces.
+
+**Where it goes.** Phase 1 records it on the run and delivers nothing. Phase 3
+folds it into the seed or the first user turn — the slot `date_context`
+already uses for the date line — never the prefix. Numbers stay out (R21);
+the brief is words and bands.
+
+#### G4. Numbers never reach the model
+
+Codify with a test: no provider-encoded request contains a sensor number, a
+setpoint or a numeric valence. Appraisal *text* may reach a run by design
+(I2, I3, R19) — the owner's ruling that an appraisal is an interpretation —
+but the numbers stay harness-side (containment 2; R21), because a model
+handed a bounded numeric target drifts into maximising it. Today this holds
+by construction (`Message::planning` is dropped by both encoders); the test
+keeps a future status line from breaking it.
+### For phase 2 — one interpretation, and learning from it
 
 #### I1. The interpretive appraiser
 
@@ -687,22 +805,25 @@ future "helpful" status line from breaking it.
 and returned "nothing further" on 169 of 169 sessions. The reflector writes
 text, but only about corrections, and only from clean sessions.
 
-**Build.** One appraiser, re-fed rather than retired:
+**Build.** Not a fifth pass: **the distiller, extended** (R25). It already
+reads the whole session, writes prose, records surprises, and handles taint
+as R18 rules; it lacks the owner's context. The counts-only appraiser is
+retired into it, and the reflector folds in once its lessons measure no worse
+on the same interventions (inventory §7). Inputs and outputs:
 - **Input:** the session transcript; the goals live in it (anchor, task,
   project, the charter lines they serve, with the charter's text); the
   homeostatic state at the start and end; the commitments the run touched and
   their per-item readings; the owner's acts on its output (release, edit diff,
   rejection reason, closure, reopen); and the earlier appraisals in the same
   situation and goal (I2).
-- **Output**, typed with one free-text field: the **interpretation** (prose,
+- **Output**, beside the graph episode — whose text stays exactly as it is, because the graph extracts facts from it (a test pins this) — in `appraisals.jsonl`, typed with one free-text field: the **interpretation** (prose,
   bounded length); **good/bad** per goal it bears on; the **pointers** each
   factual claim rests on; a **prediction** for next time in this situation; and
   any **goal hypothesis** the owner's reactions suggest. The labels, if the
   appraiser uses one, are words inside the prose.
 - **Stored** with the run's taint and origin. Grounding runs before storage: a
   factual claim whose pointer does not dereference is dropped.
-- **When:** at session end for delegated and trigger runs, nightly for the
-  rest, salient episodes first (L1's priority), within a per-night budget.
+- **When:** where the distiller already runs — at session end and nightly — for every session; about 20–75 s of one background seat each (here §2.2).
 - **The reflector converges on it.** A reflection is an appraisal of a
   correction; the same pass writes both, and a success (L2) gets an
   appraisal too.
@@ -717,6 +838,21 @@ priority, ordering, the per-line trend — that text cannot do.
 the synthetic home: do lessons learned from appraisals validate more often;
 do the predictions score; does the owner's rework fall.
 
+#### X5. Score the predictions, and feed the misses back
+
+Every anticipation
+`Prediction` resolved by an `Outcome` is a calibration point, per kind: did
+`Proceed` drafts go out clean, did `Verify` drafts that skipped the check go
+badly. A miss is a prediction error — the surprise the design's §5.5 wanted —
+and it raises the episode's replay priority (L1) and queues a reflection.
+That closes the loop the two halves were built for: **predict → act →
+observe → replay the counterfactual → mark the situation → predict**. The
+live store holds six predictions and no outcomes, so X5 waits on S3 and on
+the owner recording outcomes; until then it reports coverage, never a
+calibration figure. A delivery positive is scored only after
+`outbox reconcile` has confirmed delivery — the gate that already guards the
+post-delivery labels.
+
 #### I2. Past appraisals, retrieved
 
 `goal_context` gains the clean appraisals recorded in the same situation and
@@ -727,126 +863,39 @@ which is how interpretation accumulates rather than restarting every run.
 Measured against a control at matched budget, because retrieved memory can
 cost more than it returns (arXiv 2606.15017).
 
-#### I3. Appraisal while working
+#### M1. The goal joins `Situation`
 
-**Problem.** Everything else in this design interprets a run *after* it. The
-owner's purpose is that the agent's interpretation shapes how it plans and
-reasons *during* the run. The acting model does not appraise on instruction —
-it followed neither planning instruction it was given — and fixed advice
-sentences measured worse than none. What it lacks is not advice but meaning:
-it never sees what its goals are for, what state the system is in, or what
-happened last time.
+§17.3's goal key, now that S1 makes it non-empty. It joins recording,
+matching, replay and validation together, and an absent goal never widens a
+rule's scope (APPRAISAL-RESEARCH §8.4).
 
-**Build.** At a few boundaries on long or anchored runs, the harness writes a
-**situation appraisal** into the run — on the user-turn or tool-result slot,
-never the prefix (§4.3):
-- **at the start**, in the seed: the goal and what it serves (task → project
-  → charter lines, with their text), the owner's state and the system's
-  (P1's described state), the competing work, and the relevant past
-  appraisals (I2) — "last time on this task the owner rejected the draft
-  because…";
-- **after a surprise** — a failed check, a rejected call, a forecast overrun
-  — an interpretation of what it means for the goal;
-- **before a consequential act** — staging a message, closing out the task —
-  what the act means against each live goal.
+#### O1. Point-wise counterfactual comparison replaces whole-session rumination
 
-Written by the I1 appraiser from the run so far, so it is part of the run and
-inherits its taint: it adds no exposure the conversation does not already
-have. It shapes the plan; it never widens a permission, lifts a stage, or
-chooses an action — the harness's policy on detected conditions (here §2)
-still does that. Measured against the same run without it, at matched
-budget, because it costs a model call per boundary.
+**Problem** (inventory §10). Whole-session paired replay cannot evaluate a
+policy that changes behaviour: past the first divergence there is no world
+left to evaluate it in, so pairs drop or tie. That is why twelve harness
+candidates were rejected, four with every pair tied.
 
-#### I4. The owner's goals, inferred and kept
+**Build.** Compare policies at **informative decision points** of recorded
+sessions — a steer, a denial, a failed check, an edited or rejected draft, a
+surprise — ranked by I1's judgments and L1's priority. From each point,
+`probe::drive_arm` runs K policies (a rule set, a config candidate, a prompt
+change) a **short horizon** that stays on the recording, and the owner's
+recorded verdict decides: did the arm do what the owner steered to, avoid
+what they refused, or produce the draft they actually released (new: compare
+a branch's draft against the released text). Behaviour-changing policies
+that need more than a short horizon are measured on fixtures instead
+(`mecha exp`, the synthetic home, the task suites — O2). This feeds the
+diagnostician's proposals and `learn`'s validation, and stays inside the
+nightly headroom.
 
-Each appraisal may carry a **goal hypothesis** read from the owner's acts —
-the draft they rewrote to be more formal, the task they reopened, the reason
-they gave for a rejection. Hypotheses accumulate in a store beside the goal
-records: the hypothesis in text, the situation it applies to, the pointers
-it rests on, and whether an owner act has since confirmed it (a release, a
-closure) or contradicted it. They are retrieved into planning (I2, I3) as
-*the owner seems to want*, never as *the owner said*. They are never charter
-lines and never become one — the charter's author rule is untouched — but a
-hypothesis the owner's acts keep confirming is exactly what the owner might
-choose to write into the charter, and `mecha charter` may show them beside
-it for the owner to read.
+#### O3. The losing arm teaches
 
-#### I5. When the owner confirms an interpretation or a plan
-
-"For some actions, owner should be asked for confirmation of interpretation
-or of plan." Decision 4 keeps that set small, and most of it rides on review
-objects that already exist:
-- **Irreversible or outward acts** — the staged draft, the publish: the review
-  already happens; it now shows the appraisal and the plan beside the object
-  (U2), so releasing it confirms them.
-- **A delegated task whose interpretation departs from its anchor** — the
-  inferred goal does not trace to the task, or the plan would spend
-  materially more than the task implies: the run's one question (D13)
-  carries the interpretation and the plan.
-- **A conflict between charter lines the run cannot resolve by rank** — the
-  question names both lines.
-- **Never** for routine work, and never as a new rating step.
-
-#### P1. Planning as joint optimization across goals and state
-
-**The owner's framing:** good policies jointly optimize complex, competing
-needs that change as priorities evolve and resources tighten. Two levels do
-this differently, because one of them is a language model:
-
-- **In the run, the agent optimizes in its reasoning.** It needs the inputs:
-  every live goal (the task, its project, the charter lines they serve, the
-  commitments waiting), and the system's state — context headroom, the
-  owner's attention debt and backlog, priority from the board, permits and
-  time available, how many tasks compete. I3 hands these over as **described
-  state** — words and bands ("the owner has eleven things waiting and is
-  short on attention today"; "context is two-thirds used") — not numbers or
-  setpoints, because a model handed a bounded numeric target drifts into
-  maximising it (BioBlue) and containment 2 keeps sensor numbers out of
-  prompts. The appraisal is where the trade-off is reasoned in text.
-- **In the harness, the scheduler optimizes numerically** (P2).
-
-**Charter rank inside the optimization** (R24, ruled): everything is traded
-off jointly, and when goals conflict the higher charter line wins. The rank
-exists so conflicting goals cannot stalemate and prioritization is always
-forced — the owner's reason — and it also means a lower goal made salient by
-injected text cannot outrank a higher one.
-
-#### P2. The harness's own scheduler: one objective, recomputed as state moves
-
-The harness makes allocation decisions no model sees: which background run
-gets a permit, what to surface to the owner and when, which commitment's duty
-run goes first, how the nightly replay budget is spent. Today each has its own
-rule (seat count, quiet hours, recency). P2 replaces them with one objective,
-recomputed whenever state changes: the value of each candidate piece of work
-(per-commitment guilt × line rank, the task's due pressure, expected learning
-gain) against its costs (owner attention for anything surfaced, a permit, the
-interactive latency it may cost, context and tokens), under hard constraints
-(interactive work preempts background; the guards). A1's duty runs, U1's
-interruption gate, U4's ordering and L1's replay budget become four readers of
-the one objective instead of four rules. It is numeric because nothing in it
-reaches a model; it is dynamic because every input is a live reading.
-
-#### L8. The diagnostician reads appraisals
-
-`diagnose::Evidence` — the brief the nightly harness diagnostician proposes
-changes from — is counters and means, and every candidate it has proposed has
-been rejected, none since 2026-09-10. Give it the clean appraisals of the
-episodes the draw selected: what went wrong and why, in text, beside the
-counters. Its proposals remain gated by `candidate::judge` on cost metrics; the
-appraisal feeds what is proposed, never what is accepted.
-
-#### L7. Attribute a correction by what the run was given
-
-mecha-graph's D3 contract decides whether an owner correction was a *data
-error* (the retrieved context was wrong), a *behaviour error* (the context
-was right and the agent misused it) or a *gap* (nothing relevant was
-retrieved), and its graph half already acts on it. mecha's reflector mines a
-behaviour lesson from every correction. Port the contract: a behaviour rule
-is mined only from a behaviour error; a data error goes to the source (the
-graph's supersede-and-negate path already exists); a gap is its own class —
-nobody's fault, and a retrieval target rather than a lesson. This is the
-same agency question the appraisal asks, answered from evidence the run
-already recorded (`grounding.rs`'s `calls`).
+A comparison's loser is not discarded. Its confirmed outcome — "at this point,
+asking before staging would have produced the draft the owner released" — is
+written into that session's appraisal (I1) as counterfactual reflection. This
+is §5.3's self-authored steer with the replay's verdict attached, and the
+"keep the reflection" half of rollback-and-reflect (arXiv 2609.18304).
 
 #### L2. Learn from what went right
 
@@ -871,6 +920,19 @@ becomes:
 Self-judged success (ReasoningBank's channel) is exactly what this must not
 use. Evaluated budget-matched, because the gain may be zero on this model
 (arXiv 2606.15017).
+
+#### L7. Attribute a correction by what the run was given
+
+mecha-graph's D3 contract decides whether an owner correction was a *data
+error* (the retrieved context was wrong), a *behaviour error* (the context
+was right and the agent misused it) or a *gap* (nothing relevant was
+retrieved), and its graph half already acts on it. mecha's reflector mines a
+behaviour lesson from every correction. Port the contract: a behaviour rule
+is mined only from a behaviour error; a data error goes to the source (the
+graph's supersede-and-negate path already exists); a gap is its own class —
+nobody's fault, and a retrieval target rather than a lesson. This is the
+same agency question the appraisal asks, answered from evidence the run
+already recorded (`grounding.rs`'s `calls`).
 
 #### L3. Goal-stamped reflections and per-line tenure
 
@@ -901,7 +963,93 @@ any candidate winning are demoted — §9.2's "skip the hopeless". The holdout i
 drawn uniformly first, exactly as now. The same priority orders `learn`'s
 batches and the validation budget, so regret is reflected on first.
 
-### For phase 3 — honest completion
+#### L8. The diagnostician reads appraisals
+
+`diagnose::Evidence` — the brief the nightly harness diagnostician proposes
+changes from — is counters and means, and all twelve candidates it has proposed
+— the latest on 2026-09-23 — were rejected. Give it the clean appraisals of the
+episodes the draw selected: what went wrong and why, in text, beside the
+counters. Its proposals remain gated by `candidate::judge` on cost metrics; the
+appraisal feeds what is proposed, never what is accepted.
+
+### For phase 3 — meaning in the run
+
+#### I3. Appraisal while working
+
+**Problem.** Everything else in this design interprets a run *after* it. The
+owner's purpose is that the agent's interpretation shapes how it plans and
+reasons *during* the run. The acting model does not appraise on instruction —
+it followed neither planning instruction it was given — and fixed advice
+sentences measured worse than none. What it lacks is not advice but meaning:
+it never sees what its goals are for, what state the system is in, or what
+happened last time.
+
+**Build.** Two parts, on long or anchored runs, never the prefix (§4.3):
+the **situation brief** (B1) at the start — assembly, no model call — and the
+agent's own **situation appraisal** at a few boundaries, as a turn in the
+run's own slot so it reuses the cached prefix (5–15 s; a separate cold pass
+would cost 20–50 s, here §2.2). Delivered on the slots per-run facts already
+use — the first user turn (`date_context`'s), the surprising call's tool
+result, the staging tool result:
+- **at the start**, in the seed: the goal and what it serves (task → project
+  → charter lines, with their text), the owner's state and the system's
+  (P1's described state), the competing work, and the relevant past
+  appraisals (I2) — "last time on this task the owner rejected the draft
+  because…";
+- **after a surprise** — a failed check, a rejected call, a forecast overrun
+  — an interpretation of what it means for the goal;
+- **before a consequential act** — staging a message, closing out the task —
+  what the act means against each live goal.
+
+Written in the run, from the run so far, so it is part of the run and
+inherits its taint: it adds no exposure the conversation does not already
+have. It shapes the plan; it never widens a permission, lifts a stage, or
+chooses an action — the harness's policy on detected conditions (here §2)
+still does that. Measured against the same run without it, at matched
+budget, because it costs a model call per boundary.
+
+#### M5. A task remembers its previous attempts
+
+`work_prompt` seeds a re-delegated task with nothing about earlier sessions on
+the same task. Add pointers, not prose: the prior sessions' ids, their
+outcomes (valence, failed checks, whether a draft was rejected), and, through
+`goal_context`, the clean reflections stamped with that task. The second
+attempt at a rejected task should start from why the first was rejected.
+
+#### P1. Planning as joint optimization across goals and state
+
+**The owner's framing:** good policies jointly optimize complex, competing
+needs that change as priorities evolve and resources tighten. Two levels do
+this differently, because one of them is a language model:
+
+- **In the run, the agent optimizes in its reasoning.** It needs the inputs:
+  every live goal (the task, its project, the charter lines they serve, the
+  commitments waiting), and the system's state — context headroom, the
+  owner's attention debt and backlog, priority from the board, permits and
+  time available, how many tasks compete. I3 hands these over as **described
+  state** — words and bands ("the owner has eleven things waiting and is
+  short on attention today"; "context is two-thirds used") — not numbers or
+  setpoints, because a model handed a bounded numeric target drifts into
+  maximising it (BioBlue) and containment 2 keeps sensor numbers out of
+  prompts. The appraisal is where the trade-off is reasoned in text.
+- **In the harness, the scheduler optimizes numerically** (P2).
+
+**Charter rank inside the optimization** (R24, ruled): everything is traded
+off jointly, and when goals conflict the higher charter line wins. The rank
+exists so conflicting goals cannot stalemate and prioritization is always
+forced — the owner's reason — and it also means a lower goal made salient by
+injected text cannot outrank a higher one.
+
+#### N1. Plan-time comparison
+
+On anchored delegated and trigger runs, before the first write, two candidate
+plans are drafted as text — no side effects, one extra generation in the
+run's own slot — and validated deterministically: every item traces to the
+goal (V1), the declared criteria are covered (S6), the plan fits the budget,
+no charter conflict is left unresolved by rank, and what won at similar
+points before (O4). The winner proceeds; the loser is kept as the fallback
+the frustration ladder reaches for. No model judge decides (R27). This is
+P1's joint optimization given a structural choice.
 
 #### C2. Checks the harness writes
 
@@ -1038,15 +1186,37 @@ Every staged draft shows, beside the prose: the goal it serves, the
 certificate (C1), and the recipient alignment (G1). A better-informed verdict
 is a better label for everything phase 2 learns from.
 
-#### M5. A task remembers its previous attempts
+### For phase 4 — alignment and the scheduler
 
-`work_prompt` seeds a re-delegated task with nothing about earlier sessions on
-the same task. Add pointers, not prose: the prior sessions' ids, their
-outcomes (valence, failed checks, whether a draft was rejected), and, through
-`goal_context`, the clean reflections stamped with that task. The second
-attempt at a rejected task should start from why the first was rejected.
+#### I4. The owner's goals, inferred and kept
 
-### For phase 4 — follow-through
+Each appraisal may carry a **goal hypothesis** read from the owner's acts —
+the draft they rewrote to be more formal, the task they reopened, the reason
+they gave for a rejection. Hypotheses accumulate in a store beside the goal
+records: the hypothesis in text, the situation it applies to, the pointers
+it rests on, and whether an owner act has since confirmed it (a release, a
+closure) or contradicted it. They are retrieved into planning (I2, I3) as
+*the owner seems to want*, never as *the owner said*. They are never charter
+lines and never become one — the charter's author rule is untouched — but a
+hypothesis the owner's acts keep confirming is exactly what the owner might
+choose to write into the charter, and `mecha charter` may show them beside
+it for the owner to read.
+
+#### I5. When the owner confirms an interpretation or a plan
+
+"For some actions, owner should be asked for confirmation of interpretation
+or of plan." Decision 4 keeps that set small, and most of it rides on review
+objects that already exist:
+- **Irreversible or outward acts** — the staged draft, the publish: the review
+  already happens; it now shows the appraisal and the plan beside the object
+  (U2), so releasing it confirms them.
+- **A delegated task whose interpretation departs from its anchor** — the
+  inferred goal does not trace to the task, or the plan would spend
+  materially more than the task implies: the run's one question (D13)
+  carries the interpretation and the plan.
+- **A conflict between charter lines the run cannot resolve by rank** — the
+  question names both lines.
+- **Never** for routine work, and never as a new rating step.
 
 #### S4. Commitments the guilt sensor cannot see
 
@@ -1063,7 +1233,7 @@ owner's own postconditions.
   released is owner text. `capture.rs` already detects a time phrase
   ("by Friday") and reports it without resolving it. On release, a detected
   promise is recorded as a `Commitment` — the words are the owner's own,
-  so no confirmation is asked (here §1, decision 4); a false detection only
+  so no confirmation is asked (here §1, decision 2); a false detection only
   adds a reminder, and dismissing it drops the row. Inbound mail never creates one — a third party's "you owe me" is
   a claim, and §7.4's whole safety argument is that a claim cannot write a row.
 - Mail-triage "respond" verdicts with an extracted deadline become a
@@ -1074,6 +1244,21 @@ owner's own postconditions.
   S4 and C2 are correct but empty here until the owner uses workflows.
 
 **Class.** Recorded only; every new row crosses an owner act. Ruling R10.
+
+#### P2. The harness's own scheduler: one objective, recomputed as state moves
+
+The harness makes allocation decisions no model sees: which background run
+gets a permit, what to surface to the owner and when, which commitment's duty
+run goes first, how the nightly replay budget is spent. Today each has its own
+rule (seat count, quiet hours, recency). P2 replaces them with one objective,
+recomputed whenever state changes: the value of each candidate piece of work
+(per-commitment guilt × line rank, the task's due pressure, expected learning
+gain) against its costs (owner attention for anything surfaced, a permit, the
+interactive latency it may cost, context and tokens), under hard constraints
+(interactive work preempts background; the guards). A1's duty runs, U1's
+interruption gate, U4's ordering and L1's replay budget become four readers of
+the one objective instead of four rules. It is numeric because nothing in it
+reaches a model; it is dynamic because every input is a live reading.
 
 #### A1. Duty schedules follow-through
 
@@ -1108,7 +1293,7 @@ what it reads. (The thumbs it was to carry were declined with S3b.)
 
 Display only: predicted violation × rank, per item.
 
-### For phase 5 — guardrails and stuck runs
+### For phase 5 — guardrails and mid-run policy change
 
 #### C4. Anxiety: wind down instead of being cut off
 
@@ -1225,97 +1410,18 @@ cannot create a marker: it would need an owner intervention in a clean
 session and a replay confirming it. Keyed on situation, never on valence
 (§15's mood-congruence rule).
 
-### Counterfactual anticipation (X), across phases
+#### N2. Mid-run policy change in dry branches
 
-**What exists is two halves that never meet.**
-
-*Retrospective counterfactuals — built, and live in part:*
-- **Rule validation** (`mecha validate`, `counterfactual.rs`): branch the
-  transcript at an owner intervention, strip the steer, replay with and
-  without the rule; the verdict is structural (did the model now do the
-  steered thing; did it repeat the refused call). Ledgered per rule and
-  region; drives probation and retirement.
-- **Steer probes** (`sessions appraise --probe`, `appraisal_probe.rs`): the
-  same branch, asking whether the steer was load-bearing — `regret` if the
-  unsteered replay went elsewhere, `disappointment` if it got there anyway.
-  **Computed on demand and discarded**: the appraisal is never stored, so a
-  verdict that cost a model run lives only in one readout.
-- **Harness rumination**: paired replay of a config candidate against the
-  current harness, gated by `candidate::judge`.
-- **Artifact probes** (`probe::prepare_mismatch`): a reflection's lesson
-  re-tested on the whole task against pinned gold.
-- **Reflection** turns interventions and mismatches into `Reflexion`s, and
-  `learn` consolidates them into region-scoped rules.
-
-*Anticipatory appraisal — built, opt-in:* `anticipation::assess` is a pure
-function from `Evidence` (commitment, verification state, whether a check
-exists and fits the time, budget shortfall) to a set of concern kinds and one
-`Response` (`Proceed`, `Verify`, `Clarify`, `Replan`). It runs at outbox
-staging (a `Prediction` on the draft, which in `guide` mode blocks release
-until the response is `Proceed`) and on plan writes when the owner supplied
-evidence. Owner-recorded `Outcome`s resolve predictions later. Its one
-counterfactual is `Kind::Regret`: *a named, affordable check exists and you
-have not run it* — a comparison of exactly two actions, proceed and check,
-with no model of what either leads to.
-
-**The gap.** Every retrospective probe produces the datum anticipation
-lacks — in *this* situation, the agent did *A*, the owner wanted *B*, and a
-replay showed whether *A* would have led to *B* anyway — and nothing carries
-it forward. The design named the bridge and did not build it: §7.4's "fast
-pre-action marker: one cheap lookup with two keys — the homeostat for
-predicted state, the appraisal store for recorded situations", and §17.4's
-"a rule scoped to a tool and a condition renders as one line on that tool's
-result the first time the condition recurs". This is the somatic-marker
-shape: a fast, learned, situation-keyed signal attached to an action before
-it is taken, derived from what that action led to before.
-
-X1 is built in phase 1 and X2 in phase 5 (above). The rest is parked:
-
-#### X0. The agent's own counterfactual
-
-GOAL-SYSTEM-DESIGN §5.3 designed
-this and it is unbuilt: at the end of a run the agent may name a point where
-it should have acted differently ("I should have asked before staging
-these"), and that point is probed exactly like an owner steer — replay from
-it with the alternative, compare structurally. The claim is the model's; the
-verdict is the replay's, so a self-authored regret costs a probe and earns
-nothing unless the replay confirms it. Confirmed ones enter X1 like any
-other.
-
-#### X3. Forecast the owner's verdict from the owner's history
-
-At staging,
-the draft's anticipated embarrassment is not only "unverified and exposed"
-but a base rate: of the drafts staged in this region to this recipient
-class, how many were edited or rejected. Owner verdicts are the only input,
-so the forecast is hard to manipulate; it is a number the harness keeps and
-the model never sees (§4.3).
-
-#### X4. A pre-mortem from records, not imagination
-
-When a goal is anchored,
-`goal_context` (and M5 for a re-delegated task) offers the recorded failure
-modes for that goal and region as pointers: the failed checks, the
-mismatches, the reasons the owner gave for rejecting drafts. Model-imagined
-lookahead — asking the model to simulate outcomes before acting — has some
-support for web agents (WebDreamer, arXiv 2411.06559, not re-read this
-pass), but it is the model grading its own plan; it stays parked, and only
-ever as a quarantined pass.
-
-#### X5. Score the predictions, and feed the misses back
-
-Every anticipation
-`Prediction` resolved by an `Outcome` is a calibration point, per kind: did
-`Proceed` drafts go out clean, did `Verify` drafts that skipped the check go
-badly. A miss is a prediction error — the surprise the design's §5.5 wanted —
-and it raises the episode's replay priority (L1) and queues a reflection.
-That closes the loop the two halves were built for: **predict → act →
-observe → replay the counterfactual → mark the situation → predict**. The
-live store holds six predictions and no outcomes, so X5 waits on S3 and on
-the owner recording outcomes; until then it reports coverage, never a
-calibration figure. A delivery positive is scored only after
-`outbox reconcile` has confirmed delivery — the gate that already guards the
-post-delivery labels.
+On a harness-computed trigger — a failed check, frustration rung 3, a
+surprise, a budget shortfall — two continuations branch from the current
+point for a bounded horizon, **dry**: reads run live; writes go to a scratch
+copy of the workspace (new, R28); sends go to a scratch outbox; shell runs
+sandboxed against the scratch copy; an egress the model chooses, or any
+irreversible act with no staging route, ends the branch. A structural
+validator picks the winner, whose workspace diff is committed; the loser is
+summarised into the run's appraisal. Every branch inherits the conversation's
+taint and the conversation takes their union. Delegated or unattended runs
+only, K = 2, 1–2 decision points a run (here §2.2).
 
 ### Parked
 
@@ -1330,7 +1436,7 @@ agent 69.4% to 61.2%, asking where it was genuinely uncertain (arXiv
 2603.26233).
 
 **Revised 2026-09-24: infer, don't ask.** The asking tier — a "what is this
-for?" chip — is declined (here §1, decision 4). What remains is inference:
+for?" chip — is declined (here §1, decision 2). What remains is inference:
 - A quarantined one-shot, with no tools and no history, reads the owner's own
   first turn (trusted by construction) and the closed list of pointers
   (charter lines, open board tasks, triggers) and returns one pointer or
@@ -1381,12 +1487,6 @@ on once phase 3's declared criteria produce a drift rate to read:
   repeat `serves` is the likely dominant term (§17.7 item 4), and nagging
   about it is the distractor shape boredom avoids.
 
-#### M1. The goal joins `Situation`
-
-§17.3's goal key, now that S1 makes it non-empty. It joins recording,
-matching, replay and validation together, and an absent goal never widens a
-rule's scope (APPRAISAL-RESEARCH §8.4).
-
 #### M2. Earned salience instead of rated importance
 
 Generative Agents rank memories by recency + importance + relevance, with
@@ -1413,6 +1513,48 @@ carried across the cut by the `todo` tool's carried state, and the anchor
 lives on `Conversation`, which compaction does not rewrite. What is missing
 is what this design adds: S6's declared criteria and S7's commitment
 pointers join the carried state.
+
+#### X0. The agent's own counterfactual — subsumed by O3
+
+GOAL-SYSTEM-DESIGN §5.3 designed
+this and it is unbuilt: at the end of a run the agent may name a point where
+it should have acted differently ("I should have asked before staging
+these"), and that point is probed exactly like an owner steer — replay from
+it with the alternative, compare structurally. The claim is the model's; the
+verdict is the replay's, so a self-authored regret costs a probe and earns
+nothing unless the replay confirms it. Confirmed ones enter X1 like any
+other.
+
+#### X3. Forecast the owner's verdict from the owner's history
+
+At staging,
+the draft's anticipated embarrassment is not only "unverified and exposed"
+but a base rate: of the drafts staged in this region to this recipient
+class, how many were edited or rejected. Owner verdicts are the only input,
+so the forecast is hard to manipulate; it is a number the harness keeps and
+the model never sees (§4.3).
+
+#### X4. A pre-mortem from records, not imagination
+
+When a goal is anchored,
+`goal_context` (and M5 for a re-delegated task) offers the recorded failure
+modes for that goal and region as pointers: the failed checks, the
+mismatches, the reasons the owner gave for rejecting drafts. Model-imagined
+lookahead — asking the model to simulate outcomes before acting — has some
+support for web agents (WebDreamer, arXiv 2411.06559, not re-read this
+pass), but it is the model grading its own plan; it stays parked, and only
+ever as a quarantined pass.
+
+#### N3. Imagined lookahead and speculative execution — parked
+
+World-model lookahead (the model imagines each action's outcome and picks)
+is competitive with tree search at a fraction of the cost (WebDreamer, arXiv
+2411.06559), but the model grades its own imagined futures and there is no
+structural validator for them. Speculative execution cuts latency only for
+side-effect-free steps (arXiv 2510.04371). General agents measured no gain
+from either sequential or parallel test-time scaling, for want of a context
+budget and a verifier (arXiv 2602.18998). Parked until a decision has a
+structural validator or latency becomes the problem.
 
 #### A2. Reliability per region, and autonomy the owner grants
 

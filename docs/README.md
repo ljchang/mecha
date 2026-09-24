@@ -42,7 +42,7 @@ something shipped.
 | Document | The question it went and answered |
 |---|---|
 | [`APPRAISAL-RESEARCH.md`](APPRAISAL-RESEARCH.md) | Why the appraisal label is still degenerate a week after it shipped, what the live corpus actually holds, and what appraisal theory and the harness literature say to change first |
-| [`APPRAISAL-INVENTORY-RESEARCH.md`](APPRAISAL-INVENTORY-RESEARCH.md) | What appraisal-related functionality exists across mecha and its sibling repos, what reads each signal, which owner verdicts go unread, and the full measured record (2026-09-24) |
+| [`APPRAISAL-INVENTORY-RESEARCH.md`](APPRAISAL-INVENTORY-RESEARCH.md) | What appraisal-related functionality exists across mecha and its sibling repos, what reads each signal, which owner verdicts go unread, the full measured record, every interpretive model pass, the context supply, the local-model budget, and counterfactual policy evaluation (2026-09-24) |
 | [`ARMED-READING-RESEARCH.md`](ARMED-READING-RESEARCH.md) | What an armed conversation can still read, which refusals protect something, and how to open a search result without a destination |
 | [`AUDIT-RESEARCH.md`](AUDIT-RESEARCH.md) | Where the harness was weakest on 2026-09-02, what was fixed that day, and what to build next — ranked |
 | [`BENCHMARK-RESEARCH.md`](BENCHMARK-RESEARCH.md) | How to measure this harness against public agent benchmarks, and what separates harness from model |
@@ -78,7 +78,7 @@ something shipped.
 
 | Document | What it decides |
 |---|---|
-| [`APPRAISAL-WIRING-DESIGN.md`](APPRAISAL-WIRING-DESIGN.md) | How the appraisal signals become inputs to harness decisions: five phases, each closing one loop (evidence in, learning out, honest completion, follow-through, guardrails), in an order where each is measured first. §6 holds the rulings each phase waits on |
+| [`APPRAISAL-WIRING-DESIGN.md`](APPRAISAL-WIRING-DESIGN.md) | What the appraisal system is for — the agent's own interpretation of meaning, serving self-learning, goal alignment and multi-goal planning — and the five phases that wire it in: foundation, one interpretation, meaning in the run, alignment and the scheduler, guardrails and mid-run policy change. §6 holds the rulings |
 | [`ASSISTANT-FOLLOW-THROUGH-DESIGN.md`](ASSISTANT-FOLLOW-THROUGH-DESIGN.md) | Durable delegated work, delivery recovery, verification, commitments and the daily assistant view |
 | [`BRANCHING-DESIGN.md`](BRANCHING-DESIGN.md) | Branching a conversation, and why the TUI batch deliberately left it out |
 | [`EGRESS-DESIGN.md`](EGRESS-DESIGN.md) | Why the send axis is a class (`None < Blind < Chosen`) rather than a bool, which of the two security controls owns each class, and what a blind send does not close. Read §6 before treating `Blind` as safety rather than risk reduction |
