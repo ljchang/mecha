@@ -508,7 +508,10 @@ surface, and, for a reopen, the closure it undoes. The appraisal's line is
 written beside it, so the web board and the TUI show it after a closure
 instead of losing it. If the record cannot be written, the task is not closed.
 A run with nobody present — a delegated task, a trigger, a web chat with
-approvals off — cannot close or reopen a task by any route. The
+approvals off — is refused when it tries to close or reopen a task through
+`mecha tasks set`. That refusal rests on a marker the run's commands carry,
+which a command that deliberately overrides it can defeat, so treat it as a
+guard against the ordinary route, not a guarantee. The
 [`pre_task_close`, `task_closed` and `task_reopened` hooks](/docs/features/security/hooks)
 let your own tooling refuse or react to a move.
 

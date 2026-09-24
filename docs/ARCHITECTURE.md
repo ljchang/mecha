@@ -2165,9 +2165,14 @@ now makes the move one recorded event:
   `interactive` may close, recorded as `owner-approved` on surface `chat`,
   and an unstamped run reads `unknown`, which refuses. Independently, a
   process descended from a live task-run or trigger-run marker's pid is
-  refused whatever its environment. The residue, named on `decide`: an
-  unconfined shell that both clears the variable and detaches from its
-  parent.
+  refused whatever its environment. **The residue is wider than it looks,
+  and is named on `decide`:** the posture is an environment variable the
+  command string can set, so `MECHA_RUN_POSTURE=interactive mecha tasks set …`
+  in a delegated or unattended run's `shell` overrides the stamp; where the
+  run has no marker (a web task chat, an approvals-off chat, a front-door
+  or mail run) nothing else stops it, and the record then says
+  `owner-approved`. The guard stops a run that follows the refusal text; it
+  does not stop one that names the variable (found on review of #293).
 - **`--surface` cannot claim `chat`**, and inside a run the flag is ignored:
   the surface of a run's closure is always `chat`.
 - **Reopen is the same event reversed** (`move: reopen`, `undoes` naming the

@@ -5065,12 +5065,13 @@ fn reload_tasks(app: &mut App, status: Option<String>) {
 /// What the closure appraisal said about the move just made on `task`, from
 /// the closure record — `None` when the latest record is not this move, or
 /// the task had nothing to appraise.
-fn closure_readout(task: &str, to: &str) -> Option<String> {
+fn closure_readout(task: &str, to: &str, began: chrono::DateTime<chrono::Utc>) -> Option<String> {
     use mecha_core::closure::{ClosureStore, Entry};
     let store = ClosureStore::open_existing_default()?;
     let (t, readout) = store.latest_with_readout(task).ok()??;
-    let fresh = chrono::Utc::now().signed_duration_since(t.at) < chrono::Duration::minutes(3);
-    if t.to != to || !fresh {
+    // Written after this keypress began, or it is an earlier move's record:
+    // a repeated key crosses no line and records nothing (review).
+    if t.to != to || t.at < began {
         return None;
     }
     match readout {
@@ -6449,11 +6450,12 @@ fn run_task_action(app: &mut App, key: char) -> Result<()> {
     let Some((id, was)) = selected else {
         return Ok(());
     };
+    let began = chrono::Utc::now();
     let note = match tasks_cli(&["set", &id, "--status", status, "--surface", "tui"]) {
         // A closure's appraisal is read back from the closure record (S8):
         // `self_cli` keeps the child's stdout, and the appraisal was only
         // ever on its stderr.
-        Ok(_) => match closure_readout(&id, status) {
+        Ok(_) => match closure_readout(&id, status, began) {
             Some(readout) => format!("{was} → {status} · {readout}"),
             None => format!("{was} → {status}"),
         },
