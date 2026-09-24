@@ -190,6 +190,9 @@ fn a_closure_and_its_reopen_are_recorded_and_joined() {
 /// able to close its own task through `shell: mecha tasks set`. It is refused
 /// now, before anything is recorded or moved — the posture read from the
 /// harness's shell registry, not from the command's environment (1b-2).
+// Needs the `/proc` ancestry walk (Linux only); off Linux the registry
+// fails closed instead, pinned by the test at the end of this file.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_run_with_nobody_present_cannot_close_through_the_shell() {
     let Some(f) = Fixture::new("") else { return };
@@ -233,6 +236,9 @@ fn a_run_with_nobody_present_cannot_close_through_the_shell() {
 /// itself — `MECHA_RUN_POSTURE=interactive mecha tasks set …` — and be
 /// recorded `owner-approved`. The registered shell's posture wins over the
 /// variable, so it is refused. Fails on #293's code, which read the variable.
+// Needs the `/proc` ancestry walk (Linux only); off Linux the registry
+// fails closed instead, pinned by the test at the end of this file.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_delegated_shell_that_sets_the_variable_itself_is_still_refused() {
     let Some(f) = Fixture::new("") else { return };
@@ -253,6 +259,9 @@ fn a_delegated_shell_that_sets_the_variable_itself_is_still_refused() {
 /// the posture variable, and read as the owner's terminal (rule 4). The
 /// location has no override now: the command is still refused under its
 /// registered delegated shell. Fails on the head that honoured the variable.
+// Needs the `/proc` ancestry walk (Linux only); off Linux the registry
+// fails closed instead, pinned by the test at the end of this file.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_command_cannot_point_the_registry_somewhere_else() {
     let Some(f) = Fixture::new("") else { return };
@@ -290,6 +299,9 @@ fn a_claimed_posture_with_no_registered_shell_is_refused() {
 /// close — a `serve` board tap, whose parent is no registered shell — goes
 /// through as the owner even while another run's delegated shell is live
 /// and registered elsewhere.
+// Needs the `/proc` ancestry walk (Linux only); off Linux the registry
+// fails closed instead, pinned by the test at the end of this file.
+#[cfg(target_os = "linux")]
 #[test]
 fn an_owner_close_is_unaffected_by_another_runs_registered_shell() {
     let Some(f) = Fixture::new("") else { return };
@@ -605,4 +617,21 @@ fn a_command_exec_d_in_place_by_its_registered_shell_finds_its_own_registration(
         (closed.actor, closed.surface),
         (Actor::OwnerApproved, Surface::Chat)
     );
+}
+
+/// Off Linux there is no `/proc` to walk, so the check sees only the
+/// command's own pid; with any live shell registered it refuses rather than
+/// guess the command is the owner's (the fail-closed choice, documented on
+/// `closure::decide`). The cost, named: the owner's own terminal cannot close
+/// a task while a run's shell is live.
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn off_linux_a_live_registered_shell_refuses_a_close_it_cannot_place() {
+    let Some(f) = Fixture::new("") else {
+        return;
+    };
+    let _shell = f.under_shell(Some(RunPosture::Interactive));
+    let out = f.command(&["tasks", "set", "task-1", "--status", "done"], None);
+    assert!(!out.status.success(), "must be refused off Linux");
+    assert_eq!(f.status(), "next", "nothing moved");
 }
