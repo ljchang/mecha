@@ -245,7 +245,7 @@ fn list() -> Result<()> {
     let store = open()?;
     let (triggers, problems) = store.list()?;
     for p in &problems {
-        eprintln!("mecha: unreadable trigger — {p}");
+        eprintln!("mecha: trigger will not load — {p}");
     }
     if triggers.is_empty() {
         println!(
@@ -441,7 +441,10 @@ fn print_answer(run: &RunRecord) -> Result<()> {
 
 fn next(name: Option<&str>, count: usize) -> Result<()> {
     let store = open()?;
-    let (triggers, _) = store.list()?;
+    let (triggers, problems) = store.list()?;
+    for p in &problems {
+        eprintln!("mecha: trigger will not load — {p}");
+    }
     let tz = config_tz();
     for t in triggers.iter().filter(|t| name.is_none_or(|n| t.name == n)) {
         println!("{} [{}]", t.name, t.tz(tz));
@@ -676,7 +679,7 @@ async fn tick(
     let store = open()?;
     let (triggers, problems) = store.list()?;
     for p in &problems {
-        eprintln!("mecha: unreadable trigger — {p}");
+        eprintln!("mecha: trigger will not load — {p}");
     }
     let tz = config_tz();
     let now = Utc::now();
@@ -792,7 +795,7 @@ async fn daemon(global: &GlobalOpts) -> Result<()> {
     let store = open()?;
     let (triggers, problems) = store.list()?;
     for p in &problems {
-        eprintln!("mecha: unreadable trigger — {p}");
+        eprintln!("mecha: trigger will not load — {p}");
     }
     println!(
         "mecha trigger daemon · {} trigger(s), {} enabled · ticking every minute",

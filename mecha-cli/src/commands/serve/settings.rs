@@ -191,10 +191,20 @@ pub async fn charter_save(State(_state): St, Json(body): Json<CharterSave>) -> R
     // The save stands; triggers whose `serves` it broke are named beside it,
     // because renaming a line is the edit that silently stops one firing
     // (review of #292). The store walk is file reads, off the async runtime.
+    // A walk that could not finish is said, never reported as "nothing
+    // broken" (unknown is never clean; review of #292).
     let broken =
         tokio::task::spawn_blocking(move || mecha_core::trigger::triggers_broken_by(&parsed))
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|e| {
+                vec![mecha_core::trigger::BrokenLink {
+                    trigger: "(unchecked)".to_string(),
+                    reason: format!(
+                        "could not check the triggers against the saved charter ({e}); \
+                         `mecha trigger list` shows any that no longer load"
+                    ),
+                }]
+            });
     let Json(mut state) = charter_state().await;
     if let Some(obj) = state.as_object_mut() {
         obj.insert(
