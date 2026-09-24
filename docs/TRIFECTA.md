@@ -68,7 +68,11 @@ anyone — see the `Egress` paragraph at the top, and channel 2b below.
   sends nothing: the call becomes a draft in a local file, release requires a
   human to read exactly what would leave, and the draft records the
   conversation's taint so the review can say "possibly an attacker's words"
-  out loud.
+  out loud. A write that reaches *nobody* — a new Doc in the owner's Drive,
+  whose schema takes no recipient and no existing file — is not in this
+  channel at all: it is `Egress::None` and sits with the approver, and its
+  schema test is the guard that replaced the review
+  (`PROVENANCE-DESIGN.md` §2).
 - *Reading the outside world* — delegate to a child whose only capabilities
   are fetch-shaped (`research`), **before the conversation is armed**. The
   child reads in its own context and hands back an answer marked untrusted,

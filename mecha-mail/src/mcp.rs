@@ -160,3 +160,77 @@ pub(crate) fn assert_tool_surface(
         assert!(tool["description"].as_str().unwrap().len() > 20, "{name}");
     }
 }
+
+/// Assert the fourth quadrant: a **private write**, which creates something
+/// only the owner can read.
+///
+/// These tools carry no `openWorldHint`, so they execute instead of staging
+/// (`docs/PROVENANCE-DESIGN.md` §2). The input schema is therefore the whole
+/// guard: the outbox's "exact arguments, one click away" review no longer
+/// applies. The schema must name nobody, and must not point at an existing
+/// object — a `file_id` could name a document someone else can already read,
+/// and writing into that is a publish.
+///
+/// `openWorldHint: false` is spelled out rather than omitted, so the label
+/// reads as a decision and not as a forgotten annotation.
+#[cfg(test)]
+pub(crate) fn assert_private_writes(tools: &[Value], private: &[&str]) {
+    // Property names that address a party, or an object that may already be
+    // shared. Long entries match as substrings, so `attendee_emails` or
+    // `share_with` cannot slip past on spelling; the short ones match whole
+    // words only, or `title` would trip over "to".
+    const ADDRESSING: &[&str] = &[
+        "to",
+        "cc",
+        "bcc",
+        "recipient",
+        "attendee",
+        "invite",
+        "email",
+        "share",
+        "url",
+        "channel",
+        "calendar_id",
+        "file_id",
+        "event_id",
+        "thread_id",
+        "message_id",
+    ];
+    for name in private {
+        let tool = tools
+            .iter()
+            .find(|t| t["name"] == *name)
+            .unwrap_or_else(|| panic!("no tool {name}"));
+        let a = &tool["annotations"];
+        assert_eq!(
+            a["openWorldHint"],
+            Value::Bool(false),
+            "{name} must say openWorldHint: false outright"
+        );
+        assert_ne!(a["readOnlyHint"], Value::Bool(true), "{name} is a write");
+        assert_ne!(
+            a["destructiveHint"],
+            Value::Bool(true),
+            "{name} creates; it must not destroy"
+        );
+        let props = tool["inputSchema"]["properties"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{name} has no properties"));
+        for prop in props.keys() {
+            let p = prop.to_ascii_lowercase();
+            let words: Vec<&str> = p.split(|c: char| !c.is_ascii_alphanumeric()).collect();
+            for bad in ADDRESSING {
+                let hit = if bad.len() <= 3 {
+                    words.contains(bad)
+                } else {
+                    p.contains(bad)
+                };
+                assert!(
+                    !hit,
+                    "{name}.{prop} addresses a party or an existing object; \
+                     a private write may name neither"
+                );
+            }
+        }
+    }
+}

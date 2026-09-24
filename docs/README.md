@@ -45,6 +45,7 @@ something shipped.
 | [`AUDIT-RESEARCH.md`](AUDIT-RESEARCH.md) | Where the harness was weakest on 2026-09-02, what was fixed that day, and what to build next — ranked |
 | [`BENCHMARK-RESEARCH.md`](BENCHMARK-RESEARCH.md) | How to measure this harness against public agent benchmarks, and what separates harness from model |
 | [`CANVAS-RESEARCH.md`](CANVAS-RESEARCH.md) | Can mecha reach Canvas LMS — and what Dartmouth's token policy makes impossible |
+| [`CLASSIFIER-RESEARCH.md`](CLASSIFIER-RESEARCH.md) | Whether a learned classifier (a detector, a monitor, Jev or Laya) can decide when the interlock's restriction is unnecessary — and the roles it may and may not play |
 | [`CLOUD-HOSTING-RESEARCH.md`](CLOUD-HOSTING-RESEARCH.md) | What it would cost to run the model somewhere other than this box |
 | [`CODE-MODE-RESEARCH.md`](CODE-MODE-RESEARCH.md) | Which embeddable interpreter should run the model's tool-calling programs, and what contract the model sees |
 | [`CONTEXT-RESEARCH.md`](CONTEXT-RESEARCH.md) | What is actually established about context management, compaction and distractors |
@@ -86,6 +87,7 @@ something shipped.
 | [`NOTES-GRAPH-DESIGN.md`](NOTES-GRAPH-DESIGN.md) | One web surface over the graph: capture, find, edit — the consolidation of the notes and graph tabs |
 | [`MEETING-POLL-UX-DESIGN.md`](MEETING-POLL-UX-DESIGN.md) | The meeting poll from the owner's chair: one call, one card, a deterministic sweep, and the stated decision policy. §6 holds the rulings the build waits on |
 | [`POLL-DESIGN.md`](POLL-DESIGN.md) | Polls as a general-purpose instrument — the six kinds and the lecture mode |
+| [`PROVENANCE-DESIGN.md`](PROVENANCE-DESIGN.md) | Why nearly every conversation arms, and four ways to label by provenance instead of by server — self-writes, field labels, grounded destinations, re-derivation — without any classifier lowering a label |
 | [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md) | The public surface: what mecha may publish, and under what review |
 | [`REMOTE-CONTROL-DESIGN.md`](REMOTE-CONTROL-DESIGN.md) | One live TUI session and a named Slack thread as the same conversation |
 | [`REMOTE-SURFACE-DESIGN.md`](REMOTE-SURFACE-DESIGN.md) | How the tailnet web surface gets built, and what it replaces |

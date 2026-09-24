@@ -11,11 +11,19 @@
 //!   than an email body because it is invisible in the rendered page — so the
 //!   connecting client is expected to force `untrusted_input`, exactly as
 //!   mecha's config already does for mail and the graph.
-//! - **Writes** carry `openWorldHint`, and this is the leg people miss:
+//! - **Edits** carry `openWorldHint`, and this is the leg people miss:
 //!   **writing into a document a third party can read is exfiltration.** It
 //!   looks like a local edit and it is a publish, with far more bandwidth
-//!   than `http_fetch`'s query string. So every write belongs in
-//!   `[outbox] tools` and stages rather than executing.
+//!   than `http_fetch`'s query string. So every write *into an existing
+//!   file* belongs in `[outbox] tools` and stages rather than executing.
+//! - **Creating a new file is not a send.** `docs_create`, `sheets_create`
+//!   and `slides_create` make a file in the owner's Drive that nobody else can
+//!   read — there is no sharing verb below — and their schemas take no
+//!   `file_id`, so they cannot write into a document someone else already
+//!   reads. They say `openWorldHint: false` outright and execute rather than
+//!   stage; `mcp::assert_private_writes` is the guard that replaced the
+//!   outbox's review (`docs/PROVENANCE-DESIGN.md` §2). Only the edit verbs,
+//!   which take a `file_id`, still stage.
 //! - **`docs_trash` is neither.** It moves the user's own file to their own
 //!   trash and reaches nobody, so `openWorldHint` would be wrong — it would
 //!   route trashing through the outbox and make review circular. But
@@ -91,7 +99,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 },
                 "required": ["title"]
             },
-            "annotations": {"openWorldHint": true}
+            "annotations": {"openWorldHint": false, "readOnlyHint": false}
         },
         {
             "name": "docs_append",
@@ -129,7 +137,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 "properties": {"title": {"type": "string"}},
                 "required": ["title"]
             },
-            "annotations": {"openWorldHint": true}
+            "annotations": {"openWorldHint": false, "readOnlyHint": false}
         },
         {
             "name": "sheets_write",
@@ -159,7 +167,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 "properties": {"title": {"type": "string"}},
                 "required": ["title"]
             },
-            "annotations": {"openWorldHint": true}
+            "annotations": {"openWorldHint": false, "readOnlyHint": false}
         },
         {
             "name": "docs_trash",
@@ -405,15 +413,12 @@ mod tests {
         crate::mcp::assert_tool_surface(
             &tool_definitions(),
             &["docs_list", "docs_read", "sheets_read", "slides_read"],
-            &[
-                "docs_create",
-                "docs_append",
-                "docs_replace",
-                "sheets_create",
-                "sheets_write",
-                "slides_create",
-            ],
+            &["docs_append", "docs_replace", "sheets_write"],
             &["docs_trash"],
+        );
+        crate::mcp::assert_private_writes(
+            &tool_definitions(),
+            &["docs_create", "sheets_create", "slides_create"],
         );
     }
 
@@ -461,8 +466,11 @@ mod tests {
             let read = a["readOnlyHint"].as_bool().unwrap_or(false);
             let world = a["openWorldHint"].as_bool().unwrap_or(false);
             let destructive = a["destructiveHint"].as_bool().unwrap_or(false);
+            // A private write says `openWorldHint: false` outright; an
+            // absent key is still no decision at all.
+            let private_write = a["openWorldHint"] == Value::Bool(false);
             assert!(
-                read || world || destructive,
+                read || world || destructive || private_write,
                 "{name} carries no capability annotation at all"
             );
             assert!(!(read && world), "{name} cannot be both a read and a sink");

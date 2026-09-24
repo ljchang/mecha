@@ -130,9 +130,9 @@ by index. When the quoted text is not found it says so and changes nothing,
 because a model told "ok" there goes on to describe an edit that never
 happened.
 
-## Three capability quadrants
+## Four capability quadrants
 
-The labeling is the part worth understanding, because one of the three is
+The labeling is the part worth understanding, because two of the four are
 easy to get wrong in a way nothing would report.
 
 **Reads** are `readOnlyHint` and deliberately *not* `openWorldHint`. A
@@ -140,18 +140,34 @@ document fetch travels only to Google, which already holds the file. But the
 contents are other people's words, so the `untrusted_input` override above
 makes reading arm the trifecta interlock — exactly as reading mail does.
 
-**Writes** are `openWorldHint`, and this is the leg that is easy to miss:
+**Edits** are `openWorldHint`, and this is the leg that is easy to miss:
 **writing into a document a third party can read is exfiltration.** It looks
 like a local edit and it is a publish, with far more bandwidth than a URL's
-query string. So every write is named in `[outbox] tools` and stages for your
-review rather than executing.
+query string. So every verb that takes a `file_id` and writes is named in
+`[outbox] tools` and stages for your review rather than executing.
 
 ```toml
 [outbox]
 tools = [
-  "docs__docs_create", "docs__docs_append", "docs__docs_replace",
-  "docs__sheets_create", "docs__sheets_write", "docs__slides_create",
+  "docs__docs_append", "docs__docs_replace", "docs__sheets_write",
 ]
+```
+
+**Creating a new file is not a send.** `docs_create`, `sheets_create` and
+`slides_create` make a file in your Drive that nobody else can read — there
+is no sharing verb — and they take no `file_id`, so they cannot write into a
+document someone else already reads. They say `openWorldHint: false`
+outright, which keeps them out of the interlock even in a conversation that
+has read your mail, and they sit with the approver like any other write. To
+have them run without asking, allow them by rule:
+
+```toml
+[[rule]]
+tool = "docs__docs_create"
+decision = "allow"
+# An `allow` must carry an example; the call has no command to match, so
+# any plain word proves the rule loads.
+match = ["create"]
 ```
 
 **`docs_trash` is neither**, and must not be added to that list. It moves your
