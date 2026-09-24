@@ -2183,8 +2183,10 @@ now makes the move one recorded event:
   `-y`, `permission_mode = "allow"` and a TUI switched out of `ask` (by
   `/mode`, or restored after a `/model` rebuild — `tui::stamp_posture`
   re-stamps `ToolCtx`, and every later registration records the new
-  posture) are `unattended`, as `web_posture` already did for an
-  approvals-off web chat (found on review of #293). **Why the registry and
+  posture) are `unattended`; `web_posture` applies the same rule to the
+  web session's mode, so a chat set to `allow` or `read-only` from the page
+  is unattended from its next turn, as voice's approve-all always was (both
+  found on review of #293). **Why the registry and
   not the variable:** the command string can set the variable
   (`MECHA_RUN_POSTURE=interactive mecha tasks set …`), which on #293 was
   allowed and recorded `owner-approved` wherever a run held no marker.
