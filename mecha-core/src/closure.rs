@@ -223,6 +223,12 @@ pub enum ShellReading {
         pid: u32,
         posture: std::result::Result<RunPosture, String>,
     },
+    /// A registered shell found only in the owner's real registry while this
+    /// process reads a different `MECHA_HOME`: a command inside a run that
+    /// pointed its own reads somewhere else. Refused whatever the posture —
+    /// a run's command does not get to choose where its closure is recorded
+    /// (review of #293).
+    Redirected { pid: u32, root: PathBuf },
 }
 
 impl ShellReading {
@@ -230,18 +236,43 @@ impl ShellReading {
     /// exist yet holds no registration; one that exists and cannot be read,
     /// or a registration on this process's chain that cannot be parsed, is
     /// [`ShellReading::Unreadable`].
+    ///
+    /// The registries read are [`crate::shell_registry::guard_roots`]: the
+    /// one under `MECHA_HOME` and, when that differs, the owner's real one.
     pub fn from_registry() -> Self {
-        use crate::shell_registry::{nearest_registered_ancestor, Lookup, ShellRegistry};
-        match ShellRegistry::open_existing_default() {
+        match crate::shell_registry::guard_roots() {
             Err(why) => ShellReading::Unreadable(why),
-            Ok(None) => ShellReading::NotRegistered,
-            Ok(Some(registry)) => match nearest_registered_ancestor(&registry) {
-                Lookup::Absent => ShellReading::NotRegistered,
-                Lookup::Unreadable(why) => ShellReading::Unreadable(why),
-                Lookup::Registered(e) => ShellReading::Registered {
-                    pid: e.pid,
-                    posture: e.posture(),
-                },
+            Ok(roots) => Self::from_roots(&roots),
+        }
+    }
+
+    /// Read the registries at `roots`, the first being this process's own
+    /// (`MECHA_HOME`'s). A registration found first in any later root is
+    /// [`ShellReading::Redirected`].
+    pub fn from_roots(roots: &[PathBuf]) -> Self {
+        use crate::shell_registry::{nearest_registered_ancestor_among, Lookup, ShellRegistry};
+        let mut open = Vec::new();
+        let mut at = Vec::new();
+        for (i, root) in roots.iter().enumerate() {
+            match ShellRegistry::open_existing(root.clone()) {
+                Err(why) => return ShellReading::Unreadable(why),
+                Ok(None) => {}
+                Ok(Some(registry)) => {
+                    open.push(registry);
+                    at.push(i);
+                }
+            }
+        }
+        match nearest_registered_ancestor_among(&open) {
+            (Lookup::Absent, _) => ShellReading::NotRegistered,
+            (Lookup::Unreadable(why), _) => ShellReading::Unreadable(why),
+            (Lookup::Registered(e), Some(i)) if at[i] > 0 => ShellReading::Redirected {
+                pid: e.pid,
+                root: roots[at[i]].clone(),
+            },
+            (Lookup::Registered(e), _) => ShellReading::Registered {
+                pid: e.pid,
+                posture: e.posture(),
             },
         }
     }
@@ -284,10 +315,13 @@ const OWNERS_ACT: &str = "closing or reopening a task is the owner's act — clo
 /// **What this does not close, named.** A command that detaches from its
 /// shell, so it is reparented away from the registered pid, *and* clears
 /// the variable reads as rule 4. The registry's location has no environment
-/// override (review of #294), so the command cannot point this reader at a
-/// registry of its own; `MECHA_HOME` is the one input left, and redirecting
-/// it with a hand-written config can land a move on the real board while
-/// recording it elsewhere (`shell_registry`'s module doc). An unconfined
+/// override of its own (review of #294), and `MECHA_HOME` no longer hides a
+/// registration either: the registry and the run markers are read under the
+/// owner's real home too — from the password database, never `HOME` — and a
+/// registration found only there is [`ShellReading::Redirected`], refused
+/// (review of #293). Off Linux the ancestry cannot be walked, so a
+/// registered shell anywhere refuses (`shell_registry`'s module doc). A
+/// nested front-end is named there too. An unconfined
 /// `shell` can do these, and can edit `~/.mecha` directly besides; the
 /// answer to all of them is the sandbox —
 /// bwrap and docker run the command in a pid namespace with no `~/.mecha`
@@ -334,6 +368,12 @@ pub fn decide(
             "this command was run by a shell (process {pid}) whose run posture is {word:?}, \
              which is not one this build can read; refusing to close or reopen a task on its \
              behalf — {OWNERS_ACT}"
+        )),
+        (ShellReading::Redirected { pid, root }, _) => Err(format!(
+            "this command was run by a shell (process {pid}) registered in {}, but it reads \
+             a different MECHA_HOME — a command inside a run cannot redirect where its \
+             closure is recorded; {OWNERS_ACT}",
+            root.display()
         )),
         (ShellReading::Unreadable(why), _) => Err(format!(
             "the harness's shell registry could not be read ({why}), so this command's run \
@@ -943,6 +983,50 @@ mod tests {
         )
         .is_err());
         assert!(decide(&P::NotInRun, &S::NotRegistered, Some(4243), None).is_err());
+    }
+
+    /// `MECHA_HOME=/tmp/fresh mecha tasks set …` under a registered
+    /// delegated shell (review of #293). The first root is the redirected
+    /// home, empty; the second the owner's real one, holding the shell. Read
+    /// from the first alone — all the old reader did — the command is the
+    /// owner at their terminal; read from both, it is refused, and so is a
+    /// redirected *interactive* shell: a run's command does not choose where
+    /// its closure is recorded.
+    #[test]
+    fn a_command_that_redirects_mecha_home_is_still_refused() {
+        use crate::shell_registry::ShellRegistry;
+        let base = std::env::temp_dir().join(format!("mecha-redirect-{}", uuid::Uuid::new_v4()));
+        let (fresh, owner) = (
+            base.join("fresh/runs/shells"),
+            base.join("owner/runs/shells"),
+        );
+        let registry = ShellRegistry::open(owner.clone()).unwrap();
+        for posture in [RunPosture::Delegated, RunPosture::Interactive] {
+            let _held = registry
+                .register(std::process::id(), Some(posture), None)
+                .unwrap();
+            let old = ShellReading::from_roots(std::slice::from_ref(&fresh));
+            assert_eq!(old, ShellReading::NotRegistered);
+            assert_eq!(
+                decide(&PostureReading::NotInRun, &old, None, None),
+                Ok((Actor::Owner, Surface::Cli)),
+                "the hole this closes"
+            );
+            let now = ShellReading::from_roots(&[fresh.clone(), owner.clone()]);
+            assert_eq!(
+                now,
+                ShellReading::Redirected {
+                    pid: std::process::id(),
+                    root: owner.clone()
+                }
+            );
+            assert!(decide(&PostureReading::NotInRun, &now, None, None).is_err());
+            // Not redirected: the same registration in this process's own
+            // root reads as before.
+            let own = ShellReading::from_roots(&[owner.clone(), fresh.clone()]);
+            assert!(matches!(own, ShellReading::Registered { .. }), "{own:?}");
+        }
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

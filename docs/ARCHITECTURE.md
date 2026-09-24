@@ -2191,19 +2191,34 @@ now makes the move one recorded event:
   **Why the shell child and not the hosting process:** `serve` hosts the
   owner's board and a delegated web chat at once, and registering `serve`
   would refuse the owner's own tap. **The start time** is what keeps a pid
-  a crash left behind, and later reused, from reading as a shell. **Linux
-  only:** the ancestry walk reads `/proc`; elsewhere no registered shell
-  or run marker is ever found, and only rule 5 (a set variable with no
-  registration refuses) still applies. **The residue, named on `decide`:**
+  a crash left behind, and later reused, from reading as a shell; an entry
+  whose start time cannot be read on either side is unreadable and refuses
+  (it used to be taken as a match, which let an unverified `interactive`
+  entry *permit* a closure — review of #294). **Off Linux** the walk cannot
+  read `/proc`, so it checks only the reader's own pid, and if any live
+  shell is registered it refuses rather than reading as the owner's terminal
+  — the price is that the owner's terminal cannot close a task there while
+  a run's shell is live. **`MECHA_HOME` does not hide a run** (review of
+  #293): `MECHA_HOME=/tmp/x mecha tasks set …` used to read an empty
+  registry and empty markers and land on rule 4 — while the graph server,
+  which does not follow `MECHA_HOME`, put the move on the real board and
+  the record went to the redirected store. The registry and the task and
+  trigger markers are now read under `MECHA_HOME` *and* the owner's real
+  home, which comes from the password database, never `HOME`; a
+  registration found only in the real one refuses whatever its posture
+  (`ShellReading::Redirected`). Registration still writes under
+  `MECHA_HOME`, so a trial home keeps its own registry. **A nested front
+  end is not a person:** `mecha chat`, `mecha run` and `mecha tui` stamp
+  `interactive` only with a terminal on stdin *and* no registered shell
+  above them (`setup::front_end_interactive`), so a run that pipes into
+  `mecha chat`, or feeds `mecha tui` a pty, gets `unattended` children.
+  **The residue, named on `decide`:**
   a command that detaches from its shell and clears the variable reads as
   the owner's terminal; an unconfined shell can also edit `~/.mecha`
   directly, and a command can race the few microseconds between spawn and
   registration. The registry's location has no environment override (a
   `MECHA_SHELLS_DIR` the reader honoured let a command point it at a
-  registry of its own — found on review of #294); `MECHA_HOME` is the one
-  input left, and redirecting it with a hand-written config can land a move
-  on the real board — the graph server's database does not follow
-  `MECHA_HOME` — while the record goes to the redirected store. The answer is
+  registry of its own — found on review of #294). The answer is
   confinement: bwrap and docker run the command
   with `--unshare-pid` / its own pid namespace and no `~/.mecha` mounted,
   landlock grants no path under the owner's home, and `mecha doctor`

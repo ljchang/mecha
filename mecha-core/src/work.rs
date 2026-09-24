@@ -60,6 +60,64 @@ pub fn mecha_home() -> Result<PathBuf> {
     Ok(home.join(".mecha"))
 }
 
+/// The owner's `~/.mecha` as the **password database** names it for the
+/// current uid — never from `MECHA_HOME` or `HOME`, both of which a command
+/// can set on its own command line.
+///
+/// This is the one location a process descended from the model's `shell`
+/// cannot redirect, so the closure guard's lookups read it *beside*
+/// [`mecha_home`] (review of #293: `MECHA_HOME=/tmp/x mecha tasks set …`
+/// read an empty shell registry and empty run markers, and landed on the
+/// owner's-terminal rule). `None` when the database has no entry or no home
+/// for this uid, and always under `cfg(test)`: unit tests must never read
+/// the owner's real stores.
+pub fn owner_mecha_home() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        None
+    }
+    #[cfg(not(test))]
+    {
+        // SAFETY: `getuid` cannot fail and has no preconditions.
+        passwd_home(unsafe { libc::getuid() }).map(|h| h.join(".mecha"))
+    }
+}
+
+/// The home directory the password database records for `uid`.
+#[cfg(not(test))]
+fn passwd_home(uid: libc::uid_t) -> Option<PathBuf> {
+    use std::ffi::CStr;
+    use std::os::unix::ffi::OsStrExt;
+    let mut buf = vec![0 as libc::c_char; 16 * 1024];
+    // SAFETY: `passwd` is plain data; zeroed is a valid initial value that
+    // `getpwuid_r` overwrites.
+    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    // SAFETY: every pointer is to a live local; `getpwuid_r` writes the
+    // strings into `buf`, which outlives the reads below.
+    let rc = unsafe { libc::getpwuid_r(uid, &mut pwd, buf.as_mut_ptr(), buf.len(), &mut result) };
+    if rc != 0 || result.is_null() || pwd.pw_dir.is_null() {
+        return None;
+    }
+    // SAFETY: `pw_dir` points into `buf`, NUL-terminated by `getpwuid_r`.
+    let dir = unsafe { CStr::from_ptr(pwd.pw_dir) };
+    let path = PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes()));
+    (!path.as_os_str().is_empty()).then_some(path)
+}
+
+/// The homes the closure guard reads its stores under: [`mecha_home`], and
+/// the owner's real one ([`owner_mecha_home`]) when that differs. Once when
+/// they agree, which is the normal case.
+pub fn guard_homes() -> Result<Vec<PathBuf>> {
+    let mut homes = vec![mecha_home()?];
+    if let Some(owner) = owner_mecha_home() {
+        if !homes.contains(&owner) {
+            homes.push(owner);
+        }
+    }
+    Ok(homes)
+}
+
 /// `~/.mecha/work`.
 pub fn root() -> Result<PathBuf> {
     Ok(mecha_home()?.join("work"))

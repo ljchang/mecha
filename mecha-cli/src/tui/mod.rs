@@ -1078,9 +1078,15 @@ fn approver_for(mode: PermissionMode, retained: &Arc<dyn Approver>) -> Arc<dyn A
 /// `/model` rebuild, which prepares from config and would otherwise restore
 /// the file's mode instead of the session's.
 fn stamp_posture(agent: &mut mecha_core::agent::Agent, mode: PermissionMode) {
+    // The TUI needs a terminal to start at all, but a run's shell can give
+    // it one (`script -qc 'mecha tui'`), so it asks the registry too.
+    let person = crate::setup::front_end_interactive(
+        true,
+        &mecha_core::closure::ShellReading::from_registry(),
+    );
     agent.ctx_mut().run_posture = Some(crate::setup::posture_for(
         Some(mecha_core::session::SessionKind::Tui),
-        true,
+        person,
         mode,
     ));
 }
