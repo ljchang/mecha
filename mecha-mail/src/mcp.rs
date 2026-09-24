@@ -250,7 +250,21 @@ fn check_private_write_schemas(tools: &[Value], names: &[&str]) {
     // What a private write may say: the content of the new thing. Nothing
     // here names a party or an existing object. A name is added in the diff
     // that adds the verb needing it, so its schema is read where it lands.
-    const CONTENT: &[&str] = &["title", "body"];
+    const CONTENT: &[&str] = &[
+        "title",
+        "body",
+        // calendar_hold's, read in #277. `description` and `location` are
+        // the event's text; the four time fields say when. `account` picks
+        // which of the owner's own configured accounts holds the hold — an
+        // enum over those names, so it names nobody else.
+        "description",
+        "location",
+        "start_time",
+        "end_time",
+        "all_day",
+        "timezone",
+        "account",
+    ];
     for name in names {
         let tool = tools.iter().find(|t| t["name"] == *name).unwrap();
         let props = tool["inputSchema"]["properties"]
