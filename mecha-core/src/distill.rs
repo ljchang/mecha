@@ -487,7 +487,7 @@ pub fn upsert_args(
     // human's attention sooner than one that went cleanly — but mecha-graph
     // has no reader of `affect` or the goal errors (checked 2026-09-24), so
     // today they are recorded and unread; `APPRAISAL-WIRING-DESIGN.md` L5
-    // says where salience gets built instead.
+    // (parked) says where salience would get built instead.
     if let Some((a, known)) = appraisal {
         meta["affect"] = serde_json::to_value(a.label).unwrap_or(Value::Null);
         // §17.7 item 8 — the goal *pointer* crosses, the sentence stays

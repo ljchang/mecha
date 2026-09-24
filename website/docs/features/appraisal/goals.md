@@ -28,7 +28,8 @@ stating one, and the served local model rarely does: it writes a plan only when
 your own message asks for one, and none of the sessions recorded since the
 charter began asking for a goal sentence contains one. A delegated board task is handed its task id in the prompt, but
 today that id does not set the anchor; only `mecha run --goal`, an answered
-question, and a question resume do. Most runs therefore carry no confirmed goal,
+question, a question resume, and an owner-authored artifact case
+(`mecha run --mismatch-case`) do. Most runs therefore carry no confirmed goal,
 and their appraisal records no goal rather than guessing one.
 
 
