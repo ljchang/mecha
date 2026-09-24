@@ -1885,6 +1885,16 @@ mod tests {
         assert_eq!(schema, coded);
     }
 
+    /// The relative vocabulary is on this server's window parameters, not
+    /// only the unified server's — see `time::assert_window_schema`.
+    #[test]
+    fn window_parameters_name_the_relative_vocabulary() {
+        crate::time::assert_window_schema(
+            "mecha-mail",
+            &tool_definitions(&names(&["a"]), &conf(Some("a"), None, None)),
+        );
+    }
+
     /// Tagging must never become a provider operation: it costs an OAuth
     /// scope, diverges between Gmail labels and Graph categories, and is
     /// mecha's own concept on the triage record.
