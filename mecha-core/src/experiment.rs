@@ -473,6 +473,10 @@ impl Fixtures {
                 network: None,
                 prefix_tools: s.prefix_tools,
                 capabilities: s.capabilities,
+                // A fixture is a stand-in, and its claims are not the
+                // operator's to vouch for: a trial's outbox reconciles as
+                // the default does.
+                trust_result_claims: false,
                 disabled: false,
                 owner_zone: None,
             });

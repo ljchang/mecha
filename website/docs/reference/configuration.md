@@ -511,6 +511,7 @@ Repeatable. Each entry is a stdio MCP server connected at startup. Its tools app
 | `sandbox` | bool | `false` | Confine this server with the configured `[sandbox]` backend. |
 | `network` | bool | inherits `[sandbox] network` | Network for this server alone. |
 | `capabilities` | table | all `false` | Capabilities forced onto every tool this server exposes. |
+| `trust_result_claims` | bool | `false` | Believe this server's claims about its own results. Global config only. See below. |
 | `disabled` | bool | `false` | Skip this server without deleting its config. |
 
 The environment is an allowlist, not an inheritance. The child's environment is
@@ -522,6 +523,23 @@ environment inherits every provider key in it.
 `sandbox = true` on a server that cannot be confined is an error, not a warning.
 Per-server `network` exists so a third-party server can reach its own API, confined,
 while `shell` still has no way off the machine.
+
+`trust_result_claims = true` is the one setting that trusts a server *more*. The
+server's own claims about a result are believed. Today that is a single claim: that
+a failed call was refused before any request, so nothing it could have sent went
+anywhere. With it, the outbox settles such a send as not delivered, and the draft can
+go again at once. Without it, the same failure is an unknown delivery you confirm by
+hand. A server lying about this could cost you a duplicate send, so it is off by
+default, honoured only from your global config (a project's `mecha.toml` or an experiment
+environment's setting is ignored, with a warning), and named by `mecha tools` and `mecha doctor`. Turn it on
+for a server you wrote or can read — `mecha-mail` makes the claim:
+
+```toml
+[[mcp]]
+name = "mail"
+command = "~/.cargo/bin/mecha-mail"
+trust_result_claims = true
+```
 
 ### `[[mcp]].capabilities`
 

@@ -5,6 +5,53 @@
 
 use serde_json::{json, Value};
 
+/// The `_meta` key a result carries when the server refused the call before
+/// any provider request. `docs/PROVENANCE-DESIGN.md` §3 is the convention:
+/// one namespace (`mecha-factory.ai/`), parsed only in mecha's
+/// `McpClient::call_tool`, and believed only from a server the operator's
+/// config names with `trust_result_claims`. mecha-core spells the same key;
+/// a test on each side pins the literal.
+pub const DISPATCHED_KEY: &str = "mecha-factory.ai/dispatched";
+
+/// One call's answer, and what the server knows about whether it reached
+/// anyone.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reply {
+    pub text: String,
+    pub is_error: bool,
+    /// Refused before any provider request — an absent argument, an account
+    /// that does not resolve, a thread no account holds — so nothing reached
+    /// anybody. **Only a server can know this**: a failure *after* the
+    /// request went out (a timeout, a 5xx) may or may not have delivered, and
+    /// stays unclaimed. mecha's outbox uses it to tell a send that cleanly did
+    /// not happen from one whose outcome is unknown, which would otherwise
+    /// have to wait for the owner to check the destination by hand.
+    pub not_dispatched: bool,
+}
+
+impl Reply {
+    /// A refusal before anything was dispatched. See [`Reply::not_dispatched`].
+    pub fn refused(text: impl Into<String>) -> Self {
+        Reply {
+            text: text.into(),
+            is_error: true,
+            not_dispatched: true,
+        }
+    }
+}
+
+/// `(text, is_error)`, the shape every provider returned before the claim
+/// existed: makes no claim about dispatch.
+impl From<(String, bool)> for Reply {
+    fn from((text, is_error): (String, bool)) -> Self {
+        Reply {
+            text,
+            is_error,
+            not_dispatched: false,
+        }
+    }
+}
+
 /// What a provider must supply to be served over MCP.
 #[async_trait::async_trait]
 pub trait ToolProvider: Send + Sync {
@@ -14,6 +61,28 @@ pub trait ToolProvider: Send + Sync {
 
     /// `None` means "no such tool"; `Some((text, is_error))` is the result.
     async fn call(&self, name: &str, args: &Value) -> Option<(String, bool)>;
+
+    /// The result with what the server knows about dispatch. A provider that
+    /// can tell a refusal before any request from a failure after one
+    /// overrides this; the default claims nothing, which is the safe side —
+    /// an unclaimed failure stays "outcome unknown" at the outbox.
+    async fn call_result(&self, name: &str, args: &Value) -> Option<Reply> {
+        self.call(name, args).await.map(Reply::from)
+    }
+}
+
+/// A `tools/call` result as it goes on the wire. The dispatch claim rides in
+/// `_meta` under [`DISPATCHED_KEY`], and only when it is a claim — absent
+/// means "no claim", never "dispatched".
+pub fn result_json(reply: &Reply) -> Value {
+    let mut result = json!({
+        "content": [{"type": "text", "text": reply.text}],
+        "isError": reply.is_error
+    });
+    if reply.not_dispatched {
+        result["_meta"] = json!({ DISPATCHED_KEY: false });
+    }
+    result
 }
 
 /// Serve until stdin closes.
@@ -66,13 +135,10 @@ pub async fn serve(provider: impl ToolProvider) -> anyhow::Result<()> {
                     .get("arguments")
                     .cloned()
                     .unwrap_or_else(|| json!({}));
-                match provider.call(name, &args).await {
-                    Some((text, is_error)) => json!({
+                match provider.call_result(name, &args).await {
+                    Some(reply) => json!({
                         "jsonrpc": "2.0", "id": id,
-                        "result": {
-                            "content": [{"type": "text", "text": text}],
-                            "isError": is_error
-                        }
+                        "result": result_json(&reply)
                     }),
                     None => json!({
                         "jsonrpc": "2.0", "id": id,
