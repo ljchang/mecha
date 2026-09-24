@@ -60,9 +60,12 @@ sentence the charter block asks for has been in 68 sessions since 2026-09-06
 and appears in none of them. The learning store is 100% corrections: 66
 reflections (follow-up 36, steer 22, denial 4, edit 4), 4 active rules.
 
-Doc/code disagreements found on the way. Each was corrected on
-`docs/appraisal-wiring` the same day (the code comment in `distill.rs`,
-ARCHITECTURE's goal-system section, and the website's appraisal pages):
+Doc/code disagreements found on the way. Each was corrected the same day —
+on `docs/appraisal-wiring` for the code comment in `distill.rs`,
+ARCHITECTURE's goal-system section and the website's appraisal pages; the
+pages outside the appraisal section (the distillation, memory, learning and
+workflow pages) belong to another lane and were corrected on its PR #283,
+so until that merges the distillation page still carries the claim below:
 - `distill.rs` (and the website's distillation page) say `meta.affect` and
   the goal errors give the graph's review queue a salience order. mecha-graph
   has no reader of either; GOAL-SYSTEM-DESIGN's rung 9 row calls it "not
