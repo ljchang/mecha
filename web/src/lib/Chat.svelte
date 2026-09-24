@@ -1243,6 +1243,18 @@
           {#each d.other.filter(([k, v]) => !ROUTING_KEYS.includes(k) || (k === 'reply_all' && v === 'true')) as [name, value]}
             <div class="dfield"><span class="dkey">{name}</span><span>{value}</span></div>
           {/each}
+          <!-- Every argument stays reachable (DraftView's guarantee): the
+               routing ids folded above are one click away, as in the outbox. -->
+          {#if d.other.some(([k]) => ROUTING_KEYS.includes(k))}
+            <button class="dtoggle" onclick={() => (entry.showArgs = !entry.showArgs)}>
+              {entry.showArgs ? 'hide' : 'show'} the exact arguments
+            </button>
+            {#if entry.showArgs}
+              {#each d.other.filter(([k]) => ROUTING_KEYS.includes(k)) as [name, value]}
+                <div class="dfield"><span class="dkey">{name}</span><span>{value}</span></div>
+              {/each}
+            {/if}
+          {/if}
           <!-- A reply's reviewable object includes what it replies to, and
                these bytes are third-party text: every line is marked, because
                a heading scrolls off and a per-line gutter cannot. -->
