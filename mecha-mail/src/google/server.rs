@@ -73,8 +73,8 @@ pub fn tool_definitions() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "time_min": {"type": "string"},
-                    "time_max": {"type": "string"},
+                    "time_min": crate::time::relative_time_schema("Start of the window."),
+                    "time_max": crate::time::relative_time_schema("End of the window."),
                     "calendar_id": {"type": "string", "default": "primary"}
                 }
             },
