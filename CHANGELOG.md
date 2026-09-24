@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `calendar_list_events` and `calendar_freebusy` take `now`, `today`,
+  `tomorrow`, `yesterday` and `±Nd` and resolve them on the server, in
+  `mecha-mail`, `mecha-google` and `mecha-outlook` alike (`time::window`), and
+  every answer states the window it covered and the clock it was resolved
+  against — so a run working from a stale date is contradicted by the result
+  instead of confirmed by it. A window resolves in `MECHA_TZ` alone, never
+  the machine's `TZ`; without it a relative term is refused by name. (#243)
+- Every `[[mcp]]` server is handed `[agent] timezone` as `MECHA_TZ`, so the
+  zone is set once rather than copied into each server's `env` (an explicit
+  value there still wins). `mecha setup` reports an unset `[agent] timezone`
+  once a server is wired. (#243)
+
 - Mail is classified through the working day, not only overnight.
   `mecha-mail-classify-day.timer` runs the same sweep every 20 minutes,
   07:30–21:50 in the owner's zone, clear of the morning briefing and the

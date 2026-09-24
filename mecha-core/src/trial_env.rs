@@ -186,6 +186,9 @@ impl Environment {
             })?;
             cfg.mcp.push(live.clone());
         }
+        // After the live servers: a copied one carries the operator's zone
+        // and must answer in the environment's.
+        cfg.hand_zone_to_servers();
         cfg.validate()
             .with_context(|| format!("the experiment environment {}", dir.display()))?;
         Ok(cfg)

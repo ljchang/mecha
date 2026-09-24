@@ -356,6 +356,7 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
     }
 
     steps.extend(integration_steps(facts));
+    steps.extend(timezone_step(cfg));
     steps.push(charter_step(&facts.charter));
 
     // --- 4. scheduling, and nothing is turned on for anyone
@@ -416,6 +417,45 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
     }
 
     steps
+}
+
+/// Is the owner's zone configured — once, in `[agent] timezone`?
+///
+/// Every consumer derives it from there: the date the model is shown, and
+/// every `[[mcp]]` server as `MECHA_TZ` (`McpServerConfig::owner_zone`). The
+/// mail servers resolve `today` in that and **never** the machine's `TZ`,
+/// which is UTC on a server and made the UTC day stand in for the owner's
+/// (#243) — so without it every relative calendar window is refused, and the
+/// model finds out per call rather than the owner finding out once, here.
+///
+/// Asked only once a server is wired: with none, the machine's zone is the
+/// documented default for the date and costs nothing. Not optional once
+/// asked — an unset zone there is not a feature going unused but a server
+/// that cannot say which day it is. The fix is an edit, not a command, and
+/// the one thing this step must not do is write down a zone for somebody.
+fn timezone_step(cfg: &Config) -> Option<Step> {
+    const TITLE: &str = "The owner's timezone";
+    if cfg.mcp.iter().all(|m| m.disabled) {
+        return None;
+    }
+    Some(match cfg.agent.timezone.as_deref() {
+        Some(zone) => Step::new(
+            "timezone",
+            TITLE,
+            Status::Done,
+            format!("{zone}, handed to every MCP server as MECHA_TZ"),
+        ),
+        None => Step::new(
+            "timezone",
+            TITLE,
+            Status::Missing,
+            "No [agent] timezone, so an MCP server is handed no MECHA_TZ, and the mail \
+             servers refuse `today`, `tomorrow` and the other relative windows rather than \
+             guess a day. Set it once, as an IANA name, under [agent] in \
+             ~/.mecha/config.toml: `timezone = \"<your IANA zone, e.g. Europe/Berlin>\"`. \
+             Every MCP server is handed it as MECHA_TZ.",
+        ),
+    })
 }
 
 /// The one step that blocks every other, and the only one whose remedy used
@@ -1096,6 +1136,41 @@ mod tests {
 
     fn step<'a>(steps: &'a [Step], id: &str) -> &'a Step {
         steps.iter().find(|s| s.id == id).expect("step missing")
+    }
+
+    /// #243: the zone is configured once and derived everywhere, so the only
+    /// thing to check is that once. Unset is not declinable — and the step
+    /// offers a placeholder, never a zone nobody chose.
+    #[test]
+    fn the_timezone_is_set_once_and_never_guessed() {
+        let f = facts(Some(props(262144, 4, true)));
+        let mut cfg = cfg_with_local(262144, Some(true));
+        cfg.agent.timezone = None;
+        assert!(
+            plan(&cfg, "local", &f).iter().all(|s| s.id != "timezone"),
+            "no server wired: the machine's zone is the default, nothing to ask"
+        );
+
+        cfg.mcp = vec![crate::config::McpServerConfig {
+            name: "mail".into(),
+            command: "anything".into(),
+            ..Default::default()
+        }];
+        cfg.agent.timezone = Some("Europe/Berlin".into());
+        assert_eq!(
+            step(&plan(&cfg, "local", &f), "timezone").status,
+            Status::Done
+        );
+
+        cfg.agent.timezone = None;
+        let steps = plan(&cfg, "local", &f);
+        let s = step(&steps, "timezone");
+        assert_eq!(s.status, Status::Missing);
+        assert!(
+            !s.optional,
+            "not knowing which day it is is not a preference"
+        );
+        assert!(s.detail.contains("<your IANA zone"), "{}", s.detail);
     }
 
     /// A complete install has nothing to say about itself.

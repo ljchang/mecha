@@ -474,6 +474,7 @@ impl Fixtures {
                 prefix_tools: s.prefix_tools,
                 capabilities: s.capabilities,
                 disabled: false,
+                owner_zone: None,
             });
         }
         Ok(out)
@@ -497,6 +498,8 @@ impl Fixtures {
             return Ok(());
         }
         config.mcp = self.render(home, base, fresh)?;
+        // The trial's own `[agent] timezone`, as every other server gets it.
+        config.hand_zone_to_servers();
         config.outbox.tools = self.routed().to_vec();
         config.outbox.publish_tools.clear();
         Ok(())
