@@ -341,6 +341,12 @@ also moves every variant that extends it, since that edit changes what the
 variant runs. Arms whose environments resolve the same share a condition
 and are flagged as identical like any other.
 
+If you edit an arm's environment between two sittings, a `single` arm's home
+is re-seeded from the new build (its charter, skills and learning store), since
+each trial starts from the seed anyway. A lifetime refuses to resume instead:
+re-seeding halfway through would discard what the loop learned and splice two
+worlds into one sequence, so start a new experiment for the new environment.
+
 ## Running
 
 ```bash

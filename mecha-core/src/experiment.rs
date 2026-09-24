@@ -2464,7 +2464,15 @@ impl ExperimentStore {
         let fresh = !home.join(HOME_MARKER).exists();
         std::fs::create_dir_all(&home)?;
         let record = home.join(SEEDED_FROM);
-        let want = seed_from.to_string_lossy().into_owned();
+        // The build's digest — the directory it is built in is named by it
+        // (`environment/<digest>/tree`) — not its absolute path, which a
+        // differently spelled `MECHA_HOME` changes while the world does not
+        // (found on review).
+        let want = seed_from
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| seed_from.to_string_lossy().into_owned());
         let had = std::fs::read_to_string(&record).ok();
         // A home from before the record existed adopts its current world
         // rather than reading as changed: that would re-seed every old
@@ -4620,7 +4628,8 @@ rationale = "no rumination should fail more over the sequence"
     fn a_changed_environment_reseeds_a_single_home_and_stops_a_lifetime() {
         let root = std::env::temp_dir().join(format!("mecha-exp-reseed-{}", uuid::Uuid::new_v4()));
         let store = ExperimentStore::open(&root, "reseed").unwrap();
-        let (one, two) = (root.join("env-one"), root.join("env-two"));
+        // Laid out as `prepare` builds them: `<digest>/tree`.
+        let (one, two) = (root.join("d1/tree"), root.join("d2/tree"));
         for (dir, text) in [(&one, "# one\n"), (&two, "# two\n")] {
             std::fs::create_dir_all(dir).unwrap();
             std::fs::write(dir.join("charter.toml"), text).unwrap();
@@ -4647,6 +4656,10 @@ rationale = "no rumination should fail more over the sequence"
         store.lifetime_home("l", &one).unwrap();
         assert!(store.lifetime_home("l", &one).is_ok());
         assert!(store.lifetime_home("l", &two).is_err());
+        // The same build reached through another spelling of its path is the
+        // same world: a lifetime resumes.
+        let respelled = root.join("d1/../d1/tree");
+        assert!(store.lifetime_home("l", &respelled).is_ok());
         // A home from before the record: adopts its world, neither
         // re-seeded nor refused.
         let old = store.lifetime_home("m", &one).unwrap();
