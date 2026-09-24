@@ -46,9 +46,10 @@ pub struct CreateEventRequest {
     pub attendees: Vec<String>,
     pub all_day: bool,
     pub timezone: Option<String>,
-    /// Details visible to the owner only: a delegate or anyone the calendar
-    /// is shared with sees "busy", never the title. `calendar_hold` sets it
-    /// (`docs/PROVENANCE-DESIGN.md` §2, ruling R-P1).
+    /// `visibility: private`: someone the calendar is shared with at a
+    /// reader level sees "busy", not the title. A sharee who can *make
+    /// changes* reads it as the owner does and sees everything.
+    /// `calendar_hold` sets it (`docs/PROVENANCE-DESIGN.md` §2, ruling R-P1).
     pub private: bool,
 }
 
@@ -173,17 +174,14 @@ impl CalendarProvider {
         event: &CreateEventRequest,
     ) -> Result<CalendarEvent, MailError> {
         let body = create_body(event);
+        let send_updates = sends_updates(event);
 
         let url = format!(
             "https://www.googleapis.com/calendar/v3/calendars/{}/events",
             urlencode(calendar_id)
         );
-        // Google's default is sendUpdates=none, so attendees were silently
-        // NOT invited despite the tool schema saying they would be — Graph
-        // always mails attendees, and the surface has one behaviour. Set
-        // only when there are attendees: the parameter is about them.
         let mut request = self.client.post(&url).bearer_auth(&self.access_token);
-        if !event.attendees.is_empty() {
+        if send_updates {
             request = request.query(&[("sendUpdates", "all")]);
         }
         let resp = send_with_retry(request.json(&body)).await?;
@@ -400,6 +398,18 @@ fn parse_event(item: &Value, calendar_id: &str) -> CalendarEvent {
     }
 }
 
+/// Whether an insert asks Google to mail the attendees (`sendUpdates=all`).
+///
+/// Google's default is `sendUpdates=none`, so attendees were silently NOT
+/// invited despite the tool schema saying they would be — Graph always mails
+/// attendees, and the surface has one behaviour. Set only when there are
+/// attendees: the parameter is about them. Pure, beside [`create_body`], so a
+/// hold's "mails nobody" is asserted rather than inferred (found in review
+/// of #277).
+pub(crate) fn sends_updates(event: &CreateEventRequest) -> bool {
+    !event.attendees.is_empty()
+}
+
 /// The JSON body of an event insert. Pure, so what a hold sends is testable
 /// without a network: no `attendees` key unless there are attendees, and
 /// `visibility: private` when the request is private.
@@ -462,6 +472,7 @@ mod tests {
         };
         let body = create_body(&hold);
         assert!(body.get("attendees").is_none(), "{body}");
+        assert!(!sends_updates(&hold), "a hold mails nobody");
         assert_eq!(body["visibility"], "private");
 
         let open = CreateEventRequest {

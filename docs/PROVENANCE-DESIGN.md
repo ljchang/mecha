@@ -93,8 +93,15 @@ and it gets tests that fail on the dangerous shape:
 
 **Accepted residuals:**
 
-- A private event on a calendar the owner shares with a delegate still shows
-  as *busy* at that time, never its title. That is timing, not content.
+- A private event on a calendar the owner shares at a reader level still
+  shows as *busy* at that time, never its title. That is timing, not
+  content.
+- **Private is not secret.** A sharee who can make changes to the calendar
+  reads a private event as the owner does, and so does an Outlook delegate
+  granted "view private items". Those are people the owner chose to give
+  that access; the destination is still fixed by the owner's own sharing,
+  never named by a model, so the class does not change. It is the prose
+  that must not overstate it.
 - A new Doc holds whatever private text the model put in it. That is the
   owner's data in the owner's Drive, which is where it already was.
 - **What the review used to catch, named.** With the `allow` rule, a
