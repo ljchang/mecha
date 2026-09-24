@@ -541,7 +541,8 @@ something structurally harmless, a number or a yes/no, and not otherwise.
 ## `[[search]]`
 
 Repeatable, in preference order. The chain falls through on failure, which is what
-makes stacking two free tiers viable. Registers the `web_search` tool.
+makes stacking two free tiers viable. Registers the `web_search` tool; see
+[Web search](/docs/features/tools/web-search) for how the chain behaves.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
