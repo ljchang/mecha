@@ -1719,8 +1719,10 @@ impl Manifest {
     /// every row — each group sorted, the groups in arm order. An arm
     /// identical to another measures nothing but noise; that is an A/A
     /// design when meant and a silent defect when not, so the runner warns
-    /// rather than refuses. Computed through `trials` itself, so it cannot
-    /// disagree with the hash the store records.
+    /// rather than refuses. Computed through `trials` itself, so it groups
+    /// arms exactly as the store's hashes do: the world terms `trials`
+    /// omits (charter, environment) are the same for every arm, so they
+    /// change no hash's equality with another's, only its value.
     pub fn identical_arms(&self, provider: &str, model: &str) -> Vec<Vec<String>> {
         let rows = self.trials(&["probe".into()], provider, model);
         let mut groups: Vec<(std::collections::BTreeSet<&str>, Vec<String>)> = Vec::new();

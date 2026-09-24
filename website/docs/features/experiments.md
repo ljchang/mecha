@@ -270,9 +270,10 @@ empty unless the question is about your real world.
 
 An environment holds files, never links: a symlink anywhere in it is
 refused, since the directory is copied into trial homes. The whole
-environment directory is part of every row's condition hash, by content. Editing a file between two runs makes a new condition, and its
-stores are built fresh beside the old ones. `[fixtures]` servers, when a
-manifest names any, replace the environment's servers entirely.
+environment directory is part of every row's condition hash, by content.
+Editing a file between two runs makes a new condition, and its stores are
+built fresh beside the old ones. `[fixtures]` servers, when a manifest names
+any, replace the environment's servers entirely.
 
 ## Running
 
