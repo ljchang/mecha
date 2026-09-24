@@ -11,6 +11,8 @@
 # An experiment environment's server seed (stores/<name>.calls.jsonl) is
 # authored data, like a case file.
 !eval/envs/**/*.jsonl
+# Suite case files are authored data too.
+!eval/suites/*.jsonl
 jobs/
 
 # Credentials. Nothing here has ever been committed and nothing should be: the
