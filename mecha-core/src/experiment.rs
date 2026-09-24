@@ -1715,6 +1715,31 @@ impl Manifest {
         )
     }
 
+    /// Groups of arms that would run under one condition — the same hash on
+    /// every row — each group sorted, the groups in arm order. An arm
+    /// identical to another measures nothing but noise; that is an A/A
+    /// design when meant and a silent defect when not, so the runner warns
+    /// rather than refuses. Computed through `trials` itself, so it groups
+    /// arms exactly as the store's hashes do: the world terms `trials`
+    /// omits (charter, environment) are the same for every arm, so they
+    /// change no hash's equality with another's, only its value.
+    pub fn identical_arms(&self, provider: &str, model: &str) -> Vec<Vec<String>> {
+        let rows = self.trials(&["probe".into()], provider, model);
+        let mut groups: Vec<(std::collections::BTreeSet<&str>, Vec<String>)> = Vec::new();
+        for arm in self.arms.keys() {
+            let hashes = arm_hashes(&rows, arm);
+            match groups.iter_mut().find(|(h, _)| *h == hashes) {
+                Some((_, names)) => names.push(arm.clone()),
+                None => groups.push((hashes, vec![arm.clone()])),
+            }
+        }
+        groups
+            .into_iter()
+            .map(|(_, names)| names)
+            .filter(|names| names.len() > 1)
+            .collect()
+    }
+
     /// Every trial the design calls for, in a stable order, each with its
     /// condition hash. `provider` and `model` are the operator's defaults;
     /// an arm that names its own overrides them, and the hash follows the
@@ -3129,6 +3154,23 @@ pub struct ArmJudgement {
     /// the pairs span concurrency regimes, which moves wall clock and
     /// exact seed replay, and the verdict is held at *propose*.
     pub jobs_seen: Vec<u32>,
+    /// The arm's rows carry exactly the control's condition hashes: the two
+    /// arms are one condition under two names, so every difference between
+    /// them is noise. Deliberate in an A/A design, a defect otherwise
+    /// (`levers_on = ["learned_rules"]` over `full` is `full`) — reported
+    /// either way, and the verdict is left alone, since in an A/A design a
+    /// "win" is exactly the noise reading it exists to take.
+    pub same_condition_as_control: bool,
+}
+
+/// The set of condition hashes an arm's rows carry, whatever their status:
+/// the hash is a property of the design, not of whether the row has run.
+fn arm_hashes<'a>(trials: &'a [Trial], arm: &str) -> std::collections::BTreeSet<&'a str> {
+    trials
+        .iter()
+        .filter(|t| t.arm == arm)
+        .map(|t| t.condition_hash.as_str())
+        .collect()
 }
 
 /// A finished control trial and the treatment trial on the same episode.
@@ -3265,6 +3307,8 @@ pub fn judge(
                 "this arm's pairs ran under different --jobs limits ({jobs_seen:?}); concurrency moves the run, so the verdict is not comparing like with like"
             ));
         }
+        let own = arm_hashes(trials, name);
+        let same_condition_as_control = !own.is_empty() && own == arm_hashes(trials, control_name);
         out.push(ArmJudgement {
             arm: name.clone(),
             metric,
@@ -3276,6 +3320,7 @@ pub fn judge(
             control_stages,
             unreadable_stage_lines,
             jobs_seen,
+            same_condition_as_control,
         });
     }
     out
@@ -3780,6 +3825,12 @@ rationale = "no notice, fewer turns"
             both.resolve_forced_on().unwrap(),
             vec![Lever::StepEscalation]
         );
+        // And rendered: the forcing loop and the off loop cannot fight,
+        // because `resolve_levers` already dropped the name from the off
+        // list — held by a test now, not by reading the order.
+        let rendered = child_invocation(&real, &both, None).unwrap();
+        assert!(rendered.config.agent.step_escalation);
+        assert!(!rendered.flags.iter().any(|f| f == "--no-step-escalation"));
 
         // The hash: a forced switch is a different condition from the
         // control; `levers_on` of a flag-only lever over `full` is the
@@ -3817,6 +3868,21 @@ rationale = "r"
         };
         assert_ne!(h("escalate"), h("full"));
         assert_eq!(h("rules"), h("full"));
+        // Which the runner names, and the judge flags on the stored rows.
+        assert_eq!(
+            m.identical_arms("p", "m"),
+            vec![vec!["full".to_string(), "rules".to_string()]]
+        );
+        let verdicts = judge(&m, &rows, &[], 0);
+        let flag = |arm: &str| {
+            verdicts
+                .iter()
+                .find(|v| v.arm == arm)
+                .unwrap()
+                .same_condition_as_control
+        };
+        assert!(flag("rules"));
+        assert!(!flag("escalate"));
         assert_eq!(
             condition_hash(&[], &[], "p", "m", None),
             condition_hash_world(&[], &[], "p", "m", None, &[], &[], &[], None, &[], None),
