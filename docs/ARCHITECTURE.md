@@ -4043,51 +4043,70 @@ comparison over a chosen set**, with the design written before the run.
   their futures orphans children whose rows read `running`. Lifetimes
   refuse `--jobs` above 1 until §18's stage-versus-task seat rule is
   restated for lifetimes side by side.
-- **Isolation is the whole store** (D12). Every trial runs as a child
-  `mecha run` with `MECHA_HOME` pointing at its arm's home under the
-  experiment directory, whose `config.toml` *is* the arm: the
-  **environment's** harness (`trial_env`), the operator's machine facts
-  with every inline provider key scrubbed (the variable `api_key_env`
-  names passes through), the trial's seed on the default provider, and
-  the arm's `[agent]` switches and knobs applied; the CLI-only levers ride
-  as `--no-*` flags. **The machine's posture travels, the operator's world
-  does not.** Sandbox, security, the approval `[[rule]]`s, `[approval]`,
-  providers and search come from the operator's file, and an environment
-  that names one is refused (`trial_env::MACHINE_TABLES`), because the
-  first cut dropped the rules while running `--yes` — the
-  silently-degrading-guard shape the `approval_rules` refusal exists to
-  prevent (found on review). `[[mcp]]`, `[[hook]]` and `[outbox]` come from
-  the environment and **never from the operator's file**. Until
-  2026-09-23 they did: trial homes copied the operator's config, a
-  `session_end` hook ran `mecha distill` inside each one, and the home's
-  `graph` server was the owner's live graph, so eleven synthetic sessions
-  landed in it before anyone noticed. An operator server now reaches a
-  trial only by name in `[environment] live_servers`, a term of the hash.
-  An environment server that writes `${STORE}` gets its own store under the
-  home, built once per experiment from `stores/<name>/` and
+- **Isolation is the whole store** (D12). Every trial runs as a child `mecha
+  run` with `MECHA_HOME` pointing at its arm's home under the experiment
+  directory, whose `config.toml` *is* the arm: the **environment's** harness
+  (`trial_env`), the operator's machine facts with every inline provider key
+  scrubbed (the variable `api_key_env` names passes through), the trial's
+  seed on the default provider, and the arm's `[agent]` switches and knobs
+  applied; the CLI-only levers ride as `--no-*` flags. **The machine's
+  posture travels, the operator's world does not.** Sandbox, security, the
+  approval `[[rule]]`s, `[approval]`, providers and search come from the
+  operator's file, and an environment that names one is refused
+  (`trial_env::MACHINE_TABLES`), because the first cut dropped the rules
+  while running `--yes` — the silently-degrading-guard shape the
+  `approval_rules` refusal exists to prevent (found on review). `[[mcp]]`,
+  `[[hook]]` and `[outbox]` come from the environment and **never from the
+  operator's file**. Until 2026-09-23 they did: trial homes copied the
+  operator's config, a `session_end` hook ran `mecha distill` inside each
+  one, and the home's `graph` server was the owner's live graph, so eleven
+  synthetic sessions landed in it before anyone noticed. An operator server
+  now reaches a trial only by name in `[environment] live_servers`, a term
+  of the hash. An environment server that writes `${STORE}` gets its own
+  store under the home, built once per experiment from `stores/<name>/` and
   `stores/<name>.calls.jsonl` and copied in (every trial for a `single`,
   once for a lifetime); the default environment runs the real
   `mecha-graph-mcp` that way, on its own database *and its own graph
   config*, since the graph otherwise reads `~/.mecha-graph/config.toml`,
   which holds the owner's source tokens. The stores a lever left on reads —
   `learning/`, `skills/`, `charter.toml` — are seeded once into the home
-  from the environment directory, never from the real home and never
-  written back. The environment directory's whole content is a term of
-  every row's hash (`Environment::digest`), and a manifest with no
-  `[environment]` runs in `eval/envs/default`. **Every store path
-  in the rendered config is the home's**: an operator's `[outbox] dir`,
-  skills or messages directory is cleared, or a trial's drafts would
-  stage into the real outbox (found on review). The child's
-  environment is an **allowlist** on `Sandbox::child_env`'s shape: the
-  base set, the provider key variables, and the three that name the trial
-  — `MECHA_HOME` is not the only variable that moves a store, and an
-  exported `MECHA_LEARNING_DIR` would have pointed a trial at the real
-  learning store (found on review). Its cwd is the staged workspace, so
-  no `mecha.toml` in the runner's checkout layers over the arm. The runner
-  refuses a home that is, or contains, the real one, on `setup`'s rule for
-  a workspace. Nothing in a trial home is ever copied back: a rule learned
-  inside a trial that landed in `~/.mecha/learning/` would ride every real
-  run's cached prefix from then on.
+  from the environment directory, never from the real home and never written
+  back. The environment directory's whole content is a term of every row's
+  hash (`Environment::digest`), and a manifest with no `[environment]` runs
+  in `eval/envs/default`. **An environment holds files, never links**:
+  `collect_files`, which `digest` runs before anything is copied, refuses a
+  symlink anywhere in the directory, since `refuse_operator_home` sees only
+  the directory itself and a `learning -> ~/.mecha/learning` link would
+  carry the operator's store past it. `refuse_operator_home` runs in
+  `digest` as well as `base_config`, because `ExperimentStore::plan` digests
+  first and `status` never reaches `base_config`; the symlink walk lives in
+  `digest`, the earliest point that reads the directory at all. **Every
+  store path in the rendered config is the home's**: an operator's `[outbox]
+  dir`, skills or messages directory is cleared, or a trial's drafts would
+  stage into the real outbox (found on review). The child's environment is
+  an **allowlist** on `Sandbox::child_env`'s shape: the base set, the
+  provider key variables, and the three that name the trial — `MECHA_HOME`
+  is not the only variable that moves a store, and an exported
+  `MECHA_LEARNING_DIR` would have pointed a trial at the real learning store
+  (found on review). Its cwd is the staged workspace, so no `mecha.toml` in
+  the runner's checkout layers over the arm. The runner refuses a home that
+  is, or contains, the real one, on `setup`'s rule for a workspace. Nothing
+  in a trial home is ever copied back: a rule learned inside a trial that
+  landed in `~/.mecha/learning/` would ride every real run's cached prefix
+  from then on.
+- **Two arms under one condition are named, never refused.** An arm whose
+  hashes agree with the control's on every seed both have run is the same
+  condition under two names — deliberate in an A/A design, a defect otherwise
+  (`levers_on = ["learned_rules"]` over `full` is `full`). `exp run` warns
+  at plan time (`Manifest::identical_arms`, computed through `trials` so
+  its grouping cannot drift from the store's hashes), and `judge` flags the
+  arm (`same_condition_as_control`), leaving the verdict alone. The flag
+  compares **per seed**, over the seeds both arms have rows for: every such
+  seed's hashes must agree. Not equality over all rows (a `--limit`ed
+  sitting leaves *some* arm short, chosen by arm name since rows are planned
+  arm-major), and not any shared hash (a resumed experiment keeps a finished
+  row's stored hash, so one arm can carry an old hash that coincides with
+  the control's beside a new one that does not).
 - **A session in a trial home is `SessionKind::Experiment`** (D13), set by
   the runner through `MECHA_SESSION_KIND` — the second and last kind an
   environment may set, beside `test`. `runlog::Scan` hides it in the real

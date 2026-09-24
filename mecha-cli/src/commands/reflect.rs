@@ -938,6 +938,7 @@ mod tests {
     /// Fails on the old reads of `meta.workspace` and `meta.kind`.
     #[test]
     fn the_miner_reads_the_matched_keys_and_never_the_jail_or_the_kind() {
+        mecha_core::session::ignore_kind_env_for_tests();
         let dir = scratch("mecha-reflect-test");
         let s = session_in(
             &dir,

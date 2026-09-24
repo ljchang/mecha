@@ -516,7 +516,7 @@ where
     let mut busy: std::collections::BTreeSet<String> = Default::default();
     let mut inflight = FuturesUnordered::new();
     let mut ran = 0usize;
-    let mut announced: Option<(std::time::Instant, Vec<String>)> = None;
+    let mut announced: Option<(std::time::Instant, std::collections::BTreeSet<String>)> = None;
     // A row that could not be saved stops new starts but not the rows in
     // flight: returning at once would drop their futures while their
     // children run on, orphaned, with rows saved as `running`.
@@ -556,7 +556,9 @@ where
                             // saying it after every start of our own spams
                             // a partly contended pool (both found on review).
                             let ours = format!("exp {experiment} ");
-                            let others: Vec<String> = holders
+                            // A set: `Permits::live` lists in directory
+                            // order, which a peer's re-take reshuffles.
+                            let others: std::collections::BTreeSet<String> = holders
                                 .iter()
                                 .filter_map(|p| p.what.clone())
                                 .filter(|w| !w.starts_with(&ours))
@@ -2432,7 +2434,7 @@ fn judge_cmd(name: &str, json: bool) -> Result<()> {
         }
         if v.same_condition_as_control {
             println!(
-                "  same condition as `{control}`: every row carries the control's hash, so this arm measures noise"
+                "  same condition as `{control}`: on every seed both arms ran, this arm's hashes are the control's, so it measures noise"
             );
         }
         if manifest.kind == TrialKind::Lifetime {
