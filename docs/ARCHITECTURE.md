@@ -2207,7 +2207,15 @@ now makes the move one recorded event:
   confinement: bwrap and docker run the command
   with `--unshare-pid` / its own pid namespace and no `~/.mecha` mounted,
   landlock grants no path under the owner's home, and `mecha doctor`
-  reports an unconfined `shell` or a `[sandbox]` that mounts the mecha home.
+  reports an unconfined `shell` (attention) or a `[sandbox]` that mounts the
+  mecha home (broken). **Say it plainly: inside a pid-namespaced sandbox the
+  registry does not protect anything.** The ancestry walk reads the
+  namespace's `/proc`, where the host-side pid the `shell` tool registered
+  does not exist, so a confined command always reads as unregistered — the
+  protection there is entirely that `~/.mecha` is not mounted (review of
+  #294). The walk checks the reader's own pid first, because `bash -lc
+  '<one simple command>'` execs in place; a registry or an entry that cannot
+  be read refuses rather than reading as the owner's terminal.
 - **`--surface` cannot claim `chat`**, and inside a run the flag is ignored:
   the surface of a run's closure is always `chat`.
 - **Reopen is the same event reversed** (`move: reopen`, `undoes` naming the

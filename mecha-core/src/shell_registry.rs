@@ -10,11 +10,14 @@
 //! and recorded `owner-approved`, a forged verdict in the store whose purpose
 //! is to say who closed the task.
 //!
-//! So the posture now comes from here: a file the harness writes **before**
-//! the command can run a single instruction, keyed by the pid of the direct
-//! child it spawned (`bash`, `bwrap` or `docker`), removed when that child is
-//! gone. `mecha tasks set` walks its own ancestry and takes the posture of
-//! the nearest registered shell ([`nearest_registered_ancestor`]). The
+//! So the posture now comes from here: a file the harness writes
+//! **immediately after** spawning the command — keyed by the pid of the
+//! direct child it spawned (`bash`, `bwrap` or `docker`), removed when that
+//! child is gone. `mecha tasks set` checks its own pid and then walks its
+//! ancestry, taking the posture of the nearest registered shell
+//! ([`nearest_registered_ancestor`]); its own pid first, because `bash -lc
+//! '<one simple command>'` execs that command in place, so the pid the tool
+//! registered is often the reader itself (found on review of #294). The
 //! directory is fixed — `MECHA_HOME/runs/shells`, with no override of its
 //! own — so no variable the command text sets can point the reader at a
 //! registry it wrote itself (found on review of #294: a `MECHA_SHELLS_DIR`
@@ -33,10 +36,21 @@
 //! A start time that cannot be read on either side is taken as a match: that
 //! direction refuses a closure, never permits one.
 //!
-//! **What it does not see, named.** A command that detaches from its shell
-//! (so it is reparented away from the registered pid) escapes the ancestry
-//! walk; an unconfined shell can edit `~/.mecha` directly; and `MECHA_HOME`
-//! itself is the one environment input left. Redirecting it moves the config,
+//! **Unknown is never clean.** A registry directory that exists but cannot
+//! be read, or an entry for a live ancestor that cannot be parsed, is
+//! [`Lookup::Unreadable`], and `closure::decide` refuses it — only an absent
+//! directory or an absent entry reads as "no registered shell".
+//!
+//! **What it does not see, named.** The entry is written immediately after
+//! `spawn` returns, so there is a window of microseconds in which the command
+//! is running and not yet registered; a command that clears the posture
+//! variable and reads the registry inside that window reads as rule 4 (in
+//! practice `mecha tasks set` spends far longer starting its graph client
+//! before it consults the registry, but that is timing, not a guarantee). A
+//! command that detaches from its shell (so it is reparented away from the
+//! registered pid) escapes the ancestry walk; an unconfined shell can edit
+//! `~/.mecha` directly; and `MECHA_HOME` itself is the one environment input
+//! left. Redirecting it moves the config,
 //! the closure store and this registry together — but not the board: the
 //! graph server resolves its database from its own environment
 //! (`XDG_DATA_HOME`, `MECHA_GRAPH_DB`, or its default), not from
@@ -137,17 +151,84 @@ impl ShellRegistry {
         Ok(root)
     }
 
+    /// Open (creating) the registry, sweeping stale entries as it does —
+    /// the `shell` tool opens it once per spawn, which is what keeps the
+    /// directory from accumulating after a hard kill.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         crate::create_private_dir(&root).with_context(|| format!("creating {}", root.display()))?;
-        Ok(ShellRegistry { root })
+        let registry = ShellRegistry { root };
+        registry.sweep();
+        Ok(registry)
     }
 
     /// Open at the default location only if it exists — a reader must not
-    /// create the registry it is about to consult.
-    pub fn open_existing_default() -> Option<Self> {
-        let root = Self::default_root().ok()?;
-        root.is_dir().then_some(ShellRegistry { root })
+    /// create the registry it is about to consult. `Ok(None)` only when the
+    /// directory is absent; a path that exists but is not a readable
+    /// directory, or a home that cannot be resolved, is an `Err`: unknown is
+    /// never clean (review of #294).
+    pub fn open_existing_default() -> std::result::Result<Option<Self>, String> {
+        let root = Self::default_root().map_err(|e| format!("{e:#}"))?;
+        Self::open_existing(root)
+    }
+
+    /// [`Self::open_existing_default`] at an explicit root.
+    pub fn open_existing(root: PathBuf) -> std::result::Result<Option<Self>, String> {
+        match std::fs::metadata(&root) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("{}: {e}", root.display())),
+            Ok(m) if !m.is_dir() => Err(format!("{} is not a directory", root.display())),
+            Ok(_) => match std::fs::read_dir(&root) {
+                Ok(_) => Ok(Some(ShellRegistry { root })),
+                Err(e) => Err(format!("{}: {e}", root.display())),
+            },
+        }
+    }
+
+    /// Remove entries whose process is gone or whose pid now belongs to a
+    /// different process, and stray temporary files from an interrupted
+    /// write — so a harness killed with SIGKILL does not leave files behind
+    /// forever. Bounded and best-effort: it never fails the caller, and an
+    /// entry for a live process it cannot parse is left for `lookup` to
+    /// report as unreadable.
+    pub fn sweep(&self) {
+        const MAX_PER_SWEEP: usize = 256;
+        let Ok(dir) = std::fs::read_dir(&self.root) else {
+            return;
+        };
+        for entry in dir.flatten().take(MAX_PER_SWEEP) {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            // `<pid>.json`, or `.<pid>.<uuid>.tmp` from a write that never
+            // renamed into place.
+            let pid: Option<u32> = if let Some(stem) = name.strip_suffix(".json") {
+                stem.parse().ok()
+            } else if name.starts_with('.') && name.ends_with(".tmp") {
+                name[1..].split('.').next().and_then(|p| p.parse().ok())
+            } else {
+                None
+            };
+            let Some(pid) = pid else { continue };
+            let stale = if !crate::process_alive(pid) {
+                true
+            } else if name.ends_with(".json") {
+                // Alive: stale only if the entry names a different process
+                // start than the one now holding the pid.
+                std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<Entry>(&t).ok())
+                    .is_some_and(
+                        |e| matches!((e.proc_start, proc_start(pid)), (Some(a), Some(b)) if a != b),
+                    )
+            } else {
+                false
+            };
+            if stale {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
     }
 
     pub fn root(&self) -> &Path {
@@ -192,15 +273,50 @@ impl ShellRegistry {
 
     /// The live entry for `pid`, if there is one: the file parses, the
     /// process is alive, and it is the same process that was registered.
+    /// Every reading that is not a clean yes collapses to `None` here; the
+    /// ancestry walk uses [`Self::lookup_checked`], which keeps "absent"
+    /// and "could not be read" apart.
     pub fn lookup(&self, pid: u32) -> Option<Entry> {
-        let text = std::fs::read_to_string(self.path_of(pid)).ok()?;
-        let entry: Entry = serde_json::from_str(&text).ok()?;
-        if entry.pid != pid || !crate::process_alive(pid) {
-            return None;
+        match self.lookup_checked(pid) {
+            Lookup::Registered(entry) => Some(entry),
+            Lookup::Absent | Lookup::Unreadable(_) => None,
+        }
+    }
+
+    /// [`Self::lookup`], keeping absent and unreadable apart. A file that is
+    /// absent, or names a process that is dead or whose pid has since been
+    /// reused, is [`Lookup::Absent`] — determinably not this process's
+    /// registration. A file that exists for a live pid and cannot be read or
+    /// parsed, or whose recorded pid disagrees with its name, is
+    /// [`Lookup::Unreadable`]: unknown is never clean (review of #294).
+    pub fn lookup_checked(&self, pid: u32) -> Lookup {
+        let path = self.path_of(pid);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Lookup::Absent,
+            Err(e) if !crate::process_alive(pid) => {
+                let _ = e;
+                return Lookup::Absent;
+            }
+            Err(e) => return Lookup::Unreadable(format!("{}: {e}", path.display())),
+        };
+        if !crate::process_alive(pid) {
+            return Lookup::Absent;
+        }
+        let entry: Entry = match serde_json::from_str(&text) {
+            Ok(entry) => entry,
+            Err(e) => return Lookup::Unreadable(format!("{}: {e}", path.display())),
+        };
+        if entry.pid != pid {
+            return Lookup::Unreadable(format!(
+                "{} names pid {}, not {pid}",
+                path.display(),
+                entry.pid
+            ));
         }
         match (entry.proc_start, proc_start(pid)) {
-            (Some(recorded), Some(now)) if recorded != now => None,
-            _ => Some(entry),
+            (Some(recorded), Some(now)) if recorded != now => Lookup::Absent,
+            _ => Lookup::Registered(entry),
         }
     }
 }
@@ -215,17 +331,38 @@ pub fn proc_start(pid: u32) -> Option<u64> {
     rest.split_whitespace().nth(19)?.parse().ok()
 }
 
-/// The nearest ancestor of this process that is a registered shell, and its
-/// entry. Bounded, like `closure::run_ancestor`.
-pub fn nearest_registered_ancestor(registry: &ShellRegistry) -> Option<Entry> {
+/// What the registry says about one pid.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Lookup {
+    /// No registration for this process (none written, or one left by a
+    /// process that is gone or whose pid has been reused).
+    Absent,
+    /// A live registration.
+    Registered(Entry),
+    /// A registration exists for this live pid and could not be read.
+    Unreadable(String),
+}
+
+/// The nearest registered shell among this process **and** its ancestors,
+/// this process first — `bash -lc '<one simple command>'` execs the command
+/// in place, so the pid the `shell` tool registered is then the reader's own
+/// (found on review of #294: starting at the parent refused an interactive
+/// run's bare `mecha tasks set …`). Bounded, like `closure::run_ancestor`.
+/// Stops at the first pid whose entry is registered *or* unreadable: an
+/// unreadable registration nearer than any readable one is not skipped.
+pub fn nearest_registered_ancestor(registry: &ShellRegistry) -> Lookup {
     let mut pid = std::process::id();
     for _ in 0..64 {
-        pid = crate::closure::parent_of(pid)?;
-        if let Some(entry) = registry.lookup(pid) {
-            return Some(entry);
+        match registry.lookup_checked(pid) {
+            Lookup::Absent => {}
+            found => return found,
         }
+        pid = match crate::closure::parent_of(pid) {
+            Some(parent) => parent,
+            None => return Lookup::Absent,
+        };
     }
-    None
+    Lookup::Absent
 }
 
 #[cfg(test)]
@@ -337,13 +474,96 @@ mod tests {
         else {
             return; // adopted by init or off Linux: nothing to walk
         };
-        assert!(nearest_registered_ancestor(&reg).is_none());
+        assert_eq!(nearest_registered_ancestor(&reg), Lookup::Absent);
         let _held = reg
             .register(grandparent, Some(RunPosture::Interactive), None)
             .unwrap();
-        let found = nearest_registered_ancestor(&reg).expect("grandparent is registered");
+        let Lookup::Registered(found) = nearest_registered_ancestor(&reg) else {
+            panic!("grandparent is registered");
+        };
         assert_eq!(found.pid, grandparent);
         assert_eq!(found.posture(), Ok(RunPosture::Interactive));
+        let _ = std::fs::remove_dir_all(reg.root());
+    }
+
+    /// `bash -lc '<one simple command>'` execs in place, so the registered
+    /// pid is the reader's own. On the previous head the walk began at the
+    /// parent and missed it (review of #294).
+    #[test]
+    fn a_registration_for_this_very_process_is_found() {
+        let reg = registry();
+        let _held = reg
+            .register(std::process::id(), Some(RunPosture::Interactive), None)
+            .unwrap();
+        let Lookup::Registered(found) = nearest_registered_ancestor(&reg) else {
+            panic!("this process is registered");
+        };
+        assert_eq!(found.pid, std::process::id());
+        let _ = std::fs::remove_dir_all(reg.root());
+    }
+
+    /// An entry for a live ancestor that will not parse is unreadable, not
+    /// absent, and the walk stops there rather than skipping past it.
+    #[test]
+    fn an_unparseable_entry_for_a_live_process_is_unreadable_not_absent() {
+        let reg = registry();
+        std::fs::write(reg.path_of(std::process::id()), b"{ not json").unwrap();
+        assert!(matches!(
+            reg.lookup_checked(std::process::id()),
+            Lookup::Unreadable(_)
+        ));
+        assert!(matches!(
+            nearest_registered_ancestor(&reg),
+            Lookup::Unreadable(_)
+        ));
+        let _ = std::fs::remove_dir_all(reg.root());
+    }
+
+    /// Absent is `Ok(None)`; a path that exists but is not a directory is an
+    /// error, never "no registry".
+    #[test]
+    fn an_absent_registry_is_none_and_a_broken_one_is_an_error() {
+        let base = std::env::temp_dir().join(format!("mecha-shells-open-{}", uuid::Uuid::new_v4()));
+        assert_eq!(
+            ShellRegistry::open_existing(base.clone()).map(|r| r.is_some()),
+            Ok(false)
+        );
+        std::fs::write(&base, b"a file, not a directory").unwrap();
+        assert!(ShellRegistry::open_existing(base.clone()).is_err());
+        let _ = std::fs::remove_file(&base);
+    }
+
+    /// Opening sweeps entries for dead processes and stray temporary files,
+    /// and leaves a live registration alone.
+    #[test]
+    fn opening_sweeps_dead_entries_and_stray_temporaries() {
+        let reg = registry();
+        let dead = 4_000_000u32;
+        let dead_entry = reg.path_of(dead);
+        std::fs::write(
+            &dead_entry,
+            serde_json::to_vec(&Entry {
+                pid: dead,
+                posture: "delegated".into(),
+                call_id: None,
+                started_at: Utc::now(),
+                proc_start: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let tmp = reg.root().join(format!(".{dead}.abc.tmp"));
+        std::fs::write(&tmp, b"half").unwrap();
+        let _live = reg
+            .register(std::process::id(), Some(RunPosture::Delegated), None)
+            .unwrap();
+        let reopened = ShellRegistry::open(reg.root().to_path_buf()).unwrap();
+        assert!(!dead_entry.exists(), "dead entry swept");
+        assert!(!tmp.exists(), "stray temporary swept");
+        assert!(
+            reopened.lookup(std::process::id()).is_some(),
+            "live entry kept"
+        );
         let _ = std::fs::remove_dir_all(reg.root());
     }
 }

@@ -213,12 +213,20 @@ pub fn check_shell_confinement(
         if home.starts_with(&path) || path.starts_with(&home) {
             out.push(Finding {
                 component: "sandbox".to_string(),
-                severity: Severity::Attention,
+                // Broken, not Attention: inside a pid-namespaced sandbox the
+                // ancestry walk cannot see the host-side registration, so the
+                // guard's only protection there is that the home is not
+                // mounted — with it mounted, a confined command that clears
+                // the posture variable is recorded as the owner (review of
+                // #294). The protection is failing now, not overdue.
+                severity: Severity::Broken,
                 summary: format!("the sandbox mounts the mecha home ({how})"),
                 detail: format!(
                     "`{}` in `[sandbox] {how}` contains or sits inside {}, so a confined \
                      command can reach the shell registry and the closure store the \
-                     closure guard reads. Mount something narrower.",
+                     closure guard reads — and inside the sandbox's pid namespace the \
+                     guard cannot see the harness's registration, so such a command can \
+                     be recorded as the owner. Mount something narrower.",
                     path.display(),
                     home.display()
                 ),

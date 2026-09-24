@@ -562,3 +562,47 @@ fn an_uncertain_closure_with_the_board_at_neither_end_stays_uncertain() {
         Some(id)
     );
 }
+
+/// The `shell` tool registers the pid of the process it spawned, and `bash
+/// -lc '<one simple command>'` execs that command in place — so for a bare
+/// `mecha tasks set …` the registered pid *is* the reader's own. The walk
+/// must check its own pid first; on the previous head it started at the
+/// parent, missed the registration, and refused an interactive run's
+/// legitimate close under rule 5 (review of #294). `exec` makes the
+/// in-place replacement deterministic here, and the shell waits on stdin so
+/// the registration is written before the binary starts, as it is in the
+/// harness (where `mecha tasks set`'s startup outlasts the write).
+#[test]
+fn a_command_exec_d_in_place_by_its_registered_shell_finds_its_own_registration() {
+    use std::io::Write;
+    let Some(f) = Fixture::new("") else {
+        return;
+    };
+    let mut child = Command::new("bash")
+        .args([
+            "-c",
+            "read -r _; exec \"$0\" tasks set task-1 --status done",
+            env!("CARGO_BIN_EXE_mecha"),
+        ])
+        .current_dir(f.root.join("work"))
+        .env("MECHA_HOME", f.root.join("home"))
+        .env("MECHA_SESSION_KIND", "test")
+        .env(mecha_core::closure::POSTURE_ENV, "interactive")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _registration = f
+        .shells()
+        .register(child.id(), Some(RunPosture::Interactive), Some("call-exec"))
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    ok(&out);
+    let closed = f.store().latest_closure("task-1").unwrap().unwrap();
+    assert_eq!(
+        (closed.actor, closed.surface),
+        (Actor::OwnerApproved, Surface::Chat)
+    );
+}
