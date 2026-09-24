@@ -264,7 +264,7 @@ closed set of run options does, no model sits in the gate, and a change that
 would widen mecha's own confinement is never even measured.
 
 **It records what work serves and how it went.** Your
-[charter](/docs/features/appraisal) ranks standing priorities. A run can put
+[charter](/docs/features/charter) ranks standing priorities. A run can put
 its goal to you, record the answer, and measure whether later plan writes
 change that goal. Appraisal keeps positive and negative evidence separate,
 with a label derived from the record. Closing a task or a project's last open
@@ -290,7 +290,7 @@ or edits your charter.
   each one cost to learn.
 - [Security model](/docs/features/security) — read this before giving an agent
   anything private.
-- [Goals and appraisal](/docs/features/appraisal) — the charter, and how a run is
+- [How appraisal works](/docs/features/appraisal-overview) — the charter, and how a run is
   measured against what it was for.
 - [The factory](/docs/factory/overview) — publishing out, and typed requests in.
 - [CLI reference](/docs/reference/cli) — every command and flag.

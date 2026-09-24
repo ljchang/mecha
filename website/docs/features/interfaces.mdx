@@ -192,7 +192,7 @@ The modals open onto the review surfaces:
 |---|---|
 | `/triggers` | [scheduled prompts](/docs/features/triggers) — see, edit, run, cancel |
 | `/skills` | [the procedures this agent carries](/docs/features/skills#skills--what-this-agent-knows-how-to-do) — and the one you mean, in full |
-| `/charter` | [the standing priorities](/docs/features/appraisal#the-charter--what-mecha-is-for-in-your-own-words) every run carries, ranked — `e` hands the file to `$EDITOR` |
+| `/charter` | [the standing priorities](/docs/features/charter) every run carries, ranked — `e` hands the file to `$EDITOR` |
 | `/queues` | [every store waiting on you](/docs/features/queues), in one list, including the graph's merge queue |
 | `/learning` | [reflections, rules and proposals](/docs/features/learning) — read, edit, refuse |
 | `/outbox` | [staged outbound drafts](/docs/features/outbox) — read, edit, send, reject |
@@ -224,8 +224,9 @@ Without a configured window it shows the prompt size with nothing to compare
 it to. See [Compaction](/docs/features/compaction).
 
 It also carries an [affect badge](/docs/features/appraisal#where-a-label-actually-shows-up)
-after a run — but **only** when the derived label is not neutral, which is
-uncommon. It clears when the next run starts and on `/clear`, because the label
+after a run — but **only** when the run signed something either way: the
+valence (`+1.0 −0.5`), with the derived label before it when there is one. It
+clears when the next run starts and on `/clear`, because the label
 describes the run that just finished and would otherwise read as the new
 conversation's own mood.
 

@@ -276,7 +276,7 @@ A line may also carry a `[line.sensor]` table — a `kind` from a closed set and
 a `setpoint` you wrote, such as `kind = "outbox_age"` with `setpoint = "24h"` —
 so that runs which touch what the sensor watches are appraised against that
 line. The template you are handed shows one commented out;
-[the appraisal page](/docs/features/appraisal#the-charter--what-mecha-is-for-in-your-own-words)
+[the charter page](/docs/features/charter)
 lists the kinds and their units.
 
 `mecha charter edit` creates a commented template if you have no file yet and
@@ -290,8 +290,8 @@ One authoring trap worth knowing before you start: a line shaped like *"never
 disappoint anyone"* produces sycophancy and withheld bad news. Point it the
 other way, as the first example above does.
 
-See [Goals and appraisal](/docs/features/appraisal) for what the charter is
-part of.
+See [How appraisal works](/docs/features/appraisal-overview) for what the
+charter is part of.
 
 ## 6. What is deliberately not set up
 
@@ -310,6 +310,6 @@ mecha trigger daemon --print-unit > ~/.config/systemd/user/mecha-triggers.servic
 ## Next
 
 - [First run](/docs/getting-started/first-run) — start it and use it
-- [Goals and appraisal](/docs/features/appraisal) — the charter, in full
+- [The charter](/docs/features/charter) — every rule and surface, in full
 - [Configuration](/docs/getting-started/configuration) — every setting, and what derives from what
 - [Images](/docs/features/images) — if you want it to look at screenshots
