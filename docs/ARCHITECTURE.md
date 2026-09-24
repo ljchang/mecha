@@ -1118,14 +1118,26 @@ do both. `--paste` covers the headless case instead and covers it better: the
 browser displays the whole redirect even when nothing is listening, so no
 tunnel, no forwarded port, and no browser on the machine holding the grant.
 
-**Three quadrants again, and the third is the one to get right.** Reads are
+**Four quadrants, and two of them are the ones to get right.** Reads are
 `readOnlyHint` and never `openWorldHint` — a fetch reaches only Google, which
 already holds the file — while config forces `untrusted_input`, because a
 shared document is other people's words and a *comment* is an injection vector
-invisible in the rendered page. Writes carry `openWorldHint` and are
-outbox-routed, on the argument that **writing into a document a third party
-can read is exfiltration**: it looks like a local edit and it is a publish,
-with far more bandwidth than `http_fetch`'s query string. `docs_trash` is
+invisible in the rendered page. The edit verbs (`docs_append`, `docs_replace`,
+`sheets_write`) carry `openWorldHint` and are outbox-routed, on the argument
+that **writing into a document a third party can read is exfiltration**: it
+looks like a local edit and it is a publish, with far more bandwidth than
+`http_fetch`'s query string. **The create verbs (`docs_create`,
+`sheets_create`, `slides_create`) are private writes**, and do not stage: a
+new file lands in the owner's Drive, nobody else can read it, and the schema
+takes no `file_id` or folder, so it cannot write into anything that already
+exists (`PROVENANCE-DESIGN.md` §2). They say `openWorldHint: false`
+*outright*. An absent key is the same `Egress::None` to core, but it reads as
+an omission, and `mcp::assert_private_writes` refuses it. That test is the
+guard that replaced the outbox's review. It derives which tools claim the
+quadrant, and judges each one's schema against a per-tool allowlist of
+content fields. **Do not "fix" a create verb back to `openWorldHint: true`**
+without the owner, because that would reopen the friction the ruling closed.
+`docs_trash` is
 neither — it reaches nobody, so staging it would make review circular, and it
 is not read-only, or an unattended read-only run could empty a folder at 7am.
 `destructiveHint` alone, beside `mail_triage`. There is **no permanent-delete
