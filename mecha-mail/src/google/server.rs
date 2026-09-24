@@ -425,6 +425,9 @@ mod tests {
     #[test]
     fn reads_are_read_only_and_writes_are_open_world() {
         let tools = tool_definitions();
+        // No private writes on this single-provider surface; pinned, so one
+        // added later cannot execute unstaged with its schema unread.
+        crate::mcp::assert_private_writes(&tools, &[]);
         let annotation = |name: &str, key: &str| -> bool {
             tools
                 .iter()
