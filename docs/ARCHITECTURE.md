@@ -959,9 +959,12 @@ invariants:
   Approval cards render it, and so does the `ToolCall` event every transcript
   is built from. A read-only `web_open` reaches no approver, so the
   transcript is where it is seen.
-- **A result whose host the query named gets no handle.** Blindness rests on
-  the backend, not the model, having supplied the URL, and a query-echoing
-  backend would break that. So the check is made where the handle is issued.
+- **A result whose URL carries what the query wrote gets no handle**
+  (`search::provenance`). Blindness rests on the backend, not the model,
+  having supplied the URL. Both an echoing backend and a redirect-wrapping one
+  would break that. The check is made where the handle is issued, with the
+  same parser on both sides and the result percent-decoded twice. A query
+  that merely mentions a domain keeps that domain's pages.
 
 What it leaks is which result was picked (`log2(N)` bits per call) to
 whoever serves that page. A per-conversation budget of blind calls is the

