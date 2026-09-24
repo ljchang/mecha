@@ -299,7 +299,7 @@ changes what a run does. Dependencies are the only ordering.
 | **1f** | **One commitment record, guilt per commitment.** `workflow::Commitment` absorbs `anticipation::Commitment`; drafts, parked questions and accepted front-door requests are commitments by construction; guilt per item = excess over patience × line rank; `anticipated_guilt` becomes a readout (the maximum), with old records still readable. | S7, R12 | 1e | each pending commitment has its own value; the homeostat readout matches the maximum; no consumer reads the scalar |
 | **1g** | **Store every counterfactual comparison.** Steer-probe and validation verdicts today, and the comparisons phases 2, 3 and 5 add, write one record each: situation keys, goal kind, call class, the arms, the deciding validator, the verdict, pointers — clean sessions with a readable tool surface only. | X1, O4 | — | a `--probe` run leaves records a second read returns; tainted sessions leave none |
 | **1h** | **The situation brief, assembled and recorded.** The goal chain, a harness-side board read reduced to counts and pointers, per-commitment readings (after 1f), local time and quiet hours, seats and runs in flight, budget — recorded on the run, delivered nowhere. Small readers for `/slots` occupancy and a voice call in progress. | B1 | 1a (1f for commitments) | on fixture runs of each kind (delegated, trigger, web) with a seeded board, charter and backlog, the recorded brief carries every field; no brief text appears in any provider request |
-| **1i** | **Numbers never reach the model.** A test over both provider encoders: no sensor number, setpoint or numeric valence in any request. | G4 | — | the test fails when a status line carrying a sensor number is injected |
+| **1i** | **Numbers never reach the model as text.** Half exists: `planning_sensor_metadata_never_reaches_either_provider` (`provider/anthropic.rs`) already proves `Message::planning` metadata is byte-identical out of both encoders. The gap is a sensor number, setpoint or numeric valence arriving as *block text* — a status line, a leaked brief. Add that test beside the existing one. | G4 | — | the new test fails when a status line carrying a sensor reading is injected into a tool result or user turn; the existing metadata test still passes |
 
 1a, 1b, 1e, 1g and 1i can proceed in parallel; 1h follows 1a. The phase-1 readout — anchored
 share of long runs, verdicts per week by channel, per-item reading variance —
@@ -811,8 +811,10 @@ the brief is words and bands.
 
 #### G4. Numbers never reach the model
 
-Codify with a test: no provider-encoded request contains a sensor number, a
-setpoint or a numeric valence. Appraisal *text* may reach a run by design
+Half of this is tested: `planning_sensor_metadata_never_reaches_either_provider`
+(`provider/anthropic.rs`) proves `Message::planning` metadata never reaches
+either encoder. Codify the other half: no provider-encoded request contains a
+sensor number, a setpoint or a numeric valence as block text. Appraisal *text* may reach a run by design
 (I2, I3, R19) — the owner's ruling that an appraisal is an interpretation —
 but the numbers stay harness-side (containment 2; R21), because a model
 handed a bounded numeric target drifts into maximising it. Today this holds
