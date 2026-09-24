@@ -60,6 +60,12 @@ impl Fixture {
     }
 
     fn command(&self, args: &[&str], posture: Option<&str>) -> Output {
+        self.command_with(args, posture, &[])
+    }
+
+    /// As [`Self::command`], with extra environment the command text could
+    /// have exported — what a model's `bash -lc` hands the binary.
+    fn command_with(&self, args: &[&str], posture: Option<&str>, env: &[(&str, &str)]) -> Output {
         let mut c = Command::new(env!("CARGO_BIN_EXE_mecha"));
         c.args(args)
             .current_dir(self.root.join("work"))
@@ -68,6 +74,9 @@ impl Fixture {
             .env_remove(mecha_core::closure::POSTURE_ENV);
         if let Some(p) = posture {
             c.env(mecha_core::closure::POSTURE_ENV, p);
+        }
+        for (k, v) in env {
+            c.env(k, v);
         }
         c.output().unwrap()
     }
@@ -232,6 +241,29 @@ fn a_delegated_shell_that_sets_the_variable_itself_is_still_refused() {
         &f.command(
             &["tasks", "set", "task-1", "--status", "done"],
             Some("interactive"),
+        ),
+        "delegated run's shell",
+    );
+    assert_eq!(f.status(), "next");
+    assert!(records(&f.root).is_empty());
+}
+
+/// Review of #294: the registry's reader used to honour `MECHA_SHELLS_DIR`,
+/// so a delegated run's command could point it at an empty directory, drop
+/// the posture variable, and read as the owner's terminal (rule 4). The
+/// location has no override now: the command is still refused under its
+/// registered delegated shell. Fails on the head that honoured the variable.
+#[test]
+fn a_command_cannot_point_the_registry_somewhere_else() {
+    let Some(f) = Fixture::new("") else { return };
+    let _shell = f.under_shell(Some(RunPosture::Delegated));
+    let decoy = f.root.join("decoy-shells");
+    std::fs::create_dir_all(&decoy).unwrap();
+    refused(
+        &f.command_with(
+            &["tasks", "set", "task-1", "--status", "done"],
+            None,
+            &[("MECHA_SHELLS_DIR", decoy.to_str().unwrap())],
         ),
         "delegated run's shell",
     );

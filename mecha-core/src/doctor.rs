@@ -175,11 +175,6 @@ fn owner_setpoint(
     ))
 }
 
-/// Examine every store under `home` and report what is wrong.
-///
-/// `now` is injected for testability; nothing here consults the clock.
-/// Best-effort throughout: each check appends what it found, a failed check
-/// appends a finding about the failure, and no check can stop another.
 /// Whether the `shell` tool runs confined, and confined away from the mecha
 /// home. Not a store, so not in [`examine`]: the caller hands in the loaded
 /// `[sandbox]`. The closure guard (`closure::decide`) and the provenance of
@@ -234,6 +229,11 @@ pub fn check_shell_confinement(
     out
 }
 
+/// Examine every store under `home` and report what is wrong.
+///
+/// `now` is injected for testability; nothing here consults the clock.
+/// Best-effort throughout: each check appends what it found, a failed check
+/// appends a finding about the failure, and no check can stop another.
 pub fn examine(home: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     let mut findings = Vec::new();
     // The owner's setpoints, read once for the store checks below. A charter
