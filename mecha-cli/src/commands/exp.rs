@@ -86,6 +86,15 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// What the trials say, apart from the verdict: per arm (pass rate,
+    /// pass^k and pass@k across seeds, turns, tokens, wall time, tool
+    /// errors), per task, and for a lifetime the pass rate along the
+    /// sequence.
+    Report {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// The whole record — manifest, trials, judgements — as one JSON.
     Export { name: String },
 }
@@ -101,6 +110,7 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
         } => run(&name, limit, dry_run, jobs).await,
         Cmd::Status { name, json } => status(&name, json).await,
         Cmd::Judge { name, json } => judge_cmd(&name, json),
+        Cmd::Report { name, json } => report_cmd(&name, json).await,
         Cmd::Export { name } => export(&name),
     }
 }
@@ -2376,6 +2386,218 @@ fn lifetime_readout(
         l.stages_unknown = h.unknown;
     }
     Ok(out)
+}
+
+async fn report_cmd(name: &str, json: bool) -> Result<()> {
+    let store = ExperimentStore::open_default(name)?;
+    let manifest = store.manifest()?;
+    // The plan, as `status` reads it, so a trial not yet started counts as
+    // pending rather than as nothing; then every stored row the plan does
+    // not name (an arm since dropped from the manifest), so no row goes
+    // uncounted. The store alone when the design cannot be planned.
+    let planned: Result<_> = async {
+        let cases = cases_for(&manifest).await?;
+        let real = mecha_core::config::Config::load_global()?;
+        let (provider, model) = provider_and_model(&real)?;
+        let ids: Vec<String> = cases.iter().map(|c| c.id.clone()).collect();
+        let base = std::env::current_dir().context("cannot determine the working directory")?;
+        store.plan(&manifest, &ids, &provider, &model, &base)
+    }
+    .await;
+    let (stored, stored_skipped) = store.trials()?;
+    let (mut trials, skipped): (Vec<Trial>, usize) = match planned {
+        Ok((planned, skipped)) => (planned, skipped),
+        Err(e) => {
+            eprintln!(
+                "mecha exp: the design's tasks could not be planned ({e:#}); reporting the store's rows only"
+            );
+            (Vec::new(), stored_skipped)
+        }
+    };
+    let seen: std::collections::BTreeSet<String> = trials.iter().map(|t| t.id.clone()).collect();
+    trials.extend(stored.into_values().filter(|t| !seen.contains(&t.id)));
+    let r = mecha_core::exp_report::build(&manifest, &trials);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&r)?);
+        return Ok(());
+    }
+    print!("{}", render_report(&r, skipped));
+    Ok(())
+}
+
+/// The report as tables. A missing rate prints as a dash, never a zero.
+fn render_report(r: &mecha_core::exp_report::Report, skipped: usize) -> String {
+    use std::fmt::Write;
+    let pct = |x: Option<f64>| x.map_or("—".to_string(), |v| format!("{:.0}%", v * 100.0));
+    let num = |x: Option<f64>, unit: &str| x.map_or("—".to_string(), |v| format!("{v:.1}{unit}"));
+    let k = |n: u64| {
+        if n >= 10_000 {
+            format!("{:.0}k", n as f64 / 1000.0)
+        } else if n >= 1000 {
+            format!("{:.1}k", n as f64 / 1000.0)
+        } else {
+            n.to_string()
+        }
+    };
+    let mut out = String::new();
+    let control = r
+        .control
+        .as_deref()
+        .map(|c| format!(", control `{c}`"))
+        .unwrap_or_default();
+    let _ = writeln!(out, "{} ({:?}{control})", r.name, r.kind);
+    if skipped > 0 {
+        let _ = writeln!(
+            out,
+            "  {skipped} trial file(s) could not be read and are not counted"
+        );
+    }
+    let cols = [
+        "arm",
+        "done",
+        "failed",
+        "pending",
+        "running",
+        "unknown",
+        "pass",
+        "pass^k",
+        "pass@k",
+        "turns",
+        "tokens in/out",
+        "wall",
+        "tools (err)",
+        "jobs",
+    ];
+    let widths = [16usize, 5, 6, 7, 7, 7, 11, 7, 7, 6, 14, 7, 11, 5];
+    let line = |cells: &[String]| {
+        cells
+            .iter()
+            .zip(widths)
+            .enumerate()
+            .map(|(i, (c, w))| {
+                if i == 0 {
+                    format!("{c:<w$}")
+                } else {
+                    format!("{c:>w$}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let head: Vec<String> = cols.iter().map(|c| c.to_string()).collect();
+    let _ = writeln!(out, "\n{}", line(&head));
+    for a in &r.arms {
+        let jobs = if a.jobs_seen.is_empty() {
+            "—".to_string()
+        } else {
+            a.jobs_seen
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let arm = if a.off_manifest {
+            format!("{}*", a.arm)
+        } else {
+            a.arm.clone()
+        };
+        let row = [
+            arm,
+            a.done.to_string(),
+            a.failed.to_string(),
+            a.pending.to_string(),
+            a.running.to_string(),
+            a.unknown.to_string(),
+            format!("{}/{} {}", a.passed, a.graded, pct(a.pass_rate)),
+            format!("{}/{}", a.tasks_always, a.tasks_graded),
+            format!("{}/{}", a.tasks_ever, a.tasks_graded),
+            // A mean over fewer rows than finished says so, and totals over
+            // no stats are a dash: nothing happened, not nothing went wrong.
+            format!(
+                "{}{}",
+                num(a.mean_turns, ""),
+                if a.with_stats < a.done { "*" } else { "" }
+            ),
+            if a.with_stats == 0 {
+                "—".to_string()
+            } else {
+                format!("{} / {}", k(a.input_tokens), k(a.output_tokens))
+            },
+            format!(
+                "{}{}",
+                num(a.mean_wall_secs, "s"),
+                if a.with_wall < a.done { "*" } else { "" }
+            ),
+            if a.with_stats == 0 {
+                "—".to_string()
+            } else {
+                format!("{} ({})", a.tool_calls, a.tool_errors)
+            },
+            jobs,
+        ];
+        let _ = writeln!(out, "{}", line(&row));
+    }
+    let _ = writeln!(
+        out,
+        "  pass^k: tasks passed on every run; pass@k: on at least one (across seeds and repetitions).\n  turns and wall are means over done trials with a readable record (* = over fewer than done; --json has the counts);\n  tokens and tool calls are totals over the same trials"
+    );
+    if r.arms.iter().any(|a| a.off_manifest) {
+        let _ = writeln!(
+            out,
+            "  * an arm the manifest no longer names, whose rows are still stored"
+        );
+    }
+    if r.arms.iter().any(|a| a.unknown > 0) {
+        let _ = writeln!(
+            out,
+            "  unknown: a status this build cannot read, neither rerun nor judged; a lifetime stops at one"
+        );
+    }
+    if !r.tasks.is_empty() {
+        let arms: Vec<&String> = r.arms.iter().map(|a| &a.arm).collect();
+        let _ = write!(out, "\n{:<28}", "task");
+        for a in &arms {
+            let _ = write!(out, " {:>12}", a);
+        }
+        let _ = writeln!(out);
+        for t in &r.tasks {
+            let _ = write!(out, "{:<28}", t.task);
+            for a in &arms {
+                let c = t.cells.get(*a).copied().unwrap_or_default();
+                let cell = if c.runs == 0 {
+                    "—".to_string()
+                } else {
+                    format!("{}/{}", c.passed, c.runs)
+                };
+                let _ = write!(out, " {:>12}", cell);
+            }
+            let _ = writeln!(out);
+        }
+    }
+    for c in &r.curves {
+        let _ = writeln!(
+            out,
+            "\n{}: pass by position (early failure {}, late {})",
+            c.arm,
+            pct(c.early_failure),
+            pct(c.late_failure)
+        );
+        let line: Vec<String> = c
+            .points
+            .iter()
+            .map(|(p, n, k)| format!("{p}:{k}/{n}"))
+            .collect();
+        let _ = writeln!(
+            out,
+            "  {}",
+            if line.is_empty() {
+                "—".to_string()
+            } else {
+                line.join("  ")
+            }
+        );
+    }
+    out
 }
 
 fn judge_cmd(name: &str, json: bool) -> Result<()> {
