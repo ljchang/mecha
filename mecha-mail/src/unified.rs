@@ -876,54 +876,6 @@ fn calendar_rows(
         .collect())
 }
 
-/// Resolve a caller's window bound, or say why it could not be.
-///
-/// The model has no clock, so a window it computes itself is only as good as
-/// the date it was told — on 2026-09-14 a run with a stale date asked for
-/// `time_min: 2026-09-13T00:00:00-04:00` and the calendar answered that
-/// window faithfully. Letting the model write `today` and resolving it here
-/// puts the decision where a real clock is. An RFC 3339 stamp passes through
-/// untouched, so every window that worked before still does.
-fn resolve_window(
-    raw: &str,
-    tz: Option<chrono_tz::Tz>,
-    now: chrono::DateTime<chrono::Utc>,
-    bound: crate::time::Bound,
-) -> Result<String, String> {
-    match crate::time::resolve_bound(raw, tz, now, bound) {
-        crate::time::Resolved::At(stamp) => Ok(stamp),
-        crate::time::Resolved::Passthrough => Ok(raw.to_string()),
-        // Named rather than guessed. Resolving against the machine's clock
-        // would reproduce the original bug — this server runs where `TZ` is
-        // UTC — so the refusal says which variable is missing and what to
-        // send instead.
-        crate::time::Resolved::NeedsZone => Err(format!(
-            "`{raw}` is a relative time and this server has no timezone configured, so it \
-             cannot know which day you mean. Set MECHA_TZ in the mail server's [[mcp]] env \
-             to an IANA name, or send an RFC 3339 timestamp instead."
-        )),
-    }
-}
-
-/// The window an answer actually covers, and the clock it was resolved
-/// against.
-///
-/// Prose rather than a JSON field because `calendar_list_events` answers with
-/// a JSON *array* and has nowhere to put one; `calendar_freebusy` answers
-/// with an object and carries the same two facts as `time_min`/`time_max`
-/// plus an `as_of` key instead.
-fn window_note(
-    time_min: &str,
-    time_max: &str,
-    now: chrono::DateTime<chrono::Utc>,
-    tz: Option<chrono_tz::Tz>,
-) -> String {
-    format!(
-        "window {time_min} .. {time_max} — {}",
-        crate::time::as_of(now, tz)
-    )
-}
-
 fn with_notes(body: String, failures: &[String]) -> String {
     if failures.is_empty() {
         body
@@ -1484,20 +1436,11 @@ impl MailTools {
                 // `MECHA_TZ` or nothing, and the stamp names the one it used.
                 let tz = crate::time::configured_zone();
                 let wz = crate::time::window_zone();
-                let time_min = match str_arg("time_min") {
-                    Some(raw) => match resolve_window(&raw, wz, now, crate::time::Bound::Start) {
-                        Ok(v) => v,
+                let (time_min, time_max) =
+                    match crate::time::window(str_arg("time_min"), str_arg("time_max"), wz, now) {
+                        Ok(w) => w,
                         Err(e) => return fail(e),
-                    },
-                    None => now.to_rfc3339(),
-                };
-                let time_max = match str_arg("time_max") {
-                    Some(raw) => match resolve_window(&raw, wz, now, crate::time::Bound::End) {
-                        Ok(v) => v,
-                        Err(e) => return fail(e),
-                    },
-                    None => (now + chrono::Duration::days(7)).to_rfc3339(),
-                };
+                    };
                 let calendar_id = str_arg("calendar_id");
                 // A named calendar is account-scoped, so it needs its account.
                 let mode = match calendar_id.as_deref() {
@@ -1536,7 +1479,7 @@ impl MailTools {
                 // they were — the tool confirming the premise instead of
                 // contradicting it. Both shapes now carry the window and the
                 // clock it was resolved against.
-                let stamp = window_note(&time_min, &time_max, now, wz);
+                let stamp = crate::time::window_note(&time_min, &time_max, now, wz);
                 if events.is_empty() {
                     // The window once, not twice: this line used to name it
                     // itself, and `stamp` now says the same thing plus the
@@ -1555,20 +1498,11 @@ impl MailTools {
                 // `MECHA_TZ` or nothing, and the stamp names the one it used.
                 let tz = crate::time::configured_zone();
                 let wz = crate::time::window_zone();
-                let time_min = match str_arg("time_min") {
-                    Some(raw) => match resolve_window(&raw, wz, now, crate::time::Bound::Start) {
-                        Ok(v) => v,
+                let (time_min, time_max) =
+                    match crate::time::window(str_arg("time_min"), str_arg("time_max"), wz, now) {
+                        Ok(w) => w,
                         Err(e) => return fail(e),
-                    },
-                    None => now.to_rfc3339(),
-                };
-                let time_max = match str_arg("time_max") {
-                    Some(raw) => match resolve_window(&raw, wz, now, crate::time::Bound::End) {
-                        Ok(v) => v,
-                        Err(e) => return fail(e),
-                    },
-                    None => (now + chrono::Duration::days(7)).to_rfc3339(),
-                };
+                    };
                 let (busy, failures) = match self
                     .freebusy(&time_min, &time_max, account_arg.as_deref())
                     .await
@@ -1862,7 +1796,7 @@ mod tests {
     #[test]
     fn a_window_answer_states_the_clock_it_was_resolved_against() {
         let asked_for = "2026-09-13T00:00:00-04:00";
-        let note = super::window_note(
+        let note = crate::time::window_note(
             asked_for,
             "2026-09-13T23:59:59-04:00",
             "2026-09-17T11:15:00Z".parse().unwrap(),
@@ -1889,17 +1823,18 @@ mod tests {
         let tz = Some("America/New_York".parse().unwrap());
 
         // 02:37Z on the 14th is 22:37 on the 13th where the owner is.
-        let resolved = super::resolve_window("today", tz, now, crate::time::Bound::Start).unwrap();
+        let resolved =
+            crate::time::resolve_window("today", tz, now, crate::time::Bound::Start).unwrap();
         assert!(resolved.starts_with("2026-09-13T00:00:00"), "{resolved}");
 
         let untouched = "2026-09-20T09:00:00-04:00";
         assert_eq!(
-            super::resolve_window(untouched, tz, now, crate::time::Bound::Start).unwrap(),
+            crate::time::resolve_window(untouched, tz, now, crate::time::Bound::Start).unwrap(),
             untouched
         );
 
         let refused =
-            super::resolve_window("today", None, now, crate::time::Bound::Start).unwrap_err();
+            crate::time::resolve_window("today", None, now, crate::time::Bound::Start).unwrap_err();
         assert!(
             refused.contains("MECHA_TZ"),
             "the remedy names the fix: {refused}"
