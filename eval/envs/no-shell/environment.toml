@@ -1,0 +1,4 @@
+# An example variant environment: the default, with the shell tool withheld.
+# Only what differs lives here; everything else resolves from the base, and
+# config.toml below merges key by key over the base's.
+extends = "eval/envs/default"

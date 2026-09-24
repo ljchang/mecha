@@ -1266,3 +1266,15 @@ points its manifest there.
 set`) are still permitted only under `[fixtures]`. With an environment
 store, `tasks set` would write the trial's graph, so the gate could widen
 to "no live server is named". Nothing has widened it yet.
+
+**Per-arm environments, 2026-09-24.** An arm may name its own environment,
+and an environment may `extends` another, holding only what differs: files
+overlay by path, and `config.toml` merges key by key. This opens the axes
+D5's closed set could not reach (the system prompt, the tool list, the
+charter, the graph's seed) without widening that set. Each difference is a
+file whose content the arm's digest records, so nothing an arm varies goes
+unrecorded, which was the reason for keeping the set closed. The owner
+chose "base plus overrides" over full copies when the gaps were laid out.
+`eval/envs/no-shell` is the shipped example; its first run passed the shell
+task in the default arm and failed it without `shell`, as its prediction
+said.
