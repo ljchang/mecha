@@ -1,0 +1,8 @@
+{
+  "label": "Delegation and automation",
+  "position": 5,
+  "link": {
+    "type": "generated-index",
+    "description": "Work that runs without you watching \u2014 delegated tasks, scheduled prompts, the queues waiting on you, and where a run keeps its output."
+  }
+}

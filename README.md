@@ -120,7 +120,7 @@ the public surface in both directions: what the agent makes becomes a durable,
 versioned, permissioned URL, and what other people need from you arrives as a
 **typed request** rather than free-form prose — so a stranger's words never reach
 a privileged run. See [the factory
-docs](https://docs.mecha-factory.ai/docs/factory/overview).
+docs](https://docs.mecha-factory.ai/docs/features/public-surface).
 
 Personal context is wired in over MCP, which is what keeps it open-ended:
 mail and calendar through `mecha-mail`, a personalized knowledge graph for who

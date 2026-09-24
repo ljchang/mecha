@@ -53,11 +53,11 @@ each is wired in separately.
 
 | | What it gives the model | How |
 |---|---|---|
-| **Mail and calendar** | Gmail and Outlook behind one surface. The model names an *account*, never a provider, and reads fan out across every mailbox. | [`mecha-mail`](/docs/features/mail) |
-| **Documents** | Google Docs, Sheets and Slides — but only files it created or you handed it in Google's own picker. | [`mecha-docs`](/docs/features/documents) |
+| **Mail and calendar** | Gmail and Outlook behind one surface. The model names an *account*, never a provider, and reads fan out across every mailbox. | [`mecha-mail`](/docs/features/tools/mail) |
+| **Documents** | Google Docs, Sheets and Slides — but only files it created or you handed it in Google's own picker. | [`mecha-docs`](/docs/features/tools/documents) |
 | **A knowledge graph** | Who people are, what happened when, what you already promised. Fed by ambient conversation capture (Bee), a calendar feed, Slack, messages and mail exports. | [Memory](/docs/features/memory) |
-| **Slack** | A remote control: watch a run from a phone, approve what it wants to send, pass files both ways. | [Slack](/docs/features/slack) |
-| **Anything else** | Connecting a new source is configuration, not a code change. | [MCP](/docs/features/tools-and-mcp) |
+| **Slack** | A remote control: watch a run from a phone, approve what it wants to send, pass files both ways. | [Slack](/docs/features/interfaces/slack) |
+| **Anything else** | Connecting a new source is configuration, not a code change. | [MCP](/docs/features/tools) |
 
 The knowledge graph is the piece that makes the rest add up. Mail and calendar
 tell the model what is *happening*; the graph is what lets it know who these
@@ -74,7 +74,7 @@ target. Your mail is read by weights on your own machine, and the data has no
 occasion to leave it. What that costs in hardware is a shorter answer than
 people expect: see [Choosing hardware](/docs/getting-started/hardware). That choice also shapes the engineering: the binding
 constraint on a small model in a loop is tool-call reliability rather than
-intelligence, which is why [the eval rig](/docs/features/evaluation) grades the
+intelligence, which is why [the eval rig](/docs/features/experiments/evaluation) grades the
 tool-call trace before the prose.
 
 **The memory is encrypted at rest.** The knowledge graph is
@@ -146,16 +146,16 @@ top of it.
 
 **The senses — personal context.** An assistant is only as good as what it
 knows about you, so mecha is built to be wired into a lot of it. Mail and
-calendar arrive through [`mecha-mail`](/docs/features/mail), which puts every
+calendar arrive through [`mecha-mail`](/docs/features/tools/mail), which puts every
 account behind one surface so the model names an *account* (`dartmouth`,
 `personal`) and never a provider. A [personalized knowledge
-graph](/docs/features/distillation) supplies who people are, what happened
+graph](/docs/features/memory/distillation) supplies who people are, what happened
 when, and what was said — and mecha feeds it back, distilling each closed
 session into an episode. Everything else comes over MCP, which is the seam that
 keeps this open-ended: connecting a new source of personal context is
 configuration, not a code change.
 
-**The hands — [`mecha-factory`](/docs/factory/overview).** An assistant that can
+**The hands — [`mecha-factory`](/docs/features/public-surface).** An assistant that can
 only talk to you in a terminal is not much of an assistant. The factory is the
 public surface in both directions: what the agent makes becomes a durable,
 versioned, permissioned URL you can read on a phone or send to a collaborator,
@@ -168,23 +168,23 @@ both arrive at the same typed object.
 front ends over that one loop. Four are in a terminal: `mecha run` for one
 task, `mecha chat` for a REPL, `mecha tui` full-screen with the input line live
 so you can redirect a run without stopping it, and `mecha batch` to fan out.
-The fifth is **[`mecha serve`](/docs/features/web)** — the same agent behind a
+The fifth is **[`mecha serve`](/docs/features/interfaces/web)** — the same agent behind a
 web app on your tailnet, bound to loopback and opened by your network identity
 rather than a password. That is the one that runs on a phone, where most
 reviewing actually happens, and it is the only door
-[voice](/docs/features/voice) opens through: a call speaks into the
+[voice](/docs/features/interfaces/voice) opens through: a call speaks into the
 conversation already on screen. There is a live, clickable copy of it on
-[the web surface page](/docs/features/web).
+[the web surface page](/docs/features/interfaces/web).
 
 **The pilot — you.** Anything the agent would send passes through
-[the outbox](/docs/features/outbox) first: tools you name are *staged as drafts*
+[the outbox](/docs/features/security/outbox) first: tools you name are *staged as drafts*
 rather than executed, so overnight inbox triage leaves you a review queue
 instead of sent mail. This is a property of the harness, not of the email tool,
 which means a third-party MCP server is covered by it without knowing it exists.
 
 ## Keeping track of unfinished work
 
-[Today and workflows](/docs/features/workflows) connect a delegated task to its
+[Today and workflows](/docs/features/automation/workflows) connect a delegated task to its
 conversation, questions, drafts, and completion checks. Today groups urgent
 items, decisions, verified results, and waiting work on the web home screen;
 `mecha workflow today` reads the same priorities from the terminal.
@@ -223,9 +223,9 @@ consequence is that the *useful* configuration and the *safe* configuration are
 the same one. An unattended overnight run that drafts nine replies needs no
 write permission at all, because staging executes nothing.
 
-**It expects to run unattended.** [Triggers](/docs/features/triggers) put a
+**It expects to run unattended.** [Triggers](/docs/features/automation/triggers) put a
 prompt on a cron schedule; a missed week owes one briefing rather than seven;
-each run is jailed to [its own work directory](/docs/features/work), which is
+each run is jailed to [its own work directory](/docs/features/automation/work), which is
 also where its output durably lands, so yesterday's briefing is an ordinary file
 in today's run. A scheduled run gets no additional trust — the same interlock,
 jail, sandbox and budgets apply, and it deliberately cannot read a project's
@@ -245,7 +245,7 @@ automatically. Changes with no gradeable evidence are marked as probationary. Me
 
 **Everything a model says about its own work is treated as hearsay.** Runs are
 recorded as append-only transcripts and can be [replayed against today's
-code](/docs/features/sessions-and-replay). Eval cases can end in a `verify`
+code](/docs/features/memory/sessions-and-replay). Eval cases can end in a `verify`
 command whose exit status is the grade — not whether the model reported the
 tests passing, but whether they pass. Repeated runs report **pass^k** beside
 pass@k, because reliability decays much faster than mean success and a
@@ -254,7 +254,7 @@ single-run scorecard cannot tell a flaky case from a solid one.
 **And the harness measures itself.** Every finished run records how it went, not
 only what it cost, so a run that quietly failed a third of its tool calls is
 visible instead of silent. `mecha doctor` reads those
-[populations](/docs/features/run-quality), `mecha diagnose` proposes one change
+[populations](/docs/features/learning/run-quality), `mecha diagnose` proposes one change
 with a falsifiable prediction, and `mecha eval --ab-config` is the measurement
 that would refute it — paired by case, confirmed on a holdout, and rejected
 outright if the gain was bought by attempting less work. `mecha harness
@@ -264,7 +264,7 @@ closed set of run options does, no model sits in the gate, and a change that
 would widen mecha's own confinement is never even measured.
 
 **It records what work serves and how it went.** Your
-[charter](/docs/features/charter) ranks standing priorities. A run can put
+[charter](/docs/features/appraisal/charter) ranks standing priorities. A run can put
 its goal to you, record the answer, and measure whether later plan writes
 change that goal. Appraisal keeps positive and negative evidence separate,
 with a label derived from the record. Closing a task or a project's last open
@@ -280,9 +280,9 @@ or edits your charter.
   `mecha setup` read the settings back off the server rather than typing them.
 - [First run](/docs/getting-started/first-run) — one-shot, a REPL, and
   full-screen.
-- [The web surface](/docs/features/web) — `mecha serve` on your tailnet, live
+- [The web surface](/docs/features/interfaces/web) — `mecha serve` on your tailnet, live
   on the page and clickable.
-- [Voice](/docs/features/voice) — talking to it out loud, and why that door is
+- [Voice](/docs/features/interfaces/voice) — talking to it out loud, and why that door is
   narrow.
 - [Configuration](/docs/getting-started/configuration) — the layered TOML, and
   the settings that matter early.
@@ -290,7 +290,7 @@ or edits your charter.
   each one cost to learn.
 - [Security model](/docs/features/security) — read this before giving an agent
   anything private.
-- [How appraisal works](/docs/features/appraisal-overview) — the charter, and how a run is
+- [How appraisal works](/docs/features/appraisal) — the charter, and how a run is
   measured against what it was for.
-- [The factory](/docs/factory/overview) — publishing out, and typed requests in.
+- [The factory](/docs/features/public-surface) — publishing out, and typed requests in.
 - [CLI reference](/docs/reference/cli) — every command and flag.

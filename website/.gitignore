@@ -20,9 +20,9 @@ yarn-debug.log*
 yarn-error.log*
 
 # Synced from mecha-graph at build time (sync-graph-docs.mjs)
-docs/graph/architecture.md
-docs/graph/integrations.md
-docs/graph/self-improvement.md
-docs/graph/changelog.md
-docs/graph/cli.md
-docs/graph/tui.md
+docs/features/memory/graph/architecture.md
+docs/features/memory/graph/integrations.md
+docs/features/memory/graph/self-improvement.md
+docs/features/memory/graph/changelog.md
+docs/features/memory/graph/cli.md
+docs/features/memory/graph/tui.md

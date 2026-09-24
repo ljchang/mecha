@@ -65,6 +65,67 @@ const config: Config = {
   },
   themes: ['@docusaurus/theme-mermaid'],
 
+  // Features were regrouped into sections on 2026-09-24, which moved every page
+  // under /docs/features/<name>, /docs/graph/ and /docs/factory/. Each old URL
+  // forwards to its new home so a bookmark or an external link still lands.
+  // /docs/features/appraisal is absent on purpose: it is now the appraisal
+  // section's explainer, and a real page cannot also be a redirect.
+  plugins: [
+    [
+      '@docusaurus/plugin-client-redirects',
+      {
+        redirects: [
+          {from: '/docs/category/factory', to: '/docs/features/public-surface'},
+          {from: '/docs/category/graph', to: '/docs/features/memory/graph'},
+          {from: '/docs/factory/artifacts', to: '/docs/features/public-surface/artifacts'},
+          {from: '/docs/factory/gallery', to: '/docs/features/public-surface/gallery'},
+          {from: '/docs/factory/inbound-queue', to: '/docs/features/public-surface/inbound-queue'},
+          {from: '/docs/factory/notebooks', to: '/docs/features/public-surface/notebooks'},
+          {from: '/docs/factory/onboarding', to: '/docs/features/public-surface/onboarding'},
+          {from: '/docs/factory/overview', to: '/docs/features/public-surface'},
+          {from: '/docs/factory/polls', to: '/docs/features/public-surface/polls'},
+          {from: '/docs/factory/slides', to: '/docs/features/public-surface/slides'},
+          {from: '/docs/features/anticipation', to: '/docs/features/appraisal/anticipation'},
+          {from: '/docs/features/appraisal-overview', to: '/docs/features/appraisal'},
+          {from: '/docs/features/charter', to: '/docs/features/appraisal/charter'},
+          {from: '/docs/features/compaction', to: '/docs/features/models/compaction'},
+          {from: '/docs/features/distillation', to: '/docs/features/memory/distillation'},
+          {from: '/docs/features/documents', to: '/docs/features/tools/documents'},
+          {from: '/docs/features/evaluation', to: '/docs/features/experiments/evaluation'},
+          {from: '/docs/features/frontdoor', to: '/docs/features/public-surface/frontdoor'},
+          {from: '/docs/features/goals', to: '/docs/features/appraisal/goals'},
+          {from: '/docs/features/hooks', to: '/docs/features/security/hooks'},
+          {from: '/docs/features/images', to: '/docs/features/interfaces/images'},
+          {from: '/docs/features/mail', to: '/docs/features/tools/mail'},
+          {from: '/docs/features/outbox', to: '/docs/features/security/outbox'},
+          {from: '/docs/features/plan-steps', to: '/docs/features/appraisal/plan-steps'},
+          {from: '/docs/features/providers', to: '/docs/features/models/providers'},
+          {from: '/docs/features/publishing', to: '/docs/features/public-surface/publishing'},
+          {from: '/docs/features/queues', to: '/docs/features/automation/queues'},
+          {from: '/docs/features/run-quality', to: '/docs/features/learning/run-quality'},
+          {from: '/docs/features/sandbox', to: '/docs/features/security/sandbox'},
+          {from: '/docs/features/serving', to: '/docs/features/models/serving'},
+          {from: '/docs/features/sessions-and-replay', to: '/docs/features/memory/sessions-and-replay'},
+          {from: '/docs/features/skills', to: '/docs/features/learning/skills'},
+          {from: '/docs/features/slack', to: '/docs/features/interfaces/slack'},
+          {from: '/docs/features/tools-and-mcp', to: '/docs/features/tools'},
+          {from: '/docs/features/triggers', to: '/docs/features/automation/triggers'},
+          {from: '/docs/features/voice', to: '/docs/features/interfaces/voice'},
+          {from: '/docs/features/web', to: '/docs/features/interfaces/web'},
+          {from: '/docs/features/work', to: '/docs/features/automation/work'},
+          {from: '/docs/features/workflows', to: '/docs/features/automation/workflows'},
+          {from: '/docs/graph/architecture', to: '/docs/features/memory/graph/architecture'},
+          {from: '/docs/graph/changelog', to: '/docs/features/memory/graph/changelog'},
+          {from: '/docs/graph/cli', to: '/docs/features/memory/graph/cli'},
+          {from: '/docs/graph/integrations', to: '/docs/features/memory/graph/integrations'},
+          {from: '/docs/graph/overview', to: '/docs/features/memory/graph'},
+          {from: '/docs/graph/self-improvement', to: '/docs/features/memory/graph/self-improvement'},
+          {from: '/docs/graph/tui', to: '/docs/features/memory/graph/tui'},
+        ],
+      },
+    ],
+  ],
+
   presets: [
     [
       'classic',
@@ -156,7 +217,7 @@ const config: Config = {
           items: [
             {label: 'Security model', to: '/docs/features/security'},
             {label: 'Learning', to: '/docs/features/learning'},
-            {label: 'Evaluation', to: '/docs/features/evaluation'},
+            {label: 'Evaluation', to: '/docs/features/experiments/evaluation'},
           ],
         },
         {

@@ -1,0 +1,8 @@
+{
+  "label": "Models and context",
+  "position": 2,
+  "link": {
+    "type": "generated-index",
+    "description": "The model behind the loop \u2014 hosted or local \u2014 and how a long conversation is made to fit its window."
+  }
+}

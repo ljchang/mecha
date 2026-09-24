@@ -1,8 +1,0 @@
-{
-  "label": "Factory",
-  "position": 5,
-  "link": {
-    "type": "generated-index",
-    "description": "mecha-factory: the public surface. Where what an agent makes goes to live, the typed way the outside world gets in, and the typed way you ask a group a question."
-  }
-}
