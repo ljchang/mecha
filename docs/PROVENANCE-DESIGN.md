@@ -160,6 +160,14 @@ invent a second convention:
   a project layer like `[slack]`. Any other server's claim is ignored, and
   the result is handled as today. An ignored claim always fails closed:
   untrusted, not dispatched unknown.
+- **It is an exception, and it says so where the rule lives.** Both claims
+  loosen a guard on a server's word, which is the direction
+  `[mcp.capabilities]` refuses ("config can distrust a server further, never
+  less"). R-P2 makes the exception deliberately; what keeps it "one visible
+  decision rather than a quiet per-server exemption" is that the build names
+  it in `TRIFECTA.md`'s switch table beside the widens-only rule, and that
+  `mecha tools --json` and `mecha doctor` name every server with
+  `trust_result_claims` on. Raised by mecha-8a on #274.
 
 **Estimated yield before building:** most graph reads touch calendar
 (13,452 episodes), Bee and Slack content, which stays untrusted. The win is
