@@ -111,10 +111,8 @@ prompt. An option's `link` is **data to show, never a thing to fetch** — it
 renders as a link and nothing on either end retrieves it.
 
 :::note[A typo'd key is an error, not a no-op]
-`serde` cannot combine `deny_unknown_fields` with the `flatten` that gives us
-`kind = "likert"` inline, so the keys each kind accepts are checked by hand
-against the raw TOML. A misspelled `anchor_mn` fails at authoring time rather
-than silently doing nothing — the same arrangement, for the same reason, as
+Each question kind accepts only its own keys, so a misspelled `anchor_mn`
+fails at authoring time rather than silently doing nothing — the same rule as
 request-type fields.
 :::
 

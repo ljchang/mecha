@@ -15,8 +15,7 @@ existed: the [outbox](/docs/features/security/outbox) stages what would be sent,
 [interlock](/docs/features/security) refuses exfiltration, the
 [sandbox](/docs/features/security/sandbox) confines `shell`, budgets bound the spend,
 and the session recording feeds [reflection](/docs/features/learning).
-`cron.rs` adds the clock, `trigger.rs` the store and the ledger, and the CLI
-the runner.
+Triggers add only the clock, the store and the ledger.
 
 ```bash
 mecha trigger add briefing \
@@ -101,9 +100,9 @@ TimeoutStopSec=180
 
 ### 1. Due-ness is computed backwards
 
-The primitive is `Schedule::prev_at_or_before(now)`, not `next_after`. It
-names the most recent slot at or before now, and the trigger fires if that
-slot is newer than the last one already accounted for.
+A tick asks for the most recent slot at or before now, not the next one after
+the last fire, and the trigger fires if that slot is newer than the last one
+already accounted for.
 
 A laptop closed for a week therefore wakes owing **one** briefing, not forty,
 and a tick that arrives late has lost nothing. Iterating forward from the last
@@ -145,16 +144,16 @@ every slot since the epoch.
 been handed a cron slot on your machine.
 
 :::danger
-For the same reason, a trigger run loads `Config::load_global()` — the global
-file only, no project layer. A scheduled run must not inherit the tool surface
+For the same reason, a trigger run loads the global config file only, with no
+project layer. A scheduled run must not inherit the tool surface
 of whatever repository the daemon happened to be started in.
 :::
 
 Definitions are one TOML file per trigger, which you can edit by hand
 (`mecha trigger edit <name>` opens it in `$EDITOR`), and every fire appends to
-`runs.jsonl` beside them. Storage follows the outbox's rules:
-temp-sibling-and-rename for writes, an advisory flock for read-modify-write,
-an append-only ledger. `MECHA_TRIGGERS_DIR` overrides the location.
+`runs.jsonl` beside them — an append-only ledger. Rewrites are atomic, so a
+hand edit and a running scheduler never see a half-written file.
+`MECHA_TRIGGERS_DIR` overrides the location.
 
 ```toml
 # ~/.mecha/triggers/briefing.toml
@@ -194,26 +193,25 @@ of context, by someone who has not seen the conversation.
 
 `mecha trigger run briefing` records a ledger row with **no slot**, so it never
 advances the marker and never cancels tomorrow morning's fire. Testing a
-trigger must not silently disarm the schedule it was testing. The "last
-accounted-for slot" scan simply ignores rows without a slot.
+trigger must not silently disarm the schedule it was testing.
 
 ### 5. One run per trigger at a time
 
-A non-blocking `flock` is claimed before firing. If it is already held, the
+Each trigger has a lock, claimed before firing. If it is already held, the
 tick records a `skipped (overlap)` row and moves on: a five-minute trigger
 whose run takes six minutes skips rather than stacking into an unbounded
-fan-out. The kernel releases the lock if the process dies, so a crashed run
-does not wedge a trigger forever.
+fan-out. The lock dies with its process, so a crashed run does not wedge a
+trigger forever.
 
 The per-trigger `timeout` (`20m` by default) **cancels rather than aborts**:
 the run stops at the next safe point and keeps its partial answer, exactly as
 Ctrl-C does. Killing the future would throw the work away and leave a tool
 mid-call.
 
-`mecha trigger cancel <name>` stops a run in flight the same way. It works by
-writing a sentinel file that the runner polls every two seconds, **not** by
-sending a signal — the run may be inside the daemon's own process, where
-SIGTERM would take the whole scheduler down.
+`mecha trigger cancel <name>` stops a run in flight the same way, within a
+couple of seconds. It asks the run to stop rather than signalling a process —
+the run may be inside the daemon's own process, and killing that would take the
+whole scheduler down.
 
 ## The cron parser
 
@@ -272,17 +270,9 @@ TUI to do something the command line cannot. The detail view reads the last
 answer back from the **session transcript**, which is the record; a second
 copy could disagree with it.
 
-Two details there that cost something to get right:
-
-- **Asking "is a run in flight?" must not use the flock.** `try_claim`
-  acquires and drops, so a UI polling that question would occasionally hold
-  the lock at the instant the scheduler fired, causing a spurious overlap
-  skip. Watching must never perturb what is watched. A separate advisory
-  `<name>.running` marker carries UI state beside the real lock.
-- **A marker whose pid is gone reads as not running**, so a hard kill cannot
-  leave a trigger looking busy forever. The range check on that pid is the
-  whole correctness of it: `kill(-1, 0)` succeeds, and without the check every
-  dead run would report as alive.
+Watching never perturbs what is watched: the modal's "running" indicator
+cannot cause a spurious overlap skip, and a run that was hard-killed does not
+read as busy forever.
 
 ## The ledger
 
@@ -321,19 +311,10 @@ The full answer stays in the session transcript rather than being copied into
 the ledger. `--notify` is a command handed that answer on stdin — an observer,
 like `post_tool`: its failure is logged and never fails the run.
 
-**`notify` runs in the run's [workspace](/docs/features/automation/work)**, like a hook
-already did. It used to inherit the daemon's working directory, and the shipped
-systemd unit sets `WorkingDirectory=%h` — so the only way to put the answer
-somewhere useful was to spell out an absolute path. That is how the shipped
-morning briefing came to end in
-
-```bash
-mkdir -p ~/.mecha/briefings && cat > ~/.mecha/briefings/$(date +%F).md
-```
-
-which wrote outside every path jail, into a directory it created on the way
-past, where no later run could read it back. The workspace is the answer to all
-three.
+**`notify` runs in the run's [workspace](/docs/features/automation/work)**, like a
+hook does, so a relative path in it lands in the trigger's own work directory —
+inside the path jail, where tomorrow's run can read it back — rather than
+wherever the daemon was started.
 
 ## Where to go next
 

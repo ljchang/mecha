@@ -309,13 +309,10 @@ means one hostile message cannot mint a rule, the frame forbids quoting a
 message verbatim, and the outcome is
 [measured daily](/docs/features/tools/mail#measuring-it-score-and-eval).
 
-**The residual is stated rather than hidden.** The check keys on `RUN_DOMAINS`
-membership, which is a *proxy* for the consumer: it catches someone routing
-triage into ordinary runs, and it does not catch a future tool-having caller
-that reads triage rules directly. Expressing the real property needs "this
-domain has exactly one load site", which Rust cannot say cheaply and a registry
-would cost more than it protects. So it is written where the next person meets
-it — a sentence to argue with rather than an assumption to discover.
+**One residual is accepted rather than enforced.** The check guards how
+triage rules are routed today; a future feature that gave a tool-having run
+direct access to triage rules would have to argue the exemption again rather
+than inherit it.
 
 ## `mecha validate` — acceptance is not tenure
 
@@ -382,13 +379,10 @@ regressions remain eligible for the existing retirement confirmation process.
 before `--cover` chooses extra probes. The report separates both-pass from
 both-fail outcomes; neither is evidence of an improvement.
 
-Each row is keyed by `rules_hash` — a stable FNV-1a hash of the rendered block,
-written out longhand because the std hasher is deliberately unstable across Rust
-releases and a ledger key that drifts with the toolchain would silently split
-every tally. The row also records `rule_ids` (weak observations for everything
-riding along), the outcome (`improved` / `regressed` / `unchanged_pass` /
-`unchanged_fail` / `inconclusive`), and the model, since tallies are only
-comparable within one.
+Each row records the exact rule set measured, the rules riding along, the
+outcome (`improved` / `regressed` / `unchanged_pass` / `unchanged_fail` /
+`inconclusive`), and the model — tallies are only comparable within one model
+and one rule set, so the ledger never mixes generations.
 
 ### Bisection: naming the rule that flips it
 
@@ -460,14 +454,10 @@ rewritten rule matching a retired one, so a re-derived retirement comes back
 **already retired and never renders**. Enforcement that does not depend on the
 model, the same principle as the count cap.
 
-Matching is by a `normalized_rule_key` that folds case, punctuation, spacing and
-`-ise`/`-ize`, so the variants a learner actually produces between runs are
-caught rather than only byte-identical text. It is scoped tightly on purpose:
-checked **only against retired rules**, **only for retirement**, with identity
-carry-forward still on exact text — so two genuinely distinct rules cannot be
-merged by a normalisation accident, which has its own test. No stemming, no
-stopword removal, no synonym table. The asymmetry sets how aggressive this may
-be: a false match silently retires a *good* rule.
+Matching ignores case, punctuation, spacing and `-ise`/`-ize` spelling, so the
+small wording drift a learner produces between runs is still caught. It goes no
+further — no stemming, no synonyms — because a false match would silently retire
+a *good* rule, which is worse than missing a restatement.
 
 **A genuine paraphrase is still not caught, and that is accepted.** Closing it
 would need either a judge or model-attributed sources, and a model deciding
