@@ -6,8 +6,9 @@
 //! on the page, which is what makes it worth fixing here rather than hoping
 //! the model converts.
 //!
-//! The zone comes from `MECHA_TZ`, set on the server in the `[[mcp]]` block's
-//! `env`, falling back to `TZ` and then to leaving the stamp alone. A query
+//! The zone comes from `MECHA_TZ` — mecha hands every server `[agent]
+//! timezone` under that name, and an `[[mcp]]` block's `env` can override it —
+//! falling back to `TZ` and then to leaving the stamp alone. A query
 //! window is resolved in `MECHA_TZ` alone — see [`window_zone`].
 //!
 //! **It also resolves a query window, for the same reason and the opposite
@@ -267,6 +268,69 @@ pub fn as_of(now: DateTime<Utc>, tz: Option<Tz>) -> String {
     }
 }
 
+/// Resolve a caller's window bound, or say why it could not be.
+///
+/// The model has no clock, so a window it computes itself is only as good as
+/// the date it was told — on 2026-09-14 a run with a stale date asked for
+/// `time_min: 2026-09-13T00:00:00-04:00` and the calendar answered that
+/// window faithfully. Letting the model write `today` and resolving it here
+/// puts the decision where a real clock is. An RFC 3339 stamp passes through
+/// untouched, so every window that worked before still does.
+pub fn resolve_window(
+    raw: &str,
+    tz: Option<Tz>,
+    now: DateTime<Utc>,
+    bound: Bound,
+) -> Result<String, String> {
+    match resolve_bound(raw, tz, now, bound) {
+        Resolved::At(stamp) => Ok(stamp),
+        Resolved::Passthrough => Ok(raw.to_string()),
+        // Named rather than guessed. Resolving against the machine's clock
+        // would reproduce the original bug — this server runs where `TZ` is
+        // UTC — so the refusal says which variable is missing and what to
+        // send instead.
+        Resolved::NeedsZone => Err(format!(
+            "`{raw}` is a relative time and this server has no timezone configured, so it \
+             cannot know which day you mean. Send an RFC 3339 timestamp instead. (The \
+             owner fixes this by setting [agent] timezone in mecha's config, which reaches \
+             this server as MECHA_TZ.)"
+        )),
+    }
+}
+
+/// The window an answer actually covers, and the clock it was resolved
+/// against.
+///
+/// Prose rather than a JSON field because `calendar_list_events` answers with
+/// a JSON *array* and has nowhere to put one; `calendar_freebusy` answers
+/// with an object and carries the same two facts as `time_min`/`time_max`
+/// plus an `as_of` key instead.
+pub fn window_note(time_min: &str, time_max: &str, now: DateTime<Utc>, tz: Option<Tz>) -> String {
+    format!("window {time_min} .. {time_max} — {}", as_of(now, tz))
+}
+
+/// Both bounds of a caller's window, resolved in `wz` (see [`window_zone`]),
+/// defaulting to the next seven days from `now`. One definition for every
+/// `calendar_list_events` and `calendar_freebusy` — the unified server and
+/// the two per-provider ones — so the tool name means one thing whichever
+/// binary answers it.
+pub fn window(
+    time_min: Option<String>,
+    time_max: Option<String>,
+    wz: Option<Tz>,
+    now: DateTime<Utc>,
+) -> Result<(String, String), String> {
+    let time_min = match time_min {
+        Some(raw) => resolve_window(&raw, wz, now, Bound::Start)?,
+        None => now.to_rfc3339(),
+    };
+    let time_max = match time_max {
+        Some(raw) => resolve_window(&raw, wz, now, Bound::End)?,
+        None => (now + Duration::days(7)).to_rfc3339(),
+    };
+    Ok((time_min, time_max))
+}
+
 /// A weekday/date pair computed from the source instant, in the configured
 /// mailbox zone when present. Unknown timestamps stay unknown, never guessed.
 pub fn calendar_date(raw: &str, tz: Option<Tz>) -> Option<String> {
@@ -417,6 +481,30 @@ mod tests {
         let configured = env(&[("TZ", "UTC"), ("MECHA_TZ", "America/New_York")]);
         assert_eq!(zone_from(WINDOW_VARS, configured), eastern());
         assert_eq!(zone_from(RENDER_VARS, configured), eastern());
+    }
+
+    /// The one window definition all three servers answer with: the default
+    /// is the next seven days, a relative bound resolves, a stamp passes, and
+    /// a refusal on either bound is the whole answer rather than half a
+    /// window.
+    #[test]
+    fn every_server_shares_one_window() {
+        let now = at("2026-09-14T02:37:12Z");
+        let (min, max) = window(None, None, eastern(), now).unwrap();
+        assert_eq!(min, now.to_rfc3339());
+        assert_eq!(max, (now + Duration::days(7)).to_rfc3339());
+
+        let (min, max) =
+            window(Some("today".into()), Some("today".into()), eastern(), now).unwrap();
+        assert!(min.starts_with("2026-09-13T00:00:00"), "{min}");
+        assert!(max.starts_with("2026-09-13T23:59:59"), "{max}");
+
+        let stamp = "2026-09-20T09:00:00-04:00".to_string();
+        let (min, _) = window(Some(stamp.clone()), None, None, now).unwrap();
+        assert_eq!(min, stamp, "a stamp needs no zone");
+
+        let err = window(Some(stamp), Some("tomorrow".into()), None, now).unwrap_err();
+        assert!(err.contains("MECHA_TZ"), "{err}");
     }
 
     #[test]

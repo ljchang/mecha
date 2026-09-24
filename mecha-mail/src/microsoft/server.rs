@@ -88,7 +88,7 @@ pub fn tool_definitions() -> Vec<Value> {
         },
         {
             "name": "calendar_list_events",
-            "description": "List Outlook calendar events in a time window, with recurring series expanded into their occurrences. Times are RFC 3339; omit both to get the next 7 days.",
+            "description": "List Outlook calendar events in a time window, with recurring series expanded into their occurrences. Times are RFC 3339, or one of `now`, `today`, `tomorrow`, `yesterday`, `+3d`, `-1d` — prefer those: this server resolves them against the mailbox timezone, so you do not have to know today's date, and `time_min: today` with `time_max: today` is the whole of today. Omit both to get the next 7 days. Every answer states the window it covered and the clock it was resolved against.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -279,17 +279,24 @@ async fn dispatch(
             .await
             .map(|c| serde_json::to_string_pretty(&c).unwrap_or_else(|_| "[]".into())),
         "calendar_list_events" => {
+            // The unified server's window, not a second definition of it:
+            // relative terms resolve in `MECHA_TZ`, and the answer states
+            // the clock it was resolved against (`time::window`).
             let now = chrono::Utc::now();
-            let time_min = str_arg("time_min").unwrap_or_else(|| now.to_rfc3339());
-            let time_max = str_arg("time_max")
-                .unwrap_or_else(|| (now + chrono::Duration::days(7)).to_rfc3339());
+            let wz = crate::time::window_zone();
+            let (time_min, time_max) =
+                match crate::time::window(str_arg("time_min"), str_arg("time_max"), wz, now) {
+                    Ok(w) => w,
+                    Err(e) => return Some(Err(MailError::ParseError(e))),
+                };
             let calendar_id = str_arg("calendar_id").unwrap_or_else(|| "primary".into());
             OutlookCalendarProvider::new(token)
                 .list_events(&calendar_id, &time_min, &time_max)
                 .await
                 .map(|mut events| {
+                    let stamp = crate::time::window_note(&time_min, &time_max, now, wz);
                     if events.is_empty() {
-                        return format!("no events between {time_min} and {time_max}");
+                        return format!("no events in this window.\n{stamp}");
                     }
                     // In the user's zone before the model ever sees them: a
                     // model handed UTC reports UTC, and a noon meeting
@@ -308,7 +315,9 @@ async fn dispatch(
                             e.end_time = crate::time::in_zone(&e.end_time, tz);
                         }
                     }
-                    serde_json::to_string_pretty(&events).unwrap_or_else(|_| "[]".into())
+                    let body =
+                        serde_json::to_string_pretty(&events).unwrap_or_else(|_| "[]".into());
+                    format!("{body}\n\n{stamp}")
                 })
         }
         "calendar_create_event" => {
