@@ -13,8 +13,32 @@ computes become inputs to decisions the harness makes, in an order where each
 step is measured before the next.**
 
 A bare §N is `GOAL-SYSTEM-DESIGN.md`'s; this file's own sections are "here
-§N"; proposals are cited by id (S1, I1, L1, C1, …), and each id's detail is in
+§N"; proposals are cited by id (S1, I1, P1, L1, C1, …), and each id's detail is in
 the catalogue, here §8.
+
+---
+
+## What the appraisal system is for
+
+In the owner's words (2026-09-24): "the idea is that the agent is generating
+its own meaning and interpretation which influences how it plans, reasons,
+and completes tasks." The appraisal system is a core part of three things:
+
+1. **Self-learning and improvement** — interpretations of what happened, and
+   why, are what lessons, rules, skills and harness changes are learned from.
+2. **Goal alignment with the owner** — interpreting the owner's acts and
+   reactions is how their latent goals are inferred and tracked, without
+   asking them for extra work.
+3. **Plans and policies across many goals at once** — from a low-level task
+   to a high-level charter line — while considering the state of the system:
+   context, the owner's attention, priority, resource availability, the
+   number of competing tasks. "Efficient and good policies treat this as a
+   joint optimization problem of all of these complex and competing needs,
+   which can dynamically change as priorities evolve, resources get tighter."
+
+For some actions the owner is asked to confirm the interpretation or the
+plan; overall, the meaning is the agent's own. Every section below serves one
+of the three.
 
 ---
 
@@ -50,7 +74,7 @@ and the label goes to a badge. Four measured facts decide what to do about it
 | first | **recording** — get goals and verdicts into the store | changes no behaviour; every other consumer is empty without it |
 | second | **offline** — learning, replay priority, ordering of what the owner sees | cannot make a run worse; measurable with stage levers |
 | third | **structural in-run actions** — the harness appends, holds, parks, freezes | deterministic and mostly narrowing; the model cannot ignore them |
-| last | **injected text** — advice sentences in tool results | measured locally to hurt as often as help |
+| last | **fixed advice text** — templated advice sentences in tool results | measured locally to hurt as often as help; distinct from the agent's own situation appraisal (I3), which carries meaning rather than instructions and is the core in-run consumer |
 
 **2. Supply before demand.** A consumer keys only on something the harness
 holds structurally — a task id, a trigger, a store row, an owner's click —
@@ -228,7 +252,7 @@ changes what a run does. Dependencies are the only ordering.
 share of long runs, verdicts per week by channel, per-item reading variance —
 is added to `sessions health` by the PR that first produces each number.
 
-### Phase 2 — Learning out: the nightly loop learns from that evidence
+### Phase 2 — Interpret and learn: the appraiser, and the nightly loop that learns from it
 
 *Offline consumers only. They cannot make a run worse.*
 
@@ -240,13 +264,14 @@ is added to `sessions health` by the PR that first produces each number.
 | 3 | The anchor as a second goal source for reflections; rule tenure per charter line on owner verdicts — and, behind R20's guard, clean grounded appraisals — decided by a Wilson lower bound (port the graph's ladder); dormancy for rules whose region stops recurring | L3 |
 | 5 | Retrieve past clean appraisals by situation and goal, on demand through `goal_context` — episodic memory with its meaning attached — measured against a control | I2, M1 |
 | 4 | Replay and reflection priority = gain × need: \|signed error\| on owner-verdict channels × how often the situation recurs, uniform holdout unchanged | L1 |
+| 6 | The nightly diagnostician reads clean appraisals beside its counters | L8 |
 
 **Done when**, in a lifetime experiment against the appraisal-off preset
 (stage levers): `learn` forms rules again on live-shaped data; the share of
 decisive validations rises; harness candidates find paired episodes that
 discriminate; verified task success does not fall.
 
-### Phase 3 — Honest completion: the first in-run consumer, and it is structural
+### Phase 3 — Appraise while working: plans, reasoning and honest completion
 
 *The consumer the literature supports most: false completion is the dominant
 agent failure, and judges cannot catch it (C1's problem statement).*
@@ -258,18 +283,24 @@ agent failure, and judges cannot catch it (C1's problem statement).*
 | 3 | The goal validator: every plan item traces to the anchor, deterministically | V1 |
 | 4 | The completion certificate, appended by the harness; a draft from an uncertified run is held for acknowledgement; the review shows goal, certificate and alignment | C1, G2, U2 |
 | 5 | A re-delegated task starts with pointers to its previous attempts and why they were rejected | M5 |
+| 6 | The agent appraises its situation while working: at the start, after a surprise, before a consequential act — goals, described system state, past appraisals | I3 |
+| 7 | Planning as joint optimization across every live goal and the system's state, reasoned in the appraisal | P1 |
 
 **Done when:** false completion on the task and synthetic-home suites falls
 against a no-certificate arm with `WORK_FLOOR` holding; owner rework on
-delegated tasks falls.
+delegated tasks falls; and, separately, runs with I3 beat the same runs
+without it on verified success at matched budget.
 
-### Phase 4 — Follow-through: commitments drive attention and preparation
+### Phase 4 — Alignment and follow-through: the owner's goals, commitments, and one scheduler
 
 | # | work | proposal |
 |---|---|---|
 | 1 | Commitments from owner acts: mail `reply` / `task` / `schedule`; promises in released drafts recorded automatically (dismissing one drops it) | S4 |
 | 2 | Duty runs that *prepare* follow-through for a commitment approaching its setpoint — never send | A1 |
 | 3 | Surface only when missing it costs more than the interruption, at breakpoints, extending `workflow::AttentionPolicy`; order the brief and `/queues` by duty | U1, U4 |
+| 4 | The harness's scheduler as one objective over permits, surfacing, duty runs and replay budget, recomputed as state moves | P2 |
+| 5 | The owner's goals inferred from their acts and kept as hypotheses, retrieved into planning | I4 |
+| 6 | Confirmation of an interpretation or plan for the few actions that warrant it, riding on existing review objects | I5 |
 
 **Done when:** owner-side latency on sensored lines falls; interruptions per
 day do not rise; nothing surfaced is dismissed as noise more often than
@@ -347,6 +378,10 @@ widening.
 | R18 | phase 2 | The appraiser reads the full transcript; the appraisal inherits the run's taint | **ruled 2026-09-24** |
 | R19 | phase 2 | A text appraisal may reach learning, memory retrieval into runs, the owner's surfaces, and credit and rule tenure — clean runs only for all but the surfaces, by the unchanged provenance gate | **ruled 2026-09-24** |
 | R20 | phase 2 | The guard on credit and tenure from text: the owner's verdict overrides; grounded claims from clean runs only; a measured lever with a revert before it is on | proposed with R19 |
+| R21 | phase 3 | The system's state (context, owner attention and backlog, priority, resources, competing tasks) reaches the agent's planning as *described state* — words and bands — never numbers or setpoints, on the user-turn or tool-result slot, never the prefix | yes |
+| R22 | phase 3 | An in-run situation appraisal is part of the run, inherits its taint, shapes the plan, and never widens a permission or chooses an action | yes |
+| R23 | phase 4 | Confirmation of an interpretation or plan only for: irreversible or outward acts (on the existing review), a delegated task whose interpretation departs from its anchor, and charter conflicts rank cannot settle | yes |
+| R24 | phase 3–4 | Charter rank inside the joint optimization. **Ruled 2026-09-24:** the optimization is joint over every need, dynamically; charter rank is what resolves a conflict — when goals pull against each other the higher line wins, so conflicting goals "cannot lead to a stalemate", and prioritization is forced. A side benefit the design already relied on: a lower goal made salient (the injection's method) cannot outrank a higher one | **ruled** |
 | R3 | parked | The harness may infer an anchor from the owner's first turn onto a closed list of pointers; inferred anchors key retrieval, tracing and the certificate, never credit or tenure; confirmation comes from acts the owner already performs | yes, when unparked (the asking chip was declined) |
 | R8 | parked | The harness may *propose* per-region autonomy grants; only the owner grants | yes, when unparked |
 | R9 | — | The live charter line `be-the-best` ("always finding ways you could have completed a task even better"). Unboundedness is not the issue — charter lines are attractors (here §2). §15's narrower worry is an unbounded line whose *object is the harness itself*, beside a loop that proposes harness changes; that pressure is held structurally, because no lane can accept a `Security`-class change. Flagged once; the owner's to keep or reword | — |
@@ -643,7 +678,7 @@ a valence, or a sensor number. Today it holds by construction
 (`Message::planning` is dropped by both encoders); the test is what keeps a
 future "helpful" status line from breaking it.
 
-### For phase 2 — learning out
+### For phase 2 — interpret and learn
 
 #### I1. The interpretive appraiser
 
@@ -691,6 +726,114 @@ described ("past experiences") and the input I1 reads for the next appraisal,
 which is how interpretation accumulates rather than restarting every run.
 Measured against a control at matched budget, because retrieved memory can
 cost more than it returns (arXiv 2606.15017).
+
+#### I3. Appraisal while working
+
+**Problem.** Everything else in this design interprets a run *after* it. The
+owner's purpose is that the agent's interpretation shapes how it plans and
+reasons *during* the run. The acting model does not appraise on instruction —
+it followed neither planning instruction it was given — and fixed advice
+sentences measured worse than none. What it lacks is not advice but meaning:
+it never sees what its goals are for, what state the system is in, or what
+happened last time.
+
+**Build.** At a few boundaries on long or anchored runs, the harness writes a
+**situation appraisal** into the run — on the user-turn or tool-result slot,
+never the prefix (§4.3):
+- **at the start**, in the seed: the goal and what it serves (task → project
+  → charter lines, with their text), the owner's state and the system's
+  (P1's described state), the competing work, and the relevant past
+  appraisals (I2) — "last time on this task the owner rejected the draft
+  because…";
+- **after a surprise** — a failed check, a rejected call, a forecast overrun
+  — an interpretation of what it means for the goal;
+- **before a consequential act** — staging a message, closing out the task —
+  what the act means against each live goal.
+
+Written by the I1 appraiser from the run so far, so it is part of the run and
+inherits its taint: it adds no exposure the conversation does not already
+have. It shapes the plan; it never widens a permission, lifts a stage, or
+chooses an action — the harness's policy on detected conditions (here §2)
+still does that. Measured against the same run without it, at matched
+budget, because it costs a model call per boundary.
+
+#### I4. The owner's goals, inferred and kept
+
+Each appraisal may carry a **goal hypothesis** read from the owner's acts —
+the draft they rewrote to be more formal, the task they reopened, the reason
+they gave for a rejection. Hypotheses accumulate in a store beside the goal
+records: the hypothesis in text, the situation it applies to, the pointers
+it rests on, and whether an owner act has since confirmed it (a release, a
+closure) or contradicted it. They are retrieved into planning (I2, I3) as
+*the owner seems to want*, never as *the owner said*. They are never charter
+lines and never become one — the charter's author rule is untouched — but a
+hypothesis the owner's acts keep confirming is exactly what the owner might
+choose to write into the charter, and `mecha charter` may show them beside
+it for the owner to read.
+
+#### I5. When the owner confirms an interpretation or a plan
+
+"For some actions, owner should be asked for confirmation of interpretation
+or of plan." Decision 4 keeps that set small, and most of it rides on review
+objects that already exist:
+- **Irreversible or outward acts** — the staged draft, the publish: the review
+  already happens; it now shows the appraisal and the plan beside the object
+  (U2), so releasing it confirms them.
+- **A delegated task whose interpretation departs from its anchor** — the
+  inferred goal does not trace to the task, or the plan would spend
+  materially more than the task implies: the run's one question (D13)
+  carries the interpretation and the plan.
+- **A conflict between charter lines the run cannot resolve by rank** — the
+  question names both lines.
+- **Never** for routine work, and never as a new rating step.
+
+#### P1. Planning as joint optimization across goals and state
+
+**The owner's framing:** good policies jointly optimize complex, competing
+needs that change as priorities evolve and resources tighten. Two levels do
+this differently, because one of them is a language model:
+
+- **In the run, the agent optimizes in its reasoning.** It needs the inputs:
+  every live goal (the task, its project, the charter lines they serve, the
+  commitments waiting), and the system's state — context headroom, the
+  owner's attention debt and backlog, priority from the board, permits and
+  time available, how many tasks compete. I3 hands these over as **described
+  state** — words and bands ("the owner has eleven things waiting and is
+  short on attention today"; "context is two-thirds used") — not numbers or
+  setpoints, because a model handed a bounded numeric target drifts into
+  maximising it (BioBlue) and containment 2 keeps sensor numbers out of
+  prompts. The appraisal is where the trade-off is reasoned in text.
+- **In the harness, the scheduler optimizes numerically** (P2).
+
+**Charter rank inside the optimization** (R24, ruled): everything is traded
+off jointly, and when goals conflict the higher charter line wins. The rank
+exists so conflicting goals cannot stalemate and prioritization is always
+forced — the owner's reason — and it also means a lower goal made salient by
+injected text cannot outrank a higher one.
+
+#### P2. The harness's own scheduler: one objective, recomputed as state moves
+
+The harness makes allocation decisions no model sees: which background run
+gets a permit, what to surface to the owner and when, which commitment's duty
+run goes first, how the nightly replay budget is spent. Today each has its own
+rule (seat count, quiet hours, recency). P2 replaces them with one objective,
+recomputed whenever state changes: the value of each candidate piece of work
+(per-commitment guilt × line rank, the task's due pressure, expected learning
+gain) against its costs (owner attention for anything surfaced, a permit, the
+interactive latency it may cost, context and tokens), under hard constraints
+(interactive work preempts background; the guards). A1's duty runs, U1's
+interruption gate, U4's ordering and L1's replay budget become four readers of
+the one objective instead of four rules. It is numeric because nothing in it
+reaches a model; it is dynamic because every input is a live reading.
+
+#### L8. The diagnostician reads appraisals
+
+`diagnose::Evidence` — the brief the nightly harness diagnostician proposes
+changes from — is counters and means, and every candidate it has proposed has
+been rejected, none since 2026-09-10. Give it the clean appraisals of the
+episodes the draw selected: what went wrong and why, in text, beside the
+counters. Its proposals remain gated by `candidate::judge` on cost metrics; the
+appraisal feeds what is proposed, never what is accepted.
 
 #### L7. Attribute a correction by what the run was given
 
