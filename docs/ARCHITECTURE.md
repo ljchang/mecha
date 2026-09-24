@@ -2233,6 +2233,17 @@ now makes the move one recorded event:
   #294). The walk checks the reader's own pid first, because `bash -lc
   '<one simple command>'` execs in place; a registry or an entry that cannot
   be read refuses rather than reading as the owner's terminal.
+- **An MCP server is stamped `unknown`** (`McpClient::build_command`, after
+  the config's `env`, and through `Sandbox::wrap_argv_with_env` when
+  confined) and never registered: it outlives the run that started it and
+  serves whichever run holds the agent, so no run's posture is true of it,
+  and anything it spawns meets rule 5 — a variable with no registration —
+  and is refused (review of #293).
+- **The harness's own board moves never cross the line either way**
+  (`tasks::harness_step`): `move_task` refuses a closing status and leaves
+  a closed row closed, so a task the owner closes while its run is in
+  flight is not reopened by the run's move back to `waiting` (review of
+  #293).
 - **`--surface` cannot claim `chat`**, and inside a run the flag is ignored:
   the surface of a run's closure is always `chat`.
 - **Reopen is the same event reversed** (`move: reopen`, `undoes` naming the
