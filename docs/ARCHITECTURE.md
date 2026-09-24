@@ -1022,14 +1022,21 @@ so config forces `untrusted_input` exactly as it does for the graph — reading 
 arms the interlock. But a search query travels only to googleapis.com, which
 already custodies the mailbox, so reads carry `readOnlyHint` and *not*
 `openWorldHint`; that is the difference from `http_fetch`, whose payload can
-reach any host. Sends and calendar writes do reach third parties (recipients,
-invitees), carry `openWorldHint`, and are named in `[outbox] tools`, so they
-stage rather than deliver. Unification did not touch this: the same
+reach any host. Sends and the calendar writes that can reach someone do reach
+third parties (recipients, invitees), carry `openWorldHint`, and are named in
+`[outbox] tools`, so they stage rather than deliver. **`calendar_hold` is the
+exception, and it is the private-write quadrant** (`PROVENANCE-DESIGN.md` §2).
+It is a create on the owner's primary calendar with no `attendees` and no
+`calendar_id`, and `create_params` drops both even if a model sends them. It is
+marked private, says `openWorldHint: false` outright, and does not stage.
+`event_request` is the one place a create request is built, so the test that
+takes a hold end to end, from tool name to each provider's body, is what
+guards it. Unification did not touch this: the same
 annotations ride on the unified tools (there is a shared
 `assert_tool_surface` test per surface), and one send name in the outbox
 list now covers every account it could send from.
 
-**There is a third quadrant, and it is neither.** `mail_triage` — archive,
+**And there is one more quadrant, which is neither.** `mail_triage` — archive,
 read/unread, spam, trash — mutates the user's own mailbox and reaches nobody:
 no third party learns anything, so it is not `external_send` and **must never
 appear in `[outbox] tools`**. Staging it would make triage circular, reviewing

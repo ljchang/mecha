@@ -277,7 +277,20 @@ fn check_private_write_schemas(tools: &[Value], names: &[&str]) {
         let props = tool["inputSchema"]["properties"]
             .as_object()
             .unwrap_or_else(|| panic!("{name} has no properties"));
-        for prop in props.keys() {
+        for (prop, spec) in props {
+            // Scalars only: an allowed name must not smuggle a structure in.
+            // `body: {"type": "object", "properties": {"share_with": …}}`
+            // passed a names-only check (found in review of #274).
+            let scalar = matches!(
+                spec["type"].as_str(),
+                Some("string" | "boolean" | "integer" | "number")
+            ) && spec.get("properties").is_none()
+                && spec.get("items").is_none();
+            assert!(
+                scalar,
+                "{name}.{prop} is not a flat scalar; a private write's fields carry content, \
+                 never a structure that could hold a recipient"
+            );
             assert!(
                 content_fields(name).contains(&prop.as_str()),
                 "{name}.{prop} is not a content field. A private write may name no party \
@@ -362,6 +375,18 @@ mod guard_tests {
     fn a_calendar_field_does_not_pass_on_another_verb() {
         let tools = vec![create(
             json!({"title": {"type": "string"}, "location": {"type": "string"}}),
+            json!({"openWorldHint": false}),
+        )];
+        assert_private_writes(&tools, &["thing_create"]);
+    }
+
+    /// An allowed name must not carry a structure a recipient could hide in.
+    #[test]
+    #[should_panic(expected = "not a flat scalar")]
+    fn a_nested_shape_under_an_allowed_name_fails() {
+        let tools = vec![create(
+            json!({"title": {"type": "string"},
+                   "body": {"type": "object", "properties": {"share_with": {"type": "string"}}}}),
             json!({"openWorldHint": false}),
         )];
         assert_private_writes(&tools, &["thing_create"]);
