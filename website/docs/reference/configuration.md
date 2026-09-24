@@ -177,8 +177,9 @@ what separates "stuck" from "the task was too big".
 The machine may run UTC and the model has no clock, so without `[agent] timezone`
 every "what's on Thursday" is answered in the wrong zone — and wrongly in the worst
 way, since the times stay internally consistent and read as correct. It rides in the
-system prompt with today's date, and mail MCP servers can be handed it as `MECHA_TZ`
-in their `[[mcp]]` `env` so they render event times in it before the model sees them.
+system prompt with today's date, and every MCP server is handed it as `MECHA_TZ`, so
+the mail servers render event times in it and resolve `today` in it. Without it they
+refuse relative windows rather than guess, and `mecha setup` says so once a server is wired.
 
 Use an IANA name (`America/New_York`), never a fixed offset: an offset is wrong twice
 a year. An unparseable name is a startup error; fix the IANA name before retrying.
@@ -735,7 +736,8 @@ command = "/home/me/bin/mecha-graph-mcp"
 #                                  # (kg_search) — a promise of distinct
 #                                  # names, enforced loudly on collision
 args = []
-env = { MECHA_TZ = "America/New_York" }
+env = {}                           # explicit values; MECHA_TZ comes from
+                                   # [agent] timezone unless set here
 env_passthrough = []               # an allowlist; empty is the safe default
 sandbox = false
 # network = true                   # this server alone, overriding [sandbox]

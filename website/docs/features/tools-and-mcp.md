@@ -318,8 +318,11 @@ name = "graph"
 command = "mecha-graph-mcp"            # or an absolute path to the binary
 prefix_tools = false                   # its kg_* tools carry their own namespace
 env_passthrough = ["MECHA_GRAPH_DB"]
-env = { MECHA_TZ = "America/New_York" }
 ```
+
+Every server is also handed your `[agent] timezone` as `MECHA_TZ`, so a
+server that renders or resolves times needs no line of its own; an explicit
+`MECHA_TZ` in its `env` still wins.
 
 Two things about that `command` line. A bare name resolves against the
 PATH of whatever started mecha, so a systemd unit needs `~/.cargo/bin` on

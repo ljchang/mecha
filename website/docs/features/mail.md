@@ -26,8 +26,7 @@ model.
 [[mcp]]
 name = "mail"
 command = "~/.cargo/bin/mecha-mail"
-# The server renders event times, so it needs the zone as well as the agent.
-env = { MECHA_TZ = "America/New_York" }
+# No zone here: mecha hands every server [agent] timezone as MECHA_TZ.
 
 [mcp.capabilities]
 untrusted_input = true
@@ -105,6 +104,18 @@ three resolution modes.
 account, with no event details in them. "When am I free on Thursday?" is
 answered from it; `calendar_list_events` is for when the events themselves
 matter.
+
+Both take a window as RFC 3339 timestamps **or** as `now`, `today`,
+`tomorrow`, `yesterday`, `+3d`, `-1d` — and the model is told to prefer those.
+The server resolves them against its own clock in your `[agent] timezone`, so
+a model that was told the wrong date still gets today's calendar;
+`time_min: today` with `time_max: today` is the whole of today. Every answer
+states the window it covered and the clock it was resolved against, so a
+wrong premise is contradicted by the result rather than confirmed by it.
+With no `[agent] timezone` the relative terms are refused by name instead of
+resolved against the machine's clock, which on a server is usually UTC and
+would be the wrong day every evening. `this week` is not accepted: whether a
+week starts on Sunday or Monday is a convention the server cannot know.
 
 ### Reads fan out
 
@@ -732,7 +743,9 @@ store; and add `Re:` only if the subject does not already carry it.
 
 **Merged calendars sort on the raw provider stamps**, before any zone rendering,
 because rendered strings only sort within one zone. Rendering happens afterwards
-in `MECHA_TZ` (falling back to `TZ`, then to leaving the stamp alone) — and
+in `MECHA_TZ`, which is your `[agent] timezone` as mecha hands it over
+(falling back to `TZ`, then to leaving the stamp alone; a query *window* never
+falls back) — and
 all-day events skip zone conversion entirely and keep their bare date, or a
 Monday retreat gets announced as Sunday at 8pm. See
 [Timezones](/docs/reference/configuration).

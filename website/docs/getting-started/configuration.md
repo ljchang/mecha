@@ -113,9 +113,10 @@ without it every "what's on Thursday" is answered several hours off — and wron
 in the worst way, because the times stay internally consistent with each other
 and read as correct.
 
-It rides in the system prompt with today's date. The mail MCP servers read the
-same zone from `MECHA_TZ`, which you set in their `[[mcp]]` `env` block, so they
-render event times in it before the model ever sees them.
+It rides in the system prompt with today's date, and mecha hands the same zone
+to every MCP server as `MECHA_TZ` — set it here once, never per server. The mail
+servers render event times in it and resolve `today` and `tomorrow` in it, and
+without it they refuse those words rather than guess the day.
 
 An IANA name (`America/New_York`), not an offset, because an offset is wrong
 twice a year. An unrecognised name is a startup error; correct it before
