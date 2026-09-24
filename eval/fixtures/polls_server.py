@@ -97,8 +97,9 @@ class Store:
             # Every seeded poll stands for one this machine made; anything
             # else gets the real server's refusal (mecha-factory #21).
             raise ToolError(
-                f"no poll `{poll_id}` was made from this machine, and poll_status reads only "
-                "those. The user can read any poll with `factory-publish polls status`."
+                f"this machine holds no record of a poll `{poll_id}`, and poll_status reads "
+                "only polls it has a record of. The user can read any poll with "
+                "`factory-publish polls status`."
             )
         return p
 
