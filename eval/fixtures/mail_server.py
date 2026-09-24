@@ -159,6 +159,19 @@ class Store:
             "several accounts are configured; pass the `account` the id came from (it is in every search row)"
         )
 
+    def pick_thread(self, name, thread_id):
+        """A thread-scoped call: the named account, or the only one, or else
+        whichever account holds the thread — a reply goes out from the mailbox
+        the thread arrived in, exactly as the real server resolves it."""
+        if name or len(self.mailbox["accounts"]) == 1:
+            return self.pick_item(name)
+        held = sorted({t["account"] for t in self.mailbox["threads"] if t["id"] == thread_id})
+        if len(held) == 1:
+            return self.pick_read(held[0])[0]
+        if not held:
+            raise ToolError(f"no configured account could read thread {thread_id}")
+        raise ToolError(f"thread {thread_id} was found in several accounts ({', '.join(held)}) — pass `account`")
+
     def pick_send(self, name):
         """A create: the named account, the default, or the only one — else
         fail and say to ask, exactly as the real server does."""
@@ -239,6 +252,9 @@ def render_thread(account, thread):
             f"Subject: {thread['subject']}\n"
             f"Message id (for mail_reply): {m['id']}\n\n{m.get('body', '').strip()}"
         )
+    # The count a body cannot reach, as the real server ends every read.
+    count = len(thread["messages"])
+    parts.append(f"--- end of thread · {count} message{'' if count == 1 else 's'}")
     return "\n\n".join(parts)
 
 
@@ -314,7 +330,7 @@ def mail_get_thread(store, args):
     thread_id = str_arg(args, "thread_id")
     if thread_id is None:
         raise ToolError("mail_get_thread needs thread_id")
-    a = store.pick_item(str_arg(args, "account"))
+    a = store.pick_thread(str_arg(args, "account"), thread_id)
     th = store.thread(a, thread_id)
     for m in th["messages"]:
         m["unread"] = False
@@ -360,7 +376,7 @@ def mail_reply(store, args):
     thread_id, body = str_arg(args, "thread_id"), str_arg(args, "body_markdown")
     if not (thread_id and body):
         raise ToolError("mail_reply needs thread_id and body_markdown")
-    a = store.pick_item(str_arg(args, "account"))
+    a = store.pick_thread(str_arg(args, "account"), thread_id)
     th = store.thread(a, thread_id)
     if not th["messages"]:
         raise ToolError(f"thread {thread_id} has no messages")
@@ -404,7 +420,7 @@ def mail_triage(store, args):
         raise ToolError("mail_triage needs action")
     if raw not in TRIAGE_ACTIONS:
         raise ToolError(f"unknown action `{raw}`; expected one of: {', '.join(TRIAGE_ACTIONS)}")
-    a = store.pick_item(str_arg(args, "account"))
+    a = store.pick_thread(str_arg(args, "account"), thread_id)
     th = store.thread(a, thread_id)
     if raw == "archive":
         th["archived"] = True
@@ -605,7 +621,7 @@ TOOLS = [
     },
     {
         "name": "mail_reply",
-        "description": "Reply within an existing conversation so it threads. Pass the thread_id and its `account` (both are in every search row). Replies to the newest message in the thread unless message_id names one. Set reply_all to include everyone on the original.",
+        "description": "Reply within an existing conversation so it threads. The reply goes out from the account the thread lives in; `account` may be omitted and is then looked up from the thread_id. Replies to the newest message in the thread unless message_id names one. Set reply_all to include everyone on the original.",
         "inputSchema": {
             "type": "object",
             "properties": {"thread_id": {"type": "string"}, "body_markdown": {"type": "string"}, "account": ACCOUNT, "message_id": {"type": "string"}, "reply_all": {"type": "boolean", "default": False}},

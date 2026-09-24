@@ -291,3 +291,170 @@ export function ago(iso, now = Date.now()) {
   if (h < 48) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
 }
+
+/**
+ * The conversation a reply answers — `{ account, subject }` — from the thread
+ * read the drafting run made, or null.
+ *
+ * A reply's arguments are an opaque thread id and a body, so the pane used
+ * to title it "Reply" and never say which conversation, or which mailbox it
+ * leaves from — the account is looked up from the thread at send time now,
+ * so it is often not an argument at all. Only the **first** message's header
+ * is read: mecha-mail writes it (`--- [account] From: …`) at the very start
+ * of the text, while every later header follows a stranger's body, where a
+ * line shaped like one can be typed by anybody.
+ */
+export function threadOf(sources) {
+  const read = (sources ?? []).find((s) => toolSuffix(s.tool) === 'mail_get_thread');
+  const lines = (read?.text ?? '').split('\n', 4);
+  const head = /^--- \[([^\]]+)\] From: /.exec(lines[0] ?? '');
+  if (!head) return null;
+  const subject = lines.slice(1, 3).find((l) => l.startsWith('Subject: '));
+  return { account: head[1], subject: subject ? subject.slice('Subject: '.length).trim() : '' };
+}
+
+/**
+ * Arguments that are routing, not content: shown under "exact arguments",
+ * never as a row of their own. A 150-character thread id is nothing a
+ * reviewer can check by eye, and `reply_all: false` is the default saying
+ * nothing — `reply_all: true` is shown, as a chip, because it widens who
+ * gets the mail.
+ */
+export const ROUTING_KEYS = ['thread_id', 'message_id', 'reply_all'];
+
+const MSG_HEAD = /^--- \[([^\]]+)\] From: (.*) <([^<>]*)> · (\S+)$/;
+
+/**
+ * The thread a drafting run read, as messages — `{ account, messages: [{
+ * name, address, date, subject, replyId, body }] }`, oldest first — or null
+ * when the text is not one `mail_get_thread` wrote.
+ *
+ * Presentation only, like `mail-thread.js`'s parse for the Mail tab, and
+ * stricter than it: a message starts only at a line that is a whole header
+ * mecha-mail writes — after a blank line, naming the thread's own account,
+ * followed by its `Calendar date:` (or, in older reads, `Subject:`) line — so a signature's `---`, or an
+ * "-----Original Message-----" block quoted in a body, never splits one. A
+ * body that forges all of it can still split; the verbatim text stays one
+ * click away. **Nothing here decides where a reply goes, but the pane names
+ * who it goes back to from this split** — so it names nobody unless the
+ * split is `verified` (review of #272 found a body forging all of the above).
+ */
+export function threadMessages(text, clipped = false) {
+  const lines = (text ?? '').replace(/\s+$/, '').split('\n');
+  // A read cut at the source's length cap (the detail's `clipped`) ends on
+  // the cap's note, not on the count, and is missing whatever came after.
+  if (clipped) lines.pop();
+  // mecha-mail's closing count (`thread_footer`): the one line after every
+  // body, so a body cannot forge it. Reads staged before it existed have none.
+  const foot = /^--- end of thread · (\d+) messages?$/.exec(lines[lines.length - 1] ?? '');
+  if (foot) lines.pop();
+  const first = MSG_HEAD.exec(lines[0] ?? '');
+  if (!first) return null;
+  const account = first[1];
+  const starts = [];
+  lines.forEach((l, i) => {
+    const m = MSG_HEAD.exec(l);
+    // `Calendar date:` since mecha-mail started writing one; `Subject:`
+    // straight after the header in the reads drafts staged before that hold.
+    const nextLine = lines[i + 1] ?? '';
+    const ours = nextLine.startsWith('Calendar date: ') || nextLine.startsWith('Subject: ');
+    if (m && m[1] === account && (i === 0 || lines[i - 1] === '') && ours) starts.push(i);
+  });
+  const messages = starts.map((s, k) => {
+    const [, , name, address, date] = MSG_HEAD.exec(lines[s]);
+    const end = k + 1 < starts.length ? starts[k + 1] : lines.length;
+    let i = s + 1;
+    let subject = '';
+    let replyId = null;
+    for (; i < end && lines[i] !== ''; i++) {
+      if (lines[i].startsWith('Subject: ')) subject = lines[i].slice('Subject: '.length).trim();
+      else if (lines[i].startsWith('Message id (for mail_reply): ')) replyId = lines[i].slice('Message id (for mail_reply): '.length).trim();
+    }
+    return { name: name.trim(), address, date, subject, replyId, body: lines.slice(i, end).join('\n').trim() };
+  });
+  // Whether the split can be trusted to say who wrote what — and so who a
+  // reply goes back to. A forged header in a body adds a split: the count
+  // catches it, and with no count a single message is the only split that
+  // cannot hide one (a forgery would have made a second).
+  // A clipped read is never verified: cut after its first message, a long
+  // thread looks exactly like a one-message one (found on review).
+  const verified = !clipped && (foot ? Number(foot[1]) === messages.length : messages.length === 1);
+  return { account, messages, verified, clipped };
+}
+
+/**
+ * The message a reply answers: the one `message_id` names, else the newest —
+ * `mail_reply`'s own rule. Null when `message_id` names none the run read.
+ */
+export function answeredMessage(thread, args) {
+  const msgs = thread?.messages ?? [];
+  if (!msgs.length) return null;
+  if (args?.message_id) return msgs.find((m) => m.replyId === args.message_id) ?? null;
+  return msgs[msgs.length - 1];
+}
+
+/** "Tue, Sep 15, 12:56 PM", in the viewer's zone. */
+export function msgWhen(iso) {
+  const ms = Date.parse(iso ?? '');
+  if (Number.isNaN(ms)) return iso ?? '';
+  return new Date(ms).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+/**
+ * Who a mail draft is to and what it is about, for a list row — `{ who,
+ * subject }` — from a detail (`/api/outbox/{id}`), or null for anything
+ * else. A staged reply carries no recipient and no subject (both follow from
+ * its thread), so its row used to read "REPLY" over the first line of
+ * prose, and a queue of those is a queue nobody can triage. `who` for a
+ * reply is the sender of the message it answers — who the reply is
+ * addressed back to by default.
+ */
+export function rowSummary(detail) {
+  if (!detail) return null;
+  const tool = toolSuffix(detail.tool);
+  const args = detail.args ?? {};
+  if (tool === 'mail_send') return { who: args.to ?? '', subject: args.subject ?? detail.headline ?? '' };
+  if (tool !== 'mail_reply') return null;
+  const read = (detail.sources ?? []).find((s) => toolSuffix(s.tool) === 'mail_get_thread');
+  const thread = read ? threadMessages(read.text, read.clipped) : null;
+  const answered = answeredMessage(thread, args);
+  const first = thread?.messages[0]?.subject ?? '';
+  const subject = detail.headline || (first ? (/^re:/i.test(first) ? first : `Re: ${first}`) : '');
+  return { who: answered && thread.verified ? answered.name || answered.address : '', subject };
+}
+
+/**
+ * A `docs_replace` as the edit it is — `{ find, replace, matchCase, url }` —
+ * or null. `url` opens the document, and only for an id shaped like a Drive
+ * id, so a model-written value cannot become a link anywhere but Google Docs.
+ */
+export function docEdit(tool, args) {
+  if (toolSuffix(tool) !== 'docs_replace' || typeof args?.find !== 'string') return null;
+  const id = typeof args.file_id === 'string' && /^[A-Za-z0-9_-]{20,}$/.test(args.file_id) ? args.file_id : null;
+  return {
+    find: args.find,
+    replace: typeof args.replace === 'string' ? args.replace : '',
+    matchCase: args.match_case === true,
+    url: id ? `https://docs.google.com/document/d/${id}/edit` : null,
+  };
+}
+
+/** The keys a doc-edit card renders itself. */
+export const DOC_EDIT_KEYS = ['find', 'replace', 'match_case', 'file_id'];
+
+/**
+ * One-press reasons for a reject. A reason is still recorded — the learning
+ * miner reads it — but most drafts in a clogged queue are refused for one
+ * of these, and typing it was the step that left them sitting there.
+ */
+export const REJECT_REASONS = ['Already handled', 'No longer needed', "Not right — I'll write it myself"];
+
+/**
+ * A press that lands before a draft has been on screen this long is refused.
+ * After a send the next draft opens in the same place, instantly from the
+ * cache, so a second press — key or click — would send it unread. This is
+ * the safety that replaced the armed confirm sheet, so it lives here, where a
+ * test can hold it.
+ */
+export const JUST_OPENED_MS = 800;
+export const tooSoon = (openedAt, now = Date.now()) => now - openedAt < JUST_OPENED_MS;

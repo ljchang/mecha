@@ -401,3 +401,31 @@ export function linksOf(blocks) {
   }
   return out;
 }
+
+/** The words a run of inline nodes reads as. */
+export function inlineText(nodes) {
+  return (nodes ?? []).map((n) => n.v ?? inlineText(n.c)).join('');
+}
+
+/**
+ * Where a link goes, when its words do not already say so — else null.
+ *
+ * For a draft about to be sent: `[the agenda](https://elsewhere)` renders as
+ * "the agenda", and the destination sat in a hover title nobody reads on a
+ * phone. That was the one thing the old confirm step's raw arguments showed
+ * and the rendered draft did not, so a draft pane asks for it inline.
+ */
+export function hiddenTarget(link) {
+  const shown = inlineText(link.c).trim();
+  // The whole destination, query string included — a query is exactly where
+  // an injected link carries what it exfiltrates, and `shortUrl` folds it to
+  // `?…` (found on review). Scheme dropped; only a very long one is cut.
+  const full = link.href.replace(/^https?:\/\//i, '').replace(/^mailto:/i, '');
+  // Compared with the *unfolded* destination: a bare URL is displayed as its
+  // `shortUrl`, which folds a query away, so matching that was matching the
+  // one case worth revealing (found on review). Only `www.` and a trailing
+  // slash are forgiven — neither can carry anything.
+  const same = (a) => a.replace(/^www\./i, '').replace(/\/$/, '');
+  if (same(shown) === same(full) || shown === link.href) return null;
+  return full.length > 300 ? `${full.slice(0, 299)}…` : full;
+}

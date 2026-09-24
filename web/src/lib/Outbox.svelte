@@ -4,6 +4,8 @@
   import {
     kindOf, KINDS, editsAsEvent, eventFields, eventArgs, inclusiveEnd, whenLabel, eventZone,
     attendeesOf, MAIL_HEADERS, ago, localZone, EVENT_CARD_KEYS, unreadableAccounts, unreadableNote,
+    threadOf, ROUTING_KEYS, toolSuffix, threadMessages, answeredMessage, msgWhen,
+    rowSummary, docEdit, DOC_EDIT_KEYS, REJECT_REASONS, tooSoon,
   } from './outbox-view.js';
 
   // The outbox: every draft waiting on the owner, and the one place any of
@@ -11,7 +13,7 @@
   // warning, headers, prose, everything-else, and the quoted source the draft
   // answers — because approving without reading is the failure this queue
   // exists to prevent. Every action drives a `mecha outbox …` verb on the
-  // box; the confirm step is what earns `--yes`.
+  // box; the owner pressing Send on the open draft is what earns `--yes`.
   //
   // Each draft is shown as the thing it is. A mail reads as a mail (headers,
   // then the letter, rendered); an event reads as a time, a place, a calendar
@@ -20,29 +22,43 @@
   // desk the list and the open draft sit side by side and the keys move
   // through them, as in Mail; on a phone it is a list, then a draft.
   //
-  // What "reviewed" means did not move: the taint notice, the exact arguments
-  // on an armed draft's confirm, the source reads, the reason on a reject.
+  // What "reviewed" means: the taint notice, every link's destination on the
+  // page, the source reads, the exact arguments one click away, the reason on
+  // a reject. Send is one press. An armed draft used to take a second, on a
+  // sheet of raw JSON — but every draft the assistant writes is armed (it
+  // read your mail to write it), so the second press was on every draft and
+  // taught clicking through; the one thing the JSON showed that the page did
+  // not, a link's real destination, the page now shows beside the link.
 
   let pending = $state([]);
+  // Every pending draft's detail, fetched once and kept: the rows need a
+  // reply's thread to say who and what it answers (its arguments carry
+  // neither), and a draft already read opens instantly. A draft's detail
+  // only changes when something here acts on it, which drops its entry.
+  let cache = $state({});
   let resolved = $state(0);
   let loaded = $state(false);
   let detail = $state(null);
   let error = $state(null); // an action's failure: stays until the next action
+  let notice = $state(null); // what the last action did, briefly
+  let noticeTimer = null;
+  let openedAt = 0; // when the open draft was shown: `a` is refused on one not yet seen
   let listError = $state(null); // the list poll's own, cleared by the next poll
   let busy = $state(false);
   let filter = $state('all');
   let selectedId = $state(null);
 
   // What the draft pane is doing.
-  let mode = $state('read'); // read | prose | event | confirm | reject
+  let mode = $state('read'); // read | prose | event | reject
   let editDraft = $state('');
   let ev = $state(null); // the event editor's fields
   let evError = $state(null);
   let rejectReason = $state('');
-  let showSources = $state(false);
+  let showSources = $state(false); // the other reads, or every read when no thread parsed
+  let showThread = $state(false); // every message of the thread, not only the one answered
+  let showRaw = $state(false); // the thread exactly as the drafting run read it
   let showArgs = $state(false);
   let deliveryEvidence = $state('');
-  let deliveryOutcome = $state('delivered');
   let calendars = $state(null); // null | 'loading' | 'error' | [{account, calendars}]
   let reasonEl = $state(null);
   let proseEl = $state(null);
@@ -69,12 +85,40 @@
   const asEvent = $derived(!!detail && editsAsEvent(detail.tool));
   const args = $derived(detail?.args ?? {});
   const mailHeaders = $derived((detail?.headers ?? []).filter(([k]) => MAIL_HEADERS.includes(k)));
-  const restHeaders = $derived((detail?.headers ?? []).filter(([k]) => !MAIL_HEADERS.includes(k)));
+  // Routing arguments (a thread id, `reply_all: false`) are not rows: they
+  // live under "exact arguments", and a reply-all is a chip on the letter.
+  const shown = ([k]) => !ROUTING_KEYS.includes(k);
+  const restHeaders = $derived((detail?.headers ?? []).filter(([k]) => !MAIL_HEADERS.includes(k)).filter(shown));
+  const replyAll = $derived(args.reply_all === true);
+  // The store prefixes an uncertain attempt's reason with what the heading
+  // already says; the pane shows the heading and the reason once each.
+  const failWhy = $derived((detail?.error ?? '').replace(/^Delivery outcome unknown[^.;]*[.;]\s*((inspect the destination|reconcile) before retrying\.\s*)?/i, '').trim());
+  const thread = $derived(kind === 'mail' ? threadOf(detail?.sources) : null);
+  // The thread the run read, as messages: the one a reply answers is shown
+  // as mail — who, when, what they said — and the rest one click away.
+  const readThread = $derived.by(() => {
+    if (kind !== 'mail') return null;
+    for (const source of detail?.sources ?? []) {
+      if (toolSuffix(source.tool) !== 'mail_get_thread') continue;
+      const parsed = threadMessages(source.text, source.clipped);
+      if (parsed?.messages.length) return { source, ...parsed };
+    }
+    return null;
+  });
+  const answered = $derived(readThread ? answeredMessage(readThread, args) : null);
+  const otherSources = $derived((detail?.sources ?? []).filter((x) => x !== readThread?.source));
+  // A reply's sender is the thread's account, looked up at send time; say so
+  // when the draft does not name one itself.
+  const fromThread = $derived(thread && !mailHeaders.some(([k]) => k === 'account') ? thread.account : null);
+  const title = $derived(
+    !detail ? '' : asEvent ? (args.title ?? detail.headline) : detail.headline || (thread?.subject ? `Re: ${thread.subject}` : ''),
+  );
   const invited = $derived(attendeesOf(args));
+  const doc = $derived(detail ? docEdit(detail.tool, detail.args) : null);
   const unshown = $derived(
     asEvent
       ? [...(detail?.headers ?? []), ...(detail?.other ?? [])].filter(([k]) => !EVENT_CARD_KEYS.includes(k))
-      : (detail?.other ?? []),
+      : (detail?.other ?? []).filter(shown).filter(([k]) => !(doc && DOC_EDIT_KEYS.includes(k))),
   );
 
   async function loadList() {
@@ -86,6 +130,9 @@
       resolved = data.resolved;
       loaded = true;
       listError = null;
+      const ids = new Set(pending.map((p) => p.id));
+      for (const id of Object.keys(cache)) if (!ids.has(id)) delete cache[id];
+      prefetch(pending.map((p) => p.id).filter((id) => !cache[id]));
       // At a desk the pane is never empty while there is something to read.
       if (wide && !selectedId && visible.length) open(visible[0].id);
     } catch (e) {
@@ -93,24 +140,64 @@
     }
   }
 
-  async function open(id) {
+  async function fetchDetail(id) {
+    const res = await fetch(`/api/outbox/${id}`);
+    if (!res.ok) throw new Error((await res.text()).trim());
+    const d = await res.json();
+    cache[id] = d;
+    return d;
+  }
+  /** Three at a time, so a long queue does not start with a burst. */
+  async function prefetch(ids) {
+    const queue = [...ids];
+    const worker = async () => {
+      while (queue.length) {
+        const id = queue.shift();
+        try { await fetchDetail(id); } catch { /* the row keeps its plain label */ }
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+  }
+
+  /** The cached detail at once when there is one; the fetched one always. */
+  async function open(id, { keepError = false, fresh = false } = {}) {
     selectedId = id;
+    const hit = fresh ? null : cache[id];
+    if (hit) show(hit, keepError);
     try {
-      const res = await fetch(`/api/outbox/${id}`);
-      if (!res.ok) throw new Error((await res.text()).trim());
-      const d = await res.json();
+      const d = await fetchDetail(id);
       if (selectedId !== id) return; // a later click won
-      detail = d;
-      mode = 'read';
-      evError = null;
-      // Open, as the page has always shown them: what a draft answers is part
-      // of reading it. The toggle is for a long thread already read.
-      showSources = true;
-      showArgs = false;
-      error = null;
+      if (!hit) show(d, keepError);
+      else if (mode === 'read') detail = d;
     } catch (e) {
-      error = String(e?.message ?? e);
+      const why = String(e?.message ?? e);
+      if (!hit) error = why;
+      else if (selectedId === id) {
+        // The copy on screen came from the prefetch; if it cannot be reread
+        // it may have been sent or rejected elsewhere since. Say so rather
+        // than keep showing it as current (found on review).
+        delete cache[id];
+        error = `This draft could not be reread — it may have been sent or rejected elsewhere. ${why}`;
+        loadList();
+      }
     }
+  }
+  function show(d, keepError) {
+    detail = d;
+    openedAt = Date.now();
+    mode = 'read';
+    evError = null;
+    // The message a draft answers is always shown; the rest of the thread
+    // and the verbatim read wait for a click.
+    showThread = false;
+    showRaw = false;
+    // With no thread to show as mail, the reads are what there is to see.
+    // Only a mail draft draws its thread as messages; an event or a doc edit
+    // written from a mail has no other rendering of it (found on review).
+    showSources = !(kindOf(d.tool) === 'mail' && d.sources?.some((x) => toolSuffix(x.tool) === 'mail_get_thread' && threadMessages(x.text, x.clipped)));
+    showArgs = false;
+    rejectReason = '';
+    if (!keepError) error = null;
   }
 
   function back() {
@@ -135,8 +222,17 @@
     }
   }
 
+  function say(text) {
+    notice = text;
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => (notice = null), 6000);
+  }
+
+  /** The verb's stdout on success, null on failure (the reason in `error`). */
   async function act(path, body) {
     busy = true;
+    error = null;
+    delete cache[detail.id]; // whatever happens, the stored draft may have changed
     try {
       const res = await fetch(`/api/outbox/${detail.id}/${path}`, {
         method: 'POST',
@@ -145,42 +241,64 @@
       });
       const text = await res.text();
       if (!res.ok) throw new Error(text.trim());
-      return true;
+      return text;
     } catch (e) {
       error = String(e?.message ?? e);
-      return false;
+      return null;
     } finally {
       busy = false;
     }
   }
 
-  async function reconcile() {
-    if (await act('reconcile', { outcome: deliveryOutcome, evidence: deliveryEvidence.trim() })) {
-      deliveryEvidence = '';
+  // "It was sent" closes the item; "it wasn't" puts the draft back in
+  // front of you, ready to send again — so it stays open rather than moving on.
+  async function reconcile(outcome) {
+    const id = detail.id;
+    if ((await act('reconcile', { outcome, evidence: deliveryEvidence.trim() })) === null) return;
+    deliveryEvidence = '';
+    if (outcome === 'delivered') {
+      say('Recorded as sent.');
       next();
+    } else {
+      say('Recorded as not sent — the draft can go again.');
+      open(id, { fresh: true });
     }
   }
-  // The confirm step earns its place on an armed draft, where it shows the
-  // exact arguments — more than the pane does. On a clean one it would show
-  // strictly less than what is already open, which is a confirmation that
-  // teaches people to click through, and what that trains away is the armed
-  // one. So: one step here, two when the trifecta was armed.
-  function approveClicked() {
-    if (!detail || busy || detail.delivery_uncertain) return;
-    if (detail.taint.armed) mode = 'confirm';
-    else approve();
-  }
+  // Never on a draft that appeared under your finger or pointer: after a
+  // send the next draft opens in the same place, instantly from the cache,
+  // and a second press or click would send it unread.
   async function approve() {
-    if (await act('approve')) next();
+    if (!detail || busy || detail.delivery_uncertain) return;
+    if (tooSoon(openedAt)) {
+      say('This draft just opened — press again to send it.');
+      return;
+    }
+    const id = detail.id;
+    const out = await act('approve');
+    if (out !== null) {
+      say(sentLine(out) ?? 'Sent.');
+      next();
+    } else {
+      // Reread it: a failed send changes the draft (its error, and whether
+      // delivery is now uncertain), and the page must show that draft, not
+      // the one it had before the press.
+      await loadList();
+      if (selectedId === id) open(id, { keepError: true, fresh: true });
+    }
   }
+  /** The tool's own one-line answer out of the verb's stdout, if it gave one. */
+  const sentLine = (out) =>
+    out.split('\n').slice(1).map((l) => l.trim()).find((l) => /^(sent|replied|created|added)\b/i.test(l)) ?? null;
+  // The reasons are one press each (1, 2, 3 at a desk); the box is for
+  // anything else, so it is not focused until you click into it.
   function startReject() {
     mode = 'reject';
-    queueMicrotask(() => reasonEl?.focus());
   }
-  async function reject() {
-    if (!rejectReason.trim()) return;
-    if (await act('reject', { reason: rejectReason.trim() })) {
+  async function reject(reason = rejectReason) {
+    if (!reason.trim() || busy) return;
+    if ((await act('reject', { reason: reason.trim() })) !== null) {
       rejectReason = '';
+      say('Rejected.');
       next();
     }
   }
@@ -197,16 +315,30 @@
       queueMicrotask(() => proseEl?.focus());
     }
   }
-  async function saveProse() {
-    if (await act('edit', { body: editDraft })) open(detail.id);
+  function proseKey(e) {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      saveProse(true);
+    }
   }
-  async function saveEvent() {
+  // `andSend`: the edit is saved, then the saved draft goes — one press for
+  // the commonest review there is, "fix a word and send it".
+  async function saveProse(andSend = false) {
+    const id = detail.id;
+    if ((await act('edit', { body: editDraft })) === null) return;
+    if (andSend) return approve();
+    open(id, { fresh: true });
+  }
+  async function saveEvent(andSend = false) {
     const out = eventArgs(detail.args, ev);
     if (out.error) {
       evError = out.error;
       return;
     }
-    if (await act('edit', { args: out.args })) open(detail.id);
+    const id = detail.id;
+    if ((await act('edit', { args: out.args })) === null) return;
+    if (andSend) return approve();
+    open(id, { fresh: true });
   }
 
   async function loadCalendars() {
@@ -253,9 +385,9 @@
 
   const approveLabel = $derived(
     !detail ? 'Approve'
-      : kind === 'mail' ? 'Approve and send'
-      : asEvent ? (invited.length ? 'Approve — add and invite' : 'Approve — add to calendar')
-      : kind === 'doc' ? 'Approve the edit'
+      : kind === 'mail' ? 'Send'
+      : asEvent ? (invited.length ? 'Add and send invites' : 'Add to calendar')
+      : kind === 'doc' ? 'Apply the edit'
       : 'Approve',
   );
   const canEdit = $derived(!!detail && detail.kind !== 'publish' && (editsAsEvent(detail.tool) || detail.body != null));
@@ -269,9 +401,8 @@
   }
   function onKey(e) {
     if (!wide || e.metaKey || e.ctrlKey || e.altKey) return;
-    // A held key repeats. `a` flips an armed draft into its confirm step, and
-    // the next repeat would press "Send it" — the confirm has to be a second,
-    // deliberate press, and none of these keys can be undone (found on review).
+    // A held key repeats, and none of these keys can be undone: a held `a`
+    // would send every draft in the list (found on review).
     if (e.repeat && ['a', 'x', 'e'].includes(e.key)) {
       e.preventDefault();
       return;
@@ -287,11 +418,16 @@
       return;
     }
     if (typing) return;
+    if (mode === 'reject' && /^[1-9]$/.test(e.key) && REJECT_REASONS[Number(e.key) - 1]) {
+      e.preventDefault();
+      reject(REJECT_REASONS[Number(e.key) - 1]);
+      return;
+    }
     if ((e.key === 'Enter' || e.key === ' ') && t?.closest?.('button, a, select, label')) return;
     switch (e.key) {
       case 'j': case 'ArrowDown': if (mode === 'read') move(1); else return; break;
       case 'k': case 'ArrowUp': if (mode === 'read') move(-1); else return; break;
-      case 'a': if (mode === 'read') approveClicked(); else if (mode === 'confirm') approve(); else return; break;
+      case 'a': if (mode === 'read') approve(); else return; break;
       case 'e': if (mode === 'read' && canEdit) startEdit(); else return; break;
       case 'x': if (mode === 'read' && detail) startReject(); else return; break;
       default: return;
@@ -335,6 +471,19 @@
   </svg>
 {/snippet}
 
+{#snippet message(m, target)}
+  <!-- Third-party text: the left rule marks it, as the gutter did. -->
+  <article class="msg" class:target>
+    <header class="msghead">
+      <span class="who">{m.name || m.address}</span>
+      {#if m.name}<span class="addr">{m.address}</span>{/if}
+      <span class="grow"></span>
+      <span class="when">{msgWhen(m.date)}</span>
+    </header>
+    <MailBody text={m.body} />
+  </article>
+{/snippet}
+
 {#snippet kindGlyph(k, size = 16)}
   <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
     {#if k === 'mail'}<rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 7l9 6 9-6" />
@@ -354,6 +503,7 @@
         <span class="grow"></span>
         <span class="muted">{resolved} done</span>
       </header>
+      {#if notice}<div class="notice" role="status">{notice}</div>{/if}
       {#if pending.length}
         <div class="filters" aria-label="Kind">
           <button class="fchip" class:on={filter === 'all'} onclick={() => (filter = 'all')}>All <span>{counts.all}</span></button>
@@ -367,18 +517,26 @@
       <div class="rows" bind:this={listEl}>
         {#if listError || (error && !detail)}<div class="warnline pad">{@render hazardGlyph()}<span>{listError ?? error}</span></div>{/if}
         {#each visible as item (item.id)}
+          {@const sum = rowSummary(cache[item.id])}
           <button class="row" class:on={item.id === selectedId} onclick={() => open(item.id)}>
             <span class="kicon k-{kindOf(item.tool)}">{@render kindGlyph(kindOf(item.tool))}</span>
             <span class="rbody">
               <span class="rtop">
-                <span class="rlabel">{item.label}</span>
-                {#if item.account}<span class="acct">{item.account}</span>{/if}
+                {#if sum?.who}
+                  <span class="rwho">{sum.who}</span>
+                {:else}
+                  <span class="rlabel">{item.label}</span>
+                  {#if item.account}<span class="acct">{item.account}</span>{/if}
+                {/if}
                 <span class="grow"></span>
-                {#if item.tainted}<span class="tflag" title="Drafted with untrusted content in context">{@render hazardGlyph(12)}</span>{/if}
+                {#if cache[item.id]?.delivery_uncertain}<span class="stuck">check sent</span>{:else if cache[item.id]?.error}<span class="stuck">failed</span>{/if}
                 <span class="when">{ago(item.created_at)}</span>
               </span>
-              {#if item.headline}<span class="rhead">{item.headline}</span>{/if}
+              {#if item.headline || sum?.subject}<span class="rhead">{item.headline || sum.subject}</span>{/if}
               {#if rowWhen(item)}<span class="rsnip strong">{rowWhen(item)}</span>
+              {:else if docEdit(item.tool, cache[item.id]?.args)}
+                {@const d = docEdit(item.tool, cache[item.id]?.args)}
+                <span class="rsnip">replace “{d.find}” → “{d.replace}”</span>
               {:else if item.snippet}<span class="rsnip">{item.snippet}</span>{/if}
               {#if item.edited}<span class="edited">edited by you</span>{/if}
             </span>
@@ -390,7 +548,7 @@
         {/each}
       </div>
       {#if wide}
-        <footer class="keys"><span><kbd>j</kbd><kbd>k</kbd> move</span><span><kbd>a</kbd> approve</span><span><kbd>e</kbd> edit</span><span><kbd>x</kbd> reject</span><span><kbd>esc</kbd> cancel</span></footer>
+        <footer class="keys"><span><kbd>j</kbd><kbd>k</kbd> move</span><span><kbd>a</kbd> send</span><span><kbd>e</kbd> edit</span><span><kbd>x</kbd> reject</span><span><kbd>esc</kbd> cancel</span></footer>
       {/if}
     </aside>
   {/if}
@@ -408,16 +566,19 @@
           <span class="grow"></span>
           <span class="muted mono">staged {ago(detail.created_at)}{detail.edited ? ' · edited by you' : ''}</span>
         </div>
-        <h1>{asEvent ? (args.title ?? detail.headline) : detail.headline || detail.label}</h1>
-
-        {#if error}<div class="warnline">{@render hazardGlyph()}<span>{error}</span></div>{/if}
+        {#if title}<h1>{title}</h1>{/if}
 
         {#if detail.taint.armed}
+          <!-- One line: nearly every draft carries it, and a banner on every
+               draft is one nobody reads. What it asks is specific. -->
           <div class="taint">
-            {@render hazardGlyph(15)}
-            <div><strong>Drafted with untrusted content in context.</strong> If anything here was not yours — a recipient, a link, a time — an attacker may have put it there. Read all of it.</div>
+            {@render hazardGlyph(13)}
+            <span><strong>Written after reading outside content.</strong> Check the recipients, links and times are yours.</span>
           </div>
         {/if}
+
+        <!-- The bar carries an action's error; where there is no bar, here. -->
+        {#if error && (detail.delivery_uncertain || mode === 'event' || mode === 'prose')}<div class="warnline">{@render hazardGlyph()}<span>{error}</span></div>{/if}
 
         {#if detail.error}
           <!-- A failed send stays pending: the draft is good, the delivery was
@@ -426,25 +587,25 @@
           <div class="failline">
             {@render hazardGlyph()}
             <div>
-              <div class="failhead">{detail.delivery_uncertain ? 'Delivery outcome is unknown' : 'The last attempt needs attention'}</div>
-              <div class="failwhy">{detail.error}</div>
+              <div class="failhead">{detail.delivery_uncertain ? 'mecha could not confirm this was sent' : 'The last attempt did not send'}</div>
+              {#if failWhy}<div class="failwhy">{failWhy}</div>{/if}
             </div>
           </div>
         {/if}
 
         {#if detail.delivery_uncertain}
+          <!-- Sending again before anyone checks is how a mail goes out twice,
+               so the draft cannot be sent from here until you say what the
+               destination shows. Neither answer sends anything. -->
           <div class="card pad col">
-            <p class="note">Check the destination's sent history before deciding. Recording the outcome does not send anything.</p>
-            <label class="field">What did you find?
-              <select bind:value={deliveryOutcome}>
-                <option value="delivered">Confirmed delivered</option>
-                <option value="not-delivered">Confirmed not delivered</option>
-              </select>
+            <p class="note">Look in {fromThread ?? args.account ?? 'the account'}'s Sent folder{kind === 'event' ? ' or calendar' : ''}, then say what you found.</p>
+            <label class="field">What you checked
+              <input bind:value={deliveryEvidence} placeholder="e.g. not in Sent — or the message id you found" />
             </label>
-            <label class="field">Evidence
-              <textarea rows="3" bind:value={deliveryEvidence} placeholder="Message or event ID, or the destination check that established it was not delivered"></textarea>
-            </label>
-            <div><button class="btn primary" disabled={busy || !deliveryEvidence.trim()} onclick={reconcile}>Record outcome</button></div>
+            <div class="btnrow start">
+              <button class="btn" disabled={busy || !deliveryEvidence.trim()} onclick={() => reconcile('not-delivered')}>It wasn't sent</button>
+              <button class="btn" disabled={busy || !deliveryEvidence.trim()} onclick={() => reconcile('delivered')}>It was sent</button>
+            </div>
           </div>
         {/if}
 
@@ -504,7 +665,8 @@
             {#if evError}<div class="warnline">{@render hazardGlyph()}<span>{evError}</span></div>{/if}
             <div class="btnrow">
               <button class="btn" type="button" onclick={() => (mode = 'read')}>Cancel{#if wide}<kbd>esc</kbd>{/if}</button>
-              <button class="btn primary" type="submit" disabled={busy}>Save changes</button>
+              <button class="btn" type="submit" disabled={busy}>Save</button>
+              <button class="btn primary" type="button" disabled={busy} onclick={() => saveEvent(true)}>{`Save & ${approveLabel.toLowerCase()}`}</button>
             </div>
           </form>
         {:else if asEvent}
@@ -532,23 +694,71 @@
             <div class="card pad"><div class="kicker">notes</div><MailBody text={args.description} compact /></div>
           {/if}
         {:else if kind === 'mail'}
+          {#if readThread}
+            <section class="answering" aria-label="What this answers">
+              <!-- Only a verified split may say who a reply goes back to: a
+                   body can forge a header, and a staged reply names no one
+                   else. Unverified, it is what the run read, newest last. -->
+              <div class="kicker">{toolSuffix(detail.tool) !== 'mail_reply' ? 'Written from' : readThread.verified ? 'Replying to' : 'The thread it read'}</div>
+              {#if !readThread.verified}
+                <!-- An unproven split is not drawn as messages: a parsed header
+                     in bold is a sender the page vouches for, and a forged one
+                     would be styled exactly like a real one (review of #272).
+                     The read is shown as it was read, headers as plain text. -->
+                <div class="hint warntext">
+                  {readThread.clipped
+                    ? "The run's read of this thread was cut short, so newer messages may be missing."
+                    : "mecha can't confirm where each message in this read starts, so it's shown exactly as read."}
+                  The reply goes to the newest message in the real thread.
+                </div>
+                <div class="quoted"><span class="gutter"></span><div class="qtext"><MailBody text={readThread.source.text} compact /></div></div>
+              {:else}
+                {#if toolSuffix(detail.tool) === 'mail_reply' && !args.message_id}
+                  <!-- The name is the newest message *the run read*; the
+                       reply goes to the newest one when it is sent, and a
+                       draft can wait days (found on review). A reply pinned
+                       by message_id has a fixed target, so it needs no line. -->
+                  <div class="hint">The newest message when this was drafted. If anyone has written since, the reply goes to them instead — open the thread in Mail to check.</div>
+                {/if}
+              {/if}
+              {#if readThread.verified && showThread}
+                {#each readThread.messages as m}{@render message(m, m === answered)}{/each}
+              {:else if readThread.verified && answered}
+                {@render message(answered, false)}
+              {:else if readThread.verified}
+                <div class="muted">The message this replies to is not in the thread the run read — show the thread to see what it did read.</div>
+              {/if}
+              <div class="answerlinks">
+                {#if readThread.verified && readThread.messages.length > 1}
+                  <button class="linkish" onclick={() => (showThread = !showThread)}>{showThread ? 'only the message answered' : `whole thread · ${readThread.messages.length} messages`}</button>
+                {/if}
+                {#if readThread.verified}<button class="linkish" onclick={() => (showRaw = !showRaw)}>{showRaw ? 'hide' : 'exactly what the drafting run read'}</button>{/if}
+              </div>
+              {#if showRaw && readThread.verified}<pre class="argdump rawread">{readThread.source.text}</pre>{/if}
+            </section>
+          {/if}
           <div class="card letter">
-            {#if mailHeaders.length}
+            {#if mailHeaders.length || fromThread || replyAll}
               <div class="lhead">
+                {#if fromThread}
+                  <div class="hrow"><span class="hkey">from</span><span class="hval">{fromThread} <span class="muted">— the account this thread is in</span></span></div>
+                {/if}
                 {#each mailHeaders as [key, value]}
                   <div class="hrow"><span class="hkey">{key}</span><span class="hval">{value}</span></div>
                 {/each}
+                {#if replyAll}<div class="hrow"><span class="hkey"></span><span class="chip warnchip">reply all — everyone on the thread gets it</span></div>{/if}
               </div>
             {/if}
             {#if mode === 'prose'}
-              <textarea class="prosebox" bind:this={proseEl} bind:value={editDraft} rows="14"></textarea>
+              <textarea class="prosebox" bind:this={proseEl} bind:value={editDraft} rows="14" onkeydown={proseKey}></textarea>
               <div class="btnrow pad">
-                <span class="hint grow">Markdown — **bold**, [link](https://…), lists. Converted when it sends.</span>
+                <span class="hint grow">Markdown — **bold**, [link](https://…), lists.{#if wide} <kbd>⌘/ctrl ↵</kbd> saves and sends.{/if}</span>
                 <button class="btn" onclick={() => (mode = 'read')}>Cancel{#if wide}<kbd>esc</kbd>{/if}</button>
-                <button class="btn primary" disabled={busy} onclick={saveProse}>Save edit</button>
+                <button class="btn" disabled={busy} onclick={() => saveProse()}>Save</button>
+                <button class="btn primary" disabled={busy} onclick={() => saveProse(true)}>{busy ? 'sending…' : `Save & ${approveLabel.toLowerCase()}`}</button>
               </div>
             {:else if detail.body}
-              <div class="lbody"><MailBody text={detail.body} /></div>
+              <div class="lbody"><MailBody text={detail.body} revealLinks /></div>
             {/if}
           </div>
           {#if restHeaders.length}
@@ -557,19 +767,27 @@
             </div>
           {/if}
         {:else}
+          {#if doc}
+            <div class="card pad col">
+              <div class="kicker">every “{doc.find}” in the document{doc.matchCase ? ', matching case' : ''}, becomes</div>
+              <div class="diff"><del>{doc.find}</del><span class="arrow">→</span><ins>{doc.replace || '(nothing — deleted)'}</ins></div>
+              {#if doc.url}<a class="openlink" href={doc.url} target="_blank" rel="noopener noreferrer">open the document ↗</a>{/if}
+            </div>
+          {/if}
           {#if detail.headers?.length}
             <div class="card pad hgrid">
               {#each detail.headers as [key, value]}<div class="hrow"><span class="hkey">{key}</span><span class="hval">{value}</span></div>{/each}
             </div>
           {/if}
           {#if mode === 'prose'}
-            <textarea class="prosebox card" bind:this={proseEl} bind:value={editDraft} rows="14"></textarea>
+            <textarea class="prosebox card" bind:this={proseEl} bind:value={editDraft} rows="14" onkeydown={proseKey}></textarea>
             <div class="btnrow">
               <button class="btn" onclick={() => (mode = 'read')}>Cancel{#if wide}<kbd>esc</kbd>{/if}</button>
-              <button class="btn primary" disabled={busy} onclick={saveProse}>Save edit</button>
+              <button class="btn" disabled={busy} onclick={() => saveProse()}>Save</button>
+              <button class="btn primary" disabled={busy} onclick={() => saveProse(true)}>{busy ? 'sending…' : `Save & ${approveLabel.toLowerCase()}`}</button>
             </div>
           {:else if detail.body}
-            <div class="card pad"><MailBody text={detail.body} /></div>
+            <div class="card pad"><MailBody text={detail.body} revealLinks /></div>
           {/if}
         {/if}
 
@@ -582,17 +800,17 @@
           </div>
         {/if}
 
-        {#if detail.sources?.length}
+        {#if otherSources.length}
           <div class="sources">
             <button class="disclose" onclick={() => (showSources = !showSources)} aria-expanded={showSources}>
               <span class="chev" class:open={showSources}>▸</span>
-              What this answers
-              <span class="muted mono">{detail.sources.length === 1 ? 'the thread it read' : `${detail.sources.length} reads`}</span>
+              {readThread ? 'Other things it read' : 'What this answers'}
+              <span class="muted mono">{otherSources.length === 1 ? (readThread ? '1 read' : 'the read it made') : `${otherSources.length} reads`} · their words, not your draft</span>
             </button>
             {#if showSources}
-              {#each detail.sources as source}
+              {#each otherSources as source}
                 <div class="source">
-                  <div class="source-head">{source.heading ?? `${source.tool} · ${source.keys.join(', ')}`}</div>
+                  {#if otherSources.length > 1 || readThread}<div class="source-head" title={source.heading}>{toolSuffix(source.tool).replace(/_/g, ' ')}</div>{/if}
                   <!-- Third-party text: the gutter marks every line. -->
                   <div class="quoted"><span class="gutter"></span><div class="qtext"><MailBody text={source.text} compact /></div></div>
                 </div>
@@ -611,29 +829,32 @@
           <button class="linkish" onclick={() => (showArgs = !showArgs)}>{showArgs ? 'hide' : 'show'} the exact arguments</button>
           <span>· {detail.tool}{detail.session_id ? ` · session ${detail.session_id}` : ''}</span>
         </div>
-        {#if showArgs && mode !== 'confirm'}<pre class="argdump">{JSON.stringify(detail.args, null, 2)}</pre>{/if}
+        {#if showArgs}<pre class="argdump">{JSON.stringify(detail.args, null, 2)}</pre>{/if}
       </div>
 
       {#if !detail.delivery_uncertain && mode !== 'event' && mode !== 'prose'}
         <div class="bar">
-          {#if mode === 'confirm'}
-            <div class="confirm">
-              <div class="warnline">{@render hazardGlyph()}<span>This draft was written while the trifecta was armed. These are the exact arguments that will be sent:</span></div>
-              <pre class="argdump">{JSON.stringify(detail.args, null, 2)}</pre>
-              <div class="btnrow">
-                <button class="btn" onclick={() => (mode = 'read')}>Back{#if wide}<kbd>esc</kbd>{/if}</button>
-                <button class="btn primary" disabled={busy} onclick={approve}>{busy ? 'sending…' : 'Send it'}{#if wide}<kbd>a</kbd>{/if}</button>
+          {#if error}
+            <!-- At the button that was pressed: a failure reported at the top
+                 of a scrolled pane looked like the button doing nothing. -->
+            <div class="barerr" role="alert">{@render hazardGlyph()}<span>{error}</span></div>
+          {/if}
+          {#if mode === 'reject'}
+            <div class="rejectbox">
+              <div class="reasons">
+                {#each REJECT_REASONS as reason, i}
+                  <button class="btn reason" disabled={busy} onclick={() => reject(reason)}>{reason}{#if wide}<kbd>{i + 1}</kbd>{/if}</button>
+                {/each}
               </div>
+              <form class="rejectrow" onsubmit={(e) => { e.preventDefault(); reject(); }}>
+                <input bind:this={reasonEl} bind:value={rejectReason} placeholder="Or say why" aria-label="Reason" />
+                <button class="btn" type="button" onclick={() => (mode = 'read')}>Cancel{#if wide}<kbd>esc</kbd>{/if}</button>
+                <button class="btn danger" type="submit" disabled={busy || !rejectReason.trim()}>Reject</button>
+              </form>
             </div>
-          {:else if mode === 'reject'}
-            <form class="rejectrow" onsubmit={(e) => { e.preventDefault(); reject(); }}>
-              <input bind:this={reasonEl} bind:value={rejectReason} placeholder="Why? Recorded on the item — e.g. wrong calendar, not needed" aria-label="Reason" />
-              <button class="btn" type="button" onclick={() => (mode = 'read')}>Cancel</button>
-              <button class="btn danger" type="submit" disabled={busy || !rejectReason.trim()}>Reject</button>
-            </form>
           {:else if mode === 'read'}
-            <button class="btn primary big" disabled={busy} onclick={approveClicked}>
-              {busy ? 'sending…' : detail.taint.armed ? `${approveLabel} · confirms first` : approveLabel}{#if wide}<kbd>a</kbd>{/if}
+            <button class="btn primary big" disabled={busy} onclick={approve}>
+              {busy ? 'sending…' : approveLabel}{#if wide}<kbd>a</kbd>{/if}
             </button>
             <button class="btn" disabled={busy || !canEdit} onclick={startEdit}>Edit{#if wide}<kbd>e</kbd>{/if}</button>
             <button class="btn" disabled={busy} onclick={startReject}>Reject…{#if wide}<kbd>x</kbd>{/if}</button>
@@ -707,7 +928,7 @@
   h1 { margin: 0; font-size: 21px; font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; overflow-wrap: anywhere; }
   .card { background: var(--bg); border: 1px solid #2a2a38; border-radius: var(--radius); }
   .kicker { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; }
-  .taint { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius); background: rgba(224, 164, 88, 0.08); border: 1px solid rgba(224, 164, 88, 0.3); font-size: 13px; line-height: 1.45; color: var(--text-muted); }
+  .taint { display: flex; gap: 8px; align-items: baseline; font-size: 12px; line-height: 1.45; color: var(--text-muted); }
   .taint strong { color: var(--hazard); font-weight: 600; }
   .warnline { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--hazard); line-height: 1.45; }
   .failline { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--hazard); border-radius: var(--radius); }
@@ -756,7 +977,17 @@
   .source-head { font-family: var(--mono); font-size: 11px; color: var(--accent-700); margin-bottom: 6px; }
   .quoted { display: flex; gap: 12px; }
   .gutter { width: 2px; background: var(--hazard); flex-shrink: 0; border-radius: 1px; }
-  .qtext { min-width: 0; flex: 1; }
+  .qtext { min-width: 0; flex: 1; max-height: 340px; overflow-y: auto; }
+  .answering { display: flex; flex-direction: column; gap: 10px; }
+  .answering .kicker { margin-bottom: 0; }
+  .msg { border-left: 2px solid rgba(224, 164, 88, 0.55); padding: 2px 0 2px 14px; display: flex; flex-direction: column; gap: 8px; max-height: 360px; overflow-y: auto; }
+  .msg.target { border-left-color: var(--hazard); }
+  .msghead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .who { font-size: 14px; font-weight: 600; color: var(--text); }
+  .addr { font-family: var(--mono); font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
+  .answerlinks { display: flex; gap: 14px; flex-wrap: wrap; }
+  .answerlinks .linkish { font-size: 11px; }
+  .rawread { white-space: pre-wrap; overflow-wrap: anywhere; }
   .serves { font-size: 12px; color: var(--text-muted); line-height: 1.45; }
   .provenance { display: flex; gap: 6px; flex-wrap: wrap; font-family: var(--mono); font-size: 10px; color: var(--accent-700); }
   .linkish { background: none; border: 0; padding: 0; color: var(--text-muted); font-family: var(--mono); font-size: 10px; text-decoration: underline; text-underline-offset: 2px; }
@@ -774,8 +1005,20 @@
   .btn.big { flex: 1; min-width: 200px; }
   .btn.danger { background: #d4526e; border-color: #d4526e; color: var(--void); font-weight: 600; }
   .btnrow { display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
-  .confirm { width: 100%; display: flex; flex-direction: column; gap: 10px; }
+  .barerr { width: 100%; display: flex; gap: 8px; align-items: flex-start; font-size: 13px; line-height: 1.45; color: var(--hazard); overflow-wrap: anywhere; }
+  .btnrow.start { justify-content: flex-start; }
+  .notice { margin: 0 18px 10px; padding: 7px 10px; border-radius: var(--radius-chip); background: rgba(127, 196, 184, 0.1); color: #7fc4b8; font-size: 12px; overflow-wrap: anywhere; }
+  .rejectbox { width: 100%; display: flex; flex-direction: column; gap: 8px; }
+  .reasons { display: flex; gap: 8px; flex-wrap: wrap; }
+  .reason { flex: 1; min-width: 150px; }
   .rejectrow { width: 100%; display: flex; gap: 8px; flex-wrap: wrap; }
+  .rwho { font-size: 14px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .stuck { font-family: var(--mono); font-size: 10px; padding: 1px 6px; border-radius: 4px; background: #3a2e1a; color: var(--hazard); white-space: nowrap; }
+  .diff { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; font-size: 15px; }
+  .diff del { color: #d4526e; text-decoration: line-through; overflow-wrap: anywhere; }
+  .diff ins { color: #7fc4b8; text-decoration: none; overflow-wrap: anywhere; }
+  .arrow { color: var(--text-muted); }
+  .openlink { font-size: 12px; color: var(--accent-400); }
   .rejectrow input { flex: 1; min-width: 220px; }
   .pad.btnrow { padding: 10px 16px 14px; }
 

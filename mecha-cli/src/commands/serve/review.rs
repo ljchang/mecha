@@ -289,6 +289,9 @@ fn detail_json(
                 outbox_source::Join::Returned => "returned",
             },
             "text": s.text,
+            // Cut at `outbox_source::MAX_CHARS`: the page must not read a
+            // clipped thread's surviving messages as the whole thread.
+            "clipped": s.text.ends_with(outbox_source::CLIPPED_NOTE),
         })).collect::<Vec<_>>(),
     })
 }
@@ -1432,6 +1435,31 @@ mod tests {
             vec!["c", "b", "a"]
         );
         assert_eq!(resolved, 1);
+    }
+
+    /// A read cut at `MAX_CHARS` says so, and one that was not says that: a
+    /// thread clipped after its first message is otherwise indistinguishable
+    /// from a one-message thread, and the page names a reply's recipient
+    /// from how many messages it finds.
+    #[test]
+    fn a_clipped_source_read_is_marked_clipped() {
+        let item = item("x", "pending", "2026-08-24T10:00:00Z");
+        let read = |text: String| outbox_source::SourceRead {
+            tool: "mail__mail_get_thread".into(),
+            keys: vec!["thread_id".into()],
+            join: outbox_source::Join::Asked,
+            text,
+        };
+        let sources = [
+            read(format!(
+                "--- [work] From: A <a@x> · T\n\nlong…\n\n{}",
+                outbox_source::CLIPPED_NOTE
+            )),
+            read("--- [work] From: A <a@x> · T\n\nshort".into()),
+        ];
+        let detail = detail_json(&item, &sources, None);
+        assert_eq!(detail["sources"][0]["clipped"], true);
+        assert_eq!(detail["sources"][1]["clipped"], false);
     }
 
     /// The goal note is rendered from a note the caller resolved, so this

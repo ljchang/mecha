@@ -308,7 +308,7 @@ const draftReply = {
   tool: 'mail__mail_reply',
   kind: 'message',
   label: 'Reply',
-  headline: 'Re: Review request — manuscript JAC-2291',
+  headline: '',
   snippet:
     'Thank you for thinking of me. I can take this one on — three weeks from Friday puts the review just before I travel, which works. Please send…',
   status: 'pending',
@@ -348,8 +348,23 @@ const draftHold = {
   all_day: false,
 };
 
+// A reply whose send could not be confirmed: the state a draft is left in
+// when the tool answered with an error, until the owner checks Sent.
+const draftStuck = {
+  id: 'ob-4416',
+  tool: 'mail__mail_reply',
+  kind: 'message',
+  label: 'Reply',
+  headline: '',
+  snippet: 'Happy to — Thursday at two works. I will bring the revised figures.',
+  status: 'pending',
+  created_at: '2026-08-29T06:10:02Z',
+  tainted: true,
+  edited: false,
+};
+
 export const outbox = {
-  pending: [draftReply, draftNomination, draftHold],
+  pending: [draftReply, draftStuck, draftNomination, draftHold],
   // A count, not a list: the pane renders `{pending.length} pending ·
   // {resolved} resolved` and never draws the resolved rows.
   resolved: 2,
@@ -384,11 +399,39 @@ export const outboxResolved = [
 ];
 
 export const outboxDetail = {
+  'ob-4416': {
+    id: 'ob-4416',
+    tool: 'mail__mail_reply',
+    label: 'Reply',
+    headline: '',
+    kind: 'message',
+    status: 'pending',
+    created_at: '2026-08-29T06:10:02Z',
+    summary: 'mail_reply',
+    taint: { private: true, untrusted: true, armed: true },
+    headers: [],
+    body: 'Happy to — Thursday at two works. I will bring the revised figures.\n\nBest',
+    other: [['reply_all', 'false'], ['thread_id', 'AAQkADk2ZTFh']],
+    edited: false,
+    error: 'Delivery outcome unknown; inspect the destination before retrying. the provider did not answer in time',
+    delivery_uncertain: true,
+    args: { thread_id: 'AAQkADk2ZTFh', reply_all: false, body_markdown: 'Happy to — Thursday at two works.' },
+    session_id: '20260829T060900-b12e',
+    sources: [
+      {
+        tool: 'mail__mail_get_thread',
+        keys: ['thread_id'],
+        heading: 'drafted from — third-party content via mail__mail_get_thread (thread_id), not part of your draft:',
+        join: 'asked',
+        text: '--- [work] From: Ines Okafor <ines@fairhaven.example.edu> · 2026-08-28T20:44:00Z\nCalendar date: Friday 2026-08-28 -04:00\nSubject: Figures for the renewal\nMessage id (for mail_reply): AAMkADk2…\n\nCould we go through the figures on Thursday afternoon?\n\n--- end of thread · 1 message',
+      },
+    ],
+  },
   'ob-4417': {
     id: 'ob-4417',
     tool: 'mail__mail_reply',
     label: 'Reply',
-    headline: 'Re: Review request — manuscript JAC-2291',
+    headline: '',
     kind: 'message',
     status: 'pending',
     created_at: '2026-08-29T07:41:12Z',
@@ -396,34 +439,33 @@ export const outboxDetail = {
     // Both flags set: the run read the owner's calendar and a stranger's mail
     // in one conversation. The card says so, and the send stayed staged.
     taint: { private: true, untrusted: true, armed: true },
-    headers: [
-      ['to', 'Tomas Lindqvist <editor@jac.example.org>'],
-      ['subject', 'Re: Review request — manuscript JAC-2291'],
-      ['account', 'work'],
-    ],
+    // What a staged reply really carries: a thread id and the prose. The
+    // account is looked up from the thread when it sends.
+    headers: [],
     body: `Dear Tomas,
 
-Thank you for thinking of me. I can take this one on — three weeks from Friday puts the review just before I travel, which works.
+Thank you for thinking of me. I can take this one on — three weeks from Friday puts the review just before I travel, which works. My [availability](https://cal.example.org/tomas-l/hold) is up to date.
 
 Please send the manuscript when you are ready.
 
 Best wishes`,
-    other: [['thread_id', 'thr-8812']],
+    other: [['reply_all', 'false'], ['thread_id', 'AAQkADFiNjVjOWI1LTlkNGEtNDcxMi04ZDVmLWM3N2ViOGMyNTRmOAAQAOg_w5GAV9dLsQg45HQVhMk=']],
     edited: false,
     error: null,
+    delivery_uncertain: false,
     args: {
-      thread_id: 'thr-8812',
-      account: 'work',
+      thread_id: 'AAQkADFiNjVjOWI1LTlkNGEtNDcxMi04ZDVmLWM3N2ViOGMyNTRmOAAQAOg_w5GAV9dLsQg45HQVhMk=',
+      reply_all: false,
       body_markdown: 'Dear Tomas,\n\nThank you for thinking of me…',
     },
     session_id: '20260829T074002-a91c',
     sources: [
       {
-        tool: 'mail__mail_read',
+        tool: 'mail__mail_get_thread',
         keys: ['thread_id'],
-        heading: 'read mail__mail_read(thread_id: thr-8812)',
-        join: 'returned',
-        text: 'Would you be willing to review the attached manuscript… I would need to know by Friday whether you can take it on.',
+        heading: 'drafted from — third-party content via mail__mail_get_thread (thread_id), not part of your draft:',
+        join: 'asked',
+        text: '--- [work] From: Tomas Lindqvist <editor@jac.example.org> · 2026-08-27T13:20:00Z\nCalendar date: Thursday 2026-08-27 -04:00\nSubject: Review request — manuscript JAC-2291\nMessage id (for mail_reply): AAMkADFiNjVi…\n\nDear colleague,\n\nWould you be willing to review the attached manuscript for the *Journal of Affective Computation*? The abstract is below.\n\nWith thanks,\nTomas\n\n--- [work] From: Tomas Lindqvist <editor@jac.example.org> · 2026-08-28T15:02:11Z\nCalendar date: Friday 2026-08-28 -04:00\nSubject: Re: Review request — manuscript JAC-2291\nMessage id (for mail_reply): AAMkADFiNjVj…\n\nA gentle nudge — I would need to know by **Friday** whether you can take it on, so I can line up a second reviewer.\n\nTomas\n\n--- end of thread · 2 messages',
       },
       {
         tool: 'mail__calendar_list',

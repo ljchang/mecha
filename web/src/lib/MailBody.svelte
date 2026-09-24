@@ -4,13 +4,14 @@
   // stranger's text; see the header of mail-markdown.js for the link and
   // image rules. Shared by the desk, the phone and the outbox, so a thread
   // reads the same wherever it is opened.
-  import { parseBlocks } from './mail-markdown.js';
+  import { parseBlocks, hiddenTarget } from './mail-markdown.js';
 
-  let { text = '', compact = false } = $props();
+  // `revealLinks`: a draft about to go out shows where each link goes.
+  let { text = '', compact = false, revealLinks = false } = $props();
   const blocks = $derived(parseBlocks(text));
 </script>
 
-{#snippet inline(nodes)}{#each nodes as n}{#if n.t === 'text'}{n.v}{:else if n.t === 'br'}<br />{:else if n.t === 'strong'}<strong>{@render inline(n.c)}</strong>{:else if n.t === 'em'}<em>{@render inline(n.c)}</em>{:else if n.t === 'code'}<code>{n.v}</code>{:else if n.t === 'img'}<span class="img" title={n.alt || 'image not loaded'}>image{n.alt ? `: ${n.alt}` : ''}</span>{:else if n.t === 'link'}<a href={n.href} title={n.href} target="_blank" rel="noopener noreferrer nofollow">{@render inline(n.c)}</a>{/if}{/each}{/snippet}
+{#snippet inline(nodes)}{#each nodes as n}{#if n.t === 'text'}{n.v}{:else if n.t === 'br'}<br />{:else if n.t === 'strong'}<strong>{@render inline(n.c)}</strong>{:else if n.t === 'em'}<em>{@render inline(n.c)}</em>{:else if n.t === 'code'}<code>{n.v}</code>{:else if n.t === 'img'}<span class="img" title={n.alt || 'image not loaded'}>image{n.alt ? `: ${n.alt}` : ''}</span>{:else if n.t === 'link'}<a href={n.href} title={n.href} target="_blank" rel="noopener noreferrer nofollow">{@render inline(n.c)}</a>{#if revealLinks && hiddenTarget(n)}<span class="dest">{' → '}{hiddenTarget(n)}</span>{/if}{/if}{/each}{/snippet}
 
 {#snippet block(bs)}
   {#each bs as b}
@@ -38,6 +39,7 @@
   .mailbody { font-size: 14px; line-height: 1.6; color: #d6d6de; overflow-wrap: anywhere; display: flex; flex-direction: column; gap: 10px; }
   .mailbody.compact { font-size: 13px; line-height: 1.55; gap: 8px; color: var(--text-muted); }
   .mailbody :global(p) { margin: 0; }
+  .dest { font-family: var(--mono); font-size: 0.85em; color: var(--hazard); }
   .h { font-weight: 600; color: var(--text); }
   .h1 { font-size: 17px; }
   .h2 { font-size: 15px; }
