@@ -3,7 +3,7 @@
   import { SvelteSet } from 'svelte/reactivity';
   import { apiFetch as fetch } from './api.js';
   import { parseThread } from './mail-thread.js';
-  import { LANES, laneOf, sortRows, acceptVerb, keyOf, senderOf, sweepGroups, ageOf, tickedGroups } from './mail-desk.js';
+  import { LANES, laneOf, sortRows, acceptVerb, keyOf, senderOf, sweepGroups, ageOf, tickedGroups, batchKeyVerb } from './mail-desk.js';
   import { MailQueue, HOLD_MS, VERB_PAST, VERB_LABEL, UNSEEN } from './mail-queue.svelte.js';
   import MailBody from './MailBody.svelte';
 
@@ -384,6 +384,15 @@
     // modified key the desk takes, and only outside a text field.
     if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key ?? '').toLowerCase() === 'a' && !typing && mode === 'list' && !composing && !asking && !help) {
       selectAll();
+      e.preventDefault();
+      return;
+    }
+    // The batch keys with the selecting modifier still held — ⇧ from a range,
+    // ⌘/Ctrl from a toggle (`batchKeyVerb`). Only where a triage key would
+    // act at all: never in a text field, a bar, the help or the sweep.
+    const held = batchKeyVerb(e.key, { shift: e.shiftKey, meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey }, selected.size);
+    if (held && !typing && mode === 'list' && !composing && !asking && !help && !confirmSpam) {
+      run(held);
       e.preventDefault();
       return;
     }
@@ -796,6 +805,7 @@
         <div><div class="kicker">Decide</div>
           <p><kbd>⏎</kbd> accept the suggestion</p>
           <p><kbd>e</kbd> archive · <kbd>d</kbd> dismiss</p>
+          <p>These work with <kbd>⇧</kbd> or <kbd>⌘</kbd> still held from selecting.</p>
           <p><kbd>p</kbd> park until someone replies</p>
           <p><kbd>t</kbd> make a task on the board</p></div>
         <div><div class="kicker">Draft (to the outbox)</div>
