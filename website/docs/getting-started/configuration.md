@@ -46,7 +46,7 @@ Scalars merge field by field. Tables of things do not:
 
 ### What never comes from a project file
 
-Scheduled [triggers](/docs/features/triggers) live in `~/.mecha/triggers/`,
+Scheduled [triggers](/docs/features/automation/triggers) live in `~/.mecha/triggers/`,
 outside config, and their runs load no project file. A cloned repository cannot
 install an unattended job.
 
@@ -167,7 +167,7 @@ happens *between* turns, and the next request still has to fit a reply plus
 whatever a burst of parallel tool results adds.
 
 `--compact-at N` sets it for one run. See
-[Compaction](/docs/features/compaction) for what actually happens when it fires,
+[Compaction](/docs/features/models/compaction) for what actually happens when it fires,
 including the eviction pass that runs first and the validation pass that checks
 the summary before installing it.
 
@@ -253,8 +253,8 @@ fallback policy, and every security flag are documented in the
 
 ## Next
 
-- [Providers](/docs/features/providers) — retries, fallbacks, and what each
+- [Providers](/docs/features/models/providers) — retries, fallbacks, and what each
   backend accepts.
-- [Tools and MCP](/docs/features/tools-and-mcp) — adding tools from MCP servers.
+- [Tools and MCP](/docs/features/tools) — adding tools from MCP servers.
 - [Security](/docs/features/security) — the controls, and which ones are on by
   default.

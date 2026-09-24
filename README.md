@@ -120,7 +120,7 @@ the public surface in both directions: what the agent makes becomes a durable,
 versioned, permissioned URL, and what other people need from you arrives as a
 **typed request** rather than free-form prose — so a stranger's words never reach
 a privileged run. See [the factory
-docs](https://docs.mecha-factory.ai/docs/factory/overview).
+docs](https://docs.mecha-factory.ai/docs/features/public-surface).
 
 Personal context is wired in over MCP, which is what keeps it open-ended:
 mail and calendar through `mecha-mail`, a personalized knowledge graph for who
@@ -252,11 +252,11 @@ Full documentation is at **[docs.mecha-factory.ai](https://docs.mecha-factory.ai
 - [What mecha is](https://docs.mecha-factory.ai/docs/intro) and
   [design principles](https://docs.mecha-factory.ai/docs/principles)
 - [Getting started](https://docs.mecha-factory.ai/docs/getting-started/installation)
-- [Features](https://docs.mecha-factory.ai/docs/category/features) — security,
-  sandbox, tools and MCP, outbox, triggers, learning, compaction, evaluation,
-  mail, Slack
-- [The factory](https://docs.mecha-factory.ai/docs/category/factory) — publishing,
-  the front door, polls, notebooks
+- [Features](https://docs.mecha-factory.ai/docs/category/features) — ten sections:
+  interfaces, models and context, tools, security and review, delegation and
+  automation, memory (with the knowledge graph), learning, appraisal,
+  experiments and evaluation, and the public surface (the factory: publishing,
+  the front door, polls, notebooks)
 - [CLI](https://docs.mecha-factory.ai/docs/reference/cli) and
   [configuration](https://docs.mecha-factory.ai/docs/reference/configuration) reference
 

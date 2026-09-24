@@ -21,7 +21,7 @@ Layers apply in order, each overriding only the fields it names:
 6. CLI flags.
 
 Your explicit config always overrides the harness layer. `mecha harness revert`
-undoes an accepted change; see [Run quality](/docs/features/run-quality).
+undoes an accepted change; see [Run quality](/docs/features/learning/run-quality).
 
 Later layers win. `mecha config path` prints which files are being read and whether
 they exist; `mecha config show` prints the merged result.
@@ -67,7 +67,7 @@ project layer, `enabled` **intersects** with what is already selected (so naming
 a skill the global layer did not enable enables nothing), `disabled` **unions**
 (withholding is always safe), and `dir` is dropped loudly. The direction is
 enforced by the merge, not asked for in a comment. See
-[Skills](/docs/features/skills).
+[Skills](/docs/features/learning/skills).
 
 ## Top level
 
@@ -131,7 +131,7 @@ and tool-output budget:
 
 A stale value is worse than none, because the derived threshold trusts it. If you
 change the server's `-c` or `-np`, change `context_window` to match. See
-[Serving local models](/docs/features/serving).
+[Serving local models](/docs/features/models/serving).
 
 ## `[agent]`
 
@@ -202,7 +202,7 @@ messaging, compaction, recall, and interactive or delegated questions. Their
 availability depends on the run. Inspect the result with `mecha tools --schema`.
 The global `--tool` flag narrows the registry; `--tool-profile research`,
 `assistant`, or `coding` selects a stable subset. See
-[Workflows](/docs/features/workflows#choose-a-smaller-tool-set).
+[Workflows](/docs/features/automation/workflows#choose-a-smaller-tool-set).
 
 `permission_mode` values:
 
@@ -308,7 +308,7 @@ machine, a confined `shell` drops to `none` egress and the trifecta
 interlock relaxes rather than tightens. `private_data` stays true regardless, because
 a confined shell still reads the workspace.
 
-See [Sandbox](/docs/features/sandbox) for backend selection.
+See [Sandbox](/docs/features/security/sandbox) for backend selection.
 
 ## `[outbox]`
 
@@ -324,13 +324,13 @@ the tool itself never runs until `mecha outbox send`. Empty means the outbox is 
 which is the default — routing a tool is a policy decision.
 
 A routed name that matches no registered tool warns on every start, because a typo
-means the real tool executes unrouted. See [Outbox](/docs/features/outbox).
+means the real tool executes unrouted. See [Outbox](/docs/features/security/outbox).
 
 `publish_tools` is a subset of `tools`; a name in it that is not also in `tools`
 warns on every start, for the same reason. The kind is **config's to declare, never
 the tool's** — the loop must not learn what a publish is, and a third-party MCP
 server cannot be trusted to say. Anything unnamed is a message, which is the
-conservative default. See [Publishing](/docs/features/publishing).
+conservative default. See [Publishing](/docs/features/public-surface/publishing).
 
 ## `[work]`
 
@@ -341,7 +341,7 @@ conservative default. See [Publishing](/docs/features/publishing).
 `~/.mecha/work/<producer>/` is where a run's generated output goes, and is also the
 run's path jail. Entries are counted, not files — a rendered bundle is a directory
 and counts as one. `clean` never removes anything a published bundle names as a
-source. See [The work directory](/docs/features/work).
+source. See [The work directory](/docs/features/automation/work).
 
 ## `[skills]`
 
@@ -367,7 +367,7 @@ matching no tool: a typo'd enable is indistinguishable from a skill the model
 never chose, and both look like nothing happening.
 
 `--no-skills` carries none for one run; `--skill <name>` narrows further and
-cannot widen. A [trigger](/docs/features/triggers) names its skills in its own
+cannot widen. A [trigger](/docs/features/automation/triggers) names its skills in its own
 file and carries none by default.
 
 ## `[messages]`
@@ -437,11 +437,11 @@ before any work happened; against a 32k window whose compaction threshold is
 the calendar and the factory at once, and naming what it does need is the
 cheapest context this system has to give.
 
-See [Slack](/docs/features/slack).
+See [Slack](/docs/features/interfaces/slack).
 
 ## `[web]`
 
-Global file only. See [The web surface](/docs/features/web) for installation.
+Global file only. See [The web surface](/docs/features/interfaces/web) for installation.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -470,7 +470,7 @@ the runs that needed it.
 reason, and every other outcome (an undefined exit code, a spawn failure, a timeout)
 also denies. `post_tool` and `session_end` are observers whose failures are logged and
 swallowed. The default timeout is deliberately short because a `pre_tool` hook sits on
-the critical path of every call it matches. See [Hooks](/docs/features/hooks).
+the critical path of every call it matches. See [Hooks](/docs/features/security/hooks).
 
 ## `[[mcp]]`
 
@@ -541,7 +541,8 @@ something structurally harmless, a number or a yes/no, and not otherwise.
 ## `[[search]]`
 
 Repeatable, in preference order. The chain falls through on failure, which is what
-makes stacking two free tiers viable. Registers the `web_search` tool.
+makes stacking two free tiers viable. Registers the `web_search` tool; see
+[Web search](/docs/features/tools/web-search) for how the chain behaves.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -596,7 +597,7 @@ cron slot on your machine. For the same reason a trigger run reads only the glob
 config layer.
 
 Manage them with `mecha trigger add` / `edit` / `rm`, or edit the files directly. See
-[Triggers](/docs/features/triggers) and the
+[Triggers](/docs/features/automation/triggers) and the
 [CLI reference](/docs/reference/cli).
 
 ## Environment variables

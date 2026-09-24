@@ -80,7 +80,7 @@ mecha run [OPTIONS] [PROMPT]
 | `--no-stream` | Wait for the whole answer instead of streaming it. |
 | `--resume <ID>` | Continue a saved session by id or unique prefix. |
 | `--goal <KIND:ID>` | Explicitly confirm this run's goal. |
-| `--appraisal-evidence <FILE>` | Owner-authored commitment/check evidence for the matching `--goal`; see [anticipatory appraisal](/docs/features/anticipation). |
+| `--appraisal-evidence <FILE>` | Owner-authored commitment/check evidence for the matching `--goal`; see [anticipatory appraisal](/docs/features/appraisal/anticipation). |
 | `--no-session` | Do not write a transcript. |
 | `--image <PATH>` | Attach image pixels to the user turn. Repeatable; requires a vision-enabled provider. |
 
@@ -176,7 +176,7 @@ mecha tui -w ~/code/my-project
 
 ## `serve`
 
-Serve the [web app](/docs/features/web) on loopback behind Tailscale. Configure
+Serve the [web app](/docs/features/interfaces/web) on loopback behind Tailscale. Configure
 `[web] owner_login` in the global config; `assets` points to a separately built
 copy of `web/dist`.
 
@@ -195,7 +195,7 @@ mecha serve --assets ./web/dist
 
 The browser app sends `X-Mecha-Request: 1` on mutations. Scripted API clients
 must send it too and explicitly open a chat with `POST /api/chat/{key}` before
-reading its transcript or events. See [The web surface](/docs/features/web).
+reading its transcript or events. See [The web surface](/docs/features/interfaces/web).
 
 ## `voice-serve`
 
@@ -208,7 +208,7 @@ mecha voice-serve --port 8990
 ```
 
 `--port` defaults to `8990`; `--token` optionally requires a bearer token.
-See [Voice](/docs/features/voice) for the worker and service setup.
+See [Voice](/docs/features/interfaces/voice) for the worker and service setup.
 
 ## `batch`
 
@@ -367,7 +367,7 @@ mecha skills --show
 mecha skills --json | jq '.skills[] | select(.carried)'
 ```
 
-See [Skills](/docs/features/skills).
+See [Skills](/docs/features/learning/skills).
 
 ## `charter`
 
@@ -397,7 +397,7 @@ still no `--add`, no `--set` and no tool — nothing that would let a model put 
 sentence in this file.
 
 A line's sensor, if it carries one (`[line.sensor]`, see
-[the charter page](/docs/features/charter)),
+[the charter page](/docs/features/appraisal/charter)),
 is printed beside the line as its kind and setpoint — the one thing about a
 charter a run's prompt does *not* carry — and rides in `--json` as
 `sensor: {kind, setpoint}` on the line, absent when there is none.
@@ -421,7 +421,7 @@ mecha charter --json | jq -r '.lines[] | "\(.id)\t\(.text)"'
 mecha charter --json | jq '.over_budget'
 ```
 
-See [The charter](/docs/features/charter).
+See [The charter](/docs/features/appraisal/charter).
 
 ## `sessions`
 
@@ -461,9 +461,9 @@ causes, tool calls against errors and denials, runs that finished over a failed
 call, compactions taken. Rates split by model, because a blend across two
 describes neither, and a rate with no denominator prints `—` rather than `0%`.
 Transcripts written before the outcome record carry none, so the corpus fills as
-you use it. `health` also reports [goal drift](/docs/features/goals#measuring-goal-drift)
-and [null/reopened steps](/docs/features/plan-steps#null-steps-and-reopened-steps),
-with per-run rates and explicit denominators. See [Run quality](/docs/features/run-quality).
+you use it. `health` also reports [goal drift](/docs/features/appraisal/goals#measuring-goal-drift)
+and [null/reopened steps](/docs/features/appraisal/plan-steps#null-steps-and-reopened-steps),
+with per-run rates and explicit denominators. See [Run quality](/docs/features/learning/run-quality).
 
 `appraise` is the third question: not what runs cost, nor how they went, but how
 they went **against what they were for** — the signed error per channel and the
@@ -478,7 +478,7 @@ absent means *did not run* rather than *found nothing*.
 `--probe` builds a real agent with a real workspace jail, so run it from a
 project directory or name one with `--workspace`; from a home directory it
 refuses, because the jail would cover `~/.mecha`. See
-[the paid passes](/docs/features/appraisal#the-two-paid-passes).
+[the paid passes](/docs/features/appraisal/reference#the-two-paid-passes).
 
 ```bash
 mecha sessions list -n 50
@@ -552,11 +552,11 @@ mecha outbox [list|show|edit|review|approve|reconcile|reject|anticipate|outcome]
 kept after editing, and `mecha reflect` mines the edit into writing lessons.
 Delivery attempts are recorded durably. An uncertain outcome blocks retries
 until the owner checks the destination and reconciles it; see
-[delivery recovery](/docs/features/outbox#delivery-recovery).
+[delivery recovery](/docs/features/security/outbox#delivery-recovery).
 
 An item's **kind** decides how it is reviewed, not how it was staged. A
 `publish` shows the rendered page rather than the arguments, and refuses
-`edit` — see [Publishing](/docs/features/publishing).
+`edit` — see [Publishing](/docs/features/public-surface/publishing).
 
 ```bash
 mecha outbox
@@ -570,7 +570,7 @@ mecha outbox reject 3f2a --reason "wrong recipient"
 
 Everything waiting on a human, across every store — and the knowledge graph's
 merge queue, decidable from mecha. `queues` is the default subcommand. See
-[The queues](/docs/features/queues) for the design.
+[The queues](/docs/features/automation/queues) for the design.
 
 ```
 mecha review [queues|proposers|list|sample|items|accept|reject] [ARGS]
@@ -676,7 +676,7 @@ mecha work clean --dry-run
 mecha work clean --producer briefing --keep 3
 ```
 
-See [The work directory](/docs/features/work).
+See [The work directory](/docs/features/automation/work).
 
 ## `mail`
 
@@ -716,7 +716,7 @@ error, never a guess.
 
 Every subcommand takes `--account <NAME>`.
 
-`reply`, `forward` and `schedule` **stage into the [outbox](/docs/features/outbox)
+`reply`, `forward` and `schedule` **stage into the [outbox](/docs/features/security/outbox)
 and never send**. `archive` and `spam` reach nobody outside your own mailbox and
 so are not staged. Separate verbs rather than one `--action` argument, because a
 free-form label would put `spam` inside a verb that reads as harmless.
@@ -739,7 +739,7 @@ mecha mail reflect --dry-run
 mecha-mail corpus --since 2026-07-01 --account dartmouth && mecha mail score
 ```
 
-See [Mail and calendar](/docs/features/mail#triage-the-queue-over-the-mailbox).
+See [Mail and calendar](/docs/features/tools/mail#triage-the-queue-over-the-mailbox).
 
 ## `tasks`
 
@@ -792,7 +792,7 @@ is a verdict you already delivered with nothing in it to put on the board; a
 accepting mediocre work, and proposing a follow-up there would override the
 decision you just made. All of it is best-effort: the status change lands
 whether or not the appraisal does. See
-[Appraisal reference](/docs/features/appraisal#closing-a-task-appraises-it).
+[Appraisal reference](/docs/features/appraisal/reference#closing-a-task-appraises-it).
 
 ```bash
 mecha tasks
@@ -802,7 +802,7 @@ mecha tasks set task-1a2b3c4d --due ""          # clear it
 mecha tasks list --closed
 ```
 
-Delegation leaves the task yours to close. Its [workflow](/docs/features/workflows)
+Delegation leaves the task yours to close. Its [workflow](/docs/features/automation/workflows)
 tracks questions, drafts, and completion evidence across continuations.
 
 The `/tasks` modal in `mecha tui` drives these operations, and
@@ -834,7 +834,7 @@ mecha workflow close FLOW_ID
 | `recover <ID> --reason <TEXT>` | Clear stale ownership after confirming the old runner stopped. |
 | `attention`, `tick`, `snooze`, `ack` | Configure quiet hours, refresh reminders, defer or acknowledge notices. `tick --dry-run` previews without writing. |
 
-See [Workflows and Today](/docs/features/workflows) for the complete walkthrough,
+See [Workflows and Today](/docs/features/automation/workflows) for the complete walkthrough,
 including dependencies, commitments, and delivery recovery.
 
 ## `questions`
@@ -866,7 +866,7 @@ mecha polls pick POLL_ID 1
 
 `pick` uses a one-based rank. `sweep` stages needed cards and folds reviewed
 outcomes into poll records; repeating it is safe. Review the chosen action in
-the outbox. See [Polls](/docs/factory/polls).
+the outbox. See [Polls](/docs/features/public-surface/polls).
 
 ## `kg`
 
@@ -883,7 +883,7 @@ mecha kg note "Discussed the grant timeline with Priya."
 already extracted from the old text. `assert` and `retract` maintain facts;
 `alias` and `unalias` maintain names using node IDs. `related` reads a bounded
 neighborhood; `timeline` includes superseded facts. See
-[The graph](/docs/graph/overview) and each subcommand's `--help`.
+[The graph](/docs/features/memory/graph) and each subcommand's `--help`.
 
 ## `frontdoor`
 
@@ -946,7 +946,7 @@ mecha frontdoor needs-info 42 --note "no date given"
 mecha frontdoor close 42 --reason "answered by the sent draft"
 ```
 
-See [The front door](/docs/features/frontdoor).
+See [The front door](/docs/features/public-surface/frontdoor).
 
 ## `slack`
 
@@ -1014,7 +1014,7 @@ mecha slack remote            # what this machine is mirroring
 mecha slack remote --sweep    # cool attachments whose session died
 ```
 
-See [Slack](/docs/features/slack).
+See [Slack](/docs/features/interfaces/slack).
 
 ## `trigger`
 
@@ -1463,7 +1463,7 @@ that cries wolf stops being read — and cancellations are excluded, because a
 person pressing Ctrl-C is the system working. Two trigger checks sit beside them:
 one quietly failing a third of its tool calls, and one whose most recent run
 succeeded having made none at all. See
-[Run quality](/docs/features/run-quality).
+[Run quality](/docs/features/learning/run-quality).
 
 ## `diagnose`
 
@@ -1540,7 +1540,7 @@ mecha harness overrides
 mecha harness revert max_turns
 ```
 
-See [Run quality](/docs/features/run-quality#running-the-whole-loop-unattended).
+See [Run quality](/docs/features/learning/run-quality#running-the-whole-loop-unattended).
 
 ## `vet`
 

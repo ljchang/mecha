@@ -109,8 +109,8 @@ Where a dedicated box stops making you choose.
 ### A dedicated always-on box
 
 This is the configuration mecha is built around, and the one that makes
-[triggers](/docs/features/triggers) and the [Slack remote
-control](/docs/features/slack) worth having: the assistant is only useful
+[triggers](/docs/features/automation/triggers) and the [Slack remote
+control](/docs/features/interfaces/slack) worth having: the assistant is only useful
 overnight if the machine is awake overnight.
 
 A **DGX Spark** or equivalent unified-memory box is what these docs were
@@ -140,7 +140,7 @@ Two Mac-specific notes that do transfer:
 - **Drag-and-drop into the TUI works locally and cannot work over SSH** — the
   path your terminal pastes is your laptop's. If the Mac is the machine mecha
   runs on, dropping a screenshot on the prompt just works; if it is the laptop
-  you ssh *from*, use [the Slack conduit](/docs/features/images) instead.
+  you ssh *from*, use [the Slack conduit](/docs/features/interfaces/images) instead.
 
 ## What to do once you have chosen
 
@@ -152,11 +152,11 @@ mecha setup --write
 ```
 
 `context_window` in particular is the **per-slot** figure, not the `-c` you
-passed — see [Serving a local model](/docs/features/serving) for why that
+passed — see [Serving a local model](/docs/features/models/serving) for why that
 distinction has bitten more than once.
 
 ## Next
 
 - [Installation](/docs/getting-started/installation) — the binaries, and getting a model
 - [Setting up](/docs/getting-started/setting-up) — point mecha at it
-- [Serving a local model](/docs/features/serving) — slots, `-np`, and the four numbers that have to agree
+- [Serving a local model](/docs/features/models/serving) — slots, `-np`, and the four numbers that have to agree

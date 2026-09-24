@@ -8,7 +8,7 @@
 > `Homeostat::anticipated_guilt` remains a separate sensor. General alternative
 > search, forecast calibration, automatic commitment capture, and evidence-aware
 > replay remain open. See [HISTORY](HISTORY.md) under this date and the
-> [user guide](../website/docs/features/anticipation.md). The design below records
+> [user guide](../website/docs/features/appraisal/anticipation.md). The design below records
 > the earlier proposal, not the full current implementation status.
 
 **2026-09-10 implementation addendum:** recorded followup continuation and

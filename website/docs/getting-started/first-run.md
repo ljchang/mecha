@@ -157,10 +157,10 @@ Then open Today, chat, mail, the graph, review queues, tasks, and settings.
 They share the CLI stores and the same approval rules. A session there starts **read-only**: reads run, and
 anything that would send stages in the outbox instead.
 
-It is also the only door [voice](/docs/features/voice) opens through.
+It is also the only door [voice](/docs/features/interfaces/voice) opens through.
 
 There is a **live, clickable copy of the whole app** on
-[the web surface](/docs/features/web) — worth a minute before you build it, to
+[the web surface](/docs/features/interfaces/web) — worth a minute before you build it, to
 see whether it is what you want.
 
 ## Keep track of the next step
@@ -176,7 +176,7 @@ mecha outbox
 
 Answer a parked question with `mecha questions answer`, or review a draft with
 `mecha outbox review`. Today also offers those decisions in the browser. See
-[Workflows and Today](/docs/features/workflows) to add commitments, reminders,
+[Workflows and Today](/docs/features/automation/workflows) to add commitments, reminders,
 and explicit completion checks.
 
 ## Where things are written
@@ -192,7 +192,7 @@ mecha sessions path <id>
 
 The transcript is the record, and several other features read it back rather
 than keeping a second copy that could disagree with it. See
-[Sessions and replay](/docs/features/sessions-and-replay).
+[Sessions and replay](/docs/features/memory/sessions-and-replay).
 
 ## When something goes wrong
 
@@ -213,5 +213,5 @@ any one file.
   the settings that matter early.
 - [Interfaces](/docs/features/interfaces) — run, chat, tui, serve and batch in
   depth, and which of them can redirect a run without stopping it.
-- [The web surface](/docs/features/web) — the browser one, live on the page.
+- [The web surface](/docs/features/interfaces/web) — the browser one, live on the page.
 - [Security](/docs/features/security) — what the harness refuses to do, and why.

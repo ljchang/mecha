@@ -211,6 +211,14 @@ Plain Markdown, front matter with `title`, `sidebar_position`, `description`.
 Links are checked at build time (`onBrokenLinks: 'throw'`), so a stale
 cross-reference fails CI rather than shipping.
 
+Feature pages live in a section folder under `website/docs/features/`
+(interfaces, models, tools, security, automation, memory, learning,
+appraisal, experiments, public-surface), never at the top of `features/`.
+A section's `index.md` is its landing page, and its `_category_.json` sets
+the label and position. **Moving a page changes its URL**: add the old path to
+the `client-redirects` list in `docusaurus.config.ts` in the same change,
+because the link checker sees only links inside the site.
+
 Explain what a thing does *and* why it is that way — the rationale is what
 makes the reference usable. Keep it accurate over complete: the reference
 pages are verified against the binary's own `--help` and against

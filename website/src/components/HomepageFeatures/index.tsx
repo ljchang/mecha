@@ -13,7 +13,7 @@ type FeatureItem = {
 const FeatureList: FeatureItem[] = [
   {
     title: 'Your model, on your machine',
-    to: '/docs/features/providers',
+    to: '/docs/features/models/providers',
     description: (
       <>
         Built for local open-weight models first — llama-server, vLLM, Ollama —
@@ -24,7 +24,7 @@ const FeatureList: FeatureItem[] = [
   },
   {
     title: 'Your context, connected',
-    to: '/docs/features/mail',
+    to: '/docs/features/tools/mail',
     description: (
       <>
         Mail and calendar behind one surface, a personalized knowledge graph for
@@ -47,7 +47,7 @@ const FeatureList: FeatureItem[] = [
   },
   {
     title: 'Nothing leaves without you',
-    to: '/docs/features/outbox',
+    to: '/docs/features/security/outbox',
     description: (
       <>
         Name a tool in the outbox and its calls are staged as drafts instead of
@@ -59,7 +59,7 @@ const FeatureList: FeatureItem[] = [
   },
   {
     title: 'A public surface, both directions',
-    to: '/docs/factory/overview',
+    to: '/docs/features/public-surface',
     description: (
       <>
         What the agent makes becomes a durable, versioned URL. What people need
@@ -70,7 +70,7 @@ const FeatureList: FeatureItem[] = [
   },
   {
     title: 'Graded on the trace, not the claim',
-    to: '/docs/features/evaluation',
+    to: '/docs/features/experiments/evaluation',
     description: (
       <>
         The eval rig checks the tool calls first and the prose second, runs a
