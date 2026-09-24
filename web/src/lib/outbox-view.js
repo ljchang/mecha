@@ -332,7 +332,7 @@ const MSG_HEAD = /^--- \[([^\]]+)\] From: (.*) <([^<>]*)> · (\S+)$/;
  * Presentation only, like `mail-thread.js`'s parse for the Mail tab, and
  * stricter than it: a message starts only at a line that is a whole header
  * mecha-mail writes — after a blank line, naming the thread's own account,
- * followed by its `Calendar date:` line — so a signature's `---`, or an
+ * followed by its `Calendar date:` (or, in older reads, `Subject:`) line — so a signature's `---`, or an
  * "-----Original Message-----" block quoted in a body, never splits one. A
  * body that forges all of it can still split; the verbatim text stays one
  * click away, and nothing here decides where a reply goes.
@@ -345,7 +345,11 @@ export function threadMessages(text) {
   const starts = [];
   lines.forEach((l, i) => {
     const m = MSG_HEAD.exec(l);
-    if (m && m[1] === account && (i === 0 || lines[i - 1] === '') && (lines[i + 1] ?? '').startsWith('Calendar date: ')) starts.push(i);
+    // `Calendar date:` since mecha-mail started writing one; `Subject:`
+    // straight after the header in the reads drafts staged before that hold.
+    const nextLine = lines[i + 1] ?? '';
+    const ours = nextLine.startsWith('Calendar date: ') || nextLine.startsWith('Subject: ');
+    if (m && m[1] === account && (i === 0 || lines[i - 1] === '') && ours) starts.push(i);
   });
   const messages = starts.map((s, k) => {
     const [, , name, address, date] = MSG_HEAD.exec(lines[s]);

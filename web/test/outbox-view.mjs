@@ -170,5 +170,12 @@ t('attendees accept objects', attendeesOf({ attendees: [{ email: 'a@x.edu' }] })
   t('an id that is not Drive-shaped gets no link', docEdit('docs__docs_replace', { file_id: 'evil.example/x', find: 'a' })?.url === null);
 }
 
+{
+  // The format drafts staged before mecha-mail wrote a calendar date carry.
+  const old = '--- [dartmouth] From: A B <a@x> · 2026-08-20T10:00:00Z\nSubject: Old\nMessage id (for mail_reply): M1\n\nOne.\n\n--- [dartmouth] From: C D <c@x> · 2026-08-21T10:00:00Z\nSubject: Re: Old\nMessage id (for mail_reply): M2\n\nTwo.';
+  const th = threadMessages(old);
+  t('an older read with no calendar date still parses', th?.messages.length === 2 && th.messages[1].name === 'C D' && th.messages[1].body === 'Two.');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);
