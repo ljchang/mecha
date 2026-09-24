@@ -180,6 +180,60 @@ fn owner_setpoint(
 /// `now` is injected for testability; nothing here consults the clock.
 /// Best-effort throughout: each check appends what it found, a failed check
 /// appends a finding about the failure, and no check can stop another.
+/// Whether the `shell` tool runs confined, and confined away from the mecha
+/// home. Not a store, so not in [`examine`]: the caller hands in the loaded
+/// `[sandbox]`. The closure guard (`closure::decide`) and the provenance of
+/// every closure record lean on it — an unconfined `shell` can detach from
+/// its registered parent and edit `~/.mecha` directly, and a sandbox that
+/// mounts the mecha home hands a confined command the shell registry and the
+/// closure store (`APPRAISAL-WIRING-DESIGN.md` 1b-2).
+pub fn check_shell_confinement(
+    sandbox: &crate::sandbox::SandboxConfig,
+    home: &Path,
+) -> Vec<Finding> {
+    let mut out = Vec::new();
+    if sandbox.kind == crate::sandbox::Backend::None {
+        out.push(Finding {
+            component: "sandbox".to_string(),
+            severity: Severity::Attention,
+            summary: "the shell tool runs unconfined".to_string(),
+            detail: "A run's commands can reach the mecha home, so the guard that stops a \
+                     delegated or unattended run from closing a task — and every closure \
+                     record's claim about who made it — rests on the run not trying. Add \
+                     `[sandbox]` with `kind = \"bwrap\"` (or `\"docker\"`) to \
+                     ~/.mecha/config.toml."
+                .to_string(),
+            remedy: None,
+        });
+        return out;
+    }
+    let home = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+    for (how, path) in sandbox
+        .writable
+        .iter()
+        .map(|p| ("writable", p))
+        .chain(sandbox.readable.iter().map(|p| ("readable", p)))
+    {
+        let path = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if home.starts_with(&path) || path.starts_with(&home) {
+            out.push(Finding {
+                component: "sandbox".to_string(),
+                severity: Severity::Attention,
+                summary: format!("the sandbox mounts the mecha home ({how})"),
+                detail: format!(
+                    "`{}` in `[sandbox] {how}` contains or sits inside {}, so a confined \
+                     command can reach the shell registry and the closure store the \
+                     closure guard reads. Mount something narrower.",
+                    path.display(),
+                    home.display()
+                ),
+                remedy: None,
+            });
+        }
+    }
+    out
+}
+
 pub fn examine(home: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     let mut findings = Vec::new();
     // The owner's setpoints, read once for the store checks below. A charter
@@ -3856,6 +3910,30 @@ mod tests {
         );
         assert!(of(&examine(&home, utc(NOW)), "triggers").is_empty());
 
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn an_unconfined_shell_and_a_sandbox_mounting_the_home_are_reported() {
+        use crate::sandbox::{Backend, SandboxConfig};
+        let home = home("shell-confinement");
+        let unconfined = SandboxConfig {
+            kind: Backend::None,
+            ..SandboxConfig::default()
+        };
+        let f = check_shell_confinement(&unconfined, &home);
+        assert_eq!(f.len(), 1);
+        assert!(f[0].summary.contains("unconfined"), "{f:#?}");
+
+        let mut confined = SandboxConfig {
+            kind: Backend::Bwrap,
+            ..SandboxConfig::default()
+        };
+        assert!(check_shell_confinement(&confined, &home).is_empty());
+        confined.readable.push(home.parent().unwrap().to_path_buf());
+        let f = check_shell_confinement(&confined, &home);
+        assert_eq!(f.len(), 1, "{f:#?}");
+        assert!(f[0].summary.contains("mounts the mecha home"), "{f:#?}");
         let _ = std::fs::remove_dir_all(&home);
     }
 

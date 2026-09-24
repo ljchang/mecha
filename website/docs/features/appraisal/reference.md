@@ -509,10 +509,12 @@ written beside it, so the web board and the TUI show it after a closure
 instead of losing it. If the record cannot be written, the task is not closed.
 A run with nobody present — a delegated task, a trigger, a web chat with
 approvals off — is refused when it tries to close or reopen a task through
-`mecha tasks set`. That refusal rests on a marker the run's commands carry,
-which a command that deliberately sets or removes it can defeat — removing it
-even records the move as yours, from a terminal — so treat it as a guard
-against the ordinary route, not a guarantee. The
+`mecha tasks set`. mecha registers every command a run's shell starts, with
+whether a person is in that run, and the closure check reads that
+registration rather than anything the command says about itself. A command
+run with no sandbox can still slip past it by detaching from its shell, so
+the guarantee holds where `shell` is confined — `mecha doctor` says when it
+is not. The
 [`pre_task_close`, `task_closed` and `task_reopened` hooks](/docs/features/security/hooks)
 let your own tooling refuse or react to a move.
 

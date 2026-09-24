@@ -913,6 +913,7 @@ async fn begin_move(
     use mecha_core::closure::{self, ClosureStore, Entry, Transition};
     let (actor, surface) = closure::decide(
         &closure::posture_from_env(),
+        &closure::ShellReading::from_registry(),
         closure::run_ancestor(&live_run_pids()),
         flagged,
     )
@@ -1047,9 +1048,10 @@ struct Appraised {
 /// **refused** from a delegated, scheduled or unattended run
 /// (`closure::decide`: the run posture the `shell` tool stamps on every
 /// command, and whether this process descends from a live run). The
-/// residue left is named on `closure::decide`, and it is wider than a
-/// detach: a command that sets the posture variable itself passes. And a
-/// genuinely
+/// posture now comes from the harness's shell registry (1b-2), so a
+/// command that sets the variable itself is refused; the residue left,
+/// named on `closure::decide`, is a command that detaches from its shell.
+/// And a genuinely
 /// out-of-band write — another process talking to the graph store directly
 /// — which no guard in this binary can see and which skips the appraisal;
 /// the complete fix for that one is still a closure claim the board owns,

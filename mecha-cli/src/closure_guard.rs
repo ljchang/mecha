@@ -32,9 +32,12 @@
 //! is not `ask`, the refusal reads as instructions for the workaround, and
 //! a run holding a shell can follow them. That was D6's honest residue for
 //! such a lane; since S8 the command itself refuses it (`closure::decide`:
-//! the run posture the `shell` tool stamps on every command, and whether the
-//! process descends from a live delegated or scheduled run), so following the
-//! refusal text from a lane with nobody present ends in a second refusal.
+//! the run posture of the nearest `shell` the harness registered above the
+//! process — `shell_registry`, 1b-2, which the command text cannot set — and
+//! whether it descends from a live delegated or scheduled run), so following
+//! the refusal text, or overriding `MECHA_RUN_POSTURE` in it, from a lane with
+//! nobody present ends in a second refusal. A command that detaches from its
+//! shell is the named residue; confinement is its answer.
 //! `appraise_closure`'s doc carries the fuller map of what remains
 //! reachable.
 //!

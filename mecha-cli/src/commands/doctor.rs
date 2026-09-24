@@ -39,6 +39,21 @@ pub async fn execute(args: Args) -> Result<()> {
         .iter()
         .any(|f| f.component == "mail" && f.severity == Severity::Broken);
     findings.extend(failed_units(dead_auth));
+    // Not a store, so not in `examine`: whether `shell` runs confined, and
+    // confined away from the mecha home — what the closure guard leans on
+    // (1b-2). Read from the global config, the one every front-end layers
+    // on; a config that does not load is `check_charter`'s kind of finding,
+    // said here rather than skipped.
+    match mecha_core::config::Config::load_global() {
+        Ok(cfg) => findings.extend(doctor::check_shell_confinement(&cfg.sandbox, &home)),
+        Err(e) => findings.push(Finding {
+            component: "sandbox".to_string(),
+            severity: Severity::Attention,
+            summary: "could not read the config to check shell confinement".to_string(),
+            detail: format!("{e:#}"),
+            remedy: None,
+        }),
+    }
     doctor::sort(&mut findings);
 
     if args.json {
