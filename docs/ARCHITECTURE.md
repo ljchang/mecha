@@ -950,9 +950,10 @@ invariants:
   chooses them, but each hop goes back through `fetch_vetted` (`check_url`
   plus a pinned resolve). A 3xx with no location is an error, not a request
   to a placeholder path.
-- **Every result is `from_outside`, refusals included.** Each URL came from a
-  backend or a `location` header. Only the "no such handle" refusal is clean,
-  because it quotes the model's own argument.
+- **Every result past the ledger is `from_outside`, refusals included.** Each
+  URL came from a backend or a `location` header. Only the "no such handle"
+  refusal, which comes before the ledger, is clean, because it quotes the
+  model's own argument.
 - **An approval card shows the URL.** `Tool::review_input` puts the URL
   beside the handle, because a handle is the whole argument and none of the
   decision.

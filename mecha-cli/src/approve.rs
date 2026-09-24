@@ -171,12 +171,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// The hole this closes: `web_search` had no arm, so an escalated search
-    /// rendered as `{"query":"…","limit":8}` and was then cut at 100
-    /// characters. An escalation exists so a person can spot an exfiltration
-    /// payload; everything past that cut was invisible to the only party who
-    /// could have caught it. Fails on the old behaviour twice — on the field
-    /// picked, and on the length.
     /// The card for `web_open` names the page, not only the handle —
     /// `review_input` put the URL beside it before this ever ran.
     #[test]
@@ -188,6 +182,12 @@ mod tests {
         );
     }
 
+    /// The hole this closes: `web_search` had no arm, so an escalated search
+    /// rendered as `{"query":"…","limit":8}` and was then cut at 100
+    /// characters. An escalation exists so a person can spot an exfiltration
+    /// payload; everything past that cut was invisible to the only party who
+    /// could have caught it. Fails on the old behaviour twice — on the field
+    /// picked, and on the length.
     #[test]
     fn an_escalated_search_shows_the_whole_query() {
         let payload = "x".repeat(300);
