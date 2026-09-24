@@ -317,13 +317,14 @@ pub fn path_candidates(partial: &str, workspace: &std::path::Path) -> Vec<String
 /// One list, so completion and `HELP` cannot drift apart — there is a test that
 /// every name here parses, and another that everything `HELP` advertises is
 /// here.
-pub const NAMES: [&str; 27] = [
+pub const NAMES: [&str; 28] = [
     "help",
     "tools",
     "skills",
     "charter",
     "triggers",
     "outbox",
+    "mail",
     "queues",
     "learning",
     "frontdoor",
@@ -408,6 +409,7 @@ pub const HELP: &str = "\
   /queues                every store waiting on you, incl. the graph merge queue
   /learning              reflections, rules and proposals — read, edit, refuse
   /outbox                staged outbound drafts: read, edit, send, reject
+  /mail                  the classified inbox: read, dismiss, make a task
   /frontdoor             inbound requests: read, extract, triage, close
   /tasks                 the graph's task board: see, capture, edit, move on
   /note <text>           capture a note into the knowledge graph
