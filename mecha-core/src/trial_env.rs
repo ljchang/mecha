@@ -106,6 +106,7 @@ impl Environment {
     /// arguments — are resolved against the checkout.
     pub fn base_config(&self, real: &Config, base: &Path) -> Result<Config> {
         let dir = self.dir(base);
+        refuse_operator_home(&dir, &crate::work::mecha_home()?)?;
         let path = dir.join("config.toml");
         let text = std::fs::read_to_string(&path).with_context(|| {
             format!(
@@ -195,6 +196,11 @@ impl Environment {
     /// opens. A term of every row's condition hash.
     pub fn digest(&self, base: &Path) -> Result<String> {
         let dir = self.dir(base);
+        // Guarded here as well as in `base_config`: `ExperimentStore::plan`
+        // digests first, and `status` never reaches `base_config`, so a
+        // `dir` inside the home would be read whole before the refusal
+        // (found on review).
+        refuse_operator_home(&dir, &crate::work::mecha_home()?)?;
         let mut files = Vec::new();
         collect_files(&dir, &dir, &mut files)
             .with_context(|| format!("reading the experiment environment {}", dir.display()))?;
@@ -210,6 +216,76 @@ impl Environment {
         live.sort();
         bytes.extend_from_slice(format!("live={}", live.join(",")).as_bytes());
         Ok(crate::experiment::fnv64(&bytes))
+    }
+}
+
+/// An environment is authored data, never a part of the operator's home:
+/// refused if it is the real mecha home, contains it, or lies inside it.
+/// Canonical rather than lexical, unlike `refuse_unsafe_home`: an
+/// environment must already exist, so a symlink can be seen through. Until
+/// this check, `dir = "~/.mecha"` was stopped only because the operator's
+/// config happens to name a machine table (found on review).
+pub fn refuse_operator_home(dir: &Path, real: &Path) -> Result<()> {
+    let env = dir.canonicalize().with_context(|| {
+        format!(
+            "the experiment environment {} does not exist (a manifest with no \
+             [environment] runs in {DEFAULT_DIR}, relative to the checkout)",
+            dir.display()
+        )
+    })?;
+    // A home not created yet is resolved as far as it exists: absolute,
+    // its nearest existing ancestor canonical, the rest appended. Compared
+    // as written it waved everything through when relative, and missed a
+    // symlinked ancestor (macOS's /var → /private/var) (found on review).
+    let real = resolve_existing_prefix(real)?;
+    anyhow::ensure!(
+        !env.starts_with(&real) && !real.starts_with(&env),
+        "the experiment environment {} is, contains or lies inside your mecha home {} — an \
+         environment is authored data, never your home",
+        env.display(),
+        real.display()
+    );
+    Ok(())
+}
+
+/// A path in the form `canonicalize` would give, for a path that may not
+/// exist yet: made absolute, `.`/`..` resolved, the longest existing prefix
+/// canonicalized (through any symlink) and the remainder appended.
+fn resolve_existing_prefix(p: &Path) -> Result<PathBuf> {
+    let absolute = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("cannot determine the working directory")?
+            .join(p)
+    };
+    let mut lexical = PathBuf::new();
+    for c in absolute.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                lexical.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => lexical.push(other.as_os_str()),
+        }
+    }
+    let mut existing = lexical.as_path();
+    let mut rest = Vec::new();
+    loop {
+        if let Ok(canonical) = existing.canonicalize() {
+            let mut out = canonical;
+            for part in rest.iter().rev() {
+                out.push(part);
+            }
+            return Ok(out);
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                existing = parent;
+            }
+            _ => return Ok(lexical),
+        }
     }
 }
 
@@ -356,7 +432,8 @@ async fn build_one(
                     // it is refused rather than run unconfined.
                     anyhow::ensure!(
                         !server.sandbox,
-                        "{}:{}: `run` steps execute unconfined, and `{}` is configured with                          `sandbox = true` — seed it through its tools instead",
+                        "{}:{}: `run` steps execute unconfined, and `{}` is configured with \
+                         `sandbox = true` — seed it through its tools instead",
                         calls.display(),
                         n + 1,
                         server.name
@@ -569,6 +646,57 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
             let err = env.base_config(&operator(), tmp.path()).unwrap_err();
             assert!(format!("{err:#}").contains("checkout"), "{body}: {err:#}");
         }
+    }
+
+    /// An environment that is, contains or sits inside the real home is
+    /// refused, through a symlink too; a sibling is fine.
+    #[test]
+    fn an_environment_is_never_the_operators_home() {
+        let tmp = Scratch::new();
+        let real = tmp.path().join("home/.mecha");
+        std::fs::create_dir_all(real.join("envs/inside")).unwrap();
+        let sibling = tmp.path().join("checkout/eval/envs/x");
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::os::unix::fs::symlink(&real, tmp.path().join("alias")).unwrap();
+        assert!(refuse_operator_home(&real, &real).is_err());
+        assert!(refuse_operator_home(&tmp.path().join("home"), &real).is_err());
+        assert!(refuse_operator_home(&real.join("envs/inside"), &real).is_err());
+        assert!(refuse_operator_home(&tmp.path().join("alias"), &real).is_err());
+        refuse_operator_home(&sibling, &real).unwrap();
+        assert!(refuse_operator_home(&tmp.path().join("missing"), &real).is_err());
+        // The digest refuses before reading: pointed at the home, it errors
+        // rather than walking it. The home is a guarded scratch one, never
+        // the operator's, and the lock is `work`'s, since another test may
+        // move `MECHA_HOME` meanwhile (found on review).
+        let home = crate::work::tests::HomeGuard::new();
+        std::fs::write(home.dir().join("config.toml"), "").unwrap();
+        let at_home = Environment {
+            dir: Some(home.dir().to_path_buf()),
+            live_servers: Vec::new(),
+        };
+        let err = at_home.digest(Path::new("/")).unwrap_err();
+        assert!(format!("{err:#}").contains("mecha home"), "{err:#}");
+        drop(home);
+        // A home not created yet is compared lexically, not waved through.
+        let unborn = tmp.path().join("fresh/.mecha");
+        assert!(refuse_operator_home(&tmp.path().join("home"), &unborn).is_ok());
+        std::fs::create_dir_all(tmp.path().join("fresh")).unwrap();
+        assert!(refuse_operator_home(&tmp.path().join("fresh"), &unborn).is_err());
+        // Through a symlinked ancestor, as macOS's temp directory is.
+        let linked = tmp.path().join("linked");
+        std::os::unix::fs::symlink(tmp.path().join("fresh"), &linked).unwrap();
+        assert!(refuse_operator_home(&tmp.path().join("fresh"), &linked.join(".mecha")).is_err());
+    }
+
+    /// A relative path that does not exist yet resolves against the working
+    /// directory, and a missing tail keeps its components.
+    #[test]
+    fn a_missing_path_resolves_as_far_as_it_exists() {
+        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        assert_eq!(
+            resolve_existing_prefix(Path::new("no-such-dir/x/../y")).unwrap(),
+            cwd.join("no-such-dir/y")
+        );
     }
 
     /// A server's name is a store directory and a `remove_dir_all` target:

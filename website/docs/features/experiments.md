@@ -19,9 +19,9 @@ its own A/B flags are two-arm manifests waiting to be written as such.
 
 Two arms, one task, one seed: the harness as the default
 [environment](#environments) configures it, against the same harness without
-learned rules. Nothing a trial does reaches your own graph, mail or rules. Run it from the checkout root, since
-relative paths in a manifest resolve against the directory you run `mecha exp`
-from.
+learned rules. Nothing a trial does reaches your own graph, mail or rules. Run
+it from the checkout root, since relative paths in a manifest resolve against
+the directory you run `mecha exp` from.
 
 ```toml
 # quickstart.toml
@@ -323,13 +323,53 @@ trials        = pairs per arm × number of arms
 ```
 
 Six tasks × two seeds gives twelve pairs. With a control and three treatments
-that is 48 trials. Trials run **one at a time**, each a full child run, so
-use `--dry-run` to count them and `--limit N` to spread a large design across
-sittings. `run` resumes, and never reruns a finished trial.
+that is 48 trials, each a full child run. Use `--dry-run` to count them and
+`--limit N` to spread a large design across sittings. `run` resumes, and
+never reruns a finished trial.
 
 Each treatment arm is judged against the control only, on its own predicted
 metric. Tasks with more room to differ make better pairs: a task every arm
 passes in two turns ties every time and teaches the gate nothing.
+
+### Running trials in parallel
+
+`mecha exp run <name> --jobs N` keeps up to N trials in flight (`single`
+designs only). Two rules shape it:
+
+- **Never two trials of one arm at once.** Each trial resets its arm's home
+  (config, server stores, clock) before it starts, so two of one arm would run
+  in each other's world. With two arms, `--jobs 3` therefore runs two at a
+  time. Arms interleave rather than running in blocks.
+- **Each trial holds one of the background model seats** (three, one fewer
+  than the server's slots, so your own turn never queues). When none is free,
+  the run waits and says who holds them. `--jobs` above the seat count is
+  clamped to it (`--jobs 8` runs at most three), and fewer run while other
+  background runs hold seats.
+  `--jobs 1`, the default, takes no seat, like any run you are watching from
+  a terminal.
+
+**While it holds the seats, your other background work waits.** A detached
+`mecha tasks work` and an unattended `mecha questions answer` refuse to start
+when every seat is taken, and they name the experiment's trials as the
+holders. Scheduled triggers take no seat and still run. A long design at
+`--jobs 3` can hold all three for hours; `--jobs 2` leaves one free.
+
+Every row records the `--jobs` limit it ran under, after that clamp. It's
+still an upper bound, because the one-trial-per-arm rule can hold it lower.
+Concurrent requests share the server, so time and queue wait change with
+it, and a pinned seed only replays exactly when nothing else is in the
+batch. So when an arm's pairs ran under different limits (say, an
+experiment started at `--jobs 1` and resumed at `--jobs 3`), `judge` holds
+the verdict at *propose* and says why.
+
+Expect a modest speed-up, not an N-fold one. The server's throughput stops
+growing at its slot count, and short, prompt-heavy trials barely gain at
+all. One measurement on this machine (idle server, one sample each):
+
+| Tasks | `--jobs 1` | `--jobs 3` |
+|---|---|---|
+| 12 two-to-three-turn lookups, 3 arms | 31–32 s | 24–32 s |
+| 16 file-correction tasks, 2 arms (two in flight) | 207 s | 154 s (1.34×) |
 
 ## Lifetimes
 
@@ -461,13 +501,16 @@ source_timeout_secs = 600
 
 `list` prints the tasks as JSON (id, prompt, tags, an optional turn ceiling,
 an optional `expect` block); `setup <task>` puts the world in the task's
-starting state before the run; `grade <task>` reads the run's `--json`
-result on stdin and prints a verdict with the checks behind it. The driver
-calls each with `MECHA_HOME`, `MECHA_FIXTURES` (the home's fixture-store
-root), `MECHA_EXPERIMENT_WORKSPACE` and `MECHA_EXPERIMENT_TASK` set, and
-every edge fails the trial rather than passing it: a non-zero exit, a
-timeout, no JSON, an unknown shape, or a verdict that disagrees with its own
-checks. `eval/fixtures/source_stub.py` is the whole contract in forty lines.
+starting state before the run; `grade <task>` reads the run's `--json` result
+on stdin and prints a verdict with the checks behind it. The driver calls each
+with `MECHA_HOME`, `MECHA_FIXTURES` (the home's fixture-store root),
+`MECHA_EXPERIMENT_WORKSPACE` and `MECHA_EXPERIMENT_TASK` set, and every edge
+fails the trial rather than passing it: a non-zero exit, a timeout, no JSON,
+an unknown shape, or a verdict that disagrees with its own checks. Under
+`mecha exp run --jobs`, a source's `setup` and `grade` may run for several
+arms at once, so key any state on `MECHA_FIXTURES` or `MECHA_HOME` (both per
+arm), never on a fixed path. `eval/fixtures/source_stub.py` is the whole
+contract in forty lines.
 
 `eval/fixtures/dojo.py` is AgentDojo as a fixture world — the same program
 serves a suite's tools over MCP and acts as the task source for its user
@@ -623,8 +666,9 @@ These are the limits of the instrument today. Design with them in mind;
 [`EXPERIMENT-DESIGN.md`](https://github.com/ljchang/mecha/blob/main/docs/EXPERIMENT-DESIGN.md)
 holds the plans for each one.
 
-- **Trials run sequentially.** A large design costs its full wall-clock time,
-  even on a server with free slots.
+- **Lifetimes run one at a time.** `--jobs` covers `single` designs only. A
+  lifetime's stages must not compete with its tasks for the model, and
+  running lifetimes side by side needs that rule restated first.
 - **Four knobs.** There is no arm field for the system prompt, the tool list,
   the sandbox or the security settings. A variation outside the lever set and
   the four knobs is a separate experiment with a different base config, and
