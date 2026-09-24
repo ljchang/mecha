@@ -29,7 +29,8 @@ untrusted_input = true
 
 # Mail and calendar: the fixture server, since a real account has no private
 # copy. Every send is a line in its sent.jsonl and nothing is delivered; the
-# outbox stages the two sends as drafts, as on the operator's machine.
+# outbox stages its sends and calendar writes as drafts (below), as on the
+# operator's machine.
 [[mcp]]
 name = "mail"
 command = "python3"
