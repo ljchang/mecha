@@ -75,7 +75,7 @@ function Surface() {
             bound to loopback, fronted by Tailscale, opened by your network identity rather
             than a password. It is where drafts get approved, mail gets read and queues get
             cleared, and it is the only door{' '}
-            <Link to="/docs/features/voice">voice</Link> opens through.
+            <Link to="/docs/features/interfaces/voice">voice</Link> opens through.
           </p>
         </div>
         <WebFrame
@@ -92,7 +92,7 @@ function Surface() {
           caption={
             <>
               Live, not a screenshot — the real app with fixtures behind it. More on{' '}
-              <Link to="/docs/features/web">the web surface</Link>.
+              <Link to="/docs/features/interfaces/web">the web surface</Link>.
             </>
           }
         />
@@ -110,7 +110,7 @@ function Sample() {
             <Heading as="h2">Run it</Heading>
             <p>
               One binary, five front ends — four in a terminal and{' '}
-              <Link to="/docs/features/web">one in a browser</Link>.{' '}
+              <Link to="/docs/features/interfaces/web">one in a browser</Link>.{' '}
               <code>mecha run</code> answers and exits; <code>mecha tui</code> and{' '}
               <code>mecha serve</code> keep the input live, so you can redirect a run
               without stopping it.

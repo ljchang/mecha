@@ -276,7 +276,7 @@ A line may also carry a `[line.sensor]` table — a `kind` from a closed set and
 a `setpoint` you wrote, such as `kind = "outbox_age"` with `setpoint = "24h"` —
 so that runs which touch what the sensor watches are appraised against that
 line. The template you are handed shows one commented out;
-[the charter page](/docs/features/charter)
+[the charter page](/docs/features/appraisal/charter)
 lists the kinds and their units.
 
 `mecha charter edit` creates a commented template if you have no file yet and
@@ -290,7 +290,7 @@ One authoring trap worth knowing before you start: a line shaped like *"never
 disappoint anyone"* produces sycophancy and withheld bad news. Point it the
 other way, as the first example above does.
 
-See [How appraisal works](/docs/features/appraisal-overview) for what the
+See [How appraisal works](/docs/features/appraisal) for what the
 charter is part of.
 
 ## 6. What is deliberately not set up
@@ -300,7 +300,7 @@ holding your mail is not something to opt anyone into silently — the same
 reasoning that keeps `[[trigger]]` out of a project's `mecha.toml`, where a
 cloned repository would be handing itself a cron slot on your machine.
 
-When you do want one, [Triggers](/docs/features/triggers) covers it, and the
+When you do want one, [Triggers](/docs/features/automation/triggers) covers it, and the
 runner is a unit you can read before you let it run:
 
 ```bash
@@ -310,6 +310,6 @@ mecha trigger daemon --print-unit > ~/.config/systemd/user/mecha-triggers.servic
 ## Next
 
 - [First run](/docs/getting-started/first-run) — start it and use it
-- [The charter](/docs/features/charter) — every rule and surface, in full
+- [The charter](/docs/features/appraisal/charter) — every rule and surface, in full
 - [Configuration](/docs/getting-started/configuration) — every setting, and what derives from what
-- [Images](/docs/features/images) — if you want it to look at screenshots
+- [Images](/docs/features/interfaces/images) — if you want it to look at screenshots

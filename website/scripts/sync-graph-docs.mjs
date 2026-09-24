@@ -23,7 +23,7 @@ import {fileURLToPath} from 'node:url';
 const RAW = 'https://raw.githubusercontent.com/ljchang/mecha-graph/main';
 const here = dirname(fileURLToPath(import.meta.url));
 const sibling = resolve(here, '../../../personalized_knowledge_graph');
-const outDir = resolve(here, '../docs/graph');
+const outDir = resolve(here, '../docs/features/memory/graph');
 
 const FILES = [
   {
@@ -113,7 +113,7 @@ for (const file of FILES) {
       '',
     ].join('\n');
     writeFileSync(resolve(outDir, file.out), front + text);
-    console.log(`sync-graph-docs: ${file.src} → docs/graph/${file.out}`);
+    console.log(`sync-graph-docs: ${file.src} → docs/features/memory/graph/${file.out}`);
   } catch (error) {
     console.warn(`sync-graph-docs: skipped ${file.src}: ${error.message}`);
   }

@@ -3270,8 +3270,8 @@ regressions. Both comparison arms must use the same replay policy.
 `docs/GOAL-SYSTEM-DESIGN.md` is the design and is deliberately not rewritten as
 rungs land; this section is what a session changing `charter.rs`, `goal.rs`,
 `homeostat.rs`, `guilt.rs`, `boredom.rs` or `appraisal.rs` needs to know first.
-The user-facing restatement is six pages under `website/docs/features/`:
-`appraisal-overview.md` (the explainer), `appraisal.md` (the reference),
+The user-facing restatement is the appraisal section of the docs site,
+`website/docs/features/appraisal/`: `index.md` (the explainer), `reference.md`,
 `charter.md`, `goals.md`, `plan-steps.md` and `anticipation.md`.
 
 The gap it closes: every evaluative signal in mecha was a **cost** or a
