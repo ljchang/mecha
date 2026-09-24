@@ -56,6 +56,7 @@ pub mod candidate;
 pub mod capture;
 pub mod charter;
 pub mod clock;
+pub mod closure;
 pub mod compact;
 pub mod config;
 pub mod counterfactual;

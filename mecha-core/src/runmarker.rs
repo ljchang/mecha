@@ -221,6 +221,25 @@ impl RunMarkers {
         }
     }
 
+    /// The pids of every run in flight in this directory — what
+    /// `closure::run_ancestor` checks a process's ancestry against. Read-only:
+    /// a dead marker is skipped rather than cleared, because the caller is a
+    /// check, not the run's owner. An unreadable directory is no runs, which
+    /// is the right direction for its one caller only because the posture
+    /// variable is checked beside it (`closure::decide`).
+    pub fn live_pids(&self) -> Vec<u32> {
+        let Ok(dir) = std::fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
+        dir.flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "running"))
+            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+            .filter_map(|t| serde_json::from_str::<RunMarker>(&t).ok())
+            .map(|m| m.pid)
+            .filter(|pid| crate::process_alive(*pid))
+            .collect()
+    }
+
     /// Ask the run in flight to stop. `false` when there is nothing to stop,
     /// so a caller can say so rather than pretending it did something.
     pub fn request_cancel(&self, name: &str) -> Result<bool> {

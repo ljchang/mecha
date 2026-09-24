@@ -25,10 +25,13 @@
 //! appraises, and a *delegated* run never reads it (`tasks work` withholds
 //! the tool outright) — but under an unattended run whose permission mode
 //! is not `ask`, the refusal reads as instructions for the workaround, and
-//! a run holding a shell can follow them. That is D6's honest residue for
-//! such a lane, named here because this message is where a reader first
-//! meets it; `appraise_closure`'s doc carries the fuller map of what
-//! remains reachable.
+//! a run holding a shell can follow them. That was D6's honest residue for
+//! such a lane; since S8 the command itself refuses it (`closure::decide`:
+//! the run posture the `shell` tool stamps on every command, and whether the
+//! process descends from a live delegated or scheduled run), so following the
+//! refusal text from a lane with nobody present ends in a second refusal.
+//! `appraise_closure`'s doc carries the fuller map of what remains
+//! reachable.
 //!
 //! Wrapped in [`crate::setup::build`], **before** the subagent pool is
 //! cloned, because `withhold_tool`'s own doc names the hole: a child registry
@@ -117,7 +120,7 @@ pub fn guard(registry: &mut mecha_core::tool::Registry) {
 /// write, and a fourth hand-copied `"done" | "dropped"` is how the two
 /// drift.
 pub fn is_closing_status(s: &str) -> bool {
-    matches!(s, "done" | "dropped")
+    mecha_core::closure::is_closed_status(s)
 }
 
 /// The one argument shape the guard exists for. Anything else — a missing

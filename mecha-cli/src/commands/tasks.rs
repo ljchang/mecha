@@ -93,6 +93,16 @@ pub enum Cmd {
         /// the record is written by the thing that knows.
         #[arg(long)]
         session: Option<String>,
+        /// Which surface is closing or reopening the task — `cli`, `tui`,
+        /// `web`, `slack` or `graph-tui`. **Set by the surface that shells
+        /// out, never typed**; it lands on the closure record
+        /// (`~/.mecha/closures`). A command run from a chat's `shell` is
+        /// recorded as `chat` whatever this says.
+        #[arg(long, hide = true)]
+        surface: Option<String>,
+        /// Why, when closing or reopening — kept on the closure record.
+        #[arg(long)]
+        reason: Option<String>,
     },
     /// Read what the task was captured from — the mail that asked, the
     /// stranger's request, the conversation it fell out of.
@@ -188,9 +198,12 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             waiting_on,
             project,
             session,
+            surface,
+            reason,
         } => {
             set(
-                global, &task, status, due, defer, context, waiting_on, project, session,
+                global, &task, status, due, defer, context, waiting_on, project, session, surface,
+                reason,
             )
             .await
         }
@@ -411,11 +424,12 @@ async fn add(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)] // one parameter per `kg_task_update`
-                                     // field; grouping them into a struct
-                                     // would put the tool's schema in two
-                                     // places, which is the drift this file
-                                     // avoids everywhere else.
+#[allow(clippy::too_many_arguments)]
+// one parameter per `kg_task_update`
+// field; grouping them into a struct
+// would put the tool's schema in two
+// places, which is the drift this file
+// avoids everywhere else.
 async fn set(
     global: &GlobalOpts,
     task: &str,
@@ -426,6 +440,8 @@ async fn set(
     waiting_on: Option<String>,
     project: Option<String>,
     session: Option<String>,
+    surface: Option<String>,
+    reason: Option<String>,
 ) -> Result<()> {
     let mut args = json!({ "task": task });
     let refiled = project.is_some();
@@ -450,6 +466,16 @@ async fn set(
              --waiting-on, --project"
         );
     }
+    // Checked before anything is read: a surface this build cannot name is a
+    // caller's typo, and `chat` is not nameable at all (`Surface::from_flag`).
+    let flagged = surface
+        .as_deref()
+        .map(|s| {
+            mecha_core::closure::Surface::from_flag(s).with_context(|| {
+                format!("--surface must be one of cli, tui, web, slack, graph-tui (got {s:?})")
+            })
+        })
+        .transpose()?;
 
     // One `prepare_tools` for everything below — the update, the
     // pre-mutation read, and a closure's appraisal-and-maybe-follow-up all
@@ -460,105 +486,298 @@ async fn set(
     // used to cost one.
     let prepared = setup::prepare_tools(global, false).await?;
 
-    // Read before the mutation, and only when the target is a status
-    // `is_fresh_closure` could ever call a closure (`done`/`dropped`) —
-    // `kg_task_update` answers with the fields it moved, never the row as a
-    // whole, so telling a fresh closure apart from one already closed (and
-    // finding the session/project a closure appraises) needs the record as
-    // it stood going in.
-    let before = if status
-        .as_deref()
-        .is_some_and(crate::closure_guard::is_closing_status)
-    {
-        match find_task_with(&prepared, task).await {
-            Ok(v) => Some(v),
-            // Found on review: `.ok()` used to drop this silently, and by
-            // this feature's own reasoning that is the worse of the two
-            // read failures it can have — the *outbox* read failing only
-            // costs one channel's evidence and warns loudly about it; this
-            // one loses the whole appraisal, with the same "will not be
-            // redone" stakes, and said nothing.
-            Err(e) => {
-                eprintln!(
-                    "mecha: could not appraise {task}'s closure — the board read failed: {e:#}"
-                );
-                None
-            }
-        }
-    } else {
-        None
+    // Read before the mutation whenever the status moves. `kg_task_update`
+    // answers with the fields it moved, never the row as a whole, so telling
+    // a closure from a status that was already closed, a reopen from an
+    // ordinary status change, and finding the session/project a closure
+    // appraises all need the record as it stood going in.
+    //
+    // **A failed read now stops the change** (S8). It used to print a warning
+    // and close the task unappraised; a status change that cannot be
+    // classified cannot be recorded, and a closure that happens unrecorded is
+    // the one thing the closure record exists to rule out.
+    let mut before = match status {
+        Some(_) => Some(find_task_with(&prepared, task).await.with_context(|| {
+            format!(
+                "could not read {task} before changing its status — a closure or reopen is \
+                 recorded, and cannot be told from an ordinary status change without the row \
+                 as it stands; nothing was changed"
+            )
+        })?),
+        None => None,
     };
-
-    let out = call_with(&prepared, "kg_task_update", args).await?;
-    println!("{}", serde_json::to_string_pretty(&out)?);
-
-    // §5.4 — appraise the medium-tier goal at the moment the *owner* closes
-    // it. Never the agent (D6): this function is reachable only from a
-    // person typing `tasks set` or from the modals that shell out to it —
-    // there is no tool on any run's surface that calls it.
-    if let (Some(status), Some(mut before)) = (status.as_deref(), before) {
-        if is_fresh_closure(status, &before) {
-            // `before` was read *before* the mutation above, so a `--session`
-            // passed in this same call (`tasks set T --session S --status
-            // done`) is not in it yet — patched in here rather than read
-            // back, since we already know exactly what this call just set
-            // and a second read would race against the very thing
-            // `is_fresh_closure` above is guarding. Without this, linking and
-            // closing a task in one command silently skipped appraisal.
-            //
-            // `""` is the CLI's documented "clear this field", so
-            // unlink-while-closing patches the session *out* — the owner
-            // just said that session does not belong to this task, and
-            // appraising it anyway (or refusing `""` as "not a session id",
-            // which is what patching it in verbatim produced) both read a
-            // bookkeeping gesture as something it is not.
-            match session.as_deref() {
-                Some("") => before["session"] = Value::Null,
-                Some(s) => before["session"] = json!(s),
-                None => {}
-            }
-            // `--project` in the same call is the same shape, with one
-            // difference: it takes a name *or* an id and only the server
-            // resolves it, so the new tier is read off the update's echo
-            // (the row under `task`, rendered by the server) rather than
-            // patched from the flag. Without this the closure appraised,
-            // recorded and staged under the project the task just *left*,
-            // and never checked the one it moved to (found on review). A
-            // server whose echo carries no row leaves the tier unknown.
-            if refiled && !carry_refiled_project(&mut before, &out) {
-                eprintln!(
-                    "mecha: {task} was re-filed and closed in one call, but the board's echo \
-                     carried no row with a project column, so the project tier of this \
-                     closure is unknown and not appraised"
-                );
-            }
-            // The project's open list is read *before* the task's own
-            // appraisal, because that appraisal may stage a follow-up under
-            // the same project (`stage_follow_up` copies `project`), and a
-            // follow-up lands in `inbox` — open. Read after, the disappointed
-            // closure — the one case whose reading matters most — would see
-            // its own follow-up holding the project open and print nothing
-            // (found on review). The fold itself runs after, so the task's
-            // appraisal and the project's agree about the closed task.
-            let closed = project_closure_pending(&prepared, task, &before).await;
-            // One read of every store for the task's appraisal and the
-            // project's fold alike, and each store's warning once — and
-            // only when one of the two will read them: a hand-typed task
-            // with no session under no closing project appraises nothing,
-            // and must not pay five scans or print a store warning about
-            // an appraisal that does not happen (found on review).
-            // Read lazily: the first appraisal that gets as far as a store
-            // pays the read, and a closure that appraises nothing pays
-            // nothing (found on review, twice — the second time for a
-            // delegated task with no recorded outcome).
-            let stores = LazyStores::for_closure(task);
-            let staged = appraise_closure(&prepared, task, status, &before, &stores).await;
-            if let Some((project, board)) = closed {
-                appraise_project(task, &project, &board, &stores, staged);
-            }
+    // `before` was read *before* the mutation below, so a `--session` passed
+    // in this same call (`tasks set T --session S --status done`) is not in
+    // it yet — patched in here rather than read back, since we already know
+    // exactly what this call sets and a second read would race against the
+    // very transition being classified. Without this, linking and closing a
+    // task in one command silently skipped appraisal.
+    //
+    // `""` is the CLI's documented "clear this field", so unlink-while-closing
+    // patches the session *out* — the owner just said that session does not
+    // belong to this task, and appraising it anyway (or refusing `""` as "not
+    // a session id", which is what patching it in verbatim produced) both
+    // read a bookkeeping gesture as something it is not.
+    if let Some(before) = before.as_mut() {
+        match session.as_deref() {
+            Some("") => before["session"] = Value::Null,
+            Some(s) => before["session"] = json!(s),
+            None => {}
         }
     }
+    let moving = match (status.as_deref(), before.as_ref()) {
+        (Some(to), Some(b)) => mecha_core::closure::classify(b["status"].as_str(), to),
+        _ => None,
+    };
+
+    // A move across the open/closed line is recorded *before* the board row
+    // moves, after the posture check and the `pre_task_close` hooks — either
+    // of which may refuse it with nothing changed.
+    let begun = match (moving, status.as_deref(), before.as_ref()) {
+        (Some(kind), Some(to), Some(b)) => {
+            Some(begin_move(global, &prepared, task, b, to, kind, flagged, reason).await?)
+        }
+        _ => None,
+    };
+
+    let out = match call_with(&prepared, "kg_task_update", args).await {
+        Ok(out) => out,
+        Err(e) => {
+            // The record went down first; withdraw it, so a reader never sees
+            // a move that did not happen.
+            if let Some(m) = &begun {
+                m.abort(&e);
+            }
+            return Err(e);
+        }
+    };
+    println!("{}", serde_json::to_string_pretty(&out)?);
+
+    let Some(begun) = begun else {
+        return Ok(());
+    };
+    let Some(mut before) = before else {
+        return Ok(());
+    };
+    if begun.record.kind != mecha_core::closure::Move::Close {
+        begun.finish(None).await;
+        return Ok(());
+    }
+    // §5.4 — appraise the medium-tier goal at the moment the *owner* closes
+    // it. Never a run with nobody present (`closure::decide`, above): every
+    // surface reaches this through `tasks set`, and a delegated or unattended
+    // run's `shell` is refused before the record is written.
+    let status = status.as_deref().unwrap_or_default();
+    // `--project` in the same call is the same shape as `--session`, with one
+    // difference: it takes a name *or* an id and only the server resolves
+    // it, so the new tier is read off the update's echo (the row under
+    // `task`, rendered by the server) rather than patched from the flag.
+    // Without this the closure appraised, recorded and staged under the
+    // project the task just *left*, and never checked the one it moved to
+    // (found on review). A server whose echo carries no row leaves the tier
+    // unknown.
+    if refiled && !carry_refiled_project(&mut before, &out) {
+        eprintln!(
+            "mecha: {task} was re-filed and closed in one call, but the board's echo \
+             carried no row with a project column, so the project tier of this \
+             closure is unknown and not appraised"
+        );
+    }
+    // The project's open list is read *before* the task's own appraisal,
+    // because that appraisal may stage a follow-up under the same project
+    // (`stage_follow_up` copies `project`), and a follow-up lands in `inbox`
+    // — open. Read after, the disappointed closure — the one case whose
+    // reading matters most — would see its own follow-up holding the project
+    // open and print nothing (found on review). The fold itself runs after,
+    // so the task's appraisal and the project's agree about the closed task.
+    let closed = project_closure_pending(&prepared, task, &before).await;
+    // One read of every store for the task's appraisal and the project's fold
+    // alike, and each store's warning once — and only when one of the two
+    // will read them. Read lazily: the first appraisal that gets as far as a
+    // store pays the read, and a closure that appraises nothing pays nothing
+    // (found on review, twice — the second time for a delegated task with no
+    // recorded outcome).
+    let stores = LazyStores::for_closure(task);
+    let appraised = appraise_closure(&prepared, task, status, &before, &stores).await;
+    let project_reading = closed.and_then(|(project, board)| {
+        appraise_project(task, &project, &board, &stores, appraised.staged)
+    });
+    begun
+        .finish(Some(mecha_core::closure::Entry::Readout {
+            of: begun.record.id.clone(),
+            task: task.to_string(),
+            at: chrono::Utc::now(),
+            readout: appraised.readout,
+            follow_up_staged: appraised.staged,
+            project: project_reading,
+        }))
+        .await;
     Ok(())
+}
+
+/// A move across the open/closed line that has been decided on and recorded,
+/// and whose board write is about to happen — the write-ahead half of
+/// `closure.rs`. `abort` withdraws the record when the write fails; `finish`
+/// adds the readout and tells the observers.
+struct BegunMove {
+    store: mecha_core::closure::ClosureStore,
+    record: mecha_core::closure::Transition,
+    hooks: Option<mecha_core::hooks::HookSet>,
+}
+
+impl BegunMove {
+    fn abort(&self, e: &anyhow::Error) {
+        if let Err(w) = self.store.append(&mecha_core::closure::Entry::Aborted {
+            of: self.record.id.clone(),
+            at: chrono::Utc::now(),
+            error: format!("{e:#}"),
+        }) {
+            // The one case the write-ahead order cannot make clean: the move
+            // did not happen and its record could not be withdrawn. Said, so
+            // a reader of the store has something to reconcile against.
+            eprintln!(
+                "mecha: {} did not change, and its closure record {} could not be withdrawn \
+                 ({w:#}) — the store now names a move that did not happen",
+                self.record.task, self.record.id
+            );
+        }
+    }
+
+    /// Write the readout, when there is one, and notify `task_closed` /
+    /// `task_reopened`. The move has happened, so neither may fail it: a
+    /// readout that cannot be written costs the web its line and is said.
+    async fn finish(&self, readout: Option<mecha_core::closure::Entry>) {
+        let mut payload = serde_json::to_value(&self.record).unwrap_or(Value::Null);
+        if let Some(entry) = readout {
+            if let Err(e) = self.store.append(&entry) {
+                eprintln!(
+                    "mecha: {}'s closure was recorded, but its appraisal readout could not be \
+                     ({e:#}) — surfaces that are not a terminal will not show it",
+                    self.record.task
+                );
+            }
+            if let mecha_core::closure::Entry::Readout {
+                readout,
+                follow_up_staged,
+                project,
+                ..
+            } = entry
+            {
+                payload["readout"] = json!(readout);
+                payload["follow_up_staged"] = json!(follow_up_staged);
+                payload["project_readout"] = json!(project);
+            }
+        }
+        if let Some(hooks) = &self.hooks {
+            let reopened = self.record.kind == mecha_core::closure::Move::Reopen;
+            hooks.task_moved(reopened, &payload, &hook_dir()).await;
+        }
+    }
+}
+
+/// Where a task hook runs: the mecha home, since a task belongs to no run's
+/// workspace. The current directory when the home cannot be named.
+fn hook_dir() -> std::path::PathBuf {
+    mecha_core::work::mecha_home()
+        .ok()
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+/// The pids of every delegated or scheduled run in flight — what
+/// `closure::run_ancestor` walks this process's ancestry against.
+fn live_run_pids() -> std::collections::HashSet<u32> {
+    let mut pids: std::collections::HashSet<u32> = markers()
+        .map(|m| m.live_pids().into_iter().collect())
+        .unwrap_or_default();
+    if let Ok(store) = mecha_core::trigger::TriggerStore::default_root()
+        .and_then(mecha_core::trigger::TriggerStore::open)
+    {
+        pids.extend(store.live_run_pids());
+    }
+    pids
+}
+
+/// Decide who is making a move, run the `pre_task_close` hooks, and write
+/// the record — in that order, so a refusal at any step leaves the board and
+/// the store as they were.
+#[allow(clippy::too_many_arguments)]
+async fn begin_move(
+    global: &GlobalOpts,
+    prepared: &setup::PreparedTools,
+    task: &str,
+    before: &Value,
+    to: &str,
+    kind: mecha_core::closure::Move,
+    flagged: Option<mecha_core::closure::Surface>,
+    reason: Option<String>,
+) -> Result<BegunMove> {
+    use mecha_core::closure::{self, ClosureStore, Entry, Transition};
+    let (actor, surface) = closure::decide(
+        &closure::posture_from_env(),
+        closure::run_ancestor(&live_run_pids()),
+        flagged,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let sessions = before["session"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(|s| vec![s.to_string()])
+        .unwrap_or_default();
+    let store = ClosureStore::open(ClosureStore::default_root()?)
+        .context("opening the closure store — nothing was changed")?;
+    let mut record = Transition::new(
+        task,
+        before["status"].as_str(),
+        to,
+        kind,
+        actor,
+        surface,
+        sessions,
+        reason,
+    );
+    if kind == closure::Move::Reopen {
+        record.undoes = store
+            .latest_closure(task)
+            .context("reading the closure this reopens — nothing was changed")?
+            .map(|t| t.id);
+    }
+    // Validated even under `--no-hooks`, like every other front-end: a typo in
+    // a hook's event should fail on every start, not only on the runs that use
+    // it.
+    let hooks = mecha_core::hooks::HookSet::from_config(&prepared.config.hooks)?;
+    let hooks = (!global.no_hooks && hooks.watches_tasks()).then_some(hooks);
+    if let Some(h) = &hooks {
+        let payload = serde_json::to_value(&record)?;
+        if let mecha_core::hooks::HookVerdict::Deny(why) =
+            h.pre_task_close(&payload, &hook_dir()).await
+        {
+            bail!(
+                "a pre_task_close hook refused to {} {task}: {why}",
+                verb_of(kind)
+            );
+        }
+    }
+    store
+        .append(&Entry::Transition(record.clone()))
+        .with_context(|| {
+            format!(
+                "could not record {task}'s {} — nothing was changed",
+                verb_of(kind)
+            )
+        })?;
+    Ok(BegunMove {
+        store,
+        record,
+        hooks,
+    })
+}
+
+fn verb_of(kind: mecha_core::closure::Move) -> &'static str {
+    match kind {
+        mecha_core::closure::Move::Reopen => "reopen",
+        _ => "close",
+    }
 }
 
 /// The task's record as the board holds it right now, read by id off the
@@ -577,38 +796,33 @@ async fn find_task_with(prepared: &setup::PreparedTools, task_id: &str) -> Resul
         .with_context(|| format!("no such task: {task_id} — `mecha tasks list` shows the board"))
 }
 
-/// A fresh entry into a closed status, never a status that was already
-/// there. Nudging the due date on a task that is already `done` must not
-/// re-appraise it — only the transition *into* `done`/`dropped` is a
-/// closure.
-fn is_fresh_closure(new_status: &str, before: &Value) -> bool {
-    let was = before["status"].as_str().unwrap_or("inbox");
-    crate::closure_guard::is_closing_status(new_status)
-        && !crate::closure_guard::is_closing_status(was)
+/// What a closure's appraisal said, for the record: the one-line readout
+/// (`None` when the task had no session or no recorded outcome), and whether
+/// a follow-up was staged under the task's project.
+#[derive(Debug, Default)]
+struct Appraised {
+    staged: bool,
+    readout: Option<String>,
 }
 
 /// §5.4's medium-tier appraisal moment. Best-effort throughout: the task is
 /// already closed by the time this runs, so nothing here may make that read
 /// as having failed — a warning on stderr, never a `bail!`.
 ///
-/// **Stderr, and known to be one-sided.** `set`'s own stdout/stderr split
-/// is correct — Slack's Done tap parses the whole of stdout as one JSON
-/// document, so nothing here may touch it — but found on review: every
-/// non-terminal caller of `set` (`tui::self_cli`, `serve::review::verb`,
-/// Slack's Done tap) discards stderr on success, reading only the failure
-/// arm's. So `describe`'s summary and every warning this function prints —
-/// including "will not be redone," about a decision that genuinely never
-/// gets a second one — reach only someone who typed `mecha tasks set` into
-/// a terminal. `/tasks`' own rule is that the modal can do nothing the
-/// command line cannot; the reverse now holds too, and that is the gap.
-/// Surfacing it on the other three surfaces means deciding what "a warning
-/// on an otherwise-successful child process" means to each of them, which
-/// is a real design question rather than a line fix — named here so it is
-/// not mistaken for coverage this rung already has.
+/// **Stderr for a terminal, the closure record for everyone else.**
+/// `set`'s own stdout/stderr split is correct — Slack's Done tap parses the
+/// whole of stdout as one JSON document, so nothing here may touch it — and
+/// every non-terminal caller of `set` (`tui::self_cli`, `serve::review::
+/// verb`, Slack's Done tap) discards stderr on success. So the one-line
+/// readout is returned, and `set` writes it to the closure record
+/// (`closure::Entry::Readout`), where the web board and the TUI read it
+/// back. The *warnings* this function prints — including "will not be
+/// redone" — still reach only a terminal; carrying those is a separate
+/// question from carrying the readout.
 ///
 /// **A closure made anywhere but `tasks set` consumes this moment, silently
-/// — and the model-facing path is now closed.** `is_fresh_closure` fires
-/// only on the transition *this command* observes. Every first-party owner
+/// — and the model-facing path is now closed.** The closure is classified
+/// (`closure::classify`) only on the transition *this command* observes. Every first-party owner
 /// surface routes through `tasks set` (the TUI modal via `self_cli`, the web
 /// board's `task_set`, Slack's `Action::TaskDone`), and the model can no
 /// longer close one around it: `closure_guard::ClosedStatusGuard` wraps
@@ -617,9 +831,12 @@ fn is_fresh_closure(new_status: &str, before: &Value) -> bool {
 /// `done`/`dropped` and pointing at this command. Two paths remain, and
 /// they differ in kind: `shell: mecha tasks set` — the one the refusal
 /// itself suggests — closes *through* this command, so the appraisal
-/// happens; it is fine for §5.4, and it is also the honest residue of D6
-/// for a delegated run that holds a shell (behind the approver, but a lane
-/// that can run this binary can close its own task). And a genuinely
+/// happens; since S8 it is recorded as `owner-approved` from a chat, and
+/// **refused** from a delegated, scheduled or unattended run
+/// (`closure::decide`: the run posture the `shell` tool stamps on every
+/// command, and whether this process descends from a live run). The
+/// residue left is named on `closure::decide`: an unconfined shell that
+/// both clears the variable and detaches from its parent. And a genuinely
 /// out-of-band write — another process talking to the graph store directly
 /// — which no guard in this binary can see and which skips the appraisal;
 /// the complete fix for that one is still a closure claim the board owns,
@@ -633,7 +850,7 @@ fn is_fresh_closure(new_status: &str, before: &Value) -> bool {
 ///
 /// **Not atomic, and known rather than fixed.** Two closures of the same
 /// task landing together — a Slack tap and a TUI keypress within the same
-/// `is_fresh_closure` window — can both see the pre-mutation state and both
+/// pre-read window — can both see the pre-mutation state and both
 /// reach here, staging two follow-ups instead of the one §5.4 asks for. A
 /// correct fix needs a durable claim the board or this store owns (the
 /// `runmarker`/`permit` pattern this file already uses for *live runs*
@@ -648,14 +865,14 @@ async fn appraise_closure(
     new_status: &str,
     before: &Value,
     stores: &LazyStores,
-) -> bool {
+) -> Appraised {
     // Never delegated — the ordinary case for a hand-typed task. There is
     // nothing here for D9's index to point at, and that is not an error.
     // `""` lands here too, belt over the caller's braces: the CLI spells
     // "clear this field" as an empty string, and an empty id is no session,
     // not a malformed one.
     let Some(session_id) = before["session"].as_str().filter(|s| !s.is_empty()) else {
-        return false;
+        return Appraised::default();
     };
     // Closing while the run is still live is reachable from the terminal or
     // the modal regardless of what the model is doing, and it produces the
@@ -683,10 +900,10 @@ async fn appraise_closure(
         // kill, or a transcript from before the record existed (the live
         // case above already said its own piece). Otherwise silent, on
         // `board.rs`'s own rule for the same absence.
-        Ok(None) => return false,
+        Ok(None) => return Appraised::default(),
         Err(e) => {
             eprintln!("mecha: could not appraise {task_id}'s session {session_id}: {e:#}");
-            return false;
+            return Appraised::default();
         }
     };
     // Stderr, never stdout: this is a note to the owner, not `set`'s answer.
@@ -697,20 +914,26 @@ async fn appraise_closure(
     // that read-back for exactly the tasks (delegated, with a session) that
     // button is offered on.
     mecha_core::appraisal::note_task_closure(&mut a, task_id, new_status);
-    eprintln!("mecha's appraisal of {task_id}: {}", describe(&a));
+    let readout = describe(&a);
+    eprintln!("mecha's appraisal of {task_id}: {readout}");
+    let readout = Some(readout);
 
     // The appraisal record and the warning above apply to any closure — only
     // the board write is gated, in `worth_a_follow_up`.
     if !worth_a_follow_up(new_status, &a) {
-        return false;
+        return Appraised {
+            staged: false,
+            readout,
+        };
     }
-    match stage_follow_up(prepared, task_id, before, &a).await {
+    let staged = match stage_follow_up(prepared, task_id, before, &a).await {
         Ok(under_project) => under_project,
         Err(e) => {
             eprintln!("mecha: could not stage a follow-up for {task_id}: {e:#}");
             false
         }
-    }
+    };
+    Appraised { staged, readout }
 }
 
 /// The persistent tier above a task, as the board row carries it
@@ -1025,7 +1248,7 @@ fn appraise_project(
     // must not read as if it did not (found on review) — false when the
     // deploy-window fallback filed it under none.
     follow_up_staged: bool,
-) {
+) -> Option<String> {
     let pid = project.id();
     let Some(rows) = rows_under(board, pid) else {
         eprintln!(
@@ -1033,7 +1256,7 @@ fn appraise_project(
              project they are under (a truncated answer, no `items`, or a row without \
              `project_id`), so the project is not appraised"
         );
-        return;
+        return None;
     };
     // The project's name, off any row under it — the same field the board
     // renders beside the id on every surface.
@@ -1080,8 +1303,8 @@ fn appraise_project(
     // extracted content, and a newline in it would forge a line beside
     // the summary — the sibling in `project_closure_pending` prints it the
     // same way (found on review).
-    eprintln!(
-        "mecha's appraisal of project {pid} ({name:?}), closed with {task_id}{}: {}",
+    let line = format!(
+        "project {pid} ({name:?}), closed with {task_id}{}: {}",
         if follow_up_staged {
             " (one follow-up staged under it since)"
         } else {
@@ -1089,9 +1312,11 @@ fn appraise_project(
         },
         fold.describe()
     );
+    eprintln!("mecha's appraisal of {line}");
     for (tid, a) in &readings {
         eprintln!("  {tid:?}: {}", describe(a));
     }
+    Some(line)
 }
 
 /// The follow-up gate. Two conditions, both load-bearing:
@@ -2037,6 +2262,9 @@ async fn work(
     // thing that is right in testing and wrong in the shipped unit file.
     let opts = GlobalOpts {
         surface: Some(mecha_core::session::SessionKind::Task),
+        // Delegated whatever the approver: attended or not, this run is the
+        // lane whose closure would be its own verdict (D6, S8).
+        run_posture: Some(mecha_core::closure::RunPosture::Delegated),
         ..global.clone()
     };
     let mut prepared = setup::prepare(&opts, !unattended).await?;
@@ -3713,6 +3941,10 @@ mod tests {
 
     #[test]
     fn only_a_transition_into_a_closed_status_is_a_fresh_closure() {
+        let is_fresh_closure = |to: &str, before: &Value| {
+            mecha_core::closure::classify(before["status"].as_str(), to)
+                == Some(mecha_core::closure::Move::Close)
+        };
         let open = json!({"status": "next"});
         let already_done = json!({"status": "done"});
         let already_dropped = json!({"status": "dropped"});

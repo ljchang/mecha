@@ -1300,6 +1300,20 @@ pub async fn send(
     }
 }
 
+/// The run posture of one web turn (S8): a chat about a board task is its
+/// delegated lane, a turn with approvals off has nobody at the approver, and
+/// anything else has the person in front of the page.
+fn web_posture(task_chat: bool, approve_all: bool) -> mecha_core::closure::RunPosture {
+    use mecha_core::closure::RunPosture;
+    if task_chat {
+        RunPosture::Delegated
+    } else if approve_all {
+        RunPosture::Unattended
+    } else {
+        RunPosture::Interactive
+    }
+}
+
 /// Which door a turn came through, and what that changes about it.
 struct TurnOpts {
     request_id: Option<String>,
@@ -1641,6 +1655,14 @@ fn begin_turn(
         review_hint: opts
             .spoken
             .then(|| crate::voice::SPOKEN_REVIEW_HINT.to_string()),
+        // Per turn, like the approver below: a web chat about a board task is
+        // that task's lane (it withholds `kg_task_update`, D6), a turn with
+        // approvals off has nobody at the approver, and only a turn that asks
+        // the person in front of the page is interactive (`closure::decide`).
+        run_posture: Some(web_posture(
+            ws.withheld.iter().any(|t| t == "kg_task_update"),
+            opts.approve_all,
+        )),
         ..(*chat.agent.ctx()).clone()
     });
     cx.approver = if opts.approve_all {
@@ -2686,6 +2708,17 @@ pub async fn sessions(State(state): Chat) -> axum::response::Response {
 
 #[cfg(test)]
 mod tests {
+    /// A chat about a board task is its lane whatever the page's mode; a
+    /// turn with approvals off has nobody at the approver (S8).
+    #[test]
+    fn a_web_turn_is_interactive_only_with_approvals_on_outside_a_task_chat() {
+        use mecha_core::closure::RunPosture as P;
+        assert_eq!(super::web_posture(false, false), P::Interactive);
+        assert_eq!(super::web_posture(false, true), P::Unattended);
+        assert_eq!(super::web_posture(true, false), P::Delegated);
+        assert_eq!(super::web_posture(true, true), P::Delegated);
+    }
+
     /// A spoken turn is the owner's words with the voice preamble *prefixed
     /// onto them*, in the same conversation as the typed turns (D3) — so it
     /// is not a block the core filter can drop, and the door that added the

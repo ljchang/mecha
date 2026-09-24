@@ -269,9 +269,10 @@ impl Default for WorkConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HookConfig {
-    /// `pre_tool` | `post_tool` | `session_end`. An unknown event is a startup
-    /// error, not a warning — a policy hook that never fires because its event
-    /// name has a typo is the silently-degrading-sandbox mistake again.
+    /// `pre_tool` | `post_tool` | `session_end` | `pre_task_close` |
+    /// `task_closed` | `task_reopened`. An unknown event is a startup error,
+    /// not a warning — a policy hook that never fires because its event name
+    /// has a typo is the silently-degrading-sandbox mistake again.
     pub event: String,
     /// Run via `sh -c`, as the user, in the workspace.
     pub command: String,

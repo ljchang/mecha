@@ -1,18 +1,24 @@
 //! Lifecycle hooks: user commands that attach to the loop without touching it.
 //!
-//! Three events. `pre_tool` runs before the approver and can deny a call;
+//! Six events. `pre_tool` runs before the approver and can deny a call;
 //! `post_tool` observes a completed call; `session_end` fires when a front-end
-//! closes a recorded session. Each hook is a shell command run as the user in
-//! the workspace, with the event payload as one JSON object on stdin.
+//! closes a recorded session. Three are about the task board rather than a
+//! run (`closure.rs`, `APPRAISAL-WIRING-DESIGN.md` S8): `pre_task_close` runs
+//! before a task is closed or reopened and can refuse the move;
+//! `task_closed` and `task_reopened` observe a move that happened. Each hook
+//! is a shell command run as the user, with the event payload as one JSON
+//! object on stdin — a run's hooks in its workspace, a task's in the mecha
+//! home.
 //!
 //! Two policy decisions worth stating out loud:
 //!
-//! - **`pre_tool` fails closed.** Exit 0 allows; exit 2 denies with the hook's
-//!   output as the reason; any other exit, a spawn failure, or a timeout also
-//!   **denies**. A policy hook that cannot run and silently allows is the
+//! - **`pre_tool` and `pre_task_close` fail closed.** Exit 0 allows; exit 2
+//!   denies with the hook's output as the reason; any other exit, a spawn
+//!   failure, or a timeout also **denies**. A policy hook that cannot run and silently allows is the
 //!   silently-degrading-sandbox mistake with a different spelling. Observers
-//!   (`post_tool`, `session_end`) are best-effort: their failures are logged
-//!   and swallowed, because they cannot be load-bearing.
+//!   (`post_tool`, `session_end`, `task_closed`, `task_reopened`) are
+//!   best-effort: their failures are logged and swallowed, because they
+//!   cannot be load-bearing.
 //! - **Hooks run before the human.** A `pre_tool` denial never reaches the
 //!   approver — mechanical policy is cheaper than an interruption, and a hook
 //!   cannot be talked into clicking yes. The trifecta interlock still sits in
@@ -42,6 +48,9 @@ enum Event {
     PreTool,
     PostTool,
     SessionEnd,
+    PreTaskClose,
+    TaskClosed,
+    TaskReopened,
 }
 
 #[derive(Debug)]
@@ -75,8 +84,14 @@ impl HookSet {
                 "pre_tool" => Event::PreTool,
                 "post_tool" => Event::PostTool,
                 "session_end" => Event::SessionEnd,
+                "pre_task_close" => Event::PreTaskClose,
+                "task_closed" => Event::TaskClosed,
+                "task_reopened" => Event::TaskReopened,
                 other => {
-                    bail!("hook event {other:?} is not one of pre_tool, post_tool, session_end")
+                    bail!(
+                        "hook event {other:?} is not one of pre_tool, post_tool, session_end, \
+                         pre_task_close, task_closed, task_reopened"
+                    )
                 }
             };
             if c.command.trim().is_empty() {
@@ -141,6 +156,72 @@ impl HookSet {
         Ok((out.status.code().unwrap_or(-1), text))
     }
 
+    /// One gating hook's run, read as a verdict — the one contract
+    /// `pre_tool` and `pre_task_close` share: exit 0 allows, exit 2 denies
+    /// with the hook's output as the reason, and anything else denies too.
+    async fn gate(hook: &Hook, payload: &Value, workdir: &std::path::Path) -> HookVerdict {
+        match Self::run_one(hook, payload, workdir).await {
+            Ok((0, _)) => HookVerdict::Allow,
+            Ok((2, reason)) => HookVerdict::Deny(if reason.is_empty() {
+                format!("blocked by hook `{}`", hook.command)
+            } else {
+                reason
+            }),
+            // Fail closed: an exit code the contract does not define, a
+            // crash, or a timeout is not permission.
+            Ok((code, reason)) => HookVerdict::Deny(format!(
+                "hook `{}` exited {code} (exit 0 allows, 2 denies){}",
+                hook.command,
+                if reason.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {reason}")
+                }
+            )),
+            Err(e) => HookVerdict::Deny(format!("hook `{}` failed to run: {e}", hook.command)),
+        }
+    }
+
+    /// Whether any hook watches the task board — lets `tasks set` skip the
+    /// payload in the common empty case.
+    pub fn watches_tasks(&self) -> bool {
+        self.hooks.iter().any(|h| {
+            matches!(
+                h.event,
+                Event::PreTaskClose | Event::TaskClosed | Event::TaskReopened
+            )
+        })
+    }
+
+    /// Run the `pre_task_close` hooks in order, before a task is closed or
+    /// reopened; the first denial wins. `record` is the transition that is
+    /// about to be written (`closure::Transition`), as JSON.
+    pub async fn pre_task_close(&self, record: &Value, workdir: &std::path::Path) -> HookVerdict {
+        for hook in self.hooks.iter().filter(|h| h.event == Event::PreTaskClose) {
+            let payload = serde_json::json!({ "event": "pre_task_close", "record": record });
+            if let HookVerdict::Deny(reason) = Self::gate(hook, &payload, workdir).await {
+                return HookVerdict::Deny(reason);
+            }
+        }
+        HookVerdict::Allow
+    }
+
+    /// Notify the `task_closed` or `task_reopened` observers — which one is
+    /// `reopened`. Best-effort by design.
+    pub async fn task_moved(&self, reopened: bool, record: &Value, workdir: &std::path::Path) {
+        let (event, name) = if reopened {
+            (Event::TaskReopened, "task_reopened")
+        } else {
+            (Event::TaskClosed, "task_closed")
+        };
+        for hook in self.hooks.iter().filter(|h| h.event == event) {
+            let payload = serde_json::json!({ "event": name, "record": record });
+            if let Err(e) = Self::run_one(hook, &payload, workdir).await {
+                tracing::warn!("{name} hook `{}` failed: {e}", hook.command);
+            }
+        }
+    }
+
     /// Run the matching `pre_tool` hooks in order. First denial wins.
     pub async fn pre_tool(
         &self,
@@ -157,34 +238,8 @@ impl HookSet {
                 "tool": tool,
                 "input": input,
             });
-            match Self::run_one(hook, &payload, workdir).await {
-                Ok((0, _)) => {}
-                Ok((2, reason)) => {
-                    return HookVerdict::Deny(if reason.is_empty() {
-                        format!("blocked by hook `{}`", hook.command)
-                    } else {
-                        reason
-                    });
-                }
-                // Fail closed: an exit code the contract does not define, a
-                // crash, or a timeout is not permission.
-                Ok((code, reason)) => {
-                    return HookVerdict::Deny(format!(
-                        "hook `{}` exited {code} (exit 0 allows, 2 denies){}",
-                        hook.command,
-                        if reason.is_empty() {
-                            String::new()
-                        } else {
-                            format!(": {reason}")
-                        }
-                    ));
-                }
-                Err(e) => {
-                    return HookVerdict::Deny(format!(
-                        "hook `{}` failed to run: {e}",
-                        hook.command
-                    ));
-                }
+            if let HookVerdict::Deny(reason) = Self::gate(hook, &payload, workdir).await {
+                return HookVerdict::Deny(reason);
             }
         }
         HookVerdict::Allow
@@ -356,5 +411,56 @@ mod tests {
         // way to fail the caller.
         set.post_tool("echo", &json!({}), false, "out", std::path::Path::new("."))
             .await;
+    }
+
+    #[tokio::test]
+    async fn pre_task_close_denies_on_exit_two_and_fails_closed_at_its_timeout() {
+        let record = json!({"task": "t1", "move": "close"});
+        let set = HookSet::from_config(&[cfg("pre_task_close", "echo 'not on a friday'; exit 2")])
+            .unwrap();
+        assert!(set.watches_tasks());
+        assert_eq!(
+            set.pre_task_close(&record, std::path::Path::new(".")).await,
+            HookVerdict::Deny("not on a friday".into())
+        );
+
+        let mut slow = cfg("pre_task_close", "sleep 30");
+        slow.timeout_secs = Some(1);
+        let set = HookSet::from_config(&[slow]).unwrap();
+        match set.pre_task_close(&record, std::path::Path::new(".")).await {
+            HookVerdict::Deny(reason) => assert!(reason.contains("failed to run"), "{reason}"),
+            HookVerdict::Allow => panic!("a timeout must not be permission"),
+        }
+
+        let set = HookSet::from_config(&[cfg("pre_task_close", "exit 0")]).unwrap();
+        assert_eq!(
+            set.pre_task_close(&record, std::path::Path::new(".")).await,
+            HookVerdict::Allow
+        );
+    }
+
+    #[tokio::test]
+    async fn task_observers_get_the_record_and_only_their_own_move() {
+        let closed = std::env::temp_dir().join(format!("mecha-hook-{}", uuid::Uuid::new_v4()));
+        let reopened = std::env::temp_dir().join(format!("mecha-hook-{}", uuid::Uuid::new_v4()));
+        let set = HookSet::from_config(&[
+            cfg("task_closed", &format!("cat > {}", closed.display())),
+            cfg("task_reopened", &format!("cat > {}", reopened.display())),
+        ])
+        .unwrap();
+        // Observers are not gates: a pre_tool-only set does not watch tasks.
+        assert!(!HookSet::from_config(&[cfg("pre_tool", "true")])
+            .unwrap()
+            .watches_tasks());
+        set.task_moved(false, &json!({"task": "t1"}), std::path::Path::new("."))
+            .await;
+        let written = std::fs::read_to_string(&closed).unwrap();
+        assert!(written.contains("\"event\":\"task_closed\""), "{written}");
+        assert!(written.contains("\"task\":\"t1\""), "{written}");
+        assert!(
+            !reopened.exists(),
+            "a closure must not fire the reopen hook"
+        );
+        std::fs::remove_file(&closed).ok();
     }
 }
