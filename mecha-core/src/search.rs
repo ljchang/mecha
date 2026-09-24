@@ -1088,7 +1088,19 @@ impl Tool for WebOpen {
                     // without arming `untrusted` (found in review of #276).
                     return Ok(out.from_outside());
                 }
-                crate::tool::builtin::Fetched::Redirect { status, target } => {
+                crate::tool::builtin::Fetched::Redirect {
+                    status,
+                    target: None,
+                } => {
+                    return Ok(ToolOutput::err(format!(
+                        "{status} redirect from {url} with no usable location — not followed"
+                    ))
+                    .from_outside());
+                }
+                crate::tool::builtin::Fetched::Redirect {
+                    status,
+                    target: Some(target),
+                } => {
                     let base = match reqwest::Url::parse(&url) {
                         Ok(b) => b,
                         Err(e) => return Ok(ToolOutput::err(format!("invalid url: {e}"))),
@@ -1352,7 +1364,7 @@ mod tests {
             .unwrap();
         let mut ctx = loopback_ctx();
         ctx.security.blocked_domains = vec!["blocked.example".into()];
-        let out = WebOpen::new(ledger)
+        let out = WebOpen::new(Arc::clone(&ledger))
             .call(json!({"result": h2}), &ctx)
             .await
             .unwrap();
@@ -1362,6 +1374,26 @@ mod tests {
         // like any other third-party text. Fails on the first cut, which
         // returned it unmarked.
         assert!(out.external, "a refused hop quotes the far end's location");
+
+        // A 3xx with no location is an error, not a second request to a
+        // path spelled like a placeholder.
+        let (addr3, seen3) = serve(vec![
+            "HTTP/1.1 302 Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".into(),
+            ok_body("should not be fetched"),
+        ])
+        .await;
+        let h3 = ledger.record_for_test(&format!("http://{addr3}/start"));
+        let out = WebOpen::new(ledger)
+            .call(json!({"result": h3}), &loopback_ctx())
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("no usable location"),
+            "{}",
+            out.content
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(*seen3.lock().unwrap(), vec!["GET /start HTTP/1.1"]);
     }
 
     /// An approval card for `web_open` shows where the handle leads: a

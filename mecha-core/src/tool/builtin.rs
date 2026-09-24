@@ -682,7 +682,8 @@ impl Tool for HttpFetch {
         Ok(match fetch_vetted(url, ctx).await? {
             Fetched::Done(out) => out,
             Fetched::Redirect { status, target } => ToolOutput::err(format!(
-                "{status} redirect to {target} — not followed. Call http_fetch again with that URL if you want it."
+                "{status} redirect to {} — not followed. Call http_fetch again with that URL if you want it.",
+                target.as_deref().unwrap_or("(no location header)")
             ))
             .from_outside(),
         })
@@ -698,7 +699,11 @@ pub(crate) enum Fetched {
     /// follows it must vet it again, hop by hop.
     Redirect {
         status: reqwest::StatusCode,
-        target: String,
+        /// `None` when the header is missing or not UTF-8. A value both
+        /// callers must handle rather than a placeholder string: `web_open`
+        /// resolves the target against the page, and "(no location header)"
+        /// is a perfectly good relative path (found in review of #276).
+        target: Option<String>,
     },
 }
 
@@ -755,8 +760,7 @@ pub(crate) async fn fetch_vetted(url: &str, ctx: &ToolCtx) -> Result<Fetched> {
             .headers()
             .get("location")
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("(no location header)")
-            .to_string();
+            .map(str::to_string);
         return Ok(Fetched::Redirect {
             status: resp.status(),
             target,
