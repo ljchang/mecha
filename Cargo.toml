@@ -27,7 +27,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # IANA zones, so "3pm Thursday" survives a DST boundary. A fixed offset in
 # config would be wrong twice a year, silently.
 chrono-tz = "0.10"
-dirs = "6"
+dirs = "7"
 futures = "0.3"
 libc = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
