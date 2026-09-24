@@ -401,10 +401,24 @@ async fn answer_and_resume(
     // actively working it — the same lie `tasks work` moves the status to
     // avoid, one door over.
     if let (Some(update), Some(task)) = (&update, q.task_id.as_deref()) {
-        if let Err(e) =
-            super::tasks::move_task(update, &tctx, task, "waiting", super::tasks::AGENT, None).await
+        match super::tasks::move_task(
+            prepared.agent.registry(),
+            update,
+            &tctx,
+            task,
+            "waiting",
+            super::tasks::AGENT,
+            None,
+        )
+        .await
         {
-            eprintln!("warning: the board still says you hold {task}: {e:#}");
+            Ok(super::tasks::HarnessStep::Move) => {}
+            // Closed since it parked the question: the owner's close stands,
+            // and the answer still goes to the run — it may have more to say.
+            Ok(super::tasks::HarnessStep::KeepClosure) => {
+                eprintln!("note: {task} is closed; the board keeps it closed")
+            }
+            Err(e) => eprintln!("warning: the board still says you hold {task}: {e:#}"),
         }
     }
 
@@ -519,11 +533,26 @@ async fn answer_and_resume(
         // nobody can see. It was missing here because the move back sat below
         // the bail — the hazard is identical, the door is different.
         if let (Some(update), Some(task)) = (&update, q.task_id.as_deref()) {
-            if let Err(restore) =
-                super::tasks::move_task(update, &tctx, task, "waiting", super::tasks::OWNER, None)
-                    .await
+            match super::tasks::move_task(
+                prepared.agent.registry(),
+                update,
+                &tctx,
+                task,
+                "waiting",
+                super::tasks::OWNER,
+                None,
+            )
+            .await
             {
-                eprintln!("warning: the board still says the agent has {task}: {restore:#}");
+                Ok(super::tasks::HarnessStep::Move) => {}
+                Ok(super::tasks::HarnessStep::KeepClosure) => {
+                    eprintln!(
+                        "note: {task} was closed while its run was in flight; it stays closed"
+                    )
+                }
+                Err(restore) => {
+                    eprintln!("warning: the board still says the agent has {task}: {restore:#}")
+                }
             }
         }
         bail!("the resumed run failed: {e:#}");
@@ -531,13 +560,25 @@ async fn answer_and_resume(
 
     // And back to you when it stops, for the reason it went the other way.
     if let (Some(update), Some(task)) = (&update, q.task_id.as_deref()) {
-        if let Err(e) =
-            super::tasks::move_task(update, &tctx, task, "waiting", super::tasks::OWNER, None).await
+        match super::tasks::move_task(
+            prepared.agent.registry(),
+            update,
+            &tctx,
+            task,
+            "waiting",
+            super::tasks::OWNER,
+            None,
+        )
+        .await
         {
-            eprintln!(
+            Ok(super::tasks::HarnessStep::Move) => {}
+            Ok(super::tasks::HarnessStep::KeepClosure) => {
+                eprintln!("note: {task} was closed while its run was in flight; it stays closed")
+            }
+            Err(e) => eprintln!(
                 "warning: the board still says {} has {task}: {e:#}",
                 super::tasks::AGENT
-            );
+            ),
         }
     }
 

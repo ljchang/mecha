@@ -315,6 +315,11 @@ const OWNERS_ACT: &str = "closing or reopening a task is the owner's act — clo
 ///    without one is either a registration the harness could not write
 ///    (which the `shell` tool refuses to run without) or a forgery.
 ///
+/// An MCP server and everything it spawns meet rule 5: the harness stamps
+/// every server `unknown` (`mcp::McpClient::build_command`) and never
+/// registers one, because a server outlives any one run's posture (review
+/// of #293).
+///
 /// **What this does not close, named.** A command that detaches from its
 /// shell, so it is reparented away from the registered pid, *and* clears
 /// the variable reads as rule 4. The registry's location has no environment
