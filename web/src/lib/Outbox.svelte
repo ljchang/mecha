@@ -6,7 +6,7 @@
     attendeesOf, MAIL_HEADERS, ago, localZone, EVENT_CARD_KEYS, unreadableAccounts, unreadableNote,
     threadOf, ROUTING_KEYS, toolSuffix, threadMessages, answeredMessage, msgWhen,
     rowSummary, docEdit, DOC_EDIT_KEYS, REJECT_REASONS, tooSoon,
-    replySubject, liveThread, sinceDrafted, readOf,
+    replySubject, liveThread, sinceDrafted, readOf, shouldReread,
   } from './outbox-view.js';
 
   // The outbox: every draft waiting on the owner, and the one place any of
@@ -179,13 +179,11 @@
   // newest message *when it is sent*, and a draft can sit for days. One
   // read-only `mecha mail show` per draft opened, reused for two minutes.
   let live = $state({}); // id → { status: 'loading'|'ok'|'error', thread, at }
-  const LIVE_FRESH_MS = 120_000;
   async function checkLive(d) {
     if (toolSuffix(d.tool) !== 'mail_reply' || d.args?.message_id || !d.args?.thread_id) return;
     const account = d.args.account ?? threadOf(d.sources)?.account;
     if (!account) return;
-    const had = live[d.id];
-    if (had && had.status !== 'error' && Date.now() - had.at < LIVE_FRESH_MS) return;
+    if (!shouldReread(live[d.id])) return;
     live[d.id] = { status: 'loading', at: Date.now() };
     try {
       const q = new URLSearchParams({ thread: d.args.thread_id, account });
@@ -477,12 +475,14 @@
     if (document.hidden) return;
     loadList();
     // The open draft's "no new messages" is a claim about now; keep it one.
-    // `checkLive` refetches only once the last read is older than
-    // LIVE_FRESH_MS, so this is one reread per two minutes a draft stays
-    // open (review of #275).
+    // `shouldReread` (outbox-view.js) sets the cadence: a good read every two
+    // minutes, a failed one every minute, never two in flight (review of #275).
     if (detail && mode === 'read') checkLive(detail);
   }, 30_000);
-  $effect(() => () => clearInterval(timer));
+  $effect(() => () => {
+    clearInterval(timer);
+    clearTimeout(settleTimer); // a reread must not fire for a page that is gone
+  });
 
   const monthOf = (a) => {
     const s = a?.start_time ?? '';

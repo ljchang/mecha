@@ -6,7 +6,7 @@
 // a key the form does not show dropped on save, an empty attendee field sent
 // as `[""]`. Each of those looks fine in the form and is wrong on the
 // calendar.
-import { kindOf, stampIn, wallIn, eventFields, eventArgs, inclusiveEnd, whenLabel, attendeesOf, editsAsEvent, unreadableAccounts, unreadableNote, threadOf, threadMessages, answeredMessage, rowSummary, docEdit, tooSoon, replySubject, liveThread, sinceDrafted, readOf } from '../src/lib/outbox-view.js';
+import { kindOf, stampIn, wallIn, eventFields, eventArgs, inclusiveEnd, whenLabel, attendeesOf, editsAsEvent, unreadableAccounts, unreadableNote, threadOf, threadMessages, answeredMessage, rowSummary, docEdit, tooSoon, replySubject, liveThread, sinceDrafted, readOf, shouldReread } from '../src/lib/outbox-view.js';
 
 let pass = 0;
 let fail = 0;
@@ -247,6 +247,15 @@ t('attendees accept objects', attendeesOf({ attendees: [{ email: 'a@x.edu' }] })
   t('the first thread read is the one shown', readOf(detailOf([read([['A', 'M1']]), read([['B', 'M2']])]))?.messages[0].name === 'A');
   t('a second read is never promoted when the first does not parse', readOf(detailOf(['not a thread', read([['B', 'M2']])])) === null);
   t('but never claims nothing is new', sinceDrafted(legacy, threadMessages(read([['A', 'M1'], ['B', 'M2']]))) === null);
+}
+
+{
+  // The reread cadence (review of #275): a failed read used to retry on
+  // every 30 s poll, forever.
+  t('a draft never read is read', shouldReread(undefined, 0) === true);
+  t('a good read is reused for two minutes', shouldReread({ status: 'ok', at: 0 }, 119_000) === false && shouldReread({ status: 'ok', at: 0 }, 120_000) === true);
+  t('a failed read waits a minute, not a poll', shouldReread({ status: 'error', at: 0 }, 30_000) === false && shouldReread({ status: 'error', at: 0 }, 60_000) === true);
+  t('a read in flight is never doubled', shouldReread({ status: 'loading', at: 0 }, 150_000) === false && shouldReread({ status: 'loading', at: 0 }, 180_000) === true);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

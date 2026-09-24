@@ -535,3 +535,22 @@ export function readOf(detail) {
   const parsed = source ? threadMessages(source.text, source.clipped) : null;
   return parsed?.messages.length ? { source, ...parsed } : null;
 }
+
+/**
+ * How often an open reply's thread is reread. Each reread is a `mecha mail
+ * show` subprocess and a provider round-trip under a 120 s timeout, so the
+ * cadence is a cost, and it lives here where a test holds it — the component
+ * once let a failing read retry on every 30 s poll, forever (review of #275).
+ */
+export const LIVE_FRESH_MS = 120_000; // a good read is reused this long
+export const LIVE_RETRY_MS = 60_000; // a failed one waits this long to retry
+export const LIVE_STUCK_MS = 180_000; // a read in flight longer than this is given up on
+
+/** Whether the thread should be reread now, given the last attempt `had`. */
+export function shouldReread(had, now = Date.now()) {
+  if (!had) return true;
+  const age = now - had.at;
+  if (had.status === 'loading') return age >= LIVE_STUCK_MS; // never double a read in flight
+  if (had.status === 'error') return age >= LIVE_RETRY_MS;
+  return age >= LIVE_FRESH_MS;
+}
