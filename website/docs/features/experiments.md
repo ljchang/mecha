@@ -311,6 +311,37 @@ confirmed on the holdout, under the work guardrail. A trial with no grade or
 no stats drops its pair rather than counting as zero. Below the gate's floors
 the verdict is *propose*, and says so.
 
+### Reading the results
+
+`judge` gives a verdict. `mecha exp report <name>` shows what's behind it:
+
+```
+arm               done failed pending running unknown        pass  pass^k  pass@k  turns  tokens in/out    wall tools (err)  jobs
+rules-off-12         8      0       0       0       0     6/8 75%     6/8     6/8    6.1    7.3k / 6.4k   13.0s      55 (0)     1
+rules-on-12          8      0       0       0       0     6/8 75%     6/8     6/8    5.9    7.3k / 6.4k   12.7s      53 (0)     1
+
+task                         rules-off-12  rules-on-12
+latest-evidence                       0/1          0/1
+linked-packet-11                      0/1          0/1
+…
+```
+
+- **Per arm:** trials by status (pending, running, done, failed, and
+  unknown, a status this build can't read, which a lifetime stops at); the
+  pass rate; **pass^k** (tasks that passed
+  on every run, across seeds and repetitions) and **pass@k** (on at least
+  one); mean turns and wall time; total tokens and tool calls; and the
+  `--jobs` limits it ran under.
+- **Per task:** passes over runs in each arm. A task every arm passes, or
+  every arm fails, tells the gate nothing, and this is where you see it.
+- **For a lifetime:** pass rate by sequence position for each arm, with the
+  failure rate over the first half against the second. A loop that learns
+  fails less later.
+
+A rate with nothing under it prints as a dash, never a zero: "nothing ran"
+and "nothing passed" are different findings. `--json` gives the same data
+for your own analysis.
+
 ### Sizing a design
 
 A treatment arm is compared with the control **pair by pair**: the same task,
@@ -683,10 +714,10 @@ holds the plans for each one.
   the sandbox or the security settings. A variation outside the lever set and
   the four knobs is a separate experiment with a different base config, and
   its rows do not pair with the first one's.
-- **Judging is pairwise, on one metric.** Each treatment against the control
-  only, with win/loss/tie counts. There is no per-task breakdown, token or
-  wall-clock cost, pass^k across seeds, or lifetime slope. For those, run
-  `export` and analyse the JSON.
+- **Judging is pairwise, on one metric.** Each treatment is judged against
+  the control only, by win/loss/tie counts. `report` shows the rest (per-task
+  results, cost, pass^k, lifetime curves), but as a readout, not a test:
+  there are no confidence intervals or significance tests yet.
 - **No multi-agent trials, and no mid-run forking.** An `ensemble` kind,
   branching a recorded run at one message, and snapshotting an environment
   are the communication-research half of the design, and none is built.
