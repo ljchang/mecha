@@ -772,9 +772,10 @@ impl Tool for WebSearch {
     fn description(&self) -> &str {
         if self.ledger.is_some() {
             "Search the web. Returns titles, URLs, and extracts, each result with a handle \
-             in brackets — pass that handle to web_open to read the full page. Set depth to \
-             \"deep\" only for genuine research questions that need several hops; it is much \
-             slower and costs more, and a plain lookup does not need it."
+             in brackets. To read a full page, pass that handle to web_open if you have it, \
+             or the URL to http_fetch otherwise. Set depth to \"deep\" only for genuine \
+             research questions that need several hops; it is much slower and costs more, \
+             and a plain lookup does not need it."
         } else {
             "Search the web. Returns titles, URLs, and extracts — use http_fetch afterwards if \
              you need a full page. Set depth to \"deep\" only for genuine research questions \
@@ -1103,7 +1104,13 @@ impl Tool for WebOpen {
                 } => {
                     let base = match reqwest::Url::parse(&url) {
                         Ok(b) => b,
-                        Err(e) => return Ok(ToolOutput::err(format!("invalid url: {e}"))),
+                        // Marked like every other exit past the ledger: the
+                        // URL came from a backend or a location header.
+                        // `ParseError`'s text does not echo it, but a stated
+                        // absolute with one quiet exception reads as a bug.
+                        Err(e) => {
+                            return Ok(ToolOutput::err(format!("invalid url: {e}")).from_outside())
+                        }
                     };
                     match base.join(&target) {
                         Ok(next) => url = next.to_string(),
