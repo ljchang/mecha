@@ -62,6 +62,7 @@ Exfiltration needs two things. The bit tracks one.
 | Slack post | model | **model** (channel) | direct |
 | unconfined `shell` | model | **model** (`curl` anywhere) | direct |
 | `web_search` | model | **operator config** (`[[search]]`) | needs the operator's own backend to collude |
+| `web_open` | nobody: the handle picks a result | **the search backend** (a URL it returned) | which result was picked, to that page's host — `log2(N)` bits (`PROVENANCE-DESIGN.md` §4) |
 
 `WebSearch::input_schema` has three properties — `query`, `limit`, `depth`.
 **There is no destination field.** An injection can fill the channel; it cannot
@@ -327,6 +328,14 @@ After:
   web_search            → runs, on searxng, at quick depth
   http_fetch            → still refused; the model can name a host
   mail_send             → still staged through the outbox
+```
+
+And since `web_open` (2026-09-24, `PROVENANCE-DESIGN.md` §4):
+
+```
+  web_search            → runs, and prints a handle beside each result
+  web_open a3f-9c01de.2 → runs: it opens a result, and names no host
+  http_fetch <url>      → still refused; the model can name a host
 ```
 
 ## 6. Residual risk, stated plainly

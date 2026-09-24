@@ -57,6 +57,7 @@ impl TerminalApprover {
     /// `consult` deliberately bypass, so it is not offered and, if typed,
     /// allows this call only.
     async fn ask(&self, tool: &dyn Tool, input: &Value, why: Option<&str>) -> Decision {
+        let input = &tool.review_input(input);
         let name = tool.name().to_string();
         let forced = why.is_some();
         let summary = if forced {
@@ -143,6 +144,13 @@ fn summarize_to(tool: &str, input: &Value, max: usize) -> String {
         // `Egress::Blind`. Rendering it as `{"query":"…","limit":8}` buried
         // the one field that matters behind the two that do not.
         "web_search" => field("query").map(str::to_string),
+        // The handle is the whole argument, and a handle is unreviewable, so
+        // the card shows where it leads: `Tool::review_input` put the URL
+        // beside it.
+        "web_open" => field("url").map(|url| match field("result") {
+            Some(h) => format!("{h} → {url}"),
+            None => url.to_string(),
+        }),
         _ => None,
     }
     .unwrap_or_else(|| {
@@ -162,6 +170,17 @@ fn summarize_to(tool: &str, input: &Value, max: usize) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The card for `web_open` names the page, not only the handle —
+    /// `review_input` put the URL beside it before this ever ran.
+    #[test]
+    fn a_web_open_summary_shows_where_the_handle_leads() {
+        let input = serde_json::json!({"result": "a3f-9c01de.2", "url": "https://example.org/x"});
+        assert_eq!(
+            summarize_forced("web_open", &input),
+            "a3f-9c01de.2 → https://example.org/x"
+        );
+    }
 
     /// The hole this closes: `web_search` had no arm, so an escalated search
     /// rendered as `{"query":"…","limit":8}` and was then cut at 100

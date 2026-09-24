@@ -630,13 +630,136 @@ impl SearchChain {
 // The tool
 // --------------------------------------------------------------------------
 
+/// Every URL a search handed this process, under a handle the model can name.
+///
+/// This is what makes [`WebOpen`] blind (`docs/PROVENANCE-DESIGN.md` §4). The
+/// model never writes a URL for it. It names a handle `web_search` printed
+/// beside a result, and the URL is the one the search backend returned,
+/// looked up here. An argument that is not a handle this ledger issued opens
+/// nothing, so there is no field a secret can be written into. What leaks is
+/// *which* result was chosen: `log2(N)` bits per call, to whoever serves the
+/// page.
+///
+/// Process-wide rather than per conversation, on purpose. A handle issued to
+/// one conversation opens only a URL some search already returned, and each
+/// search's token is random, so a handle has to be *held* to be used: one
+/// run cannot derive another's. The random epoch in every handle means a
+/// handle from before a restart is refused rather than silently naming a
+/// different result.
+pub struct ResultLedger {
+    state: std::sync::Mutex<LedgerState>,
+}
+
+struct LedgerState {
+    epoch: String,
+    /// Live search tokens, oldest first, so a new one never reuses a token
+    /// whose handles are still held. Capped like the handles: a token more
+    /// than `LEDGER_CAP` searches old has had every handle evicted.
+    tokens: std::collections::VecDeque<String>,
+    order: std::collections::VecDeque<String>,
+    urls: std::collections::HashMap<String, String>,
+}
+
+/// How many handles the ledger keeps before forgetting the oldest. A
+/// forgotten handle is refused with the same words as an invented one, and
+/// the remedy (search again) is the same.
+const LEDGER_CAP: usize = 4096;
+
+impl ResultLedger {
+    pub fn new() -> Self {
+        let epoch: String = uuid::Uuid::new_v4().simple().to_string()[..3].to_string();
+        ResultLedger {
+            state: std::sync::Mutex::new(LedgerState {
+                epoch,
+                tokens: std::collections::VecDeque::new(),
+                order: std::collections::VecDeque::new(),
+                urls: std::collections::HashMap::new(),
+            }),
+        }
+    }
+
+    /// Issue one handle per URL of one search, in order. An empty URL gets
+    /// no handle, since there is nothing to open.
+    fn record(&self, urls: &[&str]) -> Vec<Option<String>> {
+        let Ok(mut st) = self.state.lock() else {
+            return urls.iter().map(|_| None).collect();
+        };
+        // A random token per search, not a counter: a handle has to be *held*
+        // to be used. With a counter, one search taught a conversation the
+        // epoch and every other run's handles followed by arithmetic —
+        // batch items, eval cases, a `/clear`ed chat, a front-door run all
+        // share this ledger (found in review of #276). Retried on the
+        // vanishing chance of a collision with a token still held.
+        let search = loop {
+            let t = uuid::Uuid::new_v4().simple().to_string()[..6].to_string();
+            if !st.tokens.contains(&t) {
+                break t;
+            }
+        };
+        st.tokens.push_back(search.clone());
+        while st.tokens.len() > LEDGER_CAP {
+            st.tokens.pop_front();
+        }
+        let mut handles = Vec::with_capacity(urls.len());
+        for (i, url) in urls.iter().enumerate() {
+            if url.is_empty() {
+                handles.push(None);
+                continue;
+            }
+            let handle = format!("{}-{search}.{}", st.epoch, i + 1);
+            st.urls.insert(handle.clone(), url.to_string());
+            st.order.push_back(handle.clone());
+            while st.order.len() > LEDGER_CAP {
+                if let Some(old) = st.order.pop_front() {
+                    st.urls.remove(&old);
+                }
+            }
+            handles.push(Some(handle));
+        }
+        handles
+    }
+
+    /// Record one URL as a search would, for tests outside this module that
+    /// need a real handle — the interlock test in `agent.rs`.
+    #[cfg(test)]
+    pub(crate) fn record_for_test(&self, url: &str) -> String {
+        self.record(&[url])[0]
+            .clone()
+            .expect("a non-empty url gets a handle")
+    }
+
+    /// The URL a handle names, if this ledger issued it and still holds it.
+    pub fn resolve(&self, handle: &str) -> Option<String> {
+        self.state.lock().ok()?.urls.get(handle.trim()).cloned()
+    }
+}
+
+impl Default for ResultLedger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct WebSearch {
     chain: Arc<SearchChain>,
+    /// Where result handles are recorded for [`WebOpen`]. `None` prints no
+    /// handles, which is right exactly when no `web_open` is registered.
+    ledger: Option<Arc<ResultLedger>>,
 }
 
 impl WebSearch {
     pub fn new(chain: Arc<SearchChain>) -> Self {
-        WebSearch { chain }
+        WebSearch {
+            chain,
+            ledger: None,
+        }
+    }
+
+    /// Print a handle beside every result, recorded in `ledger`, so that a
+    /// [`WebOpen`] sharing the ledger can open it.
+    pub fn with_ledger(mut self, ledger: Arc<ResultLedger>) -> Self {
+        self.ledger = Some(ledger);
+        self
     }
 }
 
@@ -647,10 +770,18 @@ impl Tool for WebSearch {
     }
 
     fn description(&self) -> &str {
-        "Search the web. Returns titles, URLs, and extracts — use http_fetch afterwards if \
-         you need a full page. Set depth to \"deep\" only for genuine research questions \
-         that need several hops; it is much slower and costs more, and a plain lookup does \
-         not need it."
+        if self.ledger.is_some() {
+            "Search the web. Returns titles, URLs, and extracts, each result with a handle \
+             in brackets. To read a full page, pass that handle to web_open if you have it, \
+             or the URL to http_fetch otherwise. Set depth to \"deep\" only for genuine \
+             research questions that need several hops; it is much slower and costs more, \
+             and a plain lookup does not need it."
+        } else {
+            "Search the web. Returns titles, URLs, and extracts — use http_fetch afterwards if \
+             you need a full page. Set depth to \"deep\" only for genuine research questions \
+             that need several hops; it is much slower and costs more, and a plain lookup does \
+             not need it."
+        }
     }
 
     fn input_schema(&self) -> Value {
@@ -817,8 +948,16 @@ impl Tool for WebSearch {
         if let Some(answer) = &response.answer {
             out.push_str(&format!("Synthesized answer: {answer}\n\n"));
         }
+        let urls: Vec<&str> = response.results.iter().map(|r| r.url.as_str()).collect();
+        let handles = match &self.ledger {
+            Some(ledger) => ledger.record(&urls),
+            None => vec![None; urls.len()],
+        };
         for (i, r) in response.results.iter().enumerate() {
-            out.push_str(&format!("{}. {}\n   {}\n", i + 1, r.title, r.url));
+            match &handles[i] {
+                Some(h) => out.push_str(&format!("{}. [{h}] {}\n   {}\n", i + 1, r.title, r.url)),
+                None => out.push_str(&format!("{}. {}\n   {}\n", i + 1, r.title, r.url)),
+            }
             if let Some(date) = &r.published {
                 out.push_str(&format!("   published: {date}\n"));
             }
@@ -833,6 +972,162 @@ impl Tool for WebSearch {
 
         // Everything above was written by strangers.
         Ok(ToolOutput::ok(out).from_outside())
+    }
+}
+
+/// How many redirects `web_open` follows before giving up. Each hop is
+/// vetted and pinned like the first (`fetch_vetted`).
+const MAX_REDIRECTS: usize = 5;
+
+/// Open a search result by the handle `web_search` printed beside it.
+///
+/// [`Egress::Blind`] by schema: the only argument is a handle, and the URL
+/// fetched is the one the search backend returned, looked up in the
+/// [`ResultLedger`]. The model chooses among results and never composes a
+/// destination, so a payload has no field to ride in. That is the rule
+/// `docs/PROVENANCE-DESIGN.md` §4 states — the destination's provenance
+/// decides the class — and it is why this tool works in a conversation where
+/// `http_fetch` is refused. `ARMED-READING-RESEARCH.md` §3.2 measured that
+/// refusal as the complaint left after blind search shipped: you could
+/// search, and could not open what you found.
+///
+/// What it does not close, stated so nobody mistakes it for closed:
+/// selection leaks `log2(N)` bits per call to whoever serves the chosen page,
+/// and a query is still model-composed, so an attacker with pages indexed for
+/// chosen tokens could read which one was opened. Bandwidth, not reach. The
+/// leak guard (`block_sends_after_private`) still refuses it, as it refuses
+/// every blind send.
+///
+/// Redirects are followed, unlike `http_fetch`: a redirect target is chosen
+/// by the page's server, not by the model, so following it adds no
+/// model-authored bytes, and each hop goes through the same vetting.
+pub struct WebOpen {
+    ledger: Arc<ResultLedger>,
+}
+
+impl WebOpen {
+    pub fn new(ledger: Arc<ResultLedger>) -> Self {
+        WebOpen { ledger }
+    }
+}
+
+#[async_trait]
+impl Tool for WebOpen {
+    fn name(&self) -> &str {
+        "web_open"
+    }
+
+    fn description(&self) -> &str {
+        "Read the full page behind a web_search result. Pass the handle printed in brackets \
+         before the result's title, not its URL. Works in conversations where http_fetch is \
+         refused, because you are choosing among results rather than writing an address."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "result": {
+                    "type": "string",
+                    "description": "The handle from a web_search result, e.g. \"k3f-2.4\"."
+                }
+            },
+            "required": ["result"]
+        })
+    }
+
+    fn read_only(&self) -> bool {
+        true
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default().untrusted().sends_blind()
+    }
+
+    /// The URL the handle opens, beside the handle, so an approval card shows
+    /// the page and not a pointer to it.
+    fn review_input(&self, input: &Value) -> Value {
+        let mut shown = input.clone();
+        let url = input
+            .get("result")
+            .and_then(Value::as_str)
+            .and_then(|h| self.ledger.resolve(h))
+            .unwrap_or_else(|| {
+                "(no search result has this handle; nothing would be fetched)".into()
+            });
+        if let Some(obj) = shown.as_object_mut() {
+            obj.insert("url".into(), Value::String(url));
+        }
+        shown
+    }
+
+    async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+        let Some(handle) = input.get("result").and_then(Value::as_str) else {
+            return Ok(ToolOutput::err("missing required string argument `result`"));
+        };
+        // Our own words, so not `from_outside`: nothing left the machine.
+        let Some(first) = self.ledger.resolve(handle) else {
+            return Ok(ToolOutput::err(format!(
+                "no search result has the handle {handle:?}. Pass the bracketed handle from a \
+                 web_search result exactly; handles do not survive a restart, so search again \
+                 if this one is old."
+            )));
+        };
+
+        let mut url = first;
+        for _ in 0..=MAX_REDIRECTS {
+            match crate::tool::builtin::fetch_vetted(&url, ctx).await? {
+                crate::tool::builtin::Fetched::Done(mut out) => {
+                    out.content = format!("{url}\n{}", out.content);
+                    // Every URL here is third-party text: the first came from
+                    // the search backend, every later one from a `location`
+                    // header the far end chose. `fetch_vetted` leaves a
+                    // vetting refusal unmarked, which is right for
+                    // `http_fetch`, whose URL the model wrote — but a refusal
+                    // quoting `https://<payload>.invalid/` back into the
+                    // conversation unmarked would put a stranger's bytes in
+                    // without arming `untrusted` (found in review of #276).
+                    return Ok(out.from_outside());
+                }
+                crate::tool::builtin::Fetched::Redirect {
+                    status,
+                    target: None,
+                } => {
+                    return Ok(ToolOutput::err(format!(
+                        "{status} redirect from {url} with no usable location — not followed"
+                    ))
+                    .from_outside());
+                }
+                crate::tool::builtin::Fetched::Redirect {
+                    status,
+                    target: Some(target),
+                } => {
+                    let base = match reqwest::Url::parse(&url) {
+                        Ok(b) => b,
+                        // Marked like every other exit past the ledger: the
+                        // URL came from a backend or a location header.
+                        // `ParseError`'s text does not echo it, but a stated
+                        // absolute with one quiet exception reads as a bug.
+                        Err(e) => {
+                            return Ok(ToolOutput::err(format!("invalid url: {e}")).from_outside())
+                        }
+                    };
+                    match base.join(&target) {
+                        Ok(next) => url = next.to_string(),
+                        Err(_) => {
+                            return Ok(ToolOutput::err(format!(
+                                "{status} redirect to {target}, which is not a URL"
+                            ))
+                            .from_outside())
+                        }
+                    }
+                }
+            }
+        }
+        Ok(ToolOutput::err(format!(
+            "more than {MAX_REDIRECTS} redirects, last to {url} — not followed further"
+        ))
+        .from_outside())
     }
 }
 
@@ -911,6 +1206,271 @@ mod tests {
             }),
             seen,
         )
+    }
+
+    // ----------------------------------------------------------------
+    // Opening a result — `docs/PROVENANCE-DESIGN.md` §4
+    // ----------------------------------------------------------------
+
+    /// A local server that answers each connection with the next canned
+    /// response, and records every request line it saw — because "nothing
+    /// was fetched" is an assertion about the wire, not about a return value.
+    async fn serve(
+        responses: Vec<String>,
+    ) -> (std::net::SocketAddr, Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = Arc::clone(&seen);
+        tokio::spawn(async move {
+            for response in responses {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut req = Vec::new();
+                let mut tmp = [0u8; 4096];
+                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match sock.read(&mut tmp).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => req.extend_from_slice(&tmp[..n]),
+                    }
+                }
+                let line = String::from_utf8_lossy(&req)
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                log.lock().unwrap().push(line);
+                let _ = sock.write_all(response.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        (addr, seen)
+    }
+
+    fn ok_body(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// Loopback is the test server, so the private-IP guard steps aside.
+    fn loopback_ctx() -> ToolCtx {
+        ToolCtx {
+            security: crate::config::SecurityConfig {
+                block_private_ips: false,
+                ..Default::default()
+            },
+            ..ToolCtx::default()
+        }
+    }
+
+    /// Blind is earned by the schema, so the schema is what is asserted: one
+    /// property, and it is a handle. A `url` field added later would make
+    /// this tool `http_fetch` with a blind label on it.
+    #[test]
+    fn web_open_is_blind_because_its_schema_has_no_destination() {
+        let tool = WebOpen::new(Arc::new(ResultLedger::new()));
+        let caps = tool.capabilities();
+        assert_eq!(caps.egress, Egress::Blind);
+        assert!(caps.untrusted_input, "a page is a stranger's words");
+        assert!(!caps.private_data);
+        let props: Vec<String> = tool.input_schema()["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        assert_eq!(props, vec!["result".to_string()]);
+    }
+
+    /// The happy path, measured on the wire: the handle opens exactly the URL
+    /// the search returned.
+    #[tokio::test]
+    async fn a_handle_opens_exactly_the_url_the_search_returned() {
+        let (addr, seen) = serve(vec![ok_body("the page")]).await;
+        let ledger = Arc::new(ResultLedger::new());
+        let handles = ledger.record(&[&format!("http://{addr}/article?id=7")]);
+        let handle = handles[0].clone().unwrap();
+
+        let out = WebOpen::new(ledger)
+            .call(json!({"result": handle}), &loopback_ctx())
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.external, "a page is third-party content");
+        assert!(out.content.contains("the page"));
+        assert_eq!(*seen.lock().unwrap(), vec!["GET /article?id=7 HTTP/1.1"]);
+    }
+
+    /// The attack this tool must not become: an injection that wants a
+    /// secret on the wire writes a URL, or a guessed handle, into `result`.
+    /// Neither opens anything — asserted on the wire, where the leak would be.
+    #[tokio::test]
+    async fn a_composed_url_or_a_forged_handle_opens_nothing() {
+        let (addr, seen) = serve(vec![ok_body("never")]).await;
+        let ledger = Arc::new(ResultLedger::new());
+        let real = ledger.record(&[&format!("http://{addr}/ok")])[0]
+            .clone()
+            .unwrap();
+        let other_epoch = format!("zz{}", &real[2..]);
+        let tool = WebOpen::new(ledger);
+        for forged in [
+            format!("http://{addr}/?d=SECRET"),
+            other_epoch,
+            format!("{real}9"),
+            "1".to_string(),
+        ] {
+            let out = tool
+                .call(json!({"result": forged}), &loopback_ctx())
+                .await
+                .unwrap();
+            assert!(out.is_error, "{forged} opened: {}", out.content);
+            assert!(!out.external, "our own refusal is not third-party text");
+            assert!(out.content.contains("no search result has the handle"));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "a request reached the wire"
+        );
+    }
+
+    /// A redirect is the page's server choosing, not the model, so it is
+    /// followed — and every hop is vetted like the first. The second hop here
+    /// names a blocked host, and must be refused rather than fetched.
+    #[tokio::test]
+    async fn redirects_are_followed_and_every_hop_is_vetted() {
+        let (addr, seen) = serve(vec![
+            "HTTP/1.1 302 Found\r\nlocation: /final\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".into(),
+            ok_body("landed"),
+        ])
+        .await;
+        let ledger = Arc::new(ResultLedger::new());
+        let h = ledger.record(&[&format!("http://{addr}/start")])[0]
+            .clone()
+            .unwrap();
+        let out = WebOpen::new(Arc::clone(&ledger))
+            .call(json!({"result": h}), &loopback_ctx())
+            .await
+            .unwrap();
+        assert!(out.content.contains("landed"), "{}", out.content);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["GET /start HTTP/1.1", "GET /final HTTP/1.1"]
+        );
+
+        let (addr2, _) = serve(vec![
+            "HTTP/1.1 302 Found\r\nlocation: http://blocked.example/x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".into(),
+        ])
+        .await;
+        let h2 = ledger.record(&[&format!("http://{addr2}/start")])[0]
+            .clone()
+            .unwrap();
+        let mut ctx = loopback_ctx();
+        ctx.security.blocked_domains = vec!["blocked.example".into()];
+        let out = WebOpen::new(Arc::clone(&ledger))
+            .call(json!({"result": h2}), &ctx)
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(out.content.contains("blocked-domain"), "{}", out.content);
+        // The refusal quotes a URL the far end chose, so it arms `untrusted`
+        // like any other third-party text. Fails on the first cut, which
+        // returned it unmarked.
+        assert!(out.external, "a refused hop quotes the far end's location");
+
+        // A 3xx with no location is an error, not a second request to a
+        // path spelled like a placeholder.
+        let (addr3, seen3) = serve(vec![
+            "HTTP/1.1 302 Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".into(),
+            ok_body("should not be fetched"),
+        ])
+        .await;
+        let h3 = ledger.record_for_test(&format!("http://{addr3}/start"));
+        let out = WebOpen::new(ledger)
+            .call(json!({"result": h3}), &loopback_ctx())
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("no usable location"),
+            "{}",
+            out.content
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(*seen3.lock().unwrap(), vec!["GET /start HTTP/1.1"]);
+    }
+
+    /// An approval card for `web_open` shows where the handle leads: a
+    /// handle alone is the whole argument and none of the decision.
+    #[test]
+    fn a_review_shows_the_url_a_handle_opens() {
+        let ledger = Arc::new(ResultLedger::new());
+        let h = ledger.record_for_test("https://example.org/article");
+        let tool = WebOpen::new(ledger);
+        let shown = tool.review_input(&json!({"result": h}));
+        assert_eq!(shown["url"], "https://example.org/article");
+        assert_eq!(shown["result"], h.as_str());
+        let unknown = tool.review_input(&json!({"result": "zzz-000000.1"}));
+        assert!(unknown["url"]
+            .as_str()
+            .unwrap()
+            .contains("nothing would be fetched"));
+    }
+
+    /// `web_search` prints the handle only when a `web_open` shares its
+    /// ledger, and the handle it prints resolves to that result's URL.
+    #[tokio::test]
+    async fn search_prints_a_handle_that_resolves_to_its_result() {
+        let (blind, _) = classed("searxng", Egress::Blind);
+        let ledger = Arc::new(ResultLedger::new());
+        let tool = WebSearch::new(Arc::new(SearchChain::new(vec![blind])))
+            .with_ledger(Arc::clone(&ledger));
+        let out = tool
+            .call(json!({"query": "x"}), &ctx_with(None))
+            .await
+            .unwrap();
+        let handle = out
+            .content
+            .split('[')
+            .nth(1)
+            .and_then(|r| r.split(']').next())
+            .expect("a bracketed handle");
+        assert_eq!(
+            ledger.resolve(handle).as_deref(),
+            Some("https://example.com")
+        );
+        assert!(tool.description().contains("web_open"));
+
+        let (blind, _) = classed("searxng", Egress::Blind);
+        let bare = WebSearch::new(Arc::new(SearchChain::new(vec![blind])));
+        let out = bare
+            .call(json!({"query": "x"}), &ctx_with(None))
+            .await
+            .unwrap();
+        assert!(!out.content.contains('['), "{}", out.content);
+        assert!(!bare.description().contains("web_open"));
+    }
+
+    /// Forgetting is bounded and exact: past the cap the oldest handle is
+    /// refused, the newest still resolves.
+    #[test]
+    fn the_ledger_forgets_the_oldest_past_its_cap() {
+        let ledger = ResultLedger::new();
+        let first = ledger.record(&["https://a.example/0"])[0].clone().unwrap();
+        for i in 0..LEDGER_CAP {
+            ledger.record(&[&format!("https://a.example/{}", i + 1)]);
+        }
+        assert!(ledger.resolve(&first).is_none());
+        let last = ledger.record(&["https://a.example/last"])[0]
+            .clone()
+            .unwrap();
+        assert_eq!(
+            ledger.resolve(&last).as_deref(),
+            Some("https://a.example/last")
+        );
     }
 
     fn ctx_with(taint: Option<Taint>) -> ToolCtx {

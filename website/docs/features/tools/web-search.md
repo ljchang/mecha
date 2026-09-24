@@ -85,6 +85,39 @@ One thing blind does not change: the query still leaves your machine. Even a
 self-hosted SearXNG forwards it to upstream engines. Blind removes the
 attacker's choice of reader, not the fact that the query is sent.
 
+## Opening a result
+
+Each result comes back with a handle in brackets:
+
+```text
+1. [a3f-9c01de.1] Specific aims: a worked example
+   https://example.org/aims
+```
+
+`web_open` takes that handle and reads the full page. Its only argument is
+the handle, never a URL. The page it fetches is therefore one a search
+already returned, and the model picks among results rather than writing an
+address. That makes `web_open` blind by the same argument as `web_search`,
+so it keeps working in a conversation that has read your mail, where
+`http_fetch` is refused.
+
+- **What it leaks** is which result was picked, to whoever serves that page.
+  An injection can steer the pick, but it cannot pick a reader that wasn't in
+  the results.
+- **Redirects are followed**, because the page's server chooses the target,
+  not the model. Every hop is vetted the way `http_fetch` vets its one:
+  private and link-local addresses are refused, and blocked domains stay
+  blocked.
+- **Handles are random per search** and do not survive a restart, so an old
+  handle is refused. The fix is to search again.
+- **An approval prompt shows the URL** beside the handle, because a handle
+  alone tells you nothing about the page.
+- **A URL from anywhere else** still goes through `http_fetch`, and is refused
+  once the conversation holds both private data and untrusted content. That
+  includes a link in an email, one you pasted, and one the model made up.
+
+`web_open` is registered with `web_search` and not without it.
+
 ## Related
 
 - [Tools and MCP](/docs/features/tools): the other built-in tools, and how
