@@ -188,6 +188,23 @@ pub enum Drift {
     Unnamed,
 }
 
+impl GoalRef {
+    /// Whether a plan can name this kind of goal at all. The `todo` schema
+    /// offers `task:` and `charter:` (and a project is the task's tier), so
+    /// a plan under a `trigger:`, `request:` or `setpoint:` anchor can never
+    /// repeat it — judging such a plan's `serves` against the anchor would
+    /// score every named goal as a changed pointer by construction (found
+    /// on review of the structural-anchor PR). Drift is measured, and
+    /// `planning::Decision` asks to clarify the goal, only against anchors
+    /// a plan can name.
+    pub fn a_plan_can_name(&self) -> bool {
+        matches!(
+            self,
+            GoalRef::Charter(_) | GoalRef::Task(_) | GoalRef::Project(_)
+        )
+    }
+}
+
 pub fn drift_of(anchor: &GoalRef, current: Option<&GoalRef>) -> Drift {
     match current {
         None => Drift::Unnamed,
@@ -320,6 +337,18 @@ impl FromStr for GoalRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A trigger- or request-anchored run's plan can never name its
+    /// anchor, so no plan write under it is judged (review of #292).
+    #[test]
+    fn only_anchors_a_plan_can_name_are_comparable() {
+        for g in ["task:t", "charter:c", "project:p"] {
+            assert!(g.parse::<GoalRef>().unwrap().a_plan_can_name(), "{g}");
+        }
+        for g in ["trigger:morning", "request:12", "setpoint:s"] {
+            assert!(!g.parse::<GoalRef>().unwrap().a_plan_can_name(), "{g}");
+        }
+    }
 
     #[test]
     fn a_reference_round_trips_through_its_wire_form() {
