@@ -315,7 +315,7 @@ needs.*
 | 2a | **The distiller, extended, becomes the appraisal.** New inputs: the goal chain and charter text, the situation brief at start and finish, the owner's acts on the output (release, edit diff, reject reason, closure, reopen), signed errors, step findings and probe verdicts, up to three past clean appraisals of the same situation and goal. New outputs, in `appraisals.jsonl` beside the unchanged graph episode: the interpretation, good/bad per goal with pointers, lessons, a prediction for next time, goal hypotheses. The counts-only appraiser is retired into it | I1, I4 |
 | 2b | Predictions scored when next time comes; a miss is a surprise that raises the episode's priority | X5 |
 | 2c | Past clean appraisals retrieved by situation and goal through `goal_context`, with the goal as a `Situation` key | I2, M1 |
-| 2d | **Point-wise counterfactual comparison replaces whole-session rumination**: at the informative decision points of recorded sessions (a steer, a denial, a failed check, an edited or rejected draft, a surprise), drive K policies a short horizon from the point and let the owner's recorded verdict decide; the losing arms' confirmed outcomes are written into that session's appraisal | O1, O3 |
+| 2d | **Point-wise counterfactual comparison, beside whole-session rumination** (R26: both): at the informative decision points of recorded sessions (a steer, a denial, a failed check, an edited or rejected draft, a surprise), drive K policies a short horizon from the point and let the owner's recorded verdict decide; the losing arms' confirmed outcomes are written into that session's appraisal | O1, O3 |
 | 2e | Learning from appraisals: the reflector's lessons measured against I1's on the same interventions, then `learn` fed clean appraisals — successes included, corrections attributed data / behaviour / gap, tenure by a Wilson bound on the owner's verdicts behind R20's guard, priority from I1's judgments × how often the situation recurs | L2, L7, L3, L1 |
 | 2f | The nightly diagnostician reads clean appraisals beside its counters | L8 |
 
@@ -362,7 +362,7 @@ contradict.
 | 5b | The frustration ladder and the desperation brake | C5 |
 | 5c | A send whose recipient does not trace to the goal is staged; destructive calls under taint or an unconfirmed goal are prompted | G1, G3 |
 | 5d | Pre-action markers from the stored comparisons, narrowing only | X2 |
-| 5e | **Mid-run policy change**: on a harness-computed trigger (a failed check, frustration, a surprise, a budget shortfall), branch two dry continuations for a bounded horizon — reads live, writes to a scratch copy of the workspace, sends to a scratch outbox, un-stageable egress ending the branch — validate structurally, commit the winner, and write the loser into the appraisal | N2 |
+| 5e | **Mid-run policy change**: on a harness-computed trigger (a failed check, frustration, a surprise, a budget shortfall), branch two dry continuations for a bounded horizon — reads live, writes to a per-branch overlay of the workspace (bubblewrap ≥ 0.10, R28), sends to a scratch outbox, un-stageable egress ending the branch — validate structurally, commit the winner, and write the loser into the appraisal | N2 |
 
 **Done when:** on the AgentDojo suite, attack success falls and utility
 holds; per arm, tampering and reopen rates fall; N2 beats no-branching on the
@@ -422,25 +422,26 @@ widening.
 | R7 | — | Draft expiry | **deferred** until the system stabilises |
 | R20 | 2 | The guard on credit and tenure from text: the owner's verdict overrides; grounded claims from clean runs only; a measured lever with a revert first | proposed |
 | R25 | 2 | I1 is the distiller extended; the counts-only appraiser is retired into it; the reflector folds in only after its lessons measure no worse; the graph episode's text stays unchanged | proposed |
-| R26 | 2 | Whole-session harness rumination is replaced by point-wise comparison at informative decision points, and behaviour-changing policies are measured on fixtures | proposed |
-| R21 | 3 | State reaches the agent as described state, on the user-turn or tool-result slot, never the prefix. Budget *facts* may be numbers — turns left, context remaining, as the `todo` headroom line already gives them, and as the one measured budget-awareness gain did (arXiv 2511.17006). Anything a model could treat as a *score to move* stays words: sensor readings against the owner's setpoints, per-commitment guilt, valence, priorities | proposed |
+| R26 | 2 | Point-wise comparison at informative decision points, decided by the owner's recorded verdicts, is added **beside** the existing whole-session numeric comparison, which stays; behaviour-changing policies are also measured on fixtures. How the two combine for acceptance is proposed in O1: a candidate is accepted when the point-wise comparison decides for it and the numeric comparison shows no regression (`WORK_FLOOR` intact) | **ruled 2026-09-24: both** (combination proposed) |
+| R21 | 3 | State reaches the agent as described state, on the user-turn or tool-result slot, never the prefix. Budget *facts* may be numbers — turns left, context remaining; anything a model could treat as a *score to move* stays words: sensor readings against setpoints, per-commitment guilt, valence, priorities | **ruled 2026-09-24** |
 | R22 | 3 | An in-run situation appraisal is part of the run: it inherits its taint, shapes the plan, and never widens a permission or chooses an action | proposed |
 | R27 | 3, 5 | Policies are compared only where a structural validator decides; a model judge at most breaks a tie between candidates that passed every structural check | proposed |
-| R4 | 3 | The completion certificate: template only first | proposed |
-| R11 | 3 | Acceptance criteria the agent declares, from a closed set the harness executes; one-sided until the owner confirms them | proposed |
+| R4 | 3 | The completion certificate: template only first; a `Verify` re-prompt only later, as its own measured arm | **ruled 2026-09-24** |
+| R11 | 3 | Acceptance criteria the agent declares, from a closed set the harness executes; frozen; one-sided until the owner confirms them; never a charter sensor | **ruled 2026-09-24** |
 | R23 | 4 | Confirmation of an interpretation or plan only for irreversible or outward acts (on the existing review), a delegated task whose interpretation departs from its anchor, and charter conflicts rank cannot settle | proposed |
 | R10 | 4 | Promises in released drafts recorded as commitments automatically; dismissing one drops it | proposed |
 | R5 | 5 | Desperation brake: refuse writes to a frozen check's read set; withhold `Complete` after two failures | proposed |
 | R6 | 5 | A recipient that does not trace to a confirmed goal is staged | proposed |
 | R13 | 5 | Stored comparisons may narrow a matching call before dispatch | proposed |
-| R28 | 5 | A per-branch scratch copy of the workspace, so a mid-run branch can write without side effects. New capability: ARCHITECTURE's note that mismatch probes do "not branch a filesystem snapshot that was never captured" is about offline probes having no recorded file state, not a ruling against online copies; the prior decision it does extend is `BRANCHING-DESIGN.md` keeping "branching mid-run" out of its v1. On this box bubblewrap is 0.9.0 (overlays arrive in 0.10) and the disk is ext4 (no reflink), so the first form is a full copy under a size cap | owner's call; can wait until N1 is measured |
+| R28 | 5 | Mid-run counterfactual branching is built, on bubblewrap overlays: each dry branch gets a kernel overlay of the workspace (`--tmp-overlay`), so shell and file tools alike write to the branch. Prerequisite: bubblewrap ≥ 0.10 (Ubuntu 24.04 ships 0.9.0; built from upstream and installed alongside), with the sandbox preflight checking for overlay support and refusing to branch — never falling back silently — where it is missing | **ruled 2026-09-24** (the upgrade itself is an ops step, not yet done) |
 | R3 | parked | Inferring an anchor for un-anchored runs onto a closed list of pointers | parked |
 | R8 | parked | The harness may *propose* per-region autonomy grants | parked |
 | R29 | — | Sending transcripts to a cloud model for interpretation or rollouts | not proposed; the owner's privacy decision |
 | R9 | — | The charter line `be-the-best`: unboundedness is fine (lines are attractors); §15's narrower worry is a line whose object is the harness, held by the `Security` class | flagged once |
 
-**Phase 1 has every ruling it needs.** Phase 2 needs R20, R25, R26; phase 3
-needs R21, R22, R27, R4, R11.
+**Phase 1 has every ruling it needs.** Phase 2 still needs R20 and R25 (and
+the R26 combination); phase 3 still needs R22 and R27; phase 5's R28 is ruled
+and waits on the bubblewrap upgrade.
 
 ---
 
@@ -890,7 +891,7 @@ cost more than it returns (arXiv 2606.15017).
 matching, replay and validation together, and an absent goal never widens a
 rule's scope (APPRAISAL-RESEARCH §8.4).
 
-#### O1. Point-wise counterfactual comparison replaces whole-session rumination
+#### O1. Point-wise counterfactual comparison, beside whole-session rumination
 
 **Problem** (inventory §10). Whole-session paired replay cannot evaluate a
 policy that changes behaviour: past the first divergence there is no world
@@ -909,6 +910,12 @@ that need more than a short horizon are measured on fixtures instead
 (`mecha exp`, the synthetic home, the task suites — O2). This feeds the
 diagnostician's proposals and `learn`'s validation, and stays inside the
 nightly headroom.
+
+**Both, per R26.** The existing whole-session numeric comparison stays; this
+runs beside it. Proposed combination for accepting a candidate: the
+point-wise comparison decides for it, and the numeric comparison shows no
+regression with `WORK_FLOOR` intact — the new evidence decides, the old
+guards against a candidate that wins a verdict by doing less.
 
 #### O3. The losing arm teaches
 
@@ -1435,9 +1442,10 @@ session and a replay confirming it. Keyed on situation, never on valence
 
 On a harness-computed trigger — a failed check, frustration rung 3, a
 surprise, a budget shortfall — two continuations branch from the current
-point for a bounded horizon, **dry**: reads run live; writes go to a scratch
-copy of the workspace (new, R28); sends go to a scratch outbox; shell runs
-sandboxed against the scratch copy; an egress the model chooses, or any
+point for a bounded horizon, **dry**: reads run live; writes — file tools and
+shell alike — go to a per-branch kernel overlay of the workspace (R28:
+bubblewrap ≥ 0.10's `--tmp-overlay`, preflight-checked, no silent fallback);
+sends go to a scratch outbox; an egress the model chooses, or any
 irreversible act with no staging route, ends the branch. A structural
 validator picks the winner, whose workspace diff is committed; the loser is
 summarised into the run's appraisal. Every branch inherits the conversation's
