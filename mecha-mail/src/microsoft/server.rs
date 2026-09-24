@@ -338,6 +338,7 @@ async fn dispatch(
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
                 timezone: str_arg("timezone"),
+                private: false,
             };
             let calendar_id = str_arg("calendar_id").unwrap_or_else(|| "primary".into());
             OutlookCalendarProvider::new(token)

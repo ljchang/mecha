@@ -428,6 +428,28 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
             "annotations": {"openWorldHint": true}
         },
         {
+            "name": "calendar_hold",
+            "description": "Block time on the owner's own primary calendar: a private hold that invites nobody, and whose details only the owner can see. Use it for reminders, focus time, or an event the owner is attending that has no invite to accept. To invite anyone, use calendar_create_event instead. Times are RFC 3339 (or YYYY-MM-DD with all_day).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "start_time": {"type": "string"},
+                    "end_time": {"type": "string"},
+                    "account": calendar_account("Which of the owner's calendars gets the hold."),
+                    "description": {"type": "string"},
+                    "location": {"type": "string"},
+                    "all_day": {"type": "boolean", "default": false},
+                    "timezone": {"type": "string"}
+                },
+                "required": ["title", "start_time", "end_time"]
+            },
+            // Reaches nobody, so it is not a send and does not stage
+            // (`docs/PROVENANCE-DESIGN.md` §2); `mcp::assert_private_writes`
+            // is the guard that replaced the review.
+            "annotations": {"openWorldHint": false, "readOnlyHint": false}
+        },
+        {
             "name": "calendar_update_event",
             "description": "Update fields of an existing event by event_id in the `account` it lives in (from the event row). Only the fields provided change; attendees are notified.",
             "inputSchema": {
@@ -1116,6 +1138,7 @@ impl MailTools {
                             attendees,
                             all_day: false,
                             timezone: None,
+                            private: false,
                         };
                         gcal::CalendarProvider::new(t)
                             .create_event("primary", &request)
@@ -1132,6 +1155,7 @@ impl MailTools {
                             attendees,
                             all_day: false,
                             timezone: None,
+                            private: false,
                         };
                         mcal::OutlookCalendarProvider::new(t)
                             .create_event("primary", &request)
@@ -1644,7 +1668,7 @@ impl MailTools {
                 .unwrap_or_else(|_| "{}".into());
                 Some((with_notes(body, &failures), false))
             }
-            "calendar_create_event" => {
+            "calendar_create_event" | "calendar_hold" => {
                 let (Some(title), Some(start), Some(end)) =
                     (str_arg("title"), str_arg("start_time"), str_arg("end_time"))
                 else {
@@ -1655,10 +1679,13 @@ impl MailTools {
                         Ok(p) => p[0],
                         Err(e) => return fail(e),
                     };
-                let calendar_id = str_arg("calendar_id").unwrap_or_else(|| "primary".into());
+                let CreateParams {
+                    calendar_id,
+                    attendees,
+                    private,
+                } = create_params(name, args);
                 let description = str_arg("description");
                 let location = str_arg("location");
-                let attendees = str_list(args, "attendees");
                 let all_day = args
                     .get("all_day")
                     .and_then(Value::as_bool)
@@ -1681,6 +1708,7 @@ impl MailTools {
                                     attendees,
                                     all_day,
                                     timezone,
+                                    private,
                                 };
                                 gcal::CalendarProvider::new(t)
                                     .create_event(&calendar_id, &request)
@@ -1697,6 +1725,7 @@ impl MailTools {
                                     attendees,
                                     all_day,
                                     timezone,
+                                    private,
                                 };
                                 mcal::OutlookCalendarProvider::new(t)
                                     .create_event(&calendar_id, &request)
@@ -1819,6 +1848,38 @@ impl MailTools {
             }
             _ => None,
         }
+    }
+}
+
+/// What decides who can see an event, for the two verbs that create one.
+struct CreateParams {
+    calendar_id: String,
+    attendees: Vec<String>,
+    private: bool,
+}
+
+/// `calendar_hold` is `calendar_create_event` with everything that could
+/// reach someone else taken away, **whatever the arguments say**: its schema
+/// has no `attendees` or `calendar_id`, and this ignores them if a model sends
+/// them anyway, because an executed write has no outbox review behind it
+/// (`docs/PROVENANCE-DESIGN.md` §2). The owner's primary calendar, nobody
+/// invited, details private.
+fn create_params(name: &str, args: &Value) -> CreateParams {
+    if name == "calendar_hold" {
+        return CreateParams {
+            calendar_id: "primary".into(),
+            attendees: Vec::new(),
+            private: true,
+        };
+    }
+    CreateParams {
+        calendar_id: args
+            .get("calendar_id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| "primary".into()),
+        attendees: str_list(args, "attendees"),
+        private: false,
     }
 }
 
@@ -1984,8 +2045,33 @@ mod tests {
                 &names(&["dartmouth", "personal"]),
                 &conf(Some("dartmouth"), None, None),
             ),
-            &[],
+            &["calendar_hold"],
         );
+    }
+
+    /// The hold's whole guard, since it executes with no outbox review: an
+    /// `attendees` list or a shared `calendar_id` the model sends anyway is
+    /// ignored, not honoured. Fails if `create_params` ever reads them for a
+    /// hold.
+    #[test]
+    fn a_hold_ignores_attendees_and_calendar_id_whatever_the_model_sends() {
+        let smuggled = json!({
+            "title": "t", "start_time": "s", "end_time": "e",
+            "attendees": ["someone@example.com"],
+            "calendar_id": "shared-calendar@group.calendar.google.com"
+        });
+        let hold = create_params("calendar_hold", &smuggled);
+        assert_eq!(hold.calendar_id, "primary");
+        assert!(hold.attendees.is_empty());
+        assert!(hold.private);
+
+        let event = create_params("calendar_create_event", &smuggled);
+        assert_eq!(event.attendees, vec!["someone@example.com".to_string()]);
+        assert_eq!(
+            event.calendar_id,
+            "shared-calendar@group.calendar.google.com"
+        );
+        assert!(!event.private);
     }
 
     /// The action set is closed, and the closure is what stops `spam` being
