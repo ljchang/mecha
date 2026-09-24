@@ -18,7 +18,7 @@ decision point and the rulings that constrain it; a mining pass over the live
 store (aggregates only, `MECHA_SESSION_KIND=test` on every readout); and two
 external literature passes — open problems in agent harnesses, and appraisal /
 homeostasis used as control rather than as a label. Figures are from those
-passes; sources are in here §14, with anything not read at source marked.
+passes; sources are in here §15, with anything not read at source marked.
 
 **Section references.** A bare §N is `GOAL-SYSTEM-DESIGN.md`'s. This file's
 own sections are cited as "here §N", and its proposals by id (S1, V1, C1, G1,
@@ -81,14 +81,25 @@ sentence the charter block asks for has been in 68 sessions since 2026-09-06
 and appears in none of them. The learning store is 100% corrections: 66
 reflections (follow-up 36, steer 22, denial 4, edit 4), 4 active rules.
 
-Four doc/code disagreements found on the way, fixed in phase 0 (here §11)
-rather than in this file: `distill.rs` says `meta.affect` gives the graph's review
-queue a salience order (mecha-graph never reads it); §10.1's "high-surprise
-sessions seed gossip" happens only through a person; ARCHITECTURE's "two
-sensors whose only reader is the diagnostician's brief" undercounts (the
-charter reading also reaches `Decision` and the doctor); and `of_session`
-still puts `backlog_delta`'s +0.5 into the positive valence sum that the same
-section calls context, not credit.
+Doc/code disagreements found on the way, fixed in phase 0 (here §11)
+rather than in this file:
+- `distill.rs` (and the website's distillation page) say `meta.affect` and
+  the goal errors give the graph's review queue a salience order. mecha-graph
+  has no reader of either; GOAL-SYSTEM-DESIGN's rung 9 row calls it "not
+  verified", and it is verified unbuilt.
+- §10.1's "high-surprise sessions seed gossip": gossip *is* seeded every
+  night, by mecha-graph's Selector (demand × gap × staleness, through
+  `nightly-mecha.sh`) — never by `distill::Surprise`.
+- ARCHITECTURE's "two sensors whose only reader is the diagnostician's
+  brief" undercounts: the charter reading also reaches `Decision::assess`
+  and the doctor's saturation check, and the brief itself can be switched
+  off (`sensors_in_brief`).
+- ARCHITECTURE's commitment paragraph still lists a negative
+  `backlog_delta` as a +0.5 `Own` error. `of_session` no longer produces it;
+  the earlier draft of this file repeated the stale claim.
+- `Channel::Setpoint` and `GoalRef::Setpoint` have no production producer —
+  they exist because the enums are a wire format — and the website's
+  reference page presents `setpoint` as a live channel.
 
 ### 1.1 Two systems already built to receive this
 
@@ -124,6 +135,8 @@ at a fifth; §17.5 names the tier it lacks.
 | a learned **rule** (`mecha validate`, `counterfactual.rs`) | the owner's recorded intervention | branch the transcript at the intervention, strip the steer, see whether the model now does the steered thing; per-region since #192; probation and retirement from the ledger | **live** — 334 ledger rows since 2026-08-29, the latest today (none 09-18 to 09-23): 18 improved, 17 regressed, 37 unchanged-pass, 139 unchanged-fail, 123 inconclusive |
 | a task **artifact** (`mismatch::ArtifactCase`) | owner-supplied gold, outside the workspace | criterion-by-criterion, after the run; feeds `extract_mismatches` | built; used by experiments, no live producer |
 | a **claim** (`grounding::admit`, `calls`) | what the run actually received | dereference; first seen wins; stale is never evidence | built for front-door dates and triage deadlines |
+| a **graph claim** (`gossip`: `vet_judge`, `corroboration_verdict`, `round_yield`) | an independent reader over separate sources | two lensed readers, commit then reveal | live nightly, seeded by the graph's Selector |
+| a **delivery** (`OutboxItem::delivery_uncertain`, `ensure_delivery_ready`, `outbox reconcile`) | the provider's record of what arrived | blocks release while delivery is uncertain | live gate; the precondition for any post-delivery label |
 | the **plan against the goal** | the confirmed anchor | §17.5: deterministic tracing of every item to the anchor, a quarantined relevance call only on ambiguity, output accept / revise / ask | **unbuilt** |
 
 Two readings of that table shape this design. The one validator that runs
@@ -175,6 +188,101 @@ on once phase 1 has produced a drift rate to read:
   write is counted, and nothing is said. On a local model forgetting to
   repeat `serves` is the likely dominant term (§17.7 item 4), and nagging
   about it is the distractor shape boredom avoids.
+
+### 1.2 The measured record, in full
+
+The earlier draft of this file cited one pilot. The record holds more, and
+the rest is less kind to guidance; every figure below is in `HISTORY.md`
+under 2026-09-09 and 2026-09-10, and none is pooled with another.
+
+| measurement | control | treatment | reading |
+|---|---|---|---|
+| guidance v1, 12 tasks × 3 seeds | 36/36 | 36/36 | tie; 71 check omissions, no anchor |
+| guidance, harder tasks, every run anchored | **20/24** | **18/24** | 2 improved, **4 regressed**; gate rejected |
+| guidance, privacy follow-up | 6/6 | 5/6 | one wrong exclusion count |
+| mismatch learning | 10/12 | 9/12 | learning did not beat control |
+| attribution v2 | 30/36 | 30/36 | tie |
+| learning lifetime v2 | 6/6 | 6/6 | two clean reflections, below the minimum of three: no rules formed |
+| executable validation, frozen rules | — | 1 improved, 2 regressed per cap | exposure, not learning |
+| gossip extra peer rounds | — | no added coverage | 7 of 55 admitted claims contradicted |
+
+Two further facts constrain every validator-based proposal: judge-graded
+validation is unstable — the same inputs graded *improved*, then
+*unchanged*, then *improved* (HISTORY, 2026-09-11) — so a single
+directional ledger verdict is not evidence; and the structural verdicts of
+`counterfactual.rs` are the ones to build on.
+
+**The nightly learning half is healthy machinery with no input.**
+`scripts/ruminate.sh` (`mecha-ruminate.timer`, 03:30 UTC) runs reflect →
+distill → validate → learn `--auto` → propose-retirements → harness
+ruminate. Over the five nights to 2026-09-24: no new reflection; `learn` idle
+every night (all four situation batches under the minimum of three);
+`validate` ran no probe on four nights (unchanged inputs are deferred) and on
+the fifth ran twelve, none decisive; nothing retired; no harness proposal.
+The four active rules sit at zero improved and zero regressed after 17–25
+graded probes each. Every harness candidate ever proposed — twelve — was
+rejected, four as "no discriminating power, all paired episodes tied", three
+for keys that do not exist; none has been proposed since 2026-09-10. The
+correction rate per session fell from 0.45 to 0 over four weeks. A loop that
+moves only on owner corrections goes quiet exactly when the owner stops
+correcting, which is either success or disengagement, and the store cannot
+tell which — the operational case for S3 and L2.
+
+**When the model stopped planning is part of the premise.** In late August
+112 of 120 appraised sessions wrote a plan (`HANDOFF.md`, a corpus that still
+included development runs); the store holds no `todo` call after
+2026-08-28, and 4 of 79 long real runs in the last 30 days used one. Every
+plan-keyed proposal here is built so it does not depend on that changing.
+
+### 1.3 Owner verdicts already given, and unread
+
+The pipeline is starved of verdicts while the owner gives them daily on
+surfaces the appraisal does not read. What it reads today: a draft sent
+unchanged (+1.0), edited (−1.0) or rejected (−1.0); a question answered
+(+0.5) or abandoned (−0.5); a front-door request closed with nothing sent
+(−0.5); a steer, denial or stop (−1.0); a follow-up the reflector judges a
+correction (−1.0); a task closed `done` (+0.5, printed at closure, never
+stored); a post-delivery outcome (`outbox outcome`, CLI only); `run --goal`
+or an answered `ask_user`.
+
+What happens on a surface and signs nothing:
+
+| owner act | surface | what it says | proposal |
+|---|---|---|---|
+| reopening a task after `done` | board, TUI, web | the completion was wrong | S3a (−1.0 on the closing session; undoes L2's success) |
+| closing a task in `mecha-graph tui` | graph TUI | the same verdict as `tasks set`, which it bypasses | S3a + §1.4: the closure leak |
+| workflow `close` / `cancel` / `reopen` / `verify` | CLI, Today page | accepted / abandoned / wrong / checked | S3a |
+| the `--reason` on an outbox reject | CLI, web | the owner's own correction, in words | S3a → reflect (L2) |
+| `outbox reconcile` | CLI | whether a "sent" actually arrived | the precondition for any delivery positive (X5, S7) |
+| retiring or restoring a rule; dropping or editing a reflection | web learning settings, CLI | a verdict on the learner and the reflector | S3a → L3 tenure |
+| harness `accept` / `reject` / `revert` | CLI, web | a verdict on a diagnosis | S3a → L6 |
+| graph review-queue verdicts on facts from `agent:mecha` episodes | graph review queue | the owner rejecting what a session claimed | S3a, via the source episode's session id |
+| mail acts: `reply`, `task`, `schedule` | web mail | the owner taking on a commitment | S4 |
+| snoozing or acknowledging a workflow reminder | Today page | the cost of that interruption | U1 |
+
+### 1.4 mecha-graph: overlap, and where each piece belongs
+
+**Direction (owner, 2026-09-24): mecha is the harness and mecha-graph is a
+tool that should eventually merge into it.** The sweep found the graph
+re-implementing harness concerns the appraisal system also owns, several of
+them better. So this design builds each such mechanism once, in mecha core,
+porting the graph's version as the reference, and adds no new cross-repo
+wiring as the long-term shape — in particular no new graph-side reader of
+mecha's exported appraisal metadata, which the merge would make moot.
+
+| mechanism | mecha today | mecha-graph today | after the merge | near-term step here |
+|---|---|---|---|---|
+| tenure moved only by owner verdicts | rule probation and retirement on a streak of attributed regressions | `ladder.rs`: staged → sampled → trusted per class on the **Wilson lower bound** of the *human* accept rate; `HUMAN_VERDICT_SQL`, `reviewed_by` | one tenure rule | L3 ports the Wilson bound for per-line rule tenure |
+| attributing an owner correction | `Agency` from the channel (owner vs own), refined by a paid replay | D3 contract: *data error*, *behaviour error* or *gap*, decided by what the retrieved context held; distill's `meta.corrections` already supersedes and negates the wrong fact | one attribution | L7: `reflect` mines a behaviour lesson only for a behaviour error; a gap becomes its own class |
+| deterministic verification | `grounding.rs` (`admit`, `calls`) | `verify.rs` / `kg_verify` | one grounding primitive (VERIFICATION-RESEARCH: already "hand-rolled four times") | C1 and C2 use `grounding.rs`; port `verify.rs` into it when the graph merges |
+| model-free priority | replay by cost headroom, charter-rank tiebreak | Selector: demand × slot gap × staleness, SQL only, drives nightly `gossip` | one priority function | L1's *need* term is the Selector's demand term |
+| usefulness | none | utility loop: retrieval touches per class, report-only | salience | M2 reads retrieval demand beside earned error |
+| decay | rules retire only on regressions | `decay.rs` closes beliefs whose statistic no longer holds | dormancy | L3: a rule whose region stops recurring goes dormant |
+| surfaced verdict queue | `mecha review`, outbox | review-on-use: shadow tier, verdicts ordered by contradiction → retrieval → spot-check | one queue | S2, S6, R10 and A2 confirmations land in `mecha review` |
+| contested evidence | none structural | pack flags: contradicted, denied, stale — reach mecha only as JSON in a tool result | an evidence fact | anticipation `Evidence` reads a flag as `verification: Unknown` (X3, G2) |
+| the board and its closure | `tasks set` runs the closure appraisal, follow-up and project closure | `gtd::set_task_status` — also reached from the graph TUI, which bypasses all three | one closure path | **fix now** (R15): the graph TUI closes through `mecha tasks set`, or the graph records a closure event mecha's nightly appraises |
+| appraisal metadata on episodes | `distill` exports `meta.goal`, `meta.serves_charter`, `meta.affect`, per-error `goal` | only `meta.corrections` has a reader | read in-process | stop claiming graph salience (phase 0); build salience where the queue lives after the merge |
+| goal tier above project | `GoalRef` stops at `charter` / `project` / `task` | a `goal` node type exists; 0 goal nodes | decide once | not proposed; recorded so it is not rediscovered |
 
 ---
 
@@ -253,10 +361,12 @@ Five more, each with the finding that forces it:
 5. **Shadow, then measure, then arm.** Every wiring ships first writing the
    decision it *would* have made beside the run (the `Message::planning`
    pattern), then as a `harness::Lever` with a `mecha exp` arm against a
-   no-wiring control at matched budget, and only then on by default. *The one
-   efficacy pilot tied 36/36 against 36/36; skill and memory modules lose
-   their gains against a token-matched baseline, on this model family too
-   (arXiv 2606.15017).*
+   no-wiring control at matched budget, and only then on by default. *Guidance
+   tied on easy tasks (36/36 each) and lost on harder anchored ones (20/24
+   against 18/24, four regressions — here §1.2); skill and memory modules
+   lose their gains against a token-matched baseline, on this model family
+   too (arXiv 2606.15017). Measured locally, an injected sentence is as
+   likely to hurt as to help.*
 
 ---
 
@@ -321,7 +431,18 @@ agent 69.4% to 61.2%, asking where it was genuinely uncertain (arXiv
 dismissable and fires at most once per conversation; `protect-my-attention`
 is the reason for both limits. Ruling R3.
 
-### S3. A one-tap owner verdict
+### S3. Owner verdicts: collect the ones already given, then add one
+
+**S3a first.** Before any new control, sign the owner acts here §1.3 lists
+as unread: a task reopened after `done` (−1.0 on the session that closed it,
+and it withdraws that session's success for L2), workflow close / cancel /
+reopen / verify, the words of an outbox rejection (to the reflector as an
+owner correction), rule and reflection curation (to L3), harness accept /
+reject / revert (to L6), and graph review verdicts on facts a session
+claimed (joined back by the episode's session id). Each is owner-authored,
+already recorded somewhere, and costs the owner nothing new.
+
+**S3b, the new act:**
 
 **Problem.** The positive channels are starved. Web sessions are 70% of runs
 and produce an owner verdict only when they stage a draft; 5 of 120 appraised
@@ -360,7 +481,11 @@ owner's own postconditions.
   acceptance. Inbound mail never creates one — a third party's "you owe me" is
   a claim, and §7.4's whole safety argument is that a claim cannot write a row.
 - Mail-triage "respond" verdicts with an extracted deadline become a
-  commitment only when the owner acts on them ("I'll reply").
+  commitment only when the owner acts on them — the web mail `reply`,
+  `task` and `schedule` acts.
+- On this install the workflow store (`~/.mecha/workflows`) does not exist
+  yet, so `workflow::Commitment` and `Workflow::checks` have no live rows;
+  S4 and C2 are correct but empty here until the owner uses workflows.
 
 **Class.** Recorded only; every new row crosses an owner act. Ruling R10.
 
@@ -593,6 +718,11 @@ frozen check, writes to the paths that check reads are refused as
 this closes "edit what the test reads"); after k failures, `Complete` leaves
 the admissible actions — the run may verify, replan smaller or ask.
 
+Rung 3 has a built alternative: `step::escalation_candidate` and
+`Agent::escalate_step` already give a stuck step a quarantined second
+opinion, off by default (`step_escalation`); it is plan-gated today and
+becomes reachable with C3 and V1.
+
 **Class.** Rungs 1–5 are non-adversarial. The brake is narrowing and so safe
 on the adversarial axis — a page that induces failures buys only more caution.
 Ruling R5. Measure: check tampering, false completion, reopen rate, against a
@@ -690,8 +820,12 @@ batches and the validation budget, so regret is reflected on first.
 **Problem.** Stated in S3: the learning store is 100% corrections.
 
 **Build.** An owner-verified positive (S3's thumbs-up, a draft sent
-unchanged, a question answered, a task closed `done` with its checks passed)
+unchanged, a question answered, a task closed `done` with its checks passed
+and not reopened — S3a withdraws a success the owner later reopens)
 becomes:
+- a **writing exemplar**: the outbox writing miner (`mined_outbox`) mines
+  only drafts the owner edited; drafts sent unchanged are the positive half
+  of the same comparison, and today nothing mines them;
 - a **success example** for `planning::examples` — today gated on a passed
   plan check that never happens;
 - **contrast evidence** for the reflector: a correction in a region that also
@@ -707,11 +841,29 @@ use. Evaluated budget-matched, because the gain may be zero on this model
 
 ### L3. Goal-stamped reflections and per-line tenure
 
-Stamp `goals` on each reflection at mining from `appraisal::attribute_events`
-(the event-time attribution), so `goal_lessons` and `goal_context` stop
-returning empty. Then build §17.2's per-charter-line aggregate, with a rule's
-tenure measured on its line's owner-verdict channels only — S3 and the outbox
-verdicts, never counters.
+`reflect` already stamps `Reflexion::goals` — from the planning metadata at
+the intervention message — and they are empty only because no run plans.
+Add the conversation's anchor (S1) as the second source, so `goal_lessons`
+and `goal_context` stop returning empty. Then build §17.2's per-charter-line
+aggregate, with a rule's tenure measured on its line's owner-verdict
+channels only — S3 and the outbox verdicts, never counters — and decided by
+the **Wilson lower bound** of the owner-accept rate, ported from
+mecha-graph's `ladder.rs` (here §1.4), rather than a streak. A rule whose
+region stops recurring goes dormant rather than holding its place, on the
+graph's `decay.rs` rule.
+
+### L7. Attribute a correction by what the run was given
+
+mecha-graph's D3 contract decides whether an owner correction was a *data
+error* (the retrieved context was wrong), a *behaviour error* (the context
+was right and the agent misused it) or a *gap* (nothing relevant was
+retrieved), and its graph half already acts on it. mecha's reflector mines a
+behaviour lesson from every correction. Port the contract: a behaviour rule
+is mined only from a behaviour error; a data error goes to the source (the
+graph's supersede-and-negate path already exists); a gap is its own class —
+nobody's fault, and a retrieval target rather than a lesson. This is the
+same agency question the appraisal asks, answered from evidence the run
+already recorded (`grounding.rs`'s `calls`).
 
 ### L4. Mismatch from harness checks
 
@@ -719,12 +871,15 @@ C2's checks are the first steady source of `Trigger::Mismatch`. A failed
 check is the false-success label that arXiv 2606.09863 found model judges
 cannot produce: a detector trained on the harness's own ground truth.
 
-### L5. Surprise and salience, built or un-claimed
+### L5. Surprise and salience
 
-Either build what `distill.rs` and §10.1 claim — `Surprise` auto-seeds a
-bounded `gossip` pass over closed graph ids; the graph's review queue orders
-by the episode's |signed error| — or correct the two docs. Phase 0 corrects
-them; phase 3 builds.
+Gossip already runs nightly on the graph Selector's demand × gap ×
+staleness priority. `distill::Surprise` becomes one more input to that
+priority — a bounded boost for entities a high-|error| session touched —
+built in mecha when the Selector moves (here §1.4). Review-queue salience by
+|signed error| is built where the queue lives after the merge, not as a new
+graph-side reader of exported metadata. Phase 0 corrects the docs that claim
+either exists.
 
 ### L6. Credit a harness change by its descendants
 
@@ -779,12 +934,23 @@ result the first time the condition recurs". This is the somatic-marker
 shape: a fast, learned, situation-keyed signal attached to an action before
 it is taken, derived from what that action led to before.
 
+**X0. The agent's own counterfactual.** GOAL-SYSTEM-DESIGN §5.3 designed
+this and it is unbuilt: at the end of a run the agent may name a point where
+it should have acted differently ("I should have asked before staging
+these"), and that point is probed exactly like an owner steer — replay from
+it with the alternative, compare structurally. The claim is the model's; the
+verdict is the replay's, so a self-authored regret costs a probe and earns
+nothing unless the replay confirms it. Confirmed ones enter X1 like any
+other.
+
 **X1. Keep the verdicts.** Every steer and validation probe writes a
 counterfactual record: the `Situation` scope keys, the goal kind, the tool
 and a closed-set call class (tool name and argument *shape*, never argument
 values or prose), the verdict (load-bearing / not / inconclusive), and the
 pointer to the intervention. Only clean-provenance sessions, by the learning
-gate's own rule. This is storage for work already paid for.
+gate's own rule, and only probes whose recorded tool surface still exists
+(`surface::Fidelity` — before it, 12 of 13 probes were inconclusive). This
+is storage for work already paid for.
 
 **X2. The pre-action marker.** Before dispatch, the harness looks the call up
 against load-bearing records in a matching region — inference-free, one
@@ -821,7 +987,9 @@ That closes the loop the two halves were built for: **predict → act →
 observe → replay the counterfactual → mark the situation → predict**. The
 live store holds six predictions and no outcomes, so X5 waits on S3 and on
 the owner recording outcomes; until then it reports coverage, never a
-calibration figure.
+calibration figure. A delivery positive is scored only after
+`outbox reconcile` has confirmed delivery — the gate that already guards the
+post-delivery labels.
 
 ---
 
@@ -854,10 +1022,11 @@ is what makes those counters non-empty.
 
 ### M4. Compaction keeps the goal
 
-The anchor, the open acceptance criteria, unverified steps and the commitment
-pointers become mandatory survivors of the cut, the way taint and carried tool
-state already are. A summary that drops the confirmed goal is the goal-drift
-path.
+Most of this exists: the plan — with `serves`, `expect` and `check` — is
+carried across the cut by the `todo` tool's carried state, and the anchor
+lives on `Conversation`, which compaction does not rewrite. What is missing
+is what this design adds: S6's declared criteria and S7's commitment
+pointers join the carried state.
 
 ### M5. A task remembers its previous attempts
 
@@ -913,7 +1082,10 @@ the commitment, times its line's rank) exceeds the cost of the interruption
 lowered false alarms 27.6% → 22.9% (arXiv 2602.01532); an alert-driven switch
 costs about ten minutes plus ten to fifteen more to refocus (Iqbal & Horvitz,
 CHI 2007). Surface at breakpoints — run end, task closure, the morning brief —
-never mid-run. Below threshold, batch.
+never mid-run. Below threshold, batch. Build it as an extension of
+`workflow::AttentionPolicy` (quiet hours, digest hour, notice once per
+change), which is already an interruption policy; a snoozed or acknowledged
+reminder is the measured cost of that interruption.
 
 ### U2. The review object carries its evidence
 
@@ -951,6 +1123,8 @@ Numbered so answers can cite them. None is a security widening.
 | R11 | The agent may declare acceptance criteria from a closed set of harness-executed kinds; one-sided until the owner confirms them with the goal; never a charter sensor | yes |
 | R12 | Guilt becomes per-commitment goal error toward another party; one commitment record; the homeostat scalar becomes a readout | yes |
 | R13 | Probe verdicts are stored as counterfactual records, and a load-bearing record in a matching region may narrow a call before dispatch | yes, narrowing only |
+| R14 | Appraisal-adjacent mechanisms that overlap mecha-graph are built in mecha core, porting the graph's version; no new cross-repo readers of mecha's exported metadata | yes — the owner's stated direction |
+| R15 | Close the closure leak: a task closed in the graph TUI goes through `mecha tasks set`, or the graph records a closure event mecha's nightly appraises | the first, while both exist |
 
 ---
 
@@ -960,8 +1134,8 @@ Each phase ends with a measurement that decides the next.
 
 | phase | builds | the measurement that ends it |
 |---|---|---|
-| **0 — supply and honesty** | S1 (task, trigger, front door, web pointers), S5 per-item readings, S7 per-item guilt and one commitment record, X1 keep probe verdicts, L3 stamping, G4 test, the four doc corrections of here §1, shadow records for every here §5–§9 decision | anchored share of long runs; `sessions health` goal fields non-null; readings no longer constant |
-| **1 — verdicts and truth** | S3 thumbs, S6 declared criteria (one-sided), C1 certificate (template), C2 harness checks, V1 goal validator (deterministic, shadow), L1 gain × need, L2 success examples | false completion on task and synthetic-home suites vs no-certificate arm; verdicts per week; replay candidates accepted per night |
+| **0 — supply and honesty** | S3a unread verdicts, R15 closure leak, S1 (task, trigger, front door, web pointers), S5 per-item readings, S7 per-item guilt and one commitment record, X1 keep probe verdicts, L3 stamping, G4 test, the four doc corrections of here §1, shadow records for every here §5–§9 decision | anchored share of long runs; `sessions health` goal fields non-null; readings no longer constant |
+| **1 — verdicts and truth** | S3b thumbs, L7 D3 attribution, L3 Wilson tenure, S6 declared criteria (one-sided), C1 certificate (template), C2 harness checks, V1 goal validator (deterministic, shadow), L1 gain × need, L2 success examples | false completion on task and synthetic-home suites vs no-certificate arm; verdicts per week; replay candidates accepted per night |
 | **2 — control and narrowing** | X2 pre-action markers, X3 verdict forecasts, X5 prediction scoring, V1 armed, V2 re-ask and drift event (once phase 1's drift rate is read), C4 wind-down, C5 ladder + brake, G1 deterministic alignment, G2 hold, G3 risk-weighted approval, M4 compaction survivors, M5 prior attempts | per-arm: tampering, reopen, handoff quality; dojo suite attack success *and* utility vs control |
 | **3 — memory and follow-through** | S4 commitments, X4 recorded pre-mortem, M1 goal key, M2 salience, M3 gap delivery (after §17.7 item 2 reads), A1 duty runs, U1 gate, L5 built, U2–U4 | owner-side latency on sensored lines; interruptions per day; lesson application vs budget-matched control |
 | **4 — the model-judged half** | S2 tier 2, V1's quarantined relevance call, G1 quarantined check under adaptive attack, A2 proposals, A4 curiosity, L6 lineage | each against its own arm; nothing here ships on a synthetic result alone |
@@ -974,13 +1148,30 @@ all at matched budget, with variance. **Not** the label distribution, raw
 valence, lower sensor values or rule count; those are the instrument, not the
 outcome.
 
+**The instrument already exists; use it.**
+- **Run levers and stage levers.** In-run proposals are `harness::Lever`s;
+  the nightly ones (L1, L2, L3, L7, X1, X5, S5's saturation handling) are
+  stage levers measured with `stages_off`, as `sensors_in_brief` already is.
+  EXPERIMENT-DESIGN §15's appraisal-off preset is the control arm.
+- **`WORK_FLOOR` guards the narrowing proposals.** C5, G1–G3 and V2 can win a
+  comparison by doing less; the floor (0.75) and "an unfinished correction is
+  a regression, never an efficiency win" are what stop that.
+- **The readouts:** `mecha learning-report` gains owner-verdict and valence
+  lines and becomes the programme's outcome readout;
+  `scripts/appraisal-{validity,report,traces,learning-report}.py` and the
+  `eval/appraisal-*.toml` manifests are the existing harness for arms; the
+  synthetic home's `[fixtures] charter` pins a charter per trial.
+- **The confirmation surface is `mecha review`** for S2, S6, R10 and A2.
+
 ### What each proposal buys, by the owner's seven axes
 
 | | capability | accuracy | performance | independence | security | self-learning | usability |
 |---|---|---|---|---|---|---|---|
 | S1 anchors | ● | | | ● | ● | ● | |
 | S2 harness asks | ● | ● | | | | ● | ● |
-| S3 one-tap verdict | | | | | | ● | ● |
+| S3 verdicts (collected, one-tap) | | ● | | | | ● | ● |
+| L7 D3 attribution | | ● | | | | ● | |
+| §1.4 convergence with mecha-graph | | | ● | | | ● | ● |
 | S4 commitments | | | | ● | | | ● |
 | S5 sensor hygiene | | ● | | | | | ● |
 | C1 honest completion | | ● | | | ● | ● | ● |
@@ -1049,7 +1240,44 @@ Everything in `GOAL-SYSTEM-DESIGN.md` §15 stays absent. Added here:
 
 ---
 
-## 14. Sources
+## 14. Designed elsewhere, ruled or proposed, and still owed
+
+Found by the 2026-09-24 sweep; each belongs to the document named, and this
+design depends on or should absorb it. Listed so the next reader does not
+rediscover them.
+
+- **GOAL-SYSTEM-DESIGN §5.3, self-authored steers** — the agent names its
+  own counterfactual ("I should have asked before staging these") and that
+  point is probed like an owner steer. The retrospective half of X; see X0.
+- **§17.1's goal-relative second reading of `steer_verdict`** — the signed
+  error on the cited goal's computable channels between the recorded and the
+  replayed trajectory.
+- **§17.7 item 7's evidence-class grading of stops** — a redirect medium, a
+  silence weak.
+- **Disjunctive scope** — a narrowing that splits a region rather than
+  retiring a rule.
+- **§11.1's `board_overdue` and `cost` sensor kinds**, and "which line moved"
+  on a reflection.
+- **APPRAISAL-RESEARCH §3.6's third positive channel** — a read receipt on a
+  trigger's briefing; **§3.8's trajectory counters** — a same-region re-edit,
+  acting after declaring done, a verify claim with no exit code read;
+  **§3.10** — measure the quarantined appraiser at scale, then keep or retire
+  it (it returned "no further error" on 169 of 169).
+- **Replay reconstruction of evidence-bearing runs** — probes refuse them
+  until it exists, so X1 cannot store verdicts for them.
+- **VERIFICATION-RESEARCH implications 9 and 10** — tool results carry their
+  command and exit status, enabling an "untraceable numbers" check on a final
+  answer (C1's natural extension); and if an adversarial verifier is built,
+  a *pair* on gossip's lens pattern, never a lone critic.
+- **Closure follow-up staging is not atomic**, and the closure readout reaches
+  only a terminal's stderr — a task closed from the web board is appraised
+  and the page never shows it.
+- **EXPERIMENT-DESIGN §17's datasets** as the evaluation substrate, and
+  §15's appraisal-off preset.
+
+---
+
+## 15. Sources
 
 Read at source unless marked. *(abstract)*: read from the abstract only.
 *(summary)*: read through a summary of the full text — re-read the table
