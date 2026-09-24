@@ -1406,12 +1406,22 @@ async fn classify(
     accounts.sort_unstable();
     accounts.dedup();
     let mut surface_down: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // An account this sweep's own read could not reach is already known to
+    // be down: the fan-out drops it from the rows and names it in the note,
+    // so there is no thread of its to probe with — the headline case, a
+    // lapsed token, would otherwise read as "nothing to probe" and charge.
+    let unreachable = unread_accounts(note.as_deref());
     for acct in accounts {
         let failed_here = reread_failures
             .iter()
             .filter(|(t, _, _)| t.account == acct)
             .count();
         let ok_here = reread_ok.get(&acct).copied().unwrap_or(0);
+        if unreachable.contains(&acct) && ok_here == 0 {
+            eprintln!("  {acct}: this sweep could not read the account at all — the mail surface's, counted against no thread");
+            surface_down.insert(acct);
+            continue;
+        }
         if failed_here < 2 || ok_here > 0 {
             continue;
         }
@@ -1424,7 +1434,12 @@ async fn classify(
             (Some(row), Some(tool)) => fetch_body(tool.as_ref(), &ctx, &row_to_input(row))
                 .await
                 .is_ok(),
-            _ => true,
+            _ => {
+                eprintln!(
+                    "  {acct}: nothing to probe the surface with — counted as the threads' own"
+                );
+                continue;
+            }
         };
         if reread_was_outage(failed_here, ok_here, answered) {
             eprintln!("  {acct}: a re-read of a thread it has failed too — the mail surface's, counted against no thread");
@@ -1638,6 +1653,16 @@ where
         }
     }
     lens.get(lo).copied()
+}
+
+/// The accounts a `mail_recent` note says could not be read. The fan-out
+/// names each as `` account `NAME`: <error> `` (`unified.rs::merge`).
+fn unread_accounts(note: Option<&str>) -> std::collections::HashSet<String> {
+    note.unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("account `")?.split_once('`'))
+        .map(|(name, _)| name.to_string())
+        .collect()
 }
 
 /// Whether a failure of `len` characters is the server's, given where the
@@ -2917,7 +2942,7 @@ fn draft_prompt(
 mod classify_exit_tests {
     use super::{
         excused_by_length, failed_record, first_failing_length, parse_recent, reread_was_outage,
-        run_accomplished_nothing,
+        run_accomplished_nothing, unread_accounts,
     };
     use mecha_core::mail_triage::{ThreadInput, FAILED};
     use mecha_core::provider::retry::ProviderError;
@@ -3003,6 +3028,15 @@ mod classify_exit_tests {
             oversized.attempts, 3,
             "a body that will not fit is the thread's own, whatever the sweep concluded"
         );
+        // Review finding: `Invalid` is the catch-all 4xx — a mistyped model
+        // name fails every thread alike — so there the canary's verdict holds.
+        let wrong_model =
+            anyhow::Error::new(ProviderError::Invalid("model not found".into())).context("400");
+        let excused = failed_record(&thread, Some(&second), &wrong_model, true);
+        assert_eq!(
+            excused.attempts, 2,
+            "a rejected request in a sweep the canary called the server's counts against no thread"
+        );
         let sweep_wide = failed_record(&thread, Some(&second), &bad_verdict, true);
         assert_eq!(
             sweep_wide.attempts, 2,
@@ -3038,6 +3072,21 @@ mod classify_exit_tests {
             !reread_was_outage(2, 0, true),
             "the surface answered a live thread: these threads are gone"
         );
+    }
+
+    /// Review finding: a lapsed token drops the account from the read's rows
+    /// and names it only in the note, so the probe had no thread to use and
+    /// charged every requeued thread. The note is the evidence.
+    #[test]
+    fn an_account_the_read_could_not_reach_is_named_by_its_note() {
+        let note = "note — some accounts could not be read:\naccount `work`: token expired\naccount `home`: 503";
+        let got = unread_accounts(Some(note));
+        assert!(
+            got.contains("work") && got.contains("home") && got.len() == 2,
+            "{got:?}"
+        );
+        assert!(unread_accounts(None).is_empty());
+        assert!(unread_accounts(Some("nothing about accounts")).is_empty());
     }
 
     /// The failure the canary exists for is length-dependent, and one canary
