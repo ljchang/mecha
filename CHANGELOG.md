@@ -46,8 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   10 a sweep), so the long waits of a busy mailbox never strand it, and each
   failure is on disk the moment it happens rather than at the end of the
   sweep. A re-read of a stored thread that fails is the thread's own unless
-  every re-read in the sweep failed, which is the mail surface's (a lapsed
-  token, a 503) and counts against none. `mecha mail list` shows the count
+  every re-read in the sweep failed and a re-read of a thread the sweep's
+  own read just returned failed too — the mail surface's (a lapsed token, a
+  503), counted against none. Dead threads (deleted, moved) therefore back
+  off rather than fail the unit on every tick. `mecha mail list` shows the count
   and when the next retry is due; `classify --force` still retries at once,
   inside the window and out, and out of it without the per-sweep cap. A
   thread retried from the store is marked `read_whole`, outside the

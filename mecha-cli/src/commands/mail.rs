@@ -1161,6 +1161,9 @@ async fn classify(
     // see (`reread_was_outage`).
     let mut reread_failures: Vec<(ThreadInput, Option<Record>, anyhow::Error)> = Vec::new();
     let mut reread_ok = 0u32;
+    // Requeued threads that classified — the summary's count, which is not
+    // `reread_ok` (a body read that the prefilter took, or the model failed).
+    let mut requeued_ok = 0u32;
     let work = todo
         .into_iter()
         .map(Work::Row)
@@ -1287,6 +1290,9 @@ async fn classify(
         let rec = match verdict {
             Ok(v) => {
                 ok += 1;
+                if full_body {
+                    requeued_ok += 1;
+                }
                 print_line(&thread, &v, from_bucket.as_deref());
                 let mut r = record(&thread, Some(v), None);
                 r.escalated = did_escalate;
@@ -1354,11 +1360,43 @@ async fn classify(
     } else {
         true
     };
-    // Several re-reads failing with none succeeding is the mail surface (a
-    // lapsed token, a 503), not ten threads at once — which the model canary
-    // cannot see. Charged, they would all reach the day-long wait in two
-    // hours and lag a day behind the mailbox coming back.
-    if reread_was_outage(reread_failures.len(), reread_ok) {
+    // Several re-reads failing with none succeeding is either the mail
+    // surface (a lapsed token, a 503) or several threads the mailbox no
+    // longer has — and the two need opposite answers: an outage charged puts
+    // every thread on the day-long wait, and dead threads uncharged are due
+    // again next sweep, failing the unit every tick for ever. The counts
+    // cannot tell them apart, so ask the surface, as the model canary asks
+    // the model: re-read a thread this sweep's own read just returned, which
+    // therefore exists. It answering means the failures are the threads'.
+    let surface_answered = if reread_failures.len() >= 2 && reread_ok == 0 {
+        let probe = rows.iter().find(|r| {
+            r["account"].as_str() == Some(reread_failures[0].0.account.as_str())
+                && r["thread_id"].as_str().is_some()
+        });
+        match (probe, &get_thread) {
+            (Some(row), Some(tool)) => {
+                let answered = fetch_body(tool.as_ref(), &ctx, &row_to_input(row))
+                    .await
+                    .is_ok();
+                eprintln!(
+                    "  {}",
+                    if answered {
+                        "the mailbox answered a re-read of a thread it has — these threads are gone"
+                    } else {
+                        "the mailbox failed a re-read of a thread it has too — the mail \
+                         surface's, counted against no thread"
+                    }
+                );
+                answered
+            }
+            // Nothing to probe with: unknown, so the side that backs off —
+            // the other side is the loop that fails the unit every tick.
+            _ => true,
+        }
+    } else {
+        true
+    };
+    if reread_was_outage(reread_failures.len(), reread_ok, surface_answered) {
         eprintln!(
             "  every re-read of a stored thread failed — the mail surface's, counted against no thread"
         );
@@ -1386,8 +1424,8 @@ async fn classify(
     println!(
         "\n{ok} classified ({escalated} read in full on a second pass{}), \
          {prefiltered} disposed without a model, {failed} failed",
-        if reread_ok > 0 {
-            format!(", {reread_ok} retried whole from the store")
+        if requeued_ok > 0 {
+            format!(", {requeued_ok} retried whole from the store")
         } else {
             String::new()
         }
@@ -1558,11 +1596,13 @@ fn sweep_was_outage(failures: usize, canary_answered: bool) -> bool {
 }
 
 /// Whether a sweep's failed re-reads of stored threads were the mail
-/// surface's: more than one failed and none succeeded. One failure alone,
-/// or failures beside successes, are the threads' own (moved, deleted) and
-/// back off — or dead threads would hold every requeue slot each sweep.
-fn reread_was_outage(failures: usize, succeeded: u32) -> bool {
-    failures >= 2 && succeeded == 0
+/// surface's: more than one failed, none succeeded, and a re-read of a
+/// thread the sweep's own read just returned failed too. One failure alone,
+/// failures beside successes, or a surface that answers the probe are the
+/// threads' own (moved, deleted) and back off — or dead threads would be due
+/// every sweep and fail the unit on every tick.
+fn reread_was_outage(failures: usize, succeeded: u32, surface_answered: bool) -> bool {
+    failures >= 2 && succeeded == 0 && !surface_answered
 }
 
 fn record(t: &ThreadInput, verdict: Option<Verdict>, error: Option<String>) -> Record {
@@ -2925,16 +2965,27 @@ mod classify_exit_tests {
     /// the mail surface's, which the model canary cannot see.
     #[test]
     fn every_re_read_failing_is_the_mail_surface_not_the_threads() {
-        assert!(reread_was_outage(10, 0), "all ten failed, none read");
         assert!(
-            !reread_was_outage(1, 0),
+            reread_was_outage(10, 0, false),
+            "all ten failed, and a thread the mailbox has failed too"
+        );
+        assert!(
+            !reread_was_outage(1, 0, false),
             "one alone is the thread's own (moved, deleted)"
         );
         assert!(
-            !reread_was_outage(3, 7),
+            !reread_was_outage(3, 7, false),
             "failures beside successes are the threads' own — or dead threads hold every slot"
         );
-        assert!(!reread_was_outage(0, 0));
+        assert!(!reread_was_outage(0, 0, false));
+        // Review finding: two threads the mailbox no longer has fail every
+        // re-read, and taken as an outage they were due again next sweep and
+        // failed the unit on every tick. A probe of a thread the mailbox HAS
+        // answering says the surface is fine: they are gone, and back off.
+        assert!(
+            !reread_was_outage(2, 0, true),
+            "the surface answered a live thread: these threads are gone"
+        );
     }
 
     #[test]
