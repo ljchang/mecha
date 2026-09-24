@@ -23,7 +23,9 @@ pub enum Cmd {
         id: String,
         number: usize,
     },
-    /// Cancel tracking and block further task/chat/trigger runs until explicitly reopened.
+    /// Cancel tracking and block further runs of this task — `tasks work`, a web
+    /// chat on it, or an answered question resuming it — until explicitly
+    /// reopened. Triggers are not tied to a task, so they are unaffected.
     /// Does not claim completion or stop an active runner.
     Cancel {
         id: String,

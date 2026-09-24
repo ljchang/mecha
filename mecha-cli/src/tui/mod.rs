@@ -10159,11 +10159,12 @@ mod tests {
     fn the_help_overlay_advertises_the_newline_key_only_where_it_exists() {
         // On a terminal without the kitty protocol, Shift+Enter *submits* —
         // help that teaches it as a newline is worse than no help.
-        // 40 rows: the whole card, keys plus every HELP line, has to fit —
-        // the /clear assertion below reads the far end of it.
+        // 48 rows: the whole card, keys plus every HELP line, has to fit —
+        // the /clear assertion below reads the far end of it. (It was 40
+        // until `/entity` joined HELP and the card grew past it.)
         let mut app = test_app();
         app.help = true;
-        let plain = frame_text(&mut app, 100, 40, None);
+        let plain = frame_text(&mut app, 100, 48, None);
         assert!(plain.contains("alt+enter"), "{plain}");
         assert!(!plain.contains("shift+enter"), "{plain}");
         assert!(
@@ -10172,7 +10173,7 @@ mod tests {
         );
 
         app.kitty_keyboard = true;
-        let kitty = frame_text(&mut app, 100, 40, None);
+        let kitty = frame_text(&mut app, 100, 48, None);
         assert!(kitty.contains("shift+enter"), "{kitty}");
     }
 

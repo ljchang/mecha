@@ -484,6 +484,19 @@ fn write_verified(provider: &str, facts: &Facts) -> Result<()> {
         return write_local_provider(found);
     }
     let Some(props) = &facts.props else {
+        // "Nothing answered" is a claim about a probe, and it is only true
+        // when one ran. With a hosted default provider that already has its
+        // key, no local server is looked for at all (`run`'s `local_probe`),
+        // so a llama-server that is up and serving read as "start the
+        // server" — the wrong remedy for a server that was never asked.
+        if matches!(facts.local_probe, onboarding::LocalProbe::NotAttempted) {
+            anyhow::bail!(
+                "no local server was checked: the default provider `{provider}` is not a \
+                 local one and already has its credential. To record a llama-server, add \
+                 `[providers.local]` with its `base_url` (and `kind = \"local\"`) and run \
+                 `mecha setup --write --provider local`, or unset the key for this run."
+            );
+        }
         anyhow::bail!("nothing answered, so there is nothing to write down. Start the server.");
     };
     let settings = onboarding::verified_settings(props);

@@ -61,6 +61,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A leading `~` in a config path now means the home directory. Nothing ran
+  these through a shell, so `command = "~/.cargo/bin/mecha-mail"` — the line
+  the mail and documents pages printed — named a directory called `~`, the
+  server never spawned, and `[web] assets = "~/.mecha/web/dist"` served no
+  app. It covers every path-valued key and `[[mcp]]` `command` and `args`;
+  `~user` and a `~` mid-string are left as written.
+- `mecha setup` offered `mecha-docs auth personal` to authorise documents,
+  which fails: `mecha-docs auth` takes the account as `--account`. It now
+  offers `mecha-docs auth`.
+- `mecha setup --write` said "nothing answered … Start the server" when it
+  had not looked: with a hosted default provider that has its key, no local
+  server is probed. It now says so, and how to record a llama-server.
+- `mecha workflow cancel` and `mecha charter` described behaviour they do
+  not have: cancel blocks further runs of that task, not triggers (a trigger
+  is not tied to a task), and a charter is edited with `mecha charter edit`.
+  `/entity` completed in the TUI but was missing from `/help`.
 - The mail desk's batch keys work with the selecting modifier still held.
   A selection is built with ⇧-click or ⌘/Ctrl-click, and the hand is often
   still on that key when `e` goes down: ⇧E was bound to nothing and ⌘E was

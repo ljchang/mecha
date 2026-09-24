@@ -985,6 +985,81 @@ pub struct McpServerConfig {
     pub disabled: bool,
 }
 
+/// A leading `~` in a path the owner wrote, resolved against the home
+/// directory. Nothing runs these through a shell — `[[mcp]] command` goes
+/// straight to `Command::new` and `[web] assets` to `ServeDir` — so
+/// `"~/.cargo/bin/mecha-mail"` used to name a directory called `~` under the
+/// working directory: the server silently failed to spawn and the web app
+/// silently served nothing, from the snippets the docs printed. Only `~` and
+/// `~/…` expand; `~user` and a `~` anywhere else are left as written, and with
+/// no home directory to be found the path is left alone rather than guessed.
+fn expand_home(p: &Path) -> PathBuf {
+    match (p.strip_prefix("~"), dirs::home_dir()) {
+        (Ok(rest), Some(home)) => home.join(rest),
+        _ => p.to_path_buf(),
+    }
+}
+
+/// [`expand_home`] for a string field (`[[mcp]] command` and `args`).
+fn expand_home_str(s: &str) -> String {
+    if s == "~" || s.starts_with("~/") {
+        expand_home(Path::new(s)).to_string_lossy().into_owned()
+    } else {
+        s.to_string()
+    }
+}
+
+impl ConfigLayer {
+    /// Every path-valued field a config file can set, with [`expand_home`]
+    /// applied. A new path field belongs here as well as in the layer — the
+    /// same two-edit shape as a new `Config` field.
+    fn expand_home(&mut self) {
+        let opt = |p: &mut Option<PathBuf>| {
+            if let Some(v) = p.as_mut() {
+                *v = expand_home(v);
+            }
+        };
+        if let Some(a) = self.agent.as_mut() {
+            opt(&mut a.system_prompt_file);
+        }
+        if let Some(t) = self.tools.as_mut() {
+            opt(&mut t.workspace);
+        }
+        if let Some(sb) = self.sandbox.as_mut() {
+            for list in [sb.writable.as_mut(), sb.readable.as_mut()]
+                .into_iter()
+                .flatten()
+            {
+                for v in list.iter_mut() {
+                    *v = expand_home(v);
+                }
+            }
+        }
+        if let Some(o) = self.outbox.as_mut() {
+            opt(&mut o.dir);
+        }
+        if let Some(m) = self.messages.as_mut() {
+            opt(&mut m.dir);
+        }
+        if let Some(sk) = self.skills.as_mut() {
+            opt(&mut sk.dir);
+        }
+        if let Some(w) = self.web.as_mut() {
+            opt(&mut w.assets);
+            opt(&mut w.voices_dir);
+        }
+        if let Some(h) = self.harness.as_mut() {
+            opt(&mut h.source_dir);
+        }
+        for server in self.mcp.iter_mut().flatten() {
+            server.command = expand_home_str(&server.command);
+            for arg in server.args.iter_mut() {
+                *arg = expand_home_str(arg);
+            }
+        }
+    }
+}
+
 impl Config {
     pub fn global_path() -> Option<PathBuf> {
         crate::work::mecha_home()
@@ -1093,6 +1168,7 @@ impl Config {
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let mut layer: ConfigLayer =
             toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        layer.expand_home();
         // `[messages]` is receiver-side admission policy, and a project file
         // arrives with a cloned repository — it must not be able to switch a
         // session's inbound handling to `accept`. Dropped loudly rather than
@@ -2341,6 +2417,51 @@ mod tests {
     /// someone remembers to call it. Both public loaders are `load_layers`,
     /// so this is them — the PR review of this change pointed out that the
     /// test below would stay green with the `validate()` call deleted.
+    /// `~` in a config file means the home directory, as it did in every
+    /// snippet the docs printed. Before this, each of these loaded fine and
+    /// named a literal `~` directory, so the MCP server never spawned and
+    /// `mecha serve` served no app — with nothing at load to say so.
+    #[test]
+    fn a_leading_tilde_in_a_config_path_is_the_home_directory() {
+        let Some(home) = dirs::home_dir() else { return };
+        let dir = std::env::temp_dir().join(format!("mecha-tilde-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let global = dir.join("config.toml");
+        std::fs::write(
+            &global,
+            "[web]\nassets = \"~/.mecha/web/dist\"\n\
+             [outbox]\ndir = \"~/.mecha/outbox\"\n\
+             [sandbox]\nwritable = [\"~/scratch\", \"/abs\"]\n\
+             [[mcp]]\nname = \"mail\"\ncommand = \"~/.cargo/bin/mecha-mail\"\n\
+             args = [\"serve\", \"~/notes\", \"a~b\", \"~other/x\"]\n",
+        )
+        .unwrap();
+        let cfg = Config::load_layers(Some(&global), None).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(cfg.web.assets, Some(home.join(".mecha/web/dist")));
+        assert_eq!(cfg.outbox.dir, Some(home.join(".mecha/outbox")));
+        assert_eq!(
+            cfg.sandbox.writable,
+            vec![home.join("scratch"), PathBuf::from("/abs")]
+        );
+        let mail = cfg.mcp.iter().find(|s| s.name == "mail").unwrap();
+        assert_eq!(
+            mail.command,
+            home.join(".cargo/bin/mecha-mail").to_string_lossy()
+        );
+        // Only a leading `~` or `~/` expands; `~user` and a mid-string `~`
+        // are somebody's literal text.
+        assert_eq!(
+            mail.args,
+            vec![
+                "serve".to_string(),
+                home.join("notes").to_string_lossy().into_owned(),
+                "a~b".into(),
+                "~other/x".into(),
+            ]
+        );
+    }
+
     #[test]
     fn a_bad_global_file_fails_the_load_itself() {
         let dir = std::env::temp_dir().join(format!("mecha-tz-{}", uuid::Uuid::new_v4()));
