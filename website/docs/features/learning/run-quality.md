@@ -30,10 +30,8 @@ downstream ever heard about it. The corpus is the sensor that was missing.
 transcript, written by every front-end — `run`, `chat`, the TUI, Slack, a
 trigger.
 
-The gap it closed: `RunOutcome` carries fifteen fields and the transcript kept
-two of them, so an interactive run was measurably **less** observable than an
-unattended one, whose trigger ledger recorded the rest. The signal was already
-computed and thrown away at the end of every run a human was watching.
+That is deliberate: a run you watched interactively is as observable as one a
+trigger ran unattended.
 
 | Field | What it says |
 |---|---|
@@ -326,6 +324,9 @@ as though it were is how an A/B contaminates a series — the same rule
 `mecha harness ruminate` is the nightly verb: diagnose one change from the
 corpus, record it as a candidate, measure it by counterfactual replay of recent
 sessions, and dispose of it through the gate — in one pass, on a timer.
+Replay spends its budget on the sessions where the predicted metric has the
+most room to move; when two are tied, the one whose signed errors touch a
+higher-ranked [charter](/docs/features/appraisal/charter) line goes first.
 
 ```bash
 mecha harness ruminate --sessions 16 --days 7   # the nightly pass

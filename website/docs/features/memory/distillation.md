@@ -127,9 +127,10 @@ reader*.
 
 `affect` and the goal errors are [the appraisal](/docs/features/appraisal/reference) of
 the session, riding on `meta` beside the taint snapshot — never inside the
-episode body, which is the model's prose. They exist to give the graph's review
-queue a **salience ordering**: a session that carried a signed negative error is
-worth a human's attention sooner than one that went cleanly.
+episode body, which is the model's prose. They are meant to give the graph's
+review queue a **salience ordering**, so that a session that carried a signed
+negative error reaches you sooner than one that went cleanly. Nothing on the
+graph side reads them yet: today they are recorded metadata.
 
 Unlike corrections, they are **not** gated on the timeline's trust, and the
 reason is that they are structured facts the harness computed about its own run
