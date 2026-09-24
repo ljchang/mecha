@@ -12,13 +12,16 @@
 //! override for its location (`MECHA_CLOSURES_DIR` was removed on review of
 //! #293): the `mecha tasks set` that writes it can be a descendant of a
 //! model's `shell`, and a location the command text could redirect is a
-//! record the command text could hide while the real board moves. **One
-//! override remains, and it is residue:** the root is `work::mecha_home()`,
-//! which honours `MECHA_HOME`, so a command that sets it writes the record
-//! into another home — and, since `tasks::live_run_pids` reads its marker
-//! directories from the same home, empties the ancestry check too (found on
-//! review of #293; see [`decide`]). Tests reach a scratch store through
-//! `MECHA_HOME` or [`ClosureStore::open`]. The kinds of line:
+//! record the command text could hide while the real board moves. The root
+//! is `work::mecha_home()`, which honours `MECHA_HOME`, and on #293 that was
+//! residue: a command that set it wrote the record into another home and,
+//! since the run markers came from the same home, emptied the ancestry check
+//! too (found on review of #293). #294 closes it on the read side — the
+//! shell registry and the markers are read under the owner's real home as
+//! well, so a run's command that redirects its home is refused before
+//! anything is written ([`ShellReading::Redirected`]). Tests reach a
+//! scratch store through `MECHA_HOME` or [`ClosureStore::open`]. The kinds
+//! of line:
 //!
 //! - a [`Transition`] — written **before** the board row moves. It names the
 //!   task, the move (`from` → `to`), who made it and on which surface, the
