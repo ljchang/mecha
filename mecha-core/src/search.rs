@@ -1083,7 +1083,7 @@ fn provenance(query: &str, url: &str) -> Provenance {
         ))
         .trim_end_matches('/')
         .to_string();
-        let payload = t.path().trim_end_matches('/') != "" || t.query().is_some();
+        let payload = !t.path().trim_end_matches('/').is_empty() || t.query().is_some();
 
         // The token, with a path or query, appears inside the result URL:
         // an echo or a wrapped redirect.
