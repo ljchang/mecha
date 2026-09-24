@@ -22,6 +22,23 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-24 — a stale date is caught by the calendar instead of believed,
+and the zone is configured once.** #243 (`9308c00b`) and #267 (`a5140ed2`)
+are the tool-boundary half of #238's clock arc. `calendar_list_events` and
+`calendar_freebusy` take `now` / `today` / `tomorrow` / `yesterday` / `±Nd`
+and resolve them on the server (`time::window`, one definition for
+`mecha-mail`, `mecha-google` and `mecha-outlook`), and every answer states the
+window and the clock it was resolved against (`time::window_note`). A window
+resolves in `MECHA_TZ` alone (`time::window_zone`); without it a relative term
+is refused by name, never guessed. And the zone is set once: every `[[mcp]]`
+server is handed `[agent] timezone` as `MECHA_TZ` (`McpServerConfig::owner_zone`,
+filled by `Config::hand_zone_to_servers`, set in `McpClient::build_command`
+beneath the server's own `env`). **Deployed 2026-09-24** (dated machine state
+below). **Only the calendar half shipped:** `mail_search` still has the model
+write `after:YYYY/MM/DD` itself and answers with no `as_of`, so the
+2026-09-14 shape survives one tool over — the first item under *Mail* in
+*What to do next*, with the arc's minors.
+
 **2026-09-18 — the grounding arc merged and released as v0.1.21; what is left
 is a measurement and a ruling.** #244 (`569d4952`) is `grounding.rs`: one walk
 for what a run actually received (first seen wins; compaction's `[stale:`
@@ -40,9 +57,11 @@ are not in the message at classification (the store keeps no body), records
 passes across the three; the defects were at seams, not in the check
 (HISTORY, *Review process*). `docs/VERIFICATION-RESEARCH.md`'s second pass is
 the survey that led here. Released as `a5275980` and deployed the same
-evening (dated machine state below) — **except `mecha-voice-worker`**, which
-waits on the owner switching the shared checkout off PR #243's branch (worker
-bytes measured identical to `main`). **Unmeasured, and deciding whether either
+evening (dated machine state below). `mecha-voice-worker`, held back then
+because the shared checkout sat on PR #243's branch, needed no restart
+after all: the checkout is back on `main` since 2026-09-24, and the running
+worker (started 2026-09-17) already runs `main`'s `worker.py`, last changed
+by #231. **Unmeasured, and deciding whether either
 new label is ever read:** how often the local model quotes verbatim rather
 than paraphrasing; the mail section under *What to do next* says what to read
 first. Workspace: 2,781 passed, 0 failed, 3 ignored (2026-09-18, without
@@ -2554,6 +2573,32 @@ children under `mecha serve` and `mecha slack` respawned with them; two under
 Claude sessions still hold the previous — unchanged — `mecha-graph-mcp`
 inode, theirs to restart.
 
+**2026-09-24, 10:50Z, mecha-8a: #243 and #267 deployed.** `cargo install
+--path mecha-mail` from `main` at `a5140ed2` replaced `mecha-mail`,
+`mecha-google`, `mecha-outlook` and `mecha-docs`. The previous build came from
+the `mecha-mail-ux` worktree, which no longer exists; its work is on `main`
+(#258/#261/#262). Probes, each a literal or behaviour the range added:
+`strings ~/.cargo/bin/mecha-mail | grep -c 'Send an RFC 3339 timestamp
+instead'` printed 0 before and 1 after (1 for `mecha-google` and
+`mecha-outlook` too; `mecha-docs` has no calendar and stays 0), and each
+calendar server's own `tools/list` answered `time_min` without `today`
+before and with it after. `mecha-serve` and `mecha-slack` were restarted at
+10:51 because each held the old `mecha-mail` as a child (`/proc/<pid>/exe`
+ending `(deleted)`); both logged their startup lines, the fresh children
+started 10:51:20, and a sweep found no deleted mail inode still running.
+`mecha-triggers` and `mecha-drain` held none and were not restarted.
+`~/.cargo/bin/mecha` already carried #243's half (`owner_zone`) from
+mecha-e4's 06:25Z reinstall from `3d24062f`; `strings ~/.cargo/bin/mecha |
+grep -c 'handed to every MCP server as MECHA_TZ'` printed 1. **The shared
+checkout is back on `main`** (`a5140ed2`, clean) — the 2026-09-18 entry
+above held the voice worker waiting on that switch, and the worker turned out
+to need no restart (it started on 2026-09-17, after the last `worker.py`
+change, #231 on 2026-09-14). Web dist,
+voice, graph, the benchmark binary and the factory were not touched.
+`~/.mecha/config.toml`'s `env = { MECHA_TZ = "America/New_York" }` on the mail
+server is now redundant — same value, and an explicit value wins — and is the
+owner's to delete; nothing depends on it either way.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -4429,33 +4474,6 @@ is true now:
 
 ### Cheap, and worth doing first
 
-- **The tool-boundary half of the clock arc — the part that makes the *next*
-  wrong date a caught one instead of a believed one.** #238 (`42c359f1`)
-  fixed the harness's own staleness: the reading is asked per turn and
-  cannot go stale. What it did not do is make a wrong date *discoverable*.
-  On 2026-09-14 the first thing the run did was call
-  `mail__calendar_list_events` with `time_min: 2026-09-13T00:00:00-04:00`,
-  and the calendar answered that window faithfully — so the tool confirmed
-  the wrong premise instead of contradicting it. Two pieces, either useful
-  alone:
-
-  1. **Resolve relative terms at the tool boundary.** Let the time-scoped
-     mail and calendar tools accept `today` / `tomorrow` / `this week` and
-     resolve them inside the tool, where the clock is real, so a stale
-     window becomes *inexpressible* rather than merely unlikely. Note the
-     tension with `capture.rs`, which deliberately detects and never
-     resolves a spoken "when" — the distinction is that a capture is the
-     owner's words being recorded, and a query is the harness asking a
-     service a question.
-  2. **Stamp every time-scoped tool result with its own "as of".** Then a
-     wrong premise is contradicted by data on the first call. This is the
-     "check the envelope before the content" shape, and it is the half that
-     would have caught the incident within one tool call rather than two
-     owner corrections.
-
-  Both are `mecha-mail`'s surface, not `mecha-core`'s, which is why they
-  were deliberately left out of #238 rather than folded in.
-
 - **The grounding arc's owed minors** — the last review pass of #245 and of
   #246, none at the fix-and-push bar, each verified against the tree before
   being left: `tui/mail.rs`'s meta-prefix list does not know `mail show`'s
@@ -4685,6 +4703,27 @@ What is missing beyond that is refinement:
   authentication.
 
 ### Mail as a surface you work — built; what is open is judgement
+
+**The mail half of the tool-boundary clock work is unbuilt.** #243 made a
+stale date inexpressible in `calendar_list_events` and `calendar_freebusy`;
+`mail_search` still asks the model to write the date itself (`after:YYYY/MM/DD`
+for Gmail, `received>=YYYY-MM-DD` for Outlook, per its tool description) and
+its answer carries no `as_of`, so "what came in today" from a run with a
+stale date is answered faithfully for the wrong day. The pieces exist:
+`time::resolve_bound` for the terms, `time::window_zone` for the zone,
+`time::as_of` for the stamp. What is new is translating a resolved day into
+each provider's query syntax, which is why it was not folded into #243.
+
+**The calendar window's owed minors (#243/#267's last passes, none at the
+fix-and-push bar).** A seven-day default window across a DST change now reads
+`22:37-04:00 .. 21:37-05:00` — exactly 168 hours, correct, and easy to misread
+as short; if it is worth a line, the place is `time::window_note`, not the
+arithmetic. The unified server's `window_parameters_name_the_relative_vocabulary`
+doc comment says "not only the unified server's" on the unified server. And
+`eval/fixtures/mail_server.py` still answers an empty window with the old
+`no events between …` line and resolves no relative terms — a stand-in with
+its own clock, deliberately left, but a case that exercises `today` against it
+would measure the fixture rather than the server.
 
 **`docs/MAIL-UX-DESIGN.md` is the authority** and its **§7** is where the
 remaining questions live. `docs/MAIL-CORPUS-RESEARCH.md` is the measurement

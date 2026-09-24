@@ -14,6 +14,38 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-24 — the calendar contradicts a stale date instead of confirming
+it.** #238 had made the harness's own clock unable to go stale, and left the
+other half open on purpose: on 2026-09-14 a run working from a stale date
+asked `calendar_list_events` for `time_min: 2026-09-13T00:00:00-04:00`, the
+calendar answered that window faithfully, and the owner had to correct the
+date twice. #243 (`9308c00b`) moved the decision to where a clock is real.
+`time::resolve_bound` takes `now`, `today`, `tomorrow`, `yesterday` and
+`±Nd` and keeps three outcomes apart in `Resolved` — `At`, `Passthrough` for
+every RFC 3339 stamp that worked before, and `NeedsZone`, a refusal by name
+rather than a guess; `this week` is deliberately absent, since where a week
+starts is a convention the server cannot read. Every window answer carries
+`time::window_note` — the window and `as_of`, the server's instant and zone —
+so a wrong premise is contradicted by the first result. Two review passes
+found real defects: a day offset past chrono's range panicked the server
+process (`parse_day_offset` now bounds it by range containment, because
+`n.abs()` itself panics on `i64::MIN`), and the refusal was unreachable on
+the deployment it was written for (the trap below). The fix to that split the
+zone: `time::window_zone` reads `MECHA_TZ` alone, `configured_zone` keeps the
+`TZ` fallback for rendering. The owner then ruled the zone a configuration
+parameter rather than a hand-copied `env` line per server, so
+`McpServerConfig::owner_zone` — `serde(skip)`, filled by
+`Config::hand_zone_to_servers` from the running config after `load_layers`,
+after `TrialEnv::base_config` copies live servers in, and after
+`Fixtures::apply` — hands every server `[agent] timezone` as `MECHA_TZ`, and
+`mecha setup` gained a `timezone` step shown once a server is wired. #267
+(`a5140ed2`) took two of the last pass's minors: the omit-both default now
+renders in the window zone, and `time::relative_time_schema` puts the
+vocabulary on all three servers' `time_min`/`time_max`, with
+`time::assert_window_schema` measuring it per server (reverting
+`mecha-google`'s schema fails its test). Deployed the same day; the
+redundant `MECHA_TZ` line in the live config is the owner's to delete.
+
 **2026-09-18 — a claim cites what the run received: one walk for what a run
 was shown, and three surfaces that check the model's words instead of
 trusting them.** Prompted by "other harnesses have a verifier — what are they
@@ -7507,6 +7539,29 @@ before retrying it.
   wrong answer is the one you were hoping for.
 
 ### Containment and state
+
+**A fallback in a helper can make a fail-closed guard unreachable on the one
+deployment it was written for.** #243's `Resolved::NeedsZone` refused a
+relative window when no zone was configured, and its test passed a literal
+`None`. But the zone came from `configured_zone()`, which fell back to `TZ` —
+and `TZ` is in `Sandbox::child_env`'s `BASE` passthrough and UTC on the
+server — so in production the guard never fired and `today` resolved to the
+UTC day, the incident itself. The review found it; the suite could not,
+because the test bypassed the lookup the guard depended on. **Test a guard
+through the real input path, not through the value you believe reaches it** —
+`a_utc_tz_is_not_a_window_zone` drives the real variable lists through an
+injected lookup — and when one helper serves two callers with different
+stakes (rendering can tolerate the machine's zone; resolving a day cannot),
+split it rather than let the safe caller's fallback leak into the strict one.
+
+**A derived value written into a config struct at load travels with every
+copy of that struct.** The first design for #243's zone handoff stamped
+`MECHA_TZ` into each server's `env` in `load_layers`. `TrialEnv::base_config`
+copies live servers out of the operator's loaded config, so every trial would
+have carried the operator's zone into an environment that set its own, with
+nothing in the trial's files to show it. Derive at the point of use from the
+config that is running (`owner_zone` is `serde(skip)` and overwritten at each
+place a server list is assembled), never at load into a field a copy carries.
 
 **Two sessions in one checkout is fine until one of them operates on a file
 the other is writing.** Two lanes worked the same tree for an afternoon —
