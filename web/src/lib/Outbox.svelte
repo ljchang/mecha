@@ -192,7 +192,9 @@
     showThread = false;
     showRaw = false;
     // With no thread to show as mail, the reads are what there is to see.
-    showSources = !d.sources?.some((x) => toolSuffix(x.tool) === 'mail_get_thread' && threadMessages(x.text, x.clipped));
+    // Only a mail draft draws its thread as messages; an event or a doc edit
+    // written from a mail has no other rendering of it (found on review).
+    showSources = !(kindOf(d.tool) === 'mail' && d.sources?.some((x) => toolSuffix(x.tool) === 'mail_get_thread' && threadMessages(x.text, x.clipped)));
     showArgs = false;
     rejectReason = '';
     if (!keepError) error = null;
@@ -710,11 +712,20 @@
                   The reply goes to the newest message in the real thread.
                 </div>
                 <div class="quoted"><span class="gutter"></span><div class="qtext"><MailBody text={readThread.source.text} compact /></div></div>
-              {:else if showThread}
-                {#each readThread.messages as m}{@render message(m, m === answered)}{/each}
-              {:else if answered}
-                {@render message(answered, false)}
               {:else}
+                {#if toolSuffix(detail.tool) === 'mail_reply' && !args.message_id}
+                  <!-- The name is the newest message *the run read*; the
+                       reply goes to the newest one when it is sent, and a
+                       draft can wait days (found on review). A reply pinned
+                       by message_id has a fixed target, so it needs no line. -->
+                  <div class="hint">The newest message when this was drafted. If anyone has written since, the reply goes to them instead — open the thread in Mail to check.</div>
+                {/if}
+              {/if}
+              {#if readThread.verified && showThread}
+                {#each readThread.messages as m}{@render message(m, m === answered)}{/each}
+              {:else if readThread.verified && answered}
+                {@render message(answered, false)}
+              {:else if readThread.verified}
                 <div class="muted">The message this replies to is not in the thread the run read — show the thread to see what it did read.</div>
               {/if}
               <div class="answerlinks">
