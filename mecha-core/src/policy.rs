@@ -209,6 +209,7 @@ const NON_COMMAND_BUILTINS: &[&str] = &[
     "fs_list",
     "http_fetch",
     "web_search",
+    "web_open",
     "todo",
     "skill",
     "recall",

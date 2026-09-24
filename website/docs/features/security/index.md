@@ -105,7 +105,7 @@ The `egress` classes, ordered `none < blind < chosen`:
 | Class | Meaning | Examples |
 |---|---|---|
 | `none` | Nothing leaves. | `fs_read`, a confined `shell` |
-| `blind` | The payload is model-authored, but the **recipient is fixed by your config** and appears nowhere in the tool's input schema. An injection can fill the channel and still has nobody to read it back. | `web_search` — its schema is `query`, `limit`, `depth`, with no destination field |
+| `blind` | The payload is model-authored, but the **recipient is fixed by your config** — or by something the run already received — and appears nowhere in the tool's input schema. An injection can fill the channel and still has nobody to read it back. | `web_search` — its schema is `query`, `limit`, `depth`, with no destination field; `web_open` — its only argument is the handle of a search result |
 | `chosen` | **The model names the recipient.** Payload and read-back in one call. | `http_fetch` (`url`), `mail_send` (`to`), a Slack post, an unconfined `shell` |
 
 Blind is earned in code, by a tool whose schema has no destination — there is
@@ -120,6 +120,7 @@ What the built-ins declare:
 | `fs_write`, `fs_edit` | `destructive` |
 | `http_fetch` | `untrusted_input` + `chosen` egress |
 | `web_search` | `untrusted_input` + `blind` egress (`chosen` if no blind backend is configured) |
+| `web_open` | `untrusted_input` + `blind` egress |
 | `shell` | `private_data` + `destructive`, and `chosen` egress unless a sandbox has taken the network away |
 
 MCP tools declare theirs from the server's annotations, and config can force
@@ -160,6 +161,14 @@ the blind ones only, at quick depth, and the result says so. If you want no
 private data reaching a third party at all — attack or not, your own request
 or not — that is a different control, `block_sends_after_private`, and it
 refuses `blind` and `chosen` alike.
+
+**Opening a result works too.** `web_search` prints a handle in brackets
+beside each result, and `web_open` takes that handle — not a URL — and reads
+the page. The model chooses *among* the results a search returned and never
+writes an address, so there is no field a secret could ride in; what it
+leaks is which result it picked. A URL from anywhere else — a link in an
+email, one the model made up — still goes through `http_fetch`, which is
+refused once both legs are set.
 
 The refusal is counted on the run outcome as `blocked_sends`, which is what
 `mecha eval`'s `expect.blocked_sends` grades.
