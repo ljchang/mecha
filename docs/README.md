@@ -77,6 +77,7 @@ something shipped.
 
 | Document | What it decides |
 |---|---|
+| [`APPRAISAL-WIRING-DESIGN.md`](APPRAISAL-WIRING-DESIGN.md) | How the appraisal signals become inputs to harness decisions: goal supply, each appraisal as a closed set of actions, and the measured build order. §10 holds the rulings the build waits on |
 | [`ASSISTANT-FOLLOW-THROUGH-DESIGN.md`](ASSISTANT-FOLLOW-THROUGH-DESIGN.md) | Durable delegated work, delivery recovery, verification, commitments and the daily assistant view |
 | [`BRANCHING-DESIGN.md`](BRANCHING-DESIGN.md) | Branching a conversation, and why the TUI batch deliberately left it out |
 | [`EGRESS-DESIGN.md`](EGRESS-DESIGN.md) | Why the send axis is a class (`None < Blind < Chosen`) rather than a bool, which of the two security controls owns each class, and what a blind send does not close. Read §6 before treating `Blind` as safety rather than risk reduction |
