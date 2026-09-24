@@ -5,7 +5,7 @@
     kindOf, KINDS, editsAsEvent, eventFields, eventArgs, inclusiveEnd, whenLabel, eventZone,
     attendeesOf, MAIL_HEADERS, ago, localZone, EVENT_CARD_KEYS, unreadableAccounts, unreadableNote,
     threadOf, ROUTING_KEYS, toolSuffix, threadMessages, answeredMessage, msgWhen,
-    rowSummary, docEdit, DOC_EDIT_KEYS, REJECT_REASONS,
+    rowSummary, docEdit, DOC_EDIT_KEYS, REJECT_REASONS, tooSoon,
   } from './outbox-view.js';
 
   // The outbox: every draft waiting on the owner, and the one place any of
@@ -170,7 +170,16 @@
       if (!hit) show(d, keepError);
       else if (mode === 'read') detail = d;
     } catch (e) {
-      if (!hit) error = String(e?.message ?? e);
+      const why = String(e?.message ?? e);
+      if (!hit) error = why;
+      else if (selectedId === id) {
+        // The copy on screen came from the prefetch; if it cannot be reread
+        // it may have been sent or rejected elsewhere since. Say so rather
+        // than keep showing it as current (found on review).
+        delete cache[id];
+        error = `This draft could not be reread — it may have been sent or rejected elsewhere. ${why}`;
+        loadList();
+      }
     }
   }
   function show(d, keepError) {
@@ -256,10 +265,9 @@
   // Never on a draft that appeared under your finger or pointer: after a
   // send the next draft opens in the same place, instantly from the cache,
   // and a second press or click would send it unread.
-  const JUST_OPENED_MS = 800;
   async function approve() {
     if (!detail || busy || detail.delivery_uncertain) return;
-    if (Date.now() - openedAt < JUST_OPENED_MS) {
+    if (tooSoon(openedAt)) {
       say('This draft just opened — press again to send it.');
       return;
     }
@@ -689,11 +697,20 @@
               <!-- Only a verified split may say who a reply goes back to: a
                    body can forge a header, and a staged reply names no one
                    else. Unverified, it is what the run read, newest last. -->
-              <div class="kicker">{toolSuffix(detail.tool) !== 'mail_reply' ? 'Written from' : readThread.verified ? 'Replying to' : 'The thread it read · newest message'}</div>
-              {#if readThread.clipped}
-                <div class="hint warntext">The run's read of this thread was cut short, so newer messages may be missing — the reply goes to the newest message in the real thread.</div>
-              {/if}
-              {#if showThread}
+              <div class="kicker">{toolSuffix(detail.tool) !== 'mail_reply' ? 'Written from' : readThread.verified ? 'Replying to' : 'The thread it read'}</div>
+              {#if !readThread.verified}
+                <!-- An unproven split is not drawn as messages: a parsed header
+                     in bold is a sender the page vouches for, and a forged one
+                     would be styled exactly like a real one (review of #272).
+                     The read is shown as it was read, headers as plain text. -->
+                <div class="hint warntext">
+                  {readThread.clipped
+                    ? "The run's read of this thread was cut short, so newer messages may be missing."
+                    : "mecha can't confirm where each message in this read starts, so it's shown exactly as read."}
+                  The reply goes to the newest message in the real thread.
+                </div>
+                <div class="quoted"><span class="gutter"></span><div class="qtext"><MailBody text={readThread.source.text} compact /></div></div>
+              {:else if showThread}
                 {#each readThread.messages as m}{@render message(m, m === answered)}{/each}
               {:else if answered}
                 {@render message(answered, false)}
@@ -701,12 +718,12 @@
                 <div class="muted">The message this replies to is not in the thread the run read — show the thread to see what it did read.</div>
               {/if}
               <div class="answerlinks">
-                {#if readThread.messages.length > 1}
+                {#if readThread.verified && readThread.messages.length > 1}
                   <button class="linkish" onclick={() => (showThread = !showThread)}>{showThread ? 'only the message answered' : `whole thread · ${readThread.messages.length} messages`}</button>
                 {/if}
-                <button class="linkish" onclick={() => (showRaw = !showRaw)}>{showRaw ? 'hide' : 'exactly what the drafting run read'}</button>
+                {#if readThread.verified}<button class="linkish" onclick={() => (showRaw = !showRaw)}>{showRaw ? 'hide' : 'exactly what the drafting run read'}</button>{/if}
               </div>
-              {#if showRaw}<pre class="argdump rawread">{readThread.source.text}</pre>{/if}
+              {#if showRaw && readThread.verified}<pre class="argdump rawread">{readThread.source.text}</pre>{/if}
             </section>
           {/if}
           <div class="card letter">

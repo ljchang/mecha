@@ -6,7 +6,7 @@
 // a key the form does not show dropped on save, an empty attendee field sent
 // as `[""]`. Each of those looks fine in the form and is wrong on the
 // calendar.
-import { kindOf, stampIn, wallIn, eventFields, eventArgs, inclusiveEnd, whenLabel, attendeesOf, editsAsEvent, unreadableAccounts, unreadableNote, threadOf, threadMessages, answeredMessage, rowSummary, docEdit } from '../src/lib/outbox-view.js';
+import { kindOf, stampIn, wallIn, eventFields, eventArgs, inclusiveEnd, whenLabel, attendeesOf, editsAsEvent, unreadableAccounts, unreadableNote, threadOf, threadMessages, answeredMessage, rowSummary, docEdit, tooSoon } from '../src/lib/outbox-view.js';
 
 let pass = 0;
 let fail = 0;
@@ -202,6 +202,11 @@ t('attendees accept objects', attendeesOf({ attendees: [{ email: 'a@x.edu' }] })
   t('a clipped read is not verified', th?.verified === false && th.messages.length === 1);
   t('and the cap note is not body', !th?.messages[0].body.includes('truncated'));
   t('so its row names nobody', rowSummary({ tool: 'mail__mail_reply', headline: '', args: {}, sources: [{ tool: 'mail__mail_get_thread', text: cut, clipped: true }] })?.who === '');
+}
+
+{
+  t('a press right after a draft opens is refused', tooSoon(1000, 1500) === true);
+  t('a press after a look is not', tooSoon(1000, 1900) === false);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
