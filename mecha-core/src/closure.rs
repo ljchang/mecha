@@ -214,6 +214,10 @@ pub fn posture_from_env() -> PostureReading {
 /// from `work::mecha_home()`, so a redirected home yields no live runs and
 /// this check finds nothing (found on review of #293).
 ///
+/// An MCP server and everything it spawns read `unknown` and are refused:
+/// the harness stamps every server so (`mcp::McpClient::build_command`),
+/// because a server outlives any one run's posture.
+///
 /// **What this does not close, named** (found on review of #293). The
 /// posture is an environment variable the command string itself can set:
 /// `MECHA_RUN_POSTURE=interactive mecha tasks set …` in a delegated or

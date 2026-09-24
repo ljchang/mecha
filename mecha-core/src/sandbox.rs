@@ -271,25 +271,61 @@ impl Sandbox {
         workspace: &Path,
         cwd: &Path,
     ) -> Result<tokio::process::Command> {
+        self.wrap_argv_with_env(program, args, workspace, cwd, &[])
+    }
+
+    /// [`wrap_argv`](Self::wrap_argv), with named variables set in the
+    /// child's environment on every backend — the explicit-argv twin of
+    /// [`command_with_env`](Self::command_with_env), for the same reason: a
+    /// variable set on a `bwrap` or `docker` parent never reaches the child.
+    /// Facts about the harness only, never secrets.
+    pub fn wrap_argv_with_env(
+        &self,
+        program: &str,
+        args: &[String],
+        workspace: &Path,
+        cwd: &Path,
+        env: &[(&str, &str)],
+    ) -> Result<tokio::process::Command> {
         match self.cfg.kind {
             Backend::None => {
                 let mut c = tokio::process::Command::new(program);
                 c.args(args).current_dir(cwd);
+                for (k, v) in env {
+                    c.env(k, v);
+                }
                 Ok(c)
             }
             Backend::Bwrap => {
+                let mut a = self.bwrap_args(workspace, cwd)?;
+                for (k, v) in env {
+                    a.extend(["--setenv".to_string(), k.to_string(), v.to_string()]);
+                }
                 let mut c = tokio::process::Command::new("bwrap");
-                c.args(self.bwrap_args(workspace, cwd)?);
+                c.args(a);
                 c.arg("--").arg(program).args(args);
                 Ok(c)
             }
             Backend::Docker => {
+                // `docker_args` ends with the image; `-e` must precede it.
+                let mut a = self.docker_args(workspace, cwd)?;
+                let image = a.pop();
+                for (k, v) in env {
+                    a.extend(["-e".to_string(), format!("{k}={v}")]);
+                }
+                a.extend(image);
                 let mut c = tokio::process::Command::new("docker");
-                c.args(self.docker_args(workspace, cwd)?);
+                c.args(a);
                 c.arg(program).args(args);
                 Ok(c)
             }
-            Backend::Landlock => self.landlock_command(program, args, workspace, cwd),
+            Backend::Landlock => {
+                let mut c = self.landlock_command(program, args, workspace, cwd)?;
+                for (k, v) in env {
+                    c.env(k, v);
+                }
+                Ok(c)
+            }
         }
     }
 
@@ -835,6 +871,45 @@ mod tests {
             sandbox.reaches_beyond_workspace(),
             "an extra bind is exactly how private data gets back in reach"
         );
+    }
+
+    /// A confined MCP server's environment is cleared inside the sandbox, so
+    /// a variable the harness means it to see rides in the wrapper's own argv
+    /// (review of #293: the run posture never reached a confined server).
+    #[test]
+    fn a_wrapped_argv_carries_named_variables_past_the_clear() {
+        let workspace = std::env::temp_dir();
+        let env = [("MECHA_RUN_POSTURE", "unknown")];
+        let bwrap = Sandbox::new(cfg(Backend::Bwrap))
+            .wrap_argv_with_env("server", &[], &workspace, &workspace, &env)
+            .unwrap();
+        let argv: Vec<String> = bwrap
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let at = argv
+            .windows(3)
+            .position(|w| w == ["--setenv", "MECHA_RUN_POSTURE", "unknown"])
+            .unwrap_or_else(|| panic!("not set: {argv:?}"));
+        let sep = argv.iter().position(|a| a == "--").unwrap();
+        assert!(at < sep, "the variable is set before the program: {argv:?}");
+
+        let docker = Sandbox::new(cfg(Backend::Docker))
+            .wrap_argv_with_env("server", &[], &workspace, &workspace, &env)
+            .unwrap();
+        let argv: Vec<String> = docker
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let e = argv
+            .iter()
+            .position(|a| a == "MECHA_RUN_POSTURE=unknown")
+            .unwrap();
+        let program = argv.iter().position(|a| a == "server").unwrap();
+        assert_eq!(argv[e - 1], "-e");
+        assert!(e + 1 < program, "`-e` precedes the image: {argv:?}");
     }
 
     #[test]

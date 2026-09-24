@@ -2179,7 +2179,16 @@ now makes the move one recorded event:
   rebuild) stamp `unattended`; `web_posture` applies the same rule to the
   web session's mode, so a chat set to `allow` or `read-only` from the page
   is unattended from its next turn, as voice's approve-all always was (both
-  found on review of #293). Independently, a
+  found on review of #293). **An MCP server is stamped `unknown`**
+  (`McpClient::build_command`, after the config's `env`, and through
+  `Sandbox::wrap_argv_with_env` when confined): it outlives the run that
+  started it and serves whichever run holds the agent, so no run's posture
+  is true of it, and anything it spawns is refused rather than read as the
+  owner at a terminal (review of #293). **The harness's own board moves
+  never cross the line either way** (`tasks::harness_step`): `move_task`
+  refuses a closing status and leaves a closed row closed, so a task the
+  owner closes while its run is in flight is not reopened by the run's
+  move back to `waiting`. Independently, a
   process descended from a live task-run or trigger-run marker's pid is
   refused whatever its environment — **on Linux only**: the ancestry is
   read from `/proc`, and elsewhere this second check finds nothing. **The residue is wider than it looks,

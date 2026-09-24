@@ -286,10 +286,21 @@ fn tool_rejected_prefix(tool: &str) -> String {
 }
 
 async fn call_with(prepared: &setup::PreparedTools, tool: &str, args: Value) -> Result<Value> {
-    let found = find_tool(&prepared.registry, tool).with_context(|| {
+    call_in(&prepared.registry, &tool_ctx(prepared), tool, args).await
+}
+
+/// [`call_with`] over any registry — a run's own, where `PreparedTools` is
+/// not what the caller holds.
+async fn call_in(
+    registry: &mecha_core::tool::Registry,
+    ctx: &mecha_core::tool::ToolCtx,
+    tool: &str,
+    args: Value,
+) -> Result<Value> {
+    let found = find_tool(registry, tool).with_context(|| {
         format!("no knowledge-graph server in this configuration — `{tool}` is not on the tool surface. Is `[[mcp]]` enabled?")
     })?;
-    let out = found.call(args, &tool_ctx(prepared)).await?;
+    let out = found.call(args, ctx).await?;
     if out.is_error {
         bail!("{}{}", tool_rejected_prefix(tool), out.content.trim());
     }
@@ -985,7 +996,21 @@ fn verb_of(kind: mecha_core::closure::Move) -> &'static str {
 /// no `kg_task_get`, and a scan of one small JSON array beats a second
 /// implementation of the board's own lookup.
 async fn find_task_with(prepared: &setup::PreparedTools, task_id: &str) -> Result<Value> {
-    let board = call_with(prepared, "kg_task_list", json!({ "include_closed": true })).await?;
+    find_task_in(&prepared.registry, &tool_ctx(prepared), task_id).await
+}
+
+async fn find_task_in(
+    registry: &mecha_core::tool::Registry,
+    ctx: &mecha_core::tool::ToolCtx,
+    task_id: &str,
+) -> Result<Value> {
+    let board = call_in(
+        registry,
+        ctx,
+        "kg_task_list",
+        json!({ "include_closed": true }),
+    )
+    .await?;
     let found = board["items"]
         .as_array()
         .map(Vec::as_slice)
@@ -2225,22 +2250,32 @@ pub(crate) const OWNER: &str = "@owner";
 /// status it is asked to carry today is `waiting` or the pre-run status it
 /// is restoring.
 pub(crate) async fn move_task(
+    registry: &mecha_core::tool::Registry,
     update: &std::sync::Arc<dyn mecha_core::tool::Tool>,
     ctx: &mecha_core::tool::ToolCtx,
     task: &str,
     status: &str,
     waiting_on: &str,
     session: Option<&str>,
-) -> Result<()> {
+) -> Result<HarnessStep> {
     // The harness's own hand: the guard refuses every model status write
     // (closing and reopening are recorded acts only `tasks set` performs), so
-    // this reaches the wrapped tool directly — and keeps, itself, the one
-    // rule the guard used to keep for it: never a closing status.
-    anyhow::ensure!(
-        !mecha_core::closure::is_closed_status(status),
-        "move_task never carries a closing status ({status}); a closure goes through `mecha \
-         tasks set`"
-    );
+    // this reaches the wrapped tool directly — and keeps, itself, the rule the
+    // guard used to keep for it, on both sides of the line: never a closing
+    // status, and never over a closure. The row is read first because a
+    // reopen is defined by where the row *is*: the owner may close a task
+    // while its run is in flight, and the run's closing move to `waiting`
+    // would otherwise undo that close with no record, no hook and no veto
+    // (found on review of #293). A row that cannot be read is not moved.
+    // Residue: the read and the write are two calls, so a close landing
+    // between them is still stepped over; the graph has no conditional
+    // update to close that window.
+    let row = find_task_in(registry, ctx, task).await?;
+    let current = row["status"].as_str().unwrap_or_default();
+    let step = harness_step(current, status)?;
+    if step == HarnessStep::KeepClosure {
+        return Ok(step);
+    }
     let update = update
         .unguarded()
         .unwrap_or_else(|| std::sync::Arc::clone(update));
@@ -2255,7 +2290,32 @@ pub(crate) async fn move_task(
     if out.is_error {
         bail!("kg_task_update: {}", out.content.trim());
     }
-    Ok(())
+    Ok(step)
+}
+
+/// What the harness's own hand does to a row — [`move_task`]'s rule, pure so
+/// a test fails when either side of it goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HarnessStep {
+    /// The row is open and the target is open: an ordinary move.
+    Move,
+    /// The row is closed — the owner closed it through `tasks set`, which
+    /// recorded it — so the harness leaves it closed. Moving it to an open
+    /// status would be a reopen nobody recorded.
+    KeepClosure,
+}
+
+pub(crate) fn harness_step(current: &str, target: &str) -> Result<HarnessStep> {
+    anyhow::ensure!(
+        !mecha_core::closure::is_closed_status(target),
+        "move_task never carries a closing status ({target}); a closure goes through `mecha \
+         tasks set`"
+    );
+    Ok(if mecha_core::closure::is_closed_status(current) {
+        HarnessStep::KeepClosure
+    } else {
+        HarnessStep::Move
+    })
 }
 
 /// Follow a task's `captured_from` pointer to the thing that asked for it.
@@ -2704,7 +2764,8 @@ async fn work(
     // the whole time the run is in flight rather than only after it lands —
     // and names the agent, so the Waiting view distinguishes a task the agent
     // is working from one a person owes you.
-    move_task(
+    if move_task(
+        prepared.agent.registry(),
         &update,
         &tctx,
         task_id,
@@ -2712,7 +2773,11 @@ async fn work(
         AGENT,
         Some(&session.meta.id),
     )
-    .await?;
+    .await?
+        == HarnessStep::KeepClosure
+    {
+        bail!("{task_id} was closed before its run started; nothing was worked");
+    }
 
     eprintln!(
         "working {task_id} with {} ({}) · session {}",
@@ -2829,9 +2894,24 @@ async fn work(
         // parked in `waiting` by a run that died is the queue growing for a
         // reason nobody can see — which is the whole failure `/queues` exists
         // to catch, reproduced one store over.
-        if let Err(restore) = move_task(&update, &tctx, task_id, &was, &was_waiting_on, None).await
+        match move_task(
+            prepared.agent.registry(),
+            &update,
+            &tctx,
+            task_id,
+            &was,
+            &was_waiting_on,
+            None,
+        )
+        .await
         {
-            eprintln!("warning: could not put {task_id} back to {was}: {restore:#}");
+            Ok(HarnessStep::Move) => {}
+            Ok(HarnessStep::KeepClosure) => {
+                eprintln!("note: {task_id} was closed while its run was in flight; it stays closed")
+            }
+            Err(restore) => {
+                eprintln!("warning: could not put {task_id} back to {was}: {restore:#}")
+            }
         }
         bail!("the run failed; partial files or drafts may exist. Review the task session and outbox before retrying: {e:#}");
     }
@@ -2840,8 +2920,22 @@ async fn work(
     // a question, or simply reported. Leaving it on the agent would make every
     // finished delegation look like one still running, which is the state the
     // Waiting view now exists to tell apart.
-    if let Err(e) = move_task(&update, &tctx, task_id, "waiting", OWNER, None).await {
-        eprintln!("warning: the board still says {AGENT} has {task_id}: {e:#}");
+    match move_task(
+        prepared.agent.registry(),
+        &update,
+        &tctx,
+        task_id,
+        "waiting",
+        OWNER,
+        None,
+    )
+    .await
+    {
+        Ok(HarnessStep::Move) => {}
+        Ok(HarnessStep::KeepClosure) => {
+            eprintln!("note: {task_id} was closed while its run was in flight; it stays closed")
+        }
+        Err(e) => eprintln!("warning: the board still says {AGENT} has {task_id}: {e:#}"),
     }
 
     let staged: Vec<String> = staged_ids(&session.meta.id)
@@ -4409,6 +4503,28 @@ mod tests {
             Ok(ToolOutput::ok("{\"status\":\"updated\"}"))
         )
         .is_ok());
+    }
+
+    #[test]
+    fn the_harness_never_closes_and_never_steps_over_a_closure() {
+        // Both sides of the line (review of #293): a closing target is
+        // refused outright, and a closed row stays closed — the owner closed
+        // it mid-run through `tasks set`, and the run's move back to
+        // `waiting` would be a reopen nothing recorded.
+        for closed in mecha_core::closure::TASK_STATUSES
+            .iter()
+            .copied()
+            .filter(|s| mecha_core::closure::is_closed_status(s))
+        {
+            assert!(harness_step("next", closed).is_err(), "{closed}");
+            assert_eq!(
+                harness_step(closed, "waiting").unwrap(),
+                HarnessStep::KeepClosure,
+                "{closed}"
+            );
+        }
+        assert_eq!(harness_step("next", "waiting").unwrap(), HarnessStep::Move);
+        assert_eq!(harness_step("waiting", "next").unwrap(), HarnessStep::Move);
     }
 
     #[test]
