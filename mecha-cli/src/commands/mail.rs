@@ -1316,7 +1316,14 @@ async fn classify(
     // server failure this exists for is length-dependent, failing the long
     // threads of a sweep that answered the short ones. Only the model can say
     // which: ask it a canary as long as the longest thread that failed.
-    let canary_answered = if failures.len() >= 2 {
+    // Only when its answer can change a record: if every failure is already
+    // an outage by its error, the canary would decide nothing and cost a
+    // full retry cycle on the sweep that is shortest of time.
+    let need_canary = failures.len() >= 2
+        && failures
+            .iter()
+            .any(|(_, _, e)| !mecha_core::mail_triage::failure_is_outage(e));
+    let canary_answered = if need_canary {
         let longest = failures
             .iter()
             .map(|(t, _, _)| t.body.chars().count())
@@ -1377,8 +1384,13 @@ async fn classify(
     // whether it is too aggressive — and a number nobody can see is a rule
     // nobody can grade.
     println!(
-        "\n{ok} classified ({escalated} read in full), \
-         {prefiltered} disposed without a model, {failed} failed"
+        "\n{ok} classified ({escalated} read in full on a second pass{}), \
+         {prefiltered} disposed without a model, {failed} failed",
+        if reread_ok > 0 {
+            format!(", {reread_ok} retried whole from the store")
+        } else {
+            String::new()
+        }
     );
 
     // **A run that accomplished nothing must exit non-zero.**
@@ -1516,6 +1528,9 @@ fn failed_record(
     sweep_outage: bool,
 ) -> Record {
     let mut r = record(t, None, Some(format!("{e:#}")));
+    // The sweep's verdict never overrides the provider's ruling that a
+    // failure is the thread's own (`failure_is_threads_own`).
+    let sweep_outage = sweep_outage && !mecha_core::mail_triage::failure_is_threads_own(e);
     r.carry_failure(
         prev,
         sweep_outage || mecha_core::mail_triage::failure_is_outage(e),
@@ -2887,6 +2902,15 @@ mod classify_exit_tests {
         );
         // A server-wide failure that carries no provider error (the empty
         // reply a reasoning budget produces) is caught at the sweep.
+        // Review finding: two oversized threads overflow, and a canary padded
+        // to their length overflows too — an "outage" that would retry them
+        // every sweep for ever. The provider's ruling wins.
+        let overflow = anyhow::Error::new(ProviderError::ContextOverflow).context("too long");
+        let oversized = failed_record(&thread, Some(&second), &overflow, true);
+        assert_eq!(
+            oversized.attempts, 3,
+            "a body that will not fit is the thread's own, whatever the sweep concluded"
+        );
         let sweep_wide = failed_record(&thread, Some(&second), &bad_verdict, true);
         assert_eq!(
             sweep_wide.attempts, 2,

@@ -51,7 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and when the next retry is due; `classify --force` still retries at once,
   inside the window and out, and out of it without the per-sweep cap. A
   thread retried from the store is marked `read_whole`, outside the
-  escalation measurement.
+  escalation measurement. A body too long for the model, or a request it
+  rejects, stays the thread's own even in a sweep judged an outage — a
+  length-matched canary overflows just as those threads do.
 
 ### Fixed
 
