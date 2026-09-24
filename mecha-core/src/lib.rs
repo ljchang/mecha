@@ -65,6 +65,7 @@ pub mod diagnose;
 pub mod distill;
 pub mod doctor;
 pub mod eval;
+pub mod exp_report;
 pub mod experiment;
 pub mod fixture_check;
 pub mod frontdoor;

@@ -86,6 +86,15 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// What the trials say, apart from the verdict: per arm (pass rate,
+    /// pass^k and pass@k across seeds, turns, tokens, wall time, tool
+    /// errors), per task, and for a lifetime the pass rate along the
+    /// sequence.
+    Report {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// The whole record — manifest, trials, judgements — as one JSON.
     Export { name: String },
 }
@@ -101,6 +110,7 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
         } => run(&name, limit, dry_run, jobs).await,
         Cmd::Status { name, json } => status(&name, json).await,
         Cmd::Judge { name, json } => judge_cmd(&name, json),
+        Cmd::Report { name, json } => report_cmd(&name, json),
         Cmd::Export { name } => export(&name),
     }
 }
@@ -2374,6 +2384,141 @@ fn lifetime_readout(
         l.stages_unknown = h.unknown;
     }
     Ok(out)
+}
+
+fn report_cmd(name: &str, json: bool) -> Result<()> {
+    let store = ExperimentStore::open_default(name)?;
+    let manifest = store.manifest()?;
+    let (trials, skipped) = store.trials()?;
+    let trials: Vec<Trial> = trials.into_values().collect();
+    let r = mecha_core::exp_report::build(&manifest, &trials);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&r)?);
+        return Ok(());
+    }
+    print!("{}", render_report(&r, skipped));
+    Ok(())
+}
+
+/// The report as tables. A missing rate prints as a dash, never a zero.
+fn render_report(r: &mecha_core::exp_report::Report, skipped: usize) -> String {
+    use std::fmt::Write;
+    let pct = |x: Option<f64>| x.map_or("—".to_string(), |v| format!("{:.0}%", v * 100.0));
+    let num = |x: Option<f64>, unit: &str| x.map_or("—".to_string(), |v| format!("{v:.1}{unit}"));
+    let k = |n: u64| {
+        if n >= 10_000 {
+            format!("{:.0}k", n as f64 / 1000.0)
+        } else if n >= 1000 {
+            format!("{:.1}k", n as f64 / 1000.0)
+        } else {
+            n.to_string()
+        }
+    };
+    let mut out = String::new();
+    let control = r
+        .control
+        .as_deref()
+        .map(|c| format!(", control `{c}`"))
+        .unwrap_or_default();
+    let _ = writeln!(out, "{} ({:?}{control})", r.name, r.kind);
+    if skipped > 0 {
+        let _ = writeln!(
+            out,
+            "  {skipped} trial file(s) could not be read and are not counted"
+        );
+    }
+    let _ = writeln!(
+        out,
+        "\n{:<16} {:>5} {:>6} {:>7} {:>11} {:>7} {:>7} {:>6} {:>14} {:>7} {:>11} {:>5}",
+        "arm",
+        "done",
+        "failed",
+        "pending",
+        "pass",
+        "pass^k",
+        "pass@k",
+        "turns",
+        "tokens in/out",
+        "wall",
+        "tools (err)",
+        "jobs"
+    );
+    for a in &r.arms {
+        let jobs = if a.jobs_seen.is_empty() {
+            "—".to_string()
+        } else {
+            a.jobs_seen
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let _ = writeln!(
+            out,
+            "{:<16} {:>5} {:>6} {:>7} {:>11} {:>7} {:>7} {:>6} {:>14} {:>7} {:>11} {:>5}",
+            a.arm,
+            a.done,
+            a.failed,
+            a.pending,
+            format!("{}/{} {}", a.passed, a.graded, pct(a.pass_rate)),
+            format!("{}/{}", a.tasks_always, a.tasks_graded),
+            format!("{}/{}", a.tasks_ever, a.tasks_graded),
+            num(a.mean_turns, ""),
+            format!("{} / {}", k(a.input_tokens), k(a.output_tokens)),
+            num(a.mean_wall_secs, "s"),
+            format!("{} ({})", a.tool_calls, a.tool_errors),
+            jobs
+        );
+    }
+    let _ = writeln!(
+        out,
+        "  pass^k: tasks passed on every run; pass@k: on at least one (across seeds and repetitions).\n  turns and wall are means per done trial; tokens and tool calls are totals"
+    );
+    if !r.tasks.is_empty() {
+        let arms: Vec<&String> = r.arms.iter().map(|a| &a.arm).collect();
+        let _ = write!(out, "\n{:<28}", "task");
+        for a in &arms {
+            let _ = write!(out, " {:>12}", a);
+        }
+        let _ = writeln!(out);
+        for t in &r.tasks {
+            let _ = write!(out, "{:<28}", t.task);
+            for a in &arms {
+                let c = t.cells.get(*a).copied().unwrap_or_default();
+                let cell = if c.runs == 0 {
+                    "—".to_string()
+                } else {
+                    format!("{}/{}", c.passed, c.runs)
+                };
+                let _ = write!(out, " {:>12}", cell);
+            }
+            let _ = writeln!(out);
+        }
+    }
+    for c in &r.curves {
+        let _ = writeln!(
+            out,
+            "\n{}: pass by position (early failure {}, late {})",
+            c.arm,
+            pct(c.early_failure),
+            pct(c.late_failure)
+        );
+        let line: Vec<String> = c
+            .points
+            .iter()
+            .map(|(p, n, k)| format!("{p}:{k}/{n}"))
+            .collect();
+        let _ = writeln!(
+            out,
+            "  {}",
+            if line.is_empty() {
+                "—".to_string()
+            } else {
+                line.join("  ")
+            }
+        );
+    }
+    out
 }
 
 fn judge_cmd(name: &str, json: bool) -> Result<()> {
