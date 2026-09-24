@@ -993,8 +993,11 @@ pub struct McpServerConfig {
     /// R-P2). What keeps it a deliberate decision rather than a quiet
     /// exemption: it is off by default, it is honoured only from the
     /// operator's own config (`merge_file` strips it from a project layer,
-    /// loudly), `mecha tools --json` and `mecha doctor` name every server
-    /// with it on, and `docs/TRIFECTA.md` lists it with the other switches.
+    /// loudly), `mecha tools` marks its tools (`result_claims_believed` in
+    /// `--json`, `null` where an unprefixed server makes it unknowable by
+    /// name), `mecha doctor`'s text output names it as a note — not a
+    /// finding, so doctor's `--json` does not carry it — and
+    /// `docs/TRIFECTA.md` lists it with the other switches.
     /// Turn it on only for a server you wrote or can read: its word is taken
     /// about whether it sent something.
     pub trust_result_claims: bool,

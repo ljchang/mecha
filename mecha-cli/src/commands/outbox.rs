@@ -1880,6 +1880,89 @@ mod tests {
         }
     }
 
+    /// The seam the whole dispatch claim cashes out at: `release` must route
+    /// a tool error the server vouched as "nothing dispatched" to
+    /// `record_not_dispatched`, and every other error to `record_error`. Each
+    /// side is tested elsewhere; this pins the choice, so reordering the two
+    /// arms, or a wrapper dropping the field, fails here (review of #290).
+    #[tokio::test]
+    async fn a_vouched_refusal_settles_the_release_and_an_unclaimed_error_does_not() {
+        struct Refusing(bool);
+        #[async_trait::async_trait]
+        impl mecha_core::tool::Tool for Refusing {
+            fn name(&self) -> &str {
+                "mail__mail_send"
+            }
+            fn description(&self) -> &str {
+                "refuses"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                json!({"type": "object"})
+            }
+            async fn call(
+                &self,
+                _: serde_json::Value,
+                _: &mecha_core::tool::ToolCtx,
+            ) -> anyhow::Result<mecha_core::tool::ToolOutput> {
+                Ok(mecha_core::tool::ToolOutput {
+                    content: "unknown account `work`".into(),
+                    is_error: true,
+                    external: true,
+                    refusal: false,
+                    not_dispatched: self.0,
+                })
+            }
+        }
+
+        for claimed in [true, false] {
+            let store = temp_store();
+            let staged = store
+                .stage(
+                    "mail__mail_send",
+                    OutboxKind::Message,
+                    json!({"to": "a@example.com"}),
+                    Default::default(),
+                    mecha_core::outbox::Provenance {
+                        anticipation: None,
+                        filled_defaults: Vec::new(),
+                        session_id: None,
+                        workspace: None,
+                        call_id: None,
+                    },
+                )
+                .unwrap();
+            let mut surface = empty_surface();
+            surface
+                .tools
+                .registry
+                .insert(std::sync::Arc::new(Refusing(claimed)));
+            let _lock = store.lock().unwrap();
+
+            let err = surface
+                .release(&store, &staged)
+                .await
+                .unwrap_err()
+                .to_string();
+            let after = store.item(&staged.id).unwrap();
+            assert_eq!(after.status, "pending", "a failed send is never resolved");
+            assert!(after
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("unknown account")));
+            if claimed {
+                assert!(err.contains("refused before sending anything"), "{err}");
+                assert!(!after.delivery_uncertain(), "a vouched refusal is settled");
+                assert!(after.ensure_delivery_ready().is_ok(), "and can go again");
+            } else {
+                assert!(
+                    after.delivery_uncertain(),
+                    "an unclaimed error stays unknown"
+                );
+                assert!(after.ensure_delivery_ready().is_err());
+            }
+        }
+    }
+
     /// A release that dies before the tool executes must still say so on the
     /// item. This path used to bail without `record_error`, so the failure
     /// reached only stderr — which the TUI's detached release closes — and the
