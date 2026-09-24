@@ -261,6 +261,18 @@ pub async fn act(State(state): St, Json(body): Json<ActBody>) -> Response {
                 args.push("--note");
                 args.push(note);
             }
+            if body.verb == "schedule" {
+                // A hold is made directly and never reaches the outbox; only
+                // an event that invites someone stages (PROVENANCE-DESIGN §2).
+                let argv: Vec<String> = std::iter::once("mail")
+                    .chain(args.iter().copied())
+                    .map(str::to_string)
+                    .collect();
+                return spawn_detached_note(
+                    &argv,
+                    "adding to your calendar — a private hold is made directly; an event that invites people lands in the outbox for review",
+                );
+            }
             spawn_detached(&args)
         }
         "forward" => {

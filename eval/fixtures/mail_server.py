@@ -705,7 +705,7 @@ TOOLS = [
     },
     {
         "name": "calendar_hold",
-        "description": "Block time on the owner's own primary calendar: a private hold that invites nobody, and whose details only the owner can see. Use it for reminders, focus time, or an event the owner is attending that has no invite to accept. To invite anyone, use calendar_create_event instead. Times are RFC 3339 (or YYYY-MM-DD with all_day).",
+        "description": "Block time on the owner's own primary calendar: a private hold that invites nobody, and that anyone the calendar is shared with at a reader level sees only as busy. Use it for reminders, focus time, or an event the owner is attending that has no invite to accept. To invite anyone, use calendar_create_event instead. Times are RFC 3339 (or YYYY-MM-DD with all_day).",
         "inputSchema": {
             "type": "object",
             "properties": {

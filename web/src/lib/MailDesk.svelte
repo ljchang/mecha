@@ -13,8 +13,9 @@
   //
   // Same contract as the phone: the list is a store read, the reader is
   // `mecha mail show`'s text, every action is a `mecha mail …` verb through
-  // /api/mail/act, and drafting verbs stage into the outbox — nothing sends
-  // from here. Spam still confirms, for the phone's reason: it is the one
+  // /api/mail/act, and drafting verbs stage into the outbox — except a
+  // schedule with no invitees, which makes a private hold directly. Nothing
+  // sends from here. Spam still confirms, for the phone's reason: it is the one
   // verb whose effect leaves the mailbox.
   //
   // What is new is timing. Each verb is a CLI child that starts the mail
@@ -720,7 +721,7 @@
               <button onclick={() => run('archive')}><kbd>e</kbd>Archive</button>
               <button onclick={() => ask('reply', 'Steer the reply (optional) — Enter to draft', 'decline politely; ask for the deadline')}><kbd>r</kbd>Reply</button>
               <button onclick={() => run('task')}><kbd>t</kbd>Task</button>
-              <button onclick={() => run('schedule')} title="Drafts an event on your calendar from the thread's date and time; ⇧S to add instructions"><kbd>s</kbd>Add to calendar</button>
+              <button onclick={() => run('schedule')} title="Adds the thread's date and time to your calendar as a private hold, made directly; name people with ⇧S and it drafts an invitation for review instead"><kbd>s</kbd>Add to calendar</button>
               <button onclick={() => ask('forward', 'Forward to, and a covering line', 'FYI — the one I mentioned', { wantTo: true })}><kbd>f</kbd>Forward</button>
               <button onclick={() => ask('needs-info', 'What are you waiting for?', 'their dates, before I can book', { required: true })}><kbd>p</kbd>Park</button>
               <button onclick={() => run('dismiss')}><kbd>d</kbd>Dismiss</button>
@@ -810,16 +811,16 @@
           <p><kbd>t</kbd> make a task on the board</p>
           <p><kbd>⇧E</kbd> <kbd>⇧D</kbd> <kbd>⇧T</kbd> also work — and <kbd>⌘E</kbd> <kbd>⌘D</kbd> once more than one thread is selected</p></div>
         <div><div class="kicker">Draft (to the outbox)</div>
-          <p><kbd>r</kbd> reply · <kbd>s</kbd> add to calendar</p>
-          <p><kbd>⇧S</kbd> add to calendar, with instructions</p>
-          <p><kbd>f</kbd> forward · <kbd>c</kbd> compose new</p></div>
+          <p><kbd>r</kbd> reply · <kbd>f</kbd> forward · <kbd>c</kbd> compose new</p>
+          <p><kbd>s</kbd> add to calendar — a private hold, made directly</p>
+          <p><kbd>⇧S</kbd> add to calendar, with instructions; naming people drafts an invitation</p></div>
         <div><div class="kicker">Batch and recover</div>
           <p><kbd>x</kbd> select · <kbd>⇧↓</kbd> <kbd>J</kbd> <kbd>K</kbd> extend</p>
           <p><kbd>⌘A</kbd> <kbd>A</kbd> select the lane · <kbd>⌘</kbd>/<kbd>⇧</kbd>-click</p>
           <p><kbd>z</kbd> undo (within {HOLD_MS / 1000}s)</p>
           <p><kbd>!</kbd> spam — confirms first</p></div>
       </div>
-      <p class="helpnote">Actions wait {HOLD_MS / 1000} seconds before they reach the server, so <kbd>z</kbd> can take one back. Replies, forwards and invites stage in the outbox; nothing sends from here.</p>
+      <p class="helpnote">Actions wait {HOLD_MS / 1000} seconds before they reach the server, so <kbd>z</kbd> can take one back. Replies, forwards and invites stage in the outbox; a private hold on your own calendar is made directly, and nothing sends from here.</p>
     </div>
   {/if}
 
