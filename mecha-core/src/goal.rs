@@ -189,18 +189,24 @@ pub enum Drift {
 }
 
 impl GoalRef {
-    /// Whether a plan can name this kind of goal at all. The `todo` schema
-    /// offers `task:` and `charter:` (and a project is the task's tier), so
-    /// a plan under a `trigger:`, `request:` or `setpoint:` anchor can never
-    /// repeat it — judging such a plan's `serves` against the anchor would
-    /// score every named goal as a changed pointer by construction (found
-    /// on review of the structural-anchor PR). Drift is measured, and
-    /// `planning::Decision` asks to clarify the goal, only against anchors
-    /// a plan can name.
+    /// Whether a plan's `serves` is judged against this kind of anchor.
+    /// A `trigger:` or `request:` anchor is the structural tier a run was
+    /// *handed* (S1), not a goal the plan is steered toward: the `todo`
+    /// schema's description offers `task:` and `charter:`, so a trigger run
+    /// that names the charter line its work serves is serving the anchor,
+    /// yet pointer equality would score it a changed pointer — and nearly
+    /// every such plan with it. The parser does accept any kind, and
+    /// `goal_context` hands the anchor back as `confirmed_goal`, so a plan
+    /// *can* echo one; this is about what the comparison means, not what
+    /// can be written. A `setpoint:` anchor is different — the owner sets
+    /// it by hand (`run --goal setpoint:x`) and a plan diverging from it is
+    /// drift worth counting — so it stays judged (found on review of #292,
+    /// after an earlier cut excluded it too). Drift is measured, and
+    /// `planning::Decision` asks to clarify the goal, only against these.
     pub fn a_plan_can_name(&self) -> bool {
         matches!(
             self,
-            GoalRef::Charter(_) | GoalRef::Task(_) | GoalRef::Project(_)
+            GoalRef::Charter(_) | GoalRef::Task(_) | GoalRef::Project(_) | GoalRef::Setpoint(_)
         )
     }
 }
@@ -342,10 +348,10 @@ mod tests {
     /// anchor, so no plan write under it is judged (review of #292).
     #[test]
     fn only_anchors_a_plan_can_name_are_comparable() {
-        for g in ["task:t", "charter:c", "project:p"] {
+        for g in ["task:t", "charter:c", "project:p", "setpoint:s"] {
             assert!(g.parse::<GoalRef>().unwrap().a_plan_can_name(), "{g}");
         }
-        for g in ["trigger:morning", "request:12", "setpoint:s"] {
+        for g in ["trigger:morning", "request:12"] {
             assert!(!g.parse::<GoalRef>().unwrap().a_plan_can_name(), "{g}");
         }
     }

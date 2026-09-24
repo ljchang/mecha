@@ -2307,4 +2307,16 @@ mod jail_tests {
         assert_eq!(anchor, Some(GoalRef::Trigger("morning".into())));
         assert_eq!((writes, drifted, unnamed), (2, 0, 0));
     }
+
+    /// An owner-set `setpoint:` anchor stays judged: a plan serving
+    /// something else is drift, as it was before the structural kinds
+    /// arrived (review of #292 — an earlier cut had excluded it).
+    #[test]
+    fn a_plan_diverging_from_a_setpoint_anchor_is_still_drift() {
+        use crate::goal::GoalRef;
+        let track = GoalTrack::carrying(Some(GoalRef::Setpoint("attention-debt".into())));
+        track.note_plan(Some(&GoalRef::Task("x".into())));
+        let (_, writes, drifted, unnamed) = track.snapshot();
+        assert_eq!((writes, drifted, unnamed), (1, 1, 0));
+    }
 }
