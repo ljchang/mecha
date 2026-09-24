@@ -2410,7 +2410,7 @@ impl ExperimentStore {
     /// The isolated home one arm's trials run in (D12). Created with the
     /// marker, and **refused if it is, or contains, the real home**.
     pub fn arm_home(&self, arm: &str, seed_from: &Path) -> Result<PathBuf> {
-        self.home_at(arm, seed_from)
+        self.home_at(arm, seed_from, true)
     }
 
     /// The isolated home one *lifetime* runs in — one per arm × seed ×
@@ -2418,20 +2418,56 @@ impl ExperimentStore {
     /// its stages leave in the store for the next task, and two lifetimes
     /// sharing a home would learn from each other.
     pub fn lifetime_home(&self, lifetime: &str, seed_from: &Path) -> Result<PathBuf> {
-        self.home_at(lifetime, seed_from)
+        self.home_at(lifetime, seed_from, false)
     }
 
     /// `seed_from` is the experiment's environment directory: a fresh home
     /// takes its learning store, skills and charter from there, never from
     /// the real home (`trial_env`).
-    fn home_at(&self, name: &str, seed_from: &Path) -> Result<PathBuf> {
+    ///
+    /// The home records the built environment it was seeded from. When the
+    /// arm's environment has changed since (an edit between sittings, a new
+    /// digest), a `single` home is re-seeded — its charter, skills and
+    /// learning store replaced, since each trial starts from the seed
+    /// anyway — and a lifetime's is refused: re-seeding mid-sequence would
+    /// discard what the loop learned and splice two conditions into one
+    /// sequence. Without the record the config and stores followed the new
+    /// environment while the charter stayed the old one's, under a digest
+    /// that named a charter which never ran (found on review).
+    fn home_at(&self, name: &str, seed_from: &Path, reseed: bool) -> Result<PathBuf> {
         let home = self.root.join("homes").join(name);
         let real = crate::work::mecha_home()?;
         refuse_unsafe_home(&home, &real)?;
         let fresh = !home.join(HOME_MARKER).exists();
         std::fs::create_dir_all(&home)?;
-        if fresh {
+        let record = home.join(SEEDED_FROM);
+        let want = seed_from.to_string_lossy().into_owned();
+        let had = std::fs::read_to_string(&record).ok();
+        // A home from before the record existed adopts its current world
+        // rather than reading as changed: that would re-seed every old
+        // single and stop every old lifetime.
+        let changed = !fresh && had.as_deref().is_some_and(|h| h != want);
+        if changed {
+            anyhow::ensure!(
+                reseed,
+                "`{name}` was seeded from another environment than its arm now names — a \
+                 lifetime cannot change world mid-sequence; start a new experiment for the \
+                 new environment"
+            );
+            for entry in SEEDED {
+                let path = home.join(entry);
+                if path.is_dir() {
+                    std::fs::remove_dir_all(&path)?;
+                } else if path.exists() {
+                    std::fs::remove_file(&path)?;
+                }
+            }
+        }
+        if fresh || changed {
             seed_home(seed_from, &home)?;
+        }
+        if fresh || changed || had.is_none() {
+            std::fs::write(&record, &want)?;
         }
         std::fs::write(
             home.join(HOME_MARKER),
@@ -3129,6 +3165,10 @@ pub fn fold_home_overrides(
     }
     Ok(moved)
 }
+
+/// Which built environment a home's charter, skills and learning store were
+/// seeded from, beside `HOME_MARKER`.
+const SEEDED_FROM: &str = ".seeded-from";
 
 /// The stores a lever left *on* reads: the learning store (rules and
 /// reflections), the skills directory, the charter. A fresh trial home has
@@ -4549,6 +4589,52 @@ rationale = "no rumination should fail more over the sequence"
         let (all, torn) = store.all_stage_runs().unwrap();
         assert_eq!((all.len(), torn), (ledger.len(), 1));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A single's home follows its arm's environment when it changes
+    /// between sittings; a lifetime's refuses to.
+    #[test]
+    fn a_changed_environment_reseeds_a_single_home_and_stops_a_lifetime() {
+        let root = std::env::temp_dir().join(format!("mecha-exp-reseed-{}", uuid::Uuid::new_v4()));
+        let store = ExperimentStore::open(&root, "reseed").unwrap();
+        let (one, two) = (root.join("env-one"), root.join("env-two"));
+        for (dir, text) in [(&one, "# one\n"), (&two, "# two\n")] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("charter.toml"), text).unwrap();
+        }
+        let home = store.arm_home("a", &one).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(home.join("charter.toml")).unwrap(),
+            "# one\n"
+        );
+        // A trial's own learning, and the same environment again: kept.
+        std::fs::write(home.join("charter.toml"), "# one, still\n").unwrap();
+        store.arm_home("a", &one).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(home.join("charter.toml")).unwrap(),
+            "# one, still\n"
+        );
+        // The environment changed: re-seeded from the new one.
+        store.arm_home("a", &two).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(home.join("charter.toml")).unwrap(),
+            "# two\n"
+        );
+        // A lifetime: seeded once, refused on a change.
+        store.lifetime_home("l", &one).unwrap();
+        assert!(store.lifetime_home("l", &one).is_ok());
+        assert!(store.lifetime_home("l", &two).is_err());
+        // A home from before the record: adopts its world, neither
+        // re-seeded nor refused.
+        let old = store.lifetime_home("m", &one).unwrap();
+        std::fs::remove_file(old.join(SEEDED_FROM)).unwrap();
+        std::fs::write(old.join("charter.toml"), "# learned in place\n").unwrap();
+        assert!(store.lifetime_home("m", &two).is_ok());
+        assert_eq!(
+            std::fs::read_to_string(old.join("charter.toml")).unwrap(),
+            "# learned in place\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// An arm's own environment is its own hash term and its own grouping:
