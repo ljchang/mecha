@@ -517,6 +517,9 @@
 
   async function setStatus(task, status) {
     busy = true;
+    // The note belongs to at most one tap: a refused move must not sit
+    // under another task's earlier readout.
+    closureNote = null;
     try {
       const res = await fetch('/api/tasks/set', {
         method: 'POST',
