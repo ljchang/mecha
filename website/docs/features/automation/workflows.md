@@ -30,6 +30,8 @@ mecha workflow show FLOW_ID
 ```
 
 Commitments are entered by you. Messages are not automatically treated as promises.
+Neither [appraisal](/docs/features/appraisal) nor its anticipated-guilt sensor reads
+workflow commitments or checks yet; they are tracked here, not scored there.
 Times must include a timezone or UTC offset.
 
 ## Check the result
