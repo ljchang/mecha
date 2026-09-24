@@ -100,7 +100,32 @@ pub struct PreparedTools {
     /// — and paraphrasing somebody's conversation because it got long is
     /// their decision, not one a tool may take on their behalf.
     pub compact_requested: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Whether a person is in this run's conversation — stamped on every
+    /// command its `shell` runs (`closure::POSTURE_ENV`), so `mecha tasks
+    /// set` run from inside a run can tell the owner's approval from a lane
+    /// closing its own task. See [`posture_for`].
+    pub posture: mecha_core::closure::RunPosture,
     pub _mcp: Vec<Arc<McpClient>>,
+}
+
+/// The posture a front-end's run gets, unless it names one
+/// (`GlobalOpts::run_posture`). A delegated task is always `delegated`,
+/// whatever its approver: a closure is the owner's verdict on it. A chat,
+/// the TUI or `mecha run` with a person at the approver is `interactive`.
+/// Everything else — triggers, the front door, mail, Slack, voice, and the
+/// web before a session says otherwise (`serve::chat` stamps its own) — is
+/// `unattended`, the direction that refuses.
+pub fn posture_for(
+    surface: Option<mecha_core::session::SessionKind>,
+    interactive: bool,
+) -> mecha_core::closure::RunPosture {
+    use mecha_core::closure::RunPosture;
+    use mecha_core::session::SessionKind as K;
+    match surface {
+        Some(K::Task) => RunPosture::Delegated,
+        Some(K::Chat | K::Tui | K::Run | K::Test) | None if interactive => RunPosture::Interactive,
+        _ => RunPosture::Unattended,
+    }
 }
 
 /// Build an agent. `interactive` decides whether an un-approved tool call can
@@ -281,6 +306,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         // place that decides it. `Agent::run_in` mints a fresh `Mutex` per
         // run regardless — this initial one is never actually read from.
         step_escalation: step_escalation_slot(cfg.agent.step_escalation),
+        run_posture: Some(tools.posture),
         ..ToolCtx::default()
     };
 
@@ -1367,6 +1393,9 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         skill,
         mailbox,
         compact_requested,
+        posture: opts
+            .run_posture
+            .unwrap_or_else(|| posture_for(opts.surface, interactive)),
         _mcp: clients,
     })
 }
@@ -1911,10 +1940,37 @@ mod surface_only_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_subagent, excluded_by_allowlist, fold_agent_switches, levers_off,
+        build_subagent, excluded_by_allowlist, fold_agent_switches, levers_off, posture_for,
         step_escalation_enabled, step_escalation_slot,
     };
     use crate::GlobalOpts;
+
+    /// Only a surface with a person at the approver is interactive; a
+    /// delegated task never is, whatever its approver; and everything else is
+    /// the direction that refuses a closure (S8).
+    #[test]
+    fn a_run_is_interactive_only_with_a_person_at_the_approver() {
+        use mecha_core::closure::RunPosture as P;
+        use mecha_core::session::SessionKind as K;
+        assert_eq!(posture_for(Some(K::Task), true), P::Delegated);
+        assert_eq!(posture_for(Some(K::Task), false), P::Delegated);
+        for k in [K::Chat, K::Tui, K::Run] {
+            assert_eq!(posture_for(Some(k), true), P::Interactive, "{k:?}");
+            assert_eq!(posture_for(Some(k), false), P::Unattended, "{k:?}");
+        }
+        for k in [
+            K::Trigger,
+            K::Frontdoor,
+            K::Mail,
+            K::Slack,
+            K::Voice,
+            K::Web,
+        ] {
+            assert_eq!(posture_for(Some(k), true), P::Unattended, "{k:?}");
+        }
+        assert_eq!(posture_for(None, true), P::Interactive);
+        assert_eq!(posture_for(None, false), P::Unattended);
+    }
     use mecha_core::config::Config;
     use mecha_core::harness::Lever;
 

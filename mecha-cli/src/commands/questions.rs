@@ -282,6 +282,9 @@ async fn answer_and_resume(
         .with_context(|| format!("the session that asked ({}) is gone", q.session_id))?;
     let asked = Session::read(&path)?;
     opts.surface = asked.configs.first().and_then(|rc| rc.rules_surface);
+    // A resume continues the delegated run that asked, so it may not close
+    // its own task either (S8) — whatever surface its block was matched on.
+    opts.run_posture = Some(mecha_core::closure::RunPosture::Delegated);
     let mut prepared = setup::prepare(&opts, !unattended).await?;
 
     // The same refusal `tasks work` makes, for the same reason: this is that

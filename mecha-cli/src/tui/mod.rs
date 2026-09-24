@@ -5062,6 +5062,31 @@ fn reload_tasks(app: &mut App, status: Option<String>) {
     }
 }
 
+/// What the closure appraisal said about the move just made on `task`, from
+/// the closure record — `None` when the latest record is not this move, or
+/// the task had nothing to appraise.
+fn closure_readout(task: &str, to: &str) -> Option<String> {
+    use mecha_core::closure::{ClosureStore, Entry};
+    let store = ClosureStore::open_existing_default()?;
+    let (t, readout) = store.latest_with_readout(task).ok()??;
+    let fresh = chrono::Utc::now().signed_duration_since(t.at) < chrono::Duration::minutes(3);
+    if t.to != to || !fresh {
+        return None;
+    }
+    match readout {
+        Some(Entry::Readout {
+            readout: Some(r),
+            follow_up_staged,
+            ..
+        }) => Some(if follow_up_staged {
+            format!("{r} — a follow-up was staged")
+        } else {
+            r
+        }),
+        _ => None,
+    }
+}
+
 fn tasks_cli(args: &[&str]) -> Result<String> {
     let mut full = vec!["tasks"];
     full.extend_from_slice(args);
@@ -6424,8 +6449,14 @@ fn run_task_action(app: &mut App, key: char) -> Result<()> {
     let Some((id, was)) = selected else {
         return Ok(());
     };
-    let note = match tasks_cli(&["set", &id, "--status", status]) {
-        Ok(_) => format!("{was} → {status}"),
+    let note = match tasks_cli(&["set", &id, "--status", status, "--surface", "tui"]) {
+        // A closure's appraisal is read back from the closure record (S8):
+        // `self_cli` keeps the child's stdout, and the appraisal was only
+        // ever on its stderr.
+        Ok(_) => match closure_readout(&id, status) {
+            Some(readout) => format!("{was} → {status} · {readout}"),
+            None => format!("{was} → {status}"),
+        },
         Err(e) => format!("could not set {status}: {e}"),
     };
     reload_tasks(app, Some(note));

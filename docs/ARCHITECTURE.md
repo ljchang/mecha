@@ -2096,7 +2096,9 @@ mid-call was saved where nothing else looked.
 
 ## Hooks
 
-`[[hook]]` commands run at `pre_tool`, `post_tool` and `session_end`, with the
+`[[hook]]` commands run at `pre_tool`, `post_tool` and `session_end`, and — for
+the task board rather than a run — at `pre_task_close`, `task_closed` and
+`task_reopened` (see *Closing a task is a recorded event* below), with the
 event as JSON on stdin. The point is that policy, redaction and logging attach
 *without* editing the loop. Four decisions carry it:
 
@@ -2104,12 +2106,13 @@ event as JSON on stdin. The point is that policy, redaction and logging attach
   narrow policy and never loosen security, and a `pre_tool` denial never
   reaches the human: mechanical policy is cheaper than an interruption, and a
   hook cannot be talked into clicking yes.
-- **`pre_tool` fails closed.** Exit 0 allows, exit 2 denies; an undefined exit
-  code, a spawn failure or a timeout also *denies*. This is the
+- **`pre_tool` and `pre_task_close` fail closed**, through one shared gate
+  (`HookSet::gate`). Exit 0 allows, exit 2 denies; an undefined exit code, a
+  spawn failure or a timeout also *denies*. This is the
   silently-degrading-sandbox rule again — a policy hook that cannot run and
-  quietly allows is worse than no hook. `post_tool` and `session_end` are
-  observers and their failures are swallowed, because an observer must not be
-  load-bearing.
+  quietly allows is worse than no hook. `post_tool`, `session_end`,
+  `task_closed` and `task_reopened` are observers and their failures are
+  swallowed, because an observer must not be load-bearing.
 - **A hook denial reads "Blocked by a hook:", not "Denied by the user:".** The
   learning miner keys on the second string. Machine policy is not a user
   correction, and learning from it would teach mecha rules it was already
@@ -2135,6 +2138,40 @@ event as JSON on stdin. The point is that policy, redaction and logging attach
 
 Config is validated even when `--no-hooks` skips installing, so a typo'd event
 name fails on every start rather than only on the runs that needed it.
+
+### Closing a task is a recorded event
+
+`closure.rs` (S8 of `APPRAISAL-WIRING-DESIGN.md`, ruled 2026-09-24). Every
+surface closes or reopens a board task through `mecha tasks set` — the TUI
+and the web board shell out to it with `--surface`, Slack's taps carry
+`--surface slack`, a chat's model runs it through `shell` — and `tasks set`
+now makes the move one recorded event:
+
+- **Write-ahead.** The transition line is appended (and synced) to
+  `~/.mecha/closures/closures.jsonl` *before* the board row moves; a record
+  that cannot be written stops the closure ("nothing was changed"), and a
+  board write that then fails appends an `aborted` line that withdraws it.
+  A readout line after the appraisal carries what it said, so a surface
+  that is not a terminal reads it back instead of losing it on the child's
+  stderr.
+- **The pre-read is now mandatory for any status change.** It used to be
+  skipped for open statuses and warned-past for closures; a status change
+  that cannot be classified cannot be recorded, so a failed read refuses.
+- **Who may close is decided before the record is written**
+  (`closure::decide`). The `shell` tool stamps every command with the run's
+  posture (`MECHA_RUN_POSTURE`, set on every sandbox backend by
+  `Sandbox::command_with_env`, from `ToolCtx::run_posture`, which
+  `setup::posture_for` and `serve::chat::web_posture` set); only
+  `interactive` may close, recorded as `owner-approved` on surface `chat`,
+  and an unstamped run reads `unknown`, which refuses. Independently, a
+  process descended from a live task-run or trigger-run marker's pid is
+  refused whatever its environment. The residue, named on `decide`: an
+  unconfined shell that both clears the variable and detaches from its
+  parent.
+- **`--surface` cannot claim `chat`**, and inside a run the flag is ignored:
+  the surface of a run's closure is always `chat`.
+- **Reopen is the same event reversed** (`move: reopen`, `undoes` naming the
+  closure it undoes) and fires `task_reopened`; it signs nothing yet (1d).
 
 ## Tool dispatch and panics
 
@@ -4010,9 +4047,11 @@ is open, `appraise_project` folds every session that worked a task under it
 into one `ProjectReading` — labels counted, valence summed with positive
 and negative apart, `partial` if any reading was, the tasks never delegated
 and the ones it could not read counted rather than dropped — printed on
-stderr where the task's own appraisal is. It stages no follow-up (one per
-closure, and the task's owns it), writes no record (there is no project
-store), and treats a `dropped` last task as closing the tier like a `done`
+stderr where the task's own appraisal is, and carried on the closure
+record's readout line (`closure::Entry::Readout::project`). It stages no
+follow-up (one per closure, and the task's owns it), writes no project record
+(there is no project store; the readout rides on the task's closure), and
+treats a `dropped` last task as closing the tier like a `done`
 one. A board that names a project without identifying it — a graph server
 from before `project_id`, or an id that is not one token — is said once on
 stderr rather than read as no project: the silently-degrading-guard shape.

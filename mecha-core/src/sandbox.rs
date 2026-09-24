@@ -213,6 +213,52 @@ impl Sandbox {
         }
     }
 
+    /// [`command`](Self::command), with named variables set in the child's
+    /// environment on every backend — including the ones that clear it
+    /// (bwrap's `--clearenv`, docker's fresh container, landlock's
+    /// discipline), where a variable set on the parent would never arrive.
+    /// The harness uses it for facts about the run the command belongs to
+    /// (`closure::POSTURE_ENV`), never for secrets.
+    pub fn command_with_env(
+        &self,
+        command: &str,
+        workspace: &Path,
+        cwd: &Path,
+        env: &[(&str, &str)],
+    ) -> Result<tokio::process::Command> {
+        let argv = ["-lc".to_string(), command.to_string()];
+        match self.cfg.kind {
+            Backend::None | Backend::Landlock => {
+                let mut c = self.command(command, workspace, cwd)?;
+                for (k, v) in env {
+                    c.env(k, v);
+                }
+                Ok(c)
+            }
+            Backend::Bwrap => {
+                let mut a = self.bwrap_args(workspace, cwd)?;
+                for (k, v) in env {
+                    a.extend(["--setenv".to_string(), k.to_string(), v.to_string()]);
+                }
+                let mut c = tokio::process::Command::new("bwrap");
+                c.args(a).arg("--").arg("bash").args(argv);
+                Ok(c)
+            }
+            Backend::Docker => {
+                // `docker_args` ends with the image; `-e` must precede it.
+                let mut a = self.docker_args(workspace, cwd)?;
+                let image = a.pop();
+                for (k, v) in env {
+                    a.extend(["-e".to_string(), format!("{k}={v}")]);
+                }
+                a.extend(image);
+                let mut c = tokio::process::Command::new("docker");
+                c.args(a).arg("bash").args(argv);
+                Ok(c)
+            }
+        }
+    }
+
     /// Confine an explicit argv, with no shell in between.
     ///
     /// For long-lived children — an MCP server — where routing through

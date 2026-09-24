@@ -634,6 +634,12 @@ pub struct ToolCtx {
     pub goal_lessons: Vec<crate::planning::Lesson>,
     pub goal_examples: Vec<crate::planning::Example>,
     pub step_checks: Option<std::sync::Arc<std::sync::Mutex<Vec<crate::step::CheckRequest>>>>,
+    /// Whether a person is in this run's conversation, stamped by the
+    /// front-end (`setup::posture_for`). The `shell` tool hands it to every
+    /// command as `closure::POSTURE_ENV`, so `mecha tasks set` can refuse a
+    /// closure a run with nobody present tries to make. `None` is unknown and
+    /// reaches the command as `unknown`, which refuses.
+    pub run_posture: Option<crate::closure::RunPosture>,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -805,6 +811,7 @@ impl Default for ToolCtx {
             goal_lessons: Vec::new(),
             goal_examples: Vec::new(),
             step_checks: None,
+            run_posture: None,
         }
     }
 }

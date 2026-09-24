@@ -530,7 +530,20 @@ impl Tool for Shell {
         // A sandbox that cannot be built refuses the call. Running the command
         // unconfined instead would silently break the promise the capabilities
         // above are making on its behalf.
-        let mut command = match self.sandbox.command(command, &ctx.workspace, &cwd) {
+        // Every command learns whether a person is in the run that ran it —
+        // how `mecha tasks set` refuses a closure from a run with nobody
+        // present (`closure::decide`). Unstamped reads as `unknown`, which
+        // refuses; the value is a fact about the run, never a secret.
+        let posture = ctx
+            .run_posture
+            .map(|p| p.as_str())
+            .unwrap_or(crate::closure::RunPosture::UNKNOWN);
+        let mut command = match self.sandbox.command_with_env(
+            command,
+            &ctx.workspace,
+            &cwd,
+            &[(crate::closure::POSTURE_ENV, posture)],
+        ) {
             Ok(c) => c,
             Err(e) => {
                 return Ok(ToolOutput::err(format!(
@@ -1047,6 +1060,26 @@ mod tests {
 
         // Confined *with* a network is a way out again.
         assert!(shell_with(Backend::Bwrap, true).capabilities().can_send());
+    }
+
+    /// Every command learns the posture of the run that ran it, and an
+    /// unstamped run reads as `unknown` — the value `mecha tasks set` refuses.
+    #[tokio::test]
+    async fn every_command_sees_its_runs_posture_and_unstamped_reads_unknown() {
+        let dir = std::env::temp_dir().join(format!("mecha-posture-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shell = shell_with(Backend::None, false);
+        let echo = serde_json::json!({"command": "printf %s \"$MECHA_RUN_POSTURE\""});
+        let mut ctx = ToolCtx {
+            workspace: dir.clone(),
+            ..ToolCtx::default()
+        };
+        let out = shell.call(echo.clone(), &ctx).await.unwrap();
+        assert!(out.content.contains("unknown"), "{}", out.content);
+        ctx.run_posture = Some(crate::closure::RunPosture::Delegated);
+        let out = shell.call(echo, &ctx).await.unwrap();
+        assert!(out.content.contains("delegated"), "{}", out.content);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
