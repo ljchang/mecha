@@ -1098,6 +1098,17 @@ pub enum SessionKind {
 /// caller can claim a surface it is not.
 pub const SESSION_KIND_ENV: &str = "MECHA_SESSION_KIND";
 
+static KIND_ENV_IGNORED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// For test binaries outside this crate (whose `cfg(test)` this crate does
+/// not see): ignore [`SESSION_KIND_ENV`] for the rest of the process, as
+/// this crate's own unit tests do. It can only narrow what a session is
+/// labelled, never widen it.
+#[doc(hidden)]
+pub fn ignore_kind_env_for_tests() {
+    KIND_ENV_IGNORED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 impl SessionKind {
     pub const ALL: [SessionKind; 12] = [
         SessionKind::Run,
@@ -1143,6 +1154,15 @@ impl SessionKind {
     /// `None` otherwise — the override only ever narrows toward `Test`, so
     /// there is nothing else it could return.
     pub fn test_override() -> Option<SessionKind> {
+        // Unit tests are hermetic to a smoke-test mark exported in the shell
+        // running them: a developer who set `MECHA_SESSION_KIND=test` for a
+        // live run saw 28 tests fail, every session they wrote relabelled.
+        // The kind probe, which tests this very read, opts back in.
+        if KIND_ENV_IGNORED.load(std::sync::atomic::Ordering::Relaxed)
+            || (cfg!(test) && std::env::var_os("MECHA_KIND_PROBE_EXPECT").is_none())
+        {
+            return None;
+        }
         match std::env::var(SESSION_KIND_ENV) {
             Ok(v) if v == SessionKind::Test.as_str() => Some(SessionKind::Test),
             // The one other kind an environment may set: `mecha exp` marks

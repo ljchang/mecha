@@ -3308,7 +3308,11 @@ pub fn judge(
             ));
         }
         let own = arm_hashes(trials, name);
-        let same_condition_as_control = !own.is_empty() && own == arm_hashes(trials, control_name);
+        // Subset, not equality: a sitting stopped by `--limit` leaves the arm
+        // with fewer rows than the control, and every row it has still
+        // carries a control hash (found on review).
+        let same_condition_as_control =
+            !own.is_empty() && own.is_subset(&arm_hashes(trials, control_name));
         out.push(ArmJudgement {
             arm: name.clone(),
             metric,
@@ -3835,8 +3839,7 @@ rationale = "no notice, fewer turns"
         // The hash: a forced switch is a different condition from the
         // control; `levers_on` of a flag-only lever over `full` is the
         // control itself, and so is the bare-plus-one design's old value.
-        let m = Manifest::parse(
-            r#"
+        let m_text = r#"
 name = "forced"
 control = "full"
 split_seed = 1
@@ -3855,9 +3858,8 @@ levers_on = ["learned_rules"]
 [arms.rules.prediction]
 metric = "failure"
 rationale = "r"
-"#,
-        )
-        .unwrap();
+"#;
+        let m = Manifest::parse(m_text).unwrap();
         let rows = m.trials(&["t".into()], "p", "m");
         let h = |arm: &str| {
             rows.iter()
@@ -3883,6 +3885,23 @@ rationale = "r"
         };
         assert!(flag("rules"));
         assert!(!flag("escalate"));
+        // A partial sitting: the identical arm has run fewer rows than the
+        // control and is still flagged.
+        let two_seeds =
+            Manifest::parse(&m_text.replace("[tasks]", "seeds = [1, 2]\n[tasks]")).unwrap();
+        let rows2 = two_seeds.trials(&["t".into()], "p", "m");
+        let partial: Vec<Trial> = rows2
+            .iter()
+            .filter(|t| t.arm != "rules" || t.seed == Some(1))
+            .cloned()
+            .collect();
+        let v = judge(&two_seeds, &partial, &[], 0);
+        assert!(
+            v.iter()
+                .find(|a| a.arm == "rules")
+                .unwrap()
+                .same_condition_as_control
+        );
         assert_eq!(
             condition_hash(&[], &[], "p", "m", None),
             condition_hash_world(&[], &[], "p", "m", None, &[], &[], &[], None, &[], None),

@@ -4074,7 +4074,22 @@ comparison over a chosen set**, with the design written before the run.
   from the environment directory, never from the real home and never
   written back. The environment directory's whole content is a term of
   every row's hash (`Environment::digest`), and a manifest with no
-  `[environment]` runs in `eval/envs/default`. **Every store path
+  `[environment]` runs in `eval/envs/default`.
+  **An environment holds files, never links**: `collect_files`, which
+  `digest` runs before anything is copied, refuses a symlink anywhere in
+  the directory, since `refuse_operator_home` sees only the directory
+  itself and a `learning -> ~/.mecha/learning` link would carry the
+  operator's store past it. Both guards run in `digest` as well as
+  `base_config`, because `ExperimentStore::plan` digests first and `status`
+  never reaches `base_config`.
+- **Two arms under one condition are named, never refused.** An arm whose
+  rows carry only the control's condition hashes is the same condition
+  under two names — deliberate in an A/A design, a defect otherwise
+  (`levers_on = ["learned_rules"]` over `full` is `full`). `exp run` warns
+  at plan time (`Manifest::identical_arms`, computed through `trials` so
+  its grouping cannot drift from the store's hashes) and `judge` flags the
+  arm (`same_condition_as_control`, a subset test so a `--limit`ed sitting
+  keeps the flag); the verdict is left alone. **Every store path
   in the rendered config is the home's**: an operator's `[outbox] dir`,
   skills or messages directory is cleared, or a trial's drafts would
   stage into the real outbox (found on review). The child's
