@@ -253,7 +253,7 @@ widening.
 | R16 | phase 1 | The unread acts sign as follows: a task reopened after `done` −1.0 on the closing session and withdraws its success; an outbox reject reason goes to the reflector as an owner correction; workflow `close` +0.5, `cancel` −0.5, `reopen` −1.0, a failed `verify` −1.0; rule and reflection curation and harness accept / reject feed tenure, never valence | yes |
 | R2 | — | A one-tap verdict channel | **declined 2026-09-24**: no added owner work (here §1, decision 4) |
 | R7 | parked | Pending drafts expire after an owner-set age, as `expired` | **deferred 2026-09-24** until the system has stabilised |
-| R12 | phase 1 | Guilt becomes per-commitment goal error toward another party; one commitment record; the homeostat scalar becomes a readout | yes |
+| R12 | phase 1 | Guilt becomes per-commitment goal error toward another party; one commitment record; the homeostat scalar becomes a readout | **ruled 2026-09-24: per commitment** |
 | R4 | phase 3 | Honest completion: template only, or template plus one `Verify` re-prompt | template only first |
 | R11 | phase 3 | The agent may declare acceptance criteria from a closed set of harness-executed kinds; one-sided until the owner confirms them; never a charter sensor | yes |
 | R10 | phase 4 | Promises detected in the owner's released drafts are recorded as commitments automatically — the words are the owner's own; a false detection only adds a reminder, and dismissing it drops it | yes |
@@ -264,7 +264,7 @@ widening.
 | R8 | parked | The harness may *propose* per-region autonomy grants; only the owner grants | yes, when unparked |
 | R9 | — | The live charter line `be-the-best` ("always finding ways you could have completed a task even better"). Unboundedness is not the issue — charter lines are attractors (here §2). §15's narrower worry is an unbounded line whose *object is the harness itself*, beside a loop that proposes harness changes; that pressure is held structurally, because no lane can accept a `Security`-class change. Flagged once; the owner's to keep or reword | — |
 
-**To start phase 1, R12 and R16 are still needed** (R1 and R15 ruled, R2
+**To start phase 1, only R16 is still needed** (R1, R12 and R15 ruled, R2
 declined, R7 deferred). The rest can wait
 for their phase.
 
