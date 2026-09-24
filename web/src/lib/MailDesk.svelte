@@ -392,6 +392,7 @@
     // act at all: never in a text field, a bar, the help or the sweep.
     const held = batchKeyVerb(e.key, { shift: e.shiftKey, meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey }, selected.size);
     if (held && !typing && mode === 'list' && !composing && !asking && !help && !confirmSpam) {
+      gPrefix = 0; // as the plain path: `g` then ⇧E archives, and leaves no `g` armed
       run(held);
       e.preventDefault();
       return;
@@ -805,9 +806,9 @@
         <div><div class="kicker">Decide</div>
           <p><kbd>⏎</kbd> accept the suggestion</p>
           <p><kbd>e</kbd> archive · <kbd>d</kbd> dismiss</p>
-          <p>These work with <kbd>⇧</kbd> or <kbd>⌘</kbd> still held from selecting.</p>
           <p><kbd>p</kbd> park until someone replies</p>
-          <p><kbd>t</kbd> make a task on the board</p></div>
+          <p><kbd>t</kbd> make a task on the board</p>
+          <p><kbd>⇧E</kbd> <kbd>⇧D</kbd> <kbd>⇧T</kbd> also work — and <kbd>⌘E</kbd> <kbd>⌘D</kbd> once more than one thread is selected</p></div>
         <div><div class="kicker">Draft (to the outbox)</div>
           <p><kbd>r</kbd> reply · <kbd>s</kbd> add to calendar</p>
           <p><kbd>⇧S</kbd> add to calendar, with instructions</p>
