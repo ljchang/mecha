@@ -77,11 +77,13 @@ constraint on a small model in a loop is tool-call reliability rather than
 intelligence, which is why [the eval rig](/docs/features/experiments/evaluation) grades the
 tool-call trace before the prose.
 
-**The memory is encrypted at rest.** The knowledge graph is
-**SQLCipher-encrypted**, with the key resolved from an environment variable, a
-keyfile, or a local file at mode 0600 — and the keyfile is meant to be backed
-up separately from the database, because without it the graph is unrecoverable
-and with it alone an attacker still needs the file.
+**The memory can be encrypted at rest.** The knowledge graph opens with
+**SQLCipher** whenever a key exists — from an environment variable or a keyfile
+beside the database — and `mecha-graph encrypt` migrates a plaintext store and
+writes that keyfile. It is opt-in: with no key the graph is plain SQLite. The
+keyfile is meant to be backed up separately from the database, because without
+it the graph is unrecoverable and with it alone an attacker still needs the
+file.
 
 **The lethal trifecta is refused, not discouraged.** Which is the next section,
 because it is the decision the rest of the design hangs off.
@@ -107,8 +109,10 @@ work, because the injected instruction arrives through exactly the same channel
 as the legitimate data, and the model has no way to tell them apart. mecha
 treats it as a property of the system rather than a matter of the model's
 judgement: **every tool declares what it can do, the conversation tracks what
-has entered it, and an outbound call is refused once both private data and
-third-party content are present.** The refusal happens before the human is asked,
+has entered it, and a send to a destination the model chooses is refused once
+both private data and third-party content are present.** A tool whose schema
+names no destination — `web_search` is the example — is not what an injection
+needs, and is left alone. The refusal happens before the human is asked,
 because a person clicking "yes" is what an injection is trying to engineer.
 
 That single decision shapes most of the rest of this documentation — the path
@@ -181,6 +185,27 @@ conversation already on screen. There is a live, clickable copy of it on
 rather than executed, so overnight inbox triage leaves you a review queue
 instead of sent mail. This is a property of the harness, not of the email tool,
 which means a third-party MCP server is covered by it without knowing it exists.
+
+## What else is in the suit
+
+A few more pieces that the rest of the documentation covers in full:
+
+- **[Web search](/docs/features/tools/web-search)** — a chain of backends,
+  first to answer wins, built so it keeps working in a conversation that holds
+  private data.
+- **Delegation** — [subagents](/docs/reference/configuration#subagent) narrowed
+  to a few tools, [delegated tasks](/docs/features/automation/tasks) that run in
+  the background and park questions for you, and
+  [messages between agents](/docs/features/automation/messages) that carry their
+  taint with them.
+- **[Skills](/docs/features/learning/skills)** — procedures you write once and
+  the model loads when a task calls for them.
+- **[Hooks](/docs/features/security/hooks)** — your own commands at lifecycle
+  points, including one that can refuse a tool call.
+- **[Images](/docs/features/interfaces/images)** — screenshots and photos in
+  your turn, for a model that can see.
+- **[Experiments](/docs/features/experiments)** — `mecha exp`, a designed
+  comparison between configurations, with the manifest written before the run.
 
 ## Keeping track of unfinished work
 
@@ -255,11 +280,12 @@ single-run scorecard cannot tell a flaky case from a solid one.
 only what it cost, so a run that quietly failed a third of its tool calls is
 visible instead of silent. `mecha doctor` reads those
 [populations](/docs/features/learning/run-quality), `mecha diagnose` proposes one change
-with a falsifiable prediction, and `mecha eval --ab-config` is the measurement
-that would refute it — paired by case, confirmed on a holdout, and rejected
+with a falsifiable prediction, and `mecha eval --ab-config` is a measurement
+that could refute it — paired by case, confirmed on a holdout, and rejected
 outright if the gain was bought by attempting less work. `mecha harness
-ruminate` runs all four nightly, and a config change that survives the whole
-gate applies itself to a **revertible override layer**. Nothing outside that
+ruminate` is the nightly pass: it diagnoses, records the candidate, measures it
+by replaying recent sessions under each arm, and disposes of it — and a config
+change that survives the gate applies itself to a **revertible override layer**. Nothing outside that
 closed set of run options does, no model sits in the gate, and a change that
 would widen mecha's own confinement is never even measured.
 
@@ -273,7 +299,8 @@ or edits your charter.
 
 ## Where to go next
 
-- [Installation](/docs/getting-started/installation) — build it from source.
+- [Installation](/docs/getting-started/installation) — `cargo install` from
+  crates.io, or build it from source.
 - [Choosing hardware](/docs/getting-started/hardware) — what memory actually buys
   you, and recommended configurations by tier.
 - [Setting up](/docs/getting-started/setting-up) — point it at a model, and let

@@ -92,14 +92,16 @@ Where a dedicated box stops making you choose.
   comparison, all resident at once.
 
 **Measured on the machine these docs were written on** — a DGX Spark (GB10,
-128 GB unified), Qwen3.6-35B-A3B at Q4_K_M, four slots of 262,144 tokens:
+128 GB unified), Qwen3.6-35B-A3B at Q4_K_M. It runs four slots of 262,144
+tokens (`-c 1048576 -np 4`); each extra slot adds another slot's worth of KV
+cache on top of the single-slot reservation below:
 
 | | |
 |---|---:|
 | Weights | ~20.7 GB |
 | KV cache, f16 | 22.0 KiB/token |
 | Vision projector | ~0.9 GB |
-| Total reservation at `-c 262144` | ~28.5 GB |
+| Total reservation, one 262,144-token slot (`-c 262144 -np 1`) | ~28.5 GB |
 | Generation, 1k prompt | ~92 tok/s |
 | Generation, 108k prompt | ~63 tok/s |
 | Prefill | ~1,570 tok/s |

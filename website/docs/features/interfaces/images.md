@@ -86,8 +86,10 @@ mecha setup            # what disagrees
 mecha setup --write    # rewrite model, context_window and vision from /props
 ```
 
-The same check runs at startup on every command, so a mismatch tells you the
-next time you use mecha at all.
+The same check runs whenever a command builds an agent against a
+`kind = "local"` provider, so a mismatch tells you the next time you run
+anything that talks to the model. It says nothing when the server is not up —
+the first request reports that far better than a startup line can.
 
 ## The four doors
 
@@ -95,7 +97,12 @@ next time you use mecha at all.
 |---|---|
 | A local terminal | **Drop the file on the TUI prompt** |
 | Anywhere, scripted | `mecha run --image shot.png "what is wrong here?"` |
-| Away from the machine | Send it to the Slack DM, or into a `/remote-control` thread |
+| Away from the machine | Send it to the Slack DM |
+| Away, mid-session | Send it into the session's `/remote-control` thread |
+
+The web chat's attach button is not one of them: it uploads the file into the
+session's `inbox/` and names it in the message as a path (`Attached file at …`),
+so the model can `fs_read` it but never receives the pixels.
 
 ### Dropping a file on the prompt
 

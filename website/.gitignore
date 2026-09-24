@@ -26,3 +26,11 @@ docs/features/memory/graph/self-improvement.md
 docs/features/memory/graph/changelog.md
 docs/features/memory/graph/cli.md
 docs/features/memory/graph/tui.md
+# The pre-regroup paths, kept ignored: a stale checkout's old synced copies
+# under docs/graph/ must not become committable.
+docs/graph/architecture.md
+docs/graph/integrations.md
+docs/graph/self-improvement.md
+docs/graph/changelog.md
+docs/graph/cli.md
+docs/graph/tui.md

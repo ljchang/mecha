@@ -36,7 +36,7 @@ repository. `git log` is the learning history; `git revert` is the undo.
 
 ## `mecha reflect` — interventions become reflections
 
-Extraction from transcripts is pure code. Three kinds of intervention are
+Extraction from transcripts is pure code. Four kinds of intervention are
 recognised:
 
 - **Steer** — user text riding in the same message as tool results.
@@ -47,6 +47,10 @@ recognised:
 - **Follow-up turn** — a later user turn *may* be a correction or just the next
   task. Extraction only flags the candidate; the reflector decides, and is told
   to skip freely.
+- **Mismatch** — a verified failure of an owner-bound task criterion or a
+  declared check, read from the run's own harness metadata rather than from
+  any tool's prose. The first trigger that needs no person to fire; capped at
+  one per step and three per run.
 
 Each candidate goes to one model call, which returns the reusable lesson behind
 it. The result is appended to `reflections.jsonl` with the session id that
@@ -201,14 +205,16 @@ Every reflection carries an `Origin`:
 
 | Origin | Meaning |
 |---|---|
-| `clean` | No third-party content had entered the conversation when the intervention happened |
-| `untrusted` | Third-party content was in context |
-| `derived` | Not an interactive session: a subagent, eval case or batch item |
+| `clean` | No third-party content had entered the conversation when the intervention happened — or it had, and the reflector was shown only the user's own words (below) |
+| `untrusted` | Evidence that could include third-party content: a reflection recorded before provenance existed, or a mismatch from a tainted conversation |
+| `derived` | Not the user correcting mecha: mecha's own words landing in the user role (the empty-turn and final-answer nudges, the boredom notice) |
 
 `classify_origin` is deterministic code over the transcript's **recorded** taint
 (`Session::taint_timeline`) — never inferred from the text, because prose
 claiming to be from the user does not make it user content. `Reflexion::learnable()`
-returns true only for `Clean`, and `mecha learn` filters on it *before any prompt
+returns true for `Clean` — and for an `Untrusted` triage reflection, under
+[the triage exemption](#the-provenance-exemption-and-what-it-rests-on) — and
+false for anything you dropped. `mecha learn` filters on it *before any prompt
 is built*, printing what it dropped:
 
 ```
@@ -229,14 +235,40 @@ literature identifies as the one that matters — defenses have to target the
 It is **fail-closed throughout**. A reflection whose position cannot be
 established, one from a torn transcript, and one recorded before the field
 existed all classify `Untrusted` (`origin_unknown()` returns `Origin::Untrusted`,
-not the enum's first variant). `derived` exists because a subagent's steer is
-mecha correcting itself, not the user correcting mecha — learning from it is a
-feedback loop, not a lesson.
+not the enum's first variant). `derived` exists because mecha correcting
+itself is not the user correcting mecha — learning from it is a feedback loop,
+not a lesson. It is a label rather than an exclusion: the reflection is kept
+and visible, it just cannot be graded, because replaying without a
+self-authored intervention shows only the model recovering.
 
 There is deliberately **no knob** that loosens this. A switch that lets
 third-party text into every future prompt is the silently-degrading-sandbox
 shape. Excluded reflections stay in `reflections.jsonl` as readable evidence;
 they are simply never candidates.
+
+### Tainted sessions still teach: the user-turns path
+
+Working sessions — anything that touched mail, docs or the web — are exactly
+where corrections happen, and they are all untrusted, so the gate once
+excluded nearly every real lesson. The fix moves the evidence rather than
+loosening the gate. When the taint covering an intervention is not provably
+clean, the reflector is shown only **the user's own typed words plus the tool
+names** from the registry's closed set; every assistant-authored excerpt is
+withheld and never read. Third-party bytes never reach the model that writes
+the reflection, so the reflection is `clean` by construction and learnable.
+Its record says so: `evidence: "user_turns"` rather than `"full"`. (Mismatches
+are the exception — a generated observation is never the owner's words, so a
+tainted one stays `untrusted`.)
+
+```bash
+mecha reflect --remine-untrusted       # recover lessons from older tainted sessions
+mecha reflect --backfill-situations    # give pre-situation reflections one, no model call
+```
+
+`--remine-untrusted` re-mines the sessions whose reflections the gate
+excluded, through the user-turns path; it is idempotent and never re-mines a
+clean-covered intervention. `--backfill-situations` recomputes a situation
+for reflections mined before that field existed, from their transcripts.
 
 ## The triage domain
 
@@ -313,7 +345,7 @@ rules-free and rules-on — and appends the outcome to `validations.jsonl`:
 ```bash
 mecha validate
 mecha validate --unprocessed-only              # the holdout learn left
-mecha validate --trigger steer,denial          # default is all three
+mecha validate --trigger steer,denial          # default is all four
 mecha validate --judge-provider gemma26 --judge-model ...
 mecha validate --no-attribute                  # skip bisection
 mecha validate --repeat                        # deliberately remeasure unchanged inputs
@@ -337,6 +369,11 @@ results without executing them. Only complete, readable answers with matching
 tool arguments reach the judge. Missing calls, changed arguments and truncated
 answers are inconclusive. These judgments do not drive rule bisection; treat a
 single flip as a prompt to read the answers in `validation-attempts.jsonl`.
+
+Mismatch probes need an owner-supplied artifact fixture — the task, its
+starting files and the expected artifacts, fixed before any run and never
+inferred from a model's check command. They grade artifact success from that
+pinned state; they do not reconstruct a mid-step filesystem.
 
 Validation defers previously measured inputs when the rules, recording, rubric
 and measurement settings are unchanged. Provider/judge failures retry, and

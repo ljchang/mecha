@@ -41,7 +41,8 @@ const FeatureList: FeatureItem[] = [
         A personal assistant holds private data, reads other people&apos;s words,
         and can send — all three, by definition. So the interlock is structural:
         tools declare capabilities, the conversation carries the taint, and a
-        send is refused before the human is ever asked.
+        send to a destination the model chose is refused before the human is
+        ever asked.
       </>
     ),
   },

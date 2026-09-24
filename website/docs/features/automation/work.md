@@ -9,8 +9,10 @@ description: Where a run's generated output goes, why it is also the run's path 
 `~/.mecha/work/<producer>/` is where a run's generated output goes, and it is
 **also the run's workspace** — the directory the path jail is rooted at.
 
-A *producer* is whatever made the output: a trigger's name, or `chat`, or a
-session id. The directory is **stable across runs of the same producer**, which
+A *producer* is whatever made the output: a trigger's name, a task's id (for
+`mecha tasks work` and a web chat on a task), or `web` or `slack`, which keep
+one subdirectory per session or thread beneath them (and `mecha work path`
+names any other you choose). The directory is **stable across runs of the same producer**, which
 is most of the point. Yesterday's briefing is an ordinary file in today's run,
 readable with `fs_read` like anything else, rather than something that has to
 be fetched back from somewhere outside the jail.
@@ -117,9 +119,10 @@ directory may carry a `bundle.json` with a `sources` array:
 }
 ```
 
-Anything else in that file is the publisher's business. A mirror that does not
-exist yet — which is every install until `mecha-factory-publish` is wired —
-protects nothing, and that is correct rather than a stub.
+Anything else in that file is the publisher's business. `mecha-factory-publish`
+writes it: what a bundle was rendered from travels into `bundle.json` as
+`sources`. A machine with no mirror at all — nothing ever published — protects
+nothing, and that is correct rather than a stub.
 
 ## Naming
 

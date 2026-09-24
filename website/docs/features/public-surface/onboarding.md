@@ -117,13 +117,17 @@ built-in tool.
 name = "factory"
 command = "factory-publish"
 args = ["mcp"]
+# poll_status, type_list and surface_list are reads, not sinks, so nothing
+# marks what they return as third-party text except this line.
+[mcp.capabilities]
+untrusted_input = true
 
 # Nothing outbound leaves without a human reading it first.
 [outbox]
 tools = [
   "factory__bundle_publish", "factory__bundle_alias", "factory__bundle_unpublish",
   "factory__poll_create", "factory__poll_meeting_create", "factory__poll_close",
-  "factory__type_push",
+  "factory__type_push", "factory__surface_push", "factory__surface_pull",
 ]
 publish_tools = [
   "factory__bundle_publish", "factory__bundle_alias", "factory__bundle_unpublish",
@@ -139,8 +143,10 @@ even starting?" before any model is involved.
 ### What is routed, and what is not
 
 Every verb that changes what the world can see is staged for review rather than
-executed: publishing, aliasing, unpublishing, creating a poll, closing one, and
-pushing a request type. Rendering is not — it is local, cheap and reversible, and
+executed: publishing, aliasing, unpublishing, creating a poll, closing one,
+pushing a request type, and pushing a profile, the hangar or a switchboard
+(`surface_push`). `surface_pull` is staged too: it overwrites your local copy
+with the box's, and mecha classes it as a sender. Rendering is not — it is local, cheap and reversible, and
 making every iteration cost a human review is how a review queue stops being
 read.
 

@@ -275,9 +275,14 @@ An agent reading a poll through `poll_status` **does** get the text answers, in 
 withheld them and returned counts, on the front door's reasoning; that was wrong
 here, because in a poll the prose is the data — "what did people say" is most of
 why anyone runs one. What makes returning it safe is the mechanism mecha already
-has for other people's words, which is not silence: the tool carries
-`openWorldHint`, so the answers arrive marked `untrusted_input` and arm the
-interlock exactly as a mail body does. The typed and the written stay in separate
+has for other people's words, which is not silence: with
+`[mcp.capabilities] untrusted_input = true` on the factory's `[[mcp]]` block
+(as [onboarding](/docs/features/public-surface/onboarding#4-wire-it-into-an-agent)
+writes it), the answers arrive marked `untrusted_input` and arm the interlock
+exactly as a mail body does. That line is what does it: `poll_status` itself is
+declared a read — read-only, not open-world, because nothing a model writes
+leaves through it — so without the line nothing marks the prose as
+third-party. The typed and the written stay in separate
 fields, which is what lets an answer summarise the prose without treating any of
 it as an instruction.
 
