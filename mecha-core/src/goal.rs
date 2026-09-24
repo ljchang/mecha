@@ -209,6 +209,19 @@ impl GoalRef {
             GoalRef::Charter(_) | GoalRef::Task(_) | GoalRef::Project(_) | GoalRef::Setpoint(_)
         )
     }
+
+    /// The refusal a tool returns when a model's `serves` names a kind only
+    /// the harness seeds. A trigger name is a short owner slug and a request
+    /// `seq` a small integer, so either is guessable, and `distill` would
+    /// resolve a guessed one and cross it to the graph whole (review of
+    /// #292) — the kind is refused, not the guess checked.
+    pub fn not_a_plans_to_name(goal: &GoalRef) -> String {
+        format!(
+            "`serves`: `{goal}` is set by the harness when it starts a run, never by a \
+             plan; name a `charter:`, `task:`, `project:` or `setpoint:` reference, or \
+             leave `serves` out"
+        )
+    }
 }
 
 pub fn drift_of(anchor: &GoalRef, current: Option<&GoalRef>) -> Drift {
