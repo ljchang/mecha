@@ -180,7 +180,7 @@ for (const route of ROUTES) {
     ['the typed turn', body.includes('does the scripted run arrive?')],
     ['a tool call', body.includes('recall')],
     ['the staging notice', body.includes('staged, not executed')],
-    ['the draft card', body.includes('Re: Review request')],
+    ['the draft card', body.includes('Thank you for thinking of me')],
   ]) {
     if (!ok) failures.push(`chat run: ${what} never appeared`);
   }

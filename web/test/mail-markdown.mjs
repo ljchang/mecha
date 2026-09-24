@@ -143,6 +143,8 @@ t('empty text is no blocks', parseBlocks('').length === 0 && parseBlocks(null).l
   // A draft's link names its destination when its words do not.
   const [named] = parseInline('[the agenda](https://evil.example/x)');
   t('a named link reveals its destination', hiddenTarget(named) === 'evil.example/x');
+  const [leaky] = parseInline('[the agenda](https://evil.example/x?d=private-thing)');
+  t('the query string is shown, not folded away', hiddenTarget(leaky) === 'evil.example/x?d=private-thing');
   const [bare] = parseInline('https://example.org/paper');
   t('a bare URL is not revealed twice', hiddenTarget(bare) === null);
   const [mail] = parseInline('[bob@example.org](mailto:bob@example.org)');

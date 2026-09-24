@@ -252,6 +252,9 @@ def render_thread(account, thread):
             f"Subject: {thread['subject']}\n"
             f"Message id (for mail_reply): {m['id']}\n\n{m.get('body', '').strip()}"
         )
+    # The count a body cannot reach, as the real server ends every read.
+    count = len(thread["messages"])
+    parts.append(f"--- end of thread · {count} message{'' if count == 1 else 's'}")
     return "\n\n".join(parts)
 
 

@@ -417,7 +417,10 @@ export function inlineText(nodes) {
  */
 export function hiddenTarget(link) {
   const shown = inlineText(link.c).trim();
-  const short = shortUrl(link.href);
-  if (shown === short || shown === link.href || shown === link.href.replace(/^mailto:/i, '')) return null;
-  return short;
+  // The whole destination, query string included — a query is exactly where
+  // an injected link carries what it exfiltrates, and `shortUrl` folds it to
+  // `?…` (found on review). Scheme dropped; only a very long one is cut.
+  const full = link.href.replace(/^https?:\/\//i, '').replace(/^mailto:/i, '');
+  if (shown === shortUrl(link.href) || shown === link.href || shown === full) return null;
+  return full.length > 300 ? `${full.slice(0, 299)}…` : full;
 }
