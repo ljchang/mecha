@@ -786,14 +786,26 @@ fn verb_of(kind: mecha_core::closure::Move) -> &'static str {
 /// implementation of the board's own lookup.
 async fn find_task_with(prepared: &setup::PreparedTools, task_id: &str) -> Result<Value> {
     let board = call_with(prepared, "kg_task_list", json!({ "include_closed": true })).await?;
-    board["items"]
+    let found = board["items"]
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or(&[])
         .iter()
         .find(|t| t["id"].as_str() == Some(task_id))
-        .cloned()
-        .with_context(|| format!("no such task: {task_id} — `mecha tasks list` shows the board"))
+        .cloned();
+    match found {
+        Some(row) => Ok(row),
+        // A truncated answer is readable and still short: a row that did not
+        // arrive is unknown, not absent — `rows_under`'s reading of the same
+        // envelope. Refusing is right (an unclassifiable change cannot be
+        // recorded); calling it "no such task" was not (found on review).
+        None if board["truncated"].as_bool() == Some(true) => anyhow::bail!(
+            "task {task_id} is not in the board's answer, which the server truncated — \
+             it may exist past the cut, so this status change cannot be classified \
+             and was refused"
+        ),
+        None => anyhow::bail!("no such task: {task_id} — `mecha tasks list` shows the board"),
+    }
 }
 
 /// What a closure's appraisal said, for the record: the one-line readout
@@ -835,8 +847,9 @@ struct Appraised {
 /// **refused** from a delegated, scheduled or unattended run
 /// (`closure::decide`: the run posture the `shell` tool stamps on every
 /// command, and whether this process descends from a live run). The
-/// residue left is named on `closure::decide`: an unconfined shell that
-/// both clears the variable and detaches from its parent. And a genuinely
+/// residue left is named on `closure::decide`, and it is wider than a
+/// detach: a command that sets the posture variable itself passes. And a
+/// genuinely
 /// out-of-band write — another process talking to the graph store directly
 /// — which no guard in this binary can see and which skips the appraisal;
 /// the complete fix for that one is still a closure claim the board owns,

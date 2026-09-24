@@ -184,11 +184,16 @@ pub fn posture_from_env() -> PostureReading {
 /// wins over everything: a run that strips the posture variable from its
 /// command's environment is still that run's child.
 ///
-/// **What this does not close, named.** A command that both clears the
-/// variable and detaches from its parent (so init adopts it) passes both
-/// checks. An unconfined `shell` in a delegated run can do that; a confined
-/// one cannot reach the owner's `~/.mecha` or the graph at all. The complete
-/// answer is the sandbox, not a longer list here.
+/// **What this does not close, named** (found on review of #293). The
+/// posture is an environment variable the command string itself can set:
+/// `MECHA_RUN_POSTURE=interactive mecha tasks set …` in a delegated or
+/// unattended run's `bash -lc` overrides the stamp, and where the run holds
+/// no marker (a web task chat, an approvals-off chat, a front-door or mail
+/// run) the ancestry check has nothing to find — so the move is allowed and
+/// recorded `owner-approved`. Detaching also escapes the ancestry check for
+/// a marked run. This guard stops a run that follows the refusal text; it
+/// does not stop one that names the variable. A confined `shell` without the
+/// owner's `~/.mecha` or the graph cannot reach the store at all.
 pub fn decide(
     posture: &PostureReading,
     ancestor_run: Option<u32>,

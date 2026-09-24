@@ -294,3 +294,52 @@ fn a_closure_that_cannot_be_recorded_does_not_happen() {
     );
     assert_eq!(f.status(), "next");
 }
+
+/// A board the server truncated cannot say whether a missing row exists, so
+/// a status change to a row past the cut is refused as *unknown* — naming
+/// the truncation — never as "no such task" (found on review: the pre-read
+/// is now load-bearing, and the old scan ignored `truncated`). With a cap of
+/// one over two tasks, exactly one of the two moves falls past the cut.
+#[test]
+fn a_row_past_a_truncated_board_is_refused_as_unknown_not_missing() {
+    let Some(f) = Fixture::new("MECHA_FIXTURE_BOARD_CAP = \"1\"\n") else {
+        return;
+    };
+    std::fs::write(
+        f.root.join("board/board.json"),
+        json!({"v": 1, "next": 3, "tasks": [
+            {"id": "task-1", "name": "Write the quarterly summary", "status": "next"},
+            {"id": "task-2", "name": "Book the room", "status": "next"}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    // Which row the cap cut depends on the server's order, so ask it:
+    // closing the visible one first would re-sort the board and bring the
+    // other inside the cap.
+    let listed: Value = serde_json::from_slice(
+        &f.command(&["tasks", "list", "--json", "--closed"], None)
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(listed["truncated"], json!(true), "{listed}");
+    let visible = listed["items"][0]["id"].as_str().unwrap().to_string();
+    let hidden = if visible == "task-1" {
+        "task-2"
+    } else {
+        "task-1"
+    };
+    let out = f.command(&["tasks", "set", hidden, "--status", "done"], None);
+    refused(&out, "truncated");
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("no such task"));
+    let board: Value =
+        serde_json::from_str(&std::fs::read_to_string(f.root.join("board/board.json")).unwrap())
+            .unwrap();
+    let row = board["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == json!(hidden))
+        .unwrap();
+    assert_eq!(row["status"], json!("next"), "nothing moved");
+}
