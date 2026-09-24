@@ -611,6 +611,11 @@ impl RunRecord {
 
 pub struct TriggerStore {
     root: PathBuf,
+    /// Where an optional `serves` is checked. `None` is the owner's charter
+    /// (`Charter::default_path`), the only one a real store ever reads — a
+    /// charter has no configurable path. `Some` exists for tests, so a check
+    /// against a scratch charter never reads the owner's.
+    charter: Option<PathBuf>,
 }
 
 /// Holds the store's writer lock for as long as it lives.
@@ -634,7 +639,10 @@ impl TriggerStore {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         crate::create_private_dir(&root).with_context(|| format!("creating {}", root.display()))?;
-        Ok(TriggerStore { root })
+        Ok(TriggerStore {
+            root,
+            charter: None,
+        })
     }
 
     pub fn open_default() -> Result<Self> {
@@ -645,7 +653,10 @@ impl TriggerStore {
     /// state as a side effect.
     pub fn open_existing_default() -> Option<Self> {
         let root = Self::default_root().ok()?;
-        root.is_dir().then_some(TriggerStore { root })
+        root.is_dir().then_some(TriggerStore {
+            root,
+            charter: None,
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -705,13 +716,38 @@ impl TriggerStore {
                 .map(DateTime::<Utc>::from);
         }
         trigger.validate()?;
-        if trigger.serves.is_some() {
-            let charter = crate::charter::Charter::default_path()
-                .and_then(|p| crate::charter::Charter::load(&p))
-                .map_err(|e| format!("{e:#}"));
-            trigger.check_serves(charter.as_ref().map_err(String::as_str))?;
-        }
+        self.check_serves(&trigger)?;
         Ok(trigger)
+    }
+
+    /// Check a trigger's optional `serves` against the charter — the one
+    /// check `load_path` and `save` both run, so a file `mecha trigger edit`
+    /// accepts is one the daemon will load (found on review: `save` checked
+    /// only `validate`, and a typo'd slug saved, then silently stopped the
+    /// trigger firing — the divergence `Charter::parse` closed for the
+    /// charter itself). Reads the owner's charter at `Charter::default_path`,
+    /// not a path derived from this store's root, so a store opened at a
+    /// scratch root still consults the real charter unless
+    /// [`Self::with_charter`] says otherwise.
+    fn check_serves(&self, trigger: &Trigger) -> Result<()> {
+        if trigger.serves.is_none() {
+            return Ok(());
+        }
+        let charter = match &self.charter {
+            Some(p) => crate::charter::Charter::load(p),
+            None => crate::charter::Charter::default_path()
+                .and_then(|p| crate::charter::Charter::load(&p)),
+        }
+        .map_err(|e| format!("{e:#}"));
+        trigger.check_serves(charter.as_ref().map_err(String::as_str))
+    }
+
+    /// Check `serves` against this charter file instead of the owner's —
+    /// tests only.
+    #[cfg(test)]
+    fn with_charter(mut self, path: impl Into<PathBuf>) -> Self {
+        self.charter = Some(path.into());
+        self
     }
 
     pub fn get(&self, name: &str) -> Result<Trigger> {
@@ -726,6 +762,7 @@ impl TriggerStore {
 
     pub fn save(&self, trigger: &Trigger) -> Result<()> {
         trigger.validate()?;
+        self.check_serves(trigger)?;
         let path = self.path_of(&trigger.name);
         let tmp = path.with_extension("toml.tmp");
         std::fs::write(&tmp, toml::to_string_pretty(trigger)?)?;
@@ -1322,6 +1359,36 @@ mod tests {
         assert_eq!("2h".parse::<CatchUp>().unwrap().to_string(), "2h");
         assert_eq!("never".parse::<CatchUp>().unwrap(), CatchUp::Never);
         assert!("sometimes".parse::<CatchUp>().is_err());
+    }
+
+    /// The accept path and the load path agree about `serves`: a trigger
+    /// naming a line the charter lacks is refused on save, with the load
+    /// path's own message, instead of saving and then never firing. On the
+    /// old tree `save` checked only `validate` and this saved.
+    #[test]
+    fn a_trigger_serving_a_missing_line_is_refused_on_save_not_after() {
+        let root = scratch("serves-save");
+        std::fs::create_dir_all(&root).unwrap();
+        let charter = root.join("charter.toml");
+        std::fs::write(
+            &charter,
+            "[[line]]\nid = \"protect-my-attention\"\ntext = \"Protect my attention.\"\n",
+        )
+        .unwrap();
+        let store = TriggerStore::open(root.join("triggers"))
+            .unwrap()
+            .with_charter(&charter);
+
+        let mut t = daily_7am("briefing");
+        t.serves = Some(crate::goal::GoalRef::Charter("typo".into()));
+        let err = store.save(&t).unwrap_err().to_string();
+        assert!(err.contains("not a line of your charter"), "{err}");
+        assert!(!store.exists("briefing"), "nothing was written");
+
+        t.serves = Some(crate::goal::GoalRef::Charter("protect-my-attention".into()));
+        store.save(&t).unwrap();
+        assert!(store.exists("briefing"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
