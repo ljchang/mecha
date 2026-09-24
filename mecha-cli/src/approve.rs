@@ -143,6 +143,9 @@ fn summarize_to(tool: &str, input: &Value, max: usize) -> String {
         // `Egress::Blind`. Rendering it as `{"query":"…","limit":8}` buried
         // the one field that matters behind the two that do not.
         "web_search" => field("query").map(str::to_string),
+        // The handle is the whole argument; its URL is the ledger's, not the
+        // model's.
+        "web_open" => field("result").map(str::to_string),
         _ => None,
     }
     .unwrap_or_else(|| {

@@ -131,6 +131,7 @@ functions.
 | `shell` | no | private, sends, destructive (unconfined) |
 | `http_fetch` | yes | untrusted **and** sends |
 | `web_search` | yes | untrusted **and** sends |
+| `web_open` | yes | untrusted **and** sends (blind) |
 
 Two of these look wrong until you read the reasoning.
 
@@ -167,6 +168,11 @@ it is a *chain*: backends are tried in order and the first that answers wins, so
 a rate-limited provider degrades to the next one rather than to nothing. It
 carries the same pair of labels as `http_fetch` and for the same reasons — what
 comes back is whatever a stranger published, and a query string is a way out.
+With it comes `web_open`, which reads the page behind a result by the handle
+`web_search` printed beside it. It follows redirects, vetting every hop the
+way `http_fetch` vets its one, and it keeps working in a conversation where
+`http_fetch` is refused, because the model picks a result instead of writing
+a URL.
 
 `todo` is planning as a tool rather than as a mode: a list the model rewrites as
 it goes stays honest where a plan produced up front goes stale on the first

@@ -11,7 +11,9 @@ use mecha_core::config::SearchBackendConfig;
 use mecha_core::config::{Config, PermissionMode};
 use mecha_core::harness::Lever;
 use mecha_core::mcp::{self, McpClient};
-use mecha_core::search::{Exa, SearchBackend, SearchChain, Searxng, Tavily, WebSearch};
+use mecha_core::search::{
+    Exa, ResultLedger, SearchBackend, SearchChain, Searxng, Tavily, WebOpen, WebSearch,
+};
 use mecha_core::subagent::{Subagent, SubagentProfile};
 use mecha_core::tool::{Approver, ModeApprover, Registry, ToolCtx};
 use std::path::PathBuf;
@@ -1210,9 +1212,19 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
             eprintln!("mecha: search backend unavailable — {error}");
         }
         if !chain.is_empty() {
-            let allowed = opts.tools.is_empty() || opts.tools.iter().any(|t| t == "web_search");
-            if allowed {
-                registry.insert(Arc::new(WebSearch::new(Arc::new(chain))));
+            let wants = |name: &str| opts.tools.is_empty() || opts.tools.iter().any(|t| t == name);
+            if wants("web_search") {
+                // `web_open` only ever opens what a search returned, so it is
+                // registered with a search or not at all, and the two share
+                // one ledger (`PROVENANCE-DESIGN.md` §4).
+                let search = WebSearch::new(Arc::new(chain));
+                if wants("web_open") {
+                    let ledger = Arc::new(ResultLedger::new());
+                    registry.insert(Arc::new(search.with_ledger(Arc::clone(&ledger))));
+                    registry.insert(Arc::new(WebOpen::new(ledger)));
+                } else {
+                    registry.insert(Arc::new(search));
+                }
             }
         }
     }
