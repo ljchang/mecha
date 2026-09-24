@@ -3769,7 +3769,7 @@ mod tests {
         );
     }
 
-    /// The child half of the test above.
+    /// The child half of `a_unit_test_ignores_the_shells_smoke_test_mark`.
     #[test]
     #[ignore]
     fn hermetic_kind_probe() {
@@ -3782,7 +3782,9 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// The child half of the test above. Ignored so it never runs in the
+    /// The child half of
+    /// `the_env_override_narrows_to_test_or_experiment_and_never_widens_to_anything_else`.
+    /// Ignored so it never runs in the
     /// ordinary sweep, where it would read whatever the environment
     /// happened to hold.
     #[test]

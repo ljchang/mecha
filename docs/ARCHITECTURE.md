@@ -4081,18 +4081,10 @@ comparison over a chosen set**, with the design written before the run.
   itself and a `learning -> ~/.mecha/learning` link would carry the
   operator's store past it. Both guards run in `digest` as well as
   `base_config`, because `ExperimentStore::plan` digests first and `status`
-  never reaches `base_config`.
-- **Two arms under one condition are named, never refused.** An arm whose
-  rows carry only the control's condition hashes is the same condition
-  under two names — deliberate in an A/A design, a defect otherwise
-  (`levers_on = ["learned_rules"]` over `full` is `full`). `exp run` warns
-  at plan time (`Manifest::identical_arms`, computed through `trials` so
-  its grouping cannot drift from the store's hashes) and `judge` flags the
-  arm (`same_condition_as_control`, a subset test so a `--limit`ed sitting
-  keeps the flag); the verdict is left alone. **Every store path
-  in the rendered config is the home's**: an operator's `[outbox] dir`,
-  skills or messages directory is cleared, or a trial's drafts would
-  stage into the real outbox (found on review). The child's
+  never reaches `base_config`. **Every store path in the rendered config
+  is the home's**: an operator's `[outbox] dir`, skills or messages
+  directory is cleared, or a trial's drafts would stage into the real
+  outbox (found on review). The child's
   environment is an **allowlist** on `Sandbox::child_env`'s shape: the
   base set, the provider key variables, and the three that name the trial
   — `MECHA_HOME` is not the only variable that moves a store, and an
@@ -4103,6 +4095,17 @@ comparison over a chosen set**, with the design written before the run.
   a workspace. Nothing in a trial home is ever copied back: a rule learned
   inside a trial that landed in `~/.mecha/learning/` would ride every real
   run's cached prefix from then on.
+- **Two arms under one condition are named, never refused.** An arm that
+  shares a condition hash with the control is the same condition under two
+  names — deliberate in an A/A design, a defect otherwise
+  (`levers_on = ["learned_rules"]` over `full` is `full`). `exp run` warns
+  at plan time (`Manifest::identical_arms`, computed through `trials` so
+  its grouping cannot drift from the store's hashes), and `judge` flags the
+  arm (`same_condition_as_control`), leaving the verdict alone. The flag is
+  an **intersection** test — any shared hash — and neither equality nor a
+  subset: a `--limit`ed sitting leaves *some* arm short, rows are planned
+  arm-major over a `BTreeMap`, so which one is decided by arm name, and two
+  arms share a hash only where their conditions coincide.
 - **A session in a trial home is `SessionKind::Experiment`** (D13), set by
   the runner through `MECHA_SESSION_KIND` — the second and last kind an
   environment may set, beside `test`. `runlog::Scan` hides it in the real
