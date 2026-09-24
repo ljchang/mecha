@@ -1053,6 +1053,12 @@ pub struct Arm {
     /// that changes nothing would still move the hash.
     #[serde(default)]
     pub stages_off: Vec<String>,
+    /// This arm's own world, in place of the manifest's `[environment]`:
+    /// a different system prompt, tool list, charter or graph seed, as a
+    /// directory the digest names by content. Usually one that `extends`
+    /// the manifest's, carrying only what the arm changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<crate::trial_env::Environment>,
     #[serde(default)]
     pub prediction: Option<Prediction>,
 }
@@ -1726,8 +1732,15 @@ impl Manifest {
     /// arms exactly as the store's hashes do: the world terms `trials`
     /// omits (charter, environment) are the same for every arm, so they
     /// change no hash's equality with another's, only its value.
-    pub fn identical_arms(&self, provider: &str, model: &str) -> Vec<Vec<String>> {
-        let rows = self.trials(&["probe".into()], provider, model);
+    pub fn identical_arms(
+        &self,
+        provider: &str,
+        model: &str,
+        env_digests: Option<&BTreeMap<String, String>>,
+    ) -> Vec<Vec<String>> {
+        // The environment is per arm now, so it is a term that *can* tell
+        // two arms apart and must be in the rows compared.
+        let rows = self.trials_with_world(&["probe".into()], provider, model, None, env_digests);
         let mut groups: Vec<(std::collections::BTreeSet<&str>, Vec<String>)> = Vec::new();
         for arm in self.arms.keys() {
             let hashes = arm_hashes(&rows, arm);
@@ -1741,6 +1754,36 @@ impl Manifest {
             .map(|(_, names)| names)
             .filter(|names| names.len() > 1)
             .collect()
+    }
+
+    /// The environment an arm runs in: its own, or the manifest's.
+    pub fn environment_for(&self, arm: &str) -> &crate::trial_env::Environment {
+        self.arms
+            .get(arm)
+            .and_then(|a| a.environment.as_ref())
+            .unwrap_or(&self.environment)
+    }
+
+    /// Each arm's environment digest, each distinct environment resolved
+    /// once.
+    pub fn env_digests(&self, base: &Path) -> Result<BTreeMap<String, String>> {
+        let mut seen: Vec<(&crate::trial_env::Environment, String)> = Vec::new();
+        let mut out = BTreeMap::new();
+        for name in self.arms.keys() {
+            let env = self.environment_for(name);
+            let digest = match seen.iter().find(|(e, _)| *e == env) {
+                Some((_, d)) => d.clone(),
+                None => {
+                    let d = env
+                        .digest(base)
+                        .with_context(|| format!("arm `{name}`'s environment"))?;
+                    seen.push((env, d.clone()));
+                    d
+                }
+            };
+            out.insert(name.clone(), digest);
+        }
+        Ok(out)
     }
 
     /// Every trial the design calls for, in a stable order, each with its
@@ -1760,7 +1803,7 @@ impl Manifest {
         provider: &str,
         model: &str,
         charter_digest: Option<&str>,
-        env_digest: Option<&str>,
+        env_digests: Option<&BTreeMap<String, String>>,
     ) -> Vec<Trial> {
         let seeds: Vec<Option<u64>> = if self.seeds.is_empty() {
             vec![None]
@@ -1776,6 +1819,9 @@ impl Manifest {
             let stages = arm.resolve_stages().expect("validated at load");
             let provider = arm.provider.as_deref().unwrap_or(provider);
             let model = arm.model.as_deref().unwrap_or(model);
+            let env_digest = env_digests
+                .and_then(|m| m.get(arm_name))
+                .map(String::as_str);
             let row = |task: &String, seed: Option<u64>, rep: u32, position: Option<u32>| Trial {
                 owner_actions: None,
                 fixture_checked: None,
@@ -2352,9 +2398,9 @@ impl ExperimentStore {
     ) -> Result<(Vec<Trial>, usize)> {
         let (on_disk, skipped) = self.trials()?;
         let digest = manifest.fixtures.charter_digest(base)?;
-        let env = manifest.environment.digest(base)?;
+        let envs = manifest.env_digests(base)?;
         let planned = manifest
-            .trials_with_world(task_ids, provider, model, digest.as_deref(), Some(&env))
+            .trials_with_world(task_ids, provider, model, digest.as_deref(), Some(&envs))
             .into_iter()
             .map(|t| on_disk.get(&t.id).cloned().unwrap_or(t))
             .collect();
@@ -2392,6 +2438,12 @@ impl ExperimentStore {
             b"an experiment home; see mecha exp\n",
         )?;
         Ok(home)
+    }
+
+    /// Where environments are resolved and built, one directory per
+    /// digest: `<digest>/tree` (the resolved files) and `<digest>/stores`.
+    pub fn environments(&self) -> PathBuf {
+        self.root.join("environment")
     }
 
     /// Where the environment's server stores are built, once per
@@ -3894,7 +3946,7 @@ rationale = "r"
         assert_eq!(h("rules"), h("full"));
         // Which the runner names, and the judge flags on the stored rows.
         assert_eq!(
-            m.identical_arms("p", "m"),
+            m.identical_arms("p", "m", None),
             vec![vec!["full".to_string(), "rules".to_string()]]
         );
         let verdicts = judge(&m, &rows, &[], 0);
@@ -4497,6 +4549,59 @@ rationale = "no rumination should fail more over the sequence"
         let (all, torn) = store.all_stage_runs().unwrap();
         assert_eq!((all.len(), torn), (ledger.len(), 1));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An arm's own environment is its own hash term and its own grouping:
+    /// two arms that differ only in environment are two conditions, and an
+    /// arm with no environment of its own falls back to the manifest's.
+    #[test]
+    fn an_arms_environment_is_part_of_its_condition() {
+        let m = Manifest::parse(
+            r#"
+name = "envs"
+control = "base"
+split_seed = 1
+[tasks]
+cases = "c.jsonl"
+fixture = "w"
+[arms.base]
+[arms.same]
+[arms.same.prediction]
+metric = "failure"
+rationale = "r"
+[arms.prompt-b]
+environment = { dir = "eval/envs/prompt-b" }
+[arms.prompt-b.prediction]
+metric = "failure"
+rationale = "r"
+"#,
+        )
+        .unwrap();
+        assert_eq!(m.environment_for("same"), &m.environment);
+        assert_eq!(
+            m.environment_for("prompt-b").dir.as_deref(),
+            Some(Path::new("eval/envs/prompt-b"))
+        );
+        let digests = BTreeMap::from([
+            ("base".to_string(), "e-default".to_string()),
+            ("same".to_string(), "e-default".to_string()),
+            ("prompt-b".to_string(), "e-prompt-b".to_string()),
+        ]);
+        let rows = m.trials_with_world(&["t".into()], "p", "m", None, Some(&digests));
+        let h = |arm: &str| {
+            rows.iter()
+                .find(|t| t.arm == arm)
+                .unwrap()
+                .condition_hash
+                .clone()
+        };
+        assert_eq!(h("base"), h("same"));
+        assert_ne!(h("base"), h("prompt-b"));
+        assert_eq!(
+            m.identical_arms("p", "m", Some(&digests)),
+            vec![vec!["base".to_string(), "same".to_string()]],
+            "prompt-b differs only in its environment, and is its own condition"
+        );
     }
 
     /// Pairs that ran under different `--jobs` limits hold the verdict at
@@ -5657,8 +5762,20 @@ seed = "seed"
         assert_ne!(with_charter, world(&["mail__mail_send".into()]));
         let rows2 = m.trials_with_world(&["a".into()], "p", "m", Some("abc"), None);
         // And the environment's digest, only when there is one.
-        let in_env = m.trials_with_world(&["a".into()], "p", "m", Some("abc"), Some("e1"));
-        let other_env = m.trials_with_world(&["a".into()], "p", "m", Some("abc"), Some("e2"));
+        let in_env = m.trials_with_world(
+            &["a".into()],
+            "p",
+            "m",
+            Some("abc"),
+            Some(&BTreeMap::from([("full".to_string(), "e1".to_string())])),
+        );
+        let other_env = m.trials_with_world(
+            &["a".into()],
+            "p",
+            "m",
+            Some("abc"),
+            Some(&BTreeMap::from([("full".to_string(), "e2".to_string())])),
+        );
         assert_ne!(in_env[0].condition_hash, rows2[0].condition_hash);
         assert_ne!(in_env[0].condition_hash, other_env[0].condition_hash);
         assert_eq!(rows2[0].condition_hash, with_charter);
