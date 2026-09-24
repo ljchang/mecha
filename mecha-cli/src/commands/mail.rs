@@ -2741,7 +2741,10 @@ impl Draft {
 ///   stranger's mail with both legs clear.
 /// - **A failed run stages nothing and leaves the thread alone.** A thread
 ///   whose draft failed is a thread nobody has answered, which is what
-///   `classified` already means.
+///   `classified` already means. The one exception is a schedule run that
+///   made a hold before failing: a hold is made, not staged, so the calendar
+///   has changed, and the thread is marked acted and the failure says so,
+///   rather than inviting a re-run that makes a second hold.
 async fn draft(
     global: &GlobalOpts,
     thread_id: &str,
@@ -2821,7 +2824,47 @@ async fn draft(
     session.record_run(&recorded, &convo)?;
     session.append(&mecha_core::session::Record::Taint(convo.taint))?;
 
+    // Counted before the failure exit, not after: a hold is made, not
+    // staged, so a run that made one and then failed has changed the
+    // calendar. Reporting "nothing staged" there left the thread unhandled
+    // and invited a re-run that made a second hold (found in review of #281).
+    // Over every state the transcript held, not just the live list:
+    // compaction rewrites `messages` in place and keeps the old copies in
+    // `rewritten`, so a hold made before a summary would vanish from the
+    // count and the run would report nothing (found in review of #281).
+    // Only a schedule run counts: a hold from any other kind of run is not
+    // what that run was asked to do, and must not close its thread.
+    let holds = match kind {
+        Draft::Schedule => holds_made(
+            convo
+                .rewritten
+                .iter()
+                .map(Vec::as_slice)
+                .chain(std::iter::once(convo.messages.as_slice())),
+        ),
+        _ => 0,
+    };
     if let Err(e) = outcome {
+        if holds > 0 {
+            // The mark is bookkeeping and the hold cannot be taken back, so a
+            // failed mark must not swallow the report of the hold (found in
+            // review of #281).
+            let marked = store
+                .mark(
+                    &account,
+                    thread_id,
+                    kind.verb(),
+                    mecha_core::mail_triage::ACTED,
+                )
+                .err()
+                .map(|m| format!(" (and the thread could not be marked handled: {m:#})"))
+                .unwrap_or_default();
+            bail!(
+                "the {} run failed after adding {holds} private hold(s) to your calendar \
+                 — check the calendar before running it again{marked}: {e:#}",
+                kind.verb()
+            );
+        }
         bail!("the {} run failed, nothing staged: {e:#}", kind.verb());
     }
 
@@ -2829,6 +2872,31 @@ async fn draft(
         .into_iter()
         .filter(|id| !staged_before.contains(id))
         .collect();
+    // A hold is made, not staged (`docs/PROVENANCE-DESIGN.md` §2), so it
+    // never shows up in the outbox. Counted above from the run's own record:
+    // a `calendar_hold` call whose result came back clean. Marked through
+    // `mark`, like every other action that finishes a thread, so the record
+    // says which verb closed it.
+    if holds > 0 && staged.is_empty() {
+        // Reported before the store write, for the same reason as above: the
+        // hold is already on the calendar whatever the store does next.
+        println!(
+            "added {holds} private hold(s) to your calendar for {} — nobody was invited",
+            handle(thread_id)
+        );
+        if let Err(e) = store.mark(
+            &account,
+            thread_id,
+            kind.verb(),
+            mecha_core::mail_triage::ACTED,
+        ) {
+            eprintln!(
+                "warning: the hold was made but the thread could not be marked handled \
+                 — don't run schedule on it again: {e:#}"
+            );
+        }
+        return Ok(());
+    }
     if staged.is_empty() {
         // Not an error. A model that read the thread and concluded there is
         // nothing to send has done its job, and inventing a draft to have
@@ -2853,12 +2921,55 @@ async fn draft(
     );
     store.put(&rec)?;
 
+    // A hold beside a staged invitation is already on the calendar; say so,
+    // or an owner who discards the draft is left with a hold nobody reported.
+    let also = if holds > 0 {
+        format!(" (and {holds} private hold(s) are already on your calendar)")
+    } else {
+        String::new()
+    };
     println!(
-        "{} draft(s) staged for {} — `mecha outbox` to review, nothing has been sent",
+        "{} draft(s) staged for {} — `mecha outbox` to review, nothing has been sent{also}",
         staged.len(),
         handle(thread_id)
     );
     Ok(())
+}
+
+/// How many distinct `calendar_hold` calls in a run came back clean.
+///
+/// The run's record rather than the model's final words, because a model
+/// saying "added" is hearsay: a refused hold (no `allow` rule, a read-only
+/// surface) comes back `is_error`, and a hold that failed at the provider
+/// does too. Taken over every snapshot of the transcript, since compaction
+/// rewrites it; one hold appears in each snapshot from before its rewrite,
+/// so calls are counted by id, once.
+fn holds_made<'a>(
+    snapshots: impl IntoIterator<Item = &'a [mecha_core::message::Message]>,
+) -> usize {
+    use mecha_core::message::Block;
+    let mut calls = std::collections::HashSet::new();
+    let mut clean = std::collections::HashSet::new();
+    for messages in snapshots {
+        for block in messages.iter().flat_map(|m| &m.content) {
+            match block {
+                Block::ToolUse { id, name, .. }
+                    if name.rsplit("__").next() == Some("calendar_hold") =>
+                {
+                    calls.insert(id.clone());
+                }
+                Block::ToolResult {
+                    tool_use_id,
+                    is_error: false,
+                    ..
+                } => {
+                    clean.insert(tool_use_id.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+    calls.intersection(&clean).count()
 }
 
 /// What the drafting run is asked to do.
@@ -2908,28 +3019,42 @@ fn draft_prompt(
         // save-the-date. Attendees now come only from the owner's note.
         Draft::Schedule => p.push_str(
             "Add what this thread announces or arranges to the owner's own \
-             calendar with `calendar_create_event`. Leave `account` out unless \
-             the owner's note names one: the calendar tool has its own \
-             configured default, which is not the mailbox this arrived in. \
-             Use the date, time and location the thread actually states, and \
-             give the event a short title a person would recognise on a \
-             calendar. Put the useful details — a join link, a room, an \
-             agenda — in `description`, briefly. **Leave `attendees` out** \
-             unless the owner's note below names people to invite: an \
-             attendee receives an invitation, and the people who wrote the \
-             thread already know about their own event. **If the thread does \
-             not state a specific date and time, draft nothing and say so** — \
-             an event invented from 'sometime next week' is worse than no \
-             event.\n",
+             calendar. **Use `calendar_hold`** unless the owner's note below \
+             names people to invite: it puts a private block on the owner's \
+             own primary calendar, invites nobody, and is made directly. Only \
+             when the note names people, use `calendar_create_event` with \
+             exactly those people as `attendees` — an attendee receives an \
+             invitation, so that call is staged for the owner's review. The \
+             people who wrote the thread already know about their own event; \
+             never invite them unless the note says to. If `calendar_hold` is \
+             refused, use `calendar_create_event` with no `attendees` instead. \
+             Leave `account` out unless the owner's note names one: the \
+             calendar tool has its own configured default, which is not the \
+             mailbox this arrived in. Use the date, time and location the \
+             thread actually states, and give the event a short title a \
+             person would recognise on a calendar. Put the useful details — a \
+             join link, a room, an agenda — in `description`, briefly. **If \
+             the thread does not state a specific date and time, add nothing \
+             and say so** — an event invented from 'sometime next week' is \
+             worse than no event.\n",
         ),
     }
     if let Some(n) = note {
         p.push_str(&format!("\nThe owner adds: {n}\n"));
     }
+    let closing = match kind {
+        Draft::Schedule => {
+            "A hold reaches nobody but the owner. An invitation is routed to a \
+             review queue and is not delivered until the owner releases it. \
+             Add the event once and stop."
+        }
+        _ => {
+            "Your send tool is routed to a review queue — nothing you write is \
+             delivered until the owner releases it. Draft once and stop."
+        }
+    };
     p.push_str(&format!(
-        "\nWhat the classifier made of it, for context only: {}\n\
-         \nYour send tool is routed to a review queue — nothing you write is \
-         delivered until the owner releases it. Draft once and stop.\n",
+        "\nWhat the classifier made of it, for context only: {}\n\n{closing}\n",
         rec.verdict
             .as_ref()
             .map(|v| v.one_line.as_str())
@@ -3203,7 +3328,65 @@ mod classify_exit_tests {
 
 #[cfg(test)]
 mod draft_prompt_tests {
-    use super::{draft_prompt, Draft};
+    use super::{draft_prompt, holds_made, Draft};
+    use mecha_core::message::{Block, Message};
+    use serde_json::json;
+
+    fn call(id: &str, name: &str) -> Message {
+        Message {
+            role: mecha_core::message::Role::Assistant,
+            content: vec![Block::ToolUse {
+                id: id.into(),
+                name: name.into(),
+                input: json!({}),
+            }],
+            ..Message::user("")
+        }
+    }
+
+    fn result(id: &str, is_error: bool) -> Message {
+        Message {
+            content: vec![Block::ToolResult {
+                tool_use_id: id.into(),
+                content: "x".into(),
+                is_error,
+            }],
+            ..Message::user("")
+        }
+    }
+
+    /// A hold counts only when its result came back clean: a refused one
+    /// (no `allow` rule on a headless run) or a staged invitation is not a
+    /// hold, whatever the model says afterwards.
+    #[test]
+    fn only_a_clean_calendar_hold_result_counts_as_a_hold() {
+        let run = vec![
+            call("a", "mail__calendar_hold"),
+            result("a", true),
+            call("b", "mail__calendar_create_event"),
+            result("b", false),
+        ];
+        assert_eq!(holds_made([run.as_slice()]), 0);
+        let run = vec![call("c", "mail__calendar_hold"), result("c", false)];
+        assert_eq!(holds_made([run.as_slice()]), 1);
+        let bare = vec![call("d", "calendar_hold"), result("d", false)];
+        assert_eq!(
+            holds_made([bare.as_slice()]),
+            1,
+            "an unprefixed server's tool counts too"
+        );
+
+        // Compaction: the hold lives only in pre-rewrite snapshots, repeated
+        // in two of them, and the live list is a summary. Counted once, not
+        // zero and not twice.
+        let before = vec![call("h", "mail__calendar_hold"), result("h", false)];
+        let also_before = before.clone();
+        let after = vec![Message::user("summary of what happened")];
+        assert_eq!(
+            holds_made([before.as_slice(), also_before.as_slice(), after.as_slice()]),
+            1
+        );
+    }
     use mecha_core::mail_triage::Record;
 
     fn rec() -> Record {
@@ -3222,8 +3405,17 @@ mod draft_prompt_tests {
     fn adding_to_the_calendar_invites_nobody_the_owner_did_not_name() {
         let p = draft_prompt(&rec(), "t1", "dartmouth", &Draft::Schedule, None);
         assert!(!p.contains("attendees the thread"), "{p}");
-        assert!(p.contains("Leave `attendees` out"), "{p}");
-        assert!(p.contains("owner's own calendar"), "{p}");
+        assert!(p.contains("owner's own"), "{p}");
+        // The common case is a hold, made directly; an invitation only when
+        // the owner's note names people, and a refused hold falls back to a
+        // staged event rather than to nothing.
+        assert!(p.contains("**Use `calendar_hold`**"), "{p}");
+        assert!(p.contains("If `calendar_hold` is refused"), "{p}");
+        assert!(
+            p.contains("never invite them unless the note says to"),
+            "{p}"
+        );
+        assert!(!p.contains("Draft once and stop"), "{p}");
         // The calendar tool's own default decides where it lands, not the
         // mailbox the thread arrived in (found on review: naming the thread's
         // account overrode `default_calendar`).

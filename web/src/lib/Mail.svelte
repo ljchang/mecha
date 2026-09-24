@@ -18,7 +18,8 @@
   //   the next one in place: triage is a run of threads, not a trip back to
   //   the list after each.
   // - Every action is held for a few seconds behind an Undo button, then
-  //   commits. Replies, forwards and invites stage into the outbox; nothing
+  //   commits. Replies, forwards and invites stage into the outbox, and a
+  //   schedule with no invitees makes a private hold directly; nothing
   //   sends from here. Spam is the one verb that confirms first — it trains
   //   the provider's filter, the only effect outside the owner's mailbox.
 
@@ -447,7 +448,7 @@
         <button class="abtn" onclick={() => ask('needs-info', 'What are you waiting for?', 'their dates, before I can book', cur, { required: true })}>Park…</button>
       </div>
       <button class="morebtn" onclick={() => (more = !more)}>{more ? 'fewer actions' : 'more actions'}</button>
-      <div class="barnote">Drafts land in the outbox for review — nothing sends from here.</div>
+      <div class="barnote">Drafts land in the outbox for review; Add to calendar makes a private hold directly. Nothing sends from here.</div>
     </div>
   {:else if screen === 'sweep'}
     <header class="threadhead">
@@ -463,7 +464,7 @@
     </div>
     <div class="scroll">
       <h1 class="sweeptitle">{SWEEP_LABEL[sweepVerb]} {sweepCounts[sweepVerb]} thread{sweepCounts[sweepVerb] === 1 ? '' : 's'}?</h1>
-      <p class="sweepnote">The classifier suggested this for each one. Untick a group to keep it in the queue; one Undo brings the whole batch back.</p>
+      <p class="sweepnote">The classifier suggested this for each one. Untick a group to keep it in the queue; one Undo brings the whole batch back. Add to calendar makes each hold directly, once the batch goes.</p>
       {#each groups as g (g.key)}
         <label class="group">
           <input type="checkbox" checked={ticked.has(g.key)} onchange={() => toggleGroup(g)} />

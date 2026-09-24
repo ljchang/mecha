@@ -1058,7 +1058,9 @@ exception, and it is the private-write quadrant** (`PROVENANCE-DESIGN.md` §2).
 It is a create on the owner's primary calendar with no `attendees` and no
 `calendar_id`, and `create_params` drops both even if a model sends them. It is
 marked private, says `openWorldHint: false` outright, and does not stage.
-`event_request` is the one place a create request is built, so the test that
+`event_request` is the one place a *tool call* builds a create request (the
+poll-booking path and the single-provider servers build their own, all
+`private: false`), so the test that
 takes a hold end to end, from tool name to each provider's body, is what
 guards it. Unification did not touch this: the same
 annotations ride on the unified tools (there is a shared
