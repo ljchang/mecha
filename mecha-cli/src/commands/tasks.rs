@@ -2016,12 +2016,14 @@ pub(crate) const OWNER: &str = "@owner";
 /// nobody named is the ambiguity this whole phase exists to remove, and two
 /// calls could leave the board in exactly that state if the second failed.
 ///
-/// **Never a closing status.** The withheld handle is the
-/// `closure_guard`-wrapped one (`setup::build` wraps before anything is
-/// pulled off the registry), so `done`/`dropped` through here is refused by
-/// construction — deliberately: a closure is the owner's act on every path,
-/// and `tasks set` is its one caller. Every status this function is asked to
-/// carry today is `waiting` or the pre-run status it is restoring.
+/// **Never a closing status**, checked here. The withheld handle is the
+/// `closure_guard`-wrapped one, and since review of #293 the guard refuses
+/// *every* status write from a model — so the harness reaches through it
+/// with `Tool::unguarded`, and the rule the guard used to enforce for this
+/// function (no `done`/`dropped`: a closure is the owner's act, and `tasks
+/// set` is its one caller) is enforced by this function itself. Every
+/// status it is asked to carry today is `waiting` or the pre-run status it
+/// is restoring.
 pub(crate) async fn move_task(
     update: &std::sync::Arc<dyn mecha_core::tool::Tool>,
     ctx: &mecha_core::tool::ToolCtx,
@@ -2030,6 +2032,18 @@ pub(crate) async fn move_task(
     waiting_on: &str,
     session: Option<&str>,
 ) -> Result<()> {
+    // The harness's own hand: the guard refuses every model status write
+    // (closing and reopening are recorded acts only `tasks set` performs), so
+    // this reaches the wrapped tool directly — and keeps, itself, the one
+    // rule the guard used to keep for it: never a closing status.
+    anyhow::ensure!(
+        !mecha_core::closure::is_closed_status(status),
+        "move_task never carries a closing status ({status}); a closure goes through `mecha \
+         tasks set`"
+    );
+    let update = update
+        .unguarded()
+        .unwrap_or_else(|| std::sync::Arc::clone(update));
     let mut args = json!({ "task": task, "status": status, "waiting_on": waiting_on });
     // Only the run that starts a conversation names one. A later move leaves
     // the field alone rather than re-asserting it, so a failed run keeps

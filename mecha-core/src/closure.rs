@@ -47,6 +47,17 @@ pub const POSTURE_ENV: &str = "MECHA_RUN_POSTURE";
 pub const CLOSED_STATUSES: [&str; 2] = ["done", "dropped"];
 
 /// Whether a board status is a closed one.
+/// Every status the board accepts — mecha-graph's `gtd::TASK_STATUSES`,
+/// mirrored because this crate cannot depend on the graph's. Used where a
+/// status is echoed into a suggested command line (`closure_guard`), so a
+/// model-supplied value that is not one of these never is.
+pub const TASK_STATUSES: [&str; 6] = ["next", "inbox", "scheduled", "waiting", "done", "dropped"];
+
+/// Whether `status` is one of [`TASK_STATUSES`].
+pub fn is_known_status(status: &str) -> bool {
+    TASK_STATUSES.contains(&status)
+}
+
 pub fn is_closed_status(status: &str) -> bool {
     CLOSED_STATUSES.contains(&status)
 }
