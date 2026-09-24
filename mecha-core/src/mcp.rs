@@ -123,6 +123,11 @@ impl McpClient {
         // provider keys without anyone deciding it should.
         command.env_clear();
         command.envs(Sandbox::child_env(&cfg.env_passthrough));
+        // The owner's zone from `[agent] timezone`, beneath `env` so an
+        // explicit value still wins. See `McpServerConfig::owner_zone`.
+        if let Some(zone) = &cfg.owner_zone {
+            command.env("MECHA_TZ", zone);
+        }
         command.envs(&cfg.env);
 
         Ok(command)
@@ -663,6 +668,46 @@ mod tests {
             Some(workspace),
             "an unconfined server must start in the workspace, not in mecha's cwd"
         );
+    }
+
+    /// The zone is configured once, in `[agent] timezone`, and reaches every
+    /// server as `MECHA_TZ` — measured off a real child's environment. An
+    /// explicit `MECHA_TZ` in the server's own `env` still wins, and a
+    /// config with no zone hands over nothing rather than a guess.
+    #[tokio::test]
+    async fn the_owner_zone_reaches_the_server_and_an_explicit_one_wins() {
+        let seen = |cfg: McpServerConfig| async move {
+            let mut cmd = McpClient::build_command(&cfg, &unconfined(), Path::new("/tmp")).unwrap();
+            let out = cmd
+                .stdout(std::process::Stdio::piped())
+                .output()
+                .await
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout)
+                .split('\0')
+                .find_map(|e| e.strip_prefix("MECHA_TZ=").map(str::to_string))
+        };
+        let base = McpServerConfig {
+            name: "nosy".into(),
+            command: "/usr/bin/env".into(),
+            args: vec!["-0".into()],
+            ..Default::default()
+        };
+
+        let mut cfg = crate::config::Config::default();
+        cfg.agent.timezone = Some("Europe/Berlin".into());
+        cfg.mcp = vec![base.clone()];
+        cfg.hand_zone_to_servers();
+        assert_eq!(
+            seen(cfg.mcp[0].clone()).await.as_deref(),
+            Some("Europe/Berlin")
+        );
+
+        let mut explicit = cfg.mcp[0].clone();
+        explicit.env.insert("MECHA_TZ".into(), "Asia/Tokyo".into());
+        assert_eq!(seen(explicit).await.as_deref(), Some("Asia/Tokyo"));
+
+        assert_eq!(seen(base).await, None, "no zone configured, none invented");
     }
 
     /// The measurement that motivated `env_clear()`, as a test: spawn a server

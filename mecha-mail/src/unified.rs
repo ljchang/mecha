@@ -254,6 +254,21 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
         .clone()
         .or_else(|| file.calendar_default().map(String::from));
     let account = |rule: &str| plain(rule);
+    // The relative vocabulary, stated where the parameter is and not only in
+    // the tool's prose. A model reading the schema for `time_min` should be
+    // able to see that `today` is legal there — and that reaching for it is
+    // *preferred* over computing a date, which is the behaviour change this
+    // is for: the server holds a clock and the model does not.
+    let relative_time = |what: &str| -> Value {
+        json!({
+            "type": "string",
+            "description": format!(
+                "{what} An RFC 3339 timestamp, or one of `now`, `today`, `tomorrow`, \
+                 `yesterday`, `+3d`, `-1d` — resolved against the mailbox timezone by this \
+                 server. Prefer a relative term over working out the date yourself."
+            ),
+        })
+    };
     // An **item** op declares a default exactly when there is only one account
     // it could mean, and never otherwise: `Mode::Item` consults no default at
     // all, it errors until one is named — so `only_account` alone, with no
@@ -380,12 +395,12 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
         },
         {
             "name": "calendar_list_events",
-            "description": "List events in a time window across every account, merged in time order and tagged by account (recurring events arrive expanded). Times are RFC 3339; omit both to get the next 7 days. calendar_id addresses one account's calendar, so it requires `account`.",
+            "description": "List events in a time window across every account, merged in time order and tagged by account (recurring events arrive expanded). Times are RFC 3339, or one of `now`, `today`, `tomorrow`, `yesterday`, `+3d`, `-1d` — prefer those: this server resolves them against the mailbox timezone, so you do not have to know today's date, and `time_min: today` with `time_max: today` is the whole of today. Omit both to get the next 7 days. Every answer states the window it covered and the clock it was resolved against. calendar_id addresses one account's calendar, so it requires `account`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "time_min": {"type": "string"},
-                    "time_max": {"type": "string"},
+                    "time_min": relative_time("Start of the window."),
+                    "time_max": relative_time("End of the window."),
                     "account": account("Omit to read every account's primary calendar."),
                     "calendar_id": {"type": "string", "default": "primary"}
                 }
@@ -394,12 +409,12 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
         },
         {
             "name": "calendar_freebusy",
-            "description": "Busy intervals merged across every account (or one, when `account` is given) — when the user is busy, with no event details. Times are RFC 3339; the answer is in UTC with a local rendering beside it when a zone is configured. Omit both bounds for the next 7 days. Use this for scheduling questions ('when am I free?'); use calendar_list_events when the events themselves matter.",
+            "description": "Busy intervals merged across every account (or one, when `account` is given) — when the user is busy, with no event details. Times are RFC 3339, or one of `now`, `today`, `tomorrow`, `yesterday`, `+3d`, `-1d`, which this server resolves against the mailbox timezone so you need not know today's date. The answer is in UTC with a local rendering beside it when a zone is configured, and states the window and the clock it was resolved against. Omit both bounds for the next 7 days. Use this for scheduling questions ('when am I free?'); use calendar_list_events when the events themselves matter.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "time_min": {"type": "string"},
-                    "time_max": {"type": "string"},
+                    "time_min": relative_time("Start of the window."),
+                    "time_max": relative_time("End of the window."),
                     "account": account("Omit to merge every account's busy time.")
                 }
             },
@@ -1416,9 +1431,16 @@ impl MailTools {
             }
             "calendar_list_events" => {
                 let now = chrono::Utc::now();
-                let time_min = str_arg("time_min").unwrap_or_else(|| now.to_rfc3339());
-                let time_max = str_arg("time_max")
-                    .unwrap_or_else(|| (now + chrono::Duration::days(7)).to_rfc3339());
+                // Two zones on purpose: events render in `tz`, which may be
+                // the machine's `TZ`; the window resolves in `wz`, which is
+                // `MECHA_TZ` or nothing, and the stamp names the one it used.
+                let tz = crate::time::configured_zone();
+                let wz = crate::time::window_zone();
+                let (time_min, time_max) =
+                    match crate::time::window(str_arg("time_min"), str_arg("time_max"), wz, now) {
+                        Ok(w) => w,
+                        Err(e) => return fail(e),
+                    };
                 let calendar_id = str_arg("calendar_id");
                 // A named calendar is account-scoped, so it needs its account.
                 let mode = match calendar_id.as_deref() {
@@ -1451,19 +1473,36 @@ impl MailTools {
                         })
                     })
                     .collect();
+                // **The window, on every answer.** The empty case already
+                // named it; the non-empty one did not, so a run working from
+                // a wrong date got events back with nothing to say which day
+                // they were — the tool confirming the premise instead of
+                // contradicting it. Both shapes now carry the window and the
+                // clock it was resolved against.
+                let stamp = crate::time::window_note(&time_min, &time_max, now, wz);
                 if events.is_empty() {
-                    let body = format!("no events between {time_min} and {time_max}");
+                    // The window once, not twice: this line used to name it
+                    // itself, and `stamp` now says the same thing plus the
+                    // clock.
+                    let body = format!("no events in this window.\n{stamp}");
                     return Some((with_notes(body, &failures), false));
                 }
-                finish_events(&mut events, crate::time::configured_zone());
+                finish_events(&mut events, tz);
                 let body = serde_json::to_string_pretty(&events).unwrap_or_else(|_| "[]".into());
-                Some((with_notes(body, &failures), false))
+                Some((with_notes(format!("{body}\n\n{stamp}"), &failures), false))
             }
             "calendar_freebusy" => {
                 let now = chrono::Utc::now();
-                let time_min = str_arg("time_min").unwrap_or_else(|| now.to_rfc3339());
-                let time_max = str_arg("time_max")
-                    .unwrap_or_else(|| (now + chrono::Duration::days(7)).to_rfc3339());
+                // Two zones on purpose: events render in `tz`, which may be
+                // the machine's `TZ`; the window resolves in `wz`, which is
+                // `MECHA_TZ` or nothing, and the stamp names the one it used.
+                let tz = crate::time::configured_zone();
+                let wz = crate::time::window_zone();
+                let (time_min, time_max) =
+                    match crate::time::window(str_arg("time_min"), str_arg("time_max"), wz, now) {
+                        Ok(w) => w,
+                        Err(e) => return fail(e),
+                    };
                 let (busy, failures) = match self
                     .freebusy(&time_min, &time_max, account_arg.as_deref())
                     .await
@@ -1471,7 +1510,6 @@ impl MailTools {
                     Ok(r) => r,
                     Err(e) => return fail(e),
                 };
-                let tz = crate::time::configured_zone();
                 let rows: Vec<Value> = busy
                     .iter()
                     .map(|iv| {
@@ -1486,9 +1524,13 @@ impl MailTools {
                         row
                     })
                     .collect();
+                // It already named its window; what it could not say was
+                // which clock that window came from. An empty `busy` list is
+                // indistinguishable from a wrong day without it.
                 let body = serde_json::to_string_pretty(&json!({
                     "time_min": time_min,
                     "time_max": time_max,
+                    "as_of": crate::time::as_of(now, wz),
                     "busy": rows,
                 }))
                 .unwrap_or_else(|_| "{}".into());
@@ -1737,6 +1779,65 @@ mod tests {
         assert!(
             all_bad.is_err(),
             "every account failing is a failure, not two empty rows"
+        );
+    }
+
+    /// **The incident, as an assertion about the answer.**
+    ///
+    /// On 2026-09-14 a run whose prompt carried a stale date asked
+    /// `calendar_list_events` for the 13th, and the calendar answered that
+    /// window faithfully — events came back with nothing in the result to say
+    /// which day they were, so the tool confirmed the wrong premise instead of
+    /// contradicting it and the owner had to correct the date twice.
+    ///
+    /// The window and the clock now travel together, so the mismatch is
+    /// *in the answer*: a caller asking for the 13th on the 17th is told so
+    /// by the thing it asked.
+    #[test]
+    fn a_window_answer_states_the_clock_it_was_resolved_against() {
+        let asked_for = "2026-09-13T00:00:00-04:00";
+        let note = crate::time::window_note(
+            asked_for,
+            "2026-09-13T23:59:59-04:00",
+            "2026-09-17T11:15:00Z".parse().unwrap(),
+            Some("America/New_York".parse().unwrap()),
+        );
+        assert!(note.contains(asked_for), "the window asked for: {note}");
+        assert!(
+            note.contains("Thursday 2026-09-17"),
+            "and the clock that answered it: {note}"
+        );
+        // The premise and the clock are both present, which is what makes the
+        // contradiction visible without the reader holding a calendar.
+        assert!(
+            note.contains("2026-09-13") && note.contains("2026-09-17"),
+            "{note}"
+        );
+    }
+
+    /// A relative term is resolved; a real stamp is not touched; a term with
+    /// no zone to resolve it in is refused by name.
+    #[test]
+    fn resolve_window_resolves_passes_through_and_refuses() {
+        let now: chrono::DateTime<chrono::Utc> = "2026-09-14T02:37:12Z".parse().unwrap();
+        let tz = Some("America/New_York".parse().unwrap());
+
+        // 02:37Z on the 14th is 22:37 on the 13th where the owner is.
+        let resolved =
+            crate::time::resolve_window("today", tz, now, crate::time::Bound::Start).unwrap();
+        assert!(resolved.starts_with("2026-09-13T00:00:00"), "{resolved}");
+
+        let untouched = "2026-09-20T09:00:00-04:00";
+        assert_eq!(
+            crate::time::resolve_window(untouched, tz, now, crate::time::Bound::Start).unwrap(),
+            untouched
+        );
+
+        let refused =
+            crate::time::resolve_window("today", None, now, crate::time::Bound::Start).unwrap_err();
+        assert!(
+            refused.contains("MECHA_TZ"),
+            "the remedy names the fix: {refused}"
         );
     }
 
