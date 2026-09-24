@@ -1,0 +1,4 @@
+# The assistant environment one conversation later: Ada asked Tal about the
+# methods section, the owner released that email, and Tal has answered.
+# Only the mailbox differs.
+extends = "eval/envs/assistant"

@@ -1,0 +1,30 @@
+{
+ "v": 1,
+ "next": 5,
+ "docs": [
+  {
+   "id": "doc-0001",
+   "title": "Recommendation letter template",
+   "trashed": false,
+   "body": "Dear Admissions Committee,\n\nI am writing to recommend [STUDENT NAME] for admission to [PROGRAM]. I have known [STUDENT NAME] for [DURATION] as [RELATIONSHIP].\n\n[STRENGTHS \u2014 two or three specific examples of their research, with what they did themselves]\n\n[CLOSING \u2014 how they compare with other students I have worked with, and my overall recommendation]\n\nSincerely,\n\nAda Okafor\nAssociate Professor, Department of Psychological and Brain Sciences"
+  },
+  {
+   "id": "doc-0002",
+   "title": "Jordan Lee \u2014 CV",
+   "trashed": false,
+   "body": "Jordan Lee\njordan.lee@example.edu\n\nEducation\nB.A. Psychology, expected 2027. GPA 3.9.\n\nResearch\nResearch assistant, Okafor Lab, 2024\u2013present (two years). Built the preprocessing stage of the Halcyon analysis pipeline and wrote its test suite.\nIndependent project: sleep and working memory in undergraduates (n = 84), supervised by Ada Okafor.\n\nPresentations\nPoster, Society for Neuroscience annual meeting 2026: \"Sleep fragmentation predicts working-memory lapses\".\n\nTeaching\nUndergraduate teaching assistant, Introduction to Statistics, 2025."
+  },
+  {
+   "id": "doc-0003",
+   "title": "Jordan Lee \u2014 statement of purpose",
+   "trashed": false,
+   "body": "I am applying to the Neuroscience PhD program at Northwood University to study how sleep shapes memory consolidation. In the Okafor Lab I learned to build analysis pipelines that other people can trust..."
+  },
+  {
+   "id": "doc-0004",
+   "title": "Lab meeting notes",
+   "trashed": false,
+   "body": "Lab meeting notes\n\n2026-09-10\n- Halcyon refactor: preprocessing stage merged.\n- Aurora: aims page revision with Priya."
+  }
+ ]
+}

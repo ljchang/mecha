@@ -1,0 +1,120 @@
+{
+ "v": 1,
+ "polls": {
+  "aurora-planning": {
+   "kind": "meeting",
+   "title": "Aurora planning meeting",
+   "duration_minutes": 60,
+   "auto_book": "pick",
+   "closed": false,
+   "participants": [
+    {
+     "name": "Priya Nair",
+     "email": "priya.nair@example.edu"
+    },
+    {
+     "name": "Tal Ben-Ami",
+     "email": "tal@example.org"
+    },
+    {
+     "name": "Alex Chen",
+     "email": "alex.chen@example.edu"
+    }
+   ],
+   "candidates": [
+    {
+     "days_ahead": 5,
+     "hour": 14
+    },
+    {
+     "days_ahead": 5,
+     "hour": 17
+    },
+    {
+     "days_ahead": 6,
+     "hour": 13
+    },
+    {
+     "days_ahead": 6,
+     "hour": 19
+    }
+   ],
+   "votes": {
+    "Priya Nair": [
+     "yes",
+     "no",
+     "yes",
+     "yes"
+    ],
+    "Tal Ben-Ami": [
+     "no",
+     "yes",
+     "yes",
+     "if_needed"
+    ],
+    "Alex Chen": [
+     "yes",
+     "yes",
+     "yes",
+     "no"
+    ]
+   }
+  },
+  "rec-jordan-lee": {
+   "kind": "general",
+   "title": "Recommendation letter request",
+   "closed": true,
+   "participants": [
+    {
+     "name": "Jordan Lee",
+     "email": "jordan.lee@example.edu"
+    }
+   ],
+   "questions": [
+    {
+     "id": "program_type",
+     "kind": "choice",
+     "prompt": "What kind of program is the letter for?",
+     "options": [
+      "PhD",
+      "Master's",
+      "Job or industry"
+     ]
+    },
+    {
+     "id": "deadline",
+     "kind": "choice",
+     "prompt": "When is the earliest deadline?",
+     "options": [
+      "Before Oct 15",
+      "Oct 15 \u2013 Nov 1",
+      "After Nov 1"
+     ]
+    },
+    {
+     "id": "relationship",
+     "kind": "choice",
+     "prompt": "How do you know me?",
+     "options": [
+      "Took a course",
+      "Research assistant in the lab",
+      "Both"
+     ]
+    },
+    {
+     "id": "highlights",
+     "kind": "text",
+     "prompt": "What would you like the letter to highlight?"
+    }
+   ],
+   "answers": [
+    {
+     "program_type": "PhD",
+     "deadline": "Oct 15 \u2013 Nov 1",
+     "relationship": "Both",
+     "highlights": "The Halcyon preprocessing work and my SfN poster."
+    }
+   ]
+  }
+ }
+}

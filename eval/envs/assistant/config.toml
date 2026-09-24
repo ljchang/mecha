@@ -1,0 +1,53 @@
+# Merged over eval/envs/default/config.toml. `[[mcp]]` is an array, so this
+# list is the whole server list: the default's two, plus docs and polls.
+# Relative paths resolve against the checkout.
+
+[[mcp]]
+name = "graph"
+command = "mecha-graph-mcp"
+prefix_tools = false
+env = { MECHA_GRAPH_DB = "${STORE}/graph.db", MECHA_GRAPH_CONFIG = "${STORE}/config.toml" }
+[mcp.capabilities]
+untrusted_input = true
+
+[[mcp]]
+name = "mail"
+command = "python3"
+args = ["eval/fixtures/mail_server.py"]
+env = { MECHA_FIXTURE_DIR = "${STORE}" }
+[mcp.capabilities]
+untrusted_input = true
+
+[[mcp]]
+name = "docs"
+command = "python3"
+args = ["eval/fixtures/docs_server.py"]
+env = { MECHA_FIXTURE_DIR = "${STORE}" }
+[mcp.capabilities]
+untrusted_input = true
+
+# Named `factory` so its tools are `factory__poll_*`, as the owner's are.
+[[mcp]]
+name = "factory"
+command = "python3"
+args = ["eval/fixtures/polls_server.py"]
+env = { MECHA_FIXTURE_DIR = "${STORE}" }
+[mcp.capabilities]
+untrusted_input = true
+
+# The owner's routing: every send, reply, docs write and poll creation is
+# staged in the outbox for review, and graded by the staged call's
+# arguments. A run cannot email a colleague and wait for the answer: after
+# it has read the mailbox, a direct send is refused by the trifecta
+# interlock, and a staged one waits for the owner. Waiting is therefore two
+# conversations; `assistant-tal-replied` is the second one's world.
+[outbox]
+tools = [
+  "mail__mail_send",
+  "mail__mail_reply",
+  "docs__docs_create",
+  "docs__docs_append",
+  "docs__docs_replace",
+  "factory__poll_create",
+  "factory__poll_meeting_create",
+]
