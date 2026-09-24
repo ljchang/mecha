@@ -83,6 +83,8 @@ export const ROUTES = [
     // header block, then `--- ` message blocks — so render the fixture that way.
     (url) => {
       const t = fx.mailRead[url.searchParams.get('thread')] ?? fx.mailRead['thr-8812'];
+      // A thread the outbox rereads is served as mecha-mail writes it.
+      if (t.raw) return new Response(t.raw, { headers: { 'content-type': 'text/plain' } });
       return new Response(`subject:   ${t.subject}\n\n--- ${t.meta}\nSubject: ${t.subject}\n\n${t.body}\n`, {
         headers: { 'content-type': 'text/plain' },
       });

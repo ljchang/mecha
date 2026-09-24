@@ -280,6 +280,17 @@ export const mailCalendars = [
 ];
 
 export const mailRead = {
+  // The demo reply's thread as it is *now*: the two messages the draft was
+  // written from, and one that arrived while it waited in the outbox — so
+  // the outbox's reread has something to find.
+  'AAQkADFiNjVjOWI1LTlkNGEtNDcxMi04ZDVmLWM3N2ViOGMyNTRmOAAQAOg_w5GAV9dLsQg45HQVhMk=': {
+    raw: [
+      '--- [work] From: Tomas Lindqvist <editor@jac.example.org> · 2026-08-27T13:20:00Z\nCalendar date: Thursday 2026-08-27 -04:00\nSubject: Review request — manuscript JAC-2291\nMessage id (for mail_reply): AAMkADFiNjVi…\n\nDear colleague,\n\nWould you be willing to review the attached manuscript?',
+      '--- [work] From: Tomas Lindqvist <editor@jac.example.org> · 2026-08-28T15:02:11Z\nCalendar date: Friday 2026-08-28 -04:00\nSubject: Re: Review request — manuscript JAC-2291\nMessage id (for mail_reply): AAMkADFiNjVj…\n\nA gentle nudge — I would need to know by **Friday** whether you can take it on.',
+      '--- [work] From: Ines Okafor <ines@fairhaven.example.edu> · 2026-08-29T09:12:40Z\nCalendar date: Saturday 2026-08-29 -04:00\nSubject: Re: Review request — manuscript JAC-2291\nMessage id (for mail_reply): AAMkADFiNjVk…\n\nTomas — I can take this one if it still needs a reviewer; I know the retrieval-practice literature well.',
+      '--- end of thread · 3 messages',
+    ].join('\n\n'),
+  },
   'thr-8812': {
     subject: 'Review request — manuscript JAC-2291',
     meta: 'Tomas Lindqvist <editor@jac.example.org> · work · 2026-08-28 14:02',
