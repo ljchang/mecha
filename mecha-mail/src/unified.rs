@@ -1944,6 +1944,10 @@ impl crate::mcp::ToolProvider for MailTools {
         self.definitions.clone()
     }
 
+    // `serve` calls only `call_result`; `call` is the trait's required
+    // spelling, kept for any direct caller. Both go through `dispatch`, so
+    // they cannot disagree — and a provider that makes claims must override
+    // `call_result`, because the default wraps `call` and claims nothing.
     async fn call(&self, name: &str, args: &Value) -> Option<(String, bool)> {
         self.dispatch(name, args)
             .await
