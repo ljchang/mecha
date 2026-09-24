@@ -213,7 +213,8 @@ impl WebApprover {
             qid,
             kind: "approval".into(),
             tool: Some(tool.name().to_string()),
-            args: Some(super::chat::clip_args(input)),
+            // What the call points at, beside the call (`Tool::review_input`).
+            args: Some(super::chat::clip_args(&tool.review_input(input))),
             // The essentials, with the whole call still beside them. A
             // reviewer who cannot read what they are approving approves it
             // anyway — which is the failure this card exists to prevent,

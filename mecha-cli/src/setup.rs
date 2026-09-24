@@ -1225,6 +1225,13 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
                 } else {
                     registry.insert(Arc::new(search));
                 }
+            } else if wants("web_open") {
+                // Named alone, it would open nothing: its handles come only
+                // from a search. Say so rather than register neither in silence.
+                eprintln!(
+                    "mecha: `web_open` needs `web_search` beside it (it opens only search \
+                     results); add `--tool web_search`"
+                );
             }
         }
     }

@@ -57,8 +57,12 @@ impl Approver for TuiApprover {
         if self.always.lock().is_ok_and(|a| a.contains(tool.name())) {
             return Decision::Allow;
         }
-        self.ask(tool, crate::approve::summarize(tool.name(), input), false)
-            .await
+        self.ask(
+            tool,
+            crate::approve::summarize(tool.name(), &tool.review_input(input)),
+            false,
+        )
+        .await
     }
 
     /// Past the `always` list on purpose: an escalation is the interlock
@@ -69,7 +73,7 @@ impl Approver for TuiApprover {
         // payload, and the gist-sized cut hid it. See its doc comment.
         let summary = format!(
             "{why} {}",
-            crate::approve::summarize_forced(tool.name(), input)
+            crate::approve::summarize_forced(tool.name(), &tool.review_input(input))
         );
         self.ask(tool, summary, true).await
     }
@@ -80,7 +84,7 @@ impl Approver for TuiApprover {
     async fn consult(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
         let summary = format!(
             "{why} {}",
-            crate::approve::summarize_forced(tool.name(), input)
+            crate::approve::summarize_forced(tool.name(), &tool.review_input(input))
         );
         self.ask(tool, summary, true).await
     }
