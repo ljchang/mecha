@@ -448,3 +448,13 @@ export const DOC_EDIT_KEYS = ['find', 'replace', 'match_case', 'file_id'];
  * of these, and typing it was the step that left them sitting there.
  */
 export const REJECT_REASONS = ['Already handled', 'No longer needed', "Not right — I'll write it myself"];
+
+/**
+ * A press that lands before a draft has been on screen this long is refused.
+ * After a send the next draft opens in the same place, instantly from the
+ * cache, so a second press — key or click — would send it unread. This is
+ * the safety that replaced the armed confirm sheet, so it lives here, where a
+ * test can hold it.
+ */
+export const JUST_OPENED_MS = 800;
+export const tooSoon = (openedAt, now = Date.now()) => now - openedAt < JUST_OPENED_MS;
