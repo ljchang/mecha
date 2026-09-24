@@ -65,7 +65,7 @@ on `docs/appraisal-wiring` for the code comment in `distill.rs`,
 ARCHITECTURE's goal-system section and the website's appraisal pages; the
 pages outside the appraisal section (the distillation, memory, learning and
 workflow pages) belong to another lane and were corrected on its PR #283,
-so until that merges the distillation page still carries the claim below:
+merged 2026-09-24:
 - `distill.rs` (and the website's distillation page) say `meta.affect` and
   the goal errors give the graph's review queue a salience order. mecha-graph
   has no reader of either; GOAL-SYSTEM-DESIGN's rung 9 row calls it "not
