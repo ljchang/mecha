@@ -73,8 +73,8 @@ pub fn tool_definitions() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "time_min": {"type": "string"},
-                    "time_max": {"type": "string"},
+                    "time_min": crate::time::relative_time_schema("Start of the window."),
+                    "time_max": crate::time::relative_time_schema("End of the window."),
                     "calendar_id": {"type": "string", "default": "primary"}
                 }
             },
@@ -412,6 +412,13 @@ impl crate::mcp::ToolProvider for GoogleTools {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The relative vocabulary is on this server's window parameters, not
+    /// only the unified server's — see `time::assert_window_schema`.
+    #[test]
+    fn window_parameters_name_the_relative_vocabulary() {
+        crate::time::assert_window_schema("mecha-google", &tool_definitions());
+    }
 
     /// The annotations are the security contract the connecting client reads;
     /// getting one wrong mislabels a tool for every deployment.
