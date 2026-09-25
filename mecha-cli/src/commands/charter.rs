@@ -92,6 +92,9 @@ fn edit() -> Result<()> {
         CharterEdit::Saved => {
             println!("saved — it rides in the prompt from the next run");
             show_lines(&Charter::load(&path)?);
+            for w in crate::editor::charter_trigger_warnings(&path) {
+                eprintln!("warning: {w}");
+            }
         }
         // Louder than "saved", because the cost is every future run rather
         // than this command.
@@ -103,9 +106,14 @@ fn edit() -> Result<()> {
             std::process::exit(1);
         }
         CharterEdit::EditorFailedButChanged { error, loads } => match loads {
-            None => println!(
-                "the editor exited with an error ({error}), but the file changed and loads"
-            ),
+            None => {
+                println!(
+                    "the editor exited with an error ({error}), but the file changed and loads"
+                );
+                for w in crate::editor::charter_trigger_warnings(&path) {
+                    eprintln!("warning: {w}");
+                }
+            }
             Some(e) => {
                 eprintln!("the editor exited with an error ({error}); the file changed and will NOT load: {e}");
                 std::process::exit(1);

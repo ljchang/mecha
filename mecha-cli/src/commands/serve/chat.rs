@@ -1051,7 +1051,7 @@ fn ensure_session_as<'a>(
             }
             None => session_workspace(key)?,
         };
-        let (session, conversation) = match recorded {
+        let (session, mut conversation) = match recorded {
             Some((meta, path, convo)) => {
                 // The plan comes back with it (D15), from the transcript the
                 // model is about to re-read anyway.
@@ -1090,6 +1090,18 @@ fn ensure_session_as<'a>(
                 Conversation::new(),
             ),
         };
+        // A delegation opened from the board is anchored to its task, as
+        // `tasks work` anchors one (`APPRAISAL-WIRING-DESIGN.md` S1) —
+        // unless the resumed conversation already carries an anchor.
+        if conversation.goal_anchor.is_none() {
+            if let Some(id) = init.task.as_ref().and_then(|t| t["id"].as_str()) {
+                crate::commands::run::seed_goal_anchor(
+                    &mut conversation,
+                    crate::commands::run::structural_pointer(format!("task:{id}")),
+                    Some(&session),
+                )?;
+            }
+        }
         session.append(&Record::Config(RunConfig::of(
             &chat.agent,
             &chat.config,

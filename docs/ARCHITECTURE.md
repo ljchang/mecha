@@ -4168,6 +4168,19 @@ an explicit owner confirmation, persisted before execution; omitting it on resum
 preserves the saved pointer. An experiment supplies these through the immutable
 `Tasks::confirmed_goals` map, which participates in condition hashes and must
 name selected tasks. A goal reference appearing only in prose is not confirmation.
+**A structural seed is the other producer** (`APPRAISAL-WIRING-DESIGN.md` S1):
+`tasks work` and the web board's task door seed `task:<id>`, a trigger run
+seeds `trigger:<name>`, and the front-door triage run seeds `request:<seq>` —
+each through `run::seed_goal_anchor`, persisted before the run like `--goal`,
+and only where the conversation carries no anchor, so a hand-over keeps its
+saved one. The pointer is built by parsing `kind:id`, so a harness seed is
+held to the one-token rule a model's `serves` is. What a seeded goal serves
+further up is **never copied onto the anchor**: a task's project is its board
+row's `project_id`, a trigger's charter line its file's optional `serves`
+(parsed strictly — charter kind only — and checked against the loaded charter
+at load by `Trigger::check_serves`, refusing the trigger when the line is
+missing or the charter unreadable). One pointer, the tier the run was handed;
+the chain above it is read from the stores that own it.
 
 **`tasks.rs::appraise_session_with` deliberately does not call `appraisal::for_session`**,
 which does the identical assembly. `for_session` folds "could not read the file"
