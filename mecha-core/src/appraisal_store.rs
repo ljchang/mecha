@@ -12,7 +12,14 @@
 //! valence, no score, no confidence.
 //!
 //! This module is the store and nothing else. Its producer is the distiller,
-//! extended (R25, row 2a-2); until that lands nothing writes here but tests.
+//! extended (R25, row 2a-2): a follow-up turn on the episode call's own
+//! conversation (`distill::Distiller::appraise`), run by `mecha distill`.
+//!
+//! **One appraisal per session.** The write door reads the ledger under its
+//! lock and refuses a second record for a session already on it
+//! ([`Recorded::AlreadyOnRecord`]) — the distill ledger and the graph push
+//! can each fail after an appraisal was written, and a re-run must not
+//! append the same session twice.
 //!
 //! **The write door grounds, then stamps provenance, then appends.**
 //! [`AppraisalStore::record`] takes a [`Draft`] — the appraiser's unverified
@@ -161,6 +168,76 @@ pub struct Claim {
     pub quote: String,
 }
 
+/// The owner act the appraiser expects next time in this situation — a
+/// closed set beside the prose prediction, drawn from R16's table of acts
+/// the owner already performs, so row 2b-2 can score a prediction against
+/// the recorded act with no model deciding (R27; the owner's ruling of
+/// 2026-09-25). Scoring is 2b-2's; this is only the field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpectedAct {
+    /// A draft released as written.
+    ReleasedUnchanged,
+    /// A draft the owner edited before it went.
+    Edited,
+    /// A draft the owner rejected.
+    Rejected,
+    /// A task or workflow the owner closed.
+    Closed,
+    /// A closure the owner undid.
+    Reopened,
+    /// The owner does nothing with the output.
+    NoAct,
+    /// A word a newer build wrote.
+    #[serde(other)]
+    Unknown,
+}
+
+impl ExpectedAct {
+    /// The six words a producer may write, in R16's order.
+    pub const ALL: [ExpectedAct; 6] = [
+        ExpectedAct::ReleasedUnchanged,
+        ExpectedAct::Edited,
+        ExpectedAct::Rejected,
+        ExpectedAct::Closed,
+        ExpectedAct::Reopened,
+        ExpectedAct::NoAct,
+    ];
+
+    pub fn wire(self) -> &'static str {
+        match self {
+            ExpectedAct::ReleasedUnchanged => "released_unchanged",
+            ExpectedAct::Edited => "edited",
+            ExpectedAct::Rejected => "rejected",
+            ExpectedAct::Closed => "closed",
+            ExpectedAct::Reopened => "reopened",
+            ExpectedAct::NoAct => "no_act",
+            ExpectedAct::Unknown => "unknown",
+        }
+    }
+
+    /// A producer's word: one of [`Self::ALL`], or nothing — a word outside
+    /// the set predicts nothing structurally, and is never stored as
+    /// `unknown` (that variant is for a newer build's row).
+    pub fn parse(word: &str) -> Option<ExpectedAct> {
+        let word = word.trim().to_ascii_lowercase().replace([' ', '-'], "_");
+        ExpectedAct::ALL.into_iter().find(|a| a.wire() == word)
+    }
+}
+
+/// `expected_act` from the file, failing soft: absent or null is none, a
+/// word this build cannot read is [`ExpectedAct::Unknown`], and a
+/// non-string is unknown too rather than a failed row.
+fn de_expected_act<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<ExpectedAct>, D::Error> {
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(match v {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => Some(serde_json::from_value(v).unwrap_or(ExpectedAct::Unknown)),
+    })
+}
+
 /// Which way an outcome bore on a goal. Good or bad, nothing finer: a
 /// magnitude is a number, and a number is what R17 took out of the
 /// appraisal.
@@ -209,6 +286,12 @@ pub struct Draft {
     /// What to expect next time in this situation — scored when next time
     /// comes (X5, row 2b).
     pub prediction: Option<String>,
+    /// The owner act expected next time, from R16's closed set — what 2b-2
+    /// scores the prediction by.
+    pub expected_act: Option<ExpectedAct>,
+    /// Goal words the producer could not read as a pointer at all — counted
+    /// on the record with the ones that did not resolve.
+    pub unreadable_goals: usize,
     /// What the owner's reactions suggest they want (I4) — hypotheses, never
     /// a goal the run serves.
     pub goal_hypotheses: Vec<String>,
@@ -244,11 +327,26 @@ impl SessionEvidence {
     /// of #308). There is no constructor taking a caller's message list, for
     /// the same reason there is none taking a caller's taint.
     pub fn read(path: &Path) -> Result<SessionEvidence> {
+        Ok(SessionEvidence::read_with_transcript(path)?.1)
+    }
+
+    /// [`Self::read`], handing back the parsed transcript it read the
+    /// evidence from — for a producer that must show a model the same
+    /// snapshot the record's provenance describes. `mecha distill` renders
+    /// the transcript the appraiser reads from this one read: a second read
+    /// of a session still being appended to could show the model an
+    /// untrusted result the evidence never covered, and the record would be
+    /// stamped clean over it (the #308 review's two-snapshot hole, one layer
+    /// out).
+    pub fn read_with_transcript(
+        path: &Path,
+    ) -> Result<(crate::session::Transcript, SessionEvidence)> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let transcript = crate::session::Session::parse(path, &text)?;
         let ever = crate::session::Session::messages_ever(&text);
-        Ok(SessionEvidence::of(&transcript, &ever))
+        let evidence = SessionEvidence::of(&transcript, &ever);
+        Ok((transcript, evidence))
     }
 
     /// Both views are of one text, read once by [`Self::read`].
@@ -292,6 +390,26 @@ impl SessionEvidence {
     /// shows the appraiser beside the transcript.
     pub fn referent_ids(&self) -> impl Iterator<Item = &str> {
         self.packet.iter().map(|e| e.id.as_str())
+    }
+
+    /// Every referent as `(id, source, text)` — the id a claim cites, the
+    /// tool name or `owner`, and the whole text containment is checked
+    /// against. What the appraiser is shown to quote from, so what it
+    /// quotes and what the door checks are the same string.
+    pub fn referents(&self) -> impl Iterator<Item = (&str, &str, &str)> {
+        self.packet
+            .iter()
+            .map(|e| (e.id.as_str(), e.source.as_str(), e.text.as_str()))
+    }
+
+    /// The session's last goal anchor, as the record will carry it.
+    pub fn anchor(&self) -> Option<&GoalRef> {
+        self.anchor.as_ref()
+    }
+
+    /// The run's situation, as the record will carry it; `None` is unknown.
+    pub fn situation(&self) -> Option<&Situation> {
+        self.situation.as_ref()
     }
 }
 
@@ -390,15 +508,35 @@ pub struct TextAppraisal {
     pub grounding: Grounding,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prediction: Option<String>,
+    /// The owner act expected next time (R16's set) — the prediction's
+    /// structural half, for 2b-2's scorer. Absent on a row from before the
+    /// field, or when the appraiser named none; a word this build cannot
+    /// read loads as [`ExpectedAct::Unknown`].
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_expected_act"
+    )]
+    pub expected_act: Option<ExpectedAct>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub goal_hypotheses: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lessons: Vec<String>,
+    /// Judgments whose goal did not resolve against the stores that mint
+    /// goal pointers (`distill::KnownPointers`) — or was no pointer at all —
+    /// and so carry no goal. The judgment is kept; the reference is not.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub goals_unresolved: usize,
     /// A bound cut something: the interpretation, the prediction, a
-    /// hypothesis or lesson, or the number of either. Claims are never cut —
-    /// one over a bound is dropped and counted in `grounding`.
+    /// hypothesis or lesson, the number of either, or a judgment's support
+    /// list (a repeated index). Claims are never cut — one over a bound is
+    /// dropped and counted in `grounding`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub clipped: bool,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 fn untrusted() -> Origin {
@@ -427,9 +565,15 @@ impl TextAppraisal {
         self.origin == Origin::Clean && matches!(self.taint, Some(t) if !t.untrusted)
     }
 
-    /// Ground `draft` against `evidence` and seal it. `None` when the draft
-    /// has no interpretation to keep.
-    fn seal(evidence: &SessionEvidence, draft: Draft, model: &str) -> Option<TextAppraisal> {
+    /// Ground `draft` against `evidence`, resolve its judgments' goals
+    /// against `known`, and seal it. `None` when the draft has no
+    /// interpretation to keep.
+    fn seal(
+        evidence: &SessionEvidence,
+        draft: Draft,
+        model: &str,
+        known: &crate::distill::KnownPointers,
+    ) -> Option<TextAppraisal> {
         let mut clipped = false;
         let interpretation = bound(
             &draft.interpretation,
@@ -470,17 +614,51 @@ impl TextAppraisal {
         if draft.judgments.len() > MAX_JUDGMENTS {
             clipped = true;
         }
+        let mut goals_unresolved = draft.unreadable_goals;
         let judgments = draft
             .judgments
             .into_iter()
             .take(MAX_JUDGMENTS)
-            .map(|j| Judgment {
-                because: j
-                    .because
-                    .iter()
-                    .filter_map(|i| kept_at.get(i).copied())
-                    .collect(),
-                ..j
+            .map(|j| {
+                // A goal crosses into the record only if a store that mints
+                // goal pointers holds it — the board, the charter, the
+                // trigger and front-door stores — the resolution `distill`
+                // applies before a pointer rides on an episode. The model
+                // writes the reference; a token is not a pointer until a
+                // store says so.
+                let goal = j.goal.and_then(|g| {
+                    let resolved = known.resolve(&g);
+                    if resolved.is_none() {
+                        goals_unresolved += 1;
+                    }
+                    resolved
+                });
+                // Support, deduplicated in the order written and capped at
+                // what can be kept: a repeated index is one claim, not
+                // several, and the cut is flagged like every other bound
+                // (review of #308). Then renumbered to the claims kept —
+                // an index to a dropped claim is grounding's loss, already
+                // counted there, not a cut.
+                let mut seen = std::collections::BTreeSet::new();
+                let mut because = Vec::new();
+                for i in j.because {
+                    if !seen.insert(i) {
+                        clipped = true;
+                        continue;
+                    }
+                    if let Some(k) = kept_at.get(&i).copied() {
+                        if because.len() >= MAX_CLAIMS {
+                            clipped = true;
+                            break;
+                        }
+                        because.push(k);
+                    }
+                }
+                Judgment {
+                    goal,
+                    bearing: j.bearing,
+                    because,
+                }
             })
             .collect();
 
@@ -510,8 +688,12 @@ impl TextAppraisal {
             claims,
             grounding,
             prediction,
+            // The structural half is kept even when the prose prediction is
+            // empty: an expected act is a prediction on its own.
+            expected_act: draft.expected_act.filter(|a| *a != ExpectedAct::Unknown),
             goal_hypotheses,
             lessons,
+            goals_unresolved,
             clipped,
         })
     }
@@ -609,6 +791,40 @@ pub struct CleanRead {
     pub skipped: usize,
 }
 
+/// How many past appraisals the appraiser is shown (I1, I2: "up to three
+/// clean appraisals of the same situation and goal").
+pub const PAST_SHOWN: usize = 3;
+
+impl CleanRead {
+    /// The clean appraisals of the same situation and goal as `evidence` —
+    /// newest first, at most `n`, never the session's own. Only a [`Clean`]
+    /// can be returned, so a tainted appraisal cannot reach the appraiser
+    /// of a later session through here, whatever its situation.
+    ///
+    /// **Same situation** is the same region key ([`Situation::key`]: the
+    /// scope's tools, workspace and surface), and an unknown situation on
+    /// either side matches nothing — unknown is never "everywhere". **Same
+    /// goal** is the same anchor, and a run with no anchor matches another
+    /// with none: in a corpus where almost no run names a goal (inventory
+    /// §1), requiring one would serve nothing at all. Row 2c-1 makes the
+    /// goal a `Situation` key; this function is where that lands.
+    pub fn same_situation_and_goal(&self, evidence: &SessionEvidence, n: usize) -> Vec<&Clean> {
+        let Some(here) = evidence.situation.as_ref().map(Situation::key) else {
+            return Vec::new();
+        };
+        let mut out: Vec<&Clean> = self
+            .appraisals
+            .iter()
+            .filter(|c| c.session_id != evidence.session_id)
+            .filter(|c| c.anchor == evidence.anchor)
+            .filter(|c| c.situation.as_ref().map(Situation::key).as_ref() == Some(&here))
+            .collect();
+        out.sort_by(|a, b| b.at.cmp(&a.at));
+        out.truncate(n);
+        out
+    }
+}
+
 // ─── The store ──────────────────────────────────────────────────────────────
 
 /// What [`AppraisalStore::record`] did.
@@ -623,6 +839,9 @@ pub enum Recorded {
     },
     /// The draft carried no interpretation. Nothing was written.
     Empty,
+    /// The session already has an appraisal on record, `id`. Nothing was
+    /// written: one appraisal per session.
+    AlreadyOnRecord { id: String },
 }
 
 /// The append-only text-appraisal store, `~/.mecha/appraisals/appraisals.jsonl`.
@@ -682,22 +901,29 @@ impl AppraisalStore {
         Ok(StoreLock { _file: file })
     }
 
-    /// The one write door: ground `draft` against `evidence`, stamp the
-    /// session's recorded provenance, and append under the lock, synced. A
-    /// tainted session's appraisal is written — it is the owner's — and the
-    /// clean door will never serve it. An I/O failure is an `Err`, never a
-    /// quiet no-op: a caller that paid a model call must hear it was lost.
+    /// The one write door: ground `draft` against `evidence`, resolve its
+    /// goals against `known`, stamp the session's recorded provenance, and
+    /// append under the lock, synced — unless the session already has an
+    /// appraisal on record, checked under the same lock, which is refused
+    /// as [`Recorded::AlreadyOnRecord`]. A tainted session's appraisal is
+    /// written — it is the owner's — and the clean door will never serve it.
+    /// An I/O failure is an `Err`, never a quiet no-op: a caller that paid a
+    /// model call must hear it was lost.
     pub fn record(
         &self,
         evidence: &SessionEvidence,
         draft: Draft,
         model: &str,
+        known: &crate::distill::KnownPointers,
     ) -> Result<Recorded> {
-        let Some(record) = TextAppraisal::seal(evidence, draft, model) else {
+        let Some(record) = TextAppraisal::seal(evidence, draft, model, known) else {
             return Ok(Recorded::Empty);
         };
         use std::io::Write;
         let _lock = self.lock()?;
+        if let Some(id) = self.on_record_unlocked(&record.session_id)? {
+            return Ok(Recorded::AlreadyOnRecord { id });
+        }
         let path = self.ledger();
         let mut file = std::fs::OpenOptions::new()
             .create(true)
@@ -715,6 +941,29 @@ impl AppraisalStore {
             id: record.id,
             grounding: record.grounding,
         })
+    }
+
+    /// The id of the appraisal already on record for `session_id`, if any —
+    /// what a producer asks before it pays for a model call whose record the
+    /// door would refuse. A read that fails is an `Err`: "could not tell"
+    /// is not "none on record".
+    pub fn on_record(&self, session_id: &str) -> Result<Option<String>> {
+        self.on_record_unlocked(session_id)
+    }
+
+    /// The same question, for [`Self::record`] under its lock. A torn line
+    /// is skipped as `for_owner` skips it: it names no session this build
+    /// can read, and refusing every write because of one would stop the
+    /// store for good.
+    fn on_record_unlocked(&self, session_id: &str) -> Result<Option<String>> {
+        if session_id.trim().is_empty() {
+            return Ok(None);
+        }
+        let (rows, _) = self.for_owner()?;
+        Ok(rows
+            .into_iter()
+            .find(|r| r.session_id == session_id)
+            .map(|r| r.id))
     }
 
     /// Every record, oldest first, and how many lines were skipped — **for
@@ -779,6 +1028,11 @@ pub struct Summary {
     pub dropped_by: BTreeMap<String, usize>,
     /// Records a bound cut.
     pub clipped: usize,
+    /// Records carrying an expected owner act (the prediction's structural
+    /// half, for 2b-2).
+    pub with_expected_act: usize,
+    /// Judgment goals that did not resolve, across records.
+    pub goals_unresolved: usize,
 }
 
 impl Summary {
@@ -807,6 +1061,10 @@ impl Summary {
             if r.clipped {
                 s.clipped += 1;
             }
+            if r.expected_act.is_some() {
+                s.with_expected_act += 1;
+            }
+            s.goals_unresolved += r.goals_unresolved;
         }
         s.sessions = sessions.len();
         s
@@ -935,9 +1193,16 @@ mod tests {
                 ),
             ],
             prediction: Some("Next time the owner will want the date confirmed.".into()),
+            expected_act: Some(ExpectedAct::ReleasedUnchanged),
+            unreadable_goals: 0,
             goal_hypotheses: vec!["The owner wants colleagues kept informed.".into()],
             lessons: vec!["Quote the date from the mail when passing it on.".into()],
         }
+    }
+
+    /// The board holds the fixture's task; nothing else resolves.
+    fn known() -> crate::distill::KnownPointers {
+        crate::distill::KnownPointers::from_board(&json!({"items": [{"id": "t-budget"}]}))
     }
 
     /// The acceptance, at the store: an appraisal of a clean session reads
@@ -954,7 +1219,9 @@ mod tests {
             id,
             clean,
             grounding,
-        } = store.record(&evidence, draft(), "local-model").unwrap()
+        } = store
+            .record(&evidence, draft(), "local-model", &known())
+            .unwrap()
         else {
             panic!("written");
         };
@@ -1000,7 +1267,7 @@ mod tests {
             let evidence = SessionEvidence::read(&path).unwrap();
             assert_eq!(evidence.origin(), Origin::Untrusted, "{taint:?}");
             assert!(matches!(
-                store.record(&evidence, draft(), "m").unwrap(),
+                store.record(&evidence, draft(), "m", &known()).unwrap(),
                 Recorded::Written { clean: false, .. }
             ));
         }
@@ -1073,7 +1340,9 @@ mod tests {
         }
         let offered = d.claims.len();
         let store = AppraisalStore::open(root.join("appraisals")).unwrap();
-        let Recorded::Written { grounding, .. } = store.record(&evidence, d, "m").unwrap() else {
+        let Recorded::Written { grounding, .. } =
+            store.record(&evidence, d, "m", &known()).unwrap()
+        else {
             panic!("written");
         };
         // Seven fail grounding; of the fourteen that pass, twelve are kept
@@ -1207,15 +1476,18 @@ mod tests {
     #[test]
     fn an_empty_interpretation_is_refused_and_every_bound_is_flagged() {
         let root = temp_root("bounds");
-        let path = session(&root.join("sessions"), clean_taint());
-        let evidence = SessionEvidence::read(&path).unwrap();
+        // One appraisal per session, so every record below is of a fresh
+        // session.
+        let fresh =
+            || SessionEvidence::read(&session(&root.join("sessions"), clean_taint())).unwrap();
+        let evidence = fresh();
         let store = AppraisalStore::open(root.join("appraisals")).unwrap();
         let empty = Draft {
             interpretation: "   ".into(),
             ..draft()
         };
         assert_eq!(
-            store.record(&evidence, empty, "m").unwrap(),
+            store.record(&evidence, empty, "m", &known()).unwrap(),
             Recorded::Empty
         );
         assert!(!store.ledger().exists(), "nothing was written");
@@ -1225,7 +1497,7 @@ mod tests {
             goal_hypotheses: vec!["h".into(); MAX_HYPOTHESES + 1],
             ..draft()
         };
-        store.record(&evidence, long, "m").unwrap();
+        store.record(&fresh(), long, "m", &known()).unwrap();
         let got = &store.for_owner().unwrap().0[0];
         assert!(got.clipped);
         assert_eq!(got.interpretation.chars().count(), INTERPRETATION_MAX_CHARS);
@@ -1262,9 +1534,20 @@ mod tests {
                     ..draft()
                 },
             ),
+            (
+                "a repeated support index",
+                Draft {
+                    judgments: vec![Judgment {
+                        goal: Some(GoalRef::Task("t-budget".into())),
+                        bearing: Bearing::Good,
+                        because: vec![0, 0, 1, 1, 0],
+                    }],
+                    ..draft()
+                },
+            ),
         ];
         for (what, d) in cases {
-            store.record(&evidence, d, "m").unwrap();
+            store.record(&fresh(), d, "m", &known()).unwrap();
             let rows = store.for_owner().unwrap().0;
             let got = rows.last().unwrap();
             assert!(got.clipped, "{what}");
@@ -1278,7 +1561,21 @@ mod tests {
                 .iter()
                 .chain(&got.goal_hypotheses)
                 .all(|t| t.chars().count() <= LESSON_MAX_CHARS.max(HYPOTHESIS_MAX_CHARS)));
+            assert!(
+                got.judgments.iter().all(|j| {
+                    let mut d = j.because.clone();
+                    d.dedup();
+                    d == j.because && j.because.len() <= MAX_CLAIMS
+                }),
+                "{what}: support is deduplicated and capped"
+            );
         }
+        let repeated = store.for_owner().unwrap().0;
+        assert_eq!(
+            repeated.last().unwrap().judgments[0].because,
+            vec![0, 1],
+            "a repeated index is one claim, in the order written"
+        );
         // A statement over its ceiling is dropped, never cut, and counted.
         let wordy = Draft {
             claims: vec![claim(
@@ -1288,7 +1585,8 @@ mod tests {
             )],
             ..draft()
         };
-        let Recorded::Written { grounding, .. } = store.record(&evidence, wordy, "m").unwrap()
+        let Recorded::Written { grounding, .. } =
+            store.record(&fresh(), wordy, "m", &known()).unwrap()
         else {
             panic!("written");
         };
@@ -1306,7 +1604,7 @@ mod tests {
             let mut d = draft();
             d.claims
                 .push(claim("Nope", "result:t9", "the budget review moved"));
-            store.record(&evidence, d, "m").unwrap();
+            store.record(&evidence, d, "m", &known()).unwrap();
         }
         let s = Summary::of(&store.for_owner().unwrap().0);
         assert_eq!((s.records, s.sessions, s.clean, s.not_clean), (2, 2, 1, 1));
@@ -1332,6 +1630,193 @@ mod tests {
         std::fs::create_dir_all(store.ledger()).unwrap();
         assert!(store.for_owner().is_err());
         assert!(store.clean().is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// One appraisal per session: a second record of the same session —
+    /// a re-run after the graph push failed, a second nightly — is refused
+    /// under the lock and appends nothing. Fails on 2a-1's door, which
+    /// appended again.
+    #[test]
+    fn a_second_appraisal_of_a_session_is_refused_and_nothing_appended() {
+        let root = temp_root("once");
+        let path = session(&root.join("sessions"), clean_taint());
+        let evidence = SessionEvidence::read(&path).unwrap();
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        assert_eq!(store.on_record(evidence.session_id()).unwrap(), None);
+        let Recorded::Written { id, .. } = store.record(&evidence, draft(), "m", &known()).unwrap()
+        else {
+            panic!("written");
+        };
+        assert_eq!(
+            store.on_record(evidence.session_id()).unwrap(),
+            Some(id.clone())
+        );
+        // A fresh handle, a fresh read of the transcript: still refused.
+        let again = AppraisalStore::open(root.join("appraisals")).unwrap();
+        let reread = SessionEvidence::read(&path).unwrap();
+        assert_eq!(
+            again.record(&reread, draft(), "m", &known()).unwrap(),
+            Recorded::AlreadyOnRecord { id }
+        );
+        let raw = std::fs::read_to_string(store.ledger()).unwrap();
+        assert_eq!(raw.lines().count(), 1, "{raw}");
+        // Another session still writes.
+        let other = SessionEvidence::read(&session(&root.join("sessions"), clean_taint())).unwrap();
+        assert!(matches!(
+            store.record(&other, draft(), "m", &known()).unwrap(),
+            Recorded::Written { .. }
+        ));
+        // A store that cannot be read cannot say "none on record".
+        std::fs::remove_file(store.ledger()).unwrap();
+        std::fs::create_dir_all(store.ledger()).unwrap();
+        assert!(store.on_record(evidence.session_id()).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A judgment's goal crosses into the record only if a store that mints
+    /// goal pointers holds it; one that does not resolve, or a word that
+    /// was no pointer at all, leaves the judgment goal-less and is counted.
+    #[test]
+    fn a_judgments_goal_is_kept_only_when_a_store_holds_it() {
+        let root = temp_root("goals");
+        let evidence =
+            SessionEvidence::read(&session(&root.join("sessions"), clean_taint())).unwrap();
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        let mut d = draft();
+        d.judgments.push(Judgment {
+            goal: Some(GoalRef::Task("t-ghost".into())),
+            bearing: Bearing::Bad,
+            because: vec![],
+        });
+        d.judgments.push(Judgment {
+            goal: Some(GoalRef::Setpoint("inbox".into())),
+            bearing: Bearing::Bad,
+            because: vec![],
+        });
+        d.unreadable_goals = 1;
+        store.record(&evidence, d, "m", &known()).unwrap();
+        let got = &store.for_owner().unwrap().0[0];
+        assert_eq!(
+            got.judgments[0].goal,
+            Some(GoalRef::Task("t-budget".into()))
+        );
+        assert_eq!(got.judgments[1].goal, None, "not on the board");
+        assert_eq!(got.judgments[2].goal, None, "a setpoint never resolves");
+        assert_eq!(got.goals_unresolved, 3, "two unresolved and one unreadable");
+        assert_eq!(Summary::of(std::slice::from_ref(got)).goals_unresolved, 3);
+        // Nothing read admits nothing.
+        let none = SessionEvidence::read(&session(&root.join("sessions"), clean_taint())).unwrap();
+        store
+            .record(&none, draft(), "m", &crate::distill::KnownPointers::none())
+            .unwrap();
+        assert_eq!(store.for_owner().unwrap().0[1].judgments[0].goal, None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The prediction's structural half (the owner's ruling, 2026-09-25):
+    /// R16's six acts, stored beside the prose, loading leniently — a word a
+    /// newer build wrote is `unknown`, a non-string does not cost the row,
+    /// and a row from before the field has none.
+    #[test]
+    fn the_expected_act_is_a_closed_set_that_loads_leniently() {
+        for a in ExpectedAct::ALL {
+            assert_eq!(ExpectedAct::parse(a.wire()), Some(a));
+            assert_eq!(crate::appraisal::enum_name(&a), a.wire());
+        }
+        assert_eq!(ExpectedAct::parse("No act"), Some(ExpectedAct::NoAct));
+        assert_eq!(ExpectedAct::parse("unknown"), None, "not a producer's word");
+        assert_eq!(ExpectedAct::parse("delighted"), None);
+
+        let root = temp_root("act");
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        let evidence =
+            SessionEvidence::read(&session(&root.join("sessions"), clean_taint())).unwrap();
+        store.record(&evidence, draft(), "m", &known()).unwrap();
+        let written = std::fs::read_to_string(store.ledger()).unwrap();
+        assert!(
+            written.contains(r#""expected_act":"released_unchanged""#),
+            "{written}"
+        );
+        let raw = format!(
+            "{}{}\n{}\n{}\n{}\n",
+            written,
+            r#"{"id":"apr-new","at":"2026-09-25T00:00:00Z","expected_act":"sulked"}"#,
+            r#"{"id":"apr-num","at":"2026-09-25T00:00:00Z","expected_act":42}"#,
+            r#"{"id":"apr-null","at":"2026-09-25T00:00:00Z","expected_act":null}"#,
+            r#"{"id":"apr-old","at":"2026-09-25T00:00:00Z"}"#,
+        );
+        std::fs::write(store.ledger(), raw).unwrap();
+        let (rows, skipped) = store.for_owner().unwrap();
+        assert_eq!(skipped, 0, "no row is lost to the field");
+        let acts: Vec<Option<ExpectedAct>> = rows.iter().map(|r| r.expected_act).collect();
+        assert_eq!(
+            acts,
+            vec![
+                Some(ExpectedAct::ReleasedUnchanged),
+                Some(ExpectedAct::Unknown),
+                Some(ExpectedAct::Unknown),
+                None,
+                None
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The past an appraiser is shown: clean appraisals of the same
+    /// situation and the same goal, newest first, at most `n`, never the
+    /// session's own — and never a tainted one, which the type cannot hold.
+    #[test]
+    fn past_appraisals_are_clean_only_and_of_the_same_situation_and_goal() {
+        let root = temp_root("past");
+        let dir = root.join("sessions");
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        let mut same = Vec::new();
+        for _ in 0..4 {
+            let e = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+            store.record(&e, draft(), "m", &known()).unwrap();
+            same.push(e.session_id().to_string());
+        }
+        let tainted = SessionEvidence::read(&session(&dir, tainted())).unwrap();
+        store.record(&tainted, draft(), "m", &known()).unwrap();
+        // Same situation, another goal: re-anchored after the last message.
+        let elsewhere = session(&dir, clean_taint());
+        {
+            let s = Session {
+                meta: Session::read(&elsewhere).unwrap().meta,
+                path: elsewhere.clone(),
+            };
+            s.append(&Record::GoalAnchor {
+                goal: Some(GoalRef::Task("t-other".into())),
+            })
+            .unwrap();
+            s.append(&Record::Taint(clean_taint().unwrap())).unwrap();
+        }
+        let other_goal = SessionEvidence::read(&elsewhere).unwrap();
+        assert_eq!(other_goal.origin(), Origin::Clean);
+        store.record(&other_goal, draft(), "m", &known()).unwrap();
+
+        let now = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        let read = store.clean().unwrap();
+        let past = read.same_situation_and_goal(&now, PAST_SHOWN);
+        let got: Vec<&str> = past.iter().map(|c| c.session_id.as_str()).collect();
+        let mut want: Vec<&str> = same.iter().map(String::as_str).collect();
+        want.reverse();
+        want.truncate(PAST_SHOWN);
+        assert_eq!(got, want, "the three newest of the same situation and goal");
+        assert!(!got.contains(&tainted.session_id()));
+        assert!(!got.contains(&other_goal.session_id()));
+        // Never the session's own.
+        let own = read.same_situation_and_goal(
+            &SessionEvidence::read(&session(&dir, clean_taint())).unwrap(),
+            10,
+        );
+        assert_eq!(own.len(), 4);
+        let first = SessionEvidence::read(&Session::find(&dir, &same[0]).unwrap()).unwrap();
+        assert!(read
+            .same_situation_and_goal(&first, 10)
+            .iter()
+            .all(|c| c.session_id != same[0]));
         let _ = std::fs::remove_dir_all(&root);
     }
 
