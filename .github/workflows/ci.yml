@@ -197,6 +197,16 @@ jobs:
           docker pull python:3-slim
           docker pull debian:stable-slim
 
+      # The bwrap backend's resource limits run inside `systemd-run --user
+      # --scope`, which needs a user manager; a runner has none until lingering
+      # starts one. Without it the limits test would report the backend as
+      # unavailable, which the step below turns into a failure.
+      - name: Start a systemd user manager
+        run: |
+          sudo loginctl enable-linger "$USER"
+          for i in $(seq 1 40); do [ -S "/run/user/$(id -u)/bus" ] && break; sleep 0.5; done
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+
       - name: Report backend availability
         run: |
           echo "bwrap: $(bwrap --version 2>&1 || echo MISSING)"
@@ -205,6 +215,7 @@ jobs:
           echo "images: $(docker images --format '{{.Repository}}:{{.Tag}}' | tr '\n' ' ')"
           echo "-- proving bwrap actually runs, not just that it is installed:"
           bwrap --ro-bind / / --unshare-all true && echo "bwrap: WORKS" || echo "bwrap: PRESENT BUT NON-FUNCTIONAL"
+          systemd-run --user --scope --quiet --collect -p MemoryMax=64M true && echo "user scope: WORKS" || echo "user scope: NON-FUNCTIONAL"
 
       - name: Integration tests, with skips promoted to failures
         env:

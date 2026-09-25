@@ -373,3 +373,41 @@ async fn the_run_posture_reaches_a_command_in_every_confining_backend() {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+/// A memory ceiling under bwrap is a cgroup the whole command lives in, so an
+/// allocation past it is killed — measured, not asserted about an argv — and
+/// one under it runs (`memory_mb`, via `systemd-run --user --scope`).
+#[tokio::test]
+async fn a_bwrap_memory_ceiling_kills_an_allocation_past_it() {
+    if unavailable("bwrap", bwrap_present())
+        || unavailable("systemd-run --user --scope", user_scope_available())
+        || unavailable("python3", python3_available())
+    {
+        return;
+    }
+    let dir = tmpdir("bwrap-limits");
+    let sandbox = Sandbox::new(SandboxConfig {
+        kind: Backend::Bwrap,
+        memory_mb: Some(64),
+        cpus: Some(1.0),
+        ..Default::default()
+    });
+    sandbox
+        .preflight(&dir)
+        .await
+        .expect("a limited bwrap preflights");
+    let (ok, _) = run(
+        &sandbox,
+        "python3 -c 'b = bytearray(8 << 20); print(len(b))'",
+        &dir,
+    )
+    .await;
+    assert!(ok, "an allocation under the ceiling runs");
+    let (ok, _) = run(
+        &sandbox,
+        "python3 -c 'b = bytearray(512 << 20); b[::4096] = b\"x\" * len(b[::4096]); print(len(b))'",
+        &dir,
+    )
+    .await;
+    assert!(!ok, "an allocation past the ceiling is killed");
+}
