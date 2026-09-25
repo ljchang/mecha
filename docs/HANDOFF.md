@@ -22,6 +22,27 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-25 — image generation shipped; incognito chat is half built.**
+The arc is in HISTORY under 2026-09-25. `image_generate` (#303, #306) is
+merged and installed, and needs `comfyui.service` (*Standing machinery*).
+Incognito: the design (#307) and step 0 (#313) are merged and installed;
+**steps 1–3 are #321**, open at this writing, and its review thread is the
+record of where it stands. What remains after it, in the design's order
+(§9): step 4, ComfyUI's temp-file cleanup, until which `image_generate`
+stays withheld from an incognito chat (R6); step 5, the page (a
+New-incognito button, the banner, End, the locked permission chip, no
+voice — the search notice is step 3's, inside #321); step 6, the canary test — written with step 1 and in #321, green
+in full only once step 5 lands; and step 7, unrecorded reads in
+mecha-graph (another repository), until which the graph stays withheld —
+every graph read logs its query text. Parked for the owner: a reload
+banner for a phone holding a stale bundle after a deploy (a refresh fixed
+the one case seen); `mecha-core` pins `sha2 = "0.11"` in its own
+`Cargo.toml`, where a review minor would have it a workspace dependency;
+`comfyui.service` living only in `~/.config/systemd/user/`, where a review
+note suggests a copy in `scripts/` beside `start-moe-mtp.sh`; and a race between spawning a
+shell and registering it (`shell_registry::ShellRegistry`), seen as a flaky test and not
+fixed in product code. Also owed with #321's merge: its HISTORY entry.
+
 **2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2a-3, 2c-1, 2d-1,
 3a and 3a-3 merged and installed, with R34's readout; 2c-2 and 2b-1
 merged.** `APPRAISAL-WIRING-DESIGN.md` (#291) is the authority, with
@@ -1540,6 +1561,19 @@ is exactly the set holding a long-lived process.
   `--aged` before 07:00 or the briefing pastes a clap usage error into
   itself** — caught on the day by running the hook rather than reading it. And
   `llama-local.service` is new (below). A fresh clone has neither.
+- **ComfyUI is `comfyui.service`** (systemd user, enabled, since
+  2026-09-25 17:48Z), and the unit exists in no repository:
+  `~/.config/systemd/user/comfyui.service` runs the venv's python on
+  `main.py --listen 127.0.0.1 --port 8188 --temp-directory
+  %t/comfyui-temp`, with `Restart=on-failure` (a `kill -9` was back in
+  about 15 s). The temp directory is on tmpfs on purpose: uploaded
+  reference photos and previews land there, never on the SSD, and a reboot
+  clears them — incognito's step 4 builds on it. `[image] url` in
+  `~/.mecha/config.toml` points at it; with the unit down, `image_generate`
+  fails and nothing else notices. A generation holds 12–15 GB of the same
+  unified memory llama-server uses, so read `MemAvailable` first; the tool
+  asks the server to unload after `[image] unload_after_secs` (default 600),
+  so the weights are not held for the life of the unit.
 - **The local model server is `llama-local.service`** (systemd user, enabled,
   `scripts/start-moe-mtp.sh`, qwen3.6-35b-a3b on 127.0.0.1:8080). **It became a
   unit on 2026-08-19 and the reason generalises.** Before that it was only ever
