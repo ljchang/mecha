@@ -413,6 +413,41 @@ answer trustworthy rather than a guess:
 Judge-graded followups are never bisected: a followup regression is a prompt to
 read two answers, not evidence that convicts one rule.
 
+## `mecha sessions compare` — policies at the moments you decided
+
+Replaying a whole session cannot grade a policy that changes what the agent
+does: after the first different step there is nothing left to compare it to.
+So this compares policies at single moments where you already gave a verdict:
+
+| moment | found in | your verdict | an arm passes when |
+|---|---|---|---|
+| a steer | your words beside tool results | where you steered the run | it goes there without being steered |
+| a denial | a call you refused | the refusal | it never makes the refused call again |
+| a draft you rewrote and sent | the outbox | the text you sent | it drafts exactly your text |
+| a draft you rejected | the outbox | nothing sent | it ends without drafting |
+| a failed check | the harness's step feedback | your pinned artifact, when you bound one | the repeated task meets it |
+| a surprise | a forecast the run's own count missed | none | — |
+
+Each point is replayed from its recorded history under up to three policies —
+the prompt the run carried, the rules deployed today, and no rules — for at
+most four turns, and one comparison per point is written to the comparison
+store. Drafts are compared exactly, after collapsing whitespace: a draft that
+rewords yours is not a pass, and one that rewords the draft you rejected is not
+a pass either, so no rewording can win. A moment with no structural test — a
+check the agent declared for itself, or a surprise — is stored as
+inconclusive, with nothing replayed; no model is ever asked to judge.
+
+```bash
+mecha sessions compare                 # up to 8 points, today's seed
+mecha sessions compare --points 20 --seed 20250 --json
+```
+
+Points are drawn uniformly with a printed seed, so a pass can be redrawn. A
+point already compared under the same rules and model is not compared again.
+Only clean sessions are drawn, as for learning; each point holds one of the
+background model seats while its arms run, and the pass refuses a provider
+that is not on this machine.
+
 ## `mecha rules` — tallies, retirement, restore
 
 ```bash

@@ -33,8 +33,8 @@ use mecha_core::comparison::{
 };
 use mecha_core::config::{PermissionMode, ProviderConfig};
 use mecha_core::counterfactual::{
-    branch_at, locate_denial, locate_steer, truncate_after_run, verdict, Branch, ProbePoint,
-    ProbeVerdict,
+    branch_at, locate_denial, locate_steer, truncate_after_run, verdict, Branch, ProbeKind,
+    ProbePoint, ProbeVerdict,
 };
 use mecha_core::learning::{strip_rules_block, Reflexion, Trigger};
 use mecha_core::replay::{extract, Trajectory};
@@ -238,9 +238,13 @@ impl ProbePrep {
     /// so a caller cannot label a judge-graded followup as structural.
     pub fn validator(&self) -> Validator {
         match &self.method {
-            ProbeMethod::Trace { point, .. } => match point.kind {
-                mecha_core::counterfactual::ProbeKind::Steer => Validator::StructuralSteer,
-                mecha_core::counterfactual::ProbeKind::Denial { .. } => Validator::StructuralDenial,
+            ProbeMethod::Trace { point, .. } => match &point.kind {
+                ProbeKind::Steer => Validator::StructuralSteer,
+                ProbeKind::Denial { .. } => Validator::StructuralDenial,
+                ProbeKind::Draft { owner, .. } => match owner {
+                    mecha_core::counterfactual::OwnerAct::Released(_) => Validator::ReleasedDraft,
+                    mecha_core::counterfactual::OwnerAct::Rejected => Validator::RejectedDraft,
+                },
             },
             ProbeMethod::Followup { .. } => Validator::Judge,
             ProbeMethod::Artifact { .. } => Validator::ArtifactGold,
@@ -416,6 +420,8 @@ pub fn prepare_probe_in(
             // An `edit` reflection's intervention lives in an outbox item, not
             // in any transcript — there is no prefix to replay. Explicit, so a
             // new trigger kind cannot silently be probed as if it were a denial.
+            // (A point-wise comparison reaches an edited draft by the item's
+            // own staging call instead: [`prepare_draft_in`].)
             return Ok(Err(format!(
                 "`{trigger}` interventions have no replayable intervention point"
             )));
@@ -423,43 +429,138 @@ pub fn prepare_probe_in(
         let Some(point) = point else {
             return Ok(Err("could not locate the intervention".into()));
         };
-        let slice = truncate_after_run(messages, point.message_index);
-        let trajectory = extract(slice);
-        // A prefix that cannot be replayed, or one with no user turn before
-        // the intervention, is unmeasurable rather than a failing arm: a
-        // probe that cannot be set up is not evidence that the rules failed.
-        if let Err(error) = trajectory.ensure_replayable() {
-            return Ok(Err(error.to_string()));
+        match trace_method(messages, point) {
+            Ok(m) => m,
+            Err(why) => return Ok(Err(why)),
         }
-        if trajectory.turns.is_empty() {
-            return Ok(Err("no user turns before the intervention".into()));
-        }
-        let Some(branch) = branch_at(slice, &point) else {
-            return Ok(Err("could not rebuild the branch prefix".into()));
-        };
-        let index = point.message_index;
-        (
-            ProbeMethod::Trace {
-                trajectory,
-                point,
-                branch,
-            },
-            index,
-        )
     };
+    Ok(finish_prep(&transcript, method, message_index))
+}
+
+/// Slice, extract and branch a transcript at a located trace point — the
+/// part every trace-graded probe shares, whatever found its point.
+fn trace_method(
+    messages: &[mecha_core::message::Message],
+    point: ProbePoint,
+) -> Result<(ProbeMethod, usize), String> {
+    let slice = truncate_after_run(messages, point.message_index);
+    let trajectory = extract(slice);
+    // A prefix that cannot be replayed, or one with no user turn before
+    // the intervention, is unmeasurable rather than a failing arm: a
+    // probe that cannot be set up is not evidence that the rules failed.
+    if let Err(error) = trajectory.ensure_replayable() {
+        return Err(error.to_string());
+    }
+    if trajectory.turns.is_empty() {
+        return Err("no user turns before the intervention".into());
+    }
+    let Some(branch) = branch_at(slice, &point) else {
+        return Err("could not rebuild the branch prefix".into());
+    };
+    let index = point.message_index;
+    Ok((
+        ProbeMethod::Trace {
+            trajectory,
+            point,
+            branch,
+        },
+        index,
+    ))
+}
+
+/// Load the recording behind a draft the owner rewrote or rejected, branched
+/// before the turn that staged it (row 2d-1). The item's `call_id` anchors
+/// the staging call; the owner's act — the released arguments, or the
+/// rejection — rides in the point, in memory only, for
+/// `counterfactual::draft_verdict` to grade against. `Err(reason)` in the
+/// inner result is a skip, as everywhere else here.
+pub fn prepare_draft_in(
+    path: &Path,
+    item: &mecha_core::outbox::OutboxItem,
+) -> Result<Result<ProbePrep, String>> {
+    use mecha_core::counterfactual::{locate_staging, OwnerAct};
+    let owner = match mecha_core::pointwise::draft_kind(item) {
+        Some(mecha_core::pointwise::PointKind::RejectedDraft) => OwnerAct::Rejected,
+        Some(mecha_core::pointwise::PointKind::EditedDraft) => {
+            OwnerAct::Released(item.args.clone())
+        }
+        _ => {
+            return Ok(Err(
+                "the owner's act on this draft is not a draft point".into()
+            ))
+        }
+    };
+    let Some(call_id) = item.call_id.as_deref() else {
+        return Ok(Err("the draft records no staging call".into()));
+    };
+    let transcript = match Session::read(path) {
+        Ok(t) => t,
+        Err(e) => return Ok(Err(format!("session unreadable: {e:#}"))),
+    };
+    let messages = &transcript.convo.messages;
+    // The schema is filled in below, once the recorded surface is loaded.
+    let Some(point) = locate_staging(
+        messages,
+        call_id,
+        &item.tool,
+        item.args_before.clone(),
+        owner,
+        serde_json::Value::Null,
+    ) else {
+        return Ok(Err("could not locate the staging call".into()));
+    };
+    let (method, message_index) = match trace_method(messages, point) {
+        Ok(m) => m,
+        Err(why) => return Ok(Err(why)),
+    };
+    let mut prep = match finish_prep(&transcript, method, message_index) {
+        Ok(prep) => prep,
+        Err(why) => return Ok(Err(why)),
+    };
+    let spec_schema = prep
+        .recorded_specs
+        .iter()
+        .find(|s| s.name == item.tool)
+        .map(|s| s.input_schema.clone());
+    if let ProbeMethod::Trace {
+        point:
+            ProbePoint {
+                kind: ProbeKind::Draft { schema, .. },
+                ..
+            },
+        ..
+    } = &mut prep.method
+    {
+        // No recorded spec leaves the schema empty: defaults go unfilled, so
+        // an arm's raw call can only fail to match either draft — never a
+        // false verdict — and the store refuses such a recording anyway
+        // (`Fidelity` is not `Matches` without the blob).
+        *schema = spec_schema.unwrap_or(serde_json::Value::Null);
+    }
+    Ok(Ok(prep))
+}
+
+/// Everything a prepared probe needs past its method: the config covering
+/// the point, the recorded surface, and the keys a stored comparison
+/// carries. `Err(reason)` is a skip.
+fn finish_prep(
+    transcript: &mecha_core::session::Transcript,
+    method: ProbeMethod,
+    message_index: usize,
+) -> Result<ProbePrep, String> {
     // The config in effect *at the intervention*, not `first()`: a resumed
     // session's later attach ran under its own system prompt and tool list,
     // and replaying its turns under the first attach's diverges for reasons
     // that say nothing about the steer — which a counterfactual verdict then
     // reads as `Mattered`, inflating regret out of an artifact of the replay.
     let Some(recorded) = transcript.config_covering(message_index).cloned() else {
-        return Ok(Err("no RunConfig recorded".into()));
+        return Err("no RunConfig recorded".into());
     };
     if recorded.appraisal_evidence.is_some() {
-        return Ok(Err(
+        return Err(
             "owner-bound anticipatory evidence is not yet reproduced by counterfactual probes"
                 .into(),
-        ));
+        );
     }
 
     // The recorded system prompt with any rules block of its era removed: an
@@ -492,6 +593,11 @@ pub fn prepare_probe_in(
                     .checked_sub(1)
                     .and_then(|i| trajectory.calls.get(i))
                     .and_then(|c| CallClass::of(&c.name, &c.input, &recorded_specs)),
+                // The staging call, as the run recorded it.
+                mecha_core::counterfactual::ProbeKind::Draft { .. } => trajectory
+                    .calls
+                    .get(point.call_index)
+                    .and_then(|c| CallClass::of(&c.name, &c.input, &recorded_specs)),
             };
             (Some(point.call_index), call)
         }
@@ -500,7 +606,7 @@ pub fn prepare_probe_in(
     let keys = ComparisonKeys {
         session_id: transcript.meta.id.clone(),
         provenance: Provenance::of_transcript(
-            &transcript,
+            transcript,
             recorded.tools_hash.as_deref(),
             &recorded_specs,
         ),
@@ -509,30 +615,57 @@ pub fn prepare_probe_in(
         call_index,
         call,
     };
-    Ok(Ok(ProbePrep {
+    Ok(ProbePrep {
         method,
         recorded,
         recorded_specs,
         base_system,
         recorded_system,
         keys,
-    }))
+    })
 }
 
 fn prepare_mismatch(sessions_dir: &Path, r: &Reflexion) -> Result<Result<ProbePrep, String>> {
     let attempt = || -> Result<ProbePrep> {
-        use mecha_core::{
-            learning::{classify_origin, Origin},
-            planning::StepFeedback,
-        };
         anyhow::ensure!(
-            r.provenance() == Origin::Clean && r.learnable(),
+            r.provenance() == mecha_core::learning::Origin::Clean && r.learnable(),
             "mismatch reflection is not clean eligible evidence"
         );
         let path = Session::find(sessions_dir, &r.session_id)?;
-        let transcript = Session::read(&path)?;
-        let expected: StepFeedback = serde_json::from_str(&r.context)?;
-        anyhow::ensure!(expected.mismatch(), "reflection names no mismatch");
+        let expected: mecha_core::planning::StepFeedback = serde_json::from_str(&r.context)?;
+        artifact_prep(&path, &expected, &r.id)
+    };
+    Ok(attempt().map_err(|e| format!("artifact mismatch probe unavailable: {e:#}")))
+}
+
+/// Load the recording behind a failed check that an owner-bound criterion
+/// graded, for a point-wise comparison (row 2d-1): the same artifact-task
+/// repeat against the owner's pinned gold that a mismatch reflection gets,
+/// addressed by the step the harness recorded rather than by a reflection.
+/// `point` names the point in the receipt `drive_arm` writes.
+pub fn prepare_check_in(
+    path: &Path,
+    expected: &mecha_core::planning::StepFeedback,
+    point: &str,
+) -> Result<ProbePrep, String> {
+    artifact_prep(path, expected, point)
+        .map_err(|e| format!("artifact check probe unavailable: {e:#}"))
+}
+
+/// The artifact-task probe's preparation, shared by a mismatch reflection
+/// and a failed-check point: the step must name a mismatch that appears
+/// exactly once in a clean stretch of a fresh single-run recording that
+/// carries the owner's bound artifact case.
+fn artifact_prep(
+    path: &Path,
+    expected: &mecha_core::planning::StepFeedback,
+    reflection_id: &str,
+) -> Result<ProbePrep> {
+    {
+        use mecha_core::learning::{classify_origin, Origin};
+        let expected = expected.clone();
+        let transcript = Session::read(path)?;
+        anyhow::ensure!(expected.mismatch(), "the step names no mismatch");
         let found: Vec<_> = transcript
             .convo
             .messages
@@ -611,12 +744,11 @@ fn prepare_mismatch(sessions_dir: &Path, r: &Reflexion) -> Result<Result<ProbePr
             recorded,
             method: ProbeMethod::Artifact {
                 case,
-                session_id: r.session_id.clone(),
-                reflection_id: r.id.clone(),
+                session_id: transcript.meta.id.clone(),
+                reflection_id: reflection_id.to_string(),
             },
         })
-    };
-    Ok(attempt().map_err(|e| format!("artifact mismatch probe unavailable: {e:#}")))
+    }
 }
 
 /// Drive the prepared prefix once under `system` and grade the trace.
@@ -632,6 +764,23 @@ pub async fn drive_arm(
     model: &str,
     prep: &ProbePrep,
     system: String,
+) -> Result<Result<ProbeVerdict, String>> {
+    drive_arm_within(prepared, provider_cfg, model, prep, system, None).await
+}
+
+/// [`drive_arm`] with a ceiling on the assistant turns a trace arm may take
+/// from its point — the short horizon a point-wise comparison drives
+/// (`pointwise::HORIZON_TURNS`); `None` is the recording's own `max_turns`,
+/// as every other caller has always had. The recorded ceiling still binds
+/// when it is the lower. An artifact arm repeats its whole task against
+/// pinned gold, so no horizon applies to it: its horizon is the fixture's.
+pub async fn drive_arm_within(
+    prepared: &Prepared,
+    provider_cfg: &ProviderConfig,
+    model: &str,
+    prep: &ProbePrep,
+    system: String,
+    horizon: Option<u32>,
 ) -> Result<Result<ProbeVerdict, String>> {
     let recorded = &prep.recorded;
     if let ProbeMethod::Artifact {
@@ -704,7 +853,7 @@ pub async fn drive_arm(
         ));
     };
     Ok(
-        drive_continuation(prepared, provider_cfg, model, prep, system)
+        continuation(prepared, provider_cfg, model, prep, system, horizon)
             .await?
             .map(|report| {
                 let result = verdict(&report, point);
@@ -723,6 +872,17 @@ pub async fn drive_continuation(
     model: &str,
     prep: &ProbePrep,
     system: String,
+) -> Result<Result<mecha_core::replay_run::ReplayReport, String>> {
+    continuation(prepared, provider_cfg, model, prep, system, None).await
+}
+
+async fn continuation(
+    prepared: &Prepared,
+    provider_cfg: &ProviderConfig,
+    model: &str,
+    prep: &ProbePrep,
+    system: String,
+    horizon: Option<u32>,
 ) -> Result<Result<mecha_core::replay_run::ReplayReport, String>> {
     let recorded = &prep.recorded;
     let (trajectory, branch) = match &prep.method {
@@ -769,7 +929,12 @@ pub async fn drive_continuation(
     agent_cfg.thinking = recorded.thinking;
     agent_cfg.cache_prompt = recorded.cache_prompt;
     agent_cfg.max_tokens = recorded.max_tokens;
-    agent_cfg.max_turns = recorded.max_turns;
+    agent_cfg.max_turns = match horizon {
+        Some(h) if recorded.max_turns > 0 => recorded.max_turns.min(h),
+        // A recording that kept no ceiling gets the horizon, not zero turns.
+        Some(h) => h,
+        None => recorded.max_turns,
+    };
     agent_cfg.max_output_tokens = recorded.max_output_tokens;
     agent_cfg.max_cost_usd = recorded.max_cost_usd;
     agent_cfg.compact_at_tokens = recorded.compact_at_tokens;
@@ -939,7 +1104,7 @@ pub fn compare(
 }
 
 #[cfg(test)]
-mod mismatch_tests {
+pub(crate) mod mismatch_tests {
     use super::*;
     use mecha_core::{
         agent::Taint,
@@ -948,7 +1113,7 @@ mod mismatch_tests {
         planning::{Feedback, StepFeedback, Verification},
         session::{Record, SessionMeta},
     };
-    fn fixture(
+    pub(crate) fn fixture(
         clean: Option<bool>,
         artifact: bool,
         criterion: bool,

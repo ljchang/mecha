@@ -61,8 +61,21 @@ pub enum Kind {
     /// The `mecha learn --propose/--auto` gate: does a candidate rule set do
     /// better than the deployed one?
     Gate,
-    /// A kind a newer build wrote (phases 2, 3 and 5 add point-wise, in-run
-    /// and mid-run comparisons).
+    /// `mecha sessions compare` (row 2d-1, O1): K policies driven a short
+    /// horizon from an informative decision point of a recorded session,
+    /// graded by the owner's recorded verdict. One kind per point kind, so
+    /// `Summary::by_kind` reads the mix without a new field: an owner's
+    /// steer, an owner's denial, a failed check, a draft the owner rewrote
+    /// before sending, a draft the owner rejected, and a surprise (a
+    /// forecast the run's own record missed).
+    PointSteer,
+    PointDenial,
+    PointCheck,
+    PointEditedDraft,
+    PointRejectedDraft,
+    PointSurprise,
+    /// A kind a newer build wrote (phases 3 and 5 add in-run and mid-run
+    /// comparisons).
     #[default]
     #[serde(other)]
     Unknown,
@@ -89,6 +102,20 @@ pub enum Validator {
     /// An owner-supplied artifact fixture against pinned gold (mismatch
     /// probes).
     ArtifactGold,
+    /// `counterfactual::draft_verdict` on a draft the owner rewrote and
+    /// sent: an arm passes by drafting the released text and fails by
+    /// drafting the text the owner rewrote, both in `draft_form`; anything
+    /// else is a draft the owner never judged (row 2d-1).
+    ReleasedDraft,
+    /// The same validator on a draft the owner rejected: an arm fails by
+    /// drafting the rejected text and passes by ending without drafting.
+    RejectedDraft,
+    /// No structural validator can pose this point's question — a surprise
+    /// with no owner act behind it, or a check that is the agent's own or
+    /// cannot be re-run on a branch that executes nothing. **The arms are
+    /// not driven and none is recorded**, so the verdict derives
+    /// `Inconclusive`: stored so the point is counted, never judged (R27).
+    Unposed,
     #[default]
     #[serde(other)]
     Unknown,
@@ -103,7 +130,9 @@ pub enum Role {
     /// the target the structural validators grade against.
     Recorded,
     /// The recorded prefix branched without the intervention, under the
-    /// system prompt as recorded (rules block and all).
+    /// system prompt as recorded (rules block and all). At a point-wise
+    /// comparison's draft or check point the owner's act is not in the
+    /// transcript at all, so this is simply the policy the run ran under.
     WithoutIntervention,
     /// The recorded prompt with every rules block removed.
     RulesFree,
@@ -555,6 +584,11 @@ pub struct Summary {
     pub unreadable_verdict: usize,
     /// Rows a model judge decided — the ones a reader may want to leave out.
     pub judge_decided: usize,
+    /// Of the `inconclusive`, the points no structural validator could pose
+    /// ([`Validator::Unposed`]): nothing was driven for them. Kept apart
+    /// because "driven and undecided" and "never askable" call for opposite
+    /// fixes — a better arm, or a validator that does not exist yet.
+    pub unposed: usize,
 }
 
 impl Summary {
@@ -575,6 +609,9 @@ impl Summary {
             }
             if c.validator == Validator::Judge {
                 s.judge_decided += 1;
+            }
+            if c.validator == Validator::Unposed && c.verdict == Verdict::Inconclusive {
+                s.unposed += 1;
             }
         }
         s

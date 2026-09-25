@@ -139,6 +139,51 @@ pub enum Args {
         max_appraisals: usize,
     },
 
+    /// Compare policies at the informative decision points of recorded
+    /// sessions — a steer, a denial, a failed check, a draft the owner
+    /// rewrote or rejected, a surprise — and let the owner's recorded
+    /// verdict decide.
+    ///
+    /// **A paid pass, on the local model only.** Each drawn point replays
+    /// its recorded prefix under up to three policies (the prompt the run
+    /// carried, the rules deployed today, none) a short horizon from the
+    /// point, holding one background seat per point. A point no structural
+    /// validator can pose is stored inconclusive and costs nothing. Points
+    /// are drawn uniformly with a printed seed; every comparison lands in
+    /// the comparison store, clean sessions only. Like `appraise --probe`,
+    /// a replay builds a real workspace jail, so run it from a project
+    /// directory or name one with `--workspace`.
+    Compare {
+        /// Most points to drive this pass; unposed points are not counted.
+        #[arg(long, default_value_t = mecha_core::pointwise::DEFAULT_POINTS)]
+        points: usize,
+
+        /// Seed for the uniform draw. Defaults to today's day number, and
+        /// is printed so any pass can be redrawn.
+        #[arg(long)]
+        seed: Option<u64>,
+
+        /// Only sessions started in the last N days.
+        #[arg(long)]
+        days: Option<i64>,
+
+        /// Stop after reading this many sessions, newest first.
+        #[arg(long, short = 'n')]
+        limit: Option<usize>,
+
+        /// Only sessions opened through this surface.
+        #[arg(long)]
+        kind: Option<mecha_core::session::SessionKind>,
+
+        /// Read smoke-test sessions (`MECHA_SESSION_KIND=test`) too.
+        #[arg(long)]
+        include_tests: bool,
+
+        /// Emit JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Total token usage — and cost, where prices are configured — across
     /// saved sessions, grouped by provider and model.
     Stats {
@@ -187,6 +232,30 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 max_probes,
                 run_appraiser,
                 max_appraisals,
+            )
+            .await?
+        }
+
+        Args::Compare {
+            points,
+            seed,
+            days,
+            limit,
+            kind,
+            include_tests,
+            json,
+        } => {
+            crate::pointwise_pass::run(
+                global,
+                crate::pointwise_pass::Options {
+                    points,
+                    seed,
+                    days,
+                    limit,
+                    kind,
+                    include_tests,
+                    json,
+                },
             )
             .await?
         }
@@ -519,9 +588,10 @@ fn first_line(s: &str) -> String {
 
 /// What the comparison store holds: `Ok(None)` when there is no store yet,
 /// `Err` when it could not be read — a finding, not an empty store.
-type OnRecord = std::result::Result<Option<(mecha_core::comparison::Summary, usize)>, String>;
+pub(crate) type OnRecord =
+    std::result::Result<Option<(mecha_core::comparison::Summary, usize)>, String>;
 
-fn comparisons_on_record() -> OnRecord {
+pub(crate) fn comparisons_on_record() -> OnRecord {
     let Some(store) = mecha_core::comparison::ComparisonStore::open_existing_default() else {
         return Ok(None);
     };
@@ -531,7 +601,7 @@ fn comparisons_on_record() -> OnRecord {
         .map_err(|e| format!("{e:#}"))
 }
 
-fn comparisons_json(on_record: &OnRecord) -> serde_json::Value {
+pub(crate) fn comparisons_json(on_record: &OnRecord) -> serde_json::Value {
     match on_record {
         Err(e) => serde_json::json!({"read": false, "error": e}),
         // No store yet is genuinely zero of everything: the same shape as
@@ -554,7 +624,7 @@ fn comparisons_json(on_record: &OnRecord) -> serde_json::Value {
     }
 }
 
-fn comparisons_line(on_record: &OnRecord) -> String {
+pub(crate) fn comparisons_line(on_record: &OnRecord) -> String {
     match on_record {
         Err(e) => format!("counterfactual comparisons: the store could not be read ({e})"),
         Ok(None) => "counterfactual comparisons on record: none yet".into(),
@@ -562,7 +632,7 @@ fn comparisons_line(on_record: &OnRecord) -> String {
             let kinds: Vec<String> = s.by_kind.iter().map(|(k, n)| format!("{k} {n}")).collect();
             format!(
                 "counterfactual comparisons on record: {}{} · separated {} of {} decided ({}) · \
-                 {} inconclusive · {} judge-decided{}{}",
+                 {} inconclusive{} · {} judge-decided{}{}",
                 s.records,
                 if kinds.is_empty() {
                     String::new()
@@ -575,6 +645,11 @@ fn comparisons_line(on_record: &OnRecord) -> String {
                     .map(|r| format!("{:.0}%", r * 100.0))
                     .unwrap_or_else(|| "—".into()),
                 s.inconclusive,
+                if s.unposed > 0 {
+                    format!(" ({} unposed: no structural validator)", s.unposed)
+                } else {
+                    String::new()
+                },
                 s.judge_decided,
                 if s.unreadable_verdict > 0 {
                     format!(
