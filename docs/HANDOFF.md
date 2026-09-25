@@ -23,7 +23,8 @@ maps which document holds what.
 ## Where the work is
 
 **2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2a-3, 2c-1, 2d-1,
-3a and 3a-3 merged and installed, with R34's readout; 2c-2 merged.** `APPRAISAL-WIRING-DESIGN.md` (#291) is the authority, with
+3a and 3a-3 merged and installed, with R34's readout; 2c-2 and 2b-1
+merged.** `APPRAISAL-WIRING-DESIGN.md` (#291) is the authority, with
 its rulings in §6. Phase 1's rows 1a–1i landed as #292–#294, #297–#302, #304
 and #305 (plus mecha-graph#21 for the graph TUI's half of 1c; #303 is
 `image_generate`, another lane's, not recorded here). The phase was meant to
@@ -34,17 +35,17 @@ valence; and 1e and 1f change what `planning::Decision::assess` reads for
 default). Phase 2's 2a-1 (#308), 2a-2 (#314), 2c-1 (#311) and 2d-1 (#312)
 and phase 3's 3a (#309, behind a lever that ships off) followed the same
 day, then 2a-3 (#315), R34's closed-goal readout (#317), 3a-3 (#316,
-R35's arming and the fold as an append) and 2c-2 (#320). What each built is
-in HISTORY under 2026-09-24/25. `mecha` was reinstalled at 21:01Z from
-`main` at `04b89ea0` and carries all of it but 2c-2 (*Machine state, dated*
-below). Six owner rulings of 2026-09-25 are rows R30–R35 of the design's
+R35's arming and the fold as an append), 2c-2 (#320) and 2b-1 (#319). What
+each built is in HISTORY under 2026-09-24/25. `mecha` was reinstalled at
+21:01Z from `main` at `04b89ea0` and carries all of it but 2c-2 and 2b-1
+(*Machine state, dated* below). Six owner rulings of 2026-09-25 are rows R30–R35 of the design's
 §6. What is open, the follow-ups owed, the minors banked for the owner and
 the `CLAUDE.md` drift are at the top of *The goal system* below.
-The workspace on this branch merged with `6f8e69ca` (no code differs from
-`main`): `cargo test --workspace -q`, summed over its 32 `test result`
-lines, gives 3,152 passed, 0 failed, 4 ignored (3,145 at `6e6f03ba`, 3,136
-at `0692dc79`, 3,142 at `8b0acbe8`, 3,149 at `3f494340`; #313, #315, #316,
-#317 and #320 changed the set).
+The workspace on this branch merged with `8c0f5a9d` (no code differs from
+`main`): `cargo test --workspace -q`, summed over its 33 `test result`
+lines, gives 3,157 passed, 0 failed, 4 ignored (3,145 at `6e6f03ba`, 3,136
+at `0692dc79`, 3,142 at `8b0acbe8`, 3,149 at `3f494340`, 3,152 at
+`6f8e69ca`; #313, #315, #316, #317, #319 and #320 changed the set).
 
 **2026-09-24 — the outbox unclogged: a reply goes from its thread's account,
 and the web review reads as mail and sends in one press.** #272
@@ -2746,8 +2747,8 @@ the binary's mtime (21:01:09Z) is earlier than the ~21:20Z it reported. `mecha-s
 `-triggers`, `-drain` and `-serve` show `ActiveEnterTimestamp` 21:01:10Z;
 the voice worker still 11:31:38Z, and the web dist still holds
 `index-Cq2ArbMx.js`. **Merged and not installed:** 2c-2 (#320, `6f8e69ca`,
-merged 21:36Z); `strings ~/.cargo/bin/mecha | grep -c past_appraisals`
-prints 0.
+merged 21:36Z; `strings ~/.cargo/bin/mecha | grep -c past_appraisals`
+prints 0) and 2b-1 (#319, `8c0f5a9d`, merged 21:46Z).
 
 ## What the measurements say
 
@@ -3766,7 +3767,7 @@ the mechanism and every decision. What it left standing:
 
 **2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2a-3, 2c-1, 2d-1,
 3a and 3a-3 shipped and are installed, with R34's readout (#317); 2c-2
-(#320) is merged, not installed.** The authority is `APPRAISAL-WIRING-DESIGN.md`:
+(#320) and 2b-1 (#319) are merged, not installed.** The authority is `APPRAISAL-WIRING-DESIGN.md`:
 §3 holds the plan as pull requests with their order, and §6 the rulings,
 including R30–R35 of 2026-09-25. What each row built is in HISTORY under
 2026-09-24/25. Four of the catalogue entries phase 1 built (S5, S7, B1 and
@@ -3775,13 +3776,16 @@ deferrals are not repeated here; S1, S8, S3 and O4 carry none, so what 1a,
 1b, 1d and 1g deferred is in their PR bodies (#292, #293 and #294, #299,
 #298), save 1d's graph channel below. What is open:
 
-- **In flight: 2d-2 and 2b-1, then 2b-2.** 2d-2 is R26's acceptance
-  combination; the owner ruled a refinement, R36, on 2026-09-25, and the
-  2d-2 lane is adding its §6 row (point-wise for with no numeric regression
-  accepts, point-wise against rejects, and undecided falls back to today's
-  numeric gate, recorded as numeric-only). Past those, the design's §3
-  order: 2d-3, 2e-1 and 2f after 2a-2; 2e-3, 2e-4 and 2e-6 on phase 1
-  alone.
+- **In flight: 2d-2 and 2b-2.** 2d-2 is R26's acceptance combination;
+  the owner ruled a refinement, R36, on 2026-09-25, and the 2d-2 lane is
+  adding its §6 row (point-wise for with no numeric regression accepts,
+  point-wise against rejects, and undecided falls back to today's numeric
+  gate, recorded as numeric-only). 2b-2 scores R33's `expected_act`; the
+  owner ruled R37 the same day, which the 2b-2 lane is adding: a "no act"
+  resolves once the output's store patience
+  (`doctor::Patience::for_store`) has elapsed since the appraised session
+  ended. Past those, the design's §3 order: 2d-3, 2e-1 and 2f after 2a-2;
+  2e-3, 2e-4 and 2e-6 on phase 1 alone.
 - **2c-2's measured run is owed** (#320). `Lever::PastAppraisals` ships
   off, and the design asks for a `mecha exp` arm against a control at
   matched budget before it goes on, since retrieved memory can cost more

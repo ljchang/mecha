@@ -131,7 +131,12 @@ reference's fold included. The lever still ships off. **2c-2**, #320
 appraisals of the run's situation and goal, on demand and never pushed,
 selected at setup through `Clean` only (`appraisal_store::PastAppraisals`)
 and behind `Lever::PastAppraisals` (`[agent] past_appraisals`), which ships
-off; the measured run against a control is still owed.
+off; the measured run against a control is still owed. **2b-1**, #319
+(`8c0f5a9d`, 21:46Z): anticipation's owner-evidenced predictions are scored
+as their outcomes resolve them (`anticipation::Calibration::of`) — coverage
+per kind and no rate over nothing, harness placeholders counted apart, and a
+delivery positive only on confirmed delivery. The live store held no
+owner-evidenced prediction at merge (the coordinating session's count).
 **2a-3**, #315 (`0692dc79`, 20:32Z): the counts-only appraiser
 (`appraise_with_model`) is retired into 2a-2's text appraisal; `sessions
 appraise --appraise` stays as a hidden, deprecated no-op, and old records
