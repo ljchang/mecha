@@ -507,6 +507,7 @@ widening.
 | R8 | parked | The harness may *propose* per-region autonomy grants | parked |
 | R29 | — | Sending transcripts to a cloud model for interpretation or rollouts | not proposed; the owner's privacy decision |
 | R9 | — | The charter line `be-the-best`: unboundedness is fine (lines are attractors); §15's narrower worry is a line whose object is the harness, held by the `Security` class | flagged once |
+| R34 | 2 | A rule scoped to a goal that closes keeps its scope (`task:<uid>`) and widens only on evidence, by §17.4's restatement; such rules are made **visible**, not left silent | **ruled 2026-09-25; built** — `mecha rules list` counts and marks them `LOADS NOWHERE`, `mecha learn` repeats the count each pass, an unreadable board is its own finding |
 
 **Every ruling is settled** (2026-09-24; R35 on 2026-09-25), except the parked items (R3, R8), the
 flag (R9), the deferred R7, the declined R2 and R29, which is not proposed.
