@@ -176,11 +176,6 @@ pub struct Reference {
     pub bytes: Vec<u8>,
     /// File extension for the upload, from the sniffed type.
     pub ext: &'static str,
-    /// The seed this tool drew it with, when it is one of this tool's own
-    /// results — read off the *resolved* file, so every spelling of the same
-    /// path gives the same answer (found on review of #306: `./images/…` and
-    /// an absolute path slipped past a check on the raw string).
-    pub seed: Option<u64>,
 }
 
 /// At most this many references per call. The model takes ten; every one is
@@ -203,24 +198,6 @@ fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
     } else {
         None
     }
-}
-
-/// The seed a file this tool saved was made with, read off its name
-/// (`images/<yyyymmdd>-<hhmmss>-<seed>[-n].png`). `None` for anything else.
-///
-/// Why it matters: an edit sampled from the same seed as its reference starts
-/// from the noise that drew the reference, and the model redraws it — the
-/// instruction barely lands. Measured on 2026-09-25: four edits at the
-/// reference's seed came back as near-copies, one at a fresh seed was clean.
-fn seed_of_generated(path: &str) -> Option<u64> {
-    let name = path.strip_prefix("images/")?.strip_suffix(".png")?;
-    let mut parts = name.split('-');
-    let (date, time, seed) = (parts.next()?, parts.next()?, parts.next()?);
-    let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
-    if !digits(date, 8) || !digits(time, 6) {
-        return None;
-    }
-    seed.parse().ok()
 }
 
 const PROMPT_CAP: usize = 4_000;
@@ -497,6 +474,8 @@ impl ComfyUi {
         {
             let _ = self.post_json("interrupt", &json!({"prompt_id": id})).await;
         }
+        // A cancelled or interrupted job is still recorded, prompt and all.
+        self.forget(id).await;
     }
 
     /// Put one reference in the server's temp directory under a name nobody
@@ -669,14 +648,25 @@ impl ComfyUi {
                 None if entry.pointer("/status/completed").and_then(Value::as_bool)
                     == Some(true) =>
                 {
+                    self.forget(&id).await;
                     return Err(
                         anyhow!("the image server finished the job without an image").into(),
-                    )
+                    );
                 }
                 None => continue,
             }
         };
 
+        // Forgotten whether or not the fetch works: the server keeps every
+        // job's prompt and file names in memory until it restarts, and the
+        // copy that matters is the one in the workspace (or none at all).
+        let fetched = self.fetch(&image).await;
+        self.forget(&id).await;
+        Ok(fetched?)
+    }
+
+    /// The finished image's bytes, checked to be a PNG.
+    async fn fetch(&self, image: &Value) -> Result<Vec<u8>> {
         let field = |k: &str| {
             image
                 .get(k)
@@ -694,18 +684,14 @@ impl ComfyUi {
             .get(url)
             .timeout(Duration::from_secs(60))
             .send()
-            .await
-            .map_err(anyhow::Error::from)?;
+            .await?;
         if !res.status().is_success() {
-            return Err(anyhow!("fetching the finished image failed ({})", res.status()).into());
+            bail!("fetching the finished image failed ({})", res.status());
         }
-        let bytes = res.bytes().await.map_err(anyhow::Error::from)?.to_vec();
+        let bytes = res.bytes().await?.to_vec();
         if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-            return Err(anyhow!("the image server returned something that is not a PNG").into());
+            bail!("the image server returned something that is not a PNG");
         }
-        // The server keeps every job's prompt and file names in memory until
-        // it restarts; the copy that matters is now in the workspace.
-        self.forget(&id).await;
         Ok(bytes)
     }
 
@@ -765,9 +751,6 @@ async fn read_references(
     paths: &[String],
 ) -> std::result::Result<Vec<Reference>, String> {
     use tokio::io::AsyncReadExt;
-    // Where this tool saves, resolved the same way a reference is, so the
-    // comparison below is canonical path against canonical path.
-    let images_dir = ctx.resolve("images").ok();
     let mut out = Vec::with_capacity(paths.len());
     for raw in paths {
         let path = ctx
@@ -802,17 +785,10 @@ async fn read_references(
             .map_err(|e| format!("cannot read `{raw}`: {e}"))?;
         let ext = sniff_image(&bytes)
             .ok_or_else(|| format!("`{raw}` is not a PNG, JPEG or WebP image."))?;
-        let seed = match (path.parent(), path.file_name().and_then(|n| n.to_str())) {
-            (Some(parent), Some(name)) if Some(parent) == images_dir.as_deref() => {
-                seed_of_generated(&format!("images/{name}"))
-            }
-            _ => None,
-        };
         out.push(Reference {
             path: raw.clone(),
             bytes,
             ext,
-            seed,
         });
     }
     Ok(out)
@@ -990,7 +966,7 @@ impl Tool for ImageGenerate {
                 "seed": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "Without reference_images, an earlier result's seed keeps its composition while the prompt changes. Omit it for an edit, and for a new image."
+                    "description": "Without reference_images, an earlier result's seed keeps its composition while the prompt changes. Omit it for a new image. An edit always uses a fresh seed, so it is ignored there."
                 }
             },
             "required": ["prompt"]
@@ -1030,17 +1006,24 @@ impl Tool for ImageGenerate {
             Ok(references) => references,
             Err(why) => return Ok(ToolOutput::err(why)),
         };
-        // An edit at its reference's own seed redraws the reference — see
-        // `seed_of_generated`. Structural rather than a line in the prompt,
-        // because "reuse the seed to keep the composition" is exactly what a
-        // model learns from a text-to-image result.
+        // An edit always samples at a fresh seed. The seed that drew a picture
+        // starts from the noise that drew it, and the model redraws it rather
+        // than editing it — measured on 2026-09-25: four edits sampled at the
+        // reference's seed came back as near-copies on every model file
+        // tried; the same edit at a fresh seed was clean. Keyed on "this is an
+        // edit", not on recognising the file: a re-attached download or a
+        // renamed copy carries the same seed and no name to read it from
+        // (found on review of #306). Enforced here rather than asked for,
+        // because a text-to-image result tells the model its seed keeps the
+        // composition.
         let mut reseeded = None;
-        if req.references.iter().any(|r| r.seed == Some(req.seed)) {
-            let old = req.seed;
-            while req.seed == old {
-                req.seed = fresh_seed();
+        if !req.references.is_empty() {
+            if let Some(asked) = input.get("seed").and_then(Value::as_u64) {
+                while req.seed == asked {
+                    req.seed = fresh_seed();
+                }
+                reseeded = Some(asked);
             }
-            reseeded = Some(old);
         }
         // A call that starts invalidates any idle timer already armed, so a
         // `/free` cannot land while this job is loading or running.
@@ -1111,10 +1094,11 @@ impl Tool for ImageGenerate {
                 req.steps
             ));
         }
-        if let Some(old) = reseeded {
+        if let Some(asked) = reseeded {
             text.push_str(&format!(
-                " (Seed {old} is the reference's own, which redraws the original instead of \
-                 editing it, so seed {} was used.)",
+                " (Seed {asked} was not used: an edit always starts from a fresh seed, because \
+                 the seed that drew a picture redraws it instead of editing it. Seed {} was \
+                 used.)",
                 req.seed
             ));
         }
@@ -1491,18 +1475,6 @@ mod tests {
     }
 
     #[test]
-    fn a_generated_files_seed_is_read_back_off_its_name() {
-        assert_eq!(
-            seed_of_generated("images/20260925-142604-4282255838.png"),
-            Some(4282255838)
-        );
-        assert_eq!(seed_of_generated("images/20260925-142604-7-2.png"), Some(7));
-        assert_eq!(seed_of_generated("inbox/20260925-142604-7.png"), None);
-        assert_eq!(seed_of_generated("images/holiday-photo-7.png"), None);
-        assert_eq!(seed_of_generated("images/20260925-142604-7.jpg"), None);
-    }
-
-    #[test]
     fn only_real_images_are_sniffed_as_images() {
         assert_eq!(sniff_image(PNG), Some("png"));
         assert_eq!(sniff_image(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0]), Some("jpg"));
@@ -1586,6 +1558,11 @@ mod tests {
         assert!(seen
             .iter()
             .any(|l| l.starts_with("POST /interrupt") && l.contains("job-1")));
+        assert!(
+            seen.iter()
+                .any(|l| l.starts_with("POST /history") && l.contains("job-1")),
+            "a cancelled job left its prompt in the server's history"
+        );
         assert!(!dir.join("images").exists(), "nothing saved");
         std::fs::remove_dir_all(dir).ok();
     }
@@ -1815,59 +1792,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn editing_at_the_references_own_seed_is_reseeded() {
-        let (url, seen) = fake(vec![done()], "200 OK").await;
+    async fn an_edit_never_samples_at_the_seed_it_was_given() {
+        // Wherever the reference came from: this tool's own result, or a
+        // re-attached copy under a name that carries no seed at all.
         let dir = tempdir();
         std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
         std::fs::write(dir.join("images/20260925-142604-7.png"), PNG).unwrap();
-        let out = tool(&url)
-            .call(
-                json!({"prompt": "same fox, yellow raincoat", "seed": 7,
-                       "reference_images": ["images/20260925-142604-7.png"]}),
-                &ctx(&dir),
-            )
-            .await
-            .unwrap();
-        assert!(!out.is_error, "{}", out.content);
-        assert!(
-            out.content.contains("Seed 7 is the reference's own"),
-            "{}",
-            out.content
-        );
-        let submitted = seen
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|l| l.starts_with("POST /prompt"))
-            .cloned()
-            .unwrap();
-        assert!(
-            !submitted.contains("\"seed\":7,"),
-            "sampled at the reference's seed: {submitted}"
-        );
-        std::fs::remove_dir_all(dir).ok();
-    }
-
-    #[tokio::test]
-    async fn any_spelling_of_the_reference_is_reseeded() {
-        let dir = tempdir();
-        std::fs::create_dir_all(dir.join("images")).unwrap();
-        std::fs::write(dir.join("images/20260925-142604-7.png"), PNG).unwrap();
-        let absolute = dir.join("images/20260925-142604-7.png");
-        for spelling in [
-            "./images/20260925-142604-7.png".to_string(),
-            "images//20260925-142604-7.png".to_string(),
-            absolute.to_string_lossy().into_owned(),
-        ] {
+        std::fs::write(dir.join("inbox/download.png"), PNG).unwrap();
+        for reference in ["images/20260925-142604-7.png", "inbox/download.png"] {
             let (url, seen) = fake(vec![done()], "200 OK").await;
             let out = tool(&url)
                 .call(
-                    json!({"prompt": "edit", "seed": 7, "reference_images": [spelling]}),
+                    json!({"prompt": "same fox, yellow raincoat", "seed": 7,
+                           "reference_images": [reference]}),
                     &ctx(&dir),
                 )
                 .await
                 .unwrap();
-            assert!(!out.is_error, "{spelling}: {}", out.content);
+            assert!(!out.is_error, "{reference}: {}", out.content);
+            assert!(
+                out.content.contains("Seed 7 was not used"),
+                "{}",
+                out.content
+            );
             let submitted = seen
                 .lock()
                 .unwrap()
@@ -1877,7 +1825,7 @@ mod tests {
                 .unwrap();
             assert!(
                 !submitted.contains("\"seed\":7,"),
-                "{spelling} sampled at the reference's seed"
+                "{reference} sampled at the seed it was given: {submitted}"
             );
         }
         std::fs::remove_dir_all(dir).ok();

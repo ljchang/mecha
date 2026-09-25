@@ -397,13 +397,15 @@ them in as latents, and the canvas follows the first reference's shape unless
 a size is asked for. The pixels go to the loopback server and never into the
 conversation, so the capabilities do not change. Two rules:
 
-- **An edit never samples at its reference's own seed.** Measured on
-  2026-09-25: four edits sampled at the seed that drew the reference came back
-  as near-copies, the instruction barely landing, across every model file
-  tried; the same edit at a fresh seed was clean. The seed of a file this tool
-  saved is in its name (`seed_of_generated`), and a call that reuses it is
-  re-seeded and told so. Structural, because "reuse the seed to keep the
-  composition" is exactly what a text-to-image result teaches the model.
+- **An edit always samples at a fresh seed.** Measured on 2026-09-25: four
+  edits sampled at the seed that drew the reference came back as near-copies,
+  the instruction barely landing, across every model file tried; the same
+  edit at a fresh seed was clean. The rule is keyed on "this is an edit", not
+  on recognising the file — a first cut read the seed off the saved file's
+  name, and a re-attached download or renamed copy carried the same seed with
+  no name to read it from (found on review of #306). A seed the model passes
+  with references is replaced and the result says so; structural, because a
+  text-to-image result tells the model its seed keeps the composition.
 - **The web chat's Edit button starts a sentence, it does not send one** —
   `Edit images/…png: ` in the input, cursor after it. The path is what lets
   the model name the right reference; the change is the owner's to describe.
