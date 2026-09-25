@@ -180,6 +180,20 @@ mismatch comes back marked untrusted with a note saying why. There is
 deliberately no bounded-string shape — "ignore previous instructions" fits in
 very few characters, so a length cap vouches for nothing.
 
+## What the harness itself puts in the conversation
+
+Some text the harness writes into a run rides unarmed — the charter block,
+and a delegated task's own prompt with its name. **The situation brief does
+not, by ruling: delivering it arms `private`** (R35,
+`APPRAISAL-WIRING-DESIGN.md` §6, 2026-09-25). With `[agent]
+situation_brief` on, the brief puts board ids, commitment bands, the owner's
+quiet hours, seat holders and runs in flight into the first user turn — the
+same facts a `kg_task_list` read would bring, and that read arms. Arming it
+fails closed: every lever-on run starts half-armed, which the ruling
+accepts. **Ruled, not yet built:** today delivery arms nothing, so
+`Lever::SituationBrief` ships off and must stay off until the arming lands
+(`docs/ARCHITECTURE.md`, the brief's delivery bullet).
+
 ## The switches, and what each one costs
 
 | Switch | Default | What it changes |

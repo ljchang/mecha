@@ -134,12 +134,59 @@ Three rules it inherits, each of which is a bug if undone:
 
 ### The situation brief
 
-A delegated task, a trigger run and a web chat turn also record a **situation
-brief** beside the conditions (`brief` on the run's outcome record): what
-situation the run started in, assembled by mecha with no model call. It is
-recorded and **not yet sent to the model**. A later phase will put it into the
-run's first message as words, never the system prompt. Until then a test fails
-if any part of it reaches a request.
+A delegated task, a trigger run, a web chat turn and a `mecha run` one-shot
+also record a **situation brief** beside the conditions (`brief` on the run's
+outcome record): what situation the run started in, assembled by mecha with no
+model call. It is always recorded. It is **sent to the model only when you turn
+it on**:
+
+```toml
+[agent]
+situation_brief = true   # off by default
+```
+
+It ships off because it is still being measured: an experiment runs the same
+tasks with and without it before it is turned on for everyone.
+`--no-situation-brief` turns it off for one run, and `mecha eval` always runs
+without it.
+
+When it is on, mecha puts the brief into the run's first message as words,
+after your own. It never goes into the system prompt, so turning it on or off
+does not change what the model provider caches. It looks like this (a
+delegated task, fictional):
+
+```text
+Situation brief from the harness, as things stood when this run started; a later situation brief in this conversation replaces it. It describes; it asks nothing of you.
+- Goal: task task-1, under project project-aurora (2 open tasks there). No store links it to a charter line.
+- Board: 4 open tasks (1 inbox, 1 next, 2 waiting); 1 overdue (task-2); 2 due in the coming week (task-3, task-1); 2 tasks waiting on you; none waiting on someone else. Your own task is `waiting`, due 2026-09-30.
+- Waiting on the owner: one draft in the outbox, waiting over a day, past the owner's patience (charter line `replies`); no parked questions; no front-door requests.
+- Time: Friday afternoon for the owner; outside their quiet hours.
+- Background seats: 1 of 3 free; held by task-1, task-elsewhere.
+- Other runs in flight: delegated tasks task-elsewhere; no triggers (interactive chats are not counted).
+- Model server: busy with other work, with a slot free.
+- Voice: the owner spoke to you within the last few minutes; a call may be in progress.
+- Budget: up to 200 turns; no output-token ceiling; no cost ceiling; no declared context window.
+```
+
+What the words may and may not say:
+
+- **Budget facts are numbers**: turns, token and cost ceilings, the context
+  window. So are the board's counts and task ids, which mecha read itself.
+- **Anything the model could treat as a score is words.** Commitments waiting on
+  you are counted in bands ("a few", "several"), aged in bands ("over a week"),
+  and said to be past your patience or not. That line prints no number of
+  its own; the only digits it can hold are in a charter line's id.
+  A charter line's rank is "your highest-ranked" or not, never its position.
+  Your quiet hours are inside or outside, not their times. A voice call is in
+  progress or not.
+- **Anything unknown is said to be unknown**: "could not be read", never
+  "none". A count that may be short says "at least".
+
+In a long web chat, a new brief is sent only when its words change. The time,
+a voice call, how full the context is and how busy the model server is are
+bands, so their drift sends nothing new; a task starting or finishing, or your
+board changing, does. Each brief says that a later one replaces it. After a
+compaction the brief is put back rather than summarised.
 
 | Field | What it says |
 |---|---|
@@ -156,8 +203,8 @@ if any part of it reaches a request.
 Every field that could not be read says so, with the reason, and never reads
 as empty or zero. `mecha sessions health` reports how complete the recorded
 briefs are, field by field, and counts the runs that recorded none by surface
-(`situation_brief` in `--json`). The TUI, `mecha chat`, `mecha run`, Slack,
-and voice turns that are not spoken into a web chat do not record a brief yet.
+(`situation_brief` in `--json`). The TUI, `mecha chat`, Slack, and voice turns
+that are not spoken into a web chat do not record a brief yet.
 
 ### Anticipated guilt, and why it reads only mecha's own stores
 
@@ -378,7 +425,7 @@ mecha sessions appraise --days 30 --kind web --json
 | `graph_fact_rejections` | Always `null` for now: not readable from mecha. |
 | `tests_hidden`, `experiments_hidden` | Development data excluded from the population. |
 | `probe`, `appraiser` | Results of the optional paid passes, omitted when that pass did not run. |
-| `text_appraisals` | Counts from the [text-appraisal store](#text-appraisals): records, sessions, how many are `clean` and `not_clean`, claims kept and dropped by grounding (`dropped_by`, by reason), and whether the store was fully read. |
+| `text_appraisals` | Counts from the [text-appraisal store](#text-appraisals): records, sessions, how many are `clean` and `not_clean`, claims kept and dropped by grounding (`dropped_by`, by reason), records carrying an expected act (`with_expected_act`), judgment goals that did not resolve (`goals_unresolved`), and whether the store was fully read. |
 
 The signed errors, valence and label above are derived when read and never
 stored. This scan is per **session**, while `sessions health` reports per-run
@@ -392,8 +439,16 @@ what happened relative to what the run was for, why, whether it went well or
 badly for each goal it bore on, what to expect next time, and what your
 reactions suggest you want. There is no score in it, and an emotion word, if
 one appears, is part of the prose. They are kept in
-`~/.mecha/appraisals/appraisals.jsonl`. Nothing writes them yet: the store is
-built and the pass that fills it — the distiller, extended — is the next step.
+`~/.mecha/appraisals/appraisals.jsonl`, one per session, written by
+[`mecha distill`](/docs/features/memory/distillation#the-same-pass-writes-the-sessions-appraisal)
+in a follow-up question on the episode's own conversation, on the local model
+only. Nothing reads them yet except you.
+
+Beside the prose prediction, a record carries an **expected act**. This is
+what the appraiser expects you to do with this kind of output next time — one
+of `released_unchanged`, `edited`, `rejected`, `closed`, `reopened` or
+`no_act` — so that a prediction can later be checked against what you
+actually did, with no model deciding whether it came true.
 
 Three rules hold for every record:
 
@@ -407,12 +462,29 @@ Three rules hold for every record:
   be read.
 - **Only appraisals of clean sessions go further.** Learning, memory and rule
   tenure will read only appraisals of sessions with no third-party content.
-  The rest are stored for you to read and go nowhere else.
+  The rest are stored for you to read and go nowhere else. The one reader
+  today is the appraiser itself: a session's appraisal is shown up to three
+  earlier clean appraisals of the same situation and goal.
+- **A goal is named only if mecha holds it.** A judgment's goal must be a
+  charter line, a task or project on the board, a trigger or a front-door
+  request that exists. Anything else is recorded as no goal and counted.
 
 `mecha sessions appraise` prints the counts:
 
 ```text
   text appraisals on record: 2 over 2 session(s) · 1 clean · 1 not clean (the owner's surfaces only) · claims 2 kept, 2 dropped by grounding (no_such_referent 2)
+```
+
+Given a session id or a unique prefix, it prints that session's appraisal
+instead: the interpretation, its grounded claims, the prediction, the expected
+act and the lessons, under a label saying whether the appraisal is clean.
+`--text` prints every appraisal on record, newest first, and `--json` gives the
+records. Control characters are stripped from every field, because the prose is
+a model's reading of a session that may have held a stranger's text.
+
+```bash
+mecha sessions appraise 20260925T1131     # one session's appraisal
+mecha sessions appraise --text -n 5       # the five newest
 ```
 
 ### The finding: most runs had no label, and why the gate moved

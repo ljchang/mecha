@@ -184,6 +184,15 @@ pub enum Lever {
     /// `--no-carried-state`, or `[agent] carried_state = false`: a tool's
     /// state (the plan) does not ride across a compaction.
     CarriedState,
+    /// `[agent] situation_brief` unset or `false`, or `--no-situation-brief`:
+    /// the situation brief a front-end assembled is recorded and **not
+    /// delivered** — no block of it is folded into the run's user turn
+    /// (`APPRAISAL-WIRING-DESIGN.md` B1, built as 3a). Ships off: 3a is the
+    /// lever stage of the design's "shadow, then measure, then arm" (its §1,
+    /// decision 7) — 1h was the shadow — so the with and without arms are
+    /// what `mecha exp` compares before anything turns it on by default.
+    /// Recording is not levered.
+    SituationBrief,
 }
 
 impl Lever {
@@ -197,7 +206,7 @@ impl Lever {
     /// on review). The test `all_names_every_variant_serde_knows` closes
     /// it from the derive: serde's unknown-variant error lists every
     /// variant, and the test asserts this array covers that list.
-    pub const ALL: [Lever; 17] = [
+    pub const ALL: [Lever; 18] = [
         Lever::Mcp,
         Lever::LearnedRules,
         Lever::Hooks,
@@ -215,6 +224,7 @@ impl Lever {
         Lever::CompactValidate,
         Lever::PredictiveCompaction,
         Lever::CarriedState,
+        Lever::SituationBrief,
     ];
 
     pub fn parse(name: &str) -> Option<Lever> {
@@ -240,6 +250,7 @@ impl Lever {
             Lever::CompactValidate => "compact_validate",
             Lever::PredictiveCompaction => "predictive_compaction",
             Lever::CarriedState => "carried_state",
+            Lever::SituationBrief => "situation_brief",
         }
     }
 
@@ -1087,7 +1098,8 @@ mod tests {
                 | Lever::Boredom
                 | Lever::CompactValidate
                 | Lever::PredictiveCompaction
-                | Lever::CarriedState => {}
+                | Lever::CarriedState
+                | Lever::SituationBrief => {}
             }
         }
         let mut seen = std::collections::BTreeSet::new();

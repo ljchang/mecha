@@ -252,13 +252,16 @@ pub struct RunContext {
     pub homeostat: Option<crate::homeostat::Homeostat>,
     /// The situation this run started in (`APPRAISAL-WIRING-DESIGN.md` B1,
     /// built as 1h) — assembled by the front-end before the run
-    /// ([`crate::brief::assemble_for_run`]) and **carried, never read**: the
-    /// loop copies it onto the outcome after every exit, beside the
-    /// homeostat, and no request is built from it. Phase 3 delivers it; until
-    /// then `provider/anthropic.rs`'s G4 scan fails if any of it reaches a
-    /// request. `None` on every context a front-end did not assemble one for
-    /// — `eval`, `batch` and the replay probes among them, on the homeostat's
-    /// rule.
+    /// ([`crate::brief::assemble_for_run`]). **Always recorded**: the loop
+    /// copies it onto the outcome after every exit, beside the homeostat.
+    /// **Delivered only behind its lever** (built as 3a): with
+    /// `[agent] situation_brief` on, `fold_situation_brief` puts its words
+    /// (`brief::render`) into the run's first user turn, `date_context`'s
+    /// slot; off — the default — no request is built from it, and
+    /// `provider/anthropic.rs`'s G4 scan fails if any of it reaches one.
+    /// `None` on every context a front-end did not assemble one for —
+    /// `eval`, `batch` and the replay probes among them, on the homeostat's
+    /// rule — so those runs deliver nothing whatever the lever says.
     pub brief: Option<Arc<crate::brief::SituationBrief>>,
     /// Compaction threshold for this run, overriding the agent's own.
     ///
@@ -1014,6 +1017,10 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         // owner correcting mecha about the date, which is the one subject on
         // which mecha is now instructed to defer to them.
         || text.starts_with(crate::date_context::REFERENCE_STEM)
+        // The seventh: the situation brief (`brief::render`), folded into
+        // the first user turn when its delivery lever is on. A description
+        // the harness wrote, never something the owner said.
+        || text.starts_with(crate::brief::BRIEF_STEM)
         // The step-escalation stem shipped 2026-08-28 (9c2424d); transcripts
         // recorded before it carry the same fully-templated nudge bodies
         // bare, and one such nudge was already mined as a steer and probed as
@@ -1430,6 +1437,74 @@ impl Agent {
         }
     }
 
+    /// Fold this run's situation brief into its user turn, when delivery is
+    /// on (`[agent] situation_brief`, `Lever::SituationBrief`) and a
+    /// front-end assembled one (`RunContext::brief`) —
+    /// `APPRAISAL-WIRING-DESIGN.md` B1, built as 3a.
+    ///
+    /// **The slot and the lifecycle are the calendar reference's**
+    /// ([`Self::fold_calendar_reference`]), called beside it at each of its
+    /// three sites: the words ([`crate::brief::render`]) go into the
+    /// outgoing user message through [`append_user_text`] — the run's own
+    /// first user turn at the top of the run, never the system prompt and
+    /// never a second user message — and the decision is an equality
+    /// check, not a timer or a field. The one difference is which block the
+    /// equality is against: the **latest** brief in the transcript, where
+    /// the calendar asks whether its exact block is anywhere. A date never
+    /// returns, but a situation does (a seat frees, then fills again), and
+    /// an earlier identical block would leave a stale one as the latest.
+    ///
+    /// What that means on each shape of conversation:
+    /// - **One run** folds once, at its first turn; every later turn finds
+    ///   the latest brief equal to its rendering and does nothing.
+    /// - **A long-lived conversation** (a web chat) is handed a fresh brief
+    ///   per turn by its front-end, and folds it only when its words
+    ///   changed. Time, voice, context used and model-server occupancy are
+    ///   bands, so their drift re-folds nothing; the board's counts and ids,
+    ///   seat holders and runs in flight are exact, so a task starting or
+    ///   ending, or the board moving, is a new block in that turn's message
+    ///   — a change the run would act on — and the old ones stay where they
+    ///   are, each saying a later one replaces it.
+    /// - **After a compaction cut**, `compact::rebuild` has dropped any brief
+    ///   from the head and the summariser never saw one, so the call after
+    ///   the cut puts this run's brief back — into the tail message, as the
+    ///   calendar reference is put back. Its header says it describes the
+    ///   run's start, which is still what it is.
+    ///
+    /// Append-only either way: a folded block never moves, so each request
+    /// is still a byte prefix of the next, and nothing here touches the
+    /// tools or the system prompt — the cached prefix is the same bytes
+    /// with the lever on and off. **Not append-only on disk**: the message
+    /// folded into was already recorded by the door, so each fold makes the
+    /// run's record a whole-transcript `Record::Rewrite`, as the calendar's
+    /// does once a day — here once per changed brief (3a-3 in the design
+    /// doc, owed before the lever ships on).
+    fn fold_situation_brief(&self, cx: &RunContext, messages: &mut Vec<Message>) {
+        if !self.cfg.situation_brief {
+            return;
+        }
+        let Some(brief) = cx.brief.as_deref() else {
+            return;
+        };
+        let block = crate::brief::block(brief);
+        // User-role only, for the calendar's reason: a model quoting the
+        // brief back must not stand in for the harness having said it.
+        let latest = messages
+            .iter()
+            .rev()
+            .filter(|m| m.role == Role::User)
+            .flat_map(|m| m.content.iter().rev())
+            .find_map(|b| match b {
+                Block::Text { text } if text.trim_start().starts_with(crate::brief::BRIEF_STEM) => {
+                    Some(text)
+                }
+                _ => None,
+            });
+        if latest != Some(&block) {
+            append_user_text(messages, block);
+        }
+    }
+
     /// The context a bare [`Agent::run`] will use.
     pub fn context(&self) -> &Arc<RunContext> {
         &self.cx
@@ -1748,8 +1823,9 @@ impl Agent {
             .homeostat
             .clone()
             .map(|h| h.finish(&pressure, self.context_window));
-        // Carried, never read: the brief is assembled before the run and
-        // recorded after it, and nothing between builds a request from it.
+        // Recorded whatever the delivery lever says: the brief is assembled
+        // before the run and recorded after it; `fold_situation_brief` is
+        // the only reader in between, and only renders it.
         outcome.brief = cx.brief.as_deref().cloned();
         Ok(outcome)
     }
@@ -1938,6 +2014,9 @@ impl Agent {
             // again below, after compaction, because a summary can cut this
             // one away before the request goes out.
             self.fold_calendar_reference(messages);
+            // And the situation brief, in the same slot, for the same
+            // reason: a steer stays the last thing in the turn.
+            self.fold_situation_brief(cx, messages);
 
             // Anything the user typed while the previous turn was running.
             // This lands *inside* the message carrying the tool results, so
@@ -2313,6 +2392,7 @@ impl Agent {
             // called wherever the answer matters this turn — the
             // `stopping_now` rule two hundred lines up.
             self.fold_calendar_reference(messages);
+            self.fold_situation_brief(cx, messages);
             // Ahead of `sent_bytes`, which the comment below calls "exactly
             // what is about to go on the wire" — folding after it measured a
             // transcript one block shorter than the one that gets priced, and
@@ -2419,6 +2499,7 @@ impl Agent {
                     // measurement, so the request and `sent_bytes` describe
                     // the same list.
                     self.fold_calendar_reference(messages);
+                    self.fold_situation_brief(cx, messages);
                     request.messages = messages.clone();
                     // The retry carries a different list; the anchor has to
                     // describe the one that was actually priced, or the next
@@ -5235,6 +5316,266 @@ mod tests {
             "the nudge rides beside the tool results, not after them"
         );
         assert!(is_harness_voice(FINAL_ANSWER_NUDGE));
+    }
+
+    // --- the situation brief (3a) ---
+
+    /// A brief whose words change with one number, the seats held.
+    fn a_brief(held: u32) -> crate::brief::SituationBrief {
+        use crate::brief::*;
+        SituationBrief {
+            assembled_at: "2026-09-14T13:21:33Z".parse().unwrap(),
+            goal: Some(GoalChain::NoAnchor),
+            board: Some(Board::Unread {
+                why: "no graph server in this fixture".into(),
+            }),
+            commitments: None,
+            time: None,
+            seats: Some(Seats::Read {
+                capacity: 3,
+                held,
+                holders: vec![],
+                unreadable: 0,
+            }),
+            runs: None,
+            slots: Some(Slots::NotLocal),
+            voice: None,
+            budget: None,
+        }
+    }
+
+    /// Every situation brief block in a request's user messages, in order.
+    fn brief_blocks(req: &CompletionRequest) -> Vec<String> {
+        req.messages
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                Block::Text { text } if text.trim_start().starts_with(crate::brief::BRIEF_STEM) => {
+                    Some(text.trim_start().to_string())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn with_brief(agent: &Agent, brief: crate::brief::SituationBrief) -> RunContext {
+        let mut cx = (**agent.context()).clone();
+        cx.brief = Some(Arc::new(brief));
+        cx
+    }
+
+    /// Delivery is the lever's, and the context's: on with a brief, the
+    /// words ride the run's first user turn once — the second turn of the
+    /// run finds them already said; off, or on with no brief (`eval`,
+    /// `batch`, a probe), no request carries a byte of it. Recording is not
+    /// levered: the outcome carries the brief either way.
+    #[tokio::test]
+    async fn a_brief_is_folded_once_per_run_and_only_behind_its_lever() {
+        for (lever, carried) in [(false, true), (true, true), (true, false)] {
+            let (mut agent, provider) = agent_with_tools(
+                sleep_then_answer(),
+                vec![Arc::new(SleepTool(
+                    Arc::new(crate::clock::TestClock::at("2026-09-14T13:21:33Z")),
+                    chrono::Duration::zero(),
+                ))],
+                PermissionMode::Allow,
+            );
+            agent.cfg.situation_brief = lever;
+            let mut cx = (**agent.context()).clone();
+            if carried {
+                cx.brief = Some(Arc::new(a_brief(1)));
+            }
+            let mut convo = Conversation::user("what needs me?");
+            let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+            assert_eq!(outcome.brief.is_some(), carried, "recorded either way");
+
+            let seen = provider.seen.lock().unwrap();
+            assert_eq!(seen.len(), 2);
+            if lever && carried {
+                let words = crate::brief::render(&a_brief(1));
+                for req in seen.iter() {
+                    assert_eq!(brief_blocks(req), vec![words.clone()]);
+                    assert!(!req.system.as_deref().unwrap_or_default().contains(&words));
+                }
+                // In the owner's own message, after their words: the first
+                // user turn, not a second user message.
+                let first = &seen[0].messages[0];
+                assert_eq!(first.role, Role::User);
+                assert!(
+                    matches!(&first.content[0], Block::Text { text } if text == "what needs me?")
+                );
+                assert!(
+                    matches!(first.content.last(), Some(Block::Text { text }) if *text == crate::brief::block(&a_brief(1))),
+                    "behind a blank line, so no encoder runs it on from the owner's words"
+                );
+            } else {
+                for req in seen.iter() {
+                    assert!(
+                        brief_blocks(req).is_empty(),
+                        "lever {lever}, brief {carried}: delivered"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A long-lived conversation (a web chat) is handed a fresh brief each
+    /// turn: the same situation is said once, and a changed one is a new
+    /// block in the turn it changed on, the old one left where it was — so
+    /// every request is still a prefix of the next.
+    #[tokio::test]
+    async fn a_long_conversation_folds_a_new_brief_only_when_its_words_change() {
+        let (mut agent, provider) = agent_with_tools(
+            vec![
+                assistant(vec![Block::text("one")], StopReason::EndTurn),
+                assistant(vec![Block::text("two")], StopReason::EndTurn),
+                assistant(vec![Block::text("three")], StopReason::EndTurn),
+                assistant(vec![Block::text("four")], StopReason::EndTurn),
+            ],
+            vec![],
+            PermissionMode::Allow,
+        );
+        agent.cfg.situation_brief = true;
+        let mut convo = Conversation::user("first");
+        agent
+            .run_in(&with_brief(&agent, a_brief(1)), &mut convo, None)
+            .await
+            .unwrap();
+        convo.push(Message::user("second"));
+        agent
+            .run_in(&with_brief(&agent, a_brief(1)), &mut convo, None)
+            .await
+            .unwrap();
+        convo.push(Message::user("third"));
+        agent
+            .run_in(&with_brief(&agent, a_brief(0)), &mut convo, None)
+            .await
+            .unwrap();
+        // And back: a situation can return where a date cannot, so the
+        // check is against the *latest* brief, not any earlier one.
+        convo.push(Message::user("fourth"));
+        agent
+            .run_in(&with_brief(&agent, a_brief(1)), &mut convo, None)
+            .await
+            .unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        let (held, freed) = (
+            crate::brief::render(&a_brief(1)),
+            crate::brief::render(&a_brief(0)),
+        );
+        assert_eq!(brief_blocks(&seen[0]), vec![held.clone()]);
+        assert_eq!(
+            brief_blocks(&seen[1]),
+            vec![held.clone()],
+            "the same situation is not said twice"
+        );
+        assert_eq!(brief_blocks(&seen[2]), vec![held.clone(), freed.clone()]);
+        assert_eq!(
+            brief_blocks(&seen[3]),
+            vec![held.clone(), freed.clone(), held],
+            "a situation that came back is said again"
+        );
+        assert!(
+            matches!(seen[2].messages.last().unwrap().content.last(), Some(Block::Text { text }) if text.trim_start() == freed),
+            "the changed brief rides the turn it changed on"
+        );
+        for w in seen.windows(2) {
+            assert_eq!(&w[1].messages[..w[0].messages.len()], &w[0].messages[..]);
+        }
+    }
+
+    /// **A compaction cut puts the run's brief back, and never hands it to
+    /// the summariser.** `rebuild` strips a brief from the head like the
+    /// calendar reference, the summariser's input drops it outright (a
+    /// summary asked for "the specific values" would copy its counts into
+    /// the head as prose no stem can strip), and the fold after the cut
+    /// re-states it in the tail. Fails on each half: with no re-fold the
+    /// requests after the cut carry no brief; with no head strip the rebuilt
+    /// head keeps it; with no summariser drop the summariser sees it.
+    #[tokio::test]
+    async fn a_compaction_cut_puts_the_runs_brief_back_and_the_summariser_never_sees_it() {
+        let clock = Arc::new(crate::clock::TestClock::at("2026-09-14T13:21:33Z"));
+        let mut turns: Vec<CompletionResponse> = (0..8)
+            .map(|i| {
+                assistant(
+                    vec![
+                        Block::text(format!("step {i}")),
+                        Block::ToolUse {
+                            id: format!("t{i}"),
+                            name: "sleep".into(),
+                            input: json!({}),
+                        },
+                    ],
+                    StopReason::ToolUse,
+                )
+            })
+            .collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, provider) = agent_with_tools(
+            turns,
+            vec![Arc::new(SleepTool(
+                Arc::clone(&clock),
+                chrono::Duration::zero(),
+            ))],
+            PermissionMode::Allow,
+        );
+        agent.cfg.situation_brief = true;
+        agent.cfg.compact_at_tokens = Some(1);
+        agent.cfg.compact_keep_recent = 2;
+        agent.cfg.max_turns = 6;
+        agent.cfg.force_final_answer = false;
+        agent.cfg.compact_validate = false;
+        let cx = with_brief(&agent, a_brief(1));
+        let words = crate::brief::render(&a_brief(1));
+
+        let mut convo = Conversation::user("work through it");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        let (summaries, turns_sent): (Vec<&CompletionRequest>, Vec<&CompletionRequest>) = seen
+            .iter()
+            .partition(|r| r.system.as_deref() == Some(crate::compact::SUMMARY_SYSTEM));
+        assert!(!summaries.is_empty(), "this case is about a compaction");
+        for s in &summaries {
+            let all: String = s.messages.iter().map(|m| m.text()).collect();
+            assert!(
+                !all.contains(crate::brief::BRIEF_STEM),
+                "the summariser was handed the brief"
+            );
+        }
+        for (i, req) in turns_sent.iter().enumerate() {
+            assert_eq!(
+                brief_blocks(req).last(),
+                Some(&words),
+                "request {i} carries no brief"
+            );
+        }
+        assert!(convo.messages[0].text().contains("compacted"));
+        assert!(
+            !convo.messages[0]
+                .content
+                .iter()
+                .any(|b| matches!(b, Block::Text { text }
+                if text.trim_start().starts_with(crate::brief::BRIEF_STEM))),
+            "the rebuilt head keeps no brief"
+        );
+        assert!(
+            convo.messages[1..].iter().any(|m| m
+                .content
+                .iter()
+                .any(|b| matches!(b, Block::Text { text } if text.trim_start() == words))),
+            "the brief was put back after the cut"
+        );
+    }
+
+    #[test]
+    fn the_situation_brief_is_recognised_as_a_harness_voice() {
+        assert!(is_harness_voice(&crate::brief::render(&a_brief(1))));
+        assert!(!is_harness_voice(
+            "Situation: the brief I sent you yesterday"
+        ));
     }
 
     // --- the calendar reference ---
