@@ -730,6 +730,9 @@ impl Sandbox {
                     // Landlock spawns bash directly; what fails here is the
                     // ruleset in pre_exec, not a missing wrapper binary.
                     Backend::Landlock => "bash",
+                    // With limits, bwrap is started through `env` and
+                    // `systemd-run`, either of which may be what is missing.
+                    _ if self.bwrap_launcher().len() > 1 => "systemd-run` or `bwrap",
                     _ => "bwrap",
                 }
             )
@@ -907,6 +910,19 @@ fn diagnose(kind: Backend, stderr: &str) -> String {
              or use `kind = \"docker\"` instead."
                 .into()
         }
+        // The resource limits' dependency, not bwrap's: `systemd-run --user`
+        // needs a running user manager (review of #295).
+        Backend::Bwrap
+            if stderr.contains("connect to bus")
+                || stderr.contains("systemd-run")
+                || stderr.contains("user manager") =>
+        {
+            "\n\n`[sandbox] memory_mb` / `cpus` run each command in a systemd user scope, \
+             which needs a running systemd user manager. Start one that outlives your \
+             logins with `loginctl enable-linger $USER` (a desktop login also starts \
+             one), or remove the limits."
+                .into()
+        }
         Backend::Bwrap if stderr.contains("loopback") => {
             "\n\nbwrap could not configure loopback in the new network namespace. \
              Set `network = true` to share the host's, or use `kind = \"docker\"`."
@@ -1082,6 +1098,17 @@ mod tests {
             );
         }
         assert_eq!(&limited[limited.len() - 2..], ["--", "bwrap"]);
+    }
+
+    /// A missing user manager is the limits' likeliest failure and says how
+    /// to fix it (review of #295).
+    #[test]
+    fn a_missing_user_manager_is_diagnosed_with_the_fix() {
+        let advice = diagnose(
+            Backend::Bwrap,
+            "Failed to connect to bus: No such file or directory",
+        );
+        assert!(advice.contains("loginctl enable-linger"), "{advice}");
     }
 
     /// The read-back check: what systemd dropped is refused by name.
