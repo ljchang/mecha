@@ -334,7 +334,8 @@ const OWNERS_ACT: &str = "closing or reopening a task is the owner's act — clo
 /// answer to all of them is the sandbox —
 /// bwrap and docker run the command in a pid namespace with no `~/.mecha`
 /// mounted, and landlock does not grant the owner's home (`mecha doctor`
-/// reports an unconfined `shell`).
+/// reports a `[sandbox]` that mounts the mecha home; `mecha tools` shows
+/// an unconfined `shell`, the default).
 pub fn decide(
     env: &PostureReading,
     shell: &ShellReading,

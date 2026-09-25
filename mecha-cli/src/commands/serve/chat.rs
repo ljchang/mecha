@@ -1313,15 +1313,34 @@ fn web_posture(
     task_chat: bool,
     approve_all: bool,
     mode: PermissionMode,
+    started_by_a_run: bool,
 ) -> mecha_core::closure::RunPosture {
     use mecha_core::closure::RunPosture;
     if task_chat {
         RunPosture::Delegated
-    } else if approve_all || mode != PermissionMode::Ask {
+    } else if started_by_a_run || approve_all || mode != PermissionMode::Ask {
         RunPosture::Unattended
     } else {
         RunPosture::Interactive
     }
+}
+
+/// Whether this `serve` was started beneath a shell a run registered — or
+/// beneath a chain the registry cannot vouch for. Such a `serve` is a nested
+/// front end: a run's `shell` can start one, authenticate with the login it
+/// chose on the same command line, and would otherwise stamp its web
+/// chats' shells `interactive` (review of #294, the `serve` twin of the
+/// piped `mecha chat` hole). Read once and latched for the process's life,
+/// so a `serve` that detaches and is reparented later still is not a
+/// person. Off Linux the registry answers `Unreadable` while any run's
+/// shell is live, so a `serve` started then is unattended until restarted.
+static STARTED_BY_A_RUN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+pub(super) fn started_by_a_run() -> bool {
+    *STARTED_BY_A_RUN.get_or_init(|| {
+        mecha_core::closure::ShellReading::from_registry()
+            != mecha_core::closure::ShellReading::NotRegistered
+    })
 }
 
 /// Which door a turn came through, and what that changes about it.
@@ -1680,6 +1699,7 @@ fn begin_turn(
             ws.task.is_some() || ws.withheld.iter().any(|t| t == "kg_task_update"),
             opts.approve_all,
             *ws.mode.lock().unwrap_or_else(|e| e.into_inner()),
+            started_by_a_run(),
         )),
         ..(*chat.agent.ctx()).clone()
     });
@@ -2734,12 +2754,28 @@ mod tests {
     fn a_web_turn_is_interactive_only_with_approvals_on_outside_a_task_chat() {
         use super::PermissionMode::{Allow, Ask, ReadOnly};
         use mecha_core::closure::RunPosture as P;
-        assert_eq!(super::web_posture(false, false, Ask), P::Interactive);
-        assert_eq!(super::web_posture(false, false, Allow), P::Unattended);
-        assert_eq!(super::web_posture(false, false, ReadOnly), P::Unattended);
-        assert_eq!(super::web_posture(false, true, Ask), P::Unattended);
-        assert_eq!(super::web_posture(true, false, Ask), P::Delegated);
-        assert_eq!(super::web_posture(true, true, Allow), P::Delegated);
+        assert_eq!(super::web_posture(false, false, Ask, false), P::Interactive);
+        assert_eq!(
+            super::web_posture(false, false, Allow, false),
+            P::Unattended
+        );
+        assert_eq!(
+            super::web_posture(false, false, ReadOnly, false),
+            P::Unattended
+        );
+        assert_eq!(super::web_posture(false, true, Ask, false), P::Unattended);
+        assert_eq!(super::web_posture(true, false, Ask, false), P::Delegated);
+        assert_eq!(super::web_posture(true, true, Allow, false), P::Delegated);
+    }
+
+    /// A `serve` a run's shell started is never a person, whatever its
+    /// page's mode says (review of #294).
+    #[test]
+    fn a_serve_started_by_a_run_is_never_interactive() {
+        use super::PermissionMode::Ask;
+        use mecha_core::closure::RunPosture as P;
+        assert_eq!(super::web_posture(false, false, Ask, true), P::Unattended);
+        assert_eq!(super::web_posture(true, false, Ask, true), P::Delegated);
     }
 
     /// A spoken turn is the owner's words with the voice preamble *prefixed

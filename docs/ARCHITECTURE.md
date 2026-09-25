@@ -2213,7 +2213,11 @@ now makes the move one recorded event:
   end is not a person:** `mecha chat`, `mecha run` and `mecha tui` stamp
   `interactive` only with a terminal on stdin *and* no registered shell
   above them (`setup::front_end_interactive`), so a run that pipes into
-  `mecha chat`, or feeds `mecha tui` a pty, gets `unattended` children.
+  `mecha chat`, or feeds `mecha tui` a pty, gets `unattended` children;
+  `mecha serve` reads the registry once at startup and latches it
+  (`serve::chat::started_by_a_run`), so a `serve` a run's shell started —
+  and authenticated to with the login it chose on the same command line —
+  never stamps a web chat `interactive` (review of #294).
   **The residue, named on `decide`:**
   a command that detaches from its shell and clears the variable reads as
   the owner's terminal; an unconfined shell can also edit `~/.mecha`
@@ -2224,8 +2228,11 @@ now makes the move one recorded event:
   confinement: bwrap and docker run the command
   with `--unshare-pid` / its own pid namespace and no `~/.mecha` mounted,
   landlock grants no path under the owner's home, and `mecha doctor`
-  reports an unconfined `shell` (attention) or a `[sandbox]` that mounts the
-  mecha home (broken). **Say it plainly: inside a pid-namespaced sandbox the
+  reports a `[sandbox]` that mounts the mecha home (broken). An unconfined
+  `shell` is the stock default and is *not* a doctor finding — one present
+  on every install would keep `doctor` exiting 1 forever and teach its
+  readers to skip it (review of #294); `mecha tools` shows it instead
+  ("unconfined — runs as you"). **Say it plainly: inside a pid-namespaced sandbox the
   registry does not protect anything.** The ancestry walk reads the
   namespace's `/proc`, where the host-side pid the `shell` tool registered
   does not exist, so a confined command always reads as unregistered — the
