@@ -113,6 +113,14 @@ use serde::{Deserialize, Serialize};
 /// [`Reading::Unread`] or [`Reading::Deferred`] row says nothing either way.
 pub const SATURATED_AFTER_RUNS: usize = 10;
 
+/// The most recorded runs [`saturated`] reads back, newest first: room for
+/// [`SATURATED_AFTER_RUNS`] informative readings among twice as many rows
+/// that said nothing (an unreadable store, a row with no reading of the
+/// line). Argued, not measured. Past it an undecided line is not
+/// saturated — the direction that leaves it in front of the run, as before
+/// withdrawal existed — and a run never pays for more than this many rows.
+pub const SATURATION_ROWS_MAX: usize = 3 * SATURATED_AFTER_RUNS;
+
 /// The observable's value, in the kind's unit.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -671,10 +679,15 @@ fn per_item(waiters: &[Waiter], setpoint: Setpoint, now: DateTime<Utc>) -> Items
 
 /// Each line's per-run delta ([`LineReading::delta`]), from the inventory
 /// the run started with and the one it finished with. A line whose kind has
-/// no items, or whose store either read could not see, keeps `None`.
+/// no items, whose store either read could not see, or whose start reading
+/// carried no per-item form (the level read `Unread`) keeps `None` — a
+/// delta beside "store unreadable" would be two answers to one question.
 pub fn with_deltas(readings: &mut [LineReading], before: &Inventory, after: &Inventory) {
     for r in readings {
-        r.delta = Flow::between(waiters_for(r.kind, before), waiters_for(r.kind, after));
+        r.delta = match r.items {
+            Some(_) => Flow::between(waiters_for(r.kind, before), waiters_for(r.kind, after)),
+            None => None,
+        };
     }
 }
 
@@ -701,6 +714,13 @@ pub struct Saturated {
 /// is skipped, never counted on either side. Lazy: it stops pulling rows
 /// once every line in `only` is decided, so a caller streaming a session
 /// store pays for the rows it needed and no more.
+///
+/// **Bounded, because a streak may never decide** (found on review). Two
+/// cases: the corpus kind, which a run records as `Deferred` on every row
+/// and so can never saturate — it is left out here; and a setpoint the
+/// owner just edited, whose new spelling no recorded row has read yet.
+/// The second is what [`SATURATION_ROWS_MAX`] caps: without it, every run
+/// for the next ten would parse the whole doctor window at its start.
 pub fn saturated<I, R>(charter: &Charter, only: Option<&[&str]>, rows: I) -> Vec<Saturated>
 where
     I: IntoIterator<Item = R>,
@@ -715,7 +735,11 @@ where
     let mut streaks: Vec<Streak> = charter
         .lines()
         .iter()
-        .filter(|l| l.sensor.is_some())
+        .filter(|l| {
+            l.sensor
+                .as_ref()
+                .is_some_and(|s| s.kind != SensorKind::InterventionRate)
+        })
         .filter(|l| only.is_none_or(|o| o.contains(&l.id.as_str())))
         .map(|line| Streak {
             line,
@@ -728,7 +752,7 @@ where
     if streaks.is_empty() {
         return out;
     }
-    for row in rows {
+    for row in rows.into_iter().take(SATURATION_ROWS_MAX) {
         let row = row.as_ref();
         for s in streaks.iter_mut().filter(|s| !s.decided) {
             let sensor = s.line.sensor.as_ref().expect("filtered to sensored lines");
@@ -1570,6 +1594,34 @@ mod tests {
         );
         assert!(saturated(&c, None, met_first).is_empty());
         assert_eq!(pulled.get(), 0);
+    }
+
+    /// Bounded (found on review): a streak that can never decide — a
+    /// setpoint just edited, whose new spelling no row has read — stops at
+    /// `SATURATION_ROWS_MAX` rows rather than reading the whole window; and
+    /// the corpus kind, which a run records as `Deferred` on every row, is
+    /// never a candidate and pulls nothing.
+    #[test]
+    fn a_streak_that_cannot_decide_stops_at_the_row_cap() {
+        let edited = charter(vec![sensored("replies", SensorKind::OutboxAge, "36h")]);
+        let pulled = std::cell::Cell::new(0usize);
+        let rows = std::iter::repeat_with(|| {
+            pulled.set(pulled.get() + 1);
+            over_row() // read against "24h": another sensor
+        })
+        .take(1_000);
+        assert!(saturated(&edited, None, rows).is_empty());
+        assert_eq!(pulled.get(), SATURATION_ROWS_MAX);
+
+        let corpus = charter(vec![sensored("hands", SensorKind::InterventionRate, "20%")]);
+        pulled.set(0);
+        let rows = std::iter::repeat_with(|| {
+            pulled.set(pulled.get() + 1);
+            over_row()
+        })
+        .take(1_000);
+        assert!(saturated(&corpus, None, rows).is_empty());
+        assert_eq!(pulled.get(), 0, "the corpus kind is never a candidate");
     }
 
     /// Withdrawal: a line past its setpoint now and saturated over the

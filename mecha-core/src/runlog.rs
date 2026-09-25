@@ -546,7 +546,12 @@ impl Corpus {
     /// variance is zero too has not moved at all. Keyed by line id, in id
     /// order; a line no row read is absent, never a row of zeros.
     pub fn reading_variation(&self) -> Vec<LineVariation> {
-        let mut by_line: BTreeMap<&str, Vec<&crate::reading::LineReading>> = BTreeMap::new();
+        // Keyed by sensor — line, kind, setpoint spelling — as the saturation
+        // streak is: an edited setpoint is another sensor, and pooling the two
+        // would put two denominators under one count (found on review).
+        #[allow(clippy::type_complexity)]
+        let mut by_line: BTreeMap<(&str, &str, &str), Vec<&crate::reading::LineReading>> =
+            BTreeMap::new();
         for row in &self.rows {
             let Some(readings) = row
                 .stats
@@ -557,17 +562,22 @@ impl Corpus {
                 continue;
             };
             for r in readings {
-                by_line.entry(r.line.as_str()).or_default().push(r);
+                by_line
+                    .entry((r.line.as_str(), r.kind.wire(), r.setpoint.as_str()))
+                    .or_default()
+                    .push(r);
             }
         }
         by_line
             .into_iter()
-            .map(|(line, rs)| {
+            .map(|((line, kind, setpoint), rs)| {
                 let items: Vec<&crate::reading::Items> =
                     rs.iter().filter_map(|r| r.items.as_ref()).collect();
                 let deltas: Vec<crate::backlog::Flow> = rs.iter().filter_map(|r| r.delta).collect();
                 LineVariation {
                     line: line.to_string(),
+                    kind: kind.to_string(),
+                    setpoint: setpoint.to_string(),
                     runs: rs.len(),
                     informative: rs.iter().filter(|r| r.reading.over().is_some()).count(),
                     level_over: rs.iter().filter(|r| r.reading.over() == Some(true)).count(),
@@ -805,6 +815,10 @@ fn exhaustive(record: &Record) {
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct LineVariation {
     pub line: String,
+    /// The sensor the rows read, as recorded: a line whose setpoint was
+    /// edited appears once per spelling.
+    pub kind: String,
+    pub setpoint: String,
     /// Rows that recorded any reading of the line.
     pub runs: usize,
     /// Of those, rows whose level said something (`Reading::over` is
@@ -978,6 +992,27 @@ mod workspace_tests {
         assert!((v.waiting_variance.unwrap() - 8.0 / 3.0).abs() < 1e-9);
         assert_eq!(v.over_variance, Some(0.0));
         assert_eq!((v.delta_runs, v.moved_runs, v.withdrawn_runs), (2, 1, 2));
+
+        assert_eq!(
+            (v.kind.as_str(), v.setpoint.as_str()),
+            ("outbox_age", "24h")
+        );
+        // An edited setpoint is another sensor: its row is its own entry.
+        let mut edited = corpus.clone();
+        let mut r = reading(9, None, false);
+        r.stats
+            .homeostat
+            .as_mut()
+            .unwrap()
+            .charter
+            .as_mut()
+            .unwrap()[0]
+            .setpoint = "48h".into();
+        edited.rows.push(r);
+        let split = edited.reading_variation();
+        assert_eq!(split.len(), 2);
+        assert_eq!(split[0].runs, 3, "24h keeps its own rows");
+        assert_eq!((split[1].setpoint.as_str(), split[1].runs), ("48h", 1));
 
         let one = Corpus {
             rows: vec![reading(4, None, false)],

@@ -3973,7 +3973,12 @@ when touching it:
   come from `reading::recorded_readings`, which streams the store runs
   record into (`Session::default_dir`) under the doctor's own admission
   and window, lazily down to the listing, so nothing is read when no line
-  is over — the corpus kind's full scan stays a surface's cost.
+  is over — the corpus kind's full scan stays a surface's cost. The walk
+  is **bounded at `SATURATION_ROWS_MAX` rows**, because a streak may never
+  decide: a setpoint just edited has no row read against its new spelling,
+  and without the cap every run for the next ten parsed the whole doctor
+  window at its start; and the corpus kind, `Deferred` on every run row, is
+  never a candidate at all (both found on review).
   A line within its setpoint now is never withdrawn, whatever its
   history. `sessions health` shows each line's level over-count beside
   the per-item variances and the delta counts (`charter_readings` in
