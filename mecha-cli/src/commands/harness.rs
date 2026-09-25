@@ -365,7 +365,10 @@ enum Verdict {
 /// field says so — unknown, not "numeric only".
 fn pointwise_line(p: Option<&mecha_core::harness::PointwiseEvidence>) -> String {
     let Some(p) = p else {
-        return "not recorded (measured before R36)".into();
+        // Two causes, and the record cannot say which: a measurement from
+        // before the field, or one where nothing paired and the pass never
+        // ran (found on review) — so it names neither.
+        return "not recorded".into();
     };
     let t = &p.tally;
     format!(
@@ -385,7 +388,11 @@ fn pointwise_line(p: Option<&mecha_core::harness::PointwiseEvidence>) -> String 
             .as_deref()
             .map(|why| format!(" ({why})"))
             .unwrap_or_default()
-    )
+    ) + if p.outbox_unreadable {
+        "; the outbox could not be fully read, so draft points may be missing"
+    } else {
+        ""
+    }
 }
 
 /// Decide, as a function of the two facts and nothing else.
@@ -726,6 +733,10 @@ async fn measure(
             &change,
             &cand.id,
             draw.seed,
+            crate::pointwise_pass::CandidateScope {
+                workspace,
+                sessions,
+            },
         )
         .await?
     } else {
@@ -783,6 +794,7 @@ async fn measure(
             basis,
             not_run: evidence.not_run,
             comparisons: evidence.comparisons,
+            outbox_unreadable: evidence.outbox_unreadable,
         });
     }
 

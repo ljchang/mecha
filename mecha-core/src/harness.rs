@@ -591,6 +591,10 @@ pub struct PointwiseEvidence {
     /// The comparison-store rows this measurement drove or reused, by id.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comparisons: Vec<String>,
+    /// The outbox could not be fully read, so draft points may be missing
+    /// from the pool the tally was drawn from.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outbox_unreadable: bool,
 }
 
 /// Which arm of a paired replay left the recording.
@@ -1032,6 +1036,7 @@ mod tests {
             basis: Basis::Pointwise,
             not_run: None,
             comparisons: vec!["cmp-1".into()],
+            outbox_unreadable: false,
         };
         let wire = serde_json::to_value(&evidence).unwrap();
         assert_eq!(

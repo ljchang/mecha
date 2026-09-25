@@ -450,7 +450,10 @@ fn guard_regressions<'a>(
             }
         }
         (None, Some((metric, _))) => {
-            if matches!(j.guard, Guard::Held | Guard::Unmeasured) {
+            // `Unmeasured` is kept over a new cost: both reach a person, and
+            // "too few episodes to rule a regression out" is the broader,
+            // more honest thing to print.
+            if j.guard == Guard::Held {
                 j.guard = Guard::NewCost(metric);
             }
         }
