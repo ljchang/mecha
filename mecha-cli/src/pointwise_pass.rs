@@ -262,7 +262,7 @@ pub fn plan(
 ) -> Result<Plan> {
     let prepared = match (&point.kind, &point.locator) {
         (PointKind::Steer | PointKind::Denial, Locator::Intervention { text }) => {
-            probe::prepare_probe_in(path, point.kind.trigger(), text)?
+            probe::prepare_intervention_at(path, point.kind.trigger(), text, point.message_index)?
         }
         (PointKind::EditedDraft | PointKind::RejectedDraft, Locator::Draft { item_id }) => {
             let Some(item) = drafts.get(item_id) else {
@@ -1233,6 +1233,85 @@ mod tests {
         }
         assert_eq!((t.stored.written, t.stored.refused_not_clean), (0, 6));
         assert!(store.comparisons().unwrap().is_empty());
+    }
+
+    /// Two identical steers in one session are two points, and each is
+    /// prepared at its own message — so each stores under its own pointers,
+    /// and neither reads as "already compared" for the other (found on
+    /// review: relocated by text, both prepared the first).
+    #[test]
+    fn two_identical_steers_are_two_comparisons() {
+        let guard = crate::testenv::HomeGuard::new("pointwise-repeated-steer");
+        let home = guard.dir.clone();
+        SurfaceStore::open_default()
+            .unwrap()
+            .record(&specs())
+            .unwrap();
+        let session = Session::create(
+            &home.join("sessions"),
+            SessionMeta {
+                id: Session::new_id(),
+                created_at: chrono::Utc::now(),
+                provider: "scripted".into(),
+                model: "scripted".into(),
+                workspace: home.clone(),
+                title: None,
+                kind: Some(SessionKind::Tui),
+            },
+        )
+        .unwrap();
+        session
+            .append(&Record::Config(RunConfig {
+                tools: specs().iter().map(|s| s.name.clone()).collect(),
+                tools_hash: Some(mecha_core::surface::fingerprint(&specs())),
+                system_prompt: Some(format!("You are mecha.\n\n{RULES}")),
+                rules_hash: Some(mecha_core::learning::rules_hash(RULES)),
+                max_turns: 8,
+                ..Default::default()
+            }))
+            .unwrap();
+        let steer = |id: &str| {
+            let mut m = Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: id.into(),
+                content: "q3.csv".into(),
+                is_error: false,
+            }]);
+            m.content.push(Block::text("only the third quarter"));
+            m
+        };
+        let list = |id: &str| {
+            Message::assistant(vec![Block::ToolUse {
+                id: id.into(),
+                name: "fs_list".into(),
+                input: json!({}),
+            }])
+        };
+        for m in [
+            Message::user("total the quarters"),
+            list("t1"),
+            steer("t1"),
+            list("t2"),
+            steer("t2"),
+            Message::assistant(vec![Block::text("Done.")]),
+        ] {
+            session.append(&Record::Message(m)).unwrap();
+        }
+        session
+            .append(&Record::Taint(Taint {
+                untrusted: false,
+                private: true,
+            }))
+            .unwrap();
+        let (tally, offered) = plan_and_store(&home, &[], &[Outcome::Pass, Outcome::Fail]);
+        assert_eq!(tally.drawable, 2);
+        assert_eq!(
+            (tally.stored.written, tally.already_compared),
+            (2, 0),
+            "{tally:?}"
+        );
+        let mut at: Vec<Option<usize>> = offered.iter().map(|c| c.pointers.message_index).collect();
+        at.sort();
+        assert_eq!(at, vec![Some(2), Some(4)]);
     }
 
     /// A check an owner-bound criterion graded, in a recording that carries
