@@ -91,6 +91,52 @@ pub struct Workflow {
     pub notice: Option<Notice>,
     #[serde(default)]
     pub closed_at: Option<DateTime<Utc>>,
+    /// Every owner verification, oldest first — which session's work was
+    /// checked and which checks failed. `verification` above is only the
+    /// latest, and any material event clears it (`record`), so a failed
+    /// verify used to vanish the moment the task was resumed; the appraisal
+    /// reads a failure as the owner's verdict on the session that left the
+    /// artifact (`APPRAISAL-WIRING-DESIGN.md` R16e). Written by
+    /// [`WorkflowStore::verify`] only — the owner's `workflow verify` and
+    /// `workflow close` — never by the display-time re-check `today` runs
+    /// on an unsaved copy. Bounded; absent on a record from before it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verify_history: Vec<VerifyRecord>,
+}
+/// One owner verification, as [`Workflow::verify_history`] keeps it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VerifyRecord {
+    pub at: DateTime<Utc>,
+    /// The session the workflow tracked when the check ran — whose work was
+    /// checked. `None` for a workflow no run ever worked.
+    #[serde(default)]
+    pub session: Option<String>,
+    /// How many checks ran.
+    pub checks: usize,
+    /// The checks that did not pass, as declared.
+    #[serde(default)]
+    pub failed: Vec<Check>,
+}
+/// How many verifications a workflow keeps.
+const VERIFY_HISTORY_LIMIT: usize = 64;
+/// Which way the owner disposed of a workflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disposition {
+    /// `workflow close`, after a passing verification: the work accepted.
+    Closed,
+    /// `workflow cancel`: the work abandoned.
+    Cancelled,
+}
+/// One owner close or cancel, as [`Workflow::owner_dispositions`] reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnerDisposition {
+    pub kind: Disposition,
+    /// The session whose work it disposed of; `None` where the retained
+    /// history cannot say.
+    pub session: Option<String>,
+    pub at: DateTime<Utc>,
+    /// When a `workflow reopen` took it back.
+    pub reopened_at: Option<DateTime<Utc>>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Notice {
@@ -232,6 +278,7 @@ impl Workflow {
             last_notice_key: None,
             notice: None,
             closed_at: None,
+            verify_history: vec![],
         }
     }
     fn append_event(&mut self, kind: &str, detail: impl Into<String>, now: DateTime<Utc>) {
@@ -298,6 +345,54 @@ impl Workflow {
             now,
         );
         Ok(())
+    }
+    /// The owner's closes and cancels in the retained history, oldest
+    /// first, each with the session whose work it disposed of and the
+    /// reopen that took it back, if one did — what the appraisal signs per
+    /// R16b–d. Read off the event kinds `close`, `workflow cancel` and
+    /// `workflow reopen` already write; nothing new is recorded for them.
+    ///
+    /// The session is the one the workflow tracked at that event: the
+    /// detail of the latest `started` before it (`start_task` writes the
+    /// session there), or — where the retained history holds no `started`
+    /// at all — `session_id`, which nothing has changed since. Where the
+    /// history holds a later `started` but none before the event (the
+    /// earlier ones pruned), the session is unknown and `None`, never a
+    /// guess. A reopen takes back the latest disposition, and only while
+    /// that one stands: `workflow reopen` does not require a closed
+    /// workflow, so a second reopen — or one with nothing before it in the
+    /// retained history — takes back nothing rather than reaching past the
+    /// latest to an older one.
+    pub fn owner_dispositions(&self) -> Vec<OwnerDisposition> {
+        let any_started = self.events.iter().any(|e| e.kind == "started");
+        let mut session: Option<String> = if any_started {
+            None
+        } else {
+            self.session_id.clone()
+        };
+        let mut out: Vec<OwnerDisposition> = Vec::new();
+        for e in &self.events {
+            match e.kind.as_str() {
+                "started" => session = Some(e.detail.clone()),
+                "owner_closed" | "cancelled" => out.push(OwnerDisposition {
+                    kind: if e.kind == "owner_closed" {
+                        Disposition::Closed
+                    } else {
+                        Disposition::Cancelled
+                    },
+                    session: session.clone(),
+                    at: e.at,
+                    reopened_at: None,
+                }),
+                "reopened" => {
+                    if let Some(d) = out.last_mut().filter(|d| d.reopened_at.is_none()) {
+                        d.reopened_at = Some(e.at);
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
     }
     pub fn section(&self, now: DateTime<Utc>) -> &'static str {
         if self.closed_at.is_some() {
@@ -816,7 +911,25 @@ impl WorkflowStore {
         outbox: Option<&crate::outbox::OutboxStore>,
         now: DateTime<Utc>,
     ) -> Result<Workflow> {
-        self.update(id, |w| w.check_evidence(outbox, now))
+        self.update(id, |w| {
+            w.check_evidence(outbox, now)?;
+            w.verify_history.push(VerifyRecord {
+                at: now,
+                session: w.session_id.clone(),
+                checks: w.verification.len(),
+                failed: w
+                    .verification
+                    .iter()
+                    .filter(|c| !c.passed)
+                    .map(|c| c.check.clone())
+                    .collect(),
+            });
+            if w.verify_history.len() > VERIFY_HISTORY_LIMIT {
+                let excess = w.verify_history.len() - VERIFY_HISTORY_LIMIT;
+                w.verify_history.drain(..excess);
+            }
+            Ok(())
+        })
     }
     /// Link existing workflows without duplicating the task board. Cycles are rejected.
     pub fn depend(&self, id: &str, dependency: &str, now: DateTime<Utc>) -> Result<Workflow> {
@@ -1364,5 +1477,100 @@ mod lifecycle_tests {
             "guard cannot overwrite a recorded outcome"
         );
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+/// The owner's acts the appraisal reads off a workflow (R16b–e).
+#[cfg(test)]
+mod owner_verdict_tests {
+    use super::*;
+
+    fn at(s: &str) -> DateTime<Utc> {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn a_verify_the_owner_runs_is_kept_with_its_session_after_later_events_clear_the_latest() {
+        let root =
+            std::env::temp_dir().join(format!("mecha-workflow-verify-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let store = WorkflowStore::at(root.join("workflows"));
+        let now = at("2026-09-25T09:00:00Z");
+        let mut w = Workflow::new("flow-report".into(), "Report".into(), root.clone(), now);
+        w.session_id = Some("20260925T090000-ada".into());
+        w.checks = vec![Check::ArtifactContains {
+            path: "report.md".into(),
+            text: "Summary".into(),
+        }];
+        store.create(w).unwrap();
+        fs::write(root.join("report.md"), "no heading here").unwrap();
+        let checked = store.verify("flow-report", None, now).unwrap();
+        assert!(!checked.verified());
+        // A material event clears `verification`; the history is what stays.
+        let later = store
+            .update("flow-report", |w| {
+                w.record("source_changed", "Linked state changed", now);
+                Ok(())
+            })
+            .unwrap();
+        assert!(later.verification.is_empty());
+        assert_eq!(
+            later.verify_history,
+            vec![VerifyRecord {
+                at: now,
+                session: Some("20260925T090000-ada".into()),
+                checks: 1,
+                failed: vec![Check::ArtifactContains {
+                    path: "report.md".into(),
+                    text: "Summary".into(),
+                }],
+            }]
+        );
+        // A record from before the field loads with an empty history.
+        let mut raw: serde_json::Value = serde_json::to_value(&later).unwrap();
+        raw.as_object_mut().unwrap().remove("verify_history");
+        let old: Workflow = serde_json::from_value(raw).unwrap();
+        assert!(old.verify_history.is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn each_disposition_is_about_the_session_tracked_when_it_was_made() {
+        let now = at("2026-09-25T09:00:00Z");
+        let mut w = Workflow::new("flow".into(), "Flow".into(), PathBuf::from("/tmp"), now);
+        // Added with a session and never started: `session_id` is the one.
+        w.session_id = Some("s-added".into());
+        w.record("cancelled", "not now", now);
+        w.record("reopened", "Owner reopened workflow", now);
+        w.record("started", "s-first", now);
+        w.record("owner_closed", "Owner closed after verification", now);
+        w.record("reopened", "Owner reopened workflow", now);
+        // A second reopen of an open workflow takes back nothing.
+        w.record("reopened", "Owner reopened workflow", now);
+        w.record("started", "s-second", now);
+        w.record("owner_closed", "Owner closed after verification", now);
+        let ds = w.owner_dispositions();
+        let got: Vec<(Disposition, Option<&str>, bool)> = ds
+            .iter()
+            .map(|d| (d.kind, d.session.as_deref(), d.reopened_at.is_some()))
+            .collect();
+        // Before the first `started` in a history that has one, the session
+        // cannot be named from the record: unknown, not `s-added`.
+        assert_eq!(
+            got,
+            vec![
+                (Disposition::Cancelled, None, true),
+                (Disposition::Closed, Some("s-first"), true),
+                (Disposition::Closed, Some("s-second"), false),
+            ]
+        );
+        let mut never_started =
+            Workflow::new("flow2".into(), "F".into(), PathBuf::from("/tmp"), now);
+        never_started.session_id = Some("s-added".into());
+        never_started.record("cancelled", "not now", now);
+        assert_eq!(
+            never_started.owner_dispositions()[0].session.as_deref(),
+            Some("s-added")
+        );
     }
 }

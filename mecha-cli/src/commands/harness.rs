@@ -961,7 +961,30 @@ fn accept(id: &str) -> Result<()> {
     c.status = STATUS_ACCEPTED.into();
     c.resolved_at = Some(now);
     store.write(&c)?;
+    record_owner_verdict(&store, &c.id, mecha_core::curation::Act::Accepted, None)?;
     Ok(())
+}
+
+/// Append the owner's verdict on a candidate to the harness store's curation
+/// ledger (R16h): credit for the change and the diagnosis behind it. Only
+/// the owner's verbs call this — the rumination gate's own accepts and
+/// rejects write the same `status` and no ledger line, which is how the two
+/// are told apart.
+fn record_owner_verdict(
+    store: &HarnessStore,
+    id: &str,
+    act: mecha_core::curation::Act,
+    reason: Option<String>,
+) -> Result<()> {
+    mecha_core::curation::append(
+        store.root(),
+        &mecha_core::curation::Verdict::now(
+            mecha_core::curation::Target::Candidate(id.to_string()),
+            act,
+            reason,
+        ),
+    )
+    .context("the candidate changed, but the owner's verdict could not be recorded against it")
 }
 
 fn reject(id: &str, reason: Option<String>) -> Result<()> {
@@ -975,8 +998,12 @@ fn reject(id: &str, reason: Option<String>) -> Result<()> {
     );
     c.status = STATUS_REJECTED.into();
     c.resolved_at = Some(chrono::Utc::now().to_rfc3339());
-    c.reason = reason.or(c.reason).or(Some("rejected by hand".into()));
+    c.reason = reason
+        .clone()
+        .or(c.reason)
+        .or(Some("rejected by hand".into()));
     store.write(&c)?;
+    record_owner_verdict(&store, &c.id, mecha_core::curation::Act::Rejected, reason)?;
     println!("{} rejected — the record stays as evidence", c.id);
     Ok(())
 }
@@ -1037,6 +1064,7 @@ fn mark_reverted(store: &HarnessStore, id: &str) -> Result<()> {
         c.status = STATUS_REVERTED.into();
         c.resolved_at = Some(chrono::Utc::now().to_rfc3339());
         store.write(&c)?;
+        record_owner_verdict(store, &c.id, mecha_core::curation::Act::Reverted, None)?;
     }
     Ok(())
 }

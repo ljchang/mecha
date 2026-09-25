@@ -177,7 +177,7 @@ Six channels keep the source of each signal explicit. Five have a producer today
 | `edit` | A message draft sent unchanged, sent with edits, or rejected. Pending drafts carry no verdict. |
 | `counter` | A counter on [the run's own record](/docs/features/learning/run-quality). |
 | `setpoint` | Reserved for a homeostatic variable outside the range it is kept in. Nothing produces it yet: charter sensor readings are recorded on the run's conditions and attribute other errors to a line, but they are not signed errors themselves. |
-| `commitment` | Answered or abandoned questions, closed unanswered requests, and linked post-delivery owner outcomes. |
+| `commitment` | Answered or abandoned questions, closed unanswered requests, linked post-delivery owner outcomes, and the owner closing, reopening, cancelling or verifying a task or workflow a session worked. |
 | `appraisal` | An additional signed error proposed by the quarantined appraiser, distinguishable from deterministic evidence. |
 
 `cite` being a pointer is the same rule the [front door](/docs/features/public-surface/frontdoor)
@@ -205,9 +205,14 @@ from.
 | A triaged request closed without a linked draft | `−0.5`; a request with a draft is handled through that draft's outcome instead. |
 | A loop stop, empty output, or final failed call | `−1.0`, self agency. |
 | A declared step check that did not pass | `−1.0`, self agency; the model wrote both the claim and the check. |
-| A follow-up the reflector judged a correction | `−1.0`, owner agency; clean-provenance reflections only. |
+| A follow-up the reflector judged a correction | `−1.0`, owner agency; reflections that were clean as mined only. Your later dropping or editing the lesson does not change it — that is a verdict on the reflector, not the run. |
 | A turn/token/cost ceiling or boredom notice | `−0.5`; ceilings are attributed to the owner's limit. |
-| The owner closing a board task as `done` | `+0.5`, owner agency, on the `commitment` channel; `dropped` adds a zero-signed entry. Added only by [closure appraisal](#closing-a-task-appraises-it), printed there, and not stored. |
+| The owner closing a board task as `done` | `+0.5`, owner agency, on the `commitment` channel; `dropped` adds a zero-signed entry. Read back from the [closure record](#closing-a-task-appraises-it) for the sessions the closure names. |
+| The owner reopening a task after `done` | `−1.0`, owner agency, on the session that closed it, however long ago; the closure's `+0.5` is withdrawn. Reopening a `dropped` task signs nothing. |
+| The owner closing a [workflow](/docs/features/automation/workflows) | `+0.5`, owner agency, on the session the workflow tracked. |
+| The owner cancelling a workflow | `−0.5`, owner agency. Reopening a cancelled workflow takes it back and signs nothing. |
+| The owner reopening a closed workflow | `−1.0`, owner agency, on the session it closed; the close's `+0.5` is withdrawn. |
+| A workflow verification that finds an artifact check failing | `−1.0`, self agency, once per workflow and session. A failed delivery check is left to the draft's own verdict. |
 
 A change in the owner's queue size does **not** contribute. The queue is a
 global before/after reading, so it would credit a run for drafts the owner
@@ -222,9 +227,26 @@ A still-pending draft or unanswered question has no verdict yet. Process shutdow
 not count as the owner rejecting the work. An explicit owner stop (`stopped`) does: a stop followed by a re-prompt
 is a redirect, and one never resumed is an abandonment signal, counted once.
 
-Offline appraisal reads the question, front-door, and reflection stores as well
-as transcripts and drafts. If a required store is unreadable, its channel is
-incomplete and the readout is marked partial. It never silently becomes zero.
+Offline appraisal reads the question, front-door, reflection, closure and
+workflow stores as well as transcripts and drafts. If a required store is
+unreadable, its channel is incomplete and the readout is marked partial. It
+never silently becomes zero.
+
+### Verdicts that are never a run's score
+
+Some of what you do is a verdict on what the learner produced, not on how a
+run went. Retiring or restoring a learned rule, dropping or editing a
+reflection, and accepting, rejecting or reverting a harness candidate are
+recorded against the rule, the reflection or the candidate — never as a signed
+error on any run. `mecha sessions appraise` counts them in their own section.
+Rejecting a draft **with a reason** adds nothing to the run beyond the
+rejection's own `−1.0`; the reason goes to `mecha reflect` as your correction,
+in your words.
+
+Rejections in the knowledge graph's review queue of facts drawn from mecha's
+own sessions are not read yet: the graph does not expose, on any surface mecha
+reads, which episode a rejected fact came from. The readout says so rather
+than printing a zero.
 
 ## The label is derived, and there is deliberately no way to report one
 
@@ -302,7 +324,11 @@ mecha sessions appraise --days 30 --kind web --json
 | `named_a_goal`, `attributed_by_sensor`, `cite_a_charter_line` | Explicit goals and sensor attribution, counted separately. |
 | `goal_put_to_owner`, `goal_confirmed` | Sessions with stored goal questions, and those with an answer. |
 | `sessions_read`, `sessions_unreadable` | A damaged transcript is missing evidence, not a smaller successful population. |
-| `outbox_read`, `questions_read`, `frontdoor_read`, `learning_read`, `charter_read` | Whether each source was readable. |
+| `outbox_read`, `questions_read`, `frontdoor_read`, `learning_read`, `charter_read`, `closures_read`, `workflows_read` | Whether each source was readable. |
+| `owner_acts` | Your acts on runs, by act: `task_closed`, `task_dropped`, `task_reopened`, `workflow_closed`, `workflow_cancelled`, `workflow_reopened`, `workflow_verify_failed`. All are signed on the `commitment` channel. |
+| `reasoned_rejections` | Rejected drafts in this population whose reason reaches the reflector. |
+| `curation` | Your verdicts on rules (`retired`, `restored`), reflections (`dropped`, `edited`) and harness candidates (`accepted`, `rejected`, `reverted`); a group is `null` when its store could not be read. None of these is a run's score. |
+| `graph_fact_rejections` | Always `null` for now: not readable from mecha. |
 | `tests_hidden`, `experiments_hidden` | Development data excluded from the population. |
 | `probe`, `appraiser` | Results of the optional paid passes, omitted when that pass did not run. |
 
@@ -507,6 +533,10 @@ and to which status, who (you, or the agent with your approval) and on which
 surface, and, for a reopen, the closure it undoes. The appraisal's line is
 written beside it, so the web board and the TUI show it after a closure
 instead of losing it. If the record cannot be written, the task is not closed.
+`mecha sessions appraise` reads the record back: a closure counts for the
+session that did the work, and reopening a task you had closed as done counts
+against that session and takes the closure's credit away, however long ago the
+closure was.
 A run with nobody present — a delegated task, a trigger, a web chat with
 approvals off — is refused when it tries to close or reopen a task through
 `mecha tasks set`. mecha registers every command a run's shell starts, with

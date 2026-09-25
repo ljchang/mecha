@@ -614,23 +614,39 @@ impl ClosureStore {
 
     /// Every line, oldest first. A torn line is skipped with a warning.
     pub fn entries(&self) -> Result<Vec<Entry>> {
+        Ok(self.entries_counting()?.0)
+    }
+
+    /// [`Self::entries`], with how many lines were skipped — for a reader
+    /// that must say its reading is short rather than treat a skipped row
+    /// as a closure that never happened (the appraisal's closure arm).
+    pub fn entries_counting(&self) -> Result<(Vec<Entry>, usize)> {
         let path = self.ledger();
         if !path.exists() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), 0));
         }
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
-        Ok(text
+        let mut skipped = 0usize;
+        let entries = text
             .lines()
             .filter(|l| !l.trim().is_empty())
             .filter_map(|l| match serde_json::from_str::<Entry>(l) {
                 Ok(e) => Some(e),
                 Err(e) => {
                     tracing::warn!("skipping unreadable closure row: {e}");
+                    skipped += 1;
                     None
                 }
             })
-            .collect())
+            .collect();
+        Ok((entries, skipped))
+    }
+
+    /// [`Self::transitions`], with the skipped-line count.
+    pub fn transitions_counting(&self) -> Result<(Vec<Transition>, usize)> {
+        let (entries, skipped) = self.entries_counting()?;
+        Ok((self.transitions_from(&entries), skipped))
     }
 
     /// The transitions that happened, oldest first — every transition line

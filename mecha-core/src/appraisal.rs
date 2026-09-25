@@ -223,7 +223,17 @@ pub struct GoalError {
     /// rearranged, and an appraisal is read by later rungs that act. Every
     /// variant is a name or an id the harness minted, so there is nothing here
     /// a model could have written.
+    #[serde(deserialize_with = "de_cite_lenient")]
     pub cite: Cite,
+}
+
+/// A cite this build cannot read loads as [`Cite::Unknown`] rather than
+/// failing the error it rides on. `#[serde(other)]` alone cannot do it for
+/// an adjacently tagged enum: it matches an unknown tag only when there is
+/// no content beside it, and every pointer carries an id.
+fn de_cite_lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Cite, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(v).unwrap_or(Cite::Unknown))
 }
 
 /// Where an error was read off, as a reference the harness owns.
@@ -260,6 +270,56 @@ pub enum Cite {
     /// own account of the run, read off numbers only (see
     /// [`AppraiserEvidence`]), so there is no single record to point at.
     Appraiser,
+    /// A reopen of a task this session's closure had accepted, by the
+    /// reopen's own closure-record id (`closure::Transition::id`) — R16's
+    /// reopen, read from the closure store.
+    TaskReopen { task: String, reopen: String },
+    /// An owner act on a workflow that tracked this session, by the
+    /// workflow's id (R16b–e).
+    Workflow { workflow: String, act: WorkflowAct },
+    /// A cite kind from a newer build. The enum rides on distilled episodes
+    /// (`meta.goal_errors`), so it is a wire format: an unknown kind loads
+    /// as this rather than failing the record.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Which owner act on a workflow a [`Cite::Workflow`] points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowAct {
+    /// `workflow close`: the owner accepted the work (R16b).
+    Closed,
+    /// `workflow cancel`: the owner abandoned it (R16c).
+    Cancelled,
+    /// `workflow reopen` after a close: the acceptance was wrong (R16d).
+    Reopened,
+    /// `workflow verify` found an artifact check failing (R16e).
+    VerifyFailed,
+    /// An act from a newer build.
+    #[serde(other)]
+    Unknown,
+}
+
+impl Cite {
+    /// The owner act this pointer records, for a readout that counts owner
+    /// verdicts by what the owner did — `None` for a pointer that is not an
+    /// owner act on a closure or a workflow. A name, never prose.
+    pub fn owner_act(&self) -> Option<&'static str> {
+        match self {
+            Cite::TaskClosure { status, .. } if status == "done" => Some("task_closed"),
+            Cite::TaskClosure { .. } => Some("task_dropped"),
+            Cite::TaskReopen { .. } => Some("task_reopened"),
+            Cite::Workflow { act, .. } => Some(match act {
+                WorkflowAct::Closed => "workflow_closed",
+                WorkflowAct::Cancelled => "workflow_cancelled",
+                WorkflowAct::Reopened => "workflow_reopened",
+                WorkflowAct::VerifyFailed => "workflow_verify_failed",
+                WorkflowAct::Unknown => "workflow_unknown",
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// How one run went, against what it was for.
@@ -878,6 +938,16 @@ pub struct SessionRecords<'a> {
     /// store here follows. Not set for a missing file — that loads as an
     /// empty charter and attributes nothing, truthfully.
     pub charter_unreadable: bool,
+    /// The closure store's standing transitions
+    /// (`closure::ClosureStore::transitions` — an `aborted` line has already
+    /// withdrawn its transition), for the owner's task closures and reopens
+    /// (R16). Filtered by session inside, like the question store.
+    pub closures: &'a [crate::closure::Transition],
+    pub closures_unreadable: bool,
+    /// Every workflow, for the owner's close / cancel / reopen / verify
+    /// (R16b–e). Filtered by session inside.
+    pub workflows: &'a [crate::workflow::Workflow],
+    pub workflows_unreadable: bool,
 }
 
 impl SessionRecords<'_> {
@@ -888,6 +958,8 @@ impl SessionRecords<'_> {
             || self.frontdoor_unreadable
             || self.learning_unreadable
             || self.charter_unreadable
+            || self.closures_unreadable
+            || self.workflows_unreadable
     }
 }
 
@@ -991,6 +1063,35 @@ pub struct Stores {
     pub learning_unreadable: bool,
     pub charter: Option<crate::charter::Charter>,
     pub charter_unreadable: bool,
+    pub closures: Vec<crate::closure::Transition>,
+    pub closures_unreadable: bool,
+    pub workflows: Vec<crate::workflow::Workflow>,
+    pub workflows_unreadable: bool,
+}
+
+/// The closure store's standing transitions, on the terms every appraisal
+/// store gets: a store never created is empty; one that cannot be read, or
+/// holds a line that cannot be, is marked (`true`) so the reading says it
+/// is partial rather than reading a reopen that did not parse as a closure
+/// that stood.
+pub fn load_closures() -> (Vec<crate::closure::Transition>, bool) {
+    match crate::closure::ClosureStore::open_existing_default() {
+        None => (Vec::new(), false),
+        Some(store) => match store.transitions_counting() {
+            Ok((ts, skipped)) => (ts, skipped > 0),
+            Err(_) => (Vec::new(), true),
+        },
+    }
+}
+
+/// Every workflow, on the same terms. `WorkflowStore::list` refuses the
+/// whole store on one unreadable record ("corruption is an error, never an
+/// empty queue"), so any failure is the whole channel missing.
+pub fn load_workflows() -> (Vec<crate::workflow::Workflow>, bool) {
+    match crate::workflow::WorkflowStore::default_store().and_then(|s| s.list()) {
+        Ok(ws) => (ws, false),
+        Err(_) => (Vec::new(), true),
+    }
 }
 
 impl Stores {
@@ -1037,6 +1138,8 @@ impl Stores {
                     Err(_) => (Vec::new(), true),
                 },
             };
+        let (closures, closures_unreadable) = load_closures();
+        let (workflows, workflows_unreadable) = load_workflows();
         Stores {
             drafts,
             outbox_unreadable,
@@ -1048,6 +1151,10 @@ impl Stores {
             learning_unreadable,
             charter: None,
             charter_unreadable: false,
+            closures,
+            closures_unreadable,
+            workflows,
+            workflows_unreadable,
         }
     }
 
@@ -1094,6 +1201,10 @@ impl Stores {
             charter: self.charter.as_ref(),
             charter_unreadable: self.charter_unreadable,
             stops: &[],
+            closures: &self.closures,
+            closures_unreadable: self.closures_unreadable,
+            workflows: &self.workflows,
+            workflows_unreadable: self.workflows_unreadable,
         }
     }
 }
@@ -1148,6 +1259,9 @@ fn sensor_kinds_for(cite: &Cite) -> &'static [crate::charter::SensorKind] {
         | Cite::Setpoint(_)
         | Cite::Step(_)
         | Cite::TaskClosure { .. }
+        | Cite::TaskReopen { .. }
+        | Cite::Workflow { .. }
+        | Cite::Unknown
         | Cite::Appraiser => &[],
     }
 }
@@ -1568,19 +1682,16 @@ pub fn of_session(
     // replay's. Admitted on the gate below — clean provenance, the
     // learning loop's own question — and nothing wider; the rule is stated
     // once, there, so this header cannot drift from it (an earlier draft
-    // of this sentence described a wider gate the code never kept). A
-    // lesson the owner dropped is withdrawn evidence and reads as nothing.
+    // of this sentence described a wider gate the code never kept). The
+    // owner's later drop or edit of the lesson does not move it (R16g,
+    // below).
     for r in records.reflexions {
-        if r.session_id != session_id
-            || r.trigger != crate::learning::Trigger::Followup.as_str()
-            || r.dropped_at.is_some()
-        {
+        if r.session_id != session_id || r.trigger != crate::learning::Trigger::Followup.as_str() {
             continue;
         }
-        // `provenance()`, not the stored field: a record written before
-        // `is_harness_voice` existed carries `clean` for a nudge mecha wrote
-        // itself (two are on disk), and an owner-edited lesson is a promotion
-        // the stored field does not show. **Clean only — stricter than
+        // `provenance_as_mined()`, not the stored field: a record written
+        // before `is_harness_voice` existed carries `clean` for a nudge
+        // mecha wrote itself (two are on disk). **Clean only — stricter than
         // `learnable()`, which carries a triage-domain exemption this arm
         // deliberately does not; by the owner's ruling.** An appraisal never
         // rides a prompt, so a wider gate was arguable; but a reflection
@@ -1591,7 +1702,18 @@ pub fn of_session(
         // provenance's two consumers disagreeing on a rule with no row to
         // apply to. One function, one answer, measured at 15 of 22 on the
         // live store under either spelling.
-        if r.provenance() != crate::learning::Origin::Clean {
+        //
+        // **As mined, not as curated** (R16g, ruled 2026-09-24: dropping or
+        // editing a reflection is a verdict on the *reflector*, never a
+        // run's score). This arm used to skip a dropped reflection and
+        // admit an owner-edited one through `provenance()`'s edit
+        // promotion, so the owner's curation of a lesson moved the valence
+        // of the run the lesson came from. The follow-up was a correction
+        // or it was not, whatever the owner later made of the lesson drawn
+        // from it; the drop and the edit are counted against the reflector
+        // in `curation::Tally` instead, and `learnable()` still keeps a
+        // dropped lesson out of every rule.
+        if r.provenance_as_mined() != crate::learning::Origin::Clean {
             continue;
         }
         errors.push(GoalError {
@@ -1708,6 +1830,139 @@ pub fn of_session(
         });
     }
 
+    // --- Commitment: the owner closed or reopened a board task this session worked ---
+    //
+    // 1b's closure record (`closure.rs`), read back — before it, a closure
+    // was printed at `tasks set` and gone (R15/R16). A `done` closure is the
+    // owner accepting the work: `+0.5`, owner agency, the very error
+    // `note_task_closure` adds at the closure moment and with the same
+    // cite, so a reading taken then and one taken now agree. `dropped` is
+    // its zero-signed twin. **A reopen of a `done` closure is `-1.0` on the
+    // session that closed it, at any age, and withdraws that closure's
+    // `+0.5`** (ruled 2026-09-24): the completion was wrong, and a success
+    // the owner took back is not a success. Owner agency, like an edit:
+    // whether the work was wrong or the owner's want moved is the probe's
+    // question, not this function's. A reopen of a `dropped` closure takes
+    // back a zero and signs nothing — the task was never called done.
+    //
+    // The session is the closure's own `sessions` (the board row's session
+    // when the move was made), joined to the reopen by `undoes`. A reopen
+    // with no recorded closure to undo — the task was closed before 1b's
+    // record existed, and "any age" is the ruling — signs on the sessions
+    // the reopen record itself names when it moved the task *from* `done`:
+    // the same board row's session, the one whose work the lost closure
+    // accepted; there is no stored `+0.5` to withdraw.
+    for c in records.closures {
+        if !c.sessions.iter().any(|s| s == session_id) {
+            continue;
+        }
+        let reopened = |close_id: &str| {
+            records.closures.iter().find(|r| {
+                r.kind == crate::closure::Move::Reopen && r.undoes.as_deref() == Some(close_id)
+            })
+        };
+        match c.kind {
+            crate::closure::Move::Close => {
+                let done = c.to == "done";
+                match reopened(&c.id) {
+                    Some(r) if done => errors.push(task_reopen_error(&c.task, &r.id)),
+                    Some(_) => {}
+                    None => errors.push(GoalError {
+                        goal: Some(GoalRef::Task(c.task.clone())),
+                        related: Vec::new(),
+                        channel: Channel::Commitment,
+                        sign: if done { 0.5 } else { 0.0 },
+                        agency: Agency::Owner,
+                        visible: false,
+                        controllable: None,
+                        cite: Cite::TaskClosure {
+                            task: c.task.clone(),
+                            status: c.to.clone(),
+                        },
+                    }),
+                }
+            }
+            crate::closure::Move::Reopen
+                if c.undoes.is_none() && c.from.as_deref() == Some("done") =>
+            {
+                errors.push(task_reopen_error(&c.task, &c.id));
+            }
+            crate::closure::Move::Reopen | crate::closure::Move::Unknown => {}
+        }
+    }
+
+    // --- Commitment: the owner's acts on a workflow that tracked this session ---
+    //
+    // R16b–e, read off the workflow's own record: `workflow close` is the
+    // owner accepting the work (`+0.5`, owner agency, like a task closure);
+    // `workflow cancel` is the work abandoned (`-0.5`, owner agency, like an
+    // abandoned question); a `workflow reopen` of a close is the task-reopen
+    // ruling one store over (`-1.0` on the closing session, any age, the
+    // close's `+0.5` withdrawn), and a reopen of a cancel takes the
+    // abandonment back and signs nothing. `Workflow::owner_dispositions`
+    // decides which session each act was about; one it cannot name is not
+    // guessed at.
+    //
+    // **A failed verify is `-1.0`, mecha's agency** (R16e), once per
+    // workflow and session however often the owner re-checks — for an
+    // `artifact_contains` check only. A failed `delivered` check is a draft
+    // still pending or rejected, and the draft channel already signs the
+    // owner's verdict on it; signing the check too would charge one act
+    // twice (R16a's rule). An unknown check is a newer build's and says
+    // nothing here. A passing verify is evidence for the certificate and
+    // signs nothing.
+    for w in records.workflows {
+        let goal_of = || {
+            w.task_id
+                .as_ref()
+                .map(|t| GoalRef::Task(t.clone()))
+                .or_else(|| goal.clone())
+        };
+        let cite = |act| Cite::Workflow {
+            workflow: w.id.clone(),
+            act,
+        };
+        for d in w.owner_dispositions() {
+            if d.session.as_deref() != Some(session_id) {
+                continue;
+            }
+            let (sign, act) = match (d.kind, d.reopened_at.is_some()) {
+                (crate::workflow::Disposition::Closed, false) => (0.5, WorkflowAct::Closed),
+                (crate::workflow::Disposition::Closed, true) => (-1.0, WorkflowAct::Reopened),
+                (crate::workflow::Disposition::Cancelled, false) => (-0.5, WorkflowAct::Cancelled),
+                (crate::workflow::Disposition::Cancelled, true) => continue,
+            };
+            errors.push(GoalError {
+                goal: goal_of(),
+                related: Vec::new(),
+                channel: Channel::Commitment,
+                sign,
+                agency: Agency::Owner,
+                visible: false,
+                controllable: None,
+                cite: cite(act),
+            });
+        }
+        let failed_here = w.verify_history.iter().any(|v| {
+            v.session.as_deref() == Some(session_id)
+                && v.failed
+                    .iter()
+                    .any(|c| matches!(c, crate::workflow::Check::ArtifactContains { .. }))
+        });
+        if failed_here {
+            errors.push(GoalError {
+                goal: goal_of(),
+                related: Vec::new(),
+                channel: Channel::Commitment,
+                sign: -1.0,
+                agency: Agency::Own,
+                visible: false,
+                controllable: None,
+                cite: cite(WorkflowAct::VerifyFailed),
+            });
+        }
+    }
+
     // Global queue changes are context, not evidence that this run cleared
     // anything. Item-local draft/question/request records above carry credit.
 
@@ -1760,6 +2015,24 @@ pub fn of_session(
     };
     a.label = affect_of(&a);
     a
+}
+
+/// The owner reopening a task a closure had accepted as done — `-1.0`,
+/// owner agency, against the task (R16).
+fn task_reopen_error(task: &str, reopen: &str) -> GoalError {
+    GoalError {
+        goal: Some(GoalRef::Task(task.to_string())),
+        related: Vec::new(),
+        channel: Channel::Commitment,
+        sign: -1.0,
+        agency: Agency::Owner,
+        visible: false,
+        controllable: None,
+        cite: Cite::TaskReopen {
+            task: task.to_string(),
+            reopen: reopen.to_string(),
+        },
+    }
 }
 
 /// One session's transcript and its own outbox items, assembled the way
@@ -4787,6 +5060,10 @@ text = "Tell me the truth early."
                 learning_unreadable: false,
                 charter: None,
                 charter_unreadable: false,
+                closures: vec![],
+                closures_unreadable: false,
+                workflows: vec![],
+                workflows_unreadable: false,
             }
         });
         assert!(loaded);
@@ -5082,8 +5359,10 @@ text = "Tell me the truth early."
             crate::agent::EMPTY_TURN_NUDGE,
         );
         let derived_user_turns = reflexion("r8", "s1", "followup", "derived", "user_turns");
-        // And the promotion the stored field cannot show: an owner-edited
-        // lesson is the owner's whatever prompted it.
+        // And the owner's curation, which is a verdict on the reflector and
+        // never the run's score (R16g): a dropped lesson still stands for
+        // the correction it was drawn from, and an owner's edit promotes
+        // the lesson for learning without promoting the run's evidence.
         let mut edited = reflexion("r9", "s1", "followup", "untrusted", "full");
         edited.edited_at = Some("2026-08-29T00:00:00Z".into());
         let reflexions = vec![
@@ -5113,8 +5392,8 @@ text = "Tell me the truth early."
         let cites: Vec<_> = a.errors.iter().map(|e| e.cite.clone()).collect();
         assert_eq!(
             cites,
-            vec![Cite::Reflexion("r1".into()), Cite::Reflexion("r9".into())],
-            "clean provenance only, the learning loop's rule: a stored-untrusted row is out even with owner-turns evidence (the live path records those as clean, so the row is a hand edit or an older binary's), as are another session's, a steer, a dropped one, a stored-clean nudge and a derived row; an owner-edited lesson counts"
+            vec![Cite::Reflexion("r1".into()), Cite::Reflexion("r6".into())],
+            "clean provenance as mined only, the learning loop's rule: a stored-untrusted row is out even with owner-turns evidence (the live path records those as clean, so the row is a hand edit or an older binary's), as are another session's, a steer, a stored-clean nudge and a derived row; the owner dropping a lesson does not withdraw the run's error and editing one does not add it (R16g)"
         );
         assert!(a
             .errors
@@ -5729,5 +6008,372 @@ mod goal_attribution_tests {
         assert_eq!(a.errors[1].agency, Agency::Owner);
         note_task_closure(&mut a, "other", "dropped");
         assert_eq!(a.errors[2].sign, 0.0);
+    }
+}
+
+/// S3a / R16: the verdicts the owner already gives, read from the stores that
+/// record them. Each test fails on the tree before 1d, where `of_session`
+/// read no closure or workflow and let the owner's curation of a reflection
+/// move the run it came from.
+#[cfg(test)]
+mod owner_verdict_tests {
+    use super::*;
+    use crate::closure::{Actor, Move, Surface, Transition};
+    use crate::workflow::{Check, VerifyRecord, Workflow};
+
+    const S: &str = "20260925T090000-ada";
+
+    fn appraise(records: SessionRecords<'_>) -> Appraisal {
+        let stats = crate::session::RunStats {
+            boredom_notices: Some(0),
+            ..Default::default()
+        };
+        of_session(
+            S,
+            &stats,
+            &[],
+            &[],
+            records,
+            Some(stats.taint),
+            "2026-09-25T00:00:00Z".into(),
+        )
+    }
+
+    fn close(task: &str, to: &str, session: &str) -> Transition {
+        Transition::new(
+            task,
+            Some("next"),
+            to,
+            Move::Close,
+            Actor::Owner,
+            Surface::Cli,
+            vec![session.to_string()],
+            None,
+        )
+    }
+
+    fn reopen(of: &Transition) -> Transition {
+        let mut r = Transition::new(
+            &of.task,
+            Some(&of.to),
+            "next",
+            Move::Reopen,
+            Actor::Owner,
+            Surface::Web,
+            of.sessions.clone(),
+            None,
+        );
+        r.undoes = Some(of.id.clone());
+        r
+    }
+
+    fn signed(a: &Appraisal) -> Vec<(Option<&'static str>, f32, Agency)> {
+        a.errors
+            .iter()
+            .map(|e| (e.cite.owner_act(), e.sign, e.agency))
+            .collect()
+    }
+
+    #[test]
+    fn a_done_closure_signs_half_and_its_reopen_signs_minus_one_and_withdraws_it() {
+        let kept = close("task-kept", "done", S);
+        let undone = close("task-undone", "done", S);
+        let undoing = reopen(&undone);
+        let dropped = close("task-dropped", "dropped", S);
+        let dropped_reopened = close("task-dropped-again", "dropped", S);
+        let undrop = reopen(&dropped_reopened);
+        let elsewhere = close("task-other", "done", "20260925T090000-bram");
+        let closures = vec![
+            kept,
+            undone,
+            undoing.clone(),
+            dropped,
+            dropped_reopened,
+            undrop,
+            elsewhere,
+        ];
+        let a = appraise(SessionRecords {
+            closures: &closures,
+            ..Default::default()
+        });
+        assert_eq!(
+            signed(&a),
+            vec![
+                (Some("task_closed"), 0.5, Agency::Owner),
+                (Some("task_reopened"), -1.0, Agency::Owner),
+                (Some("task_dropped"), 0.0, Agency::Owner),
+            ],
+            "the reopened closure's +0.5 is withdrawn, a reopened drop signs nothing, \
+             and another session's closure is not this one's"
+        );
+        assert_eq!(
+            a.errors[1].cite,
+            Cite::TaskReopen {
+                task: "task-undone".into(),
+                reopen: undoing.id.clone()
+            }
+        );
+        assert_eq!(a.errors[1].goal, Some(GoalRef::Task("task-undone".into())));
+        let v = Valence::of(&a);
+        assert_eq!((v.positive, v.negative), (0.5, 1.0));
+        assert_eq!(a.label, Affect::Distress);
+    }
+
+    #[test]
+    fn a_reopen_of_a_closure_older_than_the_record_still_signs_at_any_age() {
+        // The task was closed before 1b's record existed: the reopen undoes
+        // nothing recorded, and moved the task from `done`.
+        let old = Transition::new(
+            "task-old",
+            Some("done"),
+            "next",
+            Move::Reopen,
+            Actor::Owner,
+            Surface::Tui,
+            vec![S.to_string()],
+            None,
+        );
+        // A reopen from `dropped` with nothing to undo says nothing.
+        let from_dropped = Transition::new(
+            "task-was-dropped",
+            Some("dropped"),
+            "next",
+            Move::Reopen,
+            Actor::Owner,
+            Surface::Tui,
+            vec![S.to_string()],
+            None,
+        );
+        let closures = vec![old, from_dropped];
+        let a = appraise(SessionRecords {
+            closures: &closures,
+            ..Default::default()
+        });
+        assert_eq!(
+            signed(&a),
+            vec![(Some("task_reopened"), -1.0, Agency::Owner)]
+        );
+    }
+
+    #[test]
+    fn a_closure_read_back_agrees_with_the_one_noted_at_the_closure_moment() {
+        let closures = vec![close("task-kept", "done", S)];
+        let mut a = appraise(SessionRecords {
+            closures: &closures,
+            ..Default::default()
+        });
+        let before = a.errors.len();
+        assert_eq!(before, 1);
+        note_task_closure(&mut a, "task-kept", "done");
+        assert_eq!(
+            a.errors.len(),
+            before,
+            "same verdict, same cite: counted once"
+        );
+    }
+
+    fn workflow(id: &str, task: Option<&str>) -> Workflow {
+        let mut w = Workflow::new(
+            id.into(),
+            "fixture".into(),
+            std::path::PathBuf::from("/tmp"),
+            chrono::Utc::now(),
+        );
+        w.task_id = task.map(str::to_string);
+        w
+    }
+
+    #[test]
+    fn workflow_close_cancel_and_reopen_sign_on_the_session_they_disposed_of() {
+        let now = chrono::Utc::now();
+        let mut closed = workflow("wf-closed", Some("task-a"));
+        closed.record("started", S, now);
+        closed.record("owner_closed", "Owner closed after verification", now);
+        let mut cancelled = workflow("wf-cancelled", None);
+        cancelled.record("started", S, now);
+        cancelled.record("cancelled", "not needed", now);
+        let mut reclosed = workflow("wf-reopened", Some("task-b"));
+        reclosed.record("started", S, now);
+        reclosed.record("owner_closed", "Owner closed after verification", now);
+        reclosed.record("reopened", "Owner reopened workflow", now);
+        let mut uncancelled = workflow("wf-uncancelled", None);
+        uncancelled.record("started", S, now);
+        uncancelled.record("cancelled", "wrong call", now);
+        uncancelled.record("reopened", "Owner reopened workflow", now);
+        // Worked by this session, then resumed by another before the close:
+        // the close is the later session's, not this one's.
+        let mut handed_on = workflow("wf-handed-on", None);
+        handed_on.record("started", S, now);
+        handed_on.record("started", "20260925T090000-bram", now);
+        handed_on.record("owner_closed", "Owner closed after verification", now);
+        let workflows = vec![closed, cancelled, reclosed, uncancelled, handed_on];
+        let a = appraise(SessionRecords {
+            workflows: &workflows,
+            ..Default::default()
+        });
+        assert_eq!(
+            signed(&a),
+            vec![
+                (Some("workflow_closed"), 0.5, Agency::Owner),
+                (Some("workflow_cancelled"), -0.5, Agency::Owner),
+                (Some("workflow_reopened"), -1.0, Agency::Owner),
+            ]
+        );
+        assert_eq!(a.errors[0].goal, Some(GoalRef::Task("task-a".into())));
+        assert!(a.errors.iter().all(|e| e.channel == Channel::Commitment));
+    }
+
+    #[test]
+    fn a_failed_artifact_verify_is_minus_one_own_once_and_a_delivery_check_signs_nothing() {
+        let at = chrono::Utc::now();
+        let artifact = Check::ArtifactContains {
+            path: "report.md".into(),
+            text: "Summary".into(),
+        };
+        let mut w = workflow("wf-verify", Some("task-c"));
+        w.session_id = Some(S.into());
+        w.verify_history = vec![
+            VerifyRecord {
+                at,
+                session: Some(S.into()),
+                checks: 1,
+                failed: vec![artifact.clone()],
+            },
+            // The owner checked again: still failing, still one verdict.
+            VerifyRecord {
+                at,
+                session: Some(S.into()),
+                checks: 1,
+                failed: vec![artifact],
+            },
+        ];
+        let mut delivery = workflow("wf-delivery", None);
+        delivery.verify_history = vec![VerifyRecord {
+            at,
+            session: Some(S.into()),
+            checks: 1,
+            failed: vec![Check::Delivered {
+                outbox_id: "o1".into(),
+            }],
+        }];
+        let mut passed = workflow("wf-passed", None);
+        passed.verify_history = vec![VerifyRecord {
+            at,
+            session: Some(S.into()),
+            checks: 2,
+            failed: vec![],
+        }];
+        let workflows = vec![w, delivery, passed];
+        let a = appraise(SessionRecords {
+            workflows: &workflows,
+            ..Default::default()
+        });
+        assert_eq!(
+            signed(&a),
+            vec![(Some("workflow_verify_failed"), -1.0, Agency::Own)]
+        );
+        assert_eq!(a.errors[0].goal, Some(GoalRef::Task("task-c".into())));
+    }
+
+    /// R16f–h: the owner's curation of what a learner produced is never a
+    /// run's score. On the tree before 1d, dropping the lesson withdrew the
+    /// run's `-1.0` and editing an untrusted one added it.
+    #[test]
+    fn curating_a_reflection_or_a_rule_or_a_candidate_never_moves_a_runs_valence() {
+        let lesson = |id: &str, origin: &str| -> crate::learning::Reflexion {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "domain": "behavior", "session_id": S, "trigger": "followup",
+                "context": "…", "intervention": "no, the other account", "reflexion_text": "…",
+                "error_type": null, "confidence": null, "created_at": "2026-09-25T00:00:00Z",
+                "origin": origin, "evidence": "full"
+            }))
+            .unwrap()
+        };
+        let as_mined = vec![
+            lesson("r-clean", "clean"),
+            lesson("r-untrusted", "untrusted"),
+        ];
+        let mut curated = as_mined.clone();
+        curated[0].dropped_at = Some("2026-09-25T01:00:00Z".into());
+        curated[1].edited_at = Some("2026-09-25T01:00:00Z".into());
+        let read = |rs: &[crate::learning::Reflexion]| {
+            appraise(SessionRecords {
+                reflexions: rs,
+                ..Default::default()
+            })
+        };
+        let before = read(&as_mined);
+        let after = read(&curated);
+        assert!(!before.errors.is_empty(), "the fixture must sign something");
+        assert_eq!(Valence::of(&before), Valence::of(&after));
+        assert_eq!(before.label, after.label);
+        assert_eq!(before.errors, after.errors);
+
+        // Rule and candidate verdicts have no way in at all: nothing in
+        // `SessionRecords` carries a curation ledger, and the tally reads
+        // them beside the runs. The reflection verdicts are counted there,
+        // against the reflector.
+        let rules = vec![
+            crate::curation::Verdict::now(
+                crate::curation::Target::Rule("rule-1".into()),
+                crate::curation::Act::Retired,
+                None,
+            ),
+            crate::curation::Verdict::now(
+                crate::curation::Target::Rule("rule-1".into()),
+                crate::curation::Act::Restored,
+                None,
+            ),
+        ];
+        let harness = vec![crate::curation::Verdict::now(
+            crate::curation::Target::Candidate("hc-1".into()),
+            crate::curation::Act::Reverted,
+            None,
+        )];
+        let t = crate::curation::Tally::of(Some(&rules), Some(&curated), Some(&harness));
+        assert_eq!(
+            t.reflections,
+            Some(crate::curation::ReflectionTally {
+                dropped: 1,
+                edited: 1
+            })
+        );
+        assert_eq!(t.rules.map(|r| (r.retired, r.restored)), Some((1, 1)));
+        assert_eq!(t.harness.map(|h| h.reverted), Some(1));
+    }
+
+    #[test]
+    fn an_unreadable_verdict_store_marks_the_reading_partial() {
+        let a = appraise(SessionRecords {
+            closures_unreadable: true,
+            ..Default::default()
+        });
+        assert!(a.partial);
+        let a = appraise(SessionRecords {
+            workflows_unreadable: true,
+            ..Default::default()
+        });
+        assert!(a.partial);
+    }
+
+    #[test]
+    fn a_cite_from_a_newer_build_loads_as_unknown() {
+        let e: GoalError = serde_json::from_value(serde_json::json!({
+            "channel": "commitment", "sign": -1.0, "agency": "owner", "visible": false,
+            "cite": {"kind": "graph_fact", "id": "f-1"}
+        }))
+        .unwrap();
+        assert_eq!(e.cite, Cite::Unknown);
+        let w: Cite = serde_json::from_value(serde_json::json!({
+            "kind": "workflow", "id": {"workflow": "wf", "act": "snoozed"}
+        }))
+        .unwrap();
+        assert_eq!(
+            w,
+            Cite::Workflow {
+                workflow: "wf".into(),
+                act: WorkflowAct::Unknown
+            }
+        );
     }
 }
