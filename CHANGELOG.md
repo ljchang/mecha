@@ -76,7 +76,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `mecha workflow cancel` and `mecha charter` described behaviour they do
   not have: cancel blocks further runs of that task, not triggers (a trigger
   is not tied to a task), and a charter is edited with `mecha charter edit`.
-  `/entity` completed in the TUI but was missing from `/help`.
+  `/entity` completed in the TUI but was missing from `/help`, and `/mail`
+  (alias `/inbox`) opened the classified inbox while neither `/help` nor Tab
+  completion named it; both are listed and completable now.
+- Recording a cloned voice on the web settings page could silently replace a
+  voice of the same name when two uploads landed together, although the page
+  refuses to overwrite: the name check and the write were two steps. The
+  recording is now linked into place, which fails if the name exists.
+- `mecha setup --write` keys its "no local server was checked" message on the
+  provider being hosted, not on it having a credential, so a llama-server
+  behind an `api_key_env` that is down is still told to start the server.
 - The mail desk's batch keys work with the selecting modifier still held.
   A selection is built with ⇧-click or ⌘/Ctrl-click, and the hand is often
   still on that key when `e` goes down: ⇧E was bound to nothing and ⌘E was

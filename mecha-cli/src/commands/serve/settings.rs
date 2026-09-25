@@ -795,9 +795,19 @@ pub async fn voice_clone(
             .into_response();
     }
     let tmp = dir.join(format!(".{}.wav.tmp.{}", q.name, request_stamp()));
-    let write = std::fs::write(&tmp, &body).and_then(|()| std::fs::rename(&tmp, &path));
+    let write = std::fs::write(&tmp, &body).and_then(|()| place_new(&tmp, &path));
+    let _ = std::fs::remove_file(&tmp);
     if let Err(e) = write {
-        let _ = std::fs::remove_file(&tmp);
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            return (
+                StatusCode::CONFLICT,
+                format!(
+                    "a voice named `{}` already exists — delete it first, or pick another name\n",
+                    q.name
+                ),
+            )
+                .into_response();
+        }
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!(
@@ -808,6 +818,27 @@ pub async fn voice_clone(
             .into_response();
     }
     voice(State(state)).await.into_response()
+}
+
+/// Put a fully written `tmp` at `path` only if nothing is there yet.
+///
+/// The `exists()` check above is a fast path, not the guarantee: two uploads
+/// of one name could both pass it, and `rename` silently replaces, so the
+/// second would overwrite the first after the page promised it never does.
+/// A hard link is the atomic "create, or fail with `AlreadyExists`", and it
+/// keeps the whole-file property the temp sibling exists for. The caller
+/// removes `tmp` either way. A filesystem that cannot hard-link falls back
+/// to the rename, with only the fast path's protection. Linux reports that as
+/// `EPERM` (`PermissionDenied`) — exFAT, FUSE, WSL's DrvFs — and macOS as
+/// `EOPNOTSUPP` (`Unsupported`), so both fall back (found on review: keying on
+/// `Unsupported` alone turned those uploads into 500s where the rename had
+/// worked). A real permission problem fails the rename the same way.
+fn place_new(tmp: &std::path::Path, path: &std::path::Path) -> std::io::Result<()> {
+    use std::io::ErrorKind::{PermissionDenied, Unsupported};
+    match std::fs::hard_link(tmp, path) {
+        Err(e) if matches!(e.kind(), Unsupported | PermissionDenied) => std::fs::rename(tmp, path),
+        other => other,
+    }
 }
 
 /// POST /api/settings/voice/clone/delete — remove one reference.
@@ -877,7 +908,27 @@ async fn probe(url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{reason_arg, valid_store_id, valid_voice_name, wav_info};
+    use super::{place_new, reason_arg, valid_store_id, valid_voice_name, wav_info};
+
+    /// Two uploads of one name that both pass the fast-path `exists()` check
+    /// must not end with the second silently replacing the first: the
+    /// second placement fails `AlreadyExists` and the first file is intact.
+    #[test]
+    fn placing_a_voice_never_overwrites_one_that_landed_first() {
+        let dir = std::env::temp_dir().join(format!("mecha-voice-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ada.wav");
+        let _ = std::fs::remove_file(&path);
+        let (a, b) = (dir.join(".a.tmp"), dir.join(".b.tmp"));
+        std::fs::write(&a, b"first").unwrap();
+        std::fs::write(&b, b"second").unwrap();
+
+        place_new(&a, &path).unwrap();
+        let err = place_new(&b, &path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&path).unwrap(), b"first");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The ids the two learning stores actually mint, and the two shapes
     /// that must never reach a child: the empty needle (which prefix-matches
