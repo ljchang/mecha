@@ -4290,6 +4290,26 @@ charter sensor errors; unread and empty snapshots remain distinguishable.
 cannot bypass a structural guard. A passed check is evidence for that declaration
 at that time, not proof of the whole goal or of current artifacts.
 
+**No sensor number, setpoint or valence reaches a run's request, as metadata or
+as text** (`APPRAISAL-WIRING-DESIGN.md` G4, R21). Two channels, one test each,
+both in `provider/anthropic.rs`: `planning_sensor_metadata_never_reaches_either_provider`
+pins `Message::planning`, and
+`a_recorded_run_carries_no_sensor_number_setpoint_or_valence_to_either_encoder`
+pins block text — a fixture run with every sensor kind past its setpoint and
+`goal_guidance` on is steered, recorded to a session file, resumed, and every
+request it sent is scanned through both encoders' whole bodies (system prompt
+and tool specs included) for every rendering of its readings, setpoints, guilt,
+load and valence (`LineReading::summary`, `render_secs`, `Valence::compact`,
+fixed precisions, the stored JSON). Its control,
+`a_status_line_carrying_a_sensor_reading_is_caught_in_a_tool_result_or_a_user_turn`,
+injects each rendering into a tool result and a user turn and requires the scan
+to catch it out of both, so the run test's silence is a finding. Budget facts —
+turns left, context remaining — are R21's permitted numbers and are not scanned
+for; the diagnostician's and the appraiser's quarantined briefs carry numbers by
+design and are not run requests. The scan only sees values the fixture holds:
+a new sensor, or a new path that could print one (a status line, the situation
+brief), extends the fixture's `world()` in the same change.
+
 **Context retrieval preserves scope and provenance.** `goal_context` is private,
 on demand, and bounded to four active applicable rules and two historical examples.
 Rules join goals through clean source reflections; successful examples require
