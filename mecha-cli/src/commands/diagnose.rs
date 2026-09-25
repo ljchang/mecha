@@ -17,9 +17,8 @@
 
 use crate::{setup, GlobalOpts};
 use anyhow::{Context, Result};
-use mecha_core::agent::Conversation;
 use mecha_core::diagnose::{
-    carries_over, diagnose_system, parse_proposal, Evidence, Proposal, DIAGNOSE_INSTRUCTION,
+    diagnose_system, lifted, parse_proposal, Evidence, Proposal, DIAGNOSE_INSTRUCTION,
 };
 use mecha_core::message::Block;
 use mecha_core::runlog::{Corpus, Scan};
@@ -516,7 +515,6 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
         evidence.runs, evidence.model, prepared.model, prepared.provider_name
     );
 
-    let brief = evidence.brief();
     let (_, provider_cfg) = prepared.config.provider(global.provider.as_deref())?;
     let provider = mecha_core::provider::build(provider_cfg)?;
     let applicability = if provider.supports_effort() {
@@ -524,9 +522,10 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
     } else {
         "The provider adapter ignores effort. Do not propose effort changes: they cannot affect a run."
     };
-    let mut convo = Conversation::user(format!(
-        "{brief}\n---\n{DIAGNOSE_INSTRUCTION}\n{applicability}"
-    ));
+    // Through `Evidence::conversation`, which opens it carrying private data
+    // when a clean appraisal rides in the brief (row 2f): the interlock knows
+    // only what the conversation's taint tells it.
+    let mut convo = evidence.conversation(&format!("{DIAGNOSE_INSTRUCTION}\n{applicability}"));
     let outcome = prepared.agent.run(&mut convo, None).await?;
 
     let Some(proposal) = parse_proposal(&outcome.text) else {
@@ -537,8 +536,9 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
     };
 
     // What it read, so a lifted sentence can be caught. Every tool result in
-    // the conversation: the source it opened, the pages it fetched, the
-    // searches it ran.
+    // the conversation — the source it opened, the pages it fetched, the
+    // searches it ran — and, through `lifted`, the appraisals its brief
+    // carried (row 2f): one check over one list of sources.
     let sources: Vec<String> = convo
         .messages
         .iter()
@@ -549,8 +549,7 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
         })
         .collect();
     let refs: Vec<&str> = sources.iter().map(String::as_str).collect();
-    let quoted =
-        carries_over(&proposal.rationale, &refs).or_else(|| carries_over(&proposal.change, &refs));
+    let quoted = lifted(&proposal, &refs, evidence);
 
     Ok(Diagnosis {
         reply: outcome.text,
