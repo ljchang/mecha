@@ -1653,10 +1653,11 @@ mod planning_metadata_tests {
 /// own instants and seconds still may not. The control catches each of those
 /// renderings, the words included, in either slot.
 ///
-/// Scope: the acting run's requests. The quarantined harness briefs —
+/// Scope: the acting run's requests. The quarantined harness brief —
 /// `diagnose::Evidence::brief` (guilt and pressure means, behind
-/// `[agent] sensors_in_brief`) and `appraisal::AppraiserEvidence::brief` —
-/// hand numbers to a model by design and are not run requests.
+/// `[agent] sensors_in_brief`) — hands numbers to a model by design and is
+/// not a run request. (The counts-only appraiser's brief was the other; it
+/// was retired in row 2a-3, and the text appraisal's inputs carry words.)
 #[cfg(test)]
 mod numbers_never_reach_the_model_tests {
     use super::tests::client_at;

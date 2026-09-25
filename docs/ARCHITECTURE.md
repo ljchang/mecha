@@ -3786,7 +3786,8 @@ The decisions that carry it, each a bug if undone:
   never say "absent" of something that ran. Predictive compaction and
   carried state got their switches (`[agent] predictive_compaction`,
   `[agent] carried_state`, and the `--no-*` flags) and joined; the
-  appraiser's pass has no in-run site to remove, and `sensors_in_brief` is
+  counts-only appraiser's pass had no in-run site to remove (and was
+  retired in row 2a-3), and `sensors_in_brief` is
   a stage lever for a trial's manifest, not a run's record.
 - **The run record names the rules it carried, in two halves.**
   `RunConfig::rules_hash` and `rule_ids` are the prefix block's
@@ -4782,7 +4783,7 @@ pending draft, a follow-up, a Ctrl-C produce no error at all — and every
 error that exists is then named from its sign and agency alone, with a probe
 verdict *refining* the word rather than licensing it. Linked owner outcomes additionally produce `Embarrassment` and `Guilt`; without
 them the free readout's label range is `Neutral`, `Distress` (the coarse word: a signed, attributed
-negative not yet split into regret or disappointment) and `Pride` (a draft sent unchanged or a question answered, *delivered* against a charter line the loaded charter contains — never the queue delta or the appraiser's own positive, both of which copy the named goal onto a positive without delivering anything); `Anger` is the appraiser's, and the probe
+negative not yet split into regret or disappointment) and `Pride` (a draft sent unchanged or a question answered, *delivered* against a charter line the loaded charter contains — never the queue delta or the appraiser's own positive, both of which copy the named goal onto a positive without delivering anything); `Anger` was the counts-only appraiser's and has no producer since its retirement (row 2a-3) — `label_of` still derives it, so an older record reads as it did — and the probe
 words stay the probe's. The incident: twenty-two owner-rejected drafts all
 read `Neutral` because `label_of` gated on the one dimension only a paid
 replay fills. Two consumers moved with the ungating and are the traps for the
@@ -4992,8 +4993,8 @@ planning metadata), load and valence (`LineReading::summary`, `render_secs`,
 injects each rendering into a tool result and a user turn and requires the scan
 to catch it out of both, so the run test's silence is a finding. Budget facts —
 turns left, context remaining — are R21's permitted numbers and are not scanned
-for; the diagnostician's and the appraiser's quarantined briefs carry numbers by
-design and are not run requests. The scan only sees values the fixture holds:
+for; the diagnostician's quarantined brief carries numbers by design and is not
+a run request (the counts-only appraiser's was the other, retired in row 2a-3). The scan only sees values the fixture holds:
 a new sensor, or a new path that could print one (a status line), extends the
 fixture's `world()` in the same change. The situation brief did (1h): `world()`
 carries one built by the real producers over a 2,917-row board, the run
@@ -5126,6 +5127,26 @@ call per session). Its invariants:
   (`text_appraisals` in `--json`).
 - **`expected_act`** is R16's closed set beside the prose prediction, for
   2b-2 to score against the owner's recorded act. It is lenient on load.
+
+**The counts-only appraiser is retired into it** (row 2a-3, R25). Before,
+`appraise_with_model` ran a quarantined pass over `AppraiserEvidence` behind
+`sessions appraise --appraise`. It was on demand only and returned "nothing
+further" on 169 of 169 sessions. It is gone, and so are its brief, its
+verdict parser and `mecha-cli`'s `appraiser_pass`.
+
+- **The same counts reach the text appraisal** as signed errors in
+  `render_appraisal_inputs`, by direction and pointer.
+- **No second model pass reads a session for its label.**
+- **`--appraise` and `--max-appraisals` are hidden deprecated no-ops.** They
+  print on stderr where the appraisal went, so `--json` stays parseable and
+  scripts keep running. `appraiser` in the JSON is always `null`.
+- **What it wrote still loads, labels and counts.** `Channel::Appraisal` and
+  `Cite::Appraiser` stay as wire variants with no producer.
+- **One label lost its producer.** `Anger` came only from that pass's
+  `other`/`world` verdict, so `Affect::reachable_today` drops it (eight
+  words, not nine). `label_of` still derives it from an old record.
+- **The reflector is untouched.** It folds in only after 2e-1 measures it
+  (2a-4).
 
 **Attribution follows the event.** `appraisal::attribute_events` uses the plan at
 the intervention or staging point and typed question/reflection links. Ambiguous
@@ -5318,8 +5339,10 @@ one. The step exists to break that; its remedy hands over `$EDITOR` and
 composes nothing.
 
 **Absent is not zero, twice over, in the readout.** `sessions appraise --json`
-omits the `probe` and `appraiser` objects entirely when the flag did not run —
-"nothing was probed" and "probed and found nothing" are opposite findings — and
+reports `probe` as `null` when the flag did not run — "nothing was probed" and
+"probed and found nothing" are opposite findings — and `appraiser` as `null`
+always, since row 2a-3 retired that pass (`--appraise` is a deprecated no-op that
+says so on stderr); and
 an unreadable outbox prints "the edit channel is missing, not empty" *before*
 the empty-corpus early return, which is the one path where a reader most needs
 to know it.
