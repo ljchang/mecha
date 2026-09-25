@@ -822,17 +822,6 @@ impl CleanRead {
         )
     }
 
-    /// The same selection for a run about to start: `run` is the situation
-    /// its rules block was matched against (`setup::build`'s, the goal
-    /// included), the key `RunConfig` records and a later appraisal of this
-    /// run will carry. What `goal_context` serves (I2, 2c-2). No session is
-    /// excluded — a fresh run has no appraisal of its own; a resumed
-    /// session appraised earlier may be served its own, which is of the
-    /// same situation and goal by construction.
-    pub fn for_run(&self, run: &Situation, n: usize) -> Vec<&Clean> {
-        self.keyed_as(Some(run), None, n)
-    }
-
     fn keyed_as(&self, here: Option<&Situation>, not: Option<&str>, n: usize) -> Vec<&Clean> {
         newest_keyed(self.appraisals.iter(), here, not, n)
     }
@@ -882,6 +871,10 @@ fn newest_keyed<'a>(
 /// with the registry it actually carries, picks the newest that agree on
 /// the tools too. Without the second step a delegated task's retrieval
 /// never matched a past run of the same task (found building it).
+///
+/// No session is excluded, unlike the appraiser's door: a fresh run has no
+/// appraisal of its own, and a resumed session appraised earlier may be
+/// served its own, which is of the same situation and goal by construction.
 #[derive(Debug, Clone, Default)]
 pub struct PastAppraisals {
     goal: Option<GoalRef>,
