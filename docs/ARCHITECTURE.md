@@ -3709,7 +3709,8 @@ recorded `Situation` of the decision point (the miner's construction —
 `ProbePrep::situation_at` — so readers key on `Situation::scope`; `None`
 when the probed reflection predates situations, because an empty-keyed
 `Situation` is standing and would match every run), the
-session's goal **kind** (`GoalRef::goal_kind`, never the id), a `CallClass`
+session's goal **kind** (`GoalRef::goal_kind`, never the id — the session's
+last anchor, since the transcript keeps no anchor positions), a `CallClass`
 (the tool and the argument names its recorded schema declares — never a
 value, never an undeclared key), K `Arm`s (role, the rules hash it carried
 on `RunConfig::rules_hash`'s convention — no block is the empty string's

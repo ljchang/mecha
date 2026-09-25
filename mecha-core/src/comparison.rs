@@ -305,7 +305,10 @@ pub struct Comparison {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub situation: Option<Situation>,
     /// The kind of goal the session was anchored to; `None` when it named
-    /// none — absent is recorded, never guessed.
+    /// none — absent is recorded, never guessed. The session's **last**
+    /// anchor (`Transcript::convo.goal_anchor`): the transcript keeps no
+    /// anchor positions the way it keeps `config_positions`, so a session
+    /// re-anchored after the decision point stamps the later kind.
     #[serde(default)]
     pub goal_kind: Option<GoalKind>,
     #[serde(default)]
@@ -366,7 +369,11 @@ impl Comparison {
 pub struct Provenance {
     /// Of the session as a whole — the taint covering its last message.
     pub origin: Origin,
-    /// Of the recorded tool surface against the blob the store holds.
+    /// Of the recorded tool surface. On a trace probe the specs are the blob
+    /// loaded *by* the recorded hash, so `Matches` reduces to "the surface
+    /// store still holds it"; on an artifact probe they are rebuilt from the
+    /// fixture's registry today, so it keeps [`Fidelity`]'s full meaning,
+    /// "today's surface still hashes to the recorded value". Both fail closed.
     pub surface: Fidelity,
 }
 
@@ -542,6 +549,10 @@ pub struct Summary {
     pub separated: usize,
     pub tied: usize,
     pub inconclusive: usize,
+    /// Rows whose verdict this build cannot read (a newer build's variant).
+    /// Kept apart from `inconclusive`: "the validator posed no question" is
+    /// a finding, "this build cannot say" is not (found on review).
+    pub unreadable_verdict: usize,
     /// Rows a model judge decided — the ones a reader may want to leave out.
     pub judge_decided: usize,
 }
@@ -559,7 +570,8 @@ impl Summary {
             match c.verdict {
                 Verdict::Separated => s.separated += 1,
                 Verdict::Tied => s.tied += 1,
-                Verdict::Inconclusive | Verdict::Unknown => s.inconclusive += 1,
+                Verdict::Inconclusive => s.inconclusive += 1,
+                Verdict::Unknown => s.unreadable_verdict += 1,
             }
             if c.validator == Validator::Judge {
                 s.judge_decided += 1;
@@ -786,6 +798,12 @@ mod tests {
         let summary = Summary::of(&rows);
         assert_eq!(summary.records, 3);
         assert_eq!(summary.by_kind.get("unknown"), Some(&2));
+        assert_eq!(
+            (summary.inconclusive, summary.unreadable_verdict),
+            (0, 2),
+            "a verdict this build cannot read is not an inconclusive one"
+        );
+        assert_eq!(summary.separated_share(), Some(0.0));
         let _ = std::fs::remove_dir_all(&root);
     }
 
