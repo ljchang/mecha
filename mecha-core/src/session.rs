@@ -1274,6 +1274,42 @@ pub struct SessionMeta {
     pub kind: Option<SessionKind>,
 }
 
+impl SessionMeta {
+    /// Whether a reader that copies a transcript's content out by default —
+    /// `reflect` into the learning store, `distill` into the knowledge graph
+    /// — takes this session. The population `runlog::Scan::default` admits:
+    /// never a `Test` session (a smoke test or a development run), and an
+    /// `Experiment` session only in the experiment home it belongs to, where
+    /// every reader admits it (`experiment::in_experiment_home`).
+    ///
+    /// Why it exists: `runlog` honoured the mark while `reflect` and
+    /// `distill` did not, so a test run marked exactly as documented was
+    /// still mined for lessons and pushed into the graph
+    /// (`INCOGNITO-DESIGN.md` §3.2). Admission only — the situation a
+    /// reflection records still never reads `kind`.
+    pub fn admitted_by_default(&self) -> bool {
+        match self.kind {
+            Some(SessionKind::Test) => false,
+            Some(SessionKind::Experiment) => crate::experiment::in_experiment_home(),
+            _ => true,
+        }
+    }
+}
+
+/// Split a session listing into what a content reader takes by default and
+/// how many it passed over ([`SessionMeta::admitted_by_default`]). One
+/// function for `reflect` and `distill`, so the rule they apply is the one
+/// this file tests.
+pub fn split_admitted<T>(sessions: Vec<(SessionMeta, T)>) -> (Vec<(SessionMeta, T)>, usize) {
+    let total = sessions.len();
+    let admitted: Vec<_> = sessions
+        .into_iter()
+        .filter(|(meta, _)| meta.admitted_by_default())
+        .collect();
+    let skipped = total - admitted.len();
+    (admitted, skipped)
+}
+
 pub struct Session {
     pub meta: SessionMeta,
     pub path: PathBuf,
@@ -2149,6 +2185,30 @@ mod homeostat_record_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn content_readers_pass_over_test_and_stray_experiment_sessions() {
+        let meta = |id: &str, kind: Option<SessionKind>| SessionMeta {
+            id: id.into(),
+            created_at: chrono::Utc::now(),
+            provider: "local".into(),
+            model: "m".into(),
+            workspace: std::path::PathBuf::from("/w"),
+            title: None,
+            kind,
+        };
+        let listing = vec![
+            (meta("web", Some(SessionKind::Web)), ()),
+            (meta("legacy", None), ()),
+            (meta("test", Some(SessionKind::Test)), ()),
+            (meta("exp", Some(SessionKind::Experiment)), ()),
+        ];
+        let (admitted, skipped) = split_admitted(listing);
+        let ids: Vec<_> = admitted.iter().map(|(m, _)| m.id.as_str()).collect();
+        // Outside an experiment home (this test's), an experiment session is
+        // contamination like a test one; an unmarked legacy session is work.
+        assert_eq!(ids, ["web", "legacy"]);
+        assert_eq!(skipped, 2);
+    }
 
     /// A rename is a record, and it has to survive the file it is written to.
     ///
