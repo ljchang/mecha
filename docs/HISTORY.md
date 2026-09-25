@@ -14,6 +14,52 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-25 — local image generation, and an incognito chat that leaves
+no trace.** Two arcs from one lane, the second designed while the first was
+in review.
+
+*Image generation.* Qwen-Image 2.1 already ran in `~/ComfyUI` (GGUF Q4,
+ComfyUI-GGUF); the question was the engine behind a mecha tool. A bake-off
+against stable-diffusion.cpp on the same prompts settled it: ComfyUI 42 s
+warm, 15 GB peak, legible sign text in 3 of 3; sd.cpp Q8_0 71 s and 21.5 GB,
+Q6_K 80 s and 20 GB, text about 1.5 of 3 with gibberish — and sd.cpp
+refuses the community GGUF outright (a tensor-shape check). The contract was
+kept sd.cpp-shaped anyway, so the engine can be swapped under it: the model
+supplies typed values, the graph is fixed in code, never the model's.
+`image_generate` (#303, `5d613736`) posts to a **loopback-only** server
+(no redirects, no proxy — review found a redirect would re-send the prompt
+elsewhere), writes the PNG into the run's workspace, and the web chat shows
+it inline. Edits (#306, `b1820b5d`) take reference images from the same
+workspace, from an upload or an earlier generation, behind an Edit button;
+**an edit always draws a fresh seed**, because reusing the reference's seed
+redraws the reference. Qwen-Image's own settings are 40 steps at cfg 1.
+**The first live test took the machine down** (04:12Z): llama-server's
+~35 GB, a parallel cargo link and ComfyUI together on the GB10's unified
+memory, where GPU memory *is* system RAM, and the kernel's OOM killer chose
+llama-server. The tool now refuses below a free-memory floor, and the rule
+for a session is to read `MemAvailable` before a generation or a big build.
+ComfyUI became `comfyui.service` so it survives a reboot (HANDOFF,
+*Standing machinery*).
+
+*Incognito chat.* The owner asked for a web chat that is gone when it
+closes. The design (#307, `613db4ce`, `INCOGNITO-DESIGN.md`) records six
+rulings: R1 strictly invisible — no transcript, no content-free counts, no
+replay, no learning; R2 no "save this conversation" escape hatch; R3 local
+and may read the owner's data, never write it; R4 web search allowed, with
+a notice before the first search; R5 a 30-minute idle close; R6 images
+deleted when the chat closes, the image server's copies and the browser's
+cache included. Its step 0 (#313,
+`5fa722fe`) fixed what every chat leaked, incognito or not: tool-output
+spills moved out of the workspace to `~/.mecha/spill/<sha256 of the
+workspace>` (review found an in-workspace `.spill` could be a symlink out of
+the jail, and a pre-planted link another way), the dropped-reasoning line
+keeps only its content-free counters at `warn` — the 400-character tail
+moved to `debug` with the whole trace, and the counters stay on purpose,
+because an empty turn is in no transcript and they are its only
+default-level record — and `reflect`/`distill` skip test sessions. Steps 1–3, the chat itself, are #321, unmerged at
+this writing; HANDOFF holds where it stands, and its entry here is owed
+when it merges.
+
 **2026-09-24/25 — appraisal wiring, phase 1: evidence and context go in,
 and what a run does changes in three named places only; phase 2 and 3a
 follow.** `APPRAISAL-WIRING-DESIGN.md` (#291,
