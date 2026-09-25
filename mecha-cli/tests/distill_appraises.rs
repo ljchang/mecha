@@ -148,6 +148,11 @@ fn session(home: &Path, marker: &str, untrusted: bool, age_mins: i64) -> String 
         .append(&Record::Config(RunConfig {
             tools: vec!["mail_search".into()],
             rules_surface: Some(SessionKind::Task),
+            // The goal the run was matched toward (2c-1) — what "the same
+            // situation and goal" is keyed on.
+            rules_goal: Some(mecha_core::situation::GoalKey::Named(GoalRef::Task(
+                "task-1".into(),
+            ))),
             ..Default::default()
         }))
         .unwrap();

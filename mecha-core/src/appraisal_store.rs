@@ -804,25 +804,33 @@ impl CleanRead {
     /// can be returned, so a tainted appraisal cannot reach the appraiser
     /// of a later session through here, whatever its situation.
     ///
-    /// **Same situation** is the same region key ([`Situation::key`]: the
-    /// scope's tools, workspace and surface), and an unknown situation on
-    /// either side matches nothing — unknown is never "everywhere". **Same
-    /// goal** is the same anchor, and a run with no anchor matches another
-    /// with none: in a corpus where almost no run names a goal (inventory
-    /// §1), requiring one would serve nothing at all. Row 2c-1 makes the
-    /// goal a `Situation` key; this function is where that lands.
+    /// **Same situation and goal** is the same region key
+    /// ([`Situation::key`]: the scope's tools, workspace, surface and — since
+    /// 2c-1 — the goal the run's block was matched toward,
+    /// `RunConfig::rules_goal`), compared exactly, so nothing widens: a run
+    /// that presented no goal matches only records that presented none,
+    /// never a goal-scoped one, and a goal-scoped run matches only its own
+    /// goal. What cannot be keyed matches nothing: an unknown situation on
+    /// either side (unknown is never "everywhere"), and a goal or surface
+    /// this build cannot name (`GoalKey::Unread`, `surface_unread`) — kept
+    /// verbatim in the key, and still never equal to anything.
     pub fn same_situation_and_goal(&self, evidence: &SessionEvidence, n: usize) -> Vec<&Clean> {
-        let Some(here) = evidence.situation.as_ref().map(Situation::key) else {
+        fn keyed(s: Option<&Situation>) -> Option<String> {
+            let s = s?;
+            let unnamed = s.surface_unread.is_some()
+                || matches!(s.goal, Some(crate::situation::GoalKey::Unread(_)));
+            (!unnamed).then(|| s.key())
+        }
+        let Some(here) = keyed(evidence.situation.as_ref()) else {
             return Vec::new();
         };
         let mut out: Vec<&Clean> = self
             .appraisals
             .iter()
             .filter(|c| c.session_id != evidence.session_id)
-            .filter(|c| c.anchor == evidence.anchor)
-            .filter(|c| c.situation.as_ref().map(Situation::key).as_ref() == Some(&here))
+            .filter(|c| keyed(c.situation.as_ref()).as_ref() == Some(&here))
             .collect();
-        out.sort_by(|a, b| b.at.cmp(&a.at));
+        out.sort_by_key(|c| std::cmp::Reverse(c.at));
         out.truncate(n);
         out
     }
@@ -1777,11 +1785,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A fixture session whose run was matched toward `goal` (2c-1's
+    /// `RunConfig::rules_goal`) — the key "same goal" is read off.
+    fn session_toward(dir: &Path, goal: Option<crate::situation::GoalKey>) -> SessionEvidence {
+        let path = session(dir, clean_taint());
+        let s = Session {
+            meta: Session::read(&path).unwrap().meta,
+            path: path.clone(),
+        };
+        s.append(&Record::Config(RunConfig {
+            tools: vec!["mail_search".into()],
+            rules_workspace: Some(PathBuf::from("/project")),
+            rules_surface: Some(SessionKind::Task),
+            rules_goal: goal,
+            ..Default::default()
+        }))
+        .unwrap();
+        s.append(&Record::Taint(clean_taint().unwrap())).unwrap();
+        let e = SessionEvidence::read(&path).unwrap();
+        assert_eq!(e.origin(), Origin::Clean);
+        e
+    }
+
     /// The past an appraiser is shown: clean appraisals of the same
-    /// situation and the same goal, newest first, at most `n`, never the
-    /// session's own — and never a tainted one, which the type cannot hold.
+    /// situation and goal key — newest first, at most `n`, never the
+    /// session's own, never a tainted one (the type cannot hold it). The
+    /// goal key is 2c-1's, compared exactly, so nothing widens: another
+    /// goal, no goal, and a goal this build cannot name each match nothing
+    /// but their own kind, and the unnameable not even that.
     #[test]
     fn past_appraisals_are_clean_only_and_of_the_same_situation_and_goal() {
+        use crate::situation::GoalKey;
         let root = temp_root("past");
         let dir = root.join("sessions");
         let store = AppraisalStore::open(root.join("appraisals")).unwrap();
@@ -1793,22 +1827,13 @@ mod tests {
         }
         let tainted = SessionEvidence::read(&session(&dir, tainted())).unwrap();
         store.record(&tainted, draft(), "m", &known()).unwrap();
-        // Same situation, another goal: re-anchored after the last message.
-        let elsewhere = session(&dir, clean_taint());
-        {
-            let s = Session {
-                meta: Session::read(&elsewhere).unwrap().meta,
-                path: elsewhere.clone(),
-            };
-            s.append(&Record::GoalAnchor {
-                goal: Some(GoalRef::Task("t-other".into())),
-            })
-            .unwrap();
-            s.append(&Record::Taint(clean_taint().unwrap())).unwrap();
-        }
-        let other_goal = SessionEvidence::read(&elsewhere).unwrap();
-        assert_eq!(other_goal.origin(), Origin::Clean);
+        let other_goal =
+            session_toward(&dir, Some(GoalKey::Named(GoalRef::Task("t-other".into()))));
         store.record(&other_goal, draft(), "m", &known()).unwrap();
+        let no_goal = session_toward(&dir, None);
+        store.record(&no_goal, draft(), "m", &known()).unwrap();
+        let unread = session_toward(&dir, Some(GoalKey::Unread("quest:y".into())));
+        store.record(&unread, draft(), "m", &known()).unwrap();
 
         let now = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
         let read = store.clean().unwrap();
@@ -1818,19 +1843,22 @@ mod tests {
         want.reverse();
         want.truncate(PAST_SHOWN);
         assert_eq!(got, want, "the three newest of the same situation and goal");
-        assert!(!got.contains(&tainted.session_id()));
-        assert!(!got.contains(&other_goal.session_id()));
+        for never in [&tainted, &other_goal, &no_goal, &unread] {
+            assert!(!got.contains(&never.session_id()));
+        }
+        // A run that presented no goal is shown only the goal-less record —
+        // never a goal-scoped one.
+        let goalless = read.same_situation_and_goal(&session_toward(&dir, None), 10);
+        let ids: Vec<&str> = goalless.iter().map(|c| c.session_id.as_str()).collect();
+        assert_eq!(ids, vec![no_goal.session_id()]);
+        // A goal this build cannot name matches nothing, itself included.
+        let unnamed = session_toward(&dir, Some(GoalKey::Unread("quest:y".into())));
+        assert!(read.same_situation_and_goal(&unnamed, 10).is_empty());
         // Never the session's own.
-        let own = read.same_situation_and_goal(
-            &SessionEvidence::read(&session(&dir, clean_taint())).unwrap(),
-            10,
-        );
-        assert_eq!(own.len(), 4);
         let first = SessionEvidence::read(&Session::find(&dir, &same[0]).unwrap()).unwrap();
-        assert!(read
-            .same_situation_and_goal(&first, 10)
-            .iter()
-            .all(|c| c.session_id != same[0]));
+        let theirs = read.same_situation_and_goal(&first, 10);
+        assert_eq!(theirs.len(), 3);
+        assert!(theirs.iter().all(|c| c.session_id != same[0]));
         let _ = std::fs::remove_dir_all(&root);
     }
 
