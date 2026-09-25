@@ -1031,7 +1031,8 @@ do the predictions score; does the owner's rework fall.
 *2a-1 built — the store, no producer yet:* `appraisal_store::TextAppraisal`
 in `~/.mecha/appraisals/appraisals.jsonl`, written only by
 `AppraisalStore::record` from a `Draft` and a `SessionEvidence` read off the
-transcript (fields private, so no caller can assert clean). A claim is a
+transcript in one read (fields private, so no caller can assert clean; one
+read, so provenance and referents are one snapshot). A claim is a
 statement, a `Pointer` and a quote; the referents are the results the run
 read (`result:<tool_use_id>`, through `grounding::calls`, so a stale result
 grounds nothing) and the owner's own turns (`turn:<n>` in `messages_ever`'s

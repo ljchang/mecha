@@ -4713,8 +4713,13 @@ append, `sync_data`). Four decisions, each a bug if undone:
   (`is_harness_voice`, the calendar reference) left out as the distiller's
   renderer leaves it out. The assistant's own words are not in the packet:
   a claim grounded in "I sent it" would be certified by itself.
-- **Provenance is read, never supplied.** `SessionEvidence`'s fields are
-  private and come off the transcript: the taint covering the last message,
+- **Provenance is read, never supplied, and from one read.**
+  `SessionEvidence`'s fields are private and come off the transcript, read
+  **once** (`Session::parse` and `messages_ever` over the same bytes — two
+  reads of a session still being appended to are two snapshots, and
+  provenance from the first over referents from the second would stamp clean
+  a packet holding an untrusted result; found on review of #308), and there
+  is no constructor taking a caller's message list: the taint covering the last message,
   `learning::classify_origin` over it (no checkpoint is unknown, unknown is
   untrusted), the last goal anchor, and the last run record's situation
   (`None` when none was recorded — never the standing empty scope). A

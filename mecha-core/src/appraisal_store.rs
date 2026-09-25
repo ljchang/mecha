@@ -232,20 +232,26 @@ pub struct SessionEvidence {
 }
 
 impl SessionEvidence {
-    /// Read a transcript file: the one-pass [`crate::session::Session::read`]
-    /// for provenance, anchor and run config, and
-    /// [`crate::session::Session::messages_ever`] for the referents —
-    /// what compaction later evicted was still received.
+    /// Read a transcript file **once**: the one-pass
+    /// [`crate::session::Session::parse`] for provenance, anchor and run
+    /// config, and [`crate::session::Session::messages_ever`] over the same
+    /// bytes for the referents — what compaction later evicted was still
+    /// received. One read, because two reads of a session still being
+    /// appended to are two snapshots: provenance from the first and
+    /// referents from the second would stamp clean a record whose packet
+    /// holds an untrusted result the first never covered (found on review
+    /// of #308). There is no constructor taking a caller's message list, for
+    /// the same reason there is none taking a caller's taint.
     pub fn read(path: &Path) -> Result<SessionEvidence> {
-        let transcript = crate::session::Session::read(path)?;
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let transcript = crate::session::Session::parse(path, &text)?;
         let ever = crate::session::Session::messages_ever(&text);
         Ok(SessionEvidence::of(&transcript, &ever))
     }
 
-    /// The same, from a transcript already read and its `messages_ever`.
-    pub fn of(transcript: &crate::session::Transcript, ever: &[Message]) -> SessionEvidence {
+    /// Both views are of one text, read once by [`Self::read`].
+    fn of(transcript: &crate::session::Transcript, ever: &[Message]) -> SessionEvidence {
         // Taint only grows, so the checkpoint covering the last message
         // covers the session; none after it is unknown, which is untrusted.
         let messages = transcript.convo.messages.len();
@@ -312,13 +318,9 @@ fn packet(ever: &[Message]) -> Vec<crate::grounding::Evidence> {
                 Block::Text { text } => Some(text.as_str()),
                 _ => None,
             })
-            .filter(|t| {
-                !t.trim().is_empty()
-                    && !crate::agent::is_harness_voice(t)
-                    && !t
-                        .trim_start()
-                        .starts_with(crate::date_context::REFERENCE_STEM)
-            })
+            // `is_harness_voice` is the one closed list of mecha's own
+            // voices in the user role, the calendar reference included.
+            .filter(|t| !t.trim().is_empty() && !crate::agent::is_harness_voice(t))
             .collect();
         if owner.is_empty() {
             continue;
@@ -761,8 +763,11 @@ impl AppraisalStore {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Summary {
     pub records: usize,
-    /// Distinct sessions appraised.
+    /// Distinct sessions appraised, counting only rows that name one.
     pub sessions: usize,
+    /// Rows that name no session — a sparse or hand-written row. Kept apart
+    /// so they never read as one more session.
+    pub no_session: usize,
     /// Records the clean door serves.
     pub clean: usize,
     /// Records the owner alone reads: tainted, or of unknown provenance.
@@ -784,7 +789,11 @@ impl Summary {
         };
         let mut sessions = std::collections::BTreeSet::new();
         for r in rows {
-            sessions.insert(r.session_id.as_str());
+            if r.session_id.trim().is_empty() {
+                s.no_session += 1;
+            } else {
+                sessions.insert(r.session_id.as_str());
+            }
             if r.is_clean() {
                 s.clean += 1;
             } else {
@@ -1203,6 +1212,69 @@ mod tests {
         assert!(got.clipped);
         assert_eq!(got.interpretation.chars().count(), INTERPRETATION_MAX_CHARS);
         assert_eq!(got.goal_hypotheses.len(), MAX_HYPOTHESES);
+
+        // Each remaining bound, one draft apiece, so a flag set by one
+        // cannot hide another that sets none.
+        let cases: Vec<(&str, Draft)> = vec![
+            (
+                "prediction",
+                Draft {
+                    prediction: Some("p".repeat(PREDICTION_MAX_CHARS + 1)),
+                    ..draft()
+                },
+            ),
+            (
+                "lesson length",
+                Draft {
+                    lessons: vec!["l".repeat(LESSON_MAX_CHARS + 1)],
+                    ..draft()
+                },
+            ),
+            (
+                "lesson count",
+                Draft {
+                    lessons: vec!["l".into(); MAX_LESSONS + 1],
+                    ..draft()
+                },
+            ),
+            (
+                "hypothesis length",
+                Draft {
+                    goal_hypotheses: vec!["h".repeat(HYPOTHESIS_MAX_CHARS + 1)],
+                    ..draft()
+                },
+            ),
+        ];
+        for (what, d) in cases {
+            store.record(&evidence, d, "m").unwrap();
+            let rows = store.for_owner().unwrap().0;
+            let got = rows.last().unwrap();
+            assert!(got.clipped, "{what}");
+            assert!(got
+                .prediction
+                .as_deref()
+                .is_none_or(|p| p.chars().count() <= PREDICTION_MAX_CHARS));
+            assert!(got.lessons.len() <= MAX_LESSONS, "{what}");
+            assert!(got
+                .lessons
+                .iter()
+                .chain(&got.goal_hypotheses)
+                .all(|t| t.chars().count() <= LESSON_MAX_CHARS.max(HYPOTHESIS_MAX_CHARS)));
+        }
+        // A statement over its ceiling is dropped, never cut, and counted.
+        let wordy = Draft {
+            claims: vec![claim(
+                &"s".repeat(STATEMENT_MAX_CHARS + 1),
+                "result:t1",
+                "the budget review moved to Thursday",
+            )],
+            ..draft()
+        };
+        let Recorded::Written { grounding, .. } = store.record(&evidence, wordy, "m").unwrap()
+        else {
+            panic!("written");
+        };
+        assert_eq!(grounding.dropped_by.get("statement_too_long"), Some(&1));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1220,6 +1292,15 @@ mod tests {
         }
         let s = Summary::of(&store.for_owner().unwrap().0);
         assert_eq!((s.records, s.sessions, s.clean, s.not_clean), (2, 2, 1, 1));
+        assert_eq!(s.no_session, 0);
+        let mut sparse = store.for_owner().unwrap().0;
+        sparse[0].session_id = String::new();
+        let s = Summary::of(&sparse);
+        assert_eq!(
+            (s.sessions, s.no_session),
+            (1, 1),
+            "a row naming no session is not one more session"
+        );
         assert_eq!((s.claims_kept, s.claims_dropped), (4, 2));
         assert_eq!(s.dropped_by.get("no_such_referent"), Some(&2));
         assert_eq!(Summary::of(&[]), Summary::default());

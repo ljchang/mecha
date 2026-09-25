@@ -641,7 +641,7 @@ fn text_appraisals_line(on_record: &AppraisalsOnRecord) -> String {
                 .collect();
             format!(
                 "text appraisals on record: {} over {} session(s) · {} clean · {} not clean \
-                 (the owner's surfaces only) · claims {} kept, {} dropped by grounding{}{}{}",
+                 (the owner's surfaces only) · claims {} kept, {} dropped by grounding{}{}{}{}",
                 s.records,
                 s.sessions,
                 s.clean,
@@ -652,6 +652,11 @@ fn text_appraisals_line(on_record: &AppraisalsOnRecord) -> String {
                     String::new()
                 } else {
                     format!(" ({})", reasons.join(" · "))
+                },
+                if s.no_session > 0 {
+                    format!(" · {} naming no session", s.no_session)
+                } else {
+                    String::new()
                 },
                 if s.clipped > 0 {
                     format!(" · {} clipped by a bound", s.clipped)
