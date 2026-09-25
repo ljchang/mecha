@@ -421,6 +421,29 @@ pub fn prepare_probe_in(
     trigger: &str,
     intervention: &str,
 ) -> Result<Result<ProbePrep, String>> {
+    prepare_intervention(path, trigger, intervention, None)
+}
+
+/// [`prepare_probe_in`] for a steer or denial whose message is already known
+/// — a point-wise comparison's point, found by `extract_interventions`.
+/// Relocated **at** that message (`locate_steer_at` / `locate_denial_at`),
+/// never by text alone: two identical steers in one session are two points,
+/// and by text both would prepare the first and store under its pointers.
+pub fn prepare_intervention_at(
+    path: &Path,
+    trigger: &str,
+    intervention: &str,
+    at: usize,
+) -> Result<Result<ProbePrep, String>> {
+    prepare_intervention(path, trigger, intervention, Some(at))
+}
+
+fn prepare_intervention(
+    path: &Path,
+    trigger: &str,
+    intervention: &str,
+    at: Option<usize>,
+) -> Result<Result<ProbePrep, String>> {
     let transcript = match Session::read(path) {
         Ok(t) => t,
         Err(e) => return Ok(Err(format!("session unreadable: {e:#}"))),
@@ -435,10 +458,17 @@ pub fn prepare_probe_in(
         let trajectory = extract(truncate_after_run(messages, index));
         (ProbeMethod::Followup { trajectory, branch }, index)
     } else {
+        use mecha_core::counterfactual::{locate_denial_at, locate_steer_at};
         let point = if trigger == Trigger::Steer.as_str() {
-            locate_steer(messages, intervention)
+            match at {
+                Some(at) => locate_steer_at(messages, at, intervention),
+                None => locate_steer(messages, intervention),
+            }
         } else if trigger == Trigger::Denial.as_str() {
-            locate_denial(messages, intervention)
+            match at {
+                Some(at) => locate_denial_at(messages, at, intervention),
+                None => locate_denial(messages, intervention),
+            }
         } else {
             // An `edit` reflection's intervention lives in an outbox item, not
             // in any transcript — there is no prefix to replay. Explicit, so a

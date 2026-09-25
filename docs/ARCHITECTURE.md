@@ -3932,7 +3932,10 @@ through the store above (a `point-*` `Kind` per point kind).
   moment, and all of one case's criteria are one point — the owner-bound
   criterion kept over a declared check. Two would store as one row and the
   second would read "already compared" without ever being measured (found
-  on review, twice).
+  on review, twice). For the same reason a steer or denial point is
+  relocated **at its own message** (`counterfactual::locate_steer_at` /
+  `locate_denial_at`, via `probe::prepare_intervention_at`), never by text
+  alone, which finds the first of two identical steers.
 - **The owner's recorded verdict decides, through a structural validator
   only** (R27). Steer and denial reuse `StructuralSteer`/`StructuralDenial`.
   A draft point is `ProbeKind::Draft`, branched like a denial (the whole

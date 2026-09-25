@@ -207,8 +207,30 @@ pub fn branch_at(messages: &[Message], point: &ProbePoint) -> Option<Branch> {
 /// message indices are not stored on reflections, and matching text keeps the
 /// reflection file human-editable without a hidden coordinate to corrupt.
 pub fn locate_steer(messages: &[Message], intervention_text: &str) -> Option<ProbePoint> {
+    locate_steer_from(messages, 0, intervention_text)
+}
+
+/// [`locate_steer`] **at** message `at`: the steer whose text is
+/// `intervention_text` and which rides in exactly that message. Text alone
+/// finds the first of two identical steers, so a caller that already knows
+/// where the intervention is (a point found by `extract_interventions`) asks
+/// here, or the second of two "stop" steers would be probed as the first and
+/// stored under the first's pointers (found on review of #312).
+pub fn locate_steer_at(
+    messages: &[Message],
+    at: usize,
+    intervention_text: &str,
+) -> Option<ProbePoint> {
+    locate_steer_from(messages, at, intervention_text).filter(|p| p.message_index == at)
+}
+
+fn locate_steer_from(
+    messages: &[Message],
+    from: usize,
+    intervention_text: &str,
+) -> Option<ProbePoint> {
     let wanted = intervention_text.trim();
-    let m = messages.iter().position(|msg| {
+    let (m, _) = messages.iter().enumerate().skip(from).find(|(_, msg)| {
         msg.role == Role::User
             && msg
                 .content
@@ -228,8 +250,18 @@ pub fn locate_steer(messages: &[Message], intervention_text: &str) -> Option<Pro
 
 /// Locate a denial: the tool result the approver wrote for a refused call.
 pub fn locate_denial(messages: &[Message], reason: &str) -> Option<ProbePoint> {
+    locate_denial_from(messages, 0, reason)
+}
+
+/// [`locate_denial`] **at** message `at` — the refusal with this reason in
+/// exactly that message, for the same reason as [`locate_steer_at`].
+pub fn locate_denial_at(messages: &[Message], at: usize, reason: &str) -> Option<ProbePoint> {
+    locate_denial_from(messages, at, reason).filter(|p| p.message_index == at)
+}
+
+fn locate_denial_from(messages: &[Message], from: usize, reason: &str) -> Option<ProbePoint> {
     let wanted = reason.trim();
-    for (m, msg) in messages.iter().enumerate() {
+    for (m, msg) in messages.iter().enumerate().skip(from) {
         if msg.role != Role::User {
             continue;
         }
@@ -1123,6 +1155,49 @@ mod tests {
             verdict(&mismatched, &point),
             ProbeVerdict::Inconclusive(_)
         ));
+    }
+
+    /// Two identical steers, and two refusals with the same reason: text
+    /// alone finds the first of each, and the `_at` locators find the one
+    /// at the message asked for — or nothing, when no match is there.
+    #[test]
+    fn a_repeated_intervention_is_located_at_its_own_message() {
+        let steer = |id: &str| {
+            let mut m = Message::tool_results(vec![result(id, "ok", false)]);
+            m.content.push(Block::text("only the third quarter"));
+            m
+        };
+        let messages = vec![
+            Message::user("total the quarters"),
+            Message::assistant(vec![tool_use("t1", "fs_list", json!({}))]),
+            steer("t1"),
+            Message::assistant(vec![tool_use("t2", "fs_write", json!({"path": "a.md"}))]),
+            Message::tool_results(vec![result("t2", "Denied by the user: not there", true)]),
+            Message::assistant(vec![tool_use("t3", "fs_list", json!({}))]),
+            steer("t3"),
+            Message::assistant(vec![tool_use("t4", "fs_write", json!({"path": "b.md"}))]),
+            Message::tool_results(vec![result("t4", "Denied by the user: not there", true)]),
+        ];
+        let text = "only the third quarter";
+        assert_eq!(locate_steer(&messages, text).unwrap().message_index, 2);
+        let second = locate_steer_at(&messages, 6, text).unwrap();
+        assert_eq!((second.message_index, second.call_index), (6, 3));
+        assert!(locate_steer_at(&messages, 4, text).is_none());
+        assert_eq!(
+            locate_denial(&messages, "not there").unwrap().message_index,
+            4
+        );
+        let refused = locate_denial_at(&messages, 8, "not there").unwrap();
+        assert_eq!(refused.message_index, 8);
+        assert_eq!(
+            refused.kind,
+            ProbeKind::Denial {
+                name: "fs_write".into(),
+                input: json!({"path": "b.md"})
+            },
+            "the second refusal's own call, not the first's"
+        );
+        assert!(locate_denial_at(&messages, 6, "not there").is_none());
     }
 
     /// The staging call is found by the id the outbox recorded, and a
