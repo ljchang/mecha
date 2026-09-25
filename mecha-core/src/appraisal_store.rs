@@ -1451,11 +1451,15 @@ pub fn observe(
     if acts.workflows_unreadable {
         return unknown("the workflow store could not be read");
     }
+    // The session's drafts, every author but the harness's own cards: a
+    // draft whose author word this build cannot read is still this
+    // session's output waiting in the outbox (the window), and still may
+    // carry the owner's act (below).
     let drafts: Vec<&crate::outbox::OutboxItem> = acts
         .drafts
         .iter()
         .filter(|d| d.session_id.as_deref() == Some(session_id))
-        .filter(|d| d.author() == crate::outbox::Author::Model)
+        .filter(|d| d.author() != crate::outbox::Author::Harness)
         .collect();
     let owners = |c: &&crate::closure::Transition| {
         c.sessions.iter().any(|s| s == session_id)
@@ -1497,16 +1501,19 @@ pub fn observe(
         constant
     };
 
+    // Readable acts, and the times of acts seen but not read — a draft by an
+    // author or with a status word this build cannot read, a closure whose
+    // move it cannot read. An unread act decides nothing unless it could be
+    // *the* act: inside the window, and no later than the first readable one
+    // (found on review of #324).
     let mut seen: Vec<(DateTime<Utc>, ExpectedAct)> = Vec::new();
+    let mut unread: Vec<DateTime<Utc>> = Vec::new();
     for d in &drafts {
-        let act = match d.status.as_str() {
-            "sent" if d.edited() => ExpectedAct::Edited,
-            "sent" => ExpectedAct::ReleasedUnchanged,
-            "rejected" => ExpectedAct::Rejected,
-            _ => continue,
-        };
-        // No readable time: it cannot be placed inside or outside the
-        // window, so the answer cannot be read.
+        if d.status == "pending" {
+            continue;
+        }
+        // Resolved, but no readable time: it cannot be placed inside or
+        // outside the window, or before or after any other act.
         let Some(at) = d
             .resolved_at
             .as_deref()
@@ -1515,7 +1522,15 @@ pub fn observe(
         else {
             return unknown("a resolved draft carries no readable time");
         };
-        seen.push((at, act));
+        let model = d.author() == crate::outbox::Author::Model;
+        match (model, d.status.as_str()) {
+            (true, "sent") if d.edited() => seen.push((at, ExpectedAct::Edited)),
+            (true, "sent") => seen.push((at, ExpectedAct::ReleasedUnchanged)),
+            (true, "rejected") => seen.push((at, ExpectedAct::Rejected)),
+            // An author or a status word this build cannot read: an act was
+            // taken, and which one is not known.
+            _ => unread.push(at),
+        }
     }
     // An actor this build cannot read is not taken as the owner's hand: the
     // act is not established to be the owner's, the direction `observe`
@@ -1524,16 +1539,7 @@ pub fn observe(
         match c.kind {
             crate::closure::Move::Close => seen.push((c.at, ExpectedAct::Closed)),
             crate::closure::Move::Reopen => seen.push((c.at, ExpectedAct::Reopened)),
-            // The owner acted on this session's task, inside the window, and
-            // this build cannot read which way: an act seen and not read is
-            // unknown, never "no act" (R37). One after the window is not the
-            // act whichever way it went.
-            crate::closure::Move::Unknown if c.at <= closes_at => {
-                return unknown(
-                    "a closure naming this session records a move this build cannot read",
-                )
-            }
-            crate::closure::Move::Unknown => {}
+            crate::closure::Move::Unknown => unread.push(c.at),
         }
     }
     for w in acts.workflows {
@@ -1551,7 +1557,19 @@ pub fn observe(
         }
     }
     seen.sort_by_key(|(at, _)| *at);
-    if let Some((at, act)) = seen.into_iter().find(|(at, _)| *at <= closes_at) {
+    let first = seen.iter().find(|(at, _)| *at <= closes_at).cloned();
+    // An act seen and not read that could be the first act — inside the
+    // window, and no later than the first readable act — makes the answer
+    // unknown, never "no act" and never the readable act after it (R37).
+    if unread
+        .iter()
+        .any(|t| *t <= closes_at && first.as_ref().is_none_or(|(f, _)| t <= f))
+    {
+        return unknown(
+            "an owner act on this session's output is recorded in a form this build cannot read",
+        );
+    }
+    if let Some((at, act)) = first {
         return ObservedAct::Act { act, at };
     }
     if now >= closes_at {
@@ -3066,6 +3084,71 @@ mod tests {
                 },
                 long_after
             ),
+            ObservedAct::Act {
+                act: ExpectedAct::Rejected,
+                ..
+            }
+        ));
+        // An unread closure after a readable act inside the window cannot be
+        // the first act: the readable one stands.
+        let mid_future = crate::closure::Transition {
+            at: end + chrono::Duration::hours(40),
+            ..future.clone()
+        };
+        let undated_board = json!({"items": [{"id": "task-1", "status": "done"}]});
+        assert!(matches!(
+            observe(
+                "s-1",
+                None,
+                end,
+                &OwnerActs {
+                    closures: std::slice::from_ref(&mid_future),
+                    board: BoardRead::Read(&undated_board),
+                    ..acts(&rejected)
+                },
+                long_after
+            ),
+            ObservedAct::Act {
+                act: ExpectedAct::Rejected,
+                ..
+            }
+        ));
+        // A draft of this session whose author word, or status word, this
+        // build cannot read, resolved inside the window with nothing readable
+        // before it: unknown, never "no act".
+        let mut foreign = draft_of(
+            &root,
+            "s-1",
+            "rejected",
+            Some(end + chrono::Duration::hours(2)),
+        );
+        foreign.author = "a-newer-author".into();
+        let mut withdrawn = draft_of(
+            &root,
+            "s-1",
+            "withdrawn",
+            Some(end + chrono::Duration::hours(2)),
+        );
+        withdrawn.author = "model".into();
+        for (what, d) in [("author", foreign.clone()), ("status", withdrawn)] {
+            assert!(
+                matches!(
+                    observe(
+                        "s-1",
+                        None,
+                        end,
+                        &acts(std::slice::from_ref(&d)),
+                        long_after
+                    ),
+                    ObservedAct::Unknown { .. }
+                ),
+                "an unreadable {what}"
+            );
+        }
+        // After a readable act it cannot be the first: the readable one stands.
+        let both = [rejected[0].clone(), foreign];
+        assert!(matches!(
+            observe("s-1", None, end, &acts(&both), long_after),
             ObservedAct::Act {
                 act: ExpectedAct::Rejected,
                 ..

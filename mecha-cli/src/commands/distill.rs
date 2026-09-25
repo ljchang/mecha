@@ -609,9 +609,19 @@ async fn score_predictions(server: &str) {
         return;
     };
     let stores = mecha_core::appraisal::Stores::load();
-    let (board, zone) = board_for_scoring(server).await;
+    // The board is read only when a task output is waiting on it — a quiet
+    // night with nothing of the kind starts no graph server.
+    let needs_board = store
+        .score_summary(&owner_acts(&stores), chrono::Utc::now())
+        .is_ok_and(|s| s.board_not_read > 0);
+    let (board, zone) = if needs_board {
+        board_for_scoring(server).await
+    } else {
+        (Err(String::new()), None)
+    };
     let board_read = match &board {
         Ok(v) => mecha_core::appraisal_store::BoardRead::Read(v),
+        Err(_) if !needs_board => mecha_core::appraisal_store::BoardRead::NotRead,
         Err(e) => {
             eprintln!(
                 "mecha: the board could not be read for task due dates ({e}); task outputs stay \
