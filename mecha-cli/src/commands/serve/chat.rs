@@ -361,6 +361,19 @@ impl ChatState {
             mecha_core::sandbox::Sandbox::new(self.config.sandbox.clone())
                 .writes_stay_in_workspace(),
         );
+        // R3's reads ride on a configured server name; a rename narrows the
+        // chat to no mail at all, so say so rather than degrade in silence.
+        let mail = format!("{}__", super::incognito::READABLE_SERVER);
+        if !self
+            .agent
+            .registry()
+            .iter()
+            .any(|t| t.name().starts_with(&mail))
+        {
+            tracing::warn!(
+                "an incognito chat can read no mail: no tool is registered under `{mail}*`"
+            );
+        }
         let (events, _) = broadcast::channel(512);
         let questions = super::present::Questions::default();
         let mut sessions = self.sessions.lock().await;
@@ -2344,6 +2357,10 @@ fn begin_turn(
             if !sessions.contains_key(&key_for_task) {
                 if let Err(e) = room.remove() {
                     tracing::warn!("a closed incognito room was not removed: {e:#}");
+                }
+                // And its plan, which a late `todo` call re-inserted the same way.
+                if let Some(todo) = &state_for_task.todo {
+                    todo.forget_in(&room.workspace);
                 }
             }
         }

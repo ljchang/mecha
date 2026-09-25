@@ -8,7 +8,8 @@
 //! transcript by type, so every place that records has to say what it does
 //! instead.
 //!
-//! **The room is in RAM.** `$XDG_RUNTIME_DIR/mecha-incognito/<key>/` holds
+//! **The room is in RAM.** `$XDG_RUNTIME_DIR/mecha-incognito/<home>/<key>/`
+//! (`<home>` a reversible escape of the mecha home's path) holds
 //! the workspace (the jail: uploads, model-written files) and, beside it, the
 //! spill directory. Both are on tmpfs — checked with `statfs`, never assumed
 //! — so nothing the conversation touches reaches the SSD, and closing the
@@ -69,7 +70,7 @@ const ALLOWED_BUILTINS: &[&str] = &[
 /// mail and calendar reads). The graph records every read's query text
 /// (`query_log`), so its tools stay withheld until it can read without
 /// recording (design §5.2).
-const READABLE_SERVER: &str = "mail";
+pub const READABLE_SERVER: &str = "mail";
 
 /// Tools an incognito run may not dispatch: every registered tool that is
 /// not allowed. `tools` is the registry as `(name, read_only)`; `routed` the
@@ -88,8 +89,12 @@ pub fn withheld<'a>(
     tools
         .into_iter()
         .filter(|(name, read_only)| {
-            let allowed = (ALLOWED_BUILTINS.contains(name) && (*name != "shell" || shell_confined))
-                || (name.starts_with(&mail) && *read_only && !routed.iter().any(|r| r == name));
+            // A routed name stages a draft on disk whatever it is — a
+            // builtin the owner routed (`http_fetch`) as much as a mail tool
+            // (found on review of #321, when only the mail arm checked).
+            let allowed = !routed.iter().any(|r| r == name)
+                && ((ALLOWED_BUILTINS.contains(name) && (*name != "shell" || shell_confined))
+                    || (name.starts_with(&mail) && *read_only));
             !allowed
         })
         .map(|(name, _)| name.to_string())
@@ -393,9 +398,13 @@ mod tests {
             ("docs__docs_read", true),
             ("image_generate", true),
             ("research", false),
+            ("http_fetch", true),
             ("a_tool_added_tomorrow", true),
         ];
-        let routed = vec!["mail__calendar_create_event".to_string()];
+        let routed = vec![
+            "mail__calendar_create_event".to_string(),
+            "http_fetch".to_string(),
+        ];
         assert!(
             withheld(tools, &routed, false).contains(&"shell".to_string()),
             "an unconfined shell could write outside the room"
@@ -407,6 +416,7 @@ mod tests {
             [
                 "a_tool_added_tomorrow",
                 "docs__docs_read",
+                "http_fetch",
                 "image_generate",
                 "kg_search",
                 "mail__calendar_create_event",
