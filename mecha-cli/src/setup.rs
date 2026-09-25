@@ -1750,29 +1750,21 @@ pub fn local_server_for_brief(
 }
 
 /// Assemble this run's situation brief and put it on the run's context —
-/// the one call every briefed front-end makes, after the anchor is seeded
-/// and the budget set, before the run. `board` is the `kg_task_list`
-/// answer when the front-end already holds one (`tasks work` read the
-/// board to find its task), else it is read here.
+/// the one call the unattended front-ends make (`tasks work`, a trigger),
+/// after the anchor is seeded and the budget set, before the run. The board
+/// is read here, open tasks only, the same read on every door; the web door
+/// makes the same reads under the interactive deadline (`serve::chat`).
 pub async fn brief_run(
     agent: &Agent,
     config: &mecha_core::config::Config,
     provider: &str,
     cx: &mut mecha_core::agent::RunContext,
     convo: &mecha_core::agent::Conversation,
-    board: Option<serde_json::Value>,
 ) {
     let local = local_server_for_brief(config, provider);
     // The two reads that wait on another process, taken together.
     let (board, slots) = tokio::join!(
-        async {
-            match board {
-                Some(b) => Ok(b),
-                None => {
-                    read_board_for_brief(agent.registry(), &cx.tools, BRIEF_BOARD_TIMEOUT).await
-                }
-            }
-        },
+        read_board_for_brief(agent.registry(), &cx.tools, BRIEF_BOARD_TIMEOUT),
         mecha_core::brief::slots_for(local.as_deref()),
     );
     let brief = mecha_core::brief::assemble_for_run(agent, cx, convo, board, slots);
