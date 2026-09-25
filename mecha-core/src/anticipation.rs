@@ -60,8 +60,9 @@ pub struct Commitment {
 pub enum RecordedCommitment {
     /// The one commitment record (`workflow::Commitment`): what every new
     /// prediction writes. Its `source` is the goal pointer the evidence is
-    /// bound to, and it states no date — nothing machine-derived says "by
-    /// when".
+    /// bound to, and its dates are only ever the owner's: none when it came
+    /// from the legacy shape, exactly the ones written when the owner gave
+    /// the record shape — the harness never supplies a "by when".
     Record(#[serde(deserialize_with = "strict_record")] crate::workflow::Commitment),
     /// The shape predictions recorded before 1f-2 carry, and the one an
     /// owner's evidence file may still be written in.
@@ -110,14 +111,6 @@ impl RecordedCommitment {
             }
         }
         Ok(())
-    }
-
-    /// The party it is owed to, whichever shape holds it.
-    pub fn party(&self) -> &str {
-        match self {
-            RecordedCommitment::Record(c) => &c.party,
-            RecordedCommitment::Legacy(c) => &c.beneficiary,
-        }
     }
 }
 
@@ -203,10 +196,11 @@ impl Evidence {
     /// an owner's evidence file is written in — becomes a
     /// `workflow::Commitment` whose party is the beneficiary, whose
     /// `source` is the goal pointer the evidence is bound to (structural,
-    /// never text), and which states **no date**: an evidence file names
-    /// none, and nothing here derives one. A record given as input must
-    /// already point at that goal, so every new write's `source` is the
-    /// same structural pointer.
+    /// never text), and which has **no date** — that shape carries none. A
+    /// record given as input must already point at that goal, so every new
+    /// write's `source` is the same structural pointer, and it keeps
+    /// exactly the dates the owner wrote on it. Dates are only ever the
+    /// owner's: nothing here derives one (ruled 2026-09-25).
     ///
     /// The door for every owner-evidence write — `BoundEvidence::new` (a
     /// run's evidence, and so every draft it stages) and
@@ -682,5 +676,55 @@ mod tests {
             with(r#"{"party":" ","source":"task:meeting","expectation":"e","consequence":"c"}"#)
                 .unwrap();
         assert!(empty.validate().is_err(), "bounded like the legacy fields");
+    }
+
+    /// Dates are only ever the owner's (ruled on review of #304): a record
+    /// the owner wrote with `due_at` / `follow_up_at` keeps exactly those
+    /// through the door and through a run's bound evidence, written back
+    /// byte-for-byte; the legacy shape still gets none; and a follow-up
+    /// after the deadline is refused rather than reordered.
+    #[test]
+    fn an_owner_written_date_on_a_record_passes_through_the_door_unchanged() {
+        let dated = r#"{"party":"attendees","source":"task:meeting","due_at":"2026-10-02T17:00:00Z","follow_up_at":"2026-10-01T09:00:00Z","expectation":"send the confirmed time","consequence":"attendees miss the meeting"}"#;
+        let input: Evidence = serde_json::from_str(&format!(
+            r#"{{"goal":"task:meeting","commitment":{dated}}}"#
+        ))
+        .unwrap();
+        let recorded = input.clone().into_record().unwrap();
+        assert_eq!(recorded, input, "the door changes nothing on it");
+        let Some(RecordedCommitment::Record(c)) = &recorded.commitment else {
+            panic!("{:?}", recorded.commitment);
+        };
+        assert_eq!(
+            (c.due_at, c.follow_up_at),
+            (
+                Some("2026-10-02T17:00:00Z".parse().unwrap()),
+                Some("2026-10-01T09:00:00Z".parse().unwrap())
+            )
+        );
+        assert_eq!(
+            serde_json::to_string(recorded.commitment.as_ref().unwrap()).unwrap(),
+            dated,
+            "written back exactly as the owner wrote it"
+        );
+        let bound = BoundEvidence::new(input).unwrap();
+        assert_eq!(bound.snapshot().commitment, recorded.commitment);
+
+        // The legacy shape has no date to carry, and the door adds none.
+        let legacy: Evidence = serde_json::from_str(
+            r#"{"goal":"task:meeting","commitment":{"beneficiary":"attendees","expectation":"e","consequence":"c"}}"#,
+        )
+        .unwrap();
+        let Some(RecordedCommitment::Record(c)) = legacy.into_record().unwrap().commitment else {
+            panic!("a legacy commitment becomes the record");
+        };
+        assert_eq!((c.due_at, c.follow_up_at), (None, None));
+
+        // A follow-up after the deadline is refused, never reordered.
+        let backwards: Evidence = serde_json::from_str(
+            r#"{"goal":"task:meeting","commitment":{"party":"attendees","source":"task:meeting","due_at":"2026-10-01T09:00:00Z","follow_up_at":"2026-10-02T17:00:00Z","expectation":"e","consequence":"c"}}"#,
+        )
+        .unwrap();
+        assert!(backwards.into_record().is_err());
     }
 }

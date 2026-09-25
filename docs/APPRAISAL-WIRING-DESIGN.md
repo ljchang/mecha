@@ -817,12 +817,16 @@ by `mecha workflow commit`. The invariants are `docs/ARCHITECTURE.md`'s
   `anticipation::RecordedCommitment` (`Record` | `Legacy`, each written back
   in its own shape); `Evidence::into_record` — called by
   `BoundEvidence::new` and `OutboxStore::anticipate`, the only doors owner
-  evidence enters by — writes the record with the beneficiary as party,
-  the evidence's goal pointer as source and no date; every reader of the
-  dates goes through `Commitment::overdue` / `follow_up_due`; the web
-  Today page says "no deadline stated". `mecha workflow commit` still
-  requires its dates (`docs/ARCHITECTURE.md`, "Every new prediction's
-  commitment is the one record").
+  evidence enters by — writes the record with the beneficiary as party
+  and the evidence's goal pointer as source; every reader of the dates
+  goes through `Commitment::overdue` / `follow_up_due`; the web Today page
+  says "no deadline stated". **Dates are only ever the owner's** (ruled on
+  review of #304, 2026-09-25): a legacy-shaped commitment gets no date; a
+  record-shaped one carries only the dates the owner wrote, passed through
+  unchanged, which is consistent with (b) because they are owner-stated,
+  not machine-derived; and the harness never supplies a date. `mecha
+  workflow commit` still requires its dates (`docs/ARCHITECTURE.md`,
+  "Every new prediction's commitment is the one record").
 - **Workflow commitments in the guilt read.** No charter kind watches the
   workflow store and the doctor has no constant for it; the commitment's
   own `due_at` is the natural patience, which is a design choice, and the
