@@ -352,7 +352,7 @@ with a `mecha exp` arm against EXPERIMENT-DESIGN §15's appraisal-off preset
 | **2b-1** | **Anticipation's predictions scored.** Every `Prediction` an `Outcome` resolves is a calibration point per kind; coverage is reported, never a calibration figure while outcomes are absent; a delivery positive only after `outbox reconcile`. | X5 | 1d | a fixture store with resolved and unresolved predictions reports coverage per kind and no rate over nothing |
 | **2b-2** | **The appraisal's own prediction scored** when the same situation and goal next come round; a miss is a surprise, recorded for 2e-6's priority. The structural scorer is the owner's ruling of 2026-09-25: the record's `expected_act` (R16's closed set, added by 2a-2) against the owner's recorded act on the next session's output; the prose prediction is never scored. | X5 | 2a-2, 2b-1 | a fixture pair of sessions scores a hit and a miss on `expected_act` against the recorded act; a model never decides a score (R27) |
 | **2c-1** | **The goal joins `Situation`** as a recorded and scope key — recording, matching, replay and validation in one change; an absent goal never widens a scope. *Built as 2c-1 (2026-09-25): the key is the whole `GoalRef` the front-end handed `prepare`, recorded as `RunConfig::rules_goal`.* | M1 | 1a | the scope-key tests cover the goal on every door; a rule mined with no goal still matches as before |
-| **2c-2** | **Past clean appraisals retrieved.** `goal_context` serves up to three clean appraisals of the same situation and goal, on demand, never pushed — through `Clean` only. Measured against a control at matched budget, since retrieved memory can cost more than it returns. | I2 | 2a-2, 2c-1 | a clean appraisal of a matching session is served and a tainted one never is; the lever's arm runs against the control |
+| **2c-2** | **Past clean appraisals retrieved.** `goal_context` serves up to three clean appraisals of the same situation and goal, on demand, never pushed — through `Clean` only. Measured against a control at matched budget, since retrieved memory can cost more than it returns. *Built as 2c-2 (2026-09-25): `Lever::PastAppraisals`, shipping off; the measured run is owed.* | I2 | 2a-2, 2c-1 | a clean appraisal of a matching session is served and a tainted one never is; the lever's arm runs against the control |
 | **2d-1** | **Point-wise comparison at informative decision points.** At a steer, a denial, a failed check, an edited or rejected draft, a surprise: `probe::drive_arm` runs K policies a short horizon from the point, and the owner's recorded verdict decides (new: a branch's draft against the released text). Each writes a 1g `Comparison` of a new kind. Points drawn uniformly until 2e-6 ranks them. **Built as 2d-1** — `mecha sessions compare`; see O1 for what was built and what it left. | O1, R26, R27 | 1g | fixture points of each kind leave comparisons a second read returns; a point whose verdict no structural validator can pose is inconclusive, never judged |
 | **2d-2** | **The acceptance combination** (R26): a harness candidate is accepted when the point-wise comparison decides for it and the whole-session numeric comparison shows no regression, `WORK_FLOOR` intact. **Built as 2d-2**, with R36's completion: point-wise against rejects, and point-wise undecided leaves the numeric verdict unchanged. | O1, R26 | 2d-1 | a candidate that wins point-wise and regresses the floor is rejected; one that wins point-wise and holds is accepted |
 | **2d-3** | **The losing arm teaches.** A comparison's confirmed losing outcome is written into that session's appraisal as counterfactual reflection — a new pointer kind naming the comparison, which 2a-1's `Pointer::Unread` already round-trips. | O3 | 2a-2, 2d-1 | a decided comparison's loser appears on the session's appraisal, pointing at its comparison; an undecided one writes nothing |
@@ -1237,6 +1237,21 @@ described ("past experiences") and the input I1 reads for the next appraisal,
 which is how interpretation accumulates rather than restarting every run.
 Measured against a control at matched budget, because retrieved memory can
 cost more than it returns (arXiv 2606.15017).
+
+> **Built as 2c-2 (2026-09-25).** Behind `Lever::PastAppraisals` (`[agent]
+> past_appraisals`), **off by default** per §1 decision 7 — the lever
+> stage; on-by-default waits for the arms. `goal_context` serves up to three
+> `Clean` appraisals keyed exactly as the run record keys the run (tools
+> re-selected against the registry the run starts with), only toward the
+> goal they were selected for, framed as a model's interpretation of an
+> earlier run, never a verified fact about this one. The tool's description
+> and the prefix are unchanged; the result is `private` (as `goal_context`
+> always was) and never `external`. The arm is `levers_on =
+> ["past_appraisals"]` against a control; an environment's `appraisals/` is
+> seeded into each trial home. **Owed:** the measured run itself — a
+> manifest whose environment's appraisals carry the situation key a trial
+> presents (its workspace included) — and whether retrieval pays at matched
+> budget.
 
 #### M1. The goal joins `Situation`
 

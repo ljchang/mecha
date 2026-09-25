@@ -242,6 +242,11 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_situation_brief: bool,
 
+    /// Serve no past appraisal through `goal_context`, whatever `[agent]
+    /// past_appraisals` says (`Lever::PastAppraisals`).
+    #[arg(long, global = true)]
+    pub no_past_appraisals: bool,
+
     /// Don't route any tools through the outbox — configured [outbox] tools
     /// execute directly under the usual gates instead of being staged.
     #[arg(long, global = true)]

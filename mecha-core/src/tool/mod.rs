@@ -650,6 +650,13 @@ pub struct ToolCtx {
     pub goal_guidance: bool,
     pub goal_lessons: Vec<crate::planning::Lesson>,
     pub goal_examples: Vec<crate::planning::Example>,
+    /// Past clean appraisals of this run's situation and goal, for
+    /// `goal_context` to serve on demand (I2, built as 2c-2). `None` is the
+    /// lever off (`Lever::PastAppraisals`), and the tool's answer is then
+    /// the bytes it was before the lever existed. Only a
+    /// [`crate::appraisal_store::Clean`] can be held here, so a tainted
+    /// appraisal cannot be served whatever the caller loaded.
+    pub goal_appraisals: Option<crate::appraisal_store::PastAppraisals>,
     pub step_checks: Option<std::sync::Arc<std::sync::Mutex<Vec<crate::step::CheckRequest>>>>,
     /// Whether a person is in this run's conversation, stamped by the
     /// front-end (`setup::posture_for`). The `shell` tool registers every
@@ -836,6 +843,7 @@ impl Default for ToolCtx {
             goal_guidance: false,
             goal_lessons: Vec::new(),
             goal_examples: Vec::new(),
+            goal_appraisals: None,
             step_checks: None,
             run_posture: None,
         }

@@ -18,7 +18,7 @@
 //!   this machine and the owner's standing word, so they come from the
 //!   operator's config and nowhere else — an environment cannot lift a
 //!   `forbid` any more than an arm can.
-//! - `charter.toml`, `skills/`, `learning/` — seeded into each home once
+//! - `charter.toml`, `skills/`, `learning/`, `appraisals/` — seeded into each home once
 //!   (`experiment::seed_home`, from here), in place of the real home's.
 //! - `stores/<server>/` and `stores/<server>.calls.jsonl` — a server's
 //!   starting state. A server in the environment's config that names

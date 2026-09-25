@@ -645,6 +645,32 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
             }
         }
     }
+    // Past clean appraisals for `goal_context` to serve on demand (I2,
+    // 2c-2), behind `Lever::PastAppraisals` — never the prefix. Keyed as the
+    // run record will key this run (`RunConfig::of` reads the same
+    // `RulesCarried`): with the learned-rules lever off nothing was matched,
+    // so the key names the tools alone, as the record will. The loop
+    // re-selects against the registry the run starts with, since a
+    // front-end may withhold a tool after this point.
+    if agent_cfg.past_appraisals {
+        use mecha_core::appraisal_store::{AppraisalStore, CleanRead, PastAppraisals};
+        let run = mecha_core::situation::Situation::of_run(
+            &registry
+                .iter()
+                .map(|t| t.name().to_string())
+                .collect::<Vec<_>>(),
+            rules.workspace.as_deref(),
+        )
+        .on(rules.surface)
+        .toward(rules.goal.clone());
+        ctx.goal_appraisals = Some(match AppraisalStore::open_existing_default() {
+            None => PastAppraisals::select(CleanRead::default(), &run),
+            Some(store) => match store.clean() {
+                Ok(read) => PastAppraisals::select(read, &run),
+                Err(e) => PastAppraisals::unread(format!("{e:#}"), &run),
+            },
+        });
+    }
 
     let mut agent = Agent::new(
         provider,
@@ -819,6 +845,7 @@ pub fn levers_off(opts: &GlobalOpts, cfg: &Config) -> Vec<Lever> {
             Lever::PredictiveCompaction => !agent.predictive_compaction,
             Lever::CarriedState => !agent.carried_state,
             Lever::SituationBrief => !agent.situation_brief,
+            Lever::PastAppraisals => !agent.past_appraisals,
         })
         .collect()
 }
@@ -848,6 +875,7 @@ pub fn switch_off(opts: &mut GlobalOpts, lever: Lever) {
         Lever::PredictiveCompaction => opts.no_predictive_compaction = true,
         Lever::CarriedState => opts.no_carried_state = true,
         Lever::SituationBrief => opts.no_situation_brief = true,
+        Lever::PastAppraisals => opts.no_past_appraisals = true,
     }
 }
 
@@ -935,6 +963,7 @@ pub(crate) fn fold_agent_switches(agent: &mut mecha_core::config::AgentConfig, o
     agent.predictive_compaction = agent.predictive_compaction && !opts.no_predictive_compaction;
     agent.carried_state = agent.carried_state && !opts.no_carried_state;
     agent.situation_brief = agent.situation_brief && !opts.no_situation_brief;
+    agent.past_appraisals = agent.past_appraisals && !opts.no_past_appraisals;
 }
 
 /// The `ToolCtx` shape `compact_requested` already established: presence is
