@@ -2216,8 +2216,14 @@ now makes the move one recorded event:
   nearest-first that shadowed the real `delegated` entry above it — so any
   registration on the chain that is unreadable, not `interactive`, or found
   outside this process's own registry refuses (`shell_registry::walk_from`,
-  review of #294). Registration still writes under
-  `MECHA_HOME`, so a trial home keeps its own registry. **A nested front
+  review of #294). Registration writes under `MECHA_HOME` *and* the owner's
+  real home (`shell_registry::write_roots`), symmetric with the read, so a
+  harness that itself runs under a `MECHA_HOME` — a trial arm — is still
+  found by a command that redirects again; the same entry in both
+  corroborates, and a trial home's own registry still holds its runs. The
+  run markers are written only under the harness's home, so for a trial
+  arm rule 1 can miss a redirected command — the registry is what refuses
+  it (review of #294). **A nested front
   end is not a person:** `mecha chat`, `mecha run` and `mecha tui` stamp
   `interactive` only with a terminal on stdin *and* no registered shell
   above them (`setup::front_end_interactive`), so a run that pipes into
