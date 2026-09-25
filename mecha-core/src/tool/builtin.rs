@@ -1160,8 +1160,17 @@ mod tests {
             run_posture: Some(crate::closure::RunPosture::Delegated),
             ..ToolCtx::default()
         };
+        // The harness registers the command just *after* spawning it, so a
+        // command that reads its entry at once can get there first (1 in ~40
+        // parallel runs, 2026-09-25). Wait for it, bounded: the claim under
+        // test is "registered while it runs", not "before its first
+        // instruction" — which the product does not promise today.
         let read_own = serde_json::json!({
-            "command": format!("echo \"pid=$$\"; cat '{}'/$$.json", root.display())
+            "command": format!(
+                "echo \"pid=$$\"; f='{}'/$$.json; i=0; \
+                 while [ ! -f \"$f\" ] && [ $i -lt 40 ]; do sleep 0.05; i=$((i+1)); done; cat \"$f\"",
+                root.display()
+            )
         });
         let out = shell.call(read_own, &ctx).await.unwrap();
         assert!(!out.is_error, "{}", out.content);
