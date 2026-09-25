@@ -3926,9 +3926,13 @@ through the store above (a `point-*` `Kind` per point kind).
   whitespace edit separates nothing; a draft sent unchanged is approval, not
   a point). **A point is a moment, not a step**: a comparison's pointers
   name a message and a call, so steps of one kind on one message anchored
-  to the same call (or none) are one point, the owner-bound criterion kept
-  over a declared check — two would store as one row and the second would
-  read "already compared" without ever being measured (found on review).
+  to the same call **as the transcript resolves it** (`call_index_of`) are
+  one point — every unresolvable anchor (none, a call no longer there, an
+  owner criterion's `artifact-criterion:<id>`) is the same unanchored
+  moment, and all of one case's criteria are one point — the owner-bound
+  criterion kept over a declared check. Two would store as one row and the
+  second would read "already compared" without ever being measured (found
+  on review, twice).
 - **The owner's recorded verdict decides, through a structural validator
   only** (R27). Steer and denial reuse `StructuralSteer`/`StructuralDenial`.
   A draft point is `ProbeKind::Draft`, branched like a denial (the whole

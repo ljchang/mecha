@@ -59,7 +59,9 @@ pub struct Tally {
     /// Points in a session whose recorded taint is not clean (or unknown):
     /// never drawn, since nothing from them may be stored.
     pub not_clean: usize,
-    /// Points whose recorded tool surface is not readable: never drawn.
+    /// Points whose recorded tool surface is not readable: drawn and
+    /// prepared (only the prepared point knows which surface applies), then
+    /// refused before any seat or budget is spent.
     pub surface_unreadable: usize,
     /// The pool the draw was over.
     pub drawable: usize,
@@ -67,6 +69,7 @@ pub struct Tally {
     /// and the arms (the model runs paid). `driven` minus `drive_failed` is
     /// the comparisons offered to the store.
     pub driven: usize,
+    /// Arms started — the runs paid for, including one that then failed.
     pub arms_driven: usize,
     /// Of `driven`, the points lost to an arm that could not be driven: paid
     /// for, and no comparison — a comparison with a missing arm is a failed
@@ -762,7 +765,8 @@ fn print_text(t: &Tally, seed: u64, outbox_read: bool) {
         println!("  the outbox could not be fully read, so draft points are floors");
     }
     println!(
-        "  not drawn: {} in a session that was not clean · {} with no readable tool surface",
+        "  not compared: {} in a session that was not clean (never drawn) · {} with no readable \
+         tool surface (refused before driving)",
         t.not_clean, t.surface_unreadable
     );
     println!(

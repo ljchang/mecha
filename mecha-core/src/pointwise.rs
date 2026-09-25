@@ -222,13 +222,20 @@ pub fn points_in(session_id: &str, messages: &[Message], drafts: &[&OutboxItem])
         };
         // **One point per moment, not per step.** A comparison's pointers
         // name a message and a call, never a step, so two steps of one kind
-        // on one message anchored to the same call (or to none — the todo
-        // tool files a tampered check with no call id) are one decision the
-        // model made, and would store as one row anyway: the second would
-        // read as "already compared" when it was never measured (found on
-        // review). Of such steps a failed owner-bound criterion is kept
-        // over a declared check, since it is the one a validator can pose.
-        let mut kept: Vec<(PointKind, Option<&str>, usize)> = Vec::new();
+        // on one message anchored to the same call are one decision the model
+        // made, and would store as one row anyway: the second would read as
+        // "already compared" when it was never measured (found on review).
+        // The anchor is the call **as the transcript resolves it**
+        // ([`call_index_of`], the coordinate the pointers carry), so an id
+        // that names no call — none at all (the todo tool files a tampered
+        // check with no call id), or an owner criterion's
+        // `artifact-criterion:<id>`, which is never a `tool_use` — is the
+        // same unanchored moment, and every criterion of one artifact case
+        // is one point (its repeat is graded against the whole case anyway;
+        // review pass 2). Of such steps a failed owner-bound criterion is
+        // kept over a declared check, since it is the one a validator can
+        // pose.
+        let mut kept: Vec<(PointKind, Option<usize>, usize)> = Vec::new();
         for (step, f) in feedback.steps.iter().enumerate() {
             let kind = if f.learnable_failure() {
                 PointKind::FailedCheck
@@ -237,7 +244,14 @@ pub fn points_in(session_id: &str, messages: &[Message], drafts: &[&OutboxItem])
             } else {
                 continue;
             };
-            let anchor = f.call_id.as_deref();
+            // An owner-bound criterion is graded by repeating the whole
+            // case, which a comparison records at no call (`call_index:
+            // None`), so every one on this message is the same moment.
+            let anchor = f
+                .call_id
+                .as_deref()
+                .filter(|_| f.criterion.is_none())
+                .and_then(|id| call_index_of(messages, id));
             match kept.iter_mut().find(|(k, a, _)| *k == kind && *a == anchor) {
                 Some(slot) => {
                     let owner_bound = |i: usize| feedback.steps[i].criterion.is_some();
@@ -248,10 +262,12 @@ pub fn points_in(session_id: &str, messages: &[Message], drafts: &[&OutboxItem])
                 None => kept.push((kind, anchor, step)),
             }
         }
-        for (kind, anchor, step) in kept {
+        for (kind, _, step) in kept {
             // The call the feedback names, when the transcript still holds
             // it; the plan tool otherwise, as the mismatch miner records.
-            let tool = anchor
+            let tool = feedback.steps[step]
+                .call_id
+                .as_deref()
                 .and_then(|id| call_named(messages, id))
                 .unwrap_or_else(|| "todo".to_string());
             out.push(Point {
@@ -580,22 +596,25 @@ mod tests {
             check_tampered: true,
             ..step(Verification::Passed, None, None)
         };
-        let owner_bound = StepFeedback {
+        let owner_bound = |criterion: &str| StepFeedback {
             criterion: Some(crate::mismatch::CriterionFeedback {
-                id: "result".into(),
+                id: criterion.into(),
                 artifact: "answer.json".into(),
                 pointer: "/ok".into(),
                 context: None,
             }),
-            call_id: None,
+            // What `ArtifactCase::criterion_feedback` writes: an anchor that
+            // is never a `tool_use` in the transcript.
+            call_id: Some(format!("artifact-criterion:{criterion}")),
             ..step(Verification::Failed, None, None)
         };
         let mut feedback = Message::tool_results(vec![result("t5", "done")]);
         feedback.planning = Some(Feedback {
             steps: vec![
                 tampered(None),
-                tampered(None),
-                owner_bound,
+                tampered(Some("t-gone")),
+                owner_bound("result"),
+                owner_bound("total"),
                 tampered(Some("t5")),
             ],
             ..Default::default()
@@ -612,10 +631,11 @@ mod tests {
             steps,
             vec![
                 (PointKind::FailedCheck, &Locator::Step { step: 2 }),
-                (PointKind::FailedCheck, &Locator::Step { step: 3 }),
+                (PointKind::FailedCheck, &Locator::Step { step: 4 }),
             ],
-            "three unanchored steps are one moment, the owner-bound one kept; \
-             the anchored one is its own"
+            "every step whose anchor the transcript cannot resolve — none, a \
+             call that is gone, two criteria of one case — is one moment, the \
+             first owner-bound one kept; the resolved anchor is its own"
         );
     }
 
