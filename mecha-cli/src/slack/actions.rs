@@ -399,12 +399,27 @@ impl Action {
     /// The board status a task tap moves its task to — a literal per
     /// variant, shared by the argv and the read-back so the two cannot
     /// disagree about what the tap asked for. `None` for every other action.
+    ///
+    /// **No wildcard, on purpose** (review of #300): `argv()` reads this with
+    /// `.expect` in its task arm, so a new variant must be classified here by
+    /// name — the compiler refuses a match that forgets one, where a `_ =>
+    /// None` would have let a new task verb compile and panic in the
+    /// connector on its first tap.
     pub fn task_status(&self) -> Option<&'static str> {
         match self {
             Action::TaskDone { .. } => Some("done"),
             Action::TaskNext { .. } => Some("next"),
             Action::TaskDrop { .. } => Some("dropped"),
-            _ => None,
+            Action::OutboxSend { .. }
+            | Action::OutboxReject { .. }
+            | Action::RestartUnit { .. }
+            | Action::TriggerRun { .. }
+            | Action::TriggerCancel { .. }
+            | Action::TriggerEnable { .. }
+            | Action::TriggerDisable { .. }
+            | Action::MailImport { .. }
+            | Action::FrontdoorClose { .. }
+            | Action::FrontdoorNeedsInfo { .. } => None,
         }
     }
 
@@ -1412,6 +1427,16 @@ mod tests {
                 argv.iter().any(|a| *a == action.value()),
                 "the object id rides as its own argument: {argv:?}"
             );
+            // A tap that drives the board names its status, and it is the
+            // one on the argv; nothing else names one.
+            let drives_board = argv.get(1..3) == Some(&["tasks".to_string(), "set".to_string()]);
+            match action.task_status() {
+                Some(status) => {
+                    assert!(drives_board, "{action:?} names a status: {argv:?}");
+                    assert_eq!(argv.get(5).map(String::as_str), Some(status), "{argv:?}");
+                }
+                None => assert!(!drives_board, "{action:?} drives the board: {argv:?}"),
+            }
         }
     }
 
