@@ -63,9 +63,15 @@ pub struct Tally {
     pub surface_unreadable: usize,
     /// The pool the draw was over.
     pub drawable: usize,
-    /// Points whose arms were driven, and the arms (the model runs paid).
+    /// Points whose arms were driven — each a seat and a budget unit paid —
+    /// and the arms (the model runs paid). `driven` minus `drive_failed` is
+    /// the comparisons offered to the store.
     pub driven: usize,
     pub arms_driven: usize,
+    /// Of `driven`, the points lost to an arm that could not be driven: paid
+    /// for, and no comparison — a comparison with a missing arm is a failed
+    /// attempt. Kept apart from `unavailable`, which is never paid for.
+    pub drive_failed: usize,
     /// Points no structural validator can pose, stored inconclusive with
     /// nothing driven.
     pub unposed: usize,
@@ -73,8 +79,8 @@ pub struct Tally {
     pub already_compared: usize,
     /// Every candidate policy ran the same prompt: nothing to compare.
     pub single_policy: usize,
-    /// The point could not be prepared or an arm could not be driven —
-    /// counted, never evidence for any arm.
+    /// The point could not be prepared or cannot be driven here — counted
+    /// before any seat or budget is spent, never evidence for any arm.
     pub unavailable: usize,
     /// Drawn after the budget ran out.
     pub over_budget: usize,
@@ -513,6 +519,25 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
     let seats = crate::commands::tasks::permits()?;
     let mut seats_gone = false;
     for Drawable { path, point } in &drawn {
+        // A steer, a denial and a draft are always posed, so once nothing
+        // more can be driven they are counted without reading their
+        // transcripts again; a check or a surprise may be unposed and free,
+        // so it is still prepared.
+        let always_posed = matches!(
+            point.kind,
+            PointKind::Steer
+                | PointKind::Denial
+                | PointKind::EditedDraft
+                | PointKind::RejectedDraft
+        );
+        if always_posed && budget == 0 {
+            tally.over_budget += 1;
+            continue;
+        }
+        if always_posed && seats_gone {
+            tally.no_seat += 1;
+            continue;
+        }
         let planned = match plan(point, path, &by_id, surfaces.as_ref())? {
             Plan::Unavailable(why) => {
                 eprintln!(
@@ -637,7 +662,7 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
             }
             Err(why) => {
                 eprintln!("· {} {}: {why}", point.session_id, point.kind.as_str());
-                tally.unavailable += 1;
+                tally.drive_failed += 1;
             }
         }
     }
@@ -741,8 +766,9 @@ fn print_text(t: &Tally, seed: u64, outbox_read: bool) {
         t.not_clean, t.surface_unreadable
     );
     println!(
-        "  drawn from {}: {} driven ({} arm(s)) · {} unposed, stored inconclusive with nothing driven",
-        t.drawable, t.driven, t.arms_driven, t.unposed
+        "  drawn from {}: {} driven ({} arm(s); {} lost to an arm that could not be driven) · \
+         {} unposed, stored inconclusive with nothing driven",
+        t.drawable, t.driven, t.arms_driven, t.drive_failed, t.unposed
     );
     println!(
         "  skipped: {} already compared · {} with one distinct policy · {} unavailable · \
