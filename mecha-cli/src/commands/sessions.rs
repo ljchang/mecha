@@ -633,6 +633,11 @@ async fn appraise(
     // whose sensor watches that store. Same best-effort terms — unreadable
     // costs the attribution and says so.
     let (charter, charter_unreadable) = appraisal::load_charter();
+    // The owner's closures and reopens (1b's record) and workflow acts
+    // (R16b–e), read once for the walk and filtered per session inside, on
+    // the same terms: unreadable costs the channel and says so.
+    let (closures, closures_unreadable) = appraisal::load_closures();
+    let (workflows, workflows_unreadable) = appraisal::load_workflows();
 
     // Walked here rather than through `runlog::Corpus`, and the difference is
     // the unit: that reader yields one row per **run**, which is right for
@@ -715,6 +720,10 @@ async fn appraise(
                 charter_unreadable,
                 // Filled by `for_transcript` from the transcript it walks.
                 stops: &[],
+                closures: &closures,
+                closures_unreadable,
+                workflows: &workflows,
+                workflows_unreadable,
             },
             None,
         ) else {
@@ -884,6 +893,23 @@ async fn appraise(
     // number `docs/APPRAISAL-RESEARCH.md` §1 found the label hiding.
     let mut signed = 0usize;
     let mut valence = appraisal::Valence::default();
+    // The owner's acts on runs, by what the owner did (R16, R16b–e) — the
+    // new owner-verdict channels ride the `commitment` channel, so they are
+    // counted apart here or a reopen and an answered question would read as
+    // one number. Signed errors only, as `channels` counts them.
+    let mut owner_acts: std::collections::BTreeMap<&'static str, usize> = Default::default();
+    // R16a: rejections of this population's drafts that carry the owner's
+    // reason — the words `reflect` hands the reflector. Counted off the
+    // drafts, since the reject's own sign is already on the edit channel.
+    let reasoned_rejections = drafts
+        .iter()
+        .filter(|d| {
+            d.rejection_reason().is_some()
+                && d.session_id
+                    .as_deref()
+                    .is_some_and(|s| appraised_ids.contains(s))
+        })
+        .count();
     for a in &appraisals {
         *labels.entry(enum_key(a.label)).or_default() += 1;
         if !a.goals.is_empty() {
@@ -913,8 +939,14 @@ async fn appraise(
             if e.sign > 0.0 {
                 positive += 1;
             }
+            if let Some(act) = e.cite.owner_act() {
+                *owner_acts.entry(act).or_default() += 1;
+            }
         }
     }
+    // R16f–h: the owner's verdicts on the learners, read beside the runs and
+    // never inside them — no appraisal above took them as input.
+    let curation = mecha_core::curation::load_default();
 
     if json {
         println!(
@@ -955,6 +987,24 @@ async fn appraise(
                 "questions_read": !questions_unreadable,
                 "frontdoor_read": !frontdoor_unreadable,
                 "learning_read": !learning_unreadable,
+                "closures_read": !closures_unreadable,
+                "workflows_read": !workflows_unreadable,
+                // The owner's acts on runs, by act: closures, reopens and
+                // workflow acts, as signed on the `commitment` channel.
+                "owner_acts": owner_acts,
+                // Owner-reasoned rejections of this population's drafts —
+                // the words `reflect` hands the reflector (R16a). The
+                // reject's own sign is on the `edit` channel.
+                "reasoned_rejections": reasoned_rejections,
+                // R16f–h: verdicts on the rule, the reflection and the
+                // candidate — never a run's score. A group is `null` when
+                // its store could not be fully read.
+                "curation": curation,
+                // Graph review rejections of facts from mecha's episodes
+                // (for L7): not readable from here — the graph's decided
+                // verdicts are on no read-only tool and no CLI answer
+                // carries the origin episode. `null` is unknown, not zero.
+                "graph_fact_rejections": serde_json::Value::Null,
                 // Absent, not zero, when no probe ran: "nothing was probed"
                 // and "probed and found nothing" are opposite findings, and a
                 // reader that cannot tell them apart is the bug this whole
@@ -990,6 +1040,22 @@ async fn appraise(
         println!(
             "  (the outbox could not be fully read, so the edit channel is incomplete and the \
              request arm is off — missing, not empty)\n"
+        );
+    }
+    if closures_unreadable || workflows_unreadable {
+        println!(
+            "  (an owner-verdict store could not be fully read — closures: {}, workflows: {} — \
+             so that channel is incomplete, not empty)\n",
+            if closures_unreadable {
+                "unreadable"
+            } else {
+                "ok"
+            },
+            if workflows_unreadable {
+                "unreadable"
+            } else {
+                "ok"
+            },
         );
     }
     if questions_unreadable || frontdoor_unreadable || learning_unreadable {
@@ -1090,6 +1156,52 @@ async fn appraise(
     println!(
         "    {:<16} {:>5}  — the only channel that can say a run went well",
         "of which +ve", positive
+    );
+
+    // The owner's verdicts, by act. The run-scoring ones first: each is an
+    // error above, on the `commitment` channel.
+    println!("\n  owner acts on runs (signed above, on `commitment`)");
+    if owner_acts.is_empty() {
+        println!("    none");
+    }
+    for (act, n) in &owner_acts {
+        println!("    {act:<24} {n:>5}");
+    }
+    println!(
+        "    {:<24} {:>5}  — the reason reaches the reflector; the reject signs once, on `edit`",
+        "rejected with a reason", reasoned_rejections
+    );
+    // Then the ones that are never a run's score (R16f–h).
+    println!("\n  owner verdicts on the learner (never a run's score)");
+    let unread = "not fully read";
+    println!(
+        "    {:<24} {}",
+        "rules",
+        curation.rules.map_or(unread.to_string(), |t| format!(
+            "{} retired · {} restored",
+            t.retired, t.restored
+        ))
+    );
+    println!(
+        "    {:<24} {}",
+        "reflections",
+        curation.reflections.map_or(unread.to_string(), |t| format!(
+            "{} dropped · {} edited",
+            t.dropped, t.edited
+        ))
+    );
+    println!(
+        "    {:<24} {}",
+        "harness candidates",
+        curation.harness.map_or(unread.to_string(), |t| format!(
+            "{} accepted · {} rejected · {} reverted",
+            t.accepted, t.rejected, t.reverted
+        ))
+    );
+    println!(
+        "    {:<24} not readable here — the graph's decided verdicts carry no origin episode on \
+         any surface mecha reads",
+        "graph fact rejections"
     );
 
     if probe {

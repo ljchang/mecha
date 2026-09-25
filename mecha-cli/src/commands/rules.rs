@@ -20,7 +20,7 @@
 //! usage is a review signal, only measured harm argues for retirement, and
 //! a human accepts the argument.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use mecha_core::learning::{
     judge_convicted, retire_threshold_for, rule_tallies, tally_for, LeapRun, LearningStore,
     Proposal, Rule, RuleTally, ValidationRecord, Verdict,
@@ -564,8 +564,12 @@ fn retire(store: &LearningStore, id: &str, reason: Option<String>) -> Result<()>
     }
     rules[i].enabled = false;
     rules[i].retired_at = Some(chrono::Utc::now().to_rfc3339());
-    rules[i].retired_reason = Some(reason.unwrap_or_else(|| "retired by hand".into()));
+    rules[i].retired_reason = Some(reason.clone().unwrap_or_else(|| "retired by hand".into()));
     store.write_learned_rules(&domain, &rules)?;
+    // The owner's verdict on the rule's tenure (R16f), recorded against the
+    // rule: `retired_at` alone cannot say who retired it — the retirement
+    // scan writes the same field — and a restore clears it.
+    record_owner_verdict(store, &rules[i], mecha_core::curation::Act::Retired, reason)?;
     store.commit(&format!(
         "retire[{domain}]: {}",
         rules[i].id.as_deref().unwrap_or(id)
@@ -587,12 +591,36 @@ fn restore(store: &LearningStore, id: &str) -> Result<()> {
     rules[i].retired_at = None;
     rules[i].retired_reason = None;
     store.write_learned_rules(&domain, &rules)?;
+    record_owner_verdict(store, &rules[i], mecha_core::curation::Act::Restored, None)?;
     store.commit(&format!(
         "restore[{domain}]: {}",
         rules[i].id.as_deref().unwrap_or(id)
     ));
     println!("restored to `{domain}`: {}", rules[i].text);
     Ok(())
+}
+
+/// Append the owner's verdict on `rule` to the learning store's curation
+/// ledger (`mecha_core::curation`), under the lock the caller holds. After
+/// the rules file is written, so a verdict is never recorded for a change
+/// that did not land; a ledger that cannot be written fails the command
+/// rather than leaving the tenure record short without a word.
+fn record_owner_verdict(
+    store: &LearningStore,
+    rule: &Rule,
+    act: mecha_core::curation::Act,
+    reason: Option<String>,
+) -> Result<()> {
+    let Some(id) = rule.id.clone() else {
+        // `find_rule` only matches rules with an id; nothing to record
+        // against otherwise.
+        return Ok(());
+    };
+    mecha_core::curation::append(
+        store.root(),
+        &mecha_core::curation::Verdict::now(mecha_core::curation::Target::Rule(id), act, reason),
+    )
+    .context("the rule changed, but the owner's verdict could not be recorded against it")
 }
 
 fn show(store: &LearningStore, id: &str) -> Result<()> {

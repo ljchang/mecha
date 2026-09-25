@@ -347,6 +347,10 @@ confinement will eventually argue well and the metric will agree with it.
 The override layer is what makes auto-acceptance reversible rather than merely
 recorded. `mecha harness revert` takes an entry out and the key returns to
 whatever your config says; the candidate record survives as evidence either way.
+Your own `accept`, `reject` and `revert` also append a line, against the
+candidate's id, to `curation.jsonl` in the harness store; the automatic gate's
+decisions do not, so the record can tell your verdict from the loop's. It is
+credit for that change and the diagnosis behind it, never a run's score.
 Exits 0 on "nothing to do" — a skipped night is not a failed night, and the
 diagnostician declining to propose is a legitimate answer that is never coerced
 into a change.

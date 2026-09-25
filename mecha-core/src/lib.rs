@@ -61,6 +61,7 @@ pub mod compact;
 pub mod config;
 pub mod counterfactual;
 pub mod cron;
+pub mod curation;
 pub mod date_context;
 pub mod diagnose;
 pub mod distill;
