@@ -87,7 +87,14 @@ recording every web turn against the backlog of the morning it started (see
 `appraisal_store.rs`, the text-appraisal store, whose write door grounds each
 claim through `grounding::admit` and whose clean door is a type only the store
 can construct (`Clean`); it has no producer yet, and the graph episode's
-prompt is pinned (`the_distillers_episode_prompt_is_pinned`). The same night,
+prompt is pinned (`the_distillers_episode_prompt_is_pinned`). **2c-1**, #311
+(`193b0114`), followed at 18:18Z on the 25th: the goal a front-end hands `prepare`
+(`GlobalOpts::goal`) joins `Situation` as a recorded and scope key
+(`situation::GoalKey`, the whole `GoalRef`), recorded as
+`RunConfig::rules_goal` and read by every door the workspace and surface keys
+read; an absent or unnameable goal never widens a scope, and none of the
+live store's 67 reflections carried a goal at merge (#311's own read-only
+count). The same night,
 separately, #295 (`c4c916d1`) made `[sandbox] memory_mb` and `cpus` real
 under bwrap through a `systemd-run --user --scope` (`Sandbox::bwrap_launcher`)
 and made landlock refuse them (see *Traps*). What the arc left open is in

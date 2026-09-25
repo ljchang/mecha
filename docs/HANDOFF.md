@@ -34,7 +34,8 @@ valence; and 1e and 1f change what `planning::Decision::assess` reads for
 default). What each built is in HISTORY under 2026-09-24/25. `mecha` is installed
 at `b1820b5d` since 18:02Z, which carries phase 1 and 2a-1 (#308, the
 text-appraisal store); phase 1 was first installed at `6a26f7ab`, the 1h
-merge, at 16:41Z (*Machine state, dated* below). Four
+merge, at 16:41Z (*Machine state, dated* below). 2c-1 (#311, the goal as a
+`Situation` key) merged at 18:18Z and is not installed. Four
 owner rulings of 2026-09-25 are now rows R30–R33 of the design's §6; R32
 and R33 reached this lane relayed, and their cells ask the owner to confirm
 them. What is
@@ -2699,7 +2700,8 @@ is `b1820b5d`, the #306 merge, so it carries phase 1 and **2a-1 (#308)**:
 `text appraisals on record`. `~/.mecha/web/dist` was rebuilt at 18:02:48Z
 with `index-Cq2ArbMx.js`. `mecha-slack`, `-triggers`, `-drain` and `-serve`
 show `ActiveEnterTimestamp` 18:03:09Z; the voice worker still 11:31:38Z.
-Nothing of the appraisal arc is merged and uninstalled. **A constraint every
+Of the appraisal arc, 2c-1 (#311, `193b0114`, merged 18:18Z) is merged and
+not installed. **A constraint every
 later install must respect:** at 18:03Z the same lane added an `[image]`
 table to `~/.mecha/config.toml` (the previous file is
 `config.toml.bak-pre-image-2026-09-25`), and `ConfigLayer` is
@@ -3735,12 +3737,12 @@ repeated here. What is open:
   the brief delivered as words in the run's first user turn behind
   `[agent] situation_brief`, which ships off. Its PR body carries an owner
   question (delivery arms no taint), and it defers M5, a re-delegated task's
-  previous attempts, to 3a-2. **2c-1** (the goal as a `Situation` key),
-  **2d-1** (point-wise comparison) and **2a-2** (the distiller writes the
-  appraisal) have branches `feat/goal-situation-key-2c-1`,
+  previous attempts, to 3a-2. **2d-1** (point-wise comparison) and **2a-2**
+  (the distiller writes the appraisal) have branches
   `feat/pointwise-comparison-2d-1` and `feat/distiller-appraises-2a-2`,
   whose local refs at 18:03Z still pointed at `main` merges (`e35bb081`,
-  `e35bb081`, `f2efa162`), with nothing pushed and no PR. 2a-2 was waiting
+  `f2efa162`), with nothing pushed and no PR. **2c-1** merged as #311
+  (`193b0114`, HISTORY) and is not installed. 2a-2 was waiting
   on R32 and 2b-2 on R33; both are now recorded as ruled, pending the
   owner's confirmation of the relayed wording (the design's §6).
 - **Phase 1's *done when* is unmeasured.** It asks for at least 60% of long
@@ -3749,6 +3751,15 @@ repeated here. What is open:
   brief complete on a sample. Read `sessions health` and `sessions appraise`
   after some days on a build carrying phase 1 (installed since 16:41Z); at
   17:58Z one real run had been recorded on one.
+- **A rule keyed on a task goal can stop loading with nothing saying so
+  (2c-1, #311), and the owner is being asked about it before the next
+  install.** The goal key is the whole `GoalRef`, so a rule learned inside
+  one task is scoped to `task:<uid>` and loads only on runs toward that
+  task; once the task closes, no run declares it again. The roster's `LOADS
+  NOWHERE` check (`rules.rs`'s `loads_nowhere`) asks whether any run record
+  ever presented the key, and a closed task's past runs did, so it reports
+  the rule as loadable. Nothing on the live store is affected yet: at merge
+  no reflection carried a goal.
 - **1d's graph channel is unreadable from mecha.** Rejected graph facts
   from `agent:mecha` episodes (L7's input) need a read-only mecha-graph verb
   that returns rejected candidates with their origin episode, or the review
