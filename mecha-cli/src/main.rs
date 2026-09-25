@@ -10,6 +10,7 @@ mod exe;
 mod harness_probe;
 mod interrupt;
 mod logs;
+mod pointwise_pass;
 mod probe;
 mod render;
 mod review_policy;
