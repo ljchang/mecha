@@ -121,7 +121,8 @@ pub fn guard_homes() -> Result<Vec<PathBuf>> {
     guard_homes_from(
         mecha_home()?,
         owner_mecha_home(),
-        std::env::var_os("MECHA_HOME").is_some(),
+        // Read as `mecha_home` reads it: an empty value is no override.
+        std::env::var_os("MECHA_HOME").is_some_and(|v| !v.is_empty()),
     )
 }
 

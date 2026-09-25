@@ -1076,7 +1076,7 @@ impl TriggerStore {
 
     /// The pids of every trigger run in flight — see
     /// [`crate::runmarker::RunMarkers::live_pids`].
-    pub fn live_run_pids(&self) -> Vec<u32> {
+    pub fn live_run_pids(&self) -> Result<Vec<u32>> {
         self.markers().live_pids()
     }
 

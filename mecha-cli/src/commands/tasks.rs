@@ -911,14 +911,17 @@ fn live_run_pids() -> Result<std::collections::HashSet<u32>> {
     if let Ok(root) = mecha_core::trigger::TriggerStore::default_root() {
         dirs.push(root.join("locks"));
     }
-    Ok(live_run_pids_in(&dirs))
+    live_run_pids_in(&dirs)
 }
 
-/// The live pids across every marker directory in `dirs`.
-fn live_run_pids_in(dirs: &[std::path::PathBuf]) -> std::collections::HashSet<u32> {
-    dirs.iter()
-        .flat_map(|d| mecha_core::runmarker::RunMarkers::new(d.clone()).live_pids())
-        .collect()
+/// The live pids across every marker directory in `dirs`; a directory that
+/// exists and cannot be read is an error, not an empty one (review of #294).
+fn live_run_pids_in(dirs: &[std::path::PathBuf]) -> Result<std::collections::HashSet<u32>> {
+    let mut pids = std::collections::HashSet::new();
+    for d in dirs {
+        pids.extend(mecha_core::runmarker::RunMarkers::new(d.clone()).live_pids()?);
+    }
+    Ok(pids)
 }
 
 /// Decide who is making a move, run the `pre_task_close` hooks, and write
