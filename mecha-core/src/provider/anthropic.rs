@@ -1582,6 +1582,7 @@ mod planning_metadata_tests {
                     goal: Some(crate::goal::GoalRef::Charter("secret-sensor".into())),
                     remaining: Some(0.876543),
                     items_over: Some(86_421),
+                    guilt: Some(0.135_792),
                 }],
                 action: crate::planning::Action::Continue,
                 applied: false,
@@ -1604,6 +1605,10 @@ mod planning_metadata_tests {
             "local recording retains the evidence"
         );
         assert!(record.contains("86421"), "and the per-item count beside it");
+        assert!(
+            record.contains("0.135792"),
+            "and the per-commitment guilt beside that"
+        );
         let loaded: Message = serde_json::from_str(&record).unwrap();
         assert_eq!(loaded, observed);
         let mut future = serde_json::to_value(observed).unwrap();
@@ -1728,9 +1733,10 @@ text = "Leave work better than you found it."
     }
 
     /// The conditions a run starts under, produced by the real producers —
-    /// `reading::read_lines` over a backlog, `guilt::with_backlogs` over a
-    /// before/after pair — rather than written in as literals, so the values
-    /// scanned for are the ones the loop actually carries.
+    /// `reading::read_lines` over a backlog, `guilt::read_commitments` over
+    /// its items, `Backlog::delta` over a before/after pair — rather than
+    /// written in as literals, so the values scanned for are the ones the
+    /// loop actually carries.
     fn world() -> World {
         let charter = Charter::parse(CHARTER).unwrap();
         // A kind added later must join the fixture, or its reading is a
@@ -1825,9 +1831,19 @@ text = "Leave work better than you found it."
                 r.reading
             );
         }
-        let fold = crate::guilt::with_backlogs(&before, &after, Some(0.2718), now);
-        let mut delta = fold.delta;
+        let mut delta = Backlog::delta(&before, &after);
         delta.flow = Some(crate::backlog::Inventory::flows(&start_items, &end_items));
+        // Every pending commitment with its own guilt (S7): the oldest item
+        // in each store is past its line's setpoint, so each store carries
+        // a number of its own, and the readout is the largest.
+        let commitments = crate::guilt::read_commitments(&start_items, &charter, now);
+        for s in &commitments {
+            assert!(
+                s.any_owed(),
+                "{:?} should hold a commitment past its patience",
+                s.store
+            );
+        }
         World {
             charter,
             homeostat: Homeostat {
@@ -1835,8 +1851,8 @@ text = "Leave work better than you found it."
                 mem_available_kb: Some(24_681_357),
                 backlog: Some(before),
                 backlog_delta: Some(delta),
-                anticipated_guilt: fold.level,
-                guilt_after_relief: fold.after_relief,
+                anticipated_guilt: crate::guilt::readout(&commitments),
+                commitments: Some(commitments),
                 charter: Some(readings),
                 ..Homeostat::default()
             },
@@ -1934,6 +1950,21 @@ text = "Leave work better than you found it."
         {
             floats("anticipated guilt", v, &mut out);
         }
+        // Per-commitment guilt (S7, 1f): each pending commitment's own
+        // value, named by R21 as a score a model would move. Only the
+        // non-zero ones — a zero renders as `0.00`, which ordinary text
+        // carries and which would make a hit a coincidence.
+        for g in h
+            .commitments
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|s| &s.items)
+            .filter_map(|i| i.guilt)
+            .filter(|g| *g > 0.0)
+        {
+            floats("per-commitment guilt", g, &mut out);
+        }
         if let Some(load) = h.load_avg_1m {
             floats("load average", load, &mut out);
         }
@@ -1973,6 +2004,7 @@ text = "Leave work better than you found it."
             "per-item reading",
             "per-run delta",
             "anticipated guilt",
+            "per-commitment guilt",
             "backlog delta",
             "valence",
         ] {
@@ -2158,9 +2190,9 @@ text = "Leave work better than you found it."
         .with_clock(Arc::new(crate::clock::FixedClock(now())));
         let mut cx = RunContext::new(tools, approver).with_queued_input(Arc::clone(&steer));
         // Everything but the backlog: `Homeostat::finish` re-reads the live
-        // backlog to fold guilt at run end, and a unit test must not read the
-        // owner's stores. The guilt that fold would write is already on the
-        // snapshot, from the fixture's own before/after pair.
+        // backlog to take the run's delta at run end, and a unit test must
+        // not read the owner's stores. The delta and the per-commitment guilt
+        // are already on the snapshot, from the fixture's own items.
         cx.homeostat = Some(Homeostat {
             backlog: None,
             ..world.homeostat.clone()
@@ -2214,8 +2246,21 @@ text = "Leave work better than you found it."
         let Reading::Observed { excess, .. } = replies.reading else {
             panic!("the replies line should read past its setpoint: {replies:?}");
         };
+        // The per-commitment guilt the replies line weighs: the outbox's
+        // oldest draft, past the line's setpoint.
+        let owed = h
+            .commitments
+            .as_deref()
+            .unwrap()
+            .iter()
+            .find(|s| s.line.as_deref() == Some("replies"))
+            .unwrap()
+            .max()
+            .unwrap();
+        assert!(owed > 0.0);
         for kept in [
             format!("{}", h.anticipated_guilt.unwrap()),
+            format!("{owed}"),
             format!("{excess}"),
             replies.setpoint.clone(),
             "299580".to_string(),
@@ -2223,17 +2268,22 @@ text = "Leave work better than you found it."
             assert!(record.contains(&kept), "the record should keep `{kept}`");
         }
         // They are *in the request objects*: the resumed run's request
-        // carries the planning metadata whose gap is that excess.
-        let carried = requests[2]
+        // carries the planning metadata whose gap is that excess, and the
+        // per-commitment guilt the decision was made on beside it.
+        let gaps: Vec<&crate::planning::Gap> = requests[2]
             .messages
             .iter()
             .filter_map(|m| m.planning.as_ref())
             .flat_map(|f| &f.decisions)
             .flat_map(|d| &d.charter)
-            .any(|g| g.remaining == Some(excess));
+            .collect();
         assert!(
-            carried,
+            gaps.iter().any(|g| g.remaining == Some(excess)),
             "the resumed request should hold the reading as metadata"
+        );
+        assert!(
+            gaps.iter().any(|g| g.guilt == Some(owed)),
+            "the resumed request should hold the per-commitment guilt as metadata"
         );
         // The sensor *drove* the run: the decision it made reached the model
         // as fixed words, which is what R21 allows through.
@@ -2325,6 +2375,7 @@ text = "Leave work better than you found it."
                     goal: Some(crate::goal::GoalRef::Charter("replies".into())),
                     remaining: Some(excess),
                     items_over: None,
+                    guilt: world.homeostat.anticipated_guilt,
                 }],
                 action: crate::planning::Action::ReviewCommitment,
                 applied: true,

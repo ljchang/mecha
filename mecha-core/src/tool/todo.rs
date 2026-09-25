@@ -1735,6 +1735,7 @@ impl Tool for TodoTool {
                     ctx.context.as_ref().and_then(|f| f.turns_left),
                     &verified,
                     ctx.goal_guidance,
+                    ctx.goal_commitments.as_deref(),
                 );
                 if let Some(bound) = &ctx.appraisal_evidence {
                     decision.with_owner_evidence(bound);

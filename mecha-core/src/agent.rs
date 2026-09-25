@@ -1673,6 +1673,9 @@ impl Agent {
             // Withdrawn (saturated) lines never reach an in-run consumer
             // (S5); the record keeps them in full.
             tools.goal_readings = cx.homeostat.as_ref().and_then(|h| h.in_run_readings());
+            // And their commitments with them (S7): a withdrawn line's store
+            // leaves the run beside the line.
+            tools.goal_commitments = cx.homeostat.as_ref().and_then(|h| h.in_run_commitments());
             tools.goal_guidance = self.cfg.goal_guidance;
             tools.step_checks = self
                 .cfg
