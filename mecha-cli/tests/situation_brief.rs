@@ -311,7 +311,7 @@ fn the_shared_situation(b: &SituationBrief, what: &str) {
         "{what}"
     );
     let Some(Runs {
-        tasks: Flight::Read { others },
+        tasks: Flight::Read { others, .. },
         ..
     }) = &b.runs
     else {
@@ -404,7 +404,7 @@ async fn a_delegated_run_records_every_field_and_sends_none() {
     };
     assert!(holders.contains(&"task-1".to_string()), "{holders:?}");
     let Some(Runs {
-        tasks: Flight::Read { others },
+        tasks: Flight::Read { others, .. },
         ..
     }) = &b.runs
     else {

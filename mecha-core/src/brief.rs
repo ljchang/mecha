@@ -730,6 +730,11 @@ pub enum Seats {
         /// What each holder is doing, as the harness named it (a task id,
         /// `answer <session>`), sorted.
         holders: Vec<String>,
+        /// Permit files that could not be read — each may be a held seat,
+        /// so `held` is a floor when this is not zero, and the field reads
+        /// as unread in the completeness readout.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        unreadable: u32,
     },
     Unread {
         why: String,
@@ -742,13 +747,15 @@ pub fn seats_under(home: &Path) -> Seats {
         crate::permit::DEFAULT_BACKGROUND_PERMITS,
     );
     match pool.read_live() {
-        Ok(held) => {
-            let mut holders: Vec<String> = held.iter().filter_map(|p| p.what.clone()).collect();
+        Ok(read) => {
+            let mut holders: Vec<String> =
+                read.live.iter().filter_map(|p| p.what.clone()).collect();
             holders.sort();
             Seats::Read {
                 capacity: pool.capacity() as u32,
-                held: held.len() as u32,
+                held: read.live.len() as u32,
                 holders,
+                unreadable: read.unreadable as u32,
             }
         }
         Err(e) => Seats::Unread {
@@ -772,8 +779,19 @@ pub struct Runs {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Flight {
-    Read { others: Vec<String> },
-    Unread { why: String },
+    Read {
+        others: Vec<String>,
+        /// Markers that could not be read — each may be a run in flight.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        unreadable: u32,
+    },
+    Unread {
+        why: String,
+    },
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// `anchor` is the run's own pointer, so its own marker is not counted as
@@ -786,11 +804,13 @@ pub fn runs_under(
     let flight = |dir: PathBuf, own: Option<&str>| match crate::runmarker::RunMarkers::new(dir)
         .live_names()
     {
-        Ok(names) => Flight::Read {
-            others: names
+        Ok(live) => Flight::Read {
+            others: live
+                .names
                 .into_iter()
                 .filter(|n| Some(n.as_str()) != own)
                 .collect(),
+            unreadable: live.unreadable as u32,
         },
         Err(e) => Flight::Unread {
             why: format!("{e:#}"),
@@ -1269,13 +1289,18 @@ impl SituationBrief {
             ),
             (
                 "seats",
-                of(&self.seats, |s| matches!(s, Seats::Unread { .. })),
+                of(&self.seats, |s| match s {
+                    Seats::Read { unreadable, .. } => *unreadable > 0,
+                    Seats::Unread { .. } => true,
+                }),
             ),
             (
                 "runs",
                 of(&self.runs, |r| {
-                    matches!(r.tasks, Flight::Unread { .. })
-                        || matches!(r.triggers, Flight::Unread { .. })
+                    [&r.tasks, &r.triggers].iter().any(|f| match f {
+                        Flight::Read { unreadable, .. } => *unreadable > 0,
+                        Flight::Unread { .. } => true,
+                    })
                 }),
             ),
             (
@@ -1713,7 +1738,8 @@ mod tests {
             Seats::Read {
                 capacity: 3,
                 held: 1,
-                holders: vec!["task-other".into()]
+                holders: vec!["task-other".into()],
+                unreadable: 0,
             }
         );
         assert!(crate::permit::dir_under(&home).join("dead.permit").exists());
@@ -1729,14 +1755,69 @@ mod tests {
         assert_eq!(
             runs.tasks,
             Flight::Read {
-                others: vec!["task-theirs".into()]
+                others: vec!["task-theirs".into()],
+                unreadable: 0,
             }
         );
         assert_eq!(
             runs.triggers,
             Flight::Read {
-                others: vec!["digest".into()]
+                others: vec!["digest".into()],
+                unreadable: 0,
             }
+        );
+
+        // One file down: a permit or a marker that will not parse may be a
+        // live seat or run, so it is counted and the field reads as unread
+        // — never one seat fewer presented as a reading.
+        std::fs::write(
+            crate::permit::dir_under(&home).join("torn.permit"),
+            "{\"pid\": 4",
+        )
+        .unwrap();
+        std::fs::write(
+            crate::runmarker::task_dir_under(&home).join("task-torn.running"),
+            "not json",
+        )
+        .unwrap();
+        let seats = seats_under(&home);
+        assert!(
+            matches!(
+                seats,
+                Seats::Read {
+                    held: 1,
+                    unreadable: 1,
+                    ..
+                }
+            ),
+            "{seats:?}"
+        );
+        let runs = runs_under(&home, Ok(&root), Some(&GoalRef::Task("task-mine".into())));
+        assert_eq!(
+            runs.tasks,
+            Flight::Read {
+                others: vec!["task-theirs".into()],
+                unreadable: 1,
+            }
+        );
+        let states: BTreeMap<_, _> = SituationBrief {
+            assembled_at: now(),
+            goal: None,
+            board: None,
+            commitments: None,
+            time: None,
+            seats: Some(seats),
+            runs: Some(runs),
+            slots: None,
+            voice: None,
+            budget: None,
+        }
+        .fields()
+        .into_iter()
+        .collect();
+        assert_eq!(
+            (states["seats"], states["runs"]),
+            (FieldState::Unread, FieldState::Unread)
         );
 
         // A pool that is a file, not a directory, cannot be read.
@@ -1864,10 +1945,17 @@ mod tests {
                 capacity: 3,
                 held: 0,
                 holders: vec![],
+                unreadable: 0,
             }),
             runs: Some(Runs {
-                tasks: Flight::Read { others: vec![] },
-                triggers: Flight::Read { others: vec![] },
+                tasks: Flight::Read {
+                    others: vec![],
+                    unreadable: 0,
+                },
+                triggers: Flight::Read {
+                    others: vec![],
+                    unreadable: 0,
+                },
             }),
             slots: Some(Slots::NotLocal),
             voice: Some(Voice::NoTurnSeen),

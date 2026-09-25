@@ -1916,13 +1916,16 @@ text = "Leave work better than you found it."
                 capacity: 3,
                 held: 2,
                 holders: vec!["task-g4-seat-holder".into(), "answer g4-parked".into()],
+                unreadable: 0,
             }),
             runs: Some(Runs {
                 tasks: Flight::Read {
                     others: vec!["task-g4-inflight".into()],
+                    unreadable: 0,
                 },
                 triggers: Flight::Read {
                     others: vec!["g4-nightly-digest".into()],
+                    unreadable: 0,
                 },
             }),
             slots: Some(slots_of(
@@ -2142,7 +2145,7 @@ text = "Leave work better than you found it."
         }
         if let Some(runs) = &b.runs {
             for f in [&runs.tasks, &runs.triggers] {
-                if let crate::brief::Flight::Read { others } = f {
+                if let crate::brief::Flight::Read { others, .. } = f {
                     for o in others {
                         out.push(Needle {
                             what: "situation brief pointer",

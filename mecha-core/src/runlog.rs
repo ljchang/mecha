@@ -1021,10 +1021,17 @@ mod workspace_tests {
                 capacity: 3,
                 held: 0,
                 holders: vec![],
+                unreadable: 0,
             }),
             runs: Some(Runs {
-                tasks: Flight::Read { others: vec![] },
-                triggers: Flight::Read { others: vec![] },
+                tasks: Flight::Read {
+                    others: vec![],
+                    unreadable: 0,
+                },
+                triggers: Flight::Read {
+                    others: vec![],
+                    unreadable: 0,
+                },
             }),
             slots: Some(Slots::NotLocal),
             voice: Some(Voice::NoTurnSeen),

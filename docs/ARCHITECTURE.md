@@ -4090,7 +4090,12 @@ when touching it:
   and a seat pool or marker directory that exists but cannot be read is
   unread, which is why the brief reads through `Permits::read_live` and
   `RunMarkers::live_names` rather than `live()`, whose empty list serves a
-  caller deciding whether to start. **The commitments come through the 1f
+  caller deciding whether to start — and one file down, a permit or marker
+  that will not parse is counted as `unreadable` beside the reading (it may
+  be a live seat or run), which reads the field as unread rather than one
+  fewer (found on review; `Permits::take` now writes temp-and-rename, so a
+  reader never sees a half-written permit and `live()` never sweeps one out
+  from under its holder). **The commitments come through the 1f
   accessors** (`Homeostat::in_run_commitments`, withdrawn stores named),
   never the commitment types another lane is reshaping. **Each field is
   lenient on its own** (`brief::lenient`), so a variant a later build adds
