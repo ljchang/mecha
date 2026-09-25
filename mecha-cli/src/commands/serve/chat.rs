@@ -1342,17 +1342,11 @@ fn web_posture(
 /// front end: a run's `shell` can start one, authenticate with the login it
 /// chose on the same command line, and would otherwise stamp its web
 /// chats' shells `interactive` (review of #294, the `serve` twin of the
-/// piped `mecha chat` hole). Read once and latched for the process's life,
-/// so a `serve` that detaches and is reparented later still is not a
-/// person. Off Linux the registry answers `Unreadable` while any run's
-/// shell is live, so a `serve` started then is unattended until restarted.
-static STARTED_BY_A_RUN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
+/// piped `mecha chat` hole). The reading is `setup::startup_shell_reading`,
+/// latched for the process's life, so a `serve` that detaches and is
+/// reparented later still is not a person.
 pub(super) fn started_by_a_run() -> bool {
-    *STARTED_BY_A_RUN.get_or_init(|| {
-        mecha_core::closure::ShellReading::from_registry()
-            != mecha_core::closure::ShellReading::NotRegistered
-    })
+    *crate::setup::startup_shell_reading() != mecha_core::closure::ShellReading::NotRegistered
 }
 
 /// Which door a turn came through, and what that changes about it.

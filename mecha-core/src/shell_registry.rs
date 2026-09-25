@@ -86,10 +86,11 @@
 //! posture — so each asks this registry first. `chat`, `run` and `tui` stamp
 //! `interactive` only with a terminal on stdin *and* no registered shell
 //! above them (`setup::front_end_interactive`), so a piped chat or a tui fed
-//! a pty (`script -qc 'mecha tui'`) is unattended; `serve` reads the same
-//! answer once at startup and latches it (`serve::chat::started_by_a_run`),
-//! so a `serve` a run started — and authenticated to with a login it chose —
-//! never stamps `interactive` (review of #294). A front end that detaches
+//! a pty (`script -qc 'mecha tui'`) is unattended; every front end reads the
+//! answer once at startup and latches it (`setup::startup_shell_reading`), so
+//! a `serve` a run started — and authenticated to with a login it chose —
+//! never stamps `interactive`, and a TUI reparented away from its run does
+//! not become a person on a later `/mode` (review of #294). A front end that detaches
 //! first escapes the walk, as any command does; the sandbox is again the
 //! answer (the confined command has no `~/.mecha` to run from).
 use crate::closure::RunPosture;
