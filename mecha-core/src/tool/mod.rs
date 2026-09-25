@@ -870,6 +870,24 @@ pub fn spill_within(workspace: &Path) -> PathBuf {
 pub const SPILL_DIR: &str = ".spill";
 
 impl ToolCtx {
+    /// This context for one session: its workspace, and that session's own
+    /// spill directory inside it ([`spill_within`]).
+    ///
+    /// The one way a front-end serving many sessions from one agent should
+    /// build a turn's context — `serve`'s chats, the Slack connector, the
+    /// voice facade. Cloning the agent's context and replacing only the
+    /// workspace keeps the agent's spill directory, which every session then
+    /// shares and any of them can read (found on review of #313).
+    pub fn for_session(&self, workspace: PathBuf) -> ToolCtx {
+        ToolCtx {
+            spill_dir: Some(spill_within(&workspace)),
+            workspace,
+            ..self.clone()
+        }
+    }
+}
+
+impl ToolCtx {
     /// End the run this call belongs to, saying why. The reason lands in
     /// the cell `run_in` stamped beside the token, so the outcome records it
     /// (`StopCause::Parked` for a parked question) instead of the
@@ -1914,6 +1932,48 @@ mod cap_tests {
     }
 
     #[test]
+    fn two_sessions_served_by_one_agent_cannot_read_each_others_spills() {
+        // The shape serve, Slack and the voice facade build: every turn's
+        // context from one agent context, narrowed to a session.
+        let agent = ToolCtx::default();
+        let (ws_a, ws_b) = (scratch("wsA"), scratch("wsB"));
+
+        // The old shape (replace only the workspace) shares the agent's
+        // directory, and the jail's spill exception lets A read what B
+        // spilled. This is the leak, and why the helper exists.
+        let old_a = ToolCtx {
+            workspace: ws_a.clone(),
+            ..agent.clone()
+        };
+        let old_b = ToolCtx {
+            workspace: ws_b.clone(),
+            ..agent.clone()
+        };
+        assert_eq!(old_a.spill_dir, old_b.spill_dir);
+        let shared = old_b.spill_dir.clone().unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(shared.join("shell-b.txt"), "b output").unwrap();
+        assert!(old_a
+            .resolve(&shared.join("shell-b.txt").display().to_string())
+            .is_ok());
+        std::fs::remove_dir_all(&shared).ok();
+
+        // Through for_session: each its own, and neither reads the other's.
+        let a = agent.for_session(ws_a.clone());
+        let b = agent.for_session(ws_b.clone());
+        assert_ne!(a.spill_dir, b.spill_dir);
+        let b_spill = b.spill_dir.clone().unwrap();
+        std::fs::create_dir_all(&b_spill).unwrap();
+        std::fs::write(b_spill.join("shell-b.txt"), "b output").unwrap();
+        assert!(b
+            .resolve(&b_spill.join("shell-b.txt").display().to_string())
+            .is_ok());
+        assert!(a
+            .resolve(&b_spill.join("shell-b.txt").display().to_string())
+            .is_err());
+    }
+
+    #[test]
     fn the_jail_admits_the_spill_directory_and_nothing_else_new() {
         let workspace = scratch("ws");
         let spill = scratch("spilldir");
@@ -1935,22 +1995,6 @@ mod cap_tests {
         let elsewhere = std::env::temp_dir().join("mecha-cap-elsewhere.txt");
         std::fs::write(&elsewhere, "no").unwrap();
         assert!(ctx.resolve(&elsewhere.display().to_string()).is_err());
-
-        // Another session's spill is another jail: the exception is this
-        // context's own directory, not "a spill directory" — the isolation
-        // a served session's own `.spill` exists for (found on review of
-        // #313; with both sessions on one shared directory this resolved).
-        let (a, b) = (scratch("wsA"), scratch("wsB"));
-        std::fs::create_dir_all(spill_within(&b)).unwrap();
-        std::fs::write(spill_within(&b).join("shell-t2.txt"), "b's").unwrap();
-        let only_a = ToolCtx {
-            workspace: a.clone(),
-            spill_dir: Some(spill_within(&a)),
-            ..ToolCtx::default()
-        };
-        assert!(only_a
-            .resolve(&spill_within(&b).join("shell-t2.txt").display().to_string())
-            .is_err());
 
         // And with spilling disabled there is no exception at all.
         let no_spill = ToolCtx {

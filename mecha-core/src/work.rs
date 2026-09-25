@@ -260,7 +260,11 @@ pub fn list() -> Result<Vec<Producer>> {
             None => continue,
         };
         let entries = entries_of(&path)?;
-        let bytes = entries.iter().map(|e| e.bytes).sum();
+        // The producer's own `.spill` is not an entry (`entries_of`), but it
+        // is on disk: leaving it out of the total would hide the one
+        // directory here that grows between sweeps.
+        let bytes = entries.iter().map(|e| e.bytes).sum::<u64>()
+            + dir_bytes(&path.join(crate::tool::SPILL_DIR));
         out.push(Producer {
             name,
             path,
@@ -360,12 +364,14 @@ pub fn protected_sources() -> Result<BTreeSet<PathBuf>> {
     Ok(out)
 }
 
-/// How long an orphaned spill directory under `$TMPDIR` is left alone.
+/// How long spilled output is kept: a spill directory under `$TMPDIR` whose
+/// newest file is older than this, and a file in a workspace's `.spill`
+/// older than this.
 ///
-/// A process that serves many runs from one context (a TUI left open for
-/// days) keeps writing into its directory, which refreshes its mtime; one it
-/// stopped writing to a week ago belongs to a conversation nobody is
-/// re-reading output from.
+/// Age is when the output was last *written*, which is the best signal this
+/// store has of whether a conversation still reads it — not liveness: a
+/// session left open a fortnight after its only spill loses that file, and
+/// the model's re-read finds it missing rather than wrong.
 pub const SPILL_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
 
 /// Spill directories in `tmp` older than `max_age` as of `now`: the ones a
@@ -399,7 +405,10 @@ pub fn stale_spills(
         if !meta.is_dir() {
             continue;
         }
-        let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        // The newest write inside, not the directory's own mtime — which
+        // moves only when an entry is added or removed (found on review of
+        // #313).
+        let modified = newest_mtime(&path, meta.modified().unwrap_or(std::time::UNIX_EPOCH));
         if now.duration_since(modified).unwrap_or_default() < max_age {
             continue;
         }
@@ -443,9 +452,34 @@ pub fn clean(keep: usize, only: Option<&str>, dry_run: bool) -> Result<CleanRepo
         dry_run,
         ..Default::default()
     };
+    let now = std::time::SystemTime::now();
     for producer in list()? {
         if only.is_some_and(|name| name != producer.name) {
             continue;
+        }
+        // Every workspace's spilled output ages out on the same floor, by
+        // file: a `.spill` directly in a producer directory (a board task's
+        // workspace, the voice agent's) is not a retention entry and would
+        // otherwise be reclaimed by nothing; one inside a kept entry (a web
+        // session reused for weeks) would grow for as long as the session
+        // does (found on review of #313).
+        let mut spills = vec![producer.path.join(crate::tool::SPILL_DIR)];
+        spills.extend(
+            producer
+                .entries
+                .iter()
+                .take(keep)
+                .filter(|e| e.is_dir)
+                .map(|e| e.path.join(crate::tool::SPILL_DIR)),
+        );
+        for spill in spills {
+            for file in stale_spill_files(&spill, SPILL_MAX_AGE, now) {
+                if !dry_run {
+                    std::fs::remove_file(&file.path)
+                        .with_context(|| format!("removing {}", file.path.display()))?;
+                }
+                report.removed.push(file);
+            }
         }
         for entry in producer.entries.into_iter().skip(keep) {
             let canonical = entry
@@ -468,6 +502,52 @@ pub fn clean(keep: usize, only: Option<&str>, dry_run: bool) -> Result<CleanRepo
         }
     }
     Ok(report)
+}
+
+/// The newest modification time of `dir` itself (`own`) and the entries
+/// directly in it.
+fn newest_mtime(dir: &Path, own: std::time::SystemTime) -> std::time::SystemTime {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return own;
+    };
+    read.flatten()
+        .filter_map(|e| e.metadata().ok()?.modified().ok())
+        .fold(own, std::cmp::max)
+}
+
+/// Files in a workspace spill directory older than `max_age` as of `now`.
+/// Regular files only — a symlink or a directory in there is not spilled
+/// output, whatever put it there.
+pub fn stale_spill_files(
+    spill: &Path,
+    max_age: std::time::Duration,
+    now: std::time::SystemTime,
+) -> Vec<Entry> {
+    let Ok(read) = std::fs::read_dir(spill) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in read.flatten() {
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        if now.duration_since(modified).unwrap_or_default() < max_age {
+            continue;
+        }
+        out.push(Entry {
+            bytes: meta.len(),
+            path,
+            modified,
+            is_dir: false,
+        });
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
 }
 
 /// Remove the spill directories [`stale_spills`] finds in `tmp`, or list them
@@ -679,6 +759,74 @@ pub(crate) mod tests {
             "`--producer` restricts the sweep"
         );
         assert!(morning.is_dir(), "the producer directory itself survives");
+    }
+
+    /// Set a path's modification time `days` ago.
+    fn age(path: &Path, days: u64) {
+        let when =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(days * 24 * 60 * 60);
+        std::fs::File::open(path)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    }
+
+    #[test]
+    fn spilled_output_ages_out_by_file_at_every_level() {
+        let _home = HomeGuard::new();
+        // A producer that is itself a workspace (a board task's), and one
+        // whose entries are workspaces (web chats).
+        let task = ensure("task-9").unwrap();
+        let web_main = ensure("web").unwrap().join("main");
+        for spill in [
+            crate::tool::spill_within(&task),
+            crate::tool::spill_within(&web_main),
+        ] {
+            std::fs::create_dir_all(&spill).unwrap();
+            std::fs::write(spill.join("old.txt"), "old").unwrap();
+            std::fs::write(spill.join("new.txt"), "new").unwrap();
+            age(&spill.join("old.txt"), 30);
+        }
+        let report = clean(10, None, false).unwrap();
+        for spill in [
+            crate::tool::spill_within(&task),
+            crate::tool::spill_within(&web_main),
+        ] {
+            assert!(
+                !spill.join("old.txt").exists(),
+                "{} kept a month-old spill",
+                spill.display()
+            );
+            assert!(spill.join("new.txt").exists(), "a fresh spill survives");
+        }
+        assert_eq!(report.removed.len(), 2);
+        // And `mecha work list` counts what is on disk, spill included.
+        let producer = list()
+            .unwrap()
+            .into_iter()
+            .find(|p| p.name == "task-9")
+            .unwrap();
+        assert_eq!(producer.bytes, 3);
+    }
+
+    #[test]
+    fn a_spill_directory_is_as_old_as_its_newest_file() {
+        // A directory's own mtime moves only when an entry is added, so one
+        // written into a month ago but still being overwritten is live.
+        let tmp = std::env::temp_dir().join(format!("mecha-spillage-{}", uuid::Uuid::new_v4()));
+        let dir = tmp.join(format!(
+            "{}{}",
+            crate::tool::SPILL_PREFIX,
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("shell-1.txt"), "fresh").unwrap();
+        age(&dir, 30);
+        assert!(
+            stale_spills(&tmp, SPILL_MAX_AGE, std::time::SystemTime::now()).is_empty(),
+            "a fresh file inside keeps the directory"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]
