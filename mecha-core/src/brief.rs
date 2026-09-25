@@ -332,8 +332,12 @@ fn rows(board: &Value) -> Option<&Vec<Value>> {
     board["items"].as_array()
 }
 
+/// Open is not closed, by `closure`'s one mirror of the graph's status set
+/// — never a second spelling here, so a closing status the graph adds is
+/// one line to change, and this file cannot count it as open while the
+/// closure guard counts it as closed (found on review).
 fn is_open(status: &str) -> bool {
-    !matches!(status, "done" | "dropped")
+    !crate::closure::is_closed_status(status)
 }
 
 /// `id` as a pointer of `kind`, if it is one token as `GoalRef::from_str`
@@ -412,17 +416,15 @@ pub enum OwnTask {
 }
 
 /// The statuses counted by name; anything else is `other`.
-const STATUSES: [&str; 5] = ["inbox", "next", "scheduled", "waiting", "someday"];
-
 /// The agent, as the board names it (`mecha tasks`'s `AGENT`).
 const AGENT: &str = "mecha";
 
-/// A status as the brief may carry it: one of the closed set, or `other`.
+/// A status as the brief may carry it: one of the board's own set
+/// (`closure::TASK_STATUSES`, the one mirror of the graph's), or `other`.
 /// A board row's string never reaches the brief whole.
 fn status_key(status: &str) -> &'static str {
-    STATUSES
+    crate::closure::TASK_STATUSES
         .iter()
-        .chain(&["done", "dropped"])
         .find(|s| **s == status)
         .copied()
         .unwrap_or("other")
@@ -570,8 +572,15 @@ pub struct StoreBrief {
     /// How many wait — `None` when the store could not be read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<u64>,
-    /// Of the recorded items, how many are past their patience.
+    /// Of the recorded items, how many are past their patience — over
+    /// `items`, which the 1f record caps at `COMMITMENTS_RECORDED`, so a
+    /// floor when `capped` says the list was cut.
     pub owed: u64,
+    /// `waiting` is more than `items` holds: the record kept the oldest
+    /// `COMMITMENTS_RECORDED` (undated last) and `owed` is counted over
+    /// them — never a total when this is set (found on review).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub capped: bool,
     /// Items whose stamp would not parse — of unknown standing.
     pub undated: u64,
     /// Each commitment, oldest first (the 1f record's order and cap).
@@ -626,6 +635,7 @@ pub fn commitments_of(h: Option<&crate::homeostat::Homeostat>) -> Commitments {
                 .filter(|i| i.guilt.is_some_and(|g| g > 0.0))
                 .count() as u64,
             undated: s.unknown,
+            capped: s.waiting.is_some_and(|w| w > s.items.len() as u64),
             items: s
                 .items
                 .iter()
@@ -661,7 +671,10 @@ pub enum Zone {
         weekday: String,
     },
     /// `[agent] timezone` is unset: the owner's local time is unknown, and
-    /// the machine runs UTC.
+    /// the machine runs UTC. The completeness readout counts this as unread,
+    /// where [`Quiet::Unset`] is known: with no zone the fact the field is
+    /// for (the owner's local time) cannot be stated, while with no quiet
+    /// hours the fact is that none were set.
     Unset,
     /// Set to something that is not an IANA name.
     Invalid { name: String },
@@ -1289,9 +1302,15 @@ impl SituationBrief {
                     }
                 }),
             ),
+            // A board the server cut, or rows without a readable status,
+            // hold counts that are floors: a part not read, on the rule
+            // `Seats` and `Flight` apply to a file they could not parse.
             (
                 "board",
-                of(&self.board, |b| matches!(b, Board::Unread { .. })),
+                of(&self.board, |b| match b {
+                    Board::Read(c) => c.truncated || c.unreadable_rows > 0,
+                    Board::Unread { .. } => true,
+                }),
             ),
             (
                 "commitments",
@@ -1486,6 +1505,21 @@ mod tests {
         assert_eq!(c.due_this_week, None);
         assert!(c.truncated);
         assert_eq!(c.own, OwnTask::Missing);
+        // A board the server cut holds floors, not counts: the field is a
+        // part not read, like a permit that will not parse.
+        let brief = SituationBrief {
+            assembled_at: now(),
+            goal: None,
+            board: Some(Board::Read(c)),
+            commitments: None,
+            time: None,
+            seats: None,
+            runs: None,
+            slots: None,
+            voice: None,
+            budget: None,
+        };
+        assert_eq!(brief.fields()[1], ("board", FieldState::Unread));
     }
 
     #[test]
@@ -1697,10 +1731,18 @@ mod tests {
         assert_eq!(withdrawn, vec![Store::Questions]);
         assert_eq!(stores.len(), 1);
         assert_eq!(stores[0].owed, 1);
+        assert!(!stores[0].capped, "every waiting item is recorded");
         assert_eq!(
             stores[0].items.iter().map(|i| i.owed).collect::<Vec<_>>(),
             vec![Some(true), Some(false), None]
         );
+        // More waiting than the record kept: `owed` is a floor, and says so.
+        let mut more = h.clone();
+        more.commitments.as_mut().unwrap()[0].waiting = Some(40);
+        let Commitments::Read { stores, .. } = commitments_of(Some(&more)) else {
+            panic!()
+        };
+        assert!(stores[0].capped, "40 waiting, 3 recorded");
     }
 
     #[test]

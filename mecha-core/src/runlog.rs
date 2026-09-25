@@ -543,9 +543,10 @@ impl Corpus {
     /// `APPRAISAL-WIRING-DESIGN.md` §3: "the recorded brief is complete on
     /// a sample of runs"). Per field, over the runs that carry a brief:
     /// read, unread (its reader ran and could not), missing (not on the
-    /// record). Runs with no brief are counted by surface, off the created
-    /// title's prefix, so a front-end that assembles none is visible as a
-    /// count rather than as a smaller denominator.
+    /// record). Runs with no brief are counted by the surface their session
+    /// recorded (`SessionKind`), never its title — `mecha run` titles a
+    /// session with the prompt's first words — so a front-end that assembles
+    /// none is visible as a count rather than as a smaller denominator.
     pub fn brief_completeness(&self) -> BriefCompleteness {
         use crate::brief::FieldState;
         let mut out = BriefCompleteness {
