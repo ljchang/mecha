@@ -2166,44 +2166,113 @@ now makes the move one recorded event:
 - **The pre-read is now mandatory for any status change.** It used to be
   skipped for open statuses and warned-past for closures; a status change
   that cannot be classified cannot be recorded, so a failed read refuses.
-- **Who may close is decided before the record is written**
-  (`closure::decide`). The `shell` tool stamps every command with the run's
-  posture (`MECHA_RUN_POSTURE`, set on every sandbox backend by
-  `Sandbox::command_with_env`, from `ToolCtx::run_posture`, which
-  `setup::posture_for` and `serve::chat::web_posture` set); only
-  `interactive` may close, recorded as `owner-approved` on surface `chat`,
-  and an unstamped run reads `unknown`, which refuses. **`interactive` means
-  the approver asks a person**, not only that one is present: `posture_for`
-  reads the resolved permission mode, so `-y`, `permission_mode = "allow"`
-  and a TUI switched out of `ask` (by `/mode`, or restored after a `/model`
-  rebuild) stamp `unattended`; `web_posture` applies the same rule to the
+- **Who may close is decided before the record is written, from the
+  harness's own registry** (`closure::decide`, `shell_registry`; 1b-2).
+  The `shell` tool registers every command it spawns — the direct child's
+  pid, its process start time, the run's posture from
+  `ToolCtx::run_posture` (which `setup::posture_for` and
+  `serve::chat::web_posture` set) — under `~/.mecha/runs/shells/`, and
+  removes it when the child is gone; a registry it cannot open, or an entry
+  it cannot write, refuses the call. `mecha tasks set` walks its ancestry to
+  the nearest registered shell: `interactive` closes as `owner-approved` on
+  surface `chat`; any other posture, or `unknown`, refuses. A live task-run
+  or trigger-run marker above it refuses as before. `MECHA_RUN_POSTURE` is
+  still stamped but is advisory: set with no registered shell above it, it
+  refuses. **`interactive` means the approver asks a person**, not only
+  that one is present: `posture_for` reads the resolved permission mode, so
+  `-y`, `permission_mode = "allow"` and a TUI switched out of `ask` (by
+  `/mode`, or restored after a `/model` rebuild — `tui::stamp_posture`
+  re-stamps `ToolCtx`, and every later registration records the new
+  posture) are `unattended`; `web_posture` applies the same rule to the
   web session's mode, so a chat set to `allow` or `read-only` from the page
   is unattended from its next turn, as voice's approve-all always was (both
-  found on review of #293). **An MCP server is stamped `unknown`**
-  (`McpClient::build_command`, after the config's `env`, and through
-  `Sandbox::wrap_argv_with_env` when confined): it outlives the run that
-  started it and serves whichever run holds the agent, so no run's posture
-  is true of it, and anything it spawns is refused rather than read as the
-  owner at a terminal (review of #293). **The harness's own board moves
-  never cross the line either way** (`tasks::harness_step`): `move_task`
-  refuses a closing status and leaves a closed row closed, so a task the
-  owner closes while its run is in flight is not reopened by the run's
-  move back to `waiting`. Independently, a
-  process descended from a live task-run or trigger-run marker's pid is
-  refused whatever its environment — **on Linux only**: the ancestry is
-  read from `/proc`, and elsewhere this second check finds nothing. **The residue is wider than it looks,
-  and is named on `decide`:** the posture is an environment variable the
-  command string can set, so `MECHA_RUN_POSTURE=interactive mecha tasks set …`
-  in a delegated or unattended run's `shell` overrides the stamp; where the
-  run has no marker (a web task chat, an approvals-off chat, a front-door
-  or mail run) nothing else stops it, and the record then says
-  `owner-approved`. The guard stops a run that follows the refusal text; it
-  does not stop one that names the variable. `MECHA_HOME` is the same
-  residue one variable over: the closure store and the marker directories
-  the ancestry check reads both come from `work::mecha_home()`, so a command
-  that sets it writes its record elsewhere and escapes the ancestry check
-  while the real board moves (both found on review of #293; #294 closes
-  them).
+  found on review of #293). **Why the registry and
+  not the variable:** the command string can set the variable
+  (`MECHA_RUN_POSTURE=interactive mecha tasks set …`), which on #293 was
+  allowed and recorded `owner-approved` wherever a run held no marker.
+  **Why the shell child and not the hosting process:** `serve` hosts the
+  owner's board and a delegated web chat at once, and registering `serve`
+  would refuse the owner's own tap. **The start time** is what keeps a pid
+  a crash left behind, and later reused, from reading as a shell; an entry
+  whose start time cannot be read on either side is unreadable and refuses
+  (it used to be taken as a match, which let an unverified `interactive`
+  entry *permit* a closure — review of #294). **Off Linux** the walk cannot
+  read `/proc`, so it checks only the reader's own pid, and if any live
+  shell is registered it refuses rather than reading as the owner's terminal
+  — the price is that the owner's terminal cannot close a task there while
+  a run's shell is live. **`MECHA_HOME` does not hide a run** (review of
+  #293): `MECHA_HOME=/tmp/x mecha tasks set …` used to read an empty
+  registry and empty markers and land on rule 4 — while the graph server,
+  which does not follow `MECHA_HOME`, put the move on the real board and
+  the record went to the redirected store. The registry and the task and
+  trigger markers are now read under `MECHA_HOME` *and* the owner's real
+  home, which comes from the password database, never `HOME`; a
+  registration found only in the real one refuses whatever its posture
+  (`ShellReading::Redirected`). A real home the database cannot give is not
+  agreement: with `MECHA_HOME` set and no passwd entry to check it against,
+  `work::guard_homes` refuses (review of #294). **The whole chain is read,
+  not the nearest registration:** a command can write an `interactive`
+  entry for its own pid under a `MECHA_HOME` it chose, and read
+  nearest-first that shadowed the real `delegated` entry above it — so any
+  registration on the chain that is unreadable, not `interactive`, or found
+  outside this process's own registry refuses (`shell_registry::walk_from`,
+  review of #294). Registration writes under `MECHA_HOME` *and* the owner's
+  real home (`shell_registry::write_roots`), symmetric with the read, so a
+  harness that itself runs under a `MECHA_HOME` — a trial arm — is still
+  found by a command that redirects again; the same entry in both
+  corroborates, and a trial home's own registry still holds its runs. The
+  run markers are written only under the harness's home, so for a trial
+  arm rule 1 can miss a redirected command — the registry is what refuses
+  it (review of #294). **A nested front
+  end is not a person:** `mecha chat`, `mecha run` and `mecha tui` stamp
+  `interactive` only with a terminal on stdin *and* no registered shell
+  above them (`setup::front_end_interactive`), so a run that pipes into
+  `mecha chat`, or feeds `mecha tui` a pty, gets `unattended` children;
+  every front end reads the registry once at startup and latches it
+  (`setup::startup_shell_reading`), so a `serve` a run's shell started —
+  and authenticated to with the login it chose on the same command line —
+  never stamps a web chat `interactive`, and the TUI's re-stamp on `/mode`
+  and `/model` reuses the startup reading rather than a fresh one, so a TUI
+  detached and reparented away from its run stays unattended (review of
+  #294).
+  **The residue, named on `decide`:**
+  a command that detaches from its shell and clears the variable reads as
+  the owner's terminal; an unconfined shell can also edit `~/.mecha`
+  directly, and a command can race the few microseconds between spawn and
+  registration. The registry's location has no environment override (a
+  `MECHA_SHELLS_DIR` the reader honoured let a command point it at a
+  registry of its own — found on review of #294). The answer is
+  confinement: bwrap and docker run the command
+  with `--unshare-pid` / its own pid namespace and no `~/.mecha` mounted,
+  landlock grants no path under the owner's home, and `mecha doctor`
+  reports a `[sandbox]` that mounts the mecha home (broken). An unconfined
+  `shell` is the stock default and is *not* a doctor finding — one present
+  on every install would keep `doctor` exiting 1 forever and teach its
+  readers to skip it (review of #294); `mecha tools` shows it instead
+  ("unconfined — runs as you"). **Say it plainly: inside a pid-namespaced sandbox the
+  registry does not protect anything.** The ancestry walk reads the
+  namespace's `/proc`, where the host-side pid the `shell` tool registered
+  does not exist, so a confined command always reads as unregistered — the
+  protection there is entirely that `~/.mecha` is not mounted (review of
+  #294). The walk checks the reader's own pid first, because `bash -lc
+  '<one simple command>'` execs in place; a registry or an entry that cannot
+  be read refuses rather than reading as the owner's terminal.
+- **An MCP server is stamped `unknown`** (`McpClient::build_command`, after
+  the config's `env`, and through `Sandbox::wrap_argv_with_env` when
+  confined) and never registered: it outlives the run that started it and
+  serves whichever run holds the agent, so no run's posture is true of it,
+  and anything it spawns with its environment meets rule 5 — a variable
+  with no registration — and is refused (review of #293). **This is the
+  one place the variable still carries the guard:** a server is spawned by
+  the agent, never by a registered shell, so a child it starts with a
+  cleared environment reads as the owner's terminal (rule 4) without
+  detaching (review of #294). Confining the server, with the mecha home
+  unmounted, is what closes it.
+- **The harness's own board moves never cross the line either way**
+  (`tasks::harness_step`): `move_task` refuses a closing status and leaves
+  a closed row closed, so a task the owner closes while its run is in
+  flight is not reopened by the run's move back to `waiting` (review of
+  #293).
 - **`--surface` cannot claim `chat`**, and inside a run the flag is ignored:
   the surface of a run's closure is always `chat`.
 - **Reopen is the same event reversed** (`move: reopen`, `undoes` naming the

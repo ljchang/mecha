@@ -895,16 +895,33 @@ fn hook_dir() -> std::path::PathBuf {
 
 /// The pids of every delegated or scheduled run in flight — what
 /// `closure::run_ancestor` walks this process's ancestry against.
-fn live_run_pids() -> std::collections::HashSet<u32> {
-    let mut pids: std::collections::HashSet<u32> = markers()
-        .map(|m| m.live_pids().into_iter().collect())
-        .unwrap_or_default();
-    if let Ok(store) = mecha_core::trigger::TriggerStore::default_root()
-        .and_then(mecha_core::trigger::TriggerStore::open)
-    {
-        pids.extend(store.live_run_pids());
+///
+/// Read under every home [`mecha_core::work::guard_homes`] names — this
+/// process's `MECHA_HOME` and the owner's real home — so a command inside a
+/// run cannot hide its run's marker by pointing `MECHA_HOME` at an empty
+/// directory (review of #293). Read-only: nothing here creates a directory.
+/// Homes that cannot be named are an error, not an empty set — an empty set
+/// would switch rule 1 off without a word (review of #294).
+fn live_run_pids() -> Result<std::collections::HashSet<u32>> {
+    let mut dirs = Vec::new();
+    for home in mecha_core::work::guard_homes()? {
+        dirs.push(markers_dir_under(&home));
+        dirs.push(mecha_core::trigger::TriggerStore::locks_dir_under(&home));
     }
-    pids
+    if let Ok(root) = mecha_core::trigger::TriggerStore::default_root() {
+        dirs.push(root.join("locks"));
+    }
+    live_run_pids_in(&dirs)
+}
+
+/// The live pids across every marker directory in `dirs`; a directory that
+/// exists and cannot be read is an error, not an empty one (review of #294).
+fn live_run_pids_in(dirs: &[std::path::PathBuf]) -> Result<std::collections::HashSet<u32>> {
+    let mut pids = std::collections::HashSet::new();
+    for d in dirs {
+        pids.extend(mecha_core::runmarker::RunMarkers::new(d.clone()).live_pids()?);
+    }
+    Ok(pids)
 }
 
 /// Decide who is making a move, run the `pre_task_close` hooks, and write
@@ -924,7 +941,11 @@ async fn begin_move(
     use mecha_core::closure::{self, ClosureStore, Entry, Transition};
     let (actor, surface) = closure::decide(
         &closure::posture_from_env(),
-        closure::run_ancestor(&live_run_pids()),
+        &closure::ShellReading::from_registry(),
+        closure::run_ancestor(&live_run_pids().context(
+            "the run markers could not be located, so whether a run made this move cannot \
+             be told; refused",
+        )?),
         flagged,
     )
     .map_err(anyhow::Error::msg)?;
@@ -1024,10 +1045,12 @@ async fn find_task_in(
         // arrive is unknown, not absent — `rows_under`'s reading of the same
         // envelope. Refusing is right (an unclassifiable change cannot be
         // recorded); calling it "no such task" was not (found on review).
+        // Worded for every caller — `set`'s pre-read and `move_task`'s, where
+        // no status change was asked for — and each adds its own context
+        // (review of #293).
         None if board["truncated"].as_bool() == Some(true) => anyhow::bail!(
             "task {task_id} is not in the board's answer, which the server truncated — \
-             it may exist past the cut, so this status change cannot be classified \
-             and was refused"
+             it may exist past the cut, so it could not be read and nothing was changed"
         ),
         None => anyhow::bail!("no such task: {task_id} — `mecha tasks list` shows the board"),
     }
@@ -1072,9 +1095,10 @@ struct Appraised {
 /// **refused** from a delegated, scheduled or unattended run
 /// (`closure::decide`: the run posture the `shell` tool stamps on every
 /// command, and whether this process descends from a live run). The
-/// residue left is named on `closure::decide`, and it is wider than a
-/// detach: a command that sets the posture variable itself passes. And a
-/// genuinely
+/// posture now comes from the harness's shell registry (1b-2), so a
+/// command that sets the variable itself is refused; the residue left,
+/// named on `closure::decide`, is a command that detaches from its shell.
+/// And a genuinely
 /// out-of-band write — another process talking to the graph store directly
 /// — which no guard in this binary can see and which skips the appraisal;
 /// the complete fix for that one is still a closure claim the board owns,
@@ -2197,9 +2221,15 @@ pub(crate) fn permits() -> Result<mecha_core::permit::Permits> {
 }
 
 pub(crate) fn markers() -> Result<mecha_core::runmarker::RunMarkers> {
-    Ok(mecha_core::runmarker::RunMarkers::new(
-        mecha_core::work::mecha_home()?.join("taskruns"),
-    ))
+    Ok(mecha_core::runmarker::RunMarkers::new(markers_dir_under(
+        &mecha_core::work::mecha_home()?,
+    )))
+}
+
+/// Where task-run markers live under a mecha home — said once, for
+/// [`markers`] and for the closure guard's walk over every guard home.
+fn markers_dir_under(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("taskruns")
 }
 
 /// The agent, as the board names it. A node of kind `agent`, shipped with the
@@ -3519,6 +3549,27 @@ fn work_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A run's marker under the owner's home is seen from a process whose
+    /// `MECHA_HOME` is an empty directory: the union, not the first home.
+    #[test]
+    fn run_markers_are_read_under_every_home() {
+        let base = std::env::temp_dir().join(format!(
+            "mecha-markers-homes-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let (redirected, owner) = (base.join("redirected"), base.join("owner"));
+        mecha_core::runmarker::RunMarkers::new(owner.join("taskruns"))
+            .mark_running("task-1a2b3c4d", None)
+            .unwrap();
+        let only_redirected = live_run_pids_in(&[redirected.join("taskruns")]).unwrap();
+        let both =
+            live_run_pids_in(&[redirected.join("taskruns"), owner.join("taskruns")]).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(only_redirected.is_empty());
+        assert!(both.contains(&std::process::id()), "{both:?}");
+    }
 
     fn task() -> Value {
         json!({

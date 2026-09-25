@@ -564,10 +564,73 @@ impl Tool for Shell {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
+
+        // **Every command is registered, harness-side, with its run's
+        // posture** (`shell_registry`; `APPRAISAL-WIRING-DESIGN.md` 1b-2).
+        // `mecha tasks set` reads the posture from here, where the command
+        // text cannot reach, not from `POSTURE_ENV`, which it can set. A
+        // registry that cannot be opened, or a registration that cannot be
+        // written, refuses the call: an unregistered command is
+        // indistinguishable from the owner's own terminal to the closure
+        // check, and the silently-degrading guard says a protection that
+        // cannot run stops the run. Declared before the child so it is
+        // dropped after it: the entry outlives the process it names.
+        // Under every guard home (`shell_registry::write_roots`), so a harness
+        // that itself runs under a `MECHA_HOME` is still found by a command
+        // that redirects again (review of #294).
+        let registries = match crate::shell_registry::write_roots().and_then(|roots| {
+            roots
+                .into_iter()
+                .map(crate::shell_registry::ShellRegistry::open)
+                .collect::<Result<Vec<_>>>()
+        }) {
+            // No registry to write to is no protection: refused like one
+            // that could not be opened (review of #294).
+            Ok(r) if !r.is_empty() => r,
+            Ok(_) => {
+                return Ok(ToolOutput::err(
+                    "refusing to run: no shell registry to register the command in. \
+                     Nothing was executed.",
+                ))
+            }
+            Err(e) => {
+                return Ok(ToolOutput::err(format!(
+                    "refusing to run: the shell registry could not be opened ({e:#}). \
+                     Nothing was executed."
+                )))
+            }
+        };
+        let mut _registrations: Vec<crate::shell_registry::Registration> = Vec::new();
         let mut child = match command.spawn() {
             Ok(c) => c,
             Err(e) => return Ok(ToolOutput::err(format!("cannot run command: {e}"))),
         };
+        // A child with no pid has already been reaped — but it may have left
+        // a grandchild, which is what the registry exists to place, so it is
+        // refused like a registration that failed (review of #294). tokio
+        // answers `None` only after the child was awaited, so this is a shape
+        // guarantee, not a live path.
+        let registered = match child.id() {
+            Some(pid) => registries
+                .iter()
+                .map(|r| {
+                    r.register(pid, ctx.run_posture, ctx.call_id.as_deref())
+                        .map_err(|e| format!("{e:#}"))
+                })
+                .collect::<std::result::Result<Vec<_>, _>>(),
+            None => Err("the command exited before it could be named".to_string()),
+        };
+        match registered {
+            Ok(r) => _registrations = r,
+            Err(e) => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                return Ok(ToolOutput::err(format!(
+                    "refusing to run: the command could not be registered ({e}); it \
+                     was stopped as soon as it started."
+                )));
+            }
+        }
         let out_pipe = child.stdout.take();
         let err_pipe = child.stderr.take();
 
@@ -1079,6 +1142,44 @@ mod tests {
         ctx.run_posture = Some(crate::closure::RunPosture::Delegated);
         let out = shell.call(echo, &ctx).await.unwrap();
         assert!(out.content.contains("delegated"), "{}", out.content);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The command is registered, harness-side, while it runs — by its own
+    /// pid, with the run's posture — and the entry is gone once it exits
+    /// (`shell_registry`, 1b-2). The command reads its own entry: `$$` is
+    /// the registered child's pid for an unconfined `sh -c`.
+    #[tokio::test]
+    async fn every_command_is_registered_with_its_posture_while_it_runs() {
+        let dir = std::env::temp_dir().join(format!("mecha-shellreg-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = crate::shell_registry::ShellRegistry::default_root().unwrap();
+        let shell = shell_with(Backend::None, false);
+        let ctx = ToolCtx {
+            workspace: dir.clone(),
+            run_posture: Some(crate::closure::RunPosture::Delegated),
+            ..ToolCtx::default()
+        };
+        let read_own = serde_json::json!({
+            "command": format!("echo \"pid=$$\"; cat '{}'/$$.json", root.display())
+        });
+        let out = shell.call(read_own, &ctx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("\"posture\":\"delegated\""),
+            "{}",
+            out.content
+        );
+        let pid: u32 = out
+            .content
+            .lines()
+            .find_map(|l| l.strip_prefix("pid="))
+            .and_then(|p| p.trim().parse().ok())
+            .expect("the command printed its pid");
+        assert!(
+            !root.join(format!("{pid}.json")).exists(),
+            "the registration is removed when the command is done"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
