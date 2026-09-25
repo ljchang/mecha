@@ -194,6 +194,12 @@ pub enum Lever {
     /// what `mecha exp` compares before anything turns it on by default.
     /// Recording is not levered.
     SituationBrief,
+    /// `[agent] past_appraisals` unset or `false`, or `--no-past-appraisals`:
+    /// `goal_context` serves no past appraisal (`APPRAISAL-WIRING-DESIGN.md`
+    /// I2, built as 2c-2). Ships off for the reason [`Lever::SituationBrief`]
+    /// does — retrieved memory can cost more than it returns, so the arms
+    /// are measured before it is on. Nothing reaches the prefix either way.
+    PastAppraisals,
 }
 
 impl Lever {
@@ -207,7 +213,7 @@ impl Lever {
     /// on review). The test `all_names_every_variant_serde_knows` closes
     /// it from the derive: serde's unknown-variant error lists every
     /// variant, and the test asserts this array covers that list.
-    pub const ALL: [Lever; 18] = [
+    pub const ALL: [Lever; 19] = [
         Lever::Mcp,
         Lever::LearnedRules,
         Lever::Hooks,
@@ -226,6 +232,7 @@ impl Lever {
         Lever::PredictiveCompaction,
         Lever::CarriedState,
         Lever::SituationBrief,
+        Lever::PastAppraisals,
     ];
 
     pub fn parse(name: &str) -> Option<Lever> {
@@ -252,6 +259,7 @@ impl Lever {
             Lever::PredictiveCompaction => "predictive_compaction",
             Lever::CarriedState => "carried_state",
             Lever::SituationBrief => "situation_brief",
+            Lever::PastAppraisals => "past_appraisals",
         }
     }
 
@@ -1172,7 +1180,8 @@ mod tests {
                 | Lever::CompactValidate
                 | Lever::PredictiveCompaction
                 | Lever::CarriedState
-                | Lever::SituationBrief => {}
+                | Lever::SituationBrief
+                | Lever::PastAppraisals => {}
             }
         }
         let mut seen = std::collections::BTreeSet::new();
