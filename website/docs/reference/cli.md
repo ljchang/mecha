@@ -512,9 +512,10 @@ label derived from it. Nothing is stored; each appraisal is derived on the spot
 from transcripts, outcomes, drafts, questions, front-door records, clean
 correction reflections, and the charter. Read the separate positive/negative
 valence alongside the label counts, goal-confirmation coverage, and source
-readability flags. Both paid passes
-are off by default and are counted apart from each other in `--json`, where
-absent means *did not run* rather than *found nothing*.
+readability flags. The one paid pass, `--probe`, is off by default; in
+`--json` its `probe` object is `null` when it did not run, which is a
+different fact from finding nothing. `appraiser` is always `null`: that
+pass is retired, not merely skipped.
 
 `--probe` builds a real agent with a real workspace jail, so run it from a
 project directory or name one with `--workspace`; from a home directory it

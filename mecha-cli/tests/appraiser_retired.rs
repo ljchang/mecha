@@ -154,7 +154,13 @@ async fn the_retired_appraise_flag_asks_no_model_and_says_where_the_appraisal_we
         )
     });
     assert_eq!(readout["appraised"], 2, "{readout:#}");
-    assert!(readout["appraiser"].is_null(), "{readout:#}");
+    // Present and null — `Value`'s index answers null for an absent key too,
+    // so the key's presence is asked of the object (review of #315).
+    let obj = readout.as_object().expect("an object readout");
+    assert!(
+        obj.contains_key("appraiser") && obj["appraiser"].is_null(),
+        "the key is kept, always null: {readout:#}"
+    );
     assert!(
         readout["channels"]
             .as_object()
