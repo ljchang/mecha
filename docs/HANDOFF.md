@@ -2625,6 +2625,26 @@ voice, graph, the benchmark binary and the factory were not touched.
 server is now redundant — same value, and an explicit value wins — and is the
 owner's to delete; nothing depends on it either way.
 
+**Installed from main, 2026-09-25 03:10Z (verified by asking the artifacts).**
+`~/.cargo/bin/mecha` was origin/main `6bfde499` at 03:10Z (#289's setup
+wording present), then another lane installed `c4c916d1` at 03:30Z after #295
+merged: its added "did not take effect under bwrap" is in the binary, so the
+bwrap `memory_mb`/`cpus` limits in `~/.mecha/config.toml` are enforced.
+`mecha-graph` and `mecha-graph-mcp` are mecha-graph main `883be7b`: `strings`
+finds no `pkg shadow` and finds `mecha-graph shadow --confirm`, and
+`tools/list` answers 13 tools; the shared `~/Github/mecha-graph` checkout was
+fast-forwarded to match and its `target/release/mecha-graph`, which the 01:30
+nightly execs, rebuilt. mecha-mail was unchanged since its 94cccc2b install.
+`mecha-slack`, `-triggers`, `-drain` and `-serve` restarted at 03:10:33Z with
+their startup lines seen; the voice worker was not (`scripts/voice` unchanged).
+The same commit's `mecha` and `mecha-mail` had been installed minutes earlier
+by another lane, which also rebuilt `~/.mecha/web/dist` for #292/#293's
+`web/` changes (bundle `index-DeqhtR4a.js`, built 03:03Z; it contains
+`Tasks.svelte`'s added "a follow-up was staged" and is the bundle `mecha
+serve` serves) and restarted the voice worker. Still behind: Claude Code
+sessions started before 03:10Z hold the old `graph` MCP child until
+restarted.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -2795,9 +2815,7 @@ is recoverable without the checkout's cwd. Record:
   backup), and Hermes's entry was repointed the same way (its key is still
   `pkg`). Restart Hermes and any long-lived Claude Code session to drop the
   old server processes; mecha itself was already on the public binary. The
-  `update` skill's paragraph on the two repos says the rest. Owed in the
-  mecha-graph repo, not here: `docs/integrations.md`'s "Consumers (MCP)"
-  section still tells a reader to add `pkg-mcp` from the private path.
+  `update` skill's paragraph on the two repos says the rest.
 - **When #153 and #158 merge, restart `mecha-voice-worker` — and check the
   shared checkout first, every time.** The unit's `WorkingDirectory` is
   `~/Github/mecha` and its `ExecStart` runs `scripts/voice/worker.py` from
@@ -4362,12 +4380,14 @@ repeated here.
   by `mecha distill` for a human to chase with `mecha gossip --entity
   <about>`, never auto-run. See HISTORY's 2026-08-27/28 entry for the
   four-round review saga on top of it). **Review-queue salience — the rest
-  of §10 — is still unbuilt**: it needs the private
-  `personalized_knowledge_graph` repository (a different codebase mecha only
-  reaches through the MCP tool surface) to read `meta.affect`/
-  `meta.goal_errors` back and reorder pkg's review queue on them. Not
-  started, and not scoped beyond `GOAL-SYSTEM-DESIGN.md` §10's own paragraph
-  naming it. (Rung 10, the charter, landed as #100; rung 8 landed as #99 and
+  of §10 — is still unbuilt**: it needs mecha-graph (now the public
+  `~/Github/mecha-graph`, a different codebase mecha only reaches through the
+  MCP tool surface) to read `meta.affect`/`meta.goal_errors` back and reorder
+  its review queue on them. Re-checked 2026-09-24: nothing in mecha-graph's
+  core, MCP server or CLI reads either field, and the user docs
+  (`features/memory/distillation.md`) now say they are recorded and unread.
+  Not started, and not scoped beyond `GOAL-SYSTEM-DESIGN.md` §10's own
+  paragraph naming it. (Rung 10, the charter, landed as #100; rung 8 landed as #99 and
   #103 — see the summary paragraph above for what shipped.)
 
 **Two things named rather than done**, recorded so they are not rediscovered
@@ -5112,6 +5132,17 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   `~/Github/personalized_knowledge_graph` (paths baked into mecha's config
   `command =`, two crontab lines, and the gitignored OPERATIONS.md), and
   mecha's ARCHITECTURE.md still says "pkg" in narrative spots.
+
+- **mecha-graph's `.githooks/pre-commit` describes a CI that does not exist.**
+  It argues from a `rust: [stable, "1.89"]` matrix, a rustfmt job "there the
+  whole time" and a `CONTRIBUTING` file; the real `.github/workflows/ci.yml`
+  (added by mecha-graph #20, 2026-09-25) pins one toolchain, `RUST_TOOLCHAIN`
+  1.98.1, and runs test, clippy and rustfmt. Reconcile the hook's comment
+  with the workflow.
+- **mecha-graph has no `rust-version`, and #20 raised the real floor to 1.88**
+  (`<[u8]>::as_chunks`, five LE-f32 decodes in `embed`, `linkers` and
+  `precheck`). Nothing would notice a build on an older toolchain failing;
+  state it in `Cargo.toml` or add an MSRV job.
 
 ### Larger, and deliberately not started
 
