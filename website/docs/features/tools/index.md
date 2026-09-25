@@ -125,6 +125,7 @@ These come with a feature, and exist only when it does:
 | Tool | Present when | Declares |
 |---|---|---|
 | `web_search`, `web_open` | a `[[search]]` backend is configured — see [Web search](/docs/features/tools/web-search) | untrusted, `blind` send (`web_search` is `chosen` if no blind backend is configured) |
+| `image_generate` | `[image]` is configured — see [Image generation](/docs/features/tools/image-generation) | nothing; the server must be on this machine |
 | `compact` | the provider has a compaction threshold (`context_window` or `compact_at_tokens`); `--no-compact-tool` withholds it — see [Compaction](/docs/features/models/compaction) | nothing |
 | `recall` | the session can hold its history: `chat`, the TUI, a resumed `run` — see [Sessions and replay](/docs/features/memory/sessions-and-replay#recall-the-record-is-searchable) | nothing — what it returns already entered the conversation |
 | `skill` | at least one skill is installed and `--no-skills` was not passed — see [Skills](/docs/features/learning/skills) | nothing |

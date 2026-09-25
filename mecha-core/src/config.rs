@@ -34,6 +34,9 @@ pub struct Config {
     /// failure, which is what makes stacking two free tiers viable.
     #[serde(rename = "search")]
     pub search: Vec<SearchBackendConfig>,
+    /// Local image generation — the `image_generate` tool. Absent means no
+    /// tool. Global-file only; see [`crate::imagegen::ImageConfig`].
+    pub image: Option<crate::imagegen::ImageConfig>,
     /// User commands run at loop lifecycle points. See [`crate::hooks`].
     #[serde(rename = "hook")]
     pub hooks: Vec<HookConfig>,
@@ -341,6 +344,7 @@ impl Default for Config {
             mcp: Vec::new(),
             subagents: Vec::new(),
             search: Vec::new(),
+            image: None,
             hooks: Vec::new(),
             rules: Vec::new(),
             approval: ApprovalConfig::default(),
@@ -1242,6 +1246,19 @@ impl Config {
                 path.display()
             );
         }
+        // `[image]` because the tool it configures declares no egress, and
+        // that declaration is only true while the operator chose the address:
+        // a project file naming a server elsewhere would carry every prompt —
+        // model-written, from a conversation that may hold private data — to
+        // whoever a cloned repository picked. `imagegen` also refuses a
+        // non-loopback URL outright; this keeps a project from even trying.
+        if trust == LayerTrust::Project && layer.image.take().is_some() {
+            tracing::warn!(
+                "[image] in {} is ignored — image generation loads from the \
+                 global config only",
+                path.display()
+            );
+        }
         // `[harness]` for `[slack]`'s reason at its sharpest: it names what an
         // unattended nightly diagnostician reads and believes about which of
         // this harness's protections are load-bearing, and a project file
@@ -1520,6 +1537,7 @@ struct ConfigLayer {
     subagents: Option<Vec<crate::subagent::SubagentProfile>>,
     #[serde(rename = "search")]
     search: Option<Vec<SearchBackendConfig>>,
+    image: Option<crate::imagegen::ImageConfig>,
     #[serde(rename = "hook")]
     hooks: Option<Vec<HookConfig>>,
     #[serde(rename = "rule")]
@@ -1835,6 +1853,12 @@ impl ConfigLayer {
         if let Some(v) = self.search {
             cfg.search = v;
         }
+        // Wholesale: the section is one backend's address and files, and half
+        // of one merged onto half of another names a server nobody configured.
+        // Only ever reached from the global layer — `merge_file` strips it.
+        if let Some(v) = self.image {
+            cfg.image = Some(v);
+        }
         // Wholesale, like MCP servers and for the same reason: a project that
         // cannot turn a global hook off cannot be trusted to run anything.
         if let Some(v) = self.hooks {
@@ -2126,6 +2150,41 @@ mod tests {
             cfg.harness.source_dir,
             Some(std::path::PathBuf::from("/tmp/attacker"))
         );
+    }
+
+    #[test]
+    fn a_project_layer_cannot_choose_where_image_prompts_go() {
+        // `image_generate` declares no egress because the operator chose the
+        // server. A cloned repository's `[image]` would move every prompt —
+        // model-written, from a conversation that may hold private data — to
+        // an address it picked. Same file, two trusts: ignored from a project
+        // layer, applied from the global one. Partial on purpose: the other
+        // keys take their defaults, which is what "wholesale" means.
+        let dir = std::env::temp_dir().join(format!("mecha-image-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("layer.toml");
+        std::fs::write(
+            &path,
+            "[image]\nurl = \"http://127.0.0.1:9999\"\nsteps = 12\n",
+        )
+        .unwrap();
+
+        let mut cfg = Config::default();
+        cfg.merge_file(&path, LayerTrust::Project).unwrap();
+        assert_eq!(cfg.image, None);
+
+        let mut cfg = Config::default();
+        cfg.merge_file(&path, LayerTrust::Global).unwrap();
+        let image = cfg.image.expect("the operator's own file configures it");
+        assert_eq!(
+            (image.url.as_str(), image.steps),
+            ("http://127.0.0.1:9999", 12)
+        );
+        assert_eq!(
+            image.diffusion_model,
+            crate::imagegen::ImageConfig::default().diffusion_model
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
