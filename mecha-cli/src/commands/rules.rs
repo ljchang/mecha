@@ -26,7 +26,7 @@ use mecha_core::learning::{
     Proposal, Rule, RuleTally, ValidationRecord, Verdict,
 };
 use mecha_core::session::{Session, SessionKind};
-use mecha_core::situation::GoalKey;
+use mecha_core::situation::{BoardStatuses, GoalKey, GoalLiveness, TriggerState};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -80,13 +80,20 @@ pub enum Cmd {
     },
 }
 
-pub async fn execute(args: Args) -> Result<()> {
+pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     let store = LearningStore::open(LearningStore::default_root()?)?;
     match args.cmd.unwrap_or(Cmd::List { json: false }) {
-        Cmd::List { json } => list(&store, json),
+        Cmd::List { json } => {
+            let goals = goals_of(global, &all_rules(&store)).await;
+            list(&store, json, &goals)
+        }
         Cmd::Retire { id, reason } => retire(&store, &id, reason),
         Cmd::Restore { id } => restore(&store, &id),
-        Cmd::Show { id } => show(&store, &id),
+        Cmd::Show { id } => {
+            let (_, rules, i) = find_rule(&store, &id)?;
+            let goals = goals_of(global, &[rules[i].clone()]).await;
+            show(&store, &id, &goals)
+        }
         Cmd::ProposeRetirements {
             min_attributed,
             apply,
@@ -103,7 +110,7 @@ pub async fn execute(args: Args) -> Result<()> {
 /// record (`Session::run_configs_streaming` refuses it) is evidence that could
 /// not be read, never evidence of absence — one torn file must not print
 /// "nowhere" about a rule that loads fine (found on review), and so is a
-/// listing with no record carrying either key — a missing store, or one
+/// listing with no record carrying any of the keys — a missing store, or one
 /// written before the fields existed. Every attach's record counts, since
 /// a rule can be minted from a resumed run's keys (found on review); read
 /// streaming rather than slurped, once per roster, and only when a scope
@@ -221,12 +228,107 @@ fn presented_keys_in(dir: &Path, wanted: &[Keys]) -> Option<Presented> {
     Some(out)
 }
 
+/// Each goal an active rule's scope names, by its `kind:id`, with what the
+/// store that owns it says (R34): `task:` against the board, `trigger:`
+/// against the trigger store. What the roster's `LOADS NOWHERE` reads for
+/// the goal key, since the presented-keys walk cannot see a goal that has
+/// closed — the run that mined the rule always presented it.
+pub(crate) type Goals = BTreeMap<String, GoalLiveness>;
+
+/// The board and the trigger lookup R34's readout reads, shared by the
+/// roster and `mecha learn`'s log. The board is read over MCP (`kg_task_list`
+/// with closed rows), so only when `need_board` — some key in play names a
+/// task — and under a deadline; a board that could not be read comes back
+/// as the reason, which every `task:` goal then reports as unknown. The
+/// trigger store is read in place and never created.
+pub(crate) async fn goal_stores(
+    global: &crate::GlobalOpts,
+    need_board: bool,
+) -> (
+    std::result::Result<BoardStatuses, String>,
+    impl Fn(&str) -> TriggerState,
+) {
+    let board = if need_board {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(BOARD_DEADLINE_SECS),
+            super::tasks::read_board(global),
+        )
+        .await
+        {
+            Err(_) => Err(format!(
+                "`kg_task_list` did not answer within {BOARD_DEADLINE_SECS} s"
+            )),
+            Ok(Err(e)) => Err(format!("{e:#}")),
+            Ok(Ok(answer)) => BoardStatuses::of(&answer),
+        }
+    } else {
+        Err("not read: no goal in play names a task".to_string())
+    };
+    let root = mecha_core::trigger::TriggerStore::default_root().map_err(|e| format!("{e:#}"));
+    let trigger = move |name: &str| match &root {
+        Ok(root) => mecha_core::trigger::TriggerStore::state_at(root, name),
+        Err(why) => TriggerState::Unreadable(format!("the trigger store: {why}")),
+    };
+    (board, trigger)
+}
+
+/// How long the roster waits on the board: the connection is an MCP server
+/// start, and the TUI and the web settings page shell out to `rules list`.
+const BOARD_DEADLINE_SECS: u64 = 20;
+
+/// [`Goals`] for the active rules of `rules`, reading the board only when
+/// one of them names a task.
+async fn goals_of(global: &crate::GlobalOpts, rules: &[Rule]) -> Goals {
+    let named: Vec<GoalKey> = rules
+        .iter()
+        .filter(|r| r.active())
+        .filter_map(|r| r.scope.as_ref().and_then(|s| s.goal.clone()))
+        .filter(|g| g.named().is_some())
+        .collect();
+    if named.is_empty() {
+        return Goals::new();
+    }
+    let (board, trigger) = goal_stores(global, named.iter().any(GoalKey::needs_board)).await;
+    let mut out = Goals::new();
+    for g in named {
+        out.entry(g.to_string())
+            .or_insert_with(|| g.liveness(&board, &trigger));
+    }
+    out
+}
+
+/// Every rule in the store, user and learned, in domain order.
+fn all_rules(store: &LearningStore) -> Vec<Rule> {
+    store
+        .domains()
+        .into_iter()
+        .flat_map(|d| {
+            store
+                .user_rules(&d)
+                .unwrap_or_default()
+                .into_iter()
+                .chain(store.learned_rules(&d).unwrap_or_default())
+        })
+        .collect()
+}
+
+/// What [`Goals`] says about a rule's goal, when its scope names one.
+fn goal_of<'a>(r: &Rule, goals: &'a Goals) -> Option<&'a GoalLiveness> {
+    r.scope
+        .as_ref()
+        .and_then(|s| s.goal.as_ref())
+        .and_then(|g| goals.get(&g.to_string()))
+}
+
 /// Whether an active rule's scope names a workspace, surface or goal no run
 /// record presented — `Some(false)` by construction for a scope naming
 /// none of them, `None` when the store could not be read in full (unknown is
-/// not nowhere), and never `Some(true)` for a retired rule. One helper for
-/// the roster's prose and its JSON, so the two cannot drift.
-fn loads_nowhere(r: &Rule, keys: Option<&Presented>) -> Option<bool> {
+/// not nowhere), and never `Some(true)` for a retired rule. A goal the store
+/// says has closed loads nowhere whatever the records presented (R34), and a
+/// goal the store could not answer for turns a "loads" into unknown — an
+/// unreadable board never reads as "not dark". One helper for the roster's
+/// prose and its JSON, so the two cannot drift.
+fn loads_nowhere(r: &Rule, keys: Option<&Presented>, goals: &Goals) -> Option<bool> {
     let scope = r.scope.as_ref()?.scope();
     // A parked surface provably matches no run, whatever the store holds —
     // and so does a corpus-mark surface on the stored scope, which
@@ -243,18 +345,27 @@ fn loads_nowhere(r: &Rule, keys: Option<&Presented>) -> Option<bool> {
     {
         return Some(r.active());
     }
-    if scope.workspace.is_none() && scope.surface.is_none() && scope.goal.is_none() {
-        return Some(false);
+    let goal = goal_of(r, goals);
+    if let Some(GoalLiveness::Closed(_)) = goal {
+        return Some(r.active());
     }
-    keys.map(|k| r.active() && !presented(&scope, k))
+    let answer = if scope.workspace.is_none() && scope.surface.is_none() && scope.goal.is_none() {
+        Some(false)
+    } else {
+        keys.map(|k| r.active() && !presented(&scope, k))
+    };
+    match goal {
+        Some(GoalLiveness::Unknown(_)) if r.active() && answer == Some(false) => None,
+        _ => answer,
+    }
 }
 
 /// Whether some run record presents every workspace/surface/goal key `scope`
 /// names — the corpus-shaped half of `unloadable_rules`, which names tools
-/// only: a rule scoped to a workspace or surface no `prepare` ever matched
-/// against is dark with nothing warning, and the only honest test is the
-/// record of what runs actually presented (found on review). A scope that
-/// names neither key is presented by construction.
+/// only: a rule scoped to a workspace, surface or goal no `prepare` ever
+/// matched against is dark with nothing warning, and the only honest test is
+/// the record of what runs actually presented (found on review). A scope
+/// that names none of the three keys is presented by construction.
 fn presented(scope: &mecha_core::situation::Situation, presented: &Presented) -> bool {
     // A parked surface or goal is a key `Situation::matches` refuses outright.
     if scope.surface_unread.is_some() || matches!(scope.goal, Some(GoalKey::Unread(_))) {
@@ -271,19 +382,9 @@ fn presented(scope: &mecha_core::situation::Situation, presented: &Presented) ->
     })
 }
 
-fn list(store: &LearningStore, as_json: bool) -> Result<()> {
+fn list(store: &LearningStore, as_json: bool, goals: &Goals) -> Result<()> {
     let tallies = rule_tallies(&store.validations()?);
-    let everything: Vec<Rule> = store
-        .domains()
-        .into_iter()
-        .flat_map(|d| {
-            store
-                .user_rules(&d)
-                .unwrap_or_default()
-                .into_iter()
-                .chain(store.learned_rules(&d).unwrap_or_default())
-        })
-        .collect();
+    let everything = all_rules(store);
     let keys = presented_keys(&everything.iter().collect::<Vec<_>>());
     if as_json {
         let mut out = Vec::new();
@@ -318,13 +419,24 @@ fn list(store: &LearningStore, as_json: bool) -> Result<()> {
                     // A scope no run record presents — dark everywhere,
                     // whatever `scope` says. `null` when the store could
                     // not be read: unknown is not "nowhere".
-                    // Decided per rule: a scope naming neither key is
+                    // Decided per rule: a scope naming none of the keys is
                     // presented by construction and says `false` whatever
                     // the store holds; one naming a key says `null` only
                     // when the store could not be read in full (found on
                     // review — `null` had also meant "no rule needed the
                     // walk").
-                    "loads_nowhere": loads_nowhere(r, keys.as_ref()),
+                    "loads_nowhere": loads_nowhere(r, keys.as_ref(), goals),
+                    // R34: the goal the scope names has closed (why), or
+                    // the store that owns it could not say (why). Both
+                    // `null` for a scope with no goal, or an open one.
+                    "goal_closed": match goal_of(r, goals) {
+                        Some(GoalLiveness::Closed(why)) => Some(why.clone()),
+                        _ => None,
+                    },
+                    "goal_unknown": match goal_of(r, goals) {
+                        Some(GoalLiveness::Unknown(why)) => Some(why.clone()),
+                        _ => None,
+                    },
                     // Where the evidence was seen to hold, and whether a
                     // scan ever narrowed it — see `Rule::support`.
                     "support": r.support.iter().map(|s| s.describe()).collect::<Vec<_>>(),
@@ -360,6 +472,28 @@ fn list(store: &LearningStore, as_json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
     }
+    // R34: a rule toward a closed goal is marked where it is listed; the
+    // count leads, so a roster of many rules cannot hide one.
+    let closed = everything
+        .iter()
+        .filter(|r| r.active() && matches!(goal_of(r, goals), Some(GoalLiveness::Closed(_))))
+        .count();
+    if closed > 0 {
+        println!(
+            "{closed} active rule(s) are scoped to a goal that has closed and load nowhere \
+             (marked LOADS NOWHERE below); each widens only when the lesson is restated \
+             toward another goal"
+        );
+    }
+    let mut unknown: BTreeMap<&str, usize> = BTreeMap::new();
+    for r in everything.iter().filter(|r| r.active()) {
+        if let Some(GoalLiveness::Unknown(why)) = goal_of(r, goals) {
+            *unknown.entry(why.as_str()).or_default() += 1;
+        }
+    }
+    for (why, n) in unknown {
+        println!("whether {n} active rule(s) are dark is unknown: {why}");
+    }
     let mut any = false;
     for domain in store.domains() {
         let user = store.user_rules(&domain)?;
@@ -373,7 +507,7 @@ fn list(store: &LearningStore, as_json: bool) -> Result<()> {
             println!("  {} user rule(s) — immutable, never tallied", user.len());
         }
         for r in &learned {
-            println!("  {}", describe(r, &tallies, keys.as_ref()));
+            println!("  {}", describe(r, &tallies, keys.as_ref(), goals));
         }
     }
     if !any {
@@ -407,7 +541,12 @@ fn proposal_matches_verdict(p: &Proposal, id: &str, verdict: &Verdict) -> bool {
     }
 }
 
-fn describe(r: &Rule, tallies: &BTreeMap<String, RuleTally>, keys: Option<&Presented>) -> String {
+fn describe(
+    r: &Rule,
+    tallies: &BTreeMap<String, RuleTally>,
+    keys: Option<&Presented>,
+    goals: &Goals,
+) -> String {
     let id =
         r.id.as_deref()
             .unwrap_or("(no id — predates identity; next learn pass mints one)");
@@ -441,12 +580,25 @@ fn describe(r: &Rule, tallies: &BTreeMap<String, RuleTally>, keys: Option<&Prese
         // `loads_nowhere` before `is_standing`: a scope naming only a corpus
         // mark is standing by `scope()`'s definition and refused by
         // `matches`, and the prose must agree with the JSON (found on review).
-        Some(s) if loads_nowhere(r, keys) == Some(true) => format!(
-            "scoped to {} — LOADS NOWHERE: no run record presents that workspace/surface/goal",
-            s.describe()
-        ),
+        Some(s) if loads_nowhere(r, keys, goals) == Some(true) => match goal_of(r, goals) {
+            Some(GoalLiveness::Closed(why)) => format!(
+                "scoped to {} — LOADS NOWHERE: {why}; it widens only when the lesson is \
+                 restated toward another goal (R34)",
+                s.describe()
+            ),
+            _ => format!(
+                "scoped to {} — LOADS NOWHERE: no run record presents that workspace/surface/goal",
+                s.describe()
+            ),
+        },
         Some(s) if s.is_standing() => "standing (loads everywhere)".to_string(),
-        Some(s) => format!("loads with {}", s.describe()),
+        Some(s) => match goal_of(r, goals) {
+            Some(GoalLiveness::Unknown(why)) if r.active() => format!(
+                "loads with {} — whether its goal is still open is unknown: {why}",
+                s.describe()
+            ),
+            _ => format!("loads with {}", s.describe()),
+        },
     };
     // Where it was seen to hold, when that is more than where it loads —
     // a widened rule names each sub-region it widened over; a narrowed one
@@ -637,13 +789,13 @@ fn record_owner_verdict(
     .context("the rule changed, but the owner's verdict could not be recorded against it")
 }
 
-fn show(store: &LearningStore, id: &str) -> Result<()> {
+fn show(store: &LearningStore, id: &str, goals: &Goals) -> Result<()> {
     let tallies = rule_tallies(&store.validations()?);
     let (domain, rules, i) = find_rule(store, id)?;
     let keys = presented_keys(&[&rules[i]]);
     println!(
         "## {domain}\n{}",
-        describe(&rules[i], &tallies, keys.as_ref())
+        describe(&rules[i], &tallies, keys.as_ref(), goals)
     );
     Ok(())
 }
@@ -1233,7 +1385,7 @@ mod tests {
 
         // And the roster says so, in prose.
         let tallies = rule_tallies(&store.validations().unwrap());
-        let line = describe(wide, &tallies, None);
+        let line = describe(wide, &tallies, None, &Goals::new());
         assert!(line.contains("loads with http_fetch"), "{line}");
         assert!(line.contains("narrowed "), "{line}");
         // A widened pre-field rule — support `[standing, shell]`, scope
@@ -1242,7 +1394,7 @@ mod tests {
             support: vec![Situation::default(), sit(&["shell"])],
             ..rule("Old and widened.", "r-pre")
         };
-        let pre_line = describe(&pre_field, &tallies, None);
+        let pre_line = describe(&pre_field, &tallies, None, &Goals::new());
         assert!(pre_line.contains("seen in shell"), "{pre_line}");
         assert!(!pre_line.contains("seen in everywhere"), "{pre_line}");
         assert!(line.contains("by region:"), "{line}");
@@ -1253,8 +1405,97 @@ mod tests {
         std::fs::remove_dir_all(store.root()).ok();
     }
 
-    /// A scope naming a workspace or surface loads only where some run
-    /// record presented that pair; one naming neither is presented by
+    /// R34: a rule toward a goal that has closed loads nowhere although the
+    /// run that mined it presented its goal — the case the presented-keys
+    /// walk is blind to. An open goal loads; a retired rule is never
+    /// flagged; and a goal whose store could not answer turns "loads" into
+    /// unknown, never into "not dark". Fails on the old roster, which read
+    /// the closed-task rule as loading.
+    #[test]
+    fn a_rule_toward_a_closed_goal_loads_nowhere_and_an_unread_board_is_unknown() {
+        use mecha_core::situation::Situation;
+        let w = PathBuf::from("/w");
+        let task = |g: &str| Some(GoalKey::Named(g.parse().unwrap()));
+        let keys: Presented = vec![
+            (
+                Some(w.clone()),
+                Some(SessionKind::Task),
+                task("task:t-done"),
+            ),
+            (
+                Some(w.clone()),
+                Some(SessionKind::Task),
+                task("task:t-open"),
+            ),
+        ];
+        let toward = |id: &str, g: &str| Rule {
+            text: format!("Rule {id}."),
+            id: Some(id.into()),
+            scope: Some(
+                Situation::of_run(&["shell".into()], Some(&w))
+                    .on(Some(SessionKind::Task))
+                    .toward(task(g))
+                    .scope(),
+            ),
+            ..Default::default()
+        };
+        let done = toward("r-done", "task:t-done");
+        let open = toward("r-open", "task:t-open");
+        // The old answer, with nothing read about the goal: it loads.
+        assert_eq!(
+            loads_nowhere(&done, Some(&keys), &Goals::new()),
+            Some(false)
+        );
+        let goals: Goals = [
+            (
+                "task:t-done".to_string(),
+                GoalLiveness::Closed("task:t-done is done".into()),
+            ),
+            ("task:t-open".to_string(), GoalLiveness::Open),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(loads_nowhere(&done, Some(&keys), &goals), Some(true));
+        assert_eq!(
+            loads_nowhere(&done, None, &goals),
+            Some(true),
+            "closed needs no walk of the records"
+        );
+        assert_eq!(loads_nowhere(&open, Some(&keys), &goals), Some(false));
+        let tallies = BTreeMap::new();
+        let line = describe(&done, &tallies, Some(&keys), &goals);
+        assert!(
+            line.contains("LOADS NOWHERE: task:t-done is done"),
+            "{line}"
+        );
+        assert!(!describe(&open, &tallies, Some(&keys), &goals).contains("LOADS NOWHERE"));
+        let mut retired = done.clone();
+        retired.retired_at = Some("2026-09-20T00:00:00Z".into());
+        assert_eq!(loads_nowhere(&retired, Some(&keys), &goals), Some(false));
+        // The board could not be read: unknown, said in the prose, never
+        // "loads".
+        let unread: Goals = [(
+            "task:t-done".to_string(),
+            GoalLiveness::Unknown("the board could not be read: no graph server".into()),
+        )]
+        .into_iter()
+        .collect();
+        assert_eq!(loads_nowhere(&done, Some(&keys), &unread), None);
+        assert!(describe(&done, &tallies, Some(&keys), &unread).contains("is unknown"));
+        // A records walk that already says nowhere still says so.
+        let elsewhere = Rule {
+            scope: Some(
+                Situation::of_run(&["shell".into()], Some(&PathBuf::from("/gone")))
+                    .toward(task("task:t-done"))
+                    .scope(),
+            ),
+            ..done.clone()
+        };
+        assert_eq!(loads_nowhere(&elsewhere, Some(&keys), &unread), Some(true));
+    }
+
+    /// A scope naming a workspace, surface or goal loads only where some run
+    /// record presented those keys; one naming none of them is presented by
     /// construction; the roster says LOADS NOWHERE for an active rule the
     /// records never presented, and nothing when the store could not be
     /// read.
@@ -1303,8 +1544,11 @@ mod tests {
             scope: Some(toward(Some(GoalKey::Unread("dream:x".into())))),
             ..Default::default()
         };
-        assert_eq!(loads_nowhere(&parked_goal, None), Some(true));
-        assert_eq!(loads_nowhere(&parked_goal, Some(&keys)), Some(true));
+        assert_eq!(loads_nowhere(&parked_goal, None, &Goals::new()), Some(true));
+        assert_eq!(
+            loads_nowhere(&parked_goal, Some(&keys), &Goals::new()),
+            Some(true)
+        );
         assert!(!needs_presented_keys(&[&parked_goal]));
         let gone_goal = Rule {
             text: "Gone goal.".into(),
@@ -1312,7 +1556,10 @@ mod tests {
             scope: Some(toward(Some(GoalKey::Named("task:done".parse().unwrap())))),
             ..Default::default()
         };
-        assert_eq!(loads_nowhere(&gone_goal, Some(&keys)), Some(true));
+        assert_eq!(
+            loads_nowhere(&gone_goal, Some(&keys), &Goals::new()),
+            Some(true)
+        );
         assert!(needs_presented_keys(&[&gone_goal]));
         assert!(presented(&on_tui.scope(), &keys));
         assert!(
@@ -1342,35 +1589,39 @@ mod tests {
             ..Default::default()
         };
         let tallies = BTreeMap::new();
-        assert!(describe(&dark, &tallies, Some(&keys)).contains("LOADS NOWHERE"));
+        assert!(describe(&dark, &tallies, Some(&keys), &Goals::new()).contains("LOADS NOWHERE"));
         assert!(
-            !describe(&dark, &tallies, None).contains("LOADS NOWHERE"),
+            !describe(&dark, &tallies, None, &Goals::new()).contains("LOADS NOWHERE"),
             "unknown is not nowhere"
         );
         dark.retired_at = Some("2026-09-07T00:00:00Z".into());
         assert!(
-            !describe(&dark, &tallies, Some(&keys)).contains("LOADS NOWHERE"),
+            !describe(&dark, &tallies, Some(&keys), &Goals::new()).contains("LOADS NOWHERE"),
             "a retired rule loads nowhere by design"
         );
         assert_eq!(
-            loads_nowhere(&dark, Some(&keys)),
+            loads_nowhere(&dark, Some(&keys), &Goals::new()),
             Some(false),
             "retired: not flagged"
         );
         dark.retired_at = None;
-        assert_eq!(loads_nowhere(&dark, Some(&keys)), Some(true));
-        assert_eq!(loads_nowhere(&dark, None), None, "unknown store: unknown");
+        assert_eq!(loads_nowhere(&dark, Some(&keys), &Goals::new()), Some(true));
+        assert_eq!(
+            loads_nowhere(&dark, None, &Goals::new()),
+            None,
+            "unknown store: unknown"
+        );
         let tools_only = Rule {
             scope: Some(Situation::of_run(&["shell".into()], None).scope()),
             ..dark.clone()
         };
         assert_eq!(
-            loads_nowhere(&tools_only, None),
+            loads_nowhere(&tools_only, None, &Goals::new()),
             Some(false),
             "by construction, whatever the store"
         );
         assert_eq!(
-            loads_nowhere(&Rule::default(), None),
+            loads_nowhere(&Rule::default(), None, &Goals::new()),
             None,
             "unscoped: no claim"
         );
@@ -1383,8 +1634,11 @@ mod tests {
             }),
             ..dark.clone()
         };
-        assert_eq!(loads_nowhere(&parked, None), Some(true));
-        assert_eq!(loads_nowhere(&parked, Some(&keys)), Some(true));
+        assert_eq!(loads_nowhere(&parked, None, &Goals::new()), Some(true));
+        assert_eq!(
+            loads_nowhere(&parked, Some(&keys), &Goals::new()),
+            Some(true)
+        );
         assert!(!presented(&parked.scope.clone().unwrap().scope(), &keys));
         // A corpus-mark surface on the stored scope: stripped by scope(),
         // refused by matches — nowhere, and the roster says so.
@@ -1392,16 +1646,16 @@ mod tests {
             scope: Some(Situation::of_run(&["shell".into()], None).on(Some(SessionKind::Test))),
             ..dark.clone()
         };
-        assert_eq!(loads_nowhere(&marked, None), Some(true));
-        assert!(describe(&marked, &tallies, Some(&keys)).contains("LOADS NOWHERE"));
+        assert_eq!(loads_nowhere(&marked, None, &Goals::new()), Some(true));
+        assert!(describe(&marked, &tallies, Some(&keys), &Goals::new()).contains("LOADS NOWHERE"));
         // With no tools at all the same scope is standing by definition,
         // and the prose must still say nowhere, as the JSON does.
         let bare_mark = Rule {
             scope: Some(Situation::default().on(Some(SessionKind::Test))),
             ..dark.clone()
         };
-        assert_eq!(loads_nowhere(&bare_mark, None), Some(true));
-        let line = describe(&bare_mark, &tallies, None);
+        assert_eq!(loads_nowhere(&bare_mark, None, &Goals::new()), Some(true));
+        let line = describe(&bare_mark, &tallies, None, &Goals::new());
         assert!(line.contains("LOADS NOWHERE"), "{line}");
         assert!(!line.contains("standing"), "{line}");
     }
@@ -1598,7 +1852,10 @@ mod tests {
         assert!(!needs_keys(&retired));
         let keys = presented_keys_from(&[&retired, &live], &stopped)
             .expect("answered by the newest transcript");
-        assert_eq!(loads_nowhere(&live, Some(&keys)), Some(false));
+        assert_eq!(
+            loads_nowhere(&live, Some(&keys), &Goals::new()),
+            Some(false)
+        );
         let marked_only = Rule {
             scope: Some(Situation::of_run(&["shell".into()], None).on(Some(SessionKind::Test))),
             ..live.clone()
@@ -1861,9 +2118,9 @@ mod tests {
         store
             .write_learned_rules("behavior", &[rule("Ship the thing.", "r-show")])
             .unwrap();
-        assert!(show(&store, "r-show").is_ok());
-        assert!(show(&store, "").is_err(), "no id given");
-        assert!(show(&store, "nope").is_err(), "no such rule");
+        assert!(show(&store, "r-show", &Goals::new()).is_ok());
+        assert!(show(&store, "", &Goals::new()).is_err(), "no id given");
+        assert!(show(&store, "nope", &Goals::new()).is_err(), "no such rule");
         std::fs::remove_dir_all(store.root()).ok();
     }
 }

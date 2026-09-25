@@ -178,6 +178,14 @@ scope and tallies; `LOADS NOWHERE` identifies a scope no recorded run presented,
 and `--json` exposes `loads_nowhere`. An unrecognized surface or goal matches
 nothing.
 
+A rule scoped to a task keeps that scope after the task is done or dropped, and
+a rule scoped to a trigger keeps it after the trigger is removed or disabled. It
+widens only when the same lesson is learned toward another goal. Until then it
+loads nowhere, and `mecha rules` says so: a count at the top, and
+`LOADS NOWHERE` with the reason beside each such rule (`goal_closed` in
+`--json`). `mecha learn` repeats the count on every pass. If the board cannot be
+read, both say that whether those rules are dark is unknown.
+
 ### Choose how changes go live
 
 Bare `mecha learn` applies immediately, with the learning store's git history as

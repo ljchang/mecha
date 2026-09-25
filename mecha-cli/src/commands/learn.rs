@@ -287,6 +287,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
              candidate again"
         );
     }
+    // R34: rules and waiting reflections toward a goal that has closed,
+    // said on every pass — the nightly's log is where a rule going dark
+    // lands, and nothing else would say it. The board is read (an MCP
+    // connection) only when a task goal is in play.
+    let (board, trigger) = super::rules::goal_stores(global, store.goals_need_board()?).await;
+    for line in closed_goal_lines(&store.closed_goals(&board, &trigger)?) {
+        println!("{line}");
+    }
 
     if args.holdout > 0.0 {
         for (domain, rs) in by_domain.iter_mut() {
@@ -827,6 +835,50 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     Ok(())
 }
 
+/// R34's lines for the learn log: rules toward a closed goal by id with why,
+/// waiting reflections toward one, and each goal the stores could not
+/// answer for — the last never folded into "nothing is dark". Empty only
+/// when the readout found nothing closed and nothing unknown.
+fn closed_goal_lines(read: &mecha_core::learning::ClosedGoals) -> Vec<String> {
+    let mut out = Vec::new();
+    if !read.rules.is_empty() {
+        let named: Vec<String> = read
+            .rules
+            .iter()
+            .map(|(domain, rule, why)| format!("{domain}/{rule} ({why})"))
+            .collect();
+        out.push(format!(
+            "{} active rule(s) are scoped to a goal that has closed and load nowhere: {} — \
+             each widens only when the lesson is restated toward another goal; `mecha rules` \
+             marks them",
+            read.rules.len(),
+            named.join(", ")
+        ));
+    }
+    if read.reflections > 0 {
+        out.push(format!(
+            "{} waiting reflection(s) were recorded toward a goal that has closed; a rule \
+             learned from them alone would load nowhere",
+            read.reflections
+        ));
+    }
+    if !read.unknown.is_empty() {
+        let goals: Vec<String> = read
+            .unknown
+            .iter()
+            .map(|(goal, why)| format!("{goal}: {why}"))
+            .collect();
+        out.push(format!(
+            "whether {} active rule(s) and {} waiting reflection(s) are dark is unknown — \
+             their goal could not be read ({})",
+            read.unknown_rules,
+            read.unknown_reflections,
+            goals.join("; ")
+        ));
+    }
+    out
+}
+
 /// The rules whose scope this batch widened: same id, a scope that now
 /// names fewer tools. What the pass prints so a widening is visible in the
 /// log the moment it happens rather than only on the roster.
@@ -876,8 +928,43 @@ fn already_argued(
 
 #[cfg(test)]
 mod tests {
-    use super::{already_argued, dispose, hold_out, stamp_probation, widened};
+    use super::{already_argued, closed_goal_lines, dispose, hold_out, stamp_probation, widened};
     use std::collections::BTreeMap;
+
+    /// R34 in the learn log: a rule toward a closed goal is named with why,
+    /// waiting reflections are counted, and an unread board is a line of
+    /// its own — never silence, which would read as "nothing is dark".
+    #[test]
+    fn the_learn_log_names_rules_toward_a_closed_goal_and_says_when_it_cannot_tell() {
+        use mecha_core::learning::ClosedGoals;
+        assert!(closed_goal_lines(&ClosedGoals::default()).is_empty());
+        let read = ClosedGoals {
+            rules: vec![(
+                "behavior".into(),
+                "r-done".into(),
+                "task:t-done is done".into(),
+            )],
+            reflections: 2,
+            ..Default::default()
+        };
+        let lines = closed_goal_lines(&read);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].starts_with("1 active rule(s)"), "{}", lines[0]);
+        assert!(lines[0].contains("behavior/r-done (task:t-done is done)"));
+        assert!(lines[1].starts_with("2 waiting reflection(s)"));
+        let unread = ClosedGoals {
+            unknown: vec![(
+                "task:t-open".into(),
+                "the board could not be read: no graph server".into(),
+            )],
+            unknown_rules: 1,
+            ..Default::default()
+        };
+        let lines = closed_goal_lines(&unread);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("is unknown"), "{}", lines[0]);
+        assert!(lines[0].contains("no graph server"));
+    }
 
     /// A widening is reported by id: the same rule, a scope that names
     /// fewer tools. A new rule, an unchanged one and a pre-identity one are
@@ -953,7 +1040,7 @@ mod tests {
                 ),
                 (
                     "Rule f.".to_string(),
-                    "shell · for trigger:morning".to_string(),
+                    "shell · trigger:morning".to_string(),
                     "shell".to_string()
                 ),
             ]
