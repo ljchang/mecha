@@ -2260,7 +2260,10 @@ brief (which reads the board through the graph server) do not run.
 
 - **Its own door.** `POST /api/incognito` mints `incognito-<22 hex>`; the
   ordinary door refuses the prefix, so a closed incognito key can never come
-  back as a recorded chat. `POST /api/incognito/{key}/end` closes one.
+  back as a recorded chat, and answers a closed key `410 Gone`
+  (`incognito::Closed`) rather than a 500 the page would retry.
+  `POST /api/incognito/{key}/end` closes one; `…/alive` is the open page's
+  ping.
 - **Local only, refused rather than degraded.** The door opens only when the
   chat provider is a loopback server with no `fallbacks` — a `Failover`
   would re-send the conversation to a cloud provider on a transient local
@@ -2282,6 +2285,10 @@ brief (which reads the board through the graph server) do not run.
   `Sandbox::writes_stay_in_workspace` is true for `bwrap` and `docker` with no
   extra `writable` paths — not for `none`, and not for `landlock`, which
   shares the host's `/tmp`. Elsewhere `shell` is withheld with the rest.
+  Where it runs, it registers in the room (`<room>/shells`,
+  `ToolCtx::shell_registry`), not the mecha home: invisible to the closure
+  check, which is safe only because a command that can write nothing
+  outside its jail cannot write the board either.
 - **A deny-gate hook refuses the door** (`pre_tool`, `pre_task_close`). No hook runs in an incognito chat
   (a hook's log is a trace); an observer is simply not run, but a deny gate
   skipped would widen the chat past what the owner allowed, so its presence
@@ -2295,12 +2302,20 @@ brief (which reads the board through the graph server) do not run.
   image server's temp copies are removed per room.
 - **No hooks, no voice.** `pre_tool`/`post_tool` receive tool input and
   output; the voice worker logs what it hears.
-- **Closing** — End, 30 idle minutes (the reaper, once a minute), or `serve`
-  stopping — cancels a run in flight, forgets the todo plan, and removes the
+- **Closing** — End, 30 minutes with no turn and no ping from an open page
+  (the reaper, once a minute; the owner's ruling is that an open page is
+  use), or `serve` stopping — cancels a run in flight, forgets the todo plan, and removes the
   room; a run still finishing removes it again on its way out, so a late
   spill cannot leave a directory behind. `ChatState::build` sweeps leftover
   rooms before the door opens, for a `serve` that died.
-- Every incognito route answers `Cache-Control: no-store`.
+- Every incognito route answers `Cache-Control: no-store`, and the page
+  keeps nothing either: `web/test/no-storage.mjs` fails on any storage API in
+  `web/src`, and a generated picture is not a link in an incognito chat
+  (opening it in a tab writes its address into the browser's history).
+- **The page** (`Chat.svelte`): a second new-chat button beside **+**, a banner
+  that does not scroll away and carries the search notice, **End**, no voice
+  call, and — on End or a `410` — a screen saying the chat is gone, with the
+  conversation dropped from the tab's memory too.
 
 The end-to-end test drives the real routes: a turn and an upload carrying a
 canary, a scan of the whole mecha home (nothing while open, nothing after),

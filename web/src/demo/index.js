@@ -156,8 +156,15 @@ export const ROUTES = [
 
   ['GET', /^\/api\/sessions$/, () => fx.sessions],
   ['GET', /^\/api\/history$/, () => fx.history],
-  ['GET', /^\/api\/chat\/[^/]+$/, () => fx.transcript],
+  // An incognito chat reads back as one, empty, so the demo shows its banner
+  // and End rather than the fixture conversation under an incognito key.
+  ['GET', /^\/api\/chat\/([^/]+)$/, (_url, [key]) =>
+    key.startsWith('incognito-')
+      ? { ...fx.transcript, entries: [], todo: [], taint: { private: false, untrusted: false }, usage: null, incognito: true }
+      : fx.transcript],
   ['POST', /^\/api\/chat\/[^/]+$/, () => text('')],
+  ['POST', /^\/api\/incognito$/, () => ({ key: 'incognito-demo' })],
+  ['POST', /^\/api\/incognito\/[^/]+\/(end|alive)$/, () => text('')],
   // Never reached: `EventSource` is replaced wholesale below, so the stream
   // does not go through `fetch` at all. Listed anyway, because `check-demo`
   // asks this table whether every endpoint the app reaches is accounted for,

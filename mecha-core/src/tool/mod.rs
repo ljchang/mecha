@@ -665,6 +665,18 @@ pub struct ToolCtx {
     /// to make; it is also stamped as `closure::POSTURE_ENV`, now advisory.
     /// `None` registers and stamps as `unknown`, which refuses.
     pub run_posture: Option<crate::closure::RunPosture>,
+    /// Where `shell` registers its commands *instead of* the guard homes
+    /// (`shell_registry::write_roots`). `None`, the default, is the guard
+    /// homes, which is what `mecha tasks set` reads. `Some` is an incognito
+    /// chat's room, so nothing the chat does touches the mecha home, not even
+    /// a pid for as long as a command runs (owner's ruling, 2026-09-25). A
+    /// registration there is invisible to the closure check, which is safe
+    /// only because an incognito chat is offered `shell` solely where
+    /// `Sandbox::writes_stay_in_workspace` holds: a command that can write
+    /// nothing outside its jail cannot write the board either. It must name
+    /// a directory outside the workspace, or a command could edit its own
+    /// entry.
+    pub shell_registry: Option<PathBuf>,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -846,6 +858,7 @@ impl Default for ToolCtx {
             goal_appraisals: None,
             step_checks: None,
             run_posture: None,
+            shell_registry: None,
         }
     }
 }
