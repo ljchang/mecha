@@ -144,10 +144,11 @@ fn rows_from(board: &Value) -> Vec<Row> {
 /// The rows as Block Kit: one section and one actions block per task, the
 /// buttons composed from typed actions so verb and value cannot drift from
 /// what `from_payload` parses. What a row offers follows its status: an
-/// inbox capture offers **Next** (commit to it) beside **Done**; every other
-/// open task offers **Done** alone — drop, defer and dates stay on the
-/// terminal, where the board's full keyboard lives. Capped visibly by the
-/// caller like every other report.
+/// inbox capture offers **Next** (commit to it) beside **Done** and **Drop**;
+/// every other open task offers **Done** and **Drop** — the two closures,
+/// each recorded on the closure record with surface `slack` (S8). Defer and
+/// dates stay on the terminal, where the board's full keyboard lives. Capped
+/// visibly by the caller like every other report.
 pub fn listing_blocks(rows: &[Row]) -> Vec<Value> {
     let button = |action: &Action, label: &str, style: Option<&str>| {
         blocks::button(action.action_id(), label, &action.value(), style)
@@ -192,6 +193,14 @@ pub fn listing_blocks(rows: &[Row]) -> Vec<Value> {
             &Action::TaskDone { id: row.id.clone() },
             "Done",
             Some("primary"),
+        ));
+        // Unstyled, and last: a drop is reversible, and no red for an act
+        // that loses nothing — but it sits away from the thumb's first
+        // target, which is Done.
+        controls.push(button(
+            &Action::TaskDrop { id: row.id.clone() },
+            "Drop",
+            None,
         ));
         out.push(blocks::actions(controls));
     }
@@ -301,10 +310,10 @@ mod tests {
     }
 
     /// The listing's contract: an inbox capture offers the commit beside the
-    /// finish, everything else offers the finish alone, and every button's
-    /// value is the task id and nothing more.
+    /// two closures, everything else offers the closures alone, and every
+    /// button's value is the task id and nothing more.
     #[test]
-    fn an_inbox_row_offers_next_and_done_and_an_open_row_offers_done_alone() {
+    fn an_inbox_row_offers_next_done_and_drop_and_an_open_row_the_closures_alone() {
         let inbox = row("task-1a2b3c4d", "email Dirk", "inbox");
         let mut next = row("task-9f8e7d6c", "book the scanner", "next");
         next.due = Some("2026-08-25".into());
@@ -314,10 +323,12 @@ mod tests {
         let t = text(&listing_blocks(&[inbox]));
         assert!(t.contains(ids::TASK_NEXT), "{t}");
         assert!(t.contains(ids::TASK_DONE), "{t}");
+        assert!(t.contains(ids::TASK_DROP), "{t}");
         assert!(t.contains("task-1a2b3c4d"), "the value is the id: {t}");
 
         let t = text(&listing_blocks(&[next]));
         assert!(t.contains(ids::TASK_DONE), "{t}");
+        assert!(t.contains(ids::TASK_DROP), "{t}");
         assert!(
             !t.contains(ids::TASK_NEXT),
             "a committed task has nothing to commit to: {t}"

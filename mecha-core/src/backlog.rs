@@ -415,10 +415,10 @@ impl Backlog {
     /// count. Bookings arrive far faster than requests, so rows written
     /// before that commit sit systematically higher than rows after it, with
     /// nothing on a row to say which predicate produced it — the numeric
-    /// cousin of the append-only-enum rule. `anticipated_guilt` folds this
-    /// depth, so the discontinuity reaches `guilt.rs`'s reading too; its
-    /// `AGE_HALF_AT_HOURS` note documents the same shape for its own formula
-    /// change. Compare across that boundary only with the change in mind.
+    /// cousin of the append-only-enum rule. The `anticipated_guilt` fold of
+    /// rows before 1f read this depth, so the discontinuity reaches those
+    /// rows' guilt too (per-commitment guilt reads the owner-facing subset
+    /// instead). Compare across that boundary only with the change in mind.
     ///
     /// **It stepped down a second time on 2026-09-23**, when `answered` left
     /// the predicate too (the owner's ruling, recorded on `counts_as_open`).
@@ -656,7 +656,8 @@ impl BacklogDelta {
 
     /// Net change across the three stores somebody *outside* is waiting on
     /// — the outbox, the questions, the front door — which are exactly the
-    /// stores `guilt::anticipated_guilt` reads. `proposals` and `candidates`
+    /// stores whose items are commitments (`guilt::read_commitments`).
+    /// `proposals` and `candidates`
     /// are the harness's own review queue, owed to nobody outside it: a
     /// rumination run that accepted five candidates while five drafts sat
     /// unsent read as full relief through [`net`](Self::net), and the
@@ -1087,7 +1088,7 @@ mod tests {
     /// A read creates nothing (found on review, which noted nothing
     /// asserted it): every owner-facing reader opens only what exists, and
     /// a store that has never existed is an empty depth, never an unknown
-    /// one — `anticipated_guilt` is `None` unless all three were read, so
+    /// one — the guilt readout is `None` unless all three were read, so
     /// a machine that had simply never used the front door read as
     /// unmeasurable. Fails on `open_default` twice over: the directory
     /// appears, and the depth comes back `None`.

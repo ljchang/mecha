@@ -1073,7 +1073,10 @@ impl OutboxStore {
         evidence: crate::anticipation::Evidence,
         guide: bool,
     ) -> Result<OutboxItem> {
-        evidence.validate()?;
+        // The new-write door (1f-2): an owner's evidence file may be in
+        // the legacy shape; the prediction records the one commitment
+        // record, pointing at the evidence's goal and stating no date.
+        let evidence = evidence.into_record()?;
         let mut item = self.item(id)?;
         item.ensure_delivery_ready()?;
         anyhow::ensure!(

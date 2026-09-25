@@ -132,7 +132,7 @@ text can reach the model, and only after the owner check, so a stranger's
 |---|---|
 | `doctor` | the same findings `mecha doctor` prints, with a button on the ones a phone can fix |
 | `queues` | the review backlog across the stores, read-only |
-| `tasks` | the task board, with **Done** (and **Next** for an inbox capture) on each row |
+| `tasks` | the task board, with **Done** and **Drop** (and **Next** for an inbox capture) on each row; a Done or Drop is recorded as a closure, and the reply carries its appraisal |
 | `task <text>` | captures `<text>` onto the board |
 | `triggers` | the schedule, with **Run**, **Cancel**, **Enable** or **Disable** as each row's state allows |
 | `note <text>` | captures `<text>` into the knowledge graph |

@@ -54,6 +54,7 @@ pub mod ids {
     pub const MAIL_IMPORT: &str = "slack_action_mail_import";
     pub const TASK_DONE: &str = "slack_action_task_done";
     pub const TASK_NEXT: &str = "slack_action_task_next";
+    pub const TASK_DROP: &str = "slack_action_task_drop";
     /// Modal callback ids, parsed by [`super::Action::from_submission`] — the
     /// one constructor that accepts owner-typed text, and only from a signed,
     /// gated `view_submission`. Never valid in [`super::Action::from_payload`]:
@@ -101,13 +102,24 @@ pub enum Action {
     /// additive: the import refuses to overwrite live credentials, so a
     /// second tap fails loudly rather than swapping a mailbox.
     MailImport { provider: String },
-    /// Mark a board task done. Phone-safe on the board's own argument: the
-    /// change reaches nobody (`kg_task_*` is `openWorldHint: false`), every
-    /// status is one move from where it was, and the tool surface has no
-    /// delete — so replay re-asserts a state rather than compounding one.
+    /// Mark a board task done — a closure, recorded on the closure record
+    /// with surface `slack` (S8). Phone-safe on the board's own argument:
+    /// the change reaches nobody (`kg_task_*` is `openWorldHint: false`),
+    /// every status is one move from where it was, and the tool surface has
+    /// no delete. And a replay, a double tap or a stale card is refused by
+    /// the row itself (`--only-open`): the tap moves an open task and never
+    /// a closed one, so it cannot flip `done` to `dropped` behind the
+    /// record's back or reopen what the owner closed elsewhere.
     TaskDone { id: String },
-    /// Commit an inbox capture to `next`. The same reversibility argument.
+    /// Commit an inbox capture to `next`. The same reversibility argument,
+    /// and the same guard — `next` from a closed task would be a reopen.
     TaskNext { id: String },
+    /// Drop a board task — the other closure, recorded like `TaskDone`.
+    /// One tap, by SLACK-ACTIONS-DESIGN §4's owner decision: a drop is
+    /// local and reversible (a reopen from any surface undoes it, and is
+    /// recorded against it), so a second tap's only argument would be
+    /// tap-count.
+    TaskDrop { id: String },
     /// Close a frontdoor request, with the reason the frontdoor design makes
     /// mandatory. `reason` is **owner-authored text from a gated modal
     /// submission** — see [`Action::from_submission`], the only constructor
@@ -182,29 +194,22 @@ impl Action {
                 "--provider".into(),
                 provider.clone(),
             ],
-            Action::TaskDone { id } => vec![
+            Action::TaskDone { id } | Action::TaskNext { id } | Action::TaskDrop { id } => vec![
                 "mecha".into(),
                 "tasks".into(),
                 "set".into(),
                 id.clone(),
                 "--status".into(),
-                "done".into(),
+                self.task_status()
+                    .expect("every task variant names its status")
+                    .into(),
                 // The closure record's surface (S8) — a literal, like the
                 // status: the tap picks a verb, never composes one.
                 "--surface".into(),
                 "slack".into(),
-            ],
-            Action::TaskNext { id } => vec![
-                "mecha".into(),
-                "tasks".into(),
-                "set".into(),
-                id.clone(),
-                "--status".into(),
-                "next".into(),
-                // The closure record's surface (S8) — a literal, like the
-                // status: the tap picks a verb, never composes one.
-                "--surface".into(),
-                "slack".into(),
+                // The row at tap time decides, not the card: a task closed
+                // since the listing was composed is refused, never moved.
+                "--only-open".into(),
             ],
             Action::FrontdoorClose { seq, reason } => vec![
                 "mecha".into(),
@@ -304,6 +309,9 @@ impl Action {
             ids::TASK_NEXT if is_task_id(value) => Some(Action::TaskNext {
                 id: value.to_string(),
             }),
+            ids::TASK_DROP if is_task_id(value) => Some(Action::TaskDrop {
+                id: value.to_string(),
+            }),
             // Deliberately unreachable here: the frontdoor variants carry
             // owner-typed text, and a button's payload must never be able to
             // smuggle text into an argv. They are constructible only through
@@ -361,6 +369,7 @@ impl Action {
             Action::MailImport { .. } => ids::MAIL_IMPORT,
             Action::TaskDone { .. } => ids::TASK_DONE,
             Action::TaskNext { .. } => ids::TASK_NEXT,
+            Action::TaskDrop { .. } => ids::TASK_DROP,
             Action::FrontdoorClose { .. } => ids::FRONTDOOR_CLOSE_SUBMIT,
             Action::FrontdoorNeedsInfo { .. } => ids::FRONTDOOR_NEEDS_INFO_SUBMIT,
         }
@@ -378,10 +387,39 @@ impl Action {
             | Action::TriggerEnable { name }
             | Action::TriggerDisable { name } => name.clone(),
             Action::MailImport { provider } => provider.clone(),
-            Action::TaskDone { id } | Action::TaskNext { id } => id.clone(),
+            Action::TaskDone { id } | Action::TaskNext { id } | Action::TaskDrop { id } => {
+                id.clone()
+            }
             Action::FrontdoorClose { seq, .. } | Action::FrontdoorNeedsInfo { seq, .. } => {
                 seq.to_string()
             }
+        }
+    }
+
+    /// The board status a task tap moves its task to — a literal per
+    /// variant, shared by the argv and the read-back so the two cannot
+    /// disagree about what the tap asked for. `None` for every other action.
+    ///
+    /// **No wildcard, on purpose** (review of #300): `argv()` reads this with
+    /// `.expect` in its task arm, so a new variant must be classified here by
+    /// name — the compiler refuses a match that forgets one, where a `_ =>
+    /// None` would have let a new task verb compile and panic in the
+    /// connector on its first tap.
+    pub fn task_status(&self) -> Option<&'static str> {
+        match self {
+            Action::TaskDone { .. } => Some("done"),
+            Action::TaskNext { .. } => Some("next"),
+            Action::TaskDrop { .. } => Some("dropped"),
+            Action::OutboxSend { .. }
+            | Action::OutboxReject { .. }
+            | Action::RestartUnit { .. }
+            | Action::TriggerRun { .. }
+            | Action::TriggerCancel { .. }
+            | Action::TriggerEnable { .. }
+            | Action::TriggerDisable { .. }
+            | Action::MailImport { .. }
+            | Action::FrontdoorClose { .. }
+            | Action::FrontdoorNeedsInfo { .. } => None,
         }
     }
 
@@ -400,6 +438,7 @@ impl Action {
             }
             Action::TaskDone { id } => format!("marking task `{id}` done"),
             Action::TaskNext { id } => format!("moving task `{id}` to next"),
+            Action::TaskDrop { id } => format!("dropping task `{id}`"),
             Action::FrontdoorClose { seq, .. } => format!("closing request {seq}"),
             Action::FrontdoorNeedsInfo { seq, .. } => {
                 format!("parking request {seq} for more information")
@@ -681,21 +720,46 @@ impl Executor {
         // delivered on stdout; parsing that is the read-back, and the
         // child's exit is still never the answer by itself (a clean exit
         // with an unreadable answer reports unknown, not done).
-        if let Action::TaskDone { id } | Action::TaskNext { id } = action {
+        //
+        // A closure's appraisal is not on stdout — it is on the closure
+        // record (S8), which `tasks set` writes before the board moves and
+        // completes with a readout line after. So a closing tap reads the
+        // record back too, for the move this tap made and nothing older
+        // (`ClosureStore::move_since`), exactly as the web board does.
+        if let (
+            Action::TaskDone { id } | Action::TaskNext { id } | Action::TaskDrop { id },
+            Some(want),
+        ) = (action, action.task_status())
+        {
             let argv = action.argv();
             let (_, rest) = argv.split_first().expect("argv() is never empty");
+            let began = Utc::now();
             let out = tokio::process::Command::new(crate::exe::self_exe())
                 .args(rest)
                 .stdin(std::process::Stdio::null())
                 .output()
                 .await;
-            let want = match action {
-                Action::TaskNext { .. } => "next",
-                _ => "done",
-            };
             return match out {
                 Ok(out) if out.status.success() => {
-                    task_outcome(id, want, serde_json::from_slice(&out.stdout).ok().as_ref())
+                    let outcome =
+                        task_outcome(id, want, serde_json::from_slice(&out.stdout).ok().as_ref());
+                    if !mecha_core::closure::is_closed_status(want) || outcome.status != want {
+                        return outcome;
+                    }
+                    // Store reads on the blocking pool, like every other
+                    // read-back here; a lost read-back task says so.
+                    let task = id.clone();
+                    let recorded = tokio::task::spawn_blocking(move || {
+                        match mecha_core::closure::ClosureStore::open_existing_default() {
+                            None => Err("no closure store".to_string()),
+                            Some(store) => store
+                                .move_since(&task, want, began)
+                                .map_err(|e| format!("{e:#}")),
+                        }
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()));
+                    with_closure_record(outcome, recorded)
                 }
                 Ok(out) => Outcome::of(
                     "failed",
@@ -830,7 +894,7 @@ fn store_outcome(
         // Answered in `run`, before this function is reached — the graph has
         // no local store to read back from here; arms anyway, so the match
         // stays total without a panic in spawned work.
-        Action::TaskDone { id } | Action::TaskNext { id } => Outcome::of(
+        Action::TaskDone { id } | Action::TaskNext { id } | Action::TaskDrop { id } => Outcome::of(
             "unknown",
             format!("task `{id}` — the outcome is read in run()"),
         ),
@@ -929,6 +993,53 @@ pub fn task_outcome(id: &str, want: &str, answer: Option<&serde_json::Value>) ->
             "unknown",
             format!("Task `{id}` — the update ran but the answer was unreadable; check `mecha tasks list`"),
         ),
+    }
+}
+
+/// A closing tap's outcome, with what the closure record says about the move
+/// this tap made (`recorded`: `ClosureStore::move_since` for the tap's
+/// status, since the tap began). The appraisal's readout used to be printed
+/// on the child's stderr, which this executor reads only on failure, so the
+/// reply never carried it (S8); the record is where it is kept now.
+///
+/// The board's word stays the status — the task *is* closed — and the record
+/// adds a line: the readout, or which of "nothing to appraise", "no readout
+/// written" and "no record found" it is, since those are different findings
+/// and none of them is the absence of a line.
+pub fn with_closure_record(
+    outcome: Outcome,
+    recorded: std::result::Result<
+        Option<(
+            mecha_core::closure::Transition,
+            Option<mecha_core::closure::Entry>,
+        )>,
+        String,
+    >,
+) -> Outcome {
+    use mecha_core::closure::{readout_line, Entry, Move};
+    let note = match recorded {
+        Ok(Some((t, _))) if t.kind != Move::Close => return outcome,
+        Ok(Some((_, readout @ Some(Entry::Readout { .. })))) => {
+            match readout_line(readout.as_ref()) {
+                Some(line) => format!("Closure recorded — {line}"),
+                None => "Closure recorded — nothing to appraise: no session worked it with a \
+                         recorded outcome"
+                    .to_string(),
+            }
+        }
+        Ok(Some(_)) => "Closure recorded, but its appraisal readout was not written — \
+                        `mecha sessions appraise` reads the record"
+            .to_string(),
+        // `--only-open` means the task was open going in, so a closure that
+        // landed wrote a record first; none found is itself a finding.
+        Ok(None) => "No closure record was found for this tap — check `mecha tasks list \
+                     --closed`"
+            .to_string(),
+        Err(e) => format!("The closure record could not be read back ({e})"),
+    };
+    Outcome {
+        status: outcome.status,
+        line: format!("{}\n{note}", outcome.line),
     }
 }
 
@@ -1293,6 +1404,9 @@ mod tests {
             Action::TaskNext {
                 id: "task-1a2b3c4d".into(),
             },
+            Action::TaskDrop {
+                id: "task-1a2b3c4d".into(),
+            },
             Action::FrontdoorClose {
                 seq: 5,
                 reason: "spam".into(),
@@ -1313,6 +1427,16 @@ mod tests {
                 argv.iter().any(|a| *a == action.value()),
                 "the object id rides as its own argument: {argv:?}"
             );
+            // A tap that drives the board names its status, and it is the
+            // one on the argv; nothing else names one.
+            let drives_board = argv.get(1..3) == Some(&["tasks".to_string(), "set".to_string()]);
+            match action.task_status() {
+                Some(status) => {
+                    assert!(drives_board, "{action:?} names a status: {argv:?}");
+                    assert_eq!(argv.get(5).map(String::as_str), Some(status), "{argv:?}");
+                }
+                None => assert!(!drives_board, "{action:?} drives the board: {argv:?}"),
+            }
         }
     }
 
@@ -1478,6 +1602,11 @@ mod tests {
                 None,
                 "{hostile}"
             );
+            assert_eq!(
+                Action::from_payload(ids::TASK_DROP, hostile),
+                None,
+                "{hostile}"
+            );
         }
         // The frontdoor verbs are modal callback ids, and a button payload
         // must never construct them: text can only arrive through the gated
@@ -1516,10 +1645,114 @@ mod tests {
                 "done".into(),
                 "--surface".into(),
                 "slack".into(),
+                "--only-open".into(),
             ]
         );
         let next = Action::from_payload(ids::TASK_NEXT, "task-1a2b3c4d").unwrap();
         assert_eq!(next.argv()[5], "next");
+        assert_eq!(next.argv().last().map(String::as_str), Some("--only-open"));
+    }
+
+    /// Drop is the second closure a tap can make: its own verb, the same id
+    /// rule, `dropped` as a literal, surface `slack`, and the open-only guard
+    /// — the argv `mecha-cli/tests/closure_event.rs` drives the real binary
+    /// with, so the record it asserts is the record this tap writes.
+    #[test]
+    fn a_drop_tap_round_trips_to_a_recorded_slack_closure() {
+        let drop = Action::from_payload(ids::TASK_DROP, "task-1a2b3c4d").unwrap();
+        assert_eq!(
+            drop,
+            Action::TaskDrop {
+                id: "task-1a2b3c4d".into()
+            }
+        );
+        assert_eq!(drop.action_id(), ids::TASK_DROP);
+        assert_eq!(drop.value(), "task-1a2b3c4d");
+        assert_eq!(drop.task_status(), Some("dropped"));
+        assert_eq!(
+            drop.argv(),
+            vec![
+                "mecha".to_string(),
+                "tasks".into(),
+                "set".into(),
+                "task-1a2b3c4d".into(),
+                "--status".into(),
+                "dropped".into(),
+                "--surface".into(),
+                "slack".into(),
+                "--only-open".into(),
+            ]
+        );
+        assert!(drop.describe().contains("dropping"));
+        // Only the task verbs name a board status.
+        assert_eq!(
+            Action::TriggerRun {
+                name: "briefing".into()
+            }
+            .task_status(),
+            None
+        );
+    }
+
+    /// A closing tap's reply carries what the closure record says about the
+    /// move *this tap* made — the readout the child printed on stderr, which
+    /// the executor never read — and each way of having no readout is said
+    /// as itself rather than as silence.
+    #[test]
+    fn a_closing_taps_reply_carries_the_readout_from_the_record() {
+        use mecha_core::closure::{Actor, Entry, Move, Surface, Transition};
+        let base = || Outcome::of("done", "Task `task-aa` is done — email Dirk");
+        let close = Transition::new(
+            "task-aa",
+            Some("next"),
+            "done",
+            Move::Close,
+            Actor::Owner,
+            Surface::Slack,
+            vec!["s-1".into()],
+            None,
+        );
+        let readout = |text: Option<&str>| Entry::Readout {
+            of: close.id.clone(),
+            task: "task-aa".into(),
+            at: Utc::now(),
+            readout: text.map(str::to_string),
+            follow_up_staged: false,
+            project: None,
+        };
+
+        let out = with_closure_record(
+            base(),
+            Ok(Some((close.clone(), Some(readout(Some("Pride · +0.5")))))),
+        );
+        assert_eq!(out.status, "done", "the board's word stays the status");
+        assert!(
+            out.line.starts_with("Task `task-aa` is done"),
+            "{}",
+            out.line
+        );
+        assert!(out.line.contains("Pride · +0.5"), "{}", out.line);
+
+        let out = with_closure_record(base(), Ok(Some((close.clone(), Some(readout(None))))));
+        assert!(out.line.contains("nothing to appraise"), "{}", out.line);
+
+        let out = with_closure_record(base(), Ok(Some((close.clone(), None))));
+        assert!(out.line.contains("readout was not written"), "{}", out.line);
+
+        let out = with_closure_record(base(), Ok(None));
+        assert!(out.line.contains("No closure record"), "{}", out.line);
+
+        let out = with_closure_record(base(), Err("torn store".into()));
+        assert!(out.line.contains("could not be read back"), "{}", out.line);
+        assert!(out.line.contains("torn store"), "{}", out.line);
+
+        // A reopen is not a closure: nothing is added.
+        let mut reopen = close.clone();
+        reopen.kind = Move::Reopen;
+        assert_eq!(
+            with_closure_record(base(), Ok(Some((reopen, None)))),
+            base()
+        );
     }
 
     /// The read-back answers from the graph's own reply, never the child's

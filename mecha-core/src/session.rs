@@ -808,11 +808,12 @@ impl RunStats {
     /// Each charter reading's per-item `delta` is summed on the same rule,
     /// joined by sensor, while the reading beside it stays the first run's.
     /// Two consequences to know before reading the two fields together:
-    /// `anticipated_guilt` and `guilt_after_relief` stay the first sampling
-    /// run's — the level it inherited, and that level folded with *that
-    /// run's own* delta — while `backlog_delta` becomes the episode's sum,
-    /// so on a resumed session neither guilt field describes the same act
-    /// as the delta beside it; and a first run with no homeostat at all takes a later
+    /// the per-commitment guilt (`commitments`) and its `anticipated_guilt`
+    /// readout stay the first sampling run's — what it inherited — (as does
+    /// a pre-1f row's `guilt_after_relief`, that level folded with *that
+    /// run's own* delta) while `backlog_delta` becomes the episode's sum, so
+    /// on a resumed session no guilt field describes the same act as the
+    /// delta beside it; and a first run with no homeostat at all takes a later
     /// run's whole snapshot, so "the first run's conditions" means the
     /// first run that sampled any.
     pub fn merge(&mut self, other: &RunStats) {
