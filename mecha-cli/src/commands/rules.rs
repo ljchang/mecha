@@ -26,6 +26,7 @@ use mecha_core::learning::{
     Proposal, Rule, RuleTally, ValidationRecord, Verdict,
 };
 use mecha_core::session::{Session, SessionKind};
+use mecha_core::situation::GoalKey;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -93,9 +94,9 @@ pub async fn execute(args: Args) -> Result<()> {
     }
 }
 
-/// The workspace/surface pairs some run's rules block was matched against,
-/// off every run record of every transcript in the session store —
-/// what a scope's workspace or surface key must be found in to load
+/// The workspace/surface/goal keys some run's rules block was matched
+/// against, off every run record of every transcript in the session store —
+/// what a scope's workspace, surface or goal key must be found in to load
 /// anywhere. `None` when the store cannot be read *in full*: a transcript
 /// whose header does not parse (`Session::list_counting` counts them;
 /// `list` drops them silently) or with a torn line before its first run
@@ -108,11 +109,15 @@ pub async fn execute(args: Args) -> Result<()> {
 /// streaming rather than slurped, once per roster, and only when a scope
 /// names one of those keys (`needs_presented_keys`) — the TUI's Rules
 /// pane runs the roster on a keypress.
-type Presented = Vec<(Option<PathBuf>, Option<SessionKind>)>;
+type Presented = Vec<Keys>;
+
+/// One run record's matched keys: `(rules_workspace, rules_surface,
+/// rules_goal)`.
+type Keys = (Option<PathBuf>, Option<SessionKind>, Option<GoalKey>);
 
 /// Whether a rule's answer consults the store at all: active, with no
-/// parked or corpus-mark surface (those are answered without it), and a
-/// workspace or surface on its scope. One predicate for both gates —
+/// parked or corpus-mark surface and no parked goal (those are answered
+/// without it), and a workspace, surface or goal on its scope. One predicate for both gates —
 /// whether to walk, and which pairs to walk for — because the early exit
 /// in `presented_keys_in` is sound only if every rule that will read the
 /// keys has its pair in `wanted`. Built from every rule, a retired rule
@@ -124,6 +129,7 @@ fn needs_keys(r: &Rule) -> bool {
     r.active()
         && r.scope.as_ref().is_some_and(|s| {
             s.surface_unread.is_none()
+                && !matches!(s.goal, Some(GoalKey::Unread(_)))
                 && !s
                     .surface
                     .is_some_and(|k| mecha_core::situation::Situation::MARK_KINDS.contains(&k))
@@ -131,7 +137,7 @@ fn needs_keys(r: &Rule) -> bool {
         && r.scope
             .as_ref()
             .map(|s| s.scope())
-            .is_some_and(|s| s.workspace.is_some() || s.surface.is_some())
+            .is_some_and(|s| s.workspace.is_some() || s.surface.is_some() || s.goal.is_some())
 }
 
 fn needs_presented_keys(rules: &[&Rule]) -> bool {
@@ -150,22 +156,25 @@ fn presented_keys_from(rules: &[&Rule], dir: &Path) -> Option<Presented> {
         .iter()
         .filter(|r| needs_keys(r))
         .filter_map(|r| r.scope.as_ref().map(|s| s.scope()))
-        .map(|s| (s.workspace, s.surface))
+        .map(|s| (s.workspace, s.surface, s.goal))
         .collect();
     presented_keys_in(dir, &wanted)
 }
 
-/// Whether one run record's pair presents one scope's pair: each key the
-/// scope names must be the record's.
-fn pair_presents(
-    record: &(Option<PathBuf>, Option<SessionKind>),
-    scope: &(Option<PathBuf>, Option<SessionKind>),
-) -> bool {
+/// Whether one run record's keys present one scope's keys: each key the
+/// scope names must be the record's — a goal by name, since a parked goal
+/// is presented by nothing (`Situation::matches`).
+fn pair_presents(record: &Keys, scope: &Keys) -> bool {
     scope
         .0
         .as_ref()
         .is_none_or(|sw| record.0.as_ref() == Some(sw))
         && scope.1.is_none_or(|sk| record.1 == Some(sk))
+        && match &scope.2 {
+            None => true,
+            Some(GoalKey::Named(g)) => record.2.as_ref().and_then(GoalKey::named) == Some(g),
+            Some(GoalKey::Unread(_)) => false,
+        }
 }
 
 /// `wanted` is the pairs the scoped rules name: the walk stops at the
@@ -174,10 +183,7 @@ fn pair_presents(
 /// whole store, which the TUI's reload reads on a keypress (found on
 /// review). An early exit happens only on a positive answer for every
 /// key; the unknown arms below are reached only by a walk that ran out.
-fn presented_keys_in(
-    dir: &Path,
-    wanted: &[(Option<PathBuf>, Option<SessionKind>)],
-) -> Option<Presented> {
+fn presented_keys_in(dir: &Path, wanted: &[Keys]) -> Option<Presented> {
     let (listed, unreadable) = Session::list_counting(dir).ok()?;
     if unreadable > 0 {
         return None;
@@ -185,7 +191,7 @@ fn presented_keys_in(
     let mut out = Presented::new();
     for (_, path) in listed {
         for rc in Session::run_configs_streaming(&path).ok()? {
-            let pair = (rc.rules_workspace, rc.rules_surface);
+            let pair = (rc.rules_workspace, rc.rules_surface, rc.rules_goal);
             if !out.contains(&pair) {
                 out.push(pair);
             }
@@ -198,23 +204,26 @@ fn presented_keys_in(
             return Some(out);
         }
     }
-    // A listing that yielded no record carrying either key cannot answer
+    // A listing that yielded no record carrying any key cannot answer
     // the question: a missing or empty `sessions/` lists as `Ok(empty)`,
-    // and a record from before the fields carries `(None, None)` — "before
+    // and a record from before the fields carries `(None, None, None)` — "before
     // the field" and "matched with no key" are two facts the record keeps
     // apart, and a whole store of the first kind (every record on this
     // machine, the day the keys landed) read as evidence that every keyed
     // scope loads nowhere (found on review). Zero records is the least
     // evidence there is; it must not make the loudest claim.
-    if out.iter().all(|(w, k)| w.is_none() && k.is_none()) {
+    if out
+        .iter()
+        .all(|(w, k, g)| w.is_none() && k.is_none() && g.is_none())
+    {
         return None;
     }
     Some(out)
 }
 
-/// Whether an active rule's scope names a workspace or surface no run
+/// Whether an active rule's scope names a workspace, surface or goal no run
 /// record presented — `Some(false)` by construction for a scope naming
-/// neither, `None` when the store could not be read in full (unknown is
+/// none of them, `None` when the store could not be read in full (unknown is
 /// not nowhere), and never `Some(true)` for a retired rule. One helper for
 /// the roster's prose and its JSON, so the two cannot drift.
 fn loads_nowhere(r: &Rule, keys: Option<&Presented>) -> Option<bool> {
@@ -224,7 +233,9 @@ fn loads_nowhere(r: &Rule, keys: Option<&Presented>) -> Option<bool> {
     // `scope()` strips but `matches` refuses, since no front-end declares
     // one; the roster must agree with the startup warning (found on
     // review).
+    // A parked goal is the same: `Situation::matches` refuses it outright.
     if scope.surface_unread.is_some()
+        || matches!(scope.goal, Some(GoalKey::Unread(_)))
         || r.scope
             .as_ref()
             .and_then(|s| s.surface)
@@ -232,29 +243,32 @@ fn loads_nowhere(r: &Rule, keys: Option<&Presented>) -> Option<bool> {
     {
         return Some(r.active());
     }
-    if scope.workspace.is_none() && scope.surface.is_none() {
+    if scope.workspace.is_none() && scope.surface.is_none() && scope.goal.is_none() {
         return Some(false);
     }
     keys.map(|k| r.active() && !presented(&scope, k))
 }
 
-/// Whether some run record presents every workspace/surface key `scope`
+/// Whether some run record presents every workspace/surface/goal key `scope`
 /// names — the corpus-shaped half of `unloadable_rules`, which names tools
 /// only: a rule scoped to a workspace or surface no `prepare` ever matched
 /// against is dark with nothing warning, and the only honest test is the
 /// record of what runs actually presented (found on review). A scope that
 /// names neither key is presented by construction.
 fn presented(scope: &mecha_core::situation::Situation, presented: &Presented) -> bool {
-    // A parked surface is the one key `Situation::matches` refuses outright.
-    if scope.surface_unread.is_some() {
+    // A parked surface or goal is a key `Situation::matches` refuses outright.
+    if scope.surface_unread.is_some() || matches!(scope.goal, Some(GoalKey::Unread(_))) {
         return false;
     }
-    if scope.workspace.is_none() && scope.surface.is_none() {
+    if scope.workspace.is_none() && scope.surface.is_none() && scope.goal.is_none() {
         return true;
     }
-    presented
-        .iter()
-        .any(|p| pair_presents(p, &(scope.workspace.clone(), scope.surface)))
+    presented.iter().any(|p| {
+        pair_presents(
+            p,
+            &(scope.workspace.clone(), scope.surface, scope.goal.clone()),
+        )
+    })
 }
 
 fn list(store: &LearningStore, as_json: bool) -> Result<()> {
@@ -428,7 +442,7 @@ fn describe(r: &Rule, tallies: &BTreeMap<String, RuleTally>, keys: Option<&Prese
         // mark is standing by `scope()`'s definition and refused by
         // `matches`, and the prose must agree with the JSON (found on review).
         Some(s) if loads_nowhere(r, keys) == Some(true) => format!(
-            "scoped to {} — LOADS NOWHERE: no run record presents that workspace/surface",
+            "scoped to {} — LOADS NOWHERE: no run record presents that workspace/surface/goal",
             s.describe()
         ),
         Some(s) if s.is_standing() => "standing (loads everywhere)".to_string(),
@@ -1249,10 +1263,57 @@ mod tests {
         use mecha_core::situation::Situation;
         let w = PathBuf::from("/w");
         let on_tui = Situation::of_run(&["shell".into()], Some(&w)).on(Some(SessionKind::Tui));
+        let morning = || Some(GoalKey::Named("trigger:morning".parse().unwrap()));
         let keys: Presented = vec![
-            (Some(w.clone()), Some(SessionKind::Tui)),
-            (None, Some(SessionKind::Slack)),
+            (Some(w.clone()), Some(SessionKind::Tui), None),
+            (None, Some(SessionKind::Slack), None),
+            (Some(w.clone()), Some(SessionKind::Trigger), morning()),
         ];
+        // The goal is presented the same way: toward a goal some record
+        // was matched toward, with the other keys it names, and never a
+        // goal no record presented or one this build cannot name.
+        let toward = |g: Option<GoalKey>| {
+            Situation::of_run(&["shell".into()], Some(&w))
+                .on(Some(SessionKind::Trigger))
+                .toward(g)
+                .scope()
+        };
+        assert!(presented(&toward(morning()), &keys));
+        assert!(presented(
+            &Situation::default().toward(morning()).scope(),
+            &keys
+        ));
+        assert!(!presented(
+            &toward(Some(GoalKey::Named("trigger:evening".parse().unwrap()))),
+            &keys
+        ));
+        assert!(
+            !presented(
+                &Situation::of_run(&["shell".into()], Some(&w))
+                    .on(Some(SessionKind::Tui))
+                    .toward(morning())
+                    .scope(),
+                &keys
+            ),
+            "the goal and the surface must be presented together"
+        );
+        let parked_goal = Rule {
+            text: "Parked goal.".into(),
+            id: Some("r-pg".into()),
+            scope: Some(toward(Some(GoalKey::Unread("dream:x".into())))),
+            ..Default::default()
+        };
+        assert_eq!(loads_nowhere(&parked_goal, None), Some(true));
+        assert_eq!(loads_nowhere(&parked_goal, Some(&keys)), Some(true));
+        assert!(!needs_presented_keys(&[&parked_goal]));
+        let gone_goal = Rule {
+            text: "Gone goal.".into(),
+            id: Some("r-gg".into()),
+            scope: Some(toward(Some(GoalKey::Named("task:done".parse().unwrap())))),
+            ..Default::default()
+        };
+        assert_eq!(loads_nowhere(&gone_goal, Some(&keys)), Some(true));
+        assert!(needs_presented_keys(&[&gone_goal]));
         assert!(presented(&on_tui.scope(), &keys));
         assert!(
             !presented(
@@ -1390,8 +1451,8 @@ mod tests {
         assert_eq!(
             keys,
             vec![
-                (Some(PathBuf::from("/w")), Some(SessionKind::Web)),
-                (Some(PathBuf::from("/later")), None),
+                (Some(PathBuf::from("/w")), Some(SessionKind::Web), None),
+                (Some(PathBuf::from("/later")), None, None),
             ]
         );
         // A torn trailing line is a killed process's residue and is
@@ -1498,7 +1559,7 @@ mod tests {
                 ..Default::default()
             }))
             .unwrap();
-        let wanted = vec![(Some(PathBuf::from("/w")), Some(SessionKind::Tui))];
+        let wanted = vec![(Some(PathBuf::from("/w")), Some(SessionKind::Tui), None)];
         assert_eq!(
             presented_keys_in(&stopped, &wanted),
             Some(wanted.clone()),

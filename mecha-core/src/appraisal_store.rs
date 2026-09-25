@@ -260,12 +260,15 @@ impl SessionEvidence {
             .then(|| transcript.taint_timeline.covering(messages - 1))
             .flatten();
         // The run's situation, from the last run record's matched keys —
-        // `None` when no config was recorded: unknown, never the
-        // empty-keyed scope, which is standing and would match every run.
-        let situation = transcript
-            .configs
-            .last()
-            .map(|c| Situation::of_run(&c.tools, c.rules_workspace.as_deref()).on(c.rules_surface));
+        // the goal included, so a reader keyed on the same situation and
+        // goal (I2) has the key the block was matched toward — `None` when
+        // no config was recorded: unknown, never the empty-keyed scope,
+        // which is standing and would match every run.
+        let situation = transcript.configs.last().map(|c| {
+            Situation::of_run(&c.tools, c.rules_workspace.as_deref())
+                .on(c.rules_surface)
+                .toward(c.rules_goal.clone())
+        });
         SessionEvidence {
             session_id: transcript.meta.id.clone(),
             taint,
@@ -855,6 +858,9 @@ mod tests {
                 tools: vec!["mail_search".into()],
                 rules_workspace: Some(PathBuf::from("/project")),
                 rules_surface: Some(SessionKind::Task),
+                rules_goal: Some(crate::situation::GoalKey::Named(GoalRef::Task(
+                    "t-budget".into(),
+                ))),
                 ..Default::default()
             }))
             .unwrap();
@@ -974,6 +980,14 @@ mod tests {
         let situation = got.situation.as_ref().expect("read off the run record");
         assert_eq!(situation.surface, Some(SessionKind::Task));
         assert_eq!(situation.workspace, Some(PathBuf::from("/project")));
+        // The goal the block was matched toward is on the situation, so a
+        // reader keyed on the same situation and goal (I2) has the key.
+        assert_eq!(
+            situation.goal,
+            Some(crate::situation::GoalKey::Named(GoalRef::Task(
+                "t-budget".into()
+            )))
+        );
         assert_eq!(got.claims.len(), 2);
         assert_eq!(got.claims[0].pointer, Pointer::Result("t1".into()));
         assert_eq!(got.claims[1].pointer, Pointer::Turn(3));
