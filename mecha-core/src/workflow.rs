@@ -57,8 +57,9 @@ pub struct Event {
 ///
 /// **The dates are optional, and an absent one means "no deadline stated"**
 /// (ruling (b), 2026-09-25): a commitment an owner states through appraisal
-/// evidence names a party and an expectation but never a date, and nothing
-/// machine-derived may state a "by when" for it. An undated commitment is
+/// evidence carries only the dates the owner wrote — none in the legacy
+/// shape — and nothing machine-derived may state a "by when" for it. An
+/// undated commitment is
 /// never overdue ([`Commitment::overdue`]) and never due for follow-up
 /// ([`Commitment::follow_up_due`]), and no reader treats the absence as a
 /// time — a dash is never zero. Rows written with dates serialise

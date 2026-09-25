@@ -4077,9 +4077,13 @@ when touching it:
   `OutboxStore::anticipate` (`mecha outbox anticipate`). It turns a
   legacy-shaped commitment into the record with the beneficiary as
   `party`, the evidence's **goal pointer as `source`** (structural, never
-  text; a record given as input must already point there), and **no
-  date**: an evidence file names none, and nothing derives a "by when" —
-  not `time_available_secs`, not anything. It reshapes a commitment the
+  text; a record given as input must already point there). **Dates are
+  only ever the owner's** (ruled 2026-09-25): a legacy-shaped commitment
+  gets **no date**, since that shape has none to carry; a record-shaped
+  commitment carries **only the `due_at` / `follow_up_at` the owner wrote**,
+  passed through unchanged (checked only that follow-up is no later than
+  due); and **the harness never supplies one** — no "by when" is derived
+  from `time_available_secs` or anything else. It reshapes a commitment the
   owner wrote; it creates none, so §7.4 does not move. Harness-authored
   evidence (the staging default, `Decision::assess`) carries no
   commitment at all.
@@ -4092,7 +4096,8 @@ when touching it:
   `Workflow::tick` never raises a follow-up notice for it, and the web
   Today page says "no deadline stated" (`web/src/lib/commitment.js`)
   where it used to render `new Date(undefined)`. `mecha workflow commit`
-  still requires both dates — only evidence commitments are undated.
+  still requires both dates; an evidence commitment is undated unless the
+  owner wrote dates on a record-shaped one.
 - **The doctor reads against the owner's number, and names the line.**
   `doctor::Patience` is the harness constant (48h drafts, 24h questions, 72h
   requests) or the setpoint of the charter line whose sensor watches that
