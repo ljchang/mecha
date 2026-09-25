@@ -2247,6 +2247,51 @@ whole rather than half a new one. `voice_clone` refuses an existing name with
 an `exists()` check ahead of the rename, not an exclusive create, so it does
 not hold against two concurrent uploads of one name.
 
+## Incognito chat
+
+`serve/incognito.rs` and `chat.rs`'s `Recording` (`docs/INCOGNITO-DESIGN.md`
+is the authority: rulings R1–R6, the audit, the build order). A web session is
+`Recording::Kept(session)` or `Recording::Incognito(room)`, and **an incognito
+chat has no transcript by type**: every write that records matches on the
+variant, so the compiler found each one — the per-turn message and rewrite,
+the outcome and taint records, the workflow run, the outbox route's session id
+— and an incognito turn has nowhere to write. The titler and the situation
+brief (which reads the board through the graph server) do not run.
+
+- **Its own door.** `POST /api/incognito` mints `incognito-<22 hex>`; the
+  ordinary door refuses the prefix, so a closed incognito key can never come
+  back as a recorded chat. `POST /api/incognito/{key}/end` closes one.
+- **Local only, refused rather than degraded.** The door opens only when the
+  chat provider is a loopback server with no `fallbacks` — a `Failover`
+  would re-send the conversation to a cloud provider on a transient local
+  error, and a locked model chip would not stop it.
+- **The room is in RAM.** `$XDG_RUNTIME_DIR/mecha-incognito/<home>/<key>/`
+  holds the jail and, beside it, the spill directory (never inside: the
+  jail's spill exception must point where the model cannot write). The
+  runtime directory is `statfs`-checked for tmpfs, and the `<home>` level
+  keeps a second `serve` against another home from sweeping this one's rooms.
+- **It reaches an allowlist.** `withheld` is filled with the complement of a
+  few builtins, search, and the mail server's read-only, un-routed tools —
+  against the live registry, so a tool added tomorrow is withheld without
+  anyone remembering. Withholding is checked before dispatch *and* before
+  outbox staging, so a routed tool cannot even stage a draft. The graph is
+  out (it logs every read's query text) and so is `image_generate` until the
+  image server's temp copies are removed per room.
+- **No hooks, no voice.** `pre_tool`/`post_tool` receive tool input and
+  output; the voice worker logs what it hears.
+- **Closing** — End, 30 idle minutes (the reaper, once a minute), or `serve`
+  stopping — cancels a run in flight, forgets the todo plan, and removes the
+  room; a run still finishing removes it again on its way out, so a late
+  spill cannot leave a directory behind. `ChatState::build` sweeps leftover
+  rooms before the door opens, for a `serve` that died.
+- Every incognito route answers `Cache-Control: no-store`.
+
+The end-to-end test drives the real routes: a turn and an upload carrying a
+canary, a scan of the whole mecha home (nothing while open, nothing after),
+the room gone on End, the key dead on both doors — and the same turn in an
+ordinary chat, which must find the canary, so the scan is known to look where
+a trace would be.
+
 ## Voice preferences in the browser
 
 **One preference store, read and written only through `voice-core.js`.**

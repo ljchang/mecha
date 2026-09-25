@@ -1,5 +1,16 @@
 # Incognito chat — design
 
+> **Status (2026-09-25):** step 0 merged as #313; steps 1–3 (the server side:
+> the session with no transcript, the room in RAM, the allowlist, local only)
+> built in the PR after it; the page (step 5), the image server's cleanup
+> (step 4) and mecha-graph's unrecorded reads (step 7) are next. Three
+> deliberate differences from the text below: §6.1's "own provider" is a
+> refusal at the door when the provider is not a loopback server without
+> fallbacks (this machine has none, and a refusal cannot silently degrade);
+> rooms sit one level deeper, per mecha home, so a second `serve` cannot
+> sweep this one's; and `image_generate` is withheld until step 4 lands.
+> `ARCHITECTURE.md` §Incognito chat describes what is built.
+
 **2026-09-25.** One question: *how does a web chat leave no trace once it is
 closed — not the transcript, not a title, not a count, not a file, not a log
 line — while still being able to read the owner's data and search the web?*

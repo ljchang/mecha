@@ -98,11 +98,57 @@ pub struct ChatState {
     _mcp: Vec<Arc<mecha_core::mcp::McpClient>>,
 }
 
+/// Where a web session's turns go.
+///
+/// `Kept` is every ordinary conversation: its transcript is the record.
+/// `Incognito` has none, **by type** — every place that records matches on
+/// this, so the compiler finds each one, and an incognito chat has nowhere to
+/// write rather than a flag telling writers not to (`INCOGNITO-DESIGN.md`
+/// §4.1: two of the readers already ignored the one mark that existed).
+#[derive(Clone)]
+enum Recording {
+    Kept(Arc<Session>),
+    Incognito(Arc<super::incognito::Room>),
+}
+
+impl Recording {
+    /// This conversation's id: the transcript's, or an incognito chat's key,
+    /// which is written nowhere.
+    fn id(&self) -> &str {
+        match self {
+            Recording::Kept(s) => &s.meta.id,
+            Recording::Incognito(room) => &room.key,
+        }
+    }
+
+    /// The transcript, when there is one.
+    fn kept(&self) -> Option<&Arc<Session>> {
+        match self {
+            Recording::Kept(s) => Some(s),
+            Recording::Incognito(_) => None,
+        }
+    }
+
+    /// The room, when this is an incognito chat.
+    fn room(&self) -> Option<&Arc<super::incognito::Room>> {
+        match self {
+            Recording::Kept(_) => None,
+            Recording::Incognito(room) => Some(room),
+        }
+    }
+
+    /// The recorded title. An incognito chat has none: naming it would send
+    /// its words to the model for a label nobody keeps.
+    fn title(&self) -> Option<&str> {
+        self.kept().and_then(|s| s.meta.title.as_deref())
+    }
+}
+
 struct WebSession {
     /// `None` while a run holds it — the move-and-return that keeps the map
     /// single-writer (the Slack connector's pattern).
     conversation: Option<Conversation>,
-    session: Arc<Session>,
+    session: Recording,
     workspace: PathBuf,
     live: Option<Live>,
     /// Outlives any one run, so a page can subscribe before, during, after.
@@ -191,6 +237,20 @@ impl ChatState {
         // the human who owns the run that asked (the jail's directory name
         // is the session key; see `present::WebAsker`). An unanswered card
         // resolves as the tool's measured decline, never a guess.
+        // Before the door opens: a `serve` that died with incognito chats
+        // open left their rooms, and nothing else will remove them (R1).
+        match super::incognito::rooms_root() {
+            Ok(rooms) => {
+                let removed = super::incognito::sweep(&rooms);
+                if !removed.is_empty() {
+                    tracing::warn!(
+                        "removed {} incognito room(s) left by a previous serve",
+                        removed.len()
+                    );
+                }
+            }
+            Err(e) => tracing::info!("incognito chats are unavailable: {e:#}"),
+        }
         let mut prepared = setup::prepare(&opts, false).await?;
         let routes: QuestionRoutes = Arc::default();
         let lookup: super::present::SessionLookup = {
@@ -242,8 +302,129 @@ impl ChatState {
                 live.cancel
                     .cancel(mecha_core::agent::CancelReason::Shutdown);
             }
+            // An incognito chat does not survive the process (R1): its room
+            // goes now, and a run still finishing removes it again on its
+            // way out (`begin_turn`'s hand-back).
+            if let Some(room) = ws.session.room() {
+                if let Err(e) = room.remove() {
+                    tracing::warn!("an incognito room was not removed at shutdown: {e:#}");
+                }
+            }
         }
         self.runs.close();
+    }
+
+    /// Open an incognito chat and return its key (`INCOGNITO-DESIGN.md`).
+    ///
+    /// Refused — with the reason, for the page to show — unless this
+    /// process's provider is a local server with no fallbacks and the room
+    /// can be made in RAM. The tools it may reach are the complement of an
+    /// allowlist, computed against the live registry here.
+    pub(super) async fn open_incognito(self: &Arc<Self>) -> Result<String> {
+        anyhow::ensure!(!self.stopping.is_cancelled(), "server is shutting down");
+        super::incognito::provider_is_local(&self.config, &self.provider_name)
+            .map_err(|why| anyhow::anyhow!("an incognito chat needs a local model: {why}"))?;
+        let rooms = super::incognito::rooms_root()?;
+        let key = super::incognito::new_key();
+        let room = Arc::new(super::incognito::Room::open(&rooms, &key)?);
+        let routed: Vec<String> = self
+            .agent
+            .context()
+            .outbox
+            .as_ref()
+            .map(|o| o.routed().map(String::from).collect())
+            .unwrap_or_default();
+        let withheld = super::incognito::withheld(
+            self.agent
+                .registry()
+                .iter()
+                .map(|t| (t.name(), t.read_only())),
+            &routed,
+        );
+        let (events, _) = broadcast::channel(512);
+        let questions = super::present::Questions::default();
+        let mut sessions = self.sessions.lock().await;
+        if self.stopping.is_cancelled() {
+            let _ = room.remove();
+            anyhow::bail!("server is shutting down");
+        }
+        if let Ok(mut routes) = self.routes.lock() {
+            routes.insert(key.clone(), (questions.clone(), events.clone(), None));
+        }
+        sessions.insert(
+            key.clone(),
+            WebSession {
+                conversation: Some(Conversation::new()),
+                workspace: room.workspace.clone(),
+                session: Recording::Incognito(room),
+                live: None,
+                events,
+                last_usage: Arc::new(StdMutex::new(None)),
+                mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
+                questions,
+                last_turn_spoken: false,
+                titled_at: 0,
+                withheld: Arc::from(withheld),
+                task: None,
+            },
+        );
+        Ok(key)
+    }
+
+    /// Close an incognito chat: stop a run in flight, forget the
+    /// conversation and its plan, and remove the room. `false` when `key`
+    /// is not an open incognito chat — an ordinary one is never closed here.
+    pub(super) async fn close_incognito(&self, key: &str) -> bool {
+        let mut sessions = self.sessions.lock().await;
+        close_incognito_locked(self, &mut sessions, key)
+    }
+
+    /// Close idle incognito chats once a minute until the server stops.
+    pub fn spawn_incognito_reaper(self: &Arc<Self>) {
+        let chat = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = chat.stopping.cancelled() => break,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {
+                        let closed = chat.reap_idle_incognito().await;
+                        if closed > 0 {
+                            tracing::info!("closed {closed} idle incognito chat(s)");
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /// The room of the open incognito chat under `key`, for a test to age.
+    #[cfg(test)]
+    pub(super) async fn room_of(&self, key: &str) -> Option<Arc<super::incognito::Room>> {
+        self.sessions
+            .lock()
+            .await
+            .get(key)
+            .and_then(|ws| ws.session.room().cloned())
+    }
+
+    /// Close every incognito chat idle longer than [`super::incognito::IDLE`]
+    /// and not running (R5). Returns how many closed.
+    pub(super) async fn reap_idle_incognito(&self) -> usize {
+        let mut sessions = self.sessions.lock().await;
+        let idle: Vec<String> = sessions
+            .iter()
+            .filter(|(_, ws)| {
+                ws.live.is_none()
+                    && ws
+                        .session
+                        .room()
+                        .is_some_and(|r| r.idle_for(super::incognito::IDLE))
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        idle.iter()
+            .filter(|k| close_incognito_locked(self, &mut sessions, k))
+            .count()
     }
 
     /// Includes transcript recording and hand-back, not just model work.
@@ -881,7 +1062,7 @@ pub(super) async fn open_task_conversation(
             .conversation
             .as_ref()
             .is_some_and(|c| c.messages.is_empty());
-        (ws.session.meta.id.clone(), fresh)
+        (ws.session.id().to_string(), fresh)
     };
 
     // **The link the card offers as "open the conversation".** Written by the
@@ -946,7 +1127,7 @@ pub(super) async fn release_task_conversation(
             "it is working right now — let it finish, or stop it first, then hand it over"
         );
     }
-    let id = ws.session.meta.id.clone();
+    let id = ws.session.id().to_string();
     sessions.remove(&key);
     if let Ok(mut routes) = chat.routes.lock() {
         routes.remove(&key);
@@ -1034,6 +1215,13 @@ fn ensure_session_as<'a>(
 ) -> Result<&'a mut WebSession> {
     anyhow::ensure!(!chat.stopping.is_cancelled(), "server is shutting down");
     if !sessions.contains_key(key) {
+        // An incognito chat is opened only through its own door, and one that
+        // is not in the map has closed: re-creating it here would give it a
+        // transcript under a key that promised it none.
+        anyhow::ensure!(
+            !super::incognito::is_incognito_key(key),
+            "that incognito chat has closed"
+        );
         // Picking one back up, or starting one. `Session::load` restores the
         // messages *and* the recorded taint, so a conversation that read a
         // hostile page before the restart still remembers after it.
@@ -1138,7 +1326,7 @@ fn ensure_session_as<'a>(
             key.to_string(),
             WebSession {
                 conversation: Some(conversation),
-                session: Arc::new(session),
+                session: Recording::Kept(Arc::new(session)),
                 workspace,
                 live: None,
                 events,
@@ -1153,6 +1341,71 @@ fn ensure_session_as<'a>(
         );
     }
     Ok(sessions.get_mut(key).expect("just inserted"))
+}
+
+/// Close the incognito chat under `key`, with the sessions lock held.
+fn close_incognito_locked(
+    chat: &ChatState,
+    sessions: &mut HashMap<String, WebSession>,
+    key: &str,
+) -> bool {
+    if !sessions
+        .get(key)
+        .is_some_and(|ws| ws.session.room().is_some())
+    {
+        return false;
+    }
+    let ws = sessions.remove(key).expect("checked above");
+    ws.questions.shutdown();
+    if let Some(live) = &ws.live {
+        live.cancel.cancel(mecha_core::agent::CancelReason::Stopped);
+    }
+    if let Ok(mut routes) = chat.routes.lock() {
+        routes.remove(key);
+    }
+    if let Some(todo) = &chat.todo {
+        todo.forget_in(&ws.workspace);
+    }
+    if let Some(room) = ws.session.room() {
+        if let Err(e) = room.remove() {
+            tracing::warn!("an incognito room was not removed: {e:#}");
+        }
+    }
+    true
+}
+
+/// POST /api/incognito — open an incognito chat; answers `{"key": …}`.
+/// A refusal (no local model, no RAM-backed room) is a 409 with the reason,
+/// for the page to show rather than a chat that would break its promise.
+pub async fn open_incognito(State(state): Chat) -> axum::response::Response {
+    let chat = match chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    match chat.open_incognito().await {
+        Ok(key) => Json(serde_json::json!({ "key": key })).into_response(),
+        Err(e) => (StatusCode::CONFLICT, format!("{e:#}\n")).into_response(),
+    }
+}
+
+/// POST /api/incognito/{key}/end — close an incognito chat now: the End
+/// button. 404 when it is not an open incognito chat.
+pub async fn end_incognito(
+    State(state): Chat,
+    axum::extract::Path(key): axum::extract::Path<String>,
+) -> axum::response::Response {
+    let chat = match chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    if !valid_key(&key) || !super::incognito::is_incognito_key(&key) {
+        return (StatusCode::BAD_REQUEST, "not an incognito chat\n").into_response();
+    }
+    if chat.close_incognito(&key).await {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "no such incognito chat\n").into_response()
+    }
 }
 
 /// POST /api/chat/{key} — explicitly open a chat, idempotently. The owner
@@ -1196,7 +1449,8 @@ pub async fn transcript(
     let usage = ws.last_usage.lock().ok().and_then(|u| u.clone());
     let mode = ws.mode.lock().map(|m| mode_wire(*m)).unwrap_or("read_only");
     Json(serde_json::json!({
-        "session": ws.session.meta.id,
+        "session": ws.session.id(),
+        "incognito": ws.session.room().is_some(),
         "model": chat.model,
         "mode": mode,
         "running": running,
@@ -1531,6 +1785,11 @@ fn begin_turn(
     let ws = sessions
         .get_mut(key)
         .ok_or_else(|| TurnError::Failed("no such session".into()))?;
+    // Text only (v1): the voice worker logs what it hears, which is a trace
+    // this chat promised not to leave (`INCOGNITO-DESIGN.md` §3.4).
+    if opts.spoken && ws.session.room().is_some() {
+        return Err(TurnError::Failed("an incognito chat is text-only".into()));
+    }
 
     let opts = narrow_for_echo(
         opts,
@@ -1571,23 +1830,30 @@ fn begin_turn(
         // run-quality corpus, whichever way it entered the conversation.
         let pre_fold = conversation.messages.clone();
         mecha_core::agent::append_user_text(&mut conversation.messages, text.clone());
-        if let Err(e) = ws.session.append(&Record::Rewrite {
-            messages: conversation.messages.clone(),
-        }) {
-            conversation.messages = pre_fold;
-            ws.conversation = Some(conversation);
-            return Err(TurnError::Failed(format!("recording: {e:#}")));
+        // An incognito chat records nothing — there is no transcript to fail.
+        if let Some(session) = ws.session.kept() {
+            if let Err(e) = session.append(&Record::Rewrite {
+                messages: conversation.messages.clone(),
+            }) {
+                conversation.messages = pre_fold;
+                ws.conversation = Some(conversation);
+                return Err(TurnError::Failed(format!("recording: {e:#}")));
+            }
         }
         conversation.messages.clone()
     } else {
         let user = Message::user(&text);
         conversation.push(user.clone());
-        if let Err(e) = ws.session.append(&Record::Message(user)) {
-            // Refuse to run a turn the record did not accept: an unrecorded
-            // run is invisible to distill, recall and the run-quality corpus.
-            conversation.messages.pop();
-            ws.conversation = Some(conversation);
-            return Err(TurnError::Failed(format!("recording: {e:#}")));
+        if let Some(session) = ws.session.kept() {
+            if let Err(e) = session.append(&Record::Message(user)) {
+                // Refuse to run a turn the record did not accept: an
+                // unrecorded run is invisible to distill, recall and the
+                // run-quality corpus. (An incognito turn is unrecorded on
+                // purpose, and invisible to them by design.)
+                conversation.messages.pop();
+                ws.conversation = Some(conversation);
+                return Err(TurnError::Failed(format!("recording: {e:#}")));
+            }
         }
         conversation.messages.clone()
     };
@@ -1609,7 +1875,7 @@ fn begin_turn(
             let guard = store.start_task(
                 id,
                 title,
-                &ws.session.meta.id,
+                ws.session.id(),
                 &ws.workspace,
                 chrono::Utc::now(),
             )?;
@@ -1632,6 +1898,9 @@ fn begin_turn(
         }
     };
     ws.last_turn_spoken = opts.spoken;
+    if let Some(room) = ws.session.room() {
+        room.touch();
+    }
 
     // Every observer sees accepted input. A typed request id lets its sender
     // reconcile this event with the POST response; voice has no local echo.
@@ -1708,7 +1977,15 @@ fn begin_turn(
         )),
         // The session's workspace and its own spill directory: the agent's
         // is shared by every session this process serves (`for_session`).
-        ..chat.agent.ctx().for_session(ws.workspace.clone())
+        // An incognito chat's spill is the one beside its room's workspace,
+        // in RAM, and goes with the room (`incognito::Room`).
+        ..match ws.session.room() {
+            Some(room) => chat
+                .agent
+                .ctx()
+                .for_session_in(room.workspace.clone(), room.spill.clone()),
+            None => chat.agent.ctx().for_session(ws.workspace.clone()),
+        }
     });
     cx.approver = if opts.approve_all {
         Arc::new(mecha_core::tool::ModeApprover {
@@ -1744,6 +2021,12 @@ fn begin_turn(
     // Whatever this session may not dispatch. Empty for an ordinary chat, so
     // the assignment costs nothing and there is one place it is applied.
     cx.withheld = Arc::clone(&ws.withheld);
+    // No hooks in an incognito run: `pre_tool` and `post_tool` receive tool
+    // input and output, and a user command is somewhere this chat's words
+    // would go that it cannot follow (`INCOGNITO-DESIGN.md` §3.3).
+    if ws.session.room().is_some() {
+        cx.hooks = Arc::new(mecha_core::hooks::HookSet::default());
+    }
     if let Some(shared) = &chat.agent.context().outbox {
         if let Ok(store) = OutboxStore::open(&chat.outbox_root) {
             let mine = OutboxRoute::new(
@@ -1751,7 +2034,11 @@ fn begin_turn(
                 shared.routed().map(String::from).collect::<Vec<_>>(),
                 shared.publishes().map(String::from).collect::<Vec<_>>(),
             );
-            mine.set_session_id(&ws.session.meta.id);
+            // A draft points back at the transcript that staged it; an
+            // incognito chat has none, and its routed tools are withheld.
+            if let Some(session) = ws.session.kept() {
+                mine.set_session_id(&session.meta.id);
+            }
             cx.outbox = Some(Arc::new(mine));
         }
     }
@@ -1764,7 +2051,7 @@ fn begin_turn(
 
     let agent = Arc::clone(&chat.agent);
     let key_for_task = key.to_string();
-    let session = Arc::clone(&ws.session);
+    let session = ws.session.clone();
     let bcast = ws.events.clone();
     let last_usage = Arc::clone(&ws.last_usage);
     let context_window = chat.context_window;
@@ -1794,37 +2081,43 @@ fn begin_turn(
         // brief's commitments as unread, which is the honest reading
         // (found on review). The blocking walk itself runs on; only this
         // turn stops waiting for it.
-        let (homeostat, board, slots) = tokio::join!(
-            async {
-                if sampled {
-                    tokio::time::timeout(
-                        crate::setup::BRIEF_BOARD_TIMEOUT_INTERACTIVE,
-                        tokio::task::spawn_blocking(mecha_core::homeostat::Homeostat::at_start),
-                    )
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                } else {
-                    None
-                }
-            },
-            crate::setup::read_board_for_brief(
-                agent.registry(),
-                &cx.tools,
-                crate::setup::BRIEF_BOARD_TIMEOUT_INTERACTIVE,
-            ),
-            mecha_core::brief::slots_for(local_server.as_deref()),
-        );
-        if sampled {
-            cx.homeostat = homeostat;
+        // No brief for an incognito run: there is no outcome to record it on,
+        // and assembling one reads the board through the graph server — a
+        // call that says a run happened (`INCOGNITO-DESIGN.md` §3.1). The
+        // homeostat is not sampled either, for the same reason.
+        if session.room().is_none() {
+            let (homeostat, board, slots) = tokio::join!(
+                async {
+                    if sampled {
+                        tokio::time::timeout(
+                            crate::setup::BRIEF_BOARD_TIMEOUT_INTERACTIVE,
+                            tokio::task::spawn_blocking(mecha_core::homeostat::Homeostat::at_start),
+                        )
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                    } else {
+                        None
+                    }
+                },
+                crate::setup::read_board_for_brief(
+                    agent.registry(),
+                    &cx.tools,
+                    crate::setup::BRIEF_BOARD_TIMEOUT_INTERACTIVE,
+                ),
+                mecha_core::brief::slots_for(local_server.as_deref()),
+            );
+            if sampled {
+                cx.homeostat = homeostat;
+            }
+            cx.brief = Some(Arc::new(mecha_core::brief::assemble_for_run(
+                &agent,
+                &cx,
+                &conversation,
+                board,
+                slots,
+            )));
         }
-        cx.brief = Some(Arc::new(mecha_core::brief::assemble_for_run(
-            &agent,
-            &cx,
-            &conversation,
-            board,
-            slots,
-        )));
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let forwarder = {
             let bcast = bcast.clone();
@@ -1879,10 +2172,16 @@ fn begin_turn(
             }
         }
 
+        // The transcript, when there is one. An incognito run records
+        // nothing — its conversation is rolled back all the same on failure,
+        // below, because the next request reads it from memory.
+        let kept = session.kept().cloned();
         match &outcome {
             Ok(o) => {
-                let _ = session.record_run(&before, &conversation);
-                let _ = session.record_outcome(o);
+                if let Some(session) = &kept {
+                    let _ = session.record_run(&before, &conversation);
+                    let _ = session.record_outcome(o);
+                }
             }
             // The transcript must agree with the rollback, or the failure
             // survives a resume — found on review: recording the mutated
@@ -1900,17 +2199,21 @@ fn begin_turn(
                 conversation.roll_back_failed_turn(before.clone());
                 // The one write whose failure reproduces the resume-time 400
                 // this arm exists to prevent — it must not fail silently.
-                if let Err(e) = session.record_run(&before, &conversation) {
-                    tracing::warn!(
-                        "the rollback was not recorded — a resume of this \
-                         session will replay the failed turn: {e:#}"
-                    );
+                if let Some(session) = &kept {
+                    if let Err(e) = session.record_run(&before, &conversation) {
+                        tracing::warn!(
+                            "the rollback was not recorded — a resume of this \
+                             session will replay the failed turn: {e:#}"
+                        );
+                    }
                 }
             }
         }
         // Taint is kept either way — a failed turn that read a hostile page
         // still read it, and taint only ever grows.
-        let _ = session.append(&Record::Taint(conversation.taint));
+        if let Some(session) = &kept {
+            let _ = session.append(&Record::Taint(conversation.taint));
+        }
 
         // §6.2's readout: how this session's just-finished run appraises,
         // right now. Voice rides this same path (`VoiceHost`/`SessionHost`),
@@ -1931,12 +2234,8 @@ fn begin_turn(
             // needs where *this run's own* messages start, and `before` is
             // exactly that boundary — captured right after the triggering
             // user turn was appended, before this run added anything.
-            let readout = mecha_core::appraisal::live_readout(
-                &session.meta.id,
-                o,
-                &conversation,
-                before.len(),
-            );
+            let readout =
+                mecha_core::appraisal::live_readout(session.id(), o, &conversation, before.len());
             if readout.label != mecha_core::appraisal::Affect::Neutral {
                 // The voice nudge keys on the word alone: a `cfg_weight`
                 // has no use for a magnitude, and a number is not a mood.
@@ -2017,6 +2316,17 @@ fn begin_turn(
         // above, where the file and this hand-back could be made to agree.
         let mut sessions = state_for_task.sessions.lock().await;
         let mut name_it = false;
+        // Closed while this run was finishing (End, the idle reaper, or
+        // shutdown): the room was removed then, and anything this run spilled
+        // since has recreated part of it. Remove it again; the conversation
+        // is dropped with this task.
+        if let Some(room) = session.room() {
+            if !sessions.contains_key(&key_for_task) {
+                if let Err(e) = room.remove() {
+                    tracing::warn!("a closed incognito room was not removed: {e:#}");
+                }
+            }
+        }
         if let Some(ws) = sessions.get_mut(&key_for_task) {
             // The forwarder has finished, and the admission lock prevents
             // a final send from arriving between this check and live=None.
@@ -2046,11 +2356,15 @@ fn begin_turn(
             // owner re-asking). The bookmark is left where it was, so the
             // threshold fires on the turn that finishes instead of being
             // spent on one that did not.
+            if let Some(room) = ws.session.room() {
+                room.touch();
+            }
+            // An incognito chat has no recorded title (`Recording::title`),
+            // so it is never named: that would send its words to the model
+            // for a label nobody keeps.
             name_it = ws
                 .session
-                .meta
-                .title
-                .as_deref()
+                .title()
                 .is_some_and(|t| t.starts_with(WEB_TITLE_PREFIX))
                 && mecha_core::title::due(owner_turns.len(), ws.titled_at)
                 && outcome
@@ -2109,6 +2423,9 @@ fn begin_turn(
                     // The record first: a name the page shows and the
                     // transcript does not is one that vanishes on the next
                     // restart, which is worse than never having had it.
+                    let Some(session) = session.kept() else {
+                        unreachable!("only a recorded session is named (`Recording::title`)")
+                    };
                     match session.append(&Record::Title {
                         title: recorded.clone(),
                     }) {
@@ -2138,13 +2455,13 @@ fn begin_turn(
             // costs the name, not the budget.
             let mut sessions = state_for_task.sessions.lock().await;
             if let Some(ws) = sessions.get_mut(&key_for_task) {
-                if let Some((recorded, _)) = &recorded {
-                    let mut meta = ws.session.meta.clone();
+                if let (Some((recorded, _)), Recording::Kept(current)) = (&recorded, &ws.session) {
+                    let mut meta = current.meta.clone();
                     meta.title = Some(recorded.clone());
-                    ws.session = Arc::new(Session {
+                    ws.session = Recording::Kept(Arc::new(Session {
                         meta,
-                        path: ws.session.path.clone(),
-                    });
+                        path: current.path.clone(),
+                    }));
                 }
             }
             drop(sessions);
@@ -2555,7 +2872,7 @@ pub async fn history(State(state): Chat) -> axum::response::Response {
         let sessions = chat.sessions.lock().await;
         sessions
             .iter()
-            .map(|(k, ws)| (ws.session.meta.id.clone(), k.clone()))
+            .map(|(k, ws)| (ws.session.id().to_string(), k.clone()))
             .collect()
     };
     let dir = match Session::default_dir() {
@@ -2652,10 +2969,7 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
     };
     let mut sessions = chat.sessions.lock().await;
-    if let Some((k, _)) = sessions
-        .iter()
-        .find(|(_, ws)| ws.session.meta.id == body.id)
-    {
+    if let Some((k, _)) = sessions.iter().find(|(_, ws)| ws.session.id() == body.id) {
         return Json(serde_json::json!({ "key": k })).into_response();
     }
     // **And the same question asked of the other processes.** The check above
@@ -2752,7 +3066,8 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
         key.clone(),
         WebSession {
             conversation: Some(conversation),
-            session: Arc::new(session),
+            // Resumed from its transcript, so recorded by definition.
+            session: Recording::Kept(Arc::new(session)),
             workspace,
             live: None,
             events,
@@ -2788,8 +3103,9 @@ pub async fn sessions(State(state): Chat) -> axum::response::Response {
         .map(|(key, ws)| {
             serde_json::json!({
                 "key": key,
-                "id": ws.session.meta.id,
-                "title": ws.session.meta.title,
+                "id": ws.session.id(),
+                "title": ws.session.title(),
+                "incognito": ws.session.room().is_some(),
                 "running": ws.live.is_some(),
                 "taint": ws.conversation.as_ref().map(|c| serde_json::json!({
                     "private": c.taint.private, "untrusted": c.taint.untrusted,
@@ -3657,6 +3973,78 @@ pub(super) fn test_chat() -> Arc<ChatState> {
     })
 }
 
+/// A chat whose model answers every turn with `reply`, behind a local
+/// loopback provider — the only kind an incognito chat opens on. `local`
+/// false puts the same model behind a cloud URL, for the refusal.
+#[cfg(test)]
+pub(super) fn test_chat_answering(reply: &'static str, local: bool) -> Arc<ChatState> {
+    struct Answers(&'static str);
+    #[async_trait::async_trait]
+    impl mecha_core::provider::Provider for Answers {
+        fn id(&self) -> &str {
+            "local"
+        }
+        fn default_model(&self) -> &str {
+            "test"
+        }
+        async fn complete(
+            &self,
+            _: &mecha_core::message::CompletionRequest,
+            _: Option<&mecha_core::provider::StreamSink>,
+        ) -> Result<mecha_core::message::CompletionResponse> {
+            Ok(mecha_core::message::CompletionResponse {
+                message: Message::assistant(vec![mecha_core::message::Block::Text {
+                    text: self.0.into(),
+                }]),
+                stop_reason: mecha_core::message::StopReason::EndTurn,
+                usage: Usage::default(),
+                refusal: None,
+                model: "test".into(),
+                malformed_tool_args: 0,
+            })
+        }
+    }
+    let mut config = Config::default();
+    config.providers.insert(
+        "local".into(),
+        mecha_core::config::ProviderConfig {
+            base_url: Some(if local {
+                "http://127.0.0.1:8080".into()
+            } else {
+                "https://api.example.com".into()
+            }),
+            ..Default::default()
+        },
+    );
+    let agent = Agent::new(
+        Box::new(Answers(reply)),
+        mecha_core::tool::Registry::new(),
+        Arc::new(mecha_core::tool::ModeApprover {
+            mode: PermissionMode::ReadOnly,
+        }),
+        ToolCtx::default(),
+        config.agent.clone(),
+        None,
+    )
+    .unwrap();
+    Arc::new(ChatState {
+        agent: Arc::new(agent),
+        routes: Arc::default(),
+        config,
+        provider_name: "local".into(),
+        model: "test".into(),
+        levers_off: vec![],
+        rules: Default::default(),
+        context_window: None,
+        outbox_root: OutboxStore::default_root().unwrap(),
+        sessions: Mutex::new(HashMap::new()),
+        stopping: Default::default(),
+        runs: Default::default(),
+        todo: None,
+        _mcp: vec![],
+    })
+}
+
 #[cfg(test)]
 mod workflow_recording_tests {
     use super::*;
@@ -3727,7 +4115,7 @@ mod workflow_recording_tests {
                 case.into(),
                 WebSession {
                     conversation: Some(conversation),
-                    session: Arc::new(session),
+                    session: Recording::Kept(Arc::new(session)),
                     workspace,
                     live: None,
                     events,
@@ -3788,7 +4176,8 @@ mod workflow_recording_tests {
             if case != "closed" {
                 assert_eq!(conversation.messages, messages);
             } else {
-                let (_, recorded) = Session::load(&ws.session.path).unwrap();
+                let (_, recorded) =
+                    Session::load(&ws.session.kept().expect("a recorded chat").path).unwrap();
                 assert_eq!(
                     recorded.messages, conversation.messages,
                     "a denied launch retains the same input in memory and on disk"
