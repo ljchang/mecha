@@ -774,6 +774,7 @@ fn artifact_prep(
             "recorded task differs from fixture"
         );
         mecha_core::mismatch::validate_recording(&recorded)?;
+        mecha_core::mismatch::validate_transcript(&transcript.convo.messages)?;
         let registry = mecha_core::mismatch::registry(&recorded.tools)?;
         let recorded_system = recorded.system_prompt.clone().unwrap_or_default();
         let recorded_specs = registry.specs();
@@ -860,6 +861,9 @@ pub async fn drive_arm_within(
         cfg.compact_keep_recent = recorded.compact_keep_recent;
         cfg.goal_guidance = false;
         cfg.step_escalation = false;
+        // The recording had no brief (`validate_transcript`), so the repeat
+        // delivers none, whatever this machine's config says.
+        cfg.situation_brief = false;
         cfg.step_checks = !recorded
             .levers_off
             .as_ref()

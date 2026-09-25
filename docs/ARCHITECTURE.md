@@ -4297,19 +4297,22 @@ when touching it:
   where it used to render `new Date(undefined)`. `mecha workflow commit`
   still requires both dates; an evidence commitment is undated unless the
   owner wrote dates on a record-shaped one.
-- **The situation brief is recorded, never sent (B1, built as 1h).**
+- **The situation brief is always recorded, and sent only behind its lever
+  (B1, built as 1h; delivery is 3a, next bullet).**
   `brief::SituationBrief` is what situation a run started in — the goal
   chain, the board as counts and pointers, each pending commitment, local
   time and quiet hours, seats, other runs in flight, `/slots` occupancy, a
   voice call, the budget — assembled with no model call by
   `brief::assemble_for_run` on the delegated, trigger and web doors (after
   the anchor is seeded and the budget set) and carried on `RunContext::brief`
-  to `RunStats::brief`. **The loop copies it and never reads it**, so no
-  request is built from it, and the G4 scan below fails if any field, pointer
-  or count of it reaches either encoder; phase 3 delivers it into the first
-  user turn as words, never the prefix. Five things to keep. **The board is
+  to `RunStats::brief`. **The loop copies it onto the record whatever the
+  lever says**; with delivery off (the default) no request is built from it,
+  and the G4 scan below fails if any field, pointer, count or word of it
+  reaches either encoder. Five things to keep. **The board is
   read by the harness** (`setup::read_board_for_brief`, one `kg_task_list`
-  through the run's own surface whose answer never enters the conversation;
+  through the run's own surface whose answer never enters the conversation
+  as a tool result — with delivery on, what enters is `render`'s words, and
+  what that means for taint is the delivery bullet's open question;
   the same open-only read on every door — `tasks work` once reused its
   closed-inclusive read, whose `truncated` could be set by closed history
   alone — and, like every harness call to a tool, outside `pre_tool` hooks,
@@ -4369,6 +4372,110 @@ when touching it:
   facade writes on every spoken turn (`brief::VoicePresence`, under
   `runs/`), read as a call within `VOICE_CALL_WINDOW_SECS` — the facade sees
   utterances, not calls, so five minutes is argued, not measured.
+- **The brief is delivered as words, in `date_context`'s slot, behind
+  `Lever::SituationBrief` (B1, built as 3a).** `[agent] situation_brief`
+  ships **off**: 3a is the lever stage of the design's "shadow, then measure,
+  then arm" (1h was the shadow), so `mecha exp` compares the arms before
+  anything turns it on, `mecha eval` forces it off with the rest of the set,
+  and `--no-situation-brief` narrows it per run. Recording is not levered.
+  Six things to keep. **The words are `brief::render`'s, and R21 is decided
+  there, field by field:** budget facts are numbers (turns, token and cost
+  ceilings, the window and the compaction point); the board's counts and
+  task ids are pointers off the harness's own read and appear as they are;
+  the commitments — the stores the charter's sensors read — are band words
+  ("a few", "several"), age bands ("over a week") and past the owner's
+  patience or not, so that line prints **no number of its own** (no count,
+  age, patience or owed tally — the only digits it can hold are in the
+  charter line id it points at, the owner's spelling); a served line's rank
+  is "the owner's
+  highest-ranked" or not, never its position; the quiet hours are inside or
+  outside, not their bounds; the time of day is a band; a voice call is in
+  progress or not, not its seconds. **Unknown is said**: a field its reader
+  could not read renders "could not be read", a field not on the record
+  says so, a floor says "at least" and a seat reading with an unparseable
+  file "at most" — never "none" or a zero. Two things are left out by rule
+  rather than said: `/slots` for a provider that is not a local
+  llama-server, and the context already used when no prompt has been
+  measured. **The slot is `date_context`'s**: `Agent::fold_situation_brief`
+  runs beside `fold_calendar_reference` at each of its three sites (top of
+  the turn, after compaction, and the overflow-recovery retry), appending
+  through `append_user_text` to the outgoing user message — the run's own
+  first user turn at the start, never a second user message and never the
+  system prompt or tools, so the cached prefix is the same bytes with the
+  lever on and off (`the_brief_rides_the_user_turn_and_the_cached_prefix_is_the_same_bytes_on_and_off`).
+  The block is `brief::block` — the words behind a blank line, because the
+  OpenAI-compatible encoder joins a message's text blocks with nothing
+  between them. **The decision is an equality check against the latest
+  brief in the transcript** (user-role only), where the calendar checks for
+  its block anywhere — a situation can return where a date cannot. So one
+  run folds once; a long-lived conversation (a web chat, handed a fresh
+  brief per turn) folds only when the words changed — time, voice, context
+  used and model-server occupancy are bands, so their drift re-folds
+  nothing, while the board, seat holders and runs in flight are exact, so a
+  task starting or ending re-folds (a change a run acts on; review of #309
+  banded `/slots`, which had re-folded on every occupancy wobble); and
+  every fold is append-only, so each request stays a prefix of the next.
+  Seat holders and run names are cut to one token each in the words, on
+  `GoalRef::from_str`'s rule — the graph server mints task ids, which reach
+  a permit and a marker unparsed, and a newline would have forged a line
+  in the harness's block (review of #309); the record keeps them verbatim. **Across a compaction cut** the
+  brief is the calendar reference's twin: `compact::rebuild` strips it from
+  the head, the summariser's input drops it outright (a summary asked for
+  "the specific values" would copy its counts into the head as prose no
+  stem can strip), and the fold after the cut puts the run's brief back in
+  the tail; its header says it describes the run's start.
+  **`brief::BRIEF_STEM` is the seventh harness voice** in
+  `agent::is_harness_voice`, so the title, the web transcript, replay and
+  the learning miners never read it as the owner. **`mecha run` records and
+  delivers one too** (3a): an experiment's trial is a `mecha run`, and
+  without a brief there the lever's two arms were one condition; it assembles
+  when the run is recorded or delivery is on, with the interactive board
+  deadline at a terminal. The artifact-repeat probe refuses a recording
+  whose transcript holds a brief (`mismatch::validate_transcript` — asked of
+  the transcript, because a recording from before the lever cannot name it
+  in `levers_off`, and requiring that refused every stored case; review of
+  #309), and runs with delivery off and `cx.brief` cleared, structurally.
+  Seat counts ("1 of 3 free") are a numeric resource fact beside the budget:
+  a capacity the harness sets and how much of it is held, with no setpoint
+  and no score to move. **Delivery arms no taint today, and whether it should
+  is the owner's open question** (review of #309). The untrusted axis has
+  nothing to key on: nothing in the words came from outside — no board
+  row's prose, no server's error text; `board_of` narrows every value and
+  the render drops even the `why`. The private axis is the question. With
+  the lever on, board ids, commitment bands, the owner's quiet hours, seat
+  holders and runs in flight enter the conversation without arming
+  `private`, where fetching the same through `kg_task_list` arms it — so a
+  run that later arms `untrusted` could encode them into an `Egress::Chosen`
+  destination the interlock would otherwise refuse. The precedents cut both
+  ways: the charter block and a delegated task's own prompt (its name
+  included) ride unarmed; a `kg_*` read arms. Arming on delivery would make
+  every lever-on run start half-armed, so an arm would measure interlock
+  friction beside the brief. The lever ships off, so nothing is exposed
+  until the owner rules, and the ruling belongs in `docs/TRIFECTA.md`.
+  **Every stale brief says it is superseded**: a web chat can hold several,
+  with no instants to rank them and no system-prompt guidance possible
+  without touching the prefix, so each block's header says a later brief in
+  the conversation replaces it (review of #309). `mecha run --json` at a
+  terminal counts as unattended and takes the 10s board deadline, so a hung
+  graph server can add up to that to a recorded scripted one-shot's start. **Latency is unchanged by delivery**: each door
+  assembles once per run (the web door once per turn, inside the joined 2s
+  window 1h set), and the render is a pure function over the record — now
+  that the brief is read, the 2s bound is what a person pays for it, and
+  still the right one. **A fold writes a `Record::Rewrite`, as the
+  calendar's does, and more often** (review of #309): every door records the
+  owner's message before the run, and the fold then edits that message, so
+  `record_transition`'s prefix check fails and the whole transcript is
+  written again — with `taint_checkpoints` cleared, so a clean early turn
+  classifies untrusted for `mecha learn` (§Timezones: "that record is not
+  cosmetic"). The calendar does this once a day; the brief does it on every
+  turn whose words changed, which on a web chat moving the board is most
+  turns — a transcript copy per turn and the taint timeline collapsed to
+  cumulative. It over-taints, never under, and the lever ships off; the fix
+  is 3a-3, having the door record the folded message (or a record that
+  appends blocks to the last message) so a fold is an append, and it is
+  owed before the lever ships on. *Deferred:* a re-delegated task's previous attempts
+  (M5, to 3a-2 — no existing record lists them), and a brief on the TUI,
+  `chat`, Slack and unhosted voice turns.
 - **The doctor reads against the owner's number, and names the line.**
   `doctor::Patience` is the harness constant (48h drafts, 24h questions, 72h
   requests) or the setpoint of the charter line whose sensor watches that
@@ -4878,8 +4985,15 @@ carries one built by the real producers over a 2,917-row board, the run
 carries it on `RunContext::brief`, the test asserts it lands on the record
 whole, and the scan adds its JSON, every field's JSON, its pointers, its
 counts, its local time and its voice reading — leaving out the zone name and
-weekday, which `date_context` already sends. When phase 3 delivers the brief,
-this scan is where its words are checked for numbers R21 does not allow.
+weekday, which `date_context` already sends. Since 3a the run test runs
+twice. With delivery off every rendering of the brief is a leak — its words
+and stem among them. With delivery on (`a_delivered_brief_carries_words_and_no_sensor_number_to_either_encoder`)
+the words, stem, pointers and board counts may pass, and exactly one brief
+block rides the first user message of every request (run two resumes a
+transcript that already states it); every sensor number, setpoint, guilt and
+valence, each commitment's count and age as the brief records them, the
+brief's local instant and its voice seconds still fail the scan. The control
+catches the words and the commitment numbers in either slot too.
 
 **Context retrieval preserves scope and provenance.** `goal_context` is private,
 on demand, and bounded to four active applicable rules and two historical examples.
@@ -5953,6 +6067,13 @@ The things that decide the design:
   included, alone, so the next threshold check tries again. A run that hits
   that wall every turn will eventually overflow; the fallback that keeps the
   old block is the next thing to build if a session ever reports it.
+- **Harness readings are re-stated after a cut, never summarised.** The
+  calendar reference and the situation brief (3a) are the harness's readings,
+  not events in the stretch: the summariser's input drops both outright,
+  `rebuild` strips both from the head, and the loop's folds after the cut put
+  the current ones back in the tail (§Timezones; the goal system's brief
+  bullets). A summariser handed either copies its values into the head as
+  prose no stem can strip.
 - **Stale results are evicted before anything is summarised.**
   `evict_superseded_results` runs first at both compaction sites (threshold
   and overflow recovery): when a later call covers the same target — the same
