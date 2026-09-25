@@ -30,8 +30,8 @@ Incognito: the design (#307) and step 0 (#313) are merged and installed;
 record of where it stands. What remains after it, in the design's order
 (§9): step 4, ComfyUI's temp-file cleanup, until which `image_generate`
 stays withheld from an incognito chat (R6); step 5, the page (a
-New-incognito button, the banner, End, the locked permission chip, the
-search notice, no voice); step 6, the canary test carried through the
+New-incognito button, the banner, End, the locked permission chip, no
+voice — the search notice is step 3's, inside #321); step 6, the canary test carried through the
 page; and step 7, unrecorded reads in
 mecha-graph (another repository), until which the graph stays withheld —
 every graph read logs its query text. Parked for the owner: a reload
@@ -1571,7 +1571,9 @@ is exactly the set holding a long-lived process.
   clears them — incognito's step 4 builds on it. `[image] url` in
   `~/.mecha/config.toml` points at it; with the unit down, `image_generate`
   fails and nothing else notices. A generation holds 12–15 GB of the same
-  unified memory llama-server uses, so read `MemAvailable` first.
+  unified memory llama-server uses, so read `MemAvailable` first; the tool
+  asks the server to unload after `[image] unload_after_secs` (default 600),
+  so the weights are not held for the life of the unit.
 - **The local model server is `llama-local.service`** (systemd user, enabled,
   `scripts/start-moe-mtp.sh`, qwen3.6-35b-a3b on 127.0.0.1:8080). **It became a
   unit on 2026-08-19 and the reason generalises.** Before that it was only ever
