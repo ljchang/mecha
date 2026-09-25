@@ -714,7 +714,10 @@ and a manifest refuses it in either direction). Later additions:
 `predictive_compaction` and `carried_state` got their switches, and
 `situation_brief` (`APPRAISAL-WIRING-DESIGN.md` 3a) delivers the recorded
 situation brief into the run's first user turn — it ships off, so its arm is
-`levers_on = ["situation_brief"]` against a control that leaves it off. `plan_reinjection`,
+`levers_on = ["situation_brief"]` against a control that leaves it off;
+`past_appraisals` (2c-2) likewise ships off and is measured as
+`levers_on = ["past_appraisals"]`, over an environment whose `appraisals/`
+directory is seeded into each home. `plan_reinjection`,
 `declared_checks` and `appraiser` are not levers until their switch
 exists. The stage levers as built are `reflect`, `learn`, `validate`,
 `retire`, `ruminate` and `sensors_in_brief` (`experiment::StageLever`).
