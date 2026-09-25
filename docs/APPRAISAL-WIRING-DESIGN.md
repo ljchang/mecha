@@ -720,6 +720,17 @@ install.
   stabilised; until then the saturation withdrawal above is what keeps a
   stale queue from becoming a constant input.
 
+*Built as 1e:* `reading::Items` beside the level, `LineReading::delta` and
+`BacklogDelta::flow` at run end, `withdrawn` through
+`Homeostat::in_run_readings`, and `reading::saturated` as the one
+definition the doctor's finding and the withdrawal share; the readout is
+`charter_readings` in `sessions health` (`docs/ARCHITECTURE.md`, "A
+consumer reads a line per item and per run"). One gap against the text
+above: `Decision` reads the per-item form but not the run's delta, which
+exists only once the run has finished — a mid-run delta would put a store
+read in every plan write. It is recorded for the consumers that read a
+finished run (the appraisal, 1f's per-commitment guilt).
+
 #### S7. Guilt is goal error toward another party, not its own system
 
 **Today, guilt is computed four ways by four pieces of code:**
