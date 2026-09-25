@@ -2013,6 +2013,7 @@ fn config_switch(lever: Lever) -> Option<fn(&mut crate::config::Config) -> &mut 
         Lever::PredictiveCompaction => Some(|c| &mut c.agent.predictive_compaction),
         Lever::CarriedState => Some(|c| &mut c.agent.carried_state),
         Lever::SituationBrief => Some(|c| &mut c.agent.situation_brief),
+        Lever::PastAppraisals => Some(|c| &mut c.agent.past_appraisals),
         Lever::Messages => Some(|c| &mut c.messages.enabled),
         Lever::Mcp
         | Lever::LearnedRules
@@ -3083,6 +3084,7 @@ pub fn child_invocation(
             Lever::PredictiveCompaction => config.agent.predictive_compaction = false,
             Lever::CarriedState => config.agent.carried_state = false,
             Lever::SituationBrief => config.agent.situation_brief = false,
+            Lever::PastAppraisals => config.agent.past_appraisals = false,
             Lever::Messages => {
                 config.messages.enabled = false;
                 flags.push("--no-messages".into());
@@ -3208,13 +3210,16 @@ pub fn fold_home_overrides(
 const SEEDED_FROM: &str = ".seeded-from";
 
 /// The stores a lever left *on* reads: the learning store (rules and
-/// reflections), the skills directory, the charter. A fresh trial home has
+/// reflections), the skills directory, the charter, and the appraisal store
+/// `goal_context` serves past clean appraisals from (`Lever::PastAppraisals`,
+/// 2c-2) — without which that lever's arm and its control would be one
+/// condition under two names. A fresh trial home has
 /// none, so `full` would have meant "the machine's `[agent]` switches and
 /// nothing else" (found on review). Seeded once, when the arm's home is
 /// first created, from the experiment's environment directory
 /// (`trial_env`) — never written back, and since 2026-09-23 never the real
 /// home, whose copy carried the operator's world in with it.
-pub const SEEDED: [&str; 3] = ["learning", "skills", "charter.toml"];
+pub const SEEDED: [&str; 4] = ["learning", "skills", "charter.toml", "appraisals"];
 
 pub fn seed_home(real: &Path, home: &Path) -> Result<()> {
     for name in SEEDED {
@@ -3767,8 +3772,13 @@ rationale = "no notice, fewer turns"
         .unwrap();
         std::fs::write(real.join("charter.toml"), b"[[line]]\n").unwrap();
         std::fs::write(real.join("config.toml"), b"default_provider = \"x\"\n").unwrap();
+        // The appraisal store `past_appraisals` reads (2c-2): without it the
+        // lever's arm and the control are one condition.
+        std::fs::create_dir_all(real.join("appraisals")).unwrap();
+        std::fs::write(real.join("appraisals").join("appraisals.jsonl"), b"{}\n").unwrap();
         let home = root.join("home");
         seed_home(&real, &home).unwrap();
+        assert!(home.join("appraisals").join("appraisals.jsonl").is_file());
         assert!(home.join("learning").join("rules.jsonl").is_file());
         assert!(home
             .join("skills")
@@ -3939,6 +3949,7 @@ rationale = "no notice, fewer turns"
         real.agent.predictive_compaction = false;
         real.agent.carried_state = false;
         real.agent.situation_brief = false;
+        real.agent.past_appraisals = false;
         real.messages.enabled = false;
         let names = [
             "step_escalation",
@@ -3949,6 +3960,7 @@ rationale = "no notice, fewer turns"
             "predictive_compaction",
             "carried_state",
             "situation_brief",
+            "past_appraisals",
             "messages",
         ];
         let arm = Arm {
@@ -3965,6 +3977,7 @@ rationale = "no notice, fewer turns"
         assert!(c.agent.predictive_compaction);
         assert!(c.agent.carried_state);
         assert!(c.agent.situation_brief);
+        assert!(c.agent.past_appraisals);
         assert!(c.messages.enabled);
 
         // Unnamed switches still inherit the operator's value.
