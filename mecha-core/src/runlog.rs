@@ -538,6 +538,60 @@ impl Corpus {
     /// (`APPRAISAL-WIRING-DESIGN.md` S1) is readable beside the share an
     /// owner confirmed by hand. Only kinds that occur appear; an anchor this
     /// build cannot read is not in `anchored` either, so the two agree.
+    /// Each sensored charter line's readings across the corpus, level and
+    /// per item side by side — the phase-1 readout "per-item reading
+    /// variance" (`APPRAISAL-WIRING-DESIGN.md` §3, S5). A line whose level
+    /// reads past its setpoint on every row while its per-item reading
+    /// varies is exactly the constant S5 replaces; one whose per-item
+    /// variance is zero too has not moved at all. Keyed by line id, in id
+    /// order; a line no row read is absent, never a row of zeros.
+    pub fn reading_variation(&self) -> Vec<LineVariation> {
+        // Keyed by sensor — line, kind, setpoint spelling — as the saturation
+        // streak is: an edited setpoint is another sensor, and pooling the two
+        // would put two denominators under one count (found on review).
+        #[allow(clippy::type_complexity)]
+        let mut by_line: BTreeMap<(&str, &str, &str), Vec<&crate::reading::LineReading>> =
+            BTreeMap::new();
+        for row in &self.rows {
+            let Some(readings) = row
+                .stats
+                .homeostat
+                .as_ref()
+                .and_then(|h| h.charter.as_ref())
+            else {
+                continue;
+            };
+            for r in readings {
+                by_line
+                    .entry((r.line.as_str(), r.kind.wire(), r.setpoint.as_str()))
+                    .or_default()
+                    .push(r);
+            }
+        }
+        by_line
+            .into_iter()
+            .map(|((line, kind, setpoint), rs)| {
+                let items: Vec<&crate::reading::Items> =
+                    rs.iter().filter_map(|r| r.items.as_ref()).collect();
+                let deltas: Vec<crate::backlog::Flow> = rs.iter().filter_map(|r| r.delta).collect();
+                LineVariation {
+                    line: line.to_string(),
+                    kind: kind.to_string(),
+                    setpoint: setpoint.to_string(),
+                    runs: rs.len(),
+                    informative: rs.iter().filter(|r| r.reading.over().is_some()).count(),
+                    level_over: rs.iter().filter(|r| r.reading.over() == Some(true)).count(),
+                    per_item_runs: items.len(),
+                    waiting_variance: variance(items.iter().map(|i| i.waiting as f64)),
+                    over_variance: variance(items.iter().map(|i| i.over as f64)),
+                    delta_runs: deltas.len(),
+                    moved_runs: deltas.iter().filter(|d| d.moved()).count(),
+                    withdrawn_runs: rs.iter().filter(|r| r.withdrawn).count(),
+                }
+            })
+            .collect()
+    }
+
     pub fn anchored_by_kind(&self) -> BTreeMap<&'static str, usize> {
         let mut out = BTreeMap::new();
         for row in self.anchored() {
@@ -754,6 +808,48 @@ fn exhaustive(record: &Record) {
     }
 }
 
+/// One sensored line across the corpus ([`Corpus::reading_variation`]).
+/// Every count names its own denominator; a variance over fewer than two
+/// per-item rows is `None`, never `0.0` — "did not vary" and "was not
+/// read often enough to say" are different answers.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct LineVariation {
+    pub line: String,
+    /// The sensor the rows read, as recorded: a line whose setpoint was
+    /// edited appears once per spelling.
+    pub kind: String,
+    pub setpoint: String,
+    /// Rows that recorded any reading of the line.
+    pub runs: usize,
+    /// Of those, rows whose level said something (`Reading::over` is
+    /// `Some`) — the saturation streak's own population.
+    pub informative: usize,
+    /// Of those, rows whose level read past the setpoint.
+    pub level_over: usize,
+    /// Rows that recorded the per-item form.
+    pub per_item_runs: usize,
+    /// Population variance of the per-item `waiting` count.
+    pub waiting_variance: Option<f64>,
+    /// Population variance of the per-item count past the setpoint.
+    pub over_variance: Option<f64>,
+    /// Rows that recorded the run's per-item delta.
+    pub delta_runs: usize,
+    /// Of those, rows in which the queue moved — an item added or cleared.
+    pub moved_runs: usize,
+    /// Rows on which the line was withdrawn from the run as saturated.
+    pub withdrawn_runs: usize,
+}
+
+/// Population variance, or `None` under two values.
+fn variance(values: impl Iterator<Item = f64>) -> Option<f64> {
+    let v: Vec<f64> = values.collect();
+    if v.len() < 2 {
+        return None;
+    }
+    let mean = v.iter().sum::<f64>() / v.len() as f64;
+    Some(v.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / v.len() as f64)
+}
+
 /// The goal-anchor sensor's totals (`GOAL-SYSTEM-DESIGN.md` §17.7 item 4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GoalTotals {
@@ -841,6 +937,89 @@ mod workspace_tests {
         // "from no sessions", making a well-sampled rate look like it came
         // from nowhere.
         assert_eq!(by[&PathBuf::from("/tmp")].sessions_read, 3);
+    }
+
+    /// The phase-1 readout S5 first produces: a line whose level reads past
+    /// its setpoint on every run, beside a per-item reading that varies and
+    /// a queue that moved. One row is not enough for a variance.
+    #[test]
+    fn reading_variation_sets_a_pinned_level_beside_a_moving_per_item_reading() {
+        use crate::backlog::Flow;
+        use crate::reading::{Items, LineReading, Observed, Reading};
+        let reading = |waiting: u64, delta: Option<Flow>, withdrawn: bool| {
+            let mut r = row("/tmp", "m");
+            r.stats.homeostat = Some(crate::homeostat::Homeostat {
+                charter: Some(vec![LineReading {
+                    line: "replies".into(),
+                    kind: crate::charter::SensorKind::OutboxAge,
+                    setpoint: "24h".into(),
+                    reading: Reading::Observed {
+                        value: Observed::Seconds(432_000),
+                        over: true,
+                        excess: 0.8,
+                    },
+                    items: Some(Items {
+                        waiting,
+                        over: 1,
+                        ..Default::default()
+                    }),
+                    delta,
+                    withdrawn,
+                }]),
+                ..Default::default()
+            });
+            r
+        };
+        let moved = Flow {
+            added: 2,
+            cleared: 0,
+        };
+        let corpus = Corpus {
+            rows: vec![
+                reading(4, Some(moved), false),
+                reading(6, Some(Flow::default()), true),
+                reading(2, None, true),
+                row("/tmp", "m"),
+            ],
+            ..Default::default()
+        };
+        let v = corpus.reading_variation();
+        assert_eq!(v.len(), 1);
+        let v = &v[0];
+        assert_eq!((v.runs, v.informative, v.level_over), (3, 3, 3));
+        assert_eq!(v.per_item_runs, 3);
+        // Waiting 4, 6, 2: mean 4, variance 8/3. Over is pinned at one.
+        assert!((v.waiting_variance.unwrap() - 8.0 / 3.0).abs() < 1e-9);
+        assert_eq!(v.over_variance, Some(0.0));
+        assert_eq!((v.delta_runs, v.moved_runs, v.withdrawn_runs), (2, 1, 2));
+
+        assert_eq!(
+            (v.kind.as_str(), v.setpoint.as_str()),
+            ("outbox_age", "24h")
+        );
+        // An edited setpoint is another sensor: its row is its own entry.
+        let mut edited = corpus.clone();
+        let mut r = reading(9, None, false);
+        r.stats
+            .homeostat
+            .as_mut()
+            .unwrap()
+            .charter
+            .as_mut()
+            .unwrap()[0]
+            .setpoint = "48h".into();
+        edited.rows.push(r);
+        let split = edited.reading_variation();
+        assert_eq!(split.len(), 2);
+        assert_eq!(split[0].runs, 3, "24h keeps its own rows");
+        assert_eq!((split[1].setpoint.as_str(), split[1].runs), ("48h", 1));
+
+        let one = Corpus {
+            rows: vec![reading(4, None, false)],
+            ..Default::default()
+        };
+        assert_eq!(one.reading_variation()[0].waiting_variance, None);
+        assert!(Corpus::default().reading_variation().is_empty());
     }
 }
 
