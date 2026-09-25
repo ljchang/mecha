@@ -38,10 +38,10 @@ is in HISTORY under 2026-09-24/25. `mecha` is installed at `0692dc79`
 (20:37Z), which carries all of it but #317 (*Machine state, dated* below). Six owner rulings of 2026-09-25 are rows R30–R35 of the design's
 §6. What is open, the follow-ups owed, the minors banked for the owner and
 the `CLAUDE.md` drift are at the top of *The goal system* below.
-The workspace on this branch merged with `0692dc79` (no code differs from
+The workspace on this branch merged with `8b0acbe8` (no code differs from
 `main`): `cargo test --workspace -q`, summed over its 32 `test result`
-lines, gives 3,136 passed, 0 failed, 4 ignored (3,145 at `6e6f03ba`; #313 and
-#315 changed the set since).
+lines, gives 3,142 passed, 0 failed, 4 ignored (3,145 at `6e6f03ba` and
+3,136 at `0692dc79`; #313, #315 and #317 changed the set).
 
 **2026-09-24 — the outbox unclogged: a reply goes from its thread's account,
 and the web review reads as mail and sends in one press.** #272
