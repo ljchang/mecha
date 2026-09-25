@@ -177,6 +177,28 @@ or checking before proceeding does not establish that the original forecast was
 wrong. Silence after delivery is not evidence of success. Retrospective guilt
 and embarrassment can occur even when the earlier check passed.
 
+## How well the predictions held up
+
+`mecha sessions appraise` scores every prediction in the outbox once an
+outcome resolves it. The scores are grouped by the response the assessment
+chose (`proceed`, `verify`, `clarify`, `replan`) and by each concern it named.
+A scored prediction either had its concern materialise (you recorded an
+exposed error, a harm or a missed expectation) or went out clean.
+
+- **Clean needs a confirmed delivery.** Either the send was acknowledged, or
+  you reconciled it with `mecha outbox reconcile`. A "no issue" on a draft
+  whose delivery was never confirmed waits as `delivery_unconfirmed`.
+- **Every other prediction is shown as coverage**, never as a score: not
+  sent, awaiting your outcome, delivery unknown, changed, reassessed,
+  abandoned or unsupported.
+- **A rate appears only where there is something to rate.** Until you record
+  outcomes, the readout shows coverage alone, and `materialized_rate` is
+  `null` in `--json`.
+
+```text
+  anticipation's predictions: 3 scored of 14 (proceed 1/5 scored, concern materialised 0% · verify 2/2 scored, concern materialised 50% · clarify 0/7 scored, no rate) · not yet a point: 1 awaiting the owner's outcome, 1 not sent, …
+```
+
 ## Where this is available
 
 Supplying evidence (`mecha run --appraisal-evidence`), assessing a draft
