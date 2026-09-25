@@ -125,6 +125,35 @@ impl GoalRef {
     pub fn parse_lenient(s: &str) -> Option<GoalRef> {
         s.parse().ok()
     }
+
+    /// The kind alone, as a closed set — what a record keys on when it must
+    /// not carry the id (`comparison::Comparison::goal_kind`).
+    pub fn goal_kind(&self) -> GoalKind {
+        match self {
+            GoalRef::Charter(_) => GoalKind::Charter,
+            GoalRef::Project(_) => GoalKind::Project,
+            GoalRef::Task(_) => GoalKind::Task,
+            GoalRef::Setpoint(_) => GoalKind::Setpoint,
+            GoalRef::Trigger(_) => GoalKind::Trigger,
+            GoalRef::Request(_) => GoalKind::Request,
+        }
+    }
+}
+
+/// [`GoalRef`]'s kind without its id. Spelled on the wire exactly as
+/// [`GoalRef::kind`] spells it; a kind a newer build wrote loads as
+/// `Unknown` rather than failing the record around it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalKind {
+    Charter,
+    Project,
+    Task,
+    Setpoint,
+    Trigger,
+    Request,
+    #[serde(other)]
+    Unknown,
 }
 
 /// Serialised as the same `kind:id` string the model writes, never as an
@@ -356,6 +385,29 @@ impl FromStr for GoalRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The kind word is spelled the same on both wires, for every kind; one
+    /// a newer build wrote loads as `Unknown`.
+    #[test]
+    fn a_goal_kind_is_spelled_as_its_reference_spells_it() {
+        for g in [
+            "task:t",
+            "charter:c",
+            "project:p",
+            "setpoint:s",
+            "trigger:m",
+            "request:1",
+        ] {
+            let r: GoalRef = g.parse().unwrap();
+            assert_eq!(
+                serde_json::to_value(r.goal_kind()).unwrap(),
+                serde_json::json!(r.kind()),
+                "{g}"
+            );
+        }
+        let later: GoalKind = serde_json::from_str("\"ambition\"").unwrap();
+        assert_eq!(later, GoalKind::Unknown);
+    }
 
     /// A trigger- or request-anchored run's plan can never name its
     /// anchor, so no plan write under it is judged (review of #292).

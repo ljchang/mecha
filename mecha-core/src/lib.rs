@@ -58,6 +58,7 @@ pub mod charter;
 pub mod clock;
 pub mod closure;
 pub mod compact;
+pub mod comparison;
 pub mod config;
 pub mod counterfactual;
 pub mod cron;
