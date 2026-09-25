@@ -1128,8 +1128,9 @@ pub struct ClosedGoals {
     /// Active rules, user and learned, whose scope names a closed goal:
     /// `(domain, id or text, why)`.
     pub rules: Vec<(String, String, String)>,
-    /// Reflections still waiting to be learned from — unprocessed and not
-    /// dropped — whose situation names a closed goal. A rule minted from a
+    /// Reflections still waiting to be learned from — unprocessed, not
+    /// dropped, and past the provenance gate — whose situation names a
+    /// closed goal. A rule minted from a
     /// batch of them loads nowhere from birth.
     pub reflections: usize,
     /// Goals the stores could not answer for, once each, with why.
@@ -1172,7 +1173,9 @@ impl LearningStore {
             }
         }
         for r in self.reflexions()? {
-            if r.is_processed || r.dropped_at.is_some() {
+            // What `learn` could mint a rule from: unprocessed and past its
+            // gate (`learnable` checks the owner's drop and provenance).
+            if r.is_processed || !r.learnable() {
                 continue;
             }
             if let Some(goal) = r.situation.as_ref().and_then(|s| s.goal.clone()) {

@@ -629,10 +629,10 @@ impl GoalKey {
 
     /// Whether the goal this key names is still live, read against the
     /// stores that own it. A task is closed when its board status is
-    /// closed (`closure::is_closed_status`) or it is not on an untruncated
-    /// board read with its closed rows; a trigger when its file is gone or
-    /// it is disabled. Anything a store could not answer is
-    /// [`GoalLiveness::Unknown`], never open.
+    /// closed (`closure::is_closed_status`); a task the board does not
+    /// carry is unknown, since an answer can be short without saying so. A
+    /// trigger is closed when its file is gone or it is disabled. Anything
+    /// a store could not answer is [`GoalLiveness::Unknown`], never open.
     pub fn liveness(
         &self,
         board: &Result<BoardStatuses, String>,
@@ -657,10 +657,17 @@ impl GoalKey {
                     Some(status) => GoalLiveness::Unknown(format!(
                         "the board gives {goal} the status `{status}`, which this build does not know"
                     )),
+                    // Absent is not closed: an answer can be short in a
+                    // way its envelope does not say (a cap without
+                    // `truncated`), the lesson `tasks::project_closed_by`
+                    // already paid for (found on review). A task removed
+                    // from the board stays a finding the owner can read.
                     None if board.truncated => GoalLiveness::Unknown(format!(
                         "{goal} is not in a truncated board answer"
                     )),
-                    None => GoalLiveness::Closed(format!("{goal} is not on the board")),
+                    None => GoalLiveness::Unknown(format!(
+                        "{goal} is not on the board — removed, or an answer shorter than it said"
+                    )),
                 }
             }
             GoalRef::Trigger(name) => match trigger(name) {
@@ -1177,14 +1184,15 @@ mod tests {
             live("task:t-odd", &board),
             GoalLiveness::Unknown(_)
         ));
+        // Absent is unknown, not closed: an answer can be short without
+        // saying so (`tasks::project_closed_by`'s lesson).
         assert!(
-            matches!(live("task:t-gone", &board), GoalLiveness::Closed(w) if w.contains("not on the board"))
+            matches!(live("task:t-gone", &board), GoalLiveness::Unknown(w) if w.contains("not on the board"))
         );
-        // A row with no status is not a status: absent from what was read,
-        // and on a whole board that reads as gone.
+        // A row with no status is not a status: absent from what was read.
         assert!(matches!(
             live("task:t-nostatus", &board),
-            GoalLiveness::Closed(_)
+            GoalLiveness::Unknown(_)
         ));
         // A truncated board cannot say a task is gone.
         let truncated =

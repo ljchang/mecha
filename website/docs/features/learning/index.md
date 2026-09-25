@@ -184,7 +184,9 @@ widens only when the same lesson is learned toward another goal. Until then it
 loads nowhere, and `mecha rules` says so: a count at the top, and
 `LOADS NOWHERE` with the reason beside each such rule (`goal_closed` in
 `--json`). `mecha learn` repeats the count on every pass. If the board cannot be
-read, both say that whether those rules are dark is unknown.
+read, or no longer carries the task, both say that whether those rules are dark
+is unknown. The terminal commands read the board; the TUI and the web settings
+page do not wait on it, so there a task goal reads as unknown.
 
 ### Choose how changes go live
 
