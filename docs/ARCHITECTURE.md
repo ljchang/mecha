@@ -5250,8 +5250,12 @@ the owner's** (row 2b-2, R33, R37).
   re-score it. A miss is `surprise: true` beside the appraisal's `clean`,
   situation and anchor, so a reader that acts (2e-6's priority) can take
   clean ones only.
+- **Task and workflow outputs have no store patience.** No charter sensor
+  kind watches the board or the workflow store, so a session whose output
+  is a task or workflow gets the constant too.
 - **Who writes and who reads.** `mecha distill` scores what has resolved
-  each pass, with no model call. `sessions appraise` reads coverage
+  on every writing pass — even one with nothing to distill or with the
+  graph down, since windows close on quiet nights — with no model call. `sessions appraise` reads coverage
   (`expectations` in `--json`), and `hit_rate` is `None` over no scores.
 
 **The counts-only appraiser is retired into it** (row 2a-3, R25). Before,

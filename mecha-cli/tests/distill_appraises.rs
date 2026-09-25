@@ -403,6 +403,16 @@ async fn distill_appraises_each_session_once_behind_the_right_door() {
     assert_eq!(owner.len(), 3, "one appraisal per session");
     server.abort();
 
+    // A quiet night — nothing left to distill, and no model to ask — still
+    // scores the appraisals' predictions: R37's windows close on nights
+    // like this (review of #324).
+    let quiet = ok(&mecha(&home, &work, &["distill"]).await, "distill");
+    assert!(quiet.contains("nothing to distill"), "{quiet}");
+    assert!(
+        quiet.contains("appraisals' predictions: 0 scored of 3"),
+        "{quiet}"
+    );
+
     // The owner's readout: the prose, with its taint label.
     let shown = ok(
         &mecha(

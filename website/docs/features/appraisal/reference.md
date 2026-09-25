@@ -519,8 +519,8 @@ changes or adds to it.
 - **"No act" becomes the answer only after a waiting period.** The clock
   starts when the session ends. If the session staged drafts, the wait is
   the outbox's patience: your charter line on the outbox, or 48 hours if you
-  have none. Otherwise it is 48 hours. An act after the wait does not
-  count.
+  have none. Otherwise it is 48 hours, including when the output is a
+  task or workflow. An act after the wait does not count.
 - **An unreadable store is never read as "no act".** If the outbox, the
   closure record, the workflows, or the charter the patience comes from
   cannot be read, the answer stays unknown.

@@ -1268,10 +1268,14 @@ impl Summary {
 // ─── The appraisal's own prediction, scored (X5, R33, R37; row 2b-2) ──────
 
 /// The window before "no act" becomes the act that happened, for an output
-/// with no store to take its patience from — a chat answer, a run that
-/// staged nothing. R37: "the doctor's constant"; the doctor's constant for
-/// an output waiting on the owner is the outbox's (`doctor::Patience`,
-/// `48h`), and it is the one used here.
+/// with no store patience to take — a chat answer, a run that staged
+/// nothing, **and a task or workflow the session worked**: the board and
+/// the workflow store carry no `doctor::Patience` (no charter sensor kind
+/// watches either), so a `closed` or `reopened` output resolves here too,
+/// and a closure after it is not the act (review of #324; R37 as ruled,
+/// flagged for the owner to confirm). R37: "the doctor's constant"; the
+/// doctor's constant for an output waiting on the owner is the outbox's
+/// (`doctor::Patience`, `48h`), and it is the one used here.
 pub const NO_STORE_PATIENCE_HOURS: i64 = 48;
 
 /// What the owner did with a session's output, as the stores that record
@@ -1316,20 +1320,16 @@ pub struct OwnerActs<'a> {
 fn patience_for(
     has_drafts: bool,
     acts: &OwnerActs<'_>,
-) -> std::result::Result<(chrono::Duration, String, Option<String>), String> {
+) -> std::result::Result<chrono::Duration, String> {
     if !has_drafts {
-        return Ok((
-            chrono::Duration::hours(NO_STORE_PATIENCE_HOURS),
-            format!("{NO_STORE_PATIENCE_HOURS}h"),
-            None,
-        ));
+        return Ok(chrono::Duration::hours(NO_STORE_PATIENCE_HOURS));
     }
     if acts.charter_unreadable {
         return Err("the charter could not be read, so the outbox's patience is unknown".into());
     }
-    let p = crate::doctor::Patience::for_store(acts.charter, crate::charter::SensorKind::OutboxAge)
-        .ok_or("the outbox has no patience")?;
-    Ok((p.after, p.text, p.line))
+    crate::doctor::Patience::for_store(acts.charter, crate::charter::SensorKind::OutboxAge)
+        .map(|p| p.after)
+        .ok_or_else(|| "the outbox has no patience".into())
 }
 
 /// The owner's act on `session_id`'s output, within R37's window opened at
@@ -1414,7 +1414,7 @@ pub fn observe(
             }
         }
     }
-    let (patience, _, _) = match patience_for(!drafts.is_empty(), acts) {
+    let patience = match patience_for(!drafts.is_empty(), acts) {
         Ok(p) => p,
         Err(why) => return ObservedAct::Unknown { why },
     };
@@ -1518,8 +1518,11 @@ pub struct ScoreSummary {
     pub surprises: usize,
     /// Of the surprises, those on clean appraisals.
     pub clean_surprises: usize,
-    /// Expectations whose window is still open.
+    /// Expectations whose window is still open and no act has arrived.
     pub pending: usize,
+    /// Expectations that have resolved — an act, or the window closed —
+    /// and are not yet written: the next `mecha distill` pass scores them.
+    pub resolved_unwritten: usize,
     /// Expectations whose answer could not be read.
     pub unknown: usize,
     /// `hits / scored`; `None` over no scores.
@@ -1656,9 +1659,8 @@ impl AppraisalStore {
             let ended_at = row.session_ended_at.unwrap_or(row.at);
             match observe(&row.session_id, ended_at, acts, now) {
                 ObservedAct::Unknown { .. } => s.unknown += 1,
-                // Resolved but not yet written — the next pass scores it;
-                // until then it waits, like an open window.
-                _ => s.pending += 1,
+                ObservedAct::Pending { .. } => s.pending += 1,
+                ObservedAct::Act { .. } | ObservedAct::NoAct { .. } => s.resolved_unwritten += 1,
             }
         }
         s.hit_rate = (s.scored > 0).then(|| s.hits as f64 / s.scored as f64);
@@ -2609,6 +2611,47 @@ mod tests {
                 window_closed_at: end + hours(48)
             }
         );
+        // A task the session worked, closed by the owner: the board has no
+        // store patience, so the constant bounds it — a closure at 47h is
+        // the act, one at 49h is not (R37 as ruled; flagged to confirm).
+        let close = |at: DateTime<Utc>| crate::closure::Transition {
+            at,
+            ..serde_json::from_value(json!({
+                "id": "cl-1", "task": "task-1", "from": "next", "to": "done",
+                "move": "close", "actor": "owner", "surface": "cli",
+                "sessions": ["s-3"], "at": "2026-09-20T12:00:00Z"
+            }))
+            .unwrap()
+        };
+        let on_time = [close(end + hours(47))];
+        assert_eq!(
+            observe(
+                "s-3",
+                end,
+                &OwnerActs {
+                    closures: &on_time,
+                    ..OwnerActs::default()
+                },
+                end + hours(100)
+            ),
+            ObservedAct::Act {
+                act: ExpectedAct::Closed,
+                at: end + hours(47)
+            }
+        );
+        let too_late = [close(end + hours(49))];
+        assert!(matches!(
+            observe(
+                "s-3",
+                end,
+                &OwnerActs {
+                    closures: &too_late,
+                    ..OwnerActs::default()
+                },
+                end + hours(100)
+            ),
+            ObservedAct::NoAct { .. }
+        ));
         // Another session's draft is not this session's act; with no draft
         // of its own the output has no store, and the constant applies.
         assert!(matches!(
@@ -2757,6 +2800,16 @@ mod tests {
             Some(rejected_at),
         )];
         let owner = acts(&drafts);
+
+        // Read-only before any pass: the rejection has already happened, so
+        // that one is resolved-but-unwritten, not waiting.
+        let before = store
+            .score_summary(&owner, Utc::now() + chrono::Duration::hours(2))
+            .unwrap();
+        assert_eq!(
+            (before.scored, before.resolved_unwritten, before.pending),
+            (0, 1, 1)
+        );
 
         // Before the quiet session's window closes: one scored, one waiting.
         let early = store

@@ -1277,7 +1277,13 @@ the stores that record it.
   unknown — and `hit_rate` is `None` over no scores.
 - **Interpretation to confirm:** "the doctor's constant" for an output with
   no store is read as the outbox's 48h, the doctor's constant for an output
-  waiting on the owner.
+  waiting on the owner. It covers a task or workflow the session worked
+  too: the board and the workflow store carry no `doctor::Patience`, so a
+  `closed` or `reopened` output resolves at 48h, and a closure after that
+  is not the act (found on review of #324).
+- **The scorer runs on every writing pass of `mecha distill`**, even one
+  with nothing to distill or with the graph server down, because windows
+  close on quiet nights.
 
 #### I2. Past appraisals, retrieved
 

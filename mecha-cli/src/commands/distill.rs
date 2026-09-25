@@ -41,6 +41,21 @@ pub struct Args {
 }
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
+    let dry_run = args.dry_run;
+    let distilled = distill_sessions(global, args).await;
+    // Row 2b-2's scoring runs on every pass that writes, whatever the
+    // distillation did: it needs no model, graph or network, and a
+    // prediction resolves *later* than its appraisal — a quiet night with
+    // nothing to distill, or one with the graph server down, is exactly
+    // when R37's windows close (found on review of #324). After the
+    // distillation, so an appraisal written this pass is on record for it.
+    if !dry_run {
+        score_predictions();
+    }
+    distilled
+}
+
+async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
     let sessions_dir = match &args.sessions_dir {
         Some(dir) => dir.clone(),
         None => Session::default_dir()?,
@@ -578,7 +593,6 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     if appraiser.is_some() {
         println!("{}", tally.line());
     }
-    score_predictions();
     Ok(())
 }
 
@@ -627,8 +641,8 @@ pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -
     }
     format!(
         "appraisals' predictions: {} scored of {} ({} hit, {} surprise(s), {} of them on clean \
-         appraisals; {}) · {} waiting for the owner's act or the window · {} unknown (a store or \
-         the patience could not be read){}",
+         appraisals; {}) · {} waiting for the owner's act or the window · {} resolved, to be \
+         scored on the next distill · {} unknown (a store or the patience could not be read){}",
         s.scored,
         s.with_expectation,
         s.hits,
@@ -639,6 +653,7 @@ pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -
             None => "no rate".into(),
         },
         s.pending,
+        s.resolved_unwritten,
         s.unknown,
         if s.skipped > 0 {
             format!(" · {} unreadable score line(s)", s.skipped)
