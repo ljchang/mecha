@@ -231,7 +231,7 @@ pages are verified against the binary's own `--help` and against
 `ConfigLayer`, and they should stay that way.
 
 **The overview layer is a separate job from the feature pages, and it rots
-differently.** `intro.md` and `principles.md` answer *what this is for* and
+differently.** `intro.mdx` and `principles.md` answer *what this is for* and
 *what rules it keeps*; the feature pages answer *how one subsystem works*.
 Writing a good page for a new subsystem does not update the overview, so the
 overview drifts by omission rather than by becoming wrong — which is exactly
