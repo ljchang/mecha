@@ -2208,7 +2208,9 @@ now makes the move one recorded event:
   trigger markers are now read under `MECHA_HOME` *and* the owner's real
   home, which comes from the password database, never `HOME`; a
   registration found only in the real one refuses whatever its posture
-  (`ShellReading::Redirected`). Registration still writes under
+  (`ShellReading::Redirected`). A real home the database cannot give is not
+  agreement: with `MECHA_HOME` set and no passwd entry to check it against,
+  `work::guard_homes` refuses (review of #294). Registration still writes under
   `MECHA_HOME`, so a trial home keeps its own registry. **A nested front
   end is not a person:** `mecha chat`, `mecha run` and `mecha tui` stamp
   `interactive` only with a terminal on stdin *and* no registered shell

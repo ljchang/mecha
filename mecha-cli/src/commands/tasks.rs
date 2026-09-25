@@ -900,16 +900,18 @@ fn hook_dir() -> std::path::PathBuf {
 /// process's `MECHA_HOME` and the owner's real home — so a command inside a
 /// run cannot hide its run's marker by pointing `MECHA_HOME` at an empty
 /// directory (review of #293). Read-only: nothing here creates a directory.
-fn live_run_pids() -> std::collections::HashSet<u32> {
+/// Homes that cannot be named are an error, not an empty set — an empty set
+/// would switch rule 1 off without a word (review of #294).
+fn live_run_pids() -> Result<std::collections::HashSet<u32>> {
     let mut dirs = Vec::new();
-    for home in mecha_core::work::guard_homes().unwrap_or_default() {
+    for home in mecha_core::work::guard_homes()? {
         dirs.push(markers_dir_under(&home));
         dirs.push(mecha_core::trigger::TriggerStore::locks_dir_under(&home));
     }
     if let Ok(root) = mecha_core::trigger::TriggerStore::default_root() {
         dirs.push(root.join("locks"));
     }
-    live_run_pids_in(&dirs)
+    Ok(live_run_pids_in(&dirs))
 }
 
 /// The live pids across every marker directory in `dirs`.
@@ -937,7 +939,10 @@ async fn begin_move(
     let (actor, surface) = closure::decide(
         &closure::posture_from_env(),
         &closure::ShellReading::from_registry(),
-        closure::run_ancestor(&live_run_pids()),
+        closure::run_ancestor(&live_run_pids().context(
+            "the run markers could not be located, so whether a run made this move cannot \
+             be told; refused",
+        )?),
         flagged,
     )
     .map_err(anyhow::Error::msg)?;

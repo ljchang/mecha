@@ -108,14 +108,39 @@ fn passwd_home(uid: libc::uid_t) -> Option<PathBuf> {
 /// The homes the closure guard reads its stores under: [`mecha_home`], and
 /// the owner's real one ([`owner_mecha_home`]) when that differs. Once when
 /// they agree, which is the normal case.
+///
+/// **A real home that cannot be found is not agreement** (review of #294).
+/// With no password-database entry to compare against — a container run as
+/// a uid its image does not name, an unavailable NSS module — a
+/// `MECHA_HOME` a command could have set on its own line cannot be
+/// corroborated, so this refuses rather than reading the one redirectable
+/// home as the only one. Without `MECHA_HOME` it reads the home `HOME`
+/// names, which a command can also set: named residue for a host with no
+/// passwd entry, where the sandbox is the answer.
 pub fn guard_homes() -> Result<Vec<PathBuf>> {
-    let mut homes = vec![mecha_home()?];
-    if let Some(owner) = owner_mecha_home() {
-        if !homes.contains(&owner) {
-            homes.push(owner);
-        }
+    guard_homes_from(
+        mecha_home()?,
+        owner_mecha_home(),
+        std::env::var_os("MECHA_HOME").is_some(),
+    )
+}
+
+/// [`guard_homes`]' rule, pure: `mine` is this process's home, `owner` the
+/// password database's, `overridden` whether `MECHA_HOME` chose `mine`.
+fn guard_homes_from(
+    mine: PathBuf,
+    owner: Option<PathBuf>,
+    overridden: bool,
+) -> Result<Vec<PathBuf>> {
+    match owner {
+        Some(owner) if owner == mine => Ok(vec![mine]),
+        Some(owner) => Ok(vec![mine, owner]),
+        None if overridden => anyhow::bail!(
+            "MECHA_HOME is set, and this account's home is not in the password database, \
+             so the override cannot be checked against the owner's real stores"
+        ),
+        None => Ok(vec![mine]),
     }
-    Ok(homes)
 }
 
 /// `~/.mecha/work`.
@@ -599,5 +624,32 @@ pub(crate) mod tests {
     fn no_bundle_mirror_means_no_protected_sources() {
         let _home = HomeGuard::new();
         assert!(protected_sources().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod guard_homes_tests {
+    use super::*;
+
+    /// An override the password database cannot corroborate is refused, not
+    /// read as the only home (review of #294: `None` collapsed into the
+    /// agreeing case and reopened #293's `MECHA_HOME` redirect).
+    #[test]
+    fn an_uncorroborated_home_override_is_refused_not_trusted() {
+        let mine = PathBuf::from("/tmp/elsewhere/.mecha");
+        let owner = PathBuf::from("/home/owner/.mecha");
+        assert_eq!(
+            guard_homes_from(owner.clone(), Some(owner.clone()), false).unwrap(),
+            vec![owner.clone()]
+        );
+        assert_eq!(
+            guard_homes_from(mine.clone(), Some(owner.clone()), true).unwrap(),
+            vec![mine.clone(), owner]
+        );
+        assert!(guard_homes_from(mine.clone(), None, true).is_err());
+        assert_eq!(
+            guard_homes_from(mine.clone(), None, false).unwrap(),
+            vec![mine]
+        );
     }
 }
