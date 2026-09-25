@@ -3798,7 +3798,7 @@ deferrals are not repeated here; S1, S8, S3 and O4 carry none, so what 1a,
   why.
 - **Minors banked across the arc, for the owner to weigh.** Each was
   re-checked against `f2efa162` and again after merging `6e6f03ba`; 2a-2
-  (#314) closed a thirteenth, `Judgment::because` being uncapped.
+  (#314) closed one more, `Judgment::because` being uncapped.
   - *Closure (1b, 1b-2, 1c).*
     - The web board's `POST /api/tasks/set` (`serve::board::task_set`)
       does not pass `--only-open`, so a stale web card has none of the
@@ -3829,7 +3829,8 @@ deferrals are not repeated here; S1, S8, S3 and O4 carry none, so what 1a,
       a run's own read, and the doctor inherits it although it already
       holds the whole corpus.
     - `BacklogDelta::owner_facing_net` and `owner_facing_cleared` have no
-      caller outside tests.
+      caller outside tests except each other (`owner_facing_cleared` calls
+      `owner_facing_net`).
   - *The brief (1h).*
     - `brief::assemble_for_run` does its synchronous file reads (the
       charter, permits, run markers, the trigger file, `attention.toml`,
