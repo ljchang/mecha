@@ -4463,6 +4463,7 @@ mod tests {
             blocked_sends: 0,
             taint: crate::agent::Taint::default(),
             homeostat: None,
+            brief: None,
             stop_cause: crate::agent::StopCause::Completed,
             compactions: 0,
             usage_complete: true,

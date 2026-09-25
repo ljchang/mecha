@@ -55,6 +55,13 @@ pub struct RunMarker {
     pub session: Option<String>,
 }
 
+/// Where a mecha home keeps its delegated-task run markers — said once, for
+/// `mecha tasks`, the closure guard's walk over every guard home, and the
+/// situation brief's reader.
+pub fn task_dir_under(home: &Path) -> PathBuf {
+    home.join("taskruns")
+}
+
 /// A directory of run markers, keyed by whatever the caller calls its runs.
 pub struct RunMarkers {
     dir: PathBuf,
@@ -246,6 +253,35 @@ impl RunMarkers {
             .map(|m| m.pid)
             .filter(|pid| crate::process_alive(*pid))
             .collect())
+    }
+
+    /// The names of every run in flight in this directory, sorted — the
+    /// situation brief's "runs in flight" reader. Read-only like
+    /// [`live_pids`](Self::live_pids) and fallible for the same reason: a
+    /// directory that does not exist is no runs, one that cannot be read is
+    /// an error, never an empty list.
+    pub fn live_names(&self) -> Result<Vec<String>> {
+        let dir = match std::fs::read_dir(&self.dir) {
+            Ok(dir) => dir,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(anyhow::Error::new(e)
+                    .context(format!("reading run markers in {}", self.dir.display())))
+            }
+        };
+        let mut names: Vec<String> = dir
+            .flatten()
+            .filter_map(|e| {
+                let path = e.path();
+                (path.extension().is_some_and(|x| x == "running")).then_some(())?;
+                let name = path.file_stem()?.to_str()?.to_string();
+                let marker: RunMarker =
+                    serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
+                crate::process_alive(marker.pid).then_some(name)
+            })
+            .collect();
+        names.sort();
+        Ok(names)
     }
 
     /// Ask the run in flight to stop. `false` when there is nothing to stop,
