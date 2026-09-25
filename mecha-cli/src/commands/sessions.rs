@@ -1199,6 +1199,36 @@ async fn appraise(
     // the same terms: unreadable costs the channel and says so.
     let (closures, closures_unreadable) = appraisal::load_closures();
     let (workflows, workflows_unreadable) = appraisal::load_workflows();
+    // The appraisals' own predictions (row 2b-2), read-only: what the
+    // ledger has scored, and for the rest whether the window is open or the
+    // answer unknown. `mecha distill` writes the scores; this never does.
+    let expectations: std::result::Result<
+        Option<mecha_core::appraisal_store::ScoreSummary>,
+        String,
+    > = match mecha_core::appraisal_store::AppraisalStore::open_existing_default() {
+        None => Ok(None),
+        Some(store) => store
+            .score_summary(
+                &mecha_core::appraisal_store::OwnerActs {
+                    drafts: &drafts,
+                    outbox_unreadable,
+                    closures: &closures,
+                    closures_unreadable,
+                    workflows: &workflows,
+                    workflows_unreadable,
+                    charter: charter.as_ref(),
+                    charter_unreadable,
+                    // The readout reads no board: a task output's window is
+                    // its due date, so it waits for distill's read and is
+                    // counted as such, not as unknown.
+                    board: mecha_core::appraisal_store::BoardRead::NotRead,
+                    zone: None,
+                },
+                chrono::Utc::now(),
+            )
+            .map(Some)
+            .map_err(|e| format!("{e:#}")),
+    };
 
     // Walked here rather than through `runlog::Corpus`, and the difference is
     // the unit: that reader yields one row per **run**, which is right for
@@ -1557,6 +1587,19 @@ async fn appraise(
                 // outcome can arrive long after its session. Coverage
                 // always; a rate is `null` over no points.
                 "predictions": predictions_json(&calibration, outbox_unreadable),
+                // Row 2b-2: `null` rate over no scores; `read: false` when
+                // the store could not be read, never an empty summary.
+                "expectations": match &expectations {
+                    Ok(summary) => {
+                        let mut o = serde_json::to_value(summary.clone().unwrap_or_default())
+                            .unwrap_or_default();
+                        if let Some(m) = o.as_object_mut() {
+                            m.insert("read".into(), serde_json::json!(true));
+                        }
+                        o
+                    }
+                    Err(e) => serde_json::json!({"read": false, "error": e}),
+                },
                 // Same "absent, not zero" rule as `probe`: whether the flag
                 // ran at all is a different fact from what it found.
                 // Retired in row 2a-3: always null now — the pass cannot
@@ -1630,6 +1673,14 @@ async fn appraise(
     println!("  {}\n", comparisons_line(&stored));
     println!("  {}\n", text_appraisals_line(&text_appraisals));
     println!("  {}\n", predictions_line(&calibration, outbox_unreadable));
+    println!(
+        "  {}\n",
+        match &expectations {
+            Ok(Some(s)) => crate::commands::distill::expectations_line(s),
+            Ok(None) => "appraisals' predictions: no text appraisal on record".into(),
+            Err(e) => format!("appraisals' predictions: the store could not be read ({e})"),
+        }
+    );
     if appraisals.is_empty() {
         return Ok(());
     }

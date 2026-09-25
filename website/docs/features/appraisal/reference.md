@@ -450,6 +450,7 @@ mecha sessions appraise --days 30 --kind web --json
 | `probe` | Results of the optional paid pass; `null` when it did not run. |
 | `appraiser` | Always `null`: the counts-only appraiser is retired. Kept so a reader of the old shape still finds the key. |
 | `predictions` | Anticipation's predictions scored (store-wide): per response and per concern kind, `predictions`, `scored`, `materialized`, `clean`, the reasons the rest are not yet a point (`unscored`), and `materialized_rate`, which is `null` when nothing was scored; plus `total`, `unreadable`, and whether the outbox was fully `read`. See [anticipation](/docs/features/appraisal/anticipation#how-well-the-predictions-held-up). |
+| `expectations` | The appraisals' own predictions (their expected act) checked against what you did: `with_expectation`, `scored`, `hits`, `surprises` (and `clean_surprises`), `pending` (the waiting period is still open), `unknown` (a store, the board or the patience could not be read), `board_not_read` (task outputs this readout cannot window, because it reads no board; `mecha distill` scores them), and `hit_rate`, which is `null` over no scores. `read: false` when the store could not be read. |
 | `text_appraisals` | Counts from the [text-appraisal store](#text-appraisals): records, sessions, how many are `clean` and `not_clean`, claims kept and dropped by grounding (`dropped_by`, by reason), records carrying an expected act (`with_expected_act`), judgment goals that did not resolve (`goals_unresolved`), and whether the store was fully read. |
 
 The signed errors, valence and label above are derived when read and never
@@ -506,6 +507,39 @@ act and the lessons, under a label saying whether the appraisal is clean.
 `--text` prints every appraisal on record, newest first, and `--json` gives the
 records. Control characters are stripped from every field, because the prose is
 a model's reading of a session that may have held a stranger's text.
+
+#### Checking the prediction
+
+Each appraisal's expected act is checked against what you actually did with
+the session's output. That means a draft you released as written, edited or
+rejected, or a task or workflow you closed, reopened or cancelled; a cancel
+counts as `rejected`. Your first act is the one that counts. Nothing you do
+changes or adds to it.
+
+- **"No act" becomes the answer only after a waiting period.** The clock
+  starts when the session ends. If the session staged drafts, the wait is
+  the outbox's patience: your charter line on the outbox, or 48 hours if you
+  have none.
+- **A task runs to its due date.** When the session's output is a task, the
+  wait runs to the task's due date on your board. A date with no time
+  counts through the end of that day in your timezone. If the task has no
+  due date, or it had already passed when the session ended, the wait is
+  48 hours.
+- **Anything else waits 48 hours**, including a workflow. An act after the
+  wait does not count.
+- **A board that can't be read leaves the answer unknown.** Task due dates
+  come from `mecha distill`'s read of the board. `mecha sessions appraise`
+  does not read the board, so it lists those outputs as awaiting that read.
+- **An unreadable store is never read as "no act".** If the outbox, the
+  closure record, the workflows, or the charter the patience comes from
+  cannot be read, the answer stays unknown.
+- **A wrong prediction is recorded as a surprise.** `mecha distill` records
+  each answer once, in `~/.mecha/appraisals/scores.jsonl`. A later
+  learning step can use the surprises to decide what to look at again.
+  Nothing uses them yet.
+- **`mecha sessions appraise` shows coverage:** scored, hits, surprises,
+  waiting and unknown. The hit rate appears only once something has been
+  scored.
 
 ```bash
 mecha sessions appraise 20260925T1131     # one session's appraisal

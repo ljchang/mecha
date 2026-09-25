@@ -295,6 +295,13 @@ async fn distill_appraises_each_session_once_behind_the_right_door() {
         first.contains("1 malformed, nothing stored (no_json 1)"),
         "{first}"
     );
+    // Row 2b-2: both appraisals expect no act; the sessions staged nothing,
+    // so the window is the doctor's constant from the session's end, still
+    // open — scored nothing, and no rate over nothing.
+    assert!(
+        first.contains("appraisals' predictions: 0 scored of 2 (0 hit, 0 surprise(s), 0 of them on clean appraisals; no rate) · 2 waiting"),
+        "{first}"
+    );
     assert!(
         first.contains(
             "over 3 follow-up call(s), 2700 of 3000 prompt token(s) from the server's cache"
@@ -396,6 +403,16 @@ async fn distill_appraises_each_session_once_behind_the_right_door() {
     assert_eq!(owner.len(), 3, "one appraisal per session");
     server.abort();
 
+    // A quiet night — nothing left to distill, and no model to ask — still
+    // scores the appraisals' predictions: R37's windows close on nights
+    // like this (review of #324).
+    let quiet = ok(&mecha(&home, &work, &["distill"]).await, "distill");
+    assert!(quiet.contains("nothing to distill"), "{quiet}");
+    assert!(
+        quiet.contains("appraisals' predictions: 0 scored of 3"),
+        "{quiet}"
+    );
+
     // The owner's readout: the prose, with its taint label.
     let shown = ok(
         &mecha(
@@ -428,4 +445,26 @@ async fn distill_appraises_each_session_once_behind_the_right_door() {
         "sessions appraise --text",
     );
     assert_eq!(every.matches("text appraisal apr-").count(), 3, "{every}");
+
+    // The readout's coverage of the appraisals' predictions (row 2b-2).
+    let readout = ok(
+        &mecha(
+            &home,
+            &work,
+            &["sessions", "appraise", "--json", "--include-tests"],
+        )
+        .await,
+        "sessions appraise --json",
+    );
+    let v: Value = serde_json::from_str(&readout).unwrap();
+    let e = &v["expectations"];
+    assert_eq!(e["read"], true, "{e:#}");
+    assert_eq!(e["with_expectation"], 3, "{e:#}");
+    // The sessions are anchored to a task and staged nothing, so each
+    // output's window is the task's due date — read from the board by
+    // `mecha distill`, not by this read-only readout (R37, refined).
+    assert_eq!(e["board_not_read"], 3, "{e:#}");
+    assert_eq!(e["unknown"], 0, "{e:#}");
+    assert_eq!(e["scored"], 0);
+    assert!(e["hit_rate"].is_null(), "no rate over nothing: {e:#}");
 }

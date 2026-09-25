@@ -352,7 +352,7 @@ with a `mecha exp` arm against EXPERIMENT-DESIGN §15's appraisal-off preset
 | **2a-3** | **The counts-only appraiser retired into it.** `sessions appraise --appraise` and `appraise_with_model` go; the counts it read (`AppraiserEvidence`) are already 2a-2's input as signed errors. Records carrying `channel: appraisal` / `cite: appraiser` still load and count. | I1, R25 | 2a-2 | no second model pass reads a session for the label; an old record with an appraiser error loads and is counted — *built; see I1* |
 | **2a-4** | **The reflector folded in** — only after 2e-1 measures its lessons no worse (R25). A reflection is an appraisal of a correction: the same pass writes both, still as a `Reflexion` with its `Origin`, so `learn`'s input and gate keep their shape. | I1, R25 | 2a-2, 2e-1 | 2e-1's measurement is on record; model passes per session fall from two to one; the learning store's provenance gate is unchanged (its tests pass untouched) |
 | **2b-1** | **Anticipation's predictions scored.** Every `Prediction` an `Outcome` resolves is a calibration point per kind; coverage is reported, never a calibration figure while outcomes are absent; a delivery positive only after `outbox reconcile`. | X5 | 1d | a fixture store with resolved and unresolved predictions reports coverage per kind and no rate over nothing — *built; see X5* |
-| **2b-2** | **The appraisal's own prediction scored** when the same situation and goal next come round; a miss is a surprise, recorded for 2e-6's priority. The structural scorer is R33: the record's `expected_act` (R16's closed set, added by 2a-2) against the owner's recorded act on the next session's output; the prose prediction is never scored. | X5 | 2a-2, 2b-1 | a fixture pair of sessions scores a hit and a miss on `expected_act` against the recorded act; a model never decides a score (R27) |
+| **2b-2** | **The appraisal's own prediction scored** once the owner's act on the appraised session's output arrives, or R37's window closes; a miss is a surprise, recorded for 2e-6's priority. The structural scorer is R33 (the owner's ruling of 2026-09-25): the record's `expected_act` (R16's closed set, added by 2a-2) against the owner's recorded act on the appraised session's output, with "no act" resolved by R37's window; the prose prediction is never scored. | X5 | 2a-2, 2b-1 | a fixture pair of sessions scores a hit and a miss on `expected_act` against the recorded act; a model never decides a score (R27); "no act" resolves only after R37's window — *built; see X5* |
 | **2c-1** | **The goal joins `Situation`** as a recorded and scope key — recording, matching, replay and validation in one change; an absent goal never widens a scope. *Built as 2c-1 (2026-09-25): the key is the whole `GoalRef` the front-end handed `prepare`, recorded as `RunConfig::rules_goal`.* | M1 | 1a | the scope-key tests cover the goal on every door; a rule mined with no goal still matches as before |
 | **2c-2** | **Past clean appraisals retrieved.** `goal_context` serves up to three clean appraisals of the same situation and goal, on demand, never pushed — through `Clean` only. Measured against a control at matched budget, since retrieved memory can cost more than it returns. *Built as 2c-2 (2026-09-25): `Lever::PastAppraisals`, shipping off; the measured run is owed.* | I2 | 2a-2, 2c-1 | a clean appraisal of a matching session is served and a tainted one never is; the lever's arm runs against the control |
 | **2d-1** | **Point-wise comparison at informative decision points.** At a steer, a denial, a failed check, an edited or rejected draft, a surprise: `probe::drive_arm` runs K policies a short horizon from the point, and the owner's recorded verdict decides (new: a branch's draft against the released text). Each writes a 1g `Comparison` of a new kind. Points drawn uniformly until 2e-6 ranks them. **Built as 2d-1** — `mecha sessions compare`; see O1 for what was built and what it left. | O1, R26, R27 | 1g | fixture points of each kind leave comparisons a second read returns; a point whose verdict no structural validator can pose is inconclusive, never judged |
@@ -516,8 +516,9 @@ widening.
 | R32 | 2 | What R25 pins: 2a-2's appraisal comes from a follow-up turn on the same cached prefix, so `DISTILLER_SYSTEM` and the episode stay byte-identical; the extra model call is taken deliberately over changing the episode's text (here §3, the first of phase 2's two questions) | **ruled 2026-09-25** by the owner directly; built as 2a-2 (#314), which amends decision 4 to one extra model call per session |
 | R33 | 2 | How a text prediction is scored (2b-2): a closed-set expected owner act from R16's set sits beside the prose and is scored structurally against the act the owner records (here §3, the second question) | **ruled 2026-09-25** by the owner directly; the field is `TextAppraisal::expected_act`, added by 2a-2 (#314); scoring it is 2b-2 |
 | R34 | 2 | A rule scoped to a goal that closes keeps its scope (`task:<uid>`) and widens only on evidence, by §17.4's restatement; such rules are made **visible**, not left silent | **ruled 2026-09-25; built as #317** — `mecha rules list` counts and marks them `LOADS NOWHERE`, `mecha learn` repeats the count each pass, an unreadable board is its own finding |
+| R37 | 2 | An appraisal's expected owner act of "no act" becomes the act that happened once **the output's store patience** has elapsed, counted from **the appraised session's end**: the patience is `doctor::Patience::for_store`'s (the charter line watching that store, else the doctor's constant); an output with no store (a chat answer) resolves at the doctor's constant; an owner act that arrives before the window closes is the act; an unreadable act store or patience is unknown and never resolves to no act. **Refined 2026-09-25:** a task's output uses the task's due date — the window runs from the session's end to the board row's `due_at` (the end of that day in the owner's zone), an owner closure by then is the act, an undated task keeps the constant, a `due_at` already past at the session's end falls back to the constant, and an unreadable board or unparseable `due_at` is unknown; workflow outputs keep the constant for now; "the doctor's constant" is confirmed as the outbox's 48h | **ruled 2026-09-25**; built as 2b-2 |
 
-**Every ruling is settled** (2026-09-24; R30–R36 on 2026-09-25), except the
+**Every ruling is settled** (2026-09-24; R30–R37 on 2026-09-25), except the
 parked items (R3, R8), the flag (R9), the deferred R7, the declined R2 and
 R29, which is not proposed.
 Phase 5's R28 waited on the bubblewrap upgrade, an ops step; the workstation
@@ -1249,7 +1250,7 @@ scores every prediction in the outbox per response (`proceed`, `verify`,
   queuing a reflection. That comes with 2b-2's surprise record; it waits on
   outcomes being recorded.
 
-*The text appraisal's own prediction (ruled by the owner, 2026-09-25).* A
+*The text appraisal's own prediction (R33; ruled by the owner, 2026-09-25).* A
 free-text prediction has no structural validator, and R27 forbids a model
 deciding a score. So the prediction's structural half is a closed-set
 **expected owner act** beside the prose: `TextAppraisal::expected_act`, one
@@ -1259,9 +1260,61 @@ of R16's acts — `released_unchanged`, `edited`, `rejected`, `closed`,
 - **Added by 2a-2.** It is lenient on load: a word this build cannot read
   is `unknown`, and a non-string does not cost the row. There was no
   migration, and a row from before the field has none.
-- **Scored by 2b-2**, against the owner's recorded act on the next session
-  of the same situation and goal. The prose prediction is read by people
-  and never scored.
+- **Scored by 2b-2**, against the owner's recorded act on the appraised
+  session's output. The prose prediction is read by people and never scored.
+
+*2b-2 built — the appraisal's prediction scored* (R33, R37).
+`appraisal_store::observe` reads the owner's act on a session's output from
+the stores that record it.
+
+- **The acts, R16's set.** A model-authored draft released unchanged, edited
+  then released, or rejected. A task the session worked, closed or reopened
+  by the owner (the closure record's `sessions`). A workflow that tracked the
+  session, closed, reopened or cancelled; a cancel reads as `rejected`.
+- **The act is the owner's first reaction by time**, inside R37's window. The
+  window runs from the session's end, `TextAppraisal::session_ended_at` (the
+  transcript's last write, recorded when the appraisal was written; a row
+  from before the field falls back to `at`, which is later, so the window
+  can only close late). It lasts the outbox's patience when the session
+  staged drafts (the charter line on `outbox_age`, else the doctor's 48h),
+  and otherwise 48h (`NO_STORE_PATIENCE_HOURS`), except that a task output
+  runs to the task's due date (R37, refined; below).
+- **No act inside the window, and the window closed:** `no_act` is the act.
+- **Any unreadable act store** (outbox, closures, workflows), an unreadable
+  charter where the outbox's patience is needed, or a resolved draft with no
+  readable time: **unknown, never "no act"**.
+- **Each resolved prediction is written once** to
+  `~/.mecha/appraisals/scores.jsonl` (`Score`: expected, actual, when,
+  hit). A miss is `surprise: true`, with the appraisal's cleanliness,
+  situation and anchor beside it, for 2e-6's priority and 2d-1's surprise
+  points to read; nothing ranks on it yet.
+- **`mecha distill` scores what has resolved each pass**, with no model call.
+  `sessions appraise` shows coverage — scored, hits, surprises, waiting,
+  unknown — and `hit_rate` is `None` over no scores.
+- **Confirmed by the owner:** "the doctor's constant" for an output with no
+  store is the outbox's 48h.
+- **Refined by the owner (R37, 2026-09-25): a task's output uses the task's
+  due date.** This applies when the session staged no drafts and its output
+  is a task: the anchor, else the task a closure naming the session moved.
+  - The window runs from the session's end to that task's `due_at` on the
+    board. The board is read harness-side by `mecha distill`
+    (`kg_task_list` with closed rows).
+  - A due date without a time ends at the end of that day in the owner's
+    `[agent] timezone`, or UTC when unset.
+  - An owner closure by the due date is the act.
+  - A task with no `due_at` keeps the 48h constant.
+  - **A `due_at` already past at the session's end falls back to the
+    constant.** Closing the window at once would score every overdue task's
+    review as "no act", whatever the owner then did.
+  - **Unknown, never the constant:** an unreadable board, a `due_at` that
+    will not parse, or a board with no row for the task.
+  - The read-only readout reads no board, so it counts such outputs apart
+    (`board_not_read`) rather than as unknown.
+  - **Workflow outputs keep the 48h constant for now**; the workflow store
+    carries no due date or `doctor::Patience`.
+- **The scorer runs on every writing pass of `mecha distill`**, even one
+  with nothing to distill or with the graph server down, because windows
+  close on quiet nights.
 
 #### I2. Past appraisals, retrieved
 
