@@ -710,6 +710,27 @@ impl TriggerStore {
         .get(name)
     }
 
+    /// What the store at `root` says about trigger `name`, without opening
+    /// it — the readout that names a rule scoped to a trigger that no
+    /// longer fires (R34). A name no trigger could carry is missing, not
+    /// read; a file that exists and does not load is unreadable, which the
+    /// readout keeps apart from gone.
+    pub fn state_at(root: &Path, name: &str) -> crate::situation::TriggerState {
+        use crate::situation::TriggerState;
+        if Trigger::valid_name(name).is_err() {
+            return TriggerState::Missing;
+        }
+        match root.join(format!("{name}.toml")).try_exists() {
+            Ok(false) => TriggerState::Missing,
+            Err(e) => TriggerState::Unreadable(format!("{e}")),
+            Ok(true) => match Self::read_at(root, name) {
+                Ok(t) if t.enabled => TriggerState::Enabled,
+                Ok(_) => TriggerState::Disabled,
+                Err(e) => TriggerState::Unreadable(format!("{e:#}")),
+            },
+        }
+    }
+
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         crate::create_private_dir(&root).with_context(|| format!("creating {}", root.display()))?;
@@ -1188,6 +1209,45 @@ mod tests {
         t.timezone = Some("America/New_York".into());
         t.created_at = Some(utc("2026-08-01T00:00:00Z"));
         t
+    }
+
+    /// R34's trigger half: an enabled trigger is live, a disabled or removed
+    /// one is closed, and a file that does not load is unreadable — kept
+    /// apart from gone, since the owner may be mid-edit.
+    #[test]
+    fn a_triggers_state_is_read_without_opening_the_store() {
+        use crate::situation::TriggerState;
+        let root = scratch("state-at");
+        let store = TriggerStore::open(&root).unwrap();
+        store.save(&daily_7am("morning")).unwrap();
+        let mut evening = daily_7am("evening");
+        evening.enabled = false;
+        store.save(&evening).unwrap();
+        std::fs::write(root.join("broken.toml"), "schedule = [").unwrap();
+        assert_eq!(
+            TriggerStore::state_at(&root, "morning"),
+            TriggerState::Enabled
+        );
+        assert_eq!(
+            TriggerStore::state_at(&root, "evening"),
+            TriggerState::Disabled
+        );
+        assert_eq!(TriggerStore::state_at(&root, "gone"), TriggerState::Missing);
+        assert!(matches!(
+            TriggerStore::state_at(&root, "broken"),
+            TriggerState::Unreadable(_)
+        ));
+        assert_eq!(
+            TriggerStore::state_at(&root, "../morning"),
+            TriggerState::Missing,
+            "a name no trigger could carry is never a path"
+        );
+        let absent = root.join("never-created");
+        assert_eq!(
+            TriggerStore::state_at(&absent, "morning"),
+            TriggerState::Missing
+        );
+        assert!(!absent.exists(), "reading creates nothing");
     }
 
     #[test]
