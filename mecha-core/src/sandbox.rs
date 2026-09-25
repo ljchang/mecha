@@ -108,9 +108,13 @@ pub struct SandboxConfig {
     pub env: Vec<String>,
     /// Container image for the `docker` backend.
     pub image: String,
-    /// Memory ceiling in megabytes (`docker` only).
+    /// Memory ceiling in megabytes, swap included. `docker` passes it as
+    /// `--memory`; `bwrap` runs inside a transient systemd scope with
+    /// `MemoryMax` (and `MemorySwapMax=0`), so the ceiling covers the whole
+    /// command tree. `landlock` cannot apply it and refuses at preflight.
     pub memory_mb: Option<u64>,
-    /// CPU ceiling (`docker` only), e.g. `2.0`.
+    /// CPU ceiling in cores, e.g. `2.0`: docker's `--cpus`, or the scope's
+    /// `CPUQuota` under `bwrap`. `landlock` refuses at preflight.
     pub cpus: Option<f64>,
 }
 
@@ -285,7 +289,9 @@ impl Sandbox {
                 for (k, v) in env {
                     a.extend(["--setenv".to_string(), k.to_string(), v.to_string()]);
                 }
-                let mut c = tokio::process::Command::new("bwrap");
+                let mut launcher = self.bwrap_launcher().into_iter();
+                let mut c = tokio::process::Command::new(launcher.next().expect("a launcher"));
+                c.args(launcher);
                 c.args(a);
                 c.arg("--").arg(program).args(args);
                 Ok(c)
@@ -483,6 +489,49 @@ impl Sandbox {
             .collect()
     }
 
+    /// What starts `bwrap`: itself, or — when `memory_mb` or `cpus` is set —
+    /// `systemd-run --user --scope` carrying the limits, which execs `bwrap`
+    /// in place inside a transient scope. A scope is a cgroup, so the ceiling
+    /// covers every process the command starts, where an rlimit would cover
+    /// only one. `systemd-run` refuses to start the command when it cannot
+    /// create the scope or set a property, so a limit that cannot be applied
+    /// fails preflight rather than silently not applying. `XDG_RUNTIME_DIR`
+    /// rides in the argv (through `env`) because an MCP server's command has
+    /// its environment cleared after this is built, and `systemd-run --user`
+    /// finds the user manager through it.
+    pub fn bwrap_launcher(&self) -> Vec<String> {
+        let mut properties = Vec::new();
+        if let Some(mb) = self.cfg.memory_mb {
+            properties.push(format!("MemoryMax={mb}M"));
+            properties.push("MemorySwapMax=0".to_string());
+        }
+        if let Some(cpus) = self.cfg.cpus {
+            properties.push(format!("CPUQuota={}%", (cpus * 100.0).round() as i64));
+        }
+        if properties.is_empty() {
+            return vec!["bwrap".to_string()];
+        }
+        let runtime = std::env::var("XDG_RUNTIME_DIR")
+            .ok()
+            .filter(|v| !v.is_empty())
+            // SAFETY: `getuid` cannot fail and has no preconditions.
+            .unwrap_or_else(|| format!("/run/user/{}", unsafe { libc::getuid() }));
+        let mut argv = vec![
+            "/usr/bin/env".to_string(),
+            format!("XDG_RUNTIME_DIR={runtime}"),
+            "systemd-run".to_string(),
+            "--user".to_string(),
+            "--scope".to_string(),
+            "--quiet".to_string(),
+            "--collect".to_string(),
+        ];
+        for p in properties {
+            argv.extend(["-p".to_string(), p]);
+        }
+        argv.extend(["--".to_string(), "bwrap".to_string()]);
+        argv
+    }
+
     /// Arguments up to (but not including) the command itself. Split out so the
     /// policy can be asserted on in tests without spawning anything.
     pub fn bwrap_args(&self, workspace: &Path, cwd: &Path) -> Result<Vec<String>> {
@@ -630,6 +679,16 @@ impl Sandbox {
     pub async fn preflight(&self, workspace: &Path) -> Result<()> {
         if !self.is_enabled() {
             return Ok(());
+        }
+        // A limit the backend cannot apply is refused, never ignored: the
+        // operator set it believing it held.
+        if self.cfg.kind == Backend::Landlock
+            && (self.cfg.memory_mb.is_some() || self.cfg.cpus.is_some())
+        {
+            anyhow::bail!(
+                "[sandbox] memory_mb / cpus are enforced by the docker and bwrap backends; \
+                 landlock cannot apply them. Remove them or choose another backend."
+            );
         }
 
         let marker = "mecha-sandbox-ok";
@@ -894,6 +953,45 @@ mod tests {
         let program = argv.iter().position(|a| a == "server").unwrap();
         assert_eq!(argv[e - 1], "-e");
         assert!(e + 1 < program, "`-e` precedes the image: {argv:?}");
+    }
+
+    /// No limits: `bwrap` itself. Limits: a transient systemd scope carrying
+    /// them, with `bwrap` exec'd in place after `--`.
+    #[test]
+    fn bwrap_limits_ride_in_a_systemd_scope() {
+        assert_eq!(
+            Sandbox::new(cfg(Backend::Bwrap)).bwrap_launcher(),
+            vec!["bwrap"]
+        );
+        let limited = Sandbox::new(SandboxConfig {
+            memory_mb: Some(2048),
+            cpus: Some(1.5),
+            ..cfg(Backend::Bwrap)
+        })
+        .bwrap_launcher();
+        assert_eq!(limited[0], "/usr/bin/env");
+        assert!(limited[1].starts_with("XDG_RUNTIME_DIR="), "{limited:?}");
+        assert_eq!(&limited[2..5], ["systemd-run", "--user", "--scope"]);
+        for property in ["MemoryMax=2048M", "MemorySwapMax=0", "CPUQuota=150%"] {
+            assert!(
+                limited.windows(2).any(|w| w == ["-p", property]),
+                "{property} in {limited:?}"
+            );
+        }
+        assert_eq!(&limited[limited.len() - 2..], ["--", "bwrap"]);
+    }
+
+    #[tokio::test]
+    async fn landlock_refuses_a_limit_it_cannot_apply() {
+        let sandbox = Sandbox::new(SandboxConfig {
+            memory_mb: Some(512),
+            ..cfg(Backend::Landlock)
+        });
+        let err = sandbox.preflight(&std::env::temp_dir()).await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("landlock cannot apply"),
+            "{err:#}"
+        );
     }
 
     #[test]
