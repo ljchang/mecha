@@ -236,8 +236,11 @@ impl ChatState {
         match super::incognito::rooms_root() {
             Ok(rooms) => {
                 let removed = super::incognito::sweep(&rooms);
+                // At debug: even a count says incognito chats existed, and
+                // the default level is journald's (R1 — no content-free
+                // counts; found on review of #321).
                 if !removed.is_empty() {
-                    tracing::warn!(
+                    tracing::debug!(
                         "removed {} incognito room(s) left by a previous serve",
                         removed.len()
                     );
@@ -361,19 +364,6 @@ impl ChatState {
             mecha_core::sandbox::Sandbox::new(self.config.sandbox.clone())
                 .writes_stay_in_workspace(),
         );
-        // R3's reads ride on a configured server name; a rename narrows the
-        // chat to no mail at all, so say so rather than degrade in silence.
-        let mail = format!("{}__", super::incognito::READABLE_SERVER);
-        if !self
-            .agent
-            .registry()
-            .iter()
-            .any(|t| t.name().starts_with(&mail))
-        {
-            tracing::warn!(
-                "an incognito chat can read no mail: no tool is registered under `{mail}*`"
-            );
-        }
         let (events, _) = broadcast::channel(512);
         let questions = super::present::Questions::default();
         let mut sessions = self.sessions.lock().await;
@@ -414,6 +404,20 @@ impl ChatState {
 
     /// Close idle incognito chats once a minute until the server stops.
     pub fn spawn_incognito_reaper(self: &Arc<Self>) {
+        // R3's reads ride on a configured server name, and a rename narrows
+        // an incognito chat to no mail at all. Said once, at start, about the
+        // configuration — never per chat, which would log that one opened.
+        let mail = format!("{}__", super::incognito::READABLE_SERVER);
+        if !self
+            .agent
+            .registry()
+            .iter()
+            .any(|t| t.name().starts_with(&mail))
+        {
+            tracing::warn!(
+                "incognito chats will read no mail: no tool is registered under `{mail}*`"
+            );
+        }
         let chat = Arc::clone(self);
         tokio::spawn(async move {
             loop {
@@ -422,7 +426,7 @@ impl ChatState {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {
                         let closed = chat.reap_idle_incognito().await;
                         if closed > 0 {
-                            tracing::info!("closed {closed} idle incognito chat(s)");
+                            tracing::debug!("closed {closed} idle incognito chat(s)");
                         }
                     }
                 }
