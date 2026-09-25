@@ -54,7 +54,7 @@
 //! edit `~/.mecha` directly. The answer to both is the sandbox — under bwrap
 //! and docker the command runs in a pid
 //! namespace without `~/.mecha` mounted, and landlock does not grant it the
-//! owner's home at all (`mecha doctor` reports a `shell` that runs unconfined).
+//! owner's home at all (`mecha tools` shows a `shell` that runs unconfined).
 //!
 //! **`MECHA_HOME` does not hide a registration.** Registration writes under
 //! `MECHA_HOME`, but the reader ([`guard_roots`]) also reads the registry
@@ -75,15 +75,18 @@
 //! price is that the owner's own terminal cannot close a task on macOS while
 //! a run's shell is live.
 //!
-//! **A nested front-end is a posture the harness cannot see through.** A
-//! registered shell that runs `mecha chat` or `mecha tui` starts a new front
+//! **A nested front end is not a person.** A registered shell that runs
+//! `mecha chat`, `mecha run`, `mecha tui` or `mecha serve` starts a new front
 //! end whose own `shell` tool registers its children with that front end's
-//! posture. `mecha chat` stamps `interactive` only when its stdin is a
-//! terminal, so a piped chat from a delegated run is unattended; `mecha tui`
-//! stamps it unconditionally, because it cannot start without a terminal —
-//! but a run that allocates a pty (`script -qc 'mecha tui'`) and types into
-//! it would get `interactive` children. That is named residue; the sandbox
-//! is again the answer (the confined command has no `~/.mecha` to run from).
+//! posture — so each asks this registry first. `chat`, `run` and `tui` stamp
+//! `interactive` only with a terminal on stdin *and* no registered shell
+//! above them (`setup::front_end_interactive`), so a piped chat or a tui fed
+//! a pty (`script -qc 'mecha tui'`) is unattended; `serve` reads the same
+//! answer once at startup and latches it (`serve::chat::started_by_a_run`),
+//! so a `serve` a run started — and authenticated to with a login it chose —
+//! never stamps `interactive` (review of #294). A front end that detaches
+//! first escapes the walk, as any command does; the sandbox is again the
+//! answer (the confined command has no `~/.mecha` to run from).
 use crate::closure::RunPosture;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};

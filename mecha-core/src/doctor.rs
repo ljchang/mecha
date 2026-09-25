@@ -175,9 +175,11 @@ fn owner_setpoint(
     ))
 }
 
-/// Whether the `shell` tool runs confined, and confined away from the mecha
-/// home. Not a store, so not in [`examine`]: the caller hands in the loaded
-/// `[sandbox]`. The closure guard (`closure::decide`) and the provenance of
+/// Whether a confined `shell` is confined away from the mecha home. Not a
+/// store, so not in [`examine`]: the caller hands in the loaded `[sandbox]`.
+/// An unconfined `shell` is not a finding: it is the stock default, and a
+/// finding on every install would keep `doctor` exiting 1 forever (review of
+/// #294) — `mecha tools` says it instead. The closure guard (`closure::decide`) and the provenance of
 /// every closure record lean on it — an unconfined `shell` can detach from
 /// its registered parent and edit `~/.mecha` directly, and a sandbox that
 /// mounts the mecha home hands a confined command the shell registry and the
@@ -188,18 +190,6 @@ pub fn check_shell_confinement(
 ) -> Vec<Finding> {
     let mut out = Vec::new();
     if sandbox.kind == crate::sandbox::Backend::None {
-        out.push(Finding {
-            component: "sandbox".to_string(),
-            severity: Severity::Attention,
-            summary: "the shell tool runs unconfined".to_string(),
-            detail: "A run's commands can reach the mecha home, so the guard that stops a \
-                     delegated or unattended run from closing a task — and every closure \
-                     record's claim about who made it — rests on the run not trying. Add \
-                     `[sandbox]` with `kind = \"bwrap\"` (or `\"docker\"`) to \
-                     ~/.mecha/config.toml."
-                .to_string(),
-            remedy: None,
-        });
         return out;
     }
     let home = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
@@ -3922,16 +3912,17 @@ mod tests {
     }
 
     #[test]
-    fn an_unconfined_shell_and_a_sandbox_mounting_the_home_are_reported() {
+    fn a_sandbox_mounting_the_home_is_reported_and_the_stock_default_is_not() {
         use crate::sandbox::{Backend, SandboxConfig};
         let home = home("shell-confinement");
+        // The default config: no finding, so `doctor` can exit 0 on a stock
+        // install (review of #294).
+        assert!(check_shell_confinement(&SandboxConfig::default(), &home).is_empty());
         let unconfined = SandboxConfig {
             kind: Backend::None,
             ..SandboxConfig::default()
         };
-        let f = check_shell_confinement(&unconfined, &home);
-        assert_eq!(f.len(), 1);
-        assert!(f[0].summary.contains("unconfined"), "{f:#?}");
+        assert!(check_shell_confinement(&unconfined, &home).is_empty());
 
         let mut confined = SandboxConfig {
             kind: Backend::Bwrap,

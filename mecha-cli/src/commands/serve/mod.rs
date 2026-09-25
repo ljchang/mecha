@@ -103,6 +103,15 @@ pub async fn execute(args: Args) -> Result<()> {
     // door, and a project file must have no say in it (config.rs strips
     // `[web]` from project layers as a second fence).
     let config = Config::load_global()?;
+    // Latched before anything else can happen to this process's ancestry:
+    // a `serve` a run's shell started stays not-a-person for its life, even
+    // if it is reparented later (`chat::started_by_a_run`).
+    if chat::started_by_a_run() {
+        eprintln!(
+            "note: this serve was started beneath a run's shell (or one the registry \
+             cannot vouch for); its web chats are unattended and cannot close a task"
+        );
+    }
 
     let Some(owner) = args
         .owner_login
