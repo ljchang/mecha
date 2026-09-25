@@ -167,6 +167,9 @@ pub struct Request {
 
 const PROMPT_CAP: usize = 4_000;
 
+/// Consecutive failed status polls before a job is abandoned.
+const POLL_FAILURES: u32 = 3;
+
 /// ComfyUI's graph for one text-to-image generation with Qwen-Image 2.1.
 ///
 /// `PreviewImage` rather than `SaveImage`: the server writes to its temp
@@ -315,10 +318,15 @@ impl ComfyUi {
                 .pointer(&format!("/{node}/input/required/{input}/0"))
                 .and_then(Value::as_array)
             else {
-                bail!(
-                    "the image server has no `{node}` node — for GGUF models ComfyUI needs \
-                     the ComfyUI-GGUF custom node"
-                );
+                // Only the GGUF loader comes from a custom node; the others
+                // are ComfyUI's own, so a server missing them is too old.
+                if node == "UnetLoaderGGUF" {
+                    bail!(
+                        "the image server has no `{node}` node — for GGUF models ComfyUI \
+                         needs the ComfyUI-GGUF custom node"
+                    );
+                }
+                bail!("the image server has no `{node}` node; update ComfyUI");
             };
             if !choices.iter().any(|c| c.as_str() == Some(want.as_str())) {
                 let have: Vec<&str> = choices.iter().filter_map(Value::as_str).collect();
@@ -391,6 +399,7 @@ impl ComfyUi {
             .ok_or_else(|| anyhow!("the image server accepted the job but named no prompt_id"))?;
 
         let started = Instant::now();
+        let mut failed_polls = 0u32;
         let image = loop {
             let tick = tokio::time::sleep(self.poll);
             match cancel {
@@ -411,7 +420,30 @@ impl ComfyUi {
                 )
                 .into());
             }
-            let history = self.get_json(&format!("history/{id}")).await?;
+            // A failed poll is not a failed job: the server may be slow to
+            // answer while it loads the models. Keep polling through a brief
+            // outage; after several in a row, take the job off the server
+            // before giving up — returning with it still queued would leave a
+            // generation holding the GPU with no client to reap it (found on
+            // review of #303).
+            let history = match self.get_json(&format!("history/{id}")).await {
+                Ok(history) => {
+                    failed_polls = 0;
+                    history
+                }
+                Err(e) => {
+                    failed_polls += 1;
+                    if failed_polls < POLL_FAILURES {
+                        continue;
+                    }
+                    self.abandon(&id).await;
+                    return Err(e
+                        .context(format!(
+                            "the image server stopped answering ({POLL_FAILURES} polls in a row)"
+                        ))
+                        .into());
+                }
+            };
             let Some(entry) = history.get(&id) else {
                 continue; // queued or running
             };
@@ -854,7 +886,11 @@ mod tests {
                         )
                     } else if path.starts_with("/history/") {
                         let next = history.lock().unwrap().pop_front().unwrap_or(json!({}));
-                        json_reply(next)
+                        if next == json!("fail") {
+                            reply("500 Internal Server Error", "text/plain", b"stalled")
+                        } else {
+                            json_reply(next)
+                        }
                     } else if path.starts_with("/view?") {
                         reply("200 OK", "image/png", PNG)
                     } else if line.starts_with("GET /queue") {
@@ -1157,6 +1193,43 @@ mod tests {
                 .iter()
                 .any(|l| l.starts_with("POST /free")),
             "a failed job left the models loaded"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_brief_polling_outage_does_not_fail_the_job() {
+        let (url, _) = fake(vec![json!("fail"), json!("fail"), done()], "200 OK").await;
+        let dir = tempdir();
+        let out = tool(&url)
+            .call(json!({"prompt": "a fox", "seed": 7}), &ctx(&dir))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_server_that_stops_answering_polls_gets_its_job_taken_back() {
+        // Returning with the job still queued would leave a generation on the
+        // GPU that no client will ever collect.
+        let fails = vec![json!("fail"); POLL_FAILURES as usize];
+        let (url, seen) = fake(fails, "200 OK").await;
+        let dir = tempdir();
+        let out = tool(&url)
+            .call(json!({"prompt": "a fox"}), &ctx(&dir))
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("stopped answering"),
+            "{}",
+            out.content
+        );
+        let seen = seen.lock().unwrap().clone();
+        assert!(
+            seen.iter()
+                .any(|l| l.starts_with("POST /queue") && l.contains("job-1")),
+            "the job was left on the server: {seen:?}"
         );
         std::fs::remove_dir_all(dir).ok();
     }
