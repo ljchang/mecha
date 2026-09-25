@@ -260,11 +260,7 @@ pub fn list() -> Result<Vec<Producer>> {
             None => continue,
         };
         let entries = entries_of(&path)?;
-        // The producer's own `.spill` is not an entry (`entries_of`), but it
-        // is on disk: leaving it out of the total would hide the one
-        // directory here that grows between sweeps.
-        let bytes = entries.iter().map(|e| e.bytes).sum::<u64>()
-            + dir_bytes(&path.join(crate::tool::SPILL_DIR));
+        let bytes = entries.iter().map(|e| e.bytes).sum();
         out.push(Producer {
             name,
             path,
@@ -281,15 +277,6 @@ fn entries_of(dir: &Path) -> Result<Vec<Entry>> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
-        // A session's spill directory is not an artifact: a board task's
-        // workspace is a producer directory itself, so its `.spill` would
-        // otherwise take a `keep` slot and, once enough artifacts landed
-        // after it, be removed under a conversation whose cut results still
-        // name files in it (found on review of #313). It lives as long as
-        // the workspace does.
-        if entry.file_name() == crate::tool::SPILL_DIR {
-            continue;
-        }
         let path = entry.path();
         let meta = entry.metadata()?;
         let is_dir = meta.is_dir();
@@ -365,8 +352,9 @@ pub fn protected_sources() -> Result<BTreeSet<PathBuf>> {
 }
 
 /// How long spilled output is kept: a spill directory under `$TMPDIR` whose
-/// newest file is older than this, and a file in a workspace's `.spill`
-/// older than this.
+/// newest file is older than this, and a file in a session's spill
+/// directory under the mecha home (`tool::session_spill_dir`) older than
+/// this.
 ///
 /// Age is when the output was last *written*, which is the best signal this
 /// store has of whether a conversation still reads it — not liveness: a
@@ -452,34 +440,9 @@ pub fn clean(keep: usize, only: Option<&str>, dry_run: bool) -> Result<CleanRepo
         dry_run,
         ..Default::default()
     };
-    let now = std::time::SystemTime::now();
     for producer in list()? {
         if only.is_some_and(|name| name != producer.name) {
             continue;
-        }
-        // Every workspace's spilled output ages out on the same floor, by
-        // file: a `.spill` directly in a producer directory (a board task's
-        // workspace, the voice agent's) is not a retention entry and would
-        // otherwise be reclaimed by nothing; one inside a kept entry (a web
-        // session reused for weeks) would grow for as long as the session
-        // does (found on review of #313).
-        let mut spills = vec![producer.path.join(crate::tool::SPILL_DIR)];
-        spills.extend(
-            producer
-                .entries
-                .iter()
-                .take(keep)
-                .filter(|e| e.is_dir)
-                .map(|e| e.path.join(crate::tool::SPILL_DIR)),
-        );
-        for spill in spills {
-            for file in stale_spill_files(&spill, SPILL_MAX_AGE, now) {
-                if !dry_run {
-                    std::fs::remove_file(&file.path)
-                        .with_context(|| format!("removing {}", file.path.display()))?;
-                }
-                report.removed.push(file);
-            }
         }
         for entry in producer.entries.into_iter().skip(keep) {
             let canonical = entry
@@ -499,6 +462,35 @@ pub fn clean(keep: usize, only: Option<&str>, dry_run: bool) -> Result<CleanRepo
                 removed.with_context(|| format!("removing {}", entry.path.display()))?;
             }
             report.removed.push(entry);
+        }
+    }
+    // Sessions' spilled output (`tool::session_spill_dir`), by file, on the
+    // same floor as `$TMPDIR` spills; a session directory left empty goes
+    // too, and is recreated by the next spill. Not a producer, so a sweep
+    // narrowed to one producer leaves it alone.
+    if only.is_none() {
+        let now = std::time::SystemTime::now();
+        let root = mecha_home()?.join(crate::tool::SESSION_SPILL_ROOT);
+        if let Ok(read) = std::fs::read_dir(&root) {
+            for dir in read.flatten() {
+                let dir = dir.path();
+                let Ok(meta) = std::fs::symlink_metadata(&dir) else {
+                    continue;
+                };
+                if !meta.is_dir() {
+                    continue;
+                }
+                for file in stale_spill_files(&dir, SPILL_MAX_AGE, now) {
+                    if !dry_run {
+                        std::fs::remove_file(&file.path)
+                            .with_context(|| format!("removing {}", file.path.display()))?;
+                    }
+                    report.removed.push(file);
+                }
+                if !dry_run && std::fs::read_dir(&dir).is_ok_and(|mut d| d.next().is_none()) {
+                    let _ = std::fs::remove_dir(&dir);
+                }
+            }
         }
     }
     Ok(report)
@@ -772,41 +764,28 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn spilled_output_ages_out_by_file_at_every_level() {
-        let _home = HomeGuard::new();
-        // A producer that is itself a workspace (a board task's), and one
-        // whose entries are workspaces (web chats).
-        let task = ensure("task-9").unwrap();
-        let web_main = ensure("web").unwrap().join("main");
-        for spill in [
-            crate::tool::spill_within(&task),
-            crate::tool::spill_within(&web_main),
-        ] {
-            std::fs::create_dir_all(&spill).unwrap();
-            std::fs::write(spill.join("old.txt"), "old").unwrap();
-            std::fs::write(spill.join("new.txt"), "new").unwrap();
-            age(&spill.join("old.txt"), 30);
-        }
+    fn session_spills_age_out_by_file() {
+        let home = HomeGuard::new();
+        let spill = crate::tool::session_spill_dir(&home.dir().join("work/task-9")).unwrap();
+        assert!(spill.starts_with(home.dir().join(crate::tool::SESSION_SPILL_ROOT)));
+        std::fs::create_dir_all(&spill).unwrap();
+        std::fs::write(spill.join("old.txt"), "old").unwrap();
+        std::fs::write(spill.join("new.txt"), "new").unwrap();
+        age(&spill.join("old.txt"), 30);
         let report = clean(10, None, false).unwrap();
-        for spill in [
-            crate::tool::spill_within(&task),
-            crate::tool::spill_within(&web_main),
-        ] {
-            assert!(
-                !spill.join("old.txt").exists(),
-                "{} kept a month-old spill",
-                spill.display()
-            );
-            assert!(spill.join("new.txt").exists(), "a fresh spill survives");
-        }
-        assert_eq!(report.removed.len(), 2);
-        // And `mecha work list` counts what is on disk, spill included.
-        let producer = list()
-            .unwrap()
-            .into_iter()
-            .find(|p| p.name == "task-9")
-            .unwrap();
-        assert_eq!(producer.bytes, 3);
+        assert!(
+            !spill.join("old.txt").exists(),
+            "a month-old spill is removed"
+        );
+        assert!(spill.join("new.txt").exists(), "a fresh spill survives");
+        assert_eq!(report.removed.len(), 1);
+        // A producer-narrowed sweep leaves spills alone.
+        age(&spill.join("new.txt"), 30);
+        clean(10, Some("task-9"), false).unwrap();
+        assert!(spill.join("new.txt").exists());
+        // And a directory emptied by the sweep goes too.
+        clean(10, None, false).unwrap();
+        assert!(!spill.exists());
     }
 
     #[test]
@@ -827,38 +806,6 @@ pub(crate) mod tests {
             "a fresh file inside keeps the directory"
         );
         std::fs::remove_dir_all(&tmp).ok();
-    }
-
-    #[test]
-    fn a_workspaces_spill_directory_is_never_a_retention_entry() {
-        // A board task's workspace is a producer directory itself, so its
-        // `.spill` sits where retention looks — and the oldest entry there
-        // must still not be it.
-        let _home = HomeGuard::new();
-        let task = ensure("task-7").unwrap();
-        let spill = crate::tool::spill_within(&task);
-        std::fs::create_dir_all(&spill).unwrap();
-        std::fs::write(spill.join("shell-1.txt"), "still named by a cut result").unwrap();
-        write_aged(&task, "report.md", 0);
-
-        let producer = list()
-            .unwrap()
-            .into_iter()
-            .find(|p| p.name == "task-7")
-            .unwrap();
-        let names: Vec<_> = producer
-            .entries
-            .iter()
-            .map(|e| e.path.file_name().unwrap().to_str().unwrap().to_string())
-            .collect();
-        assert_eq!(names, ["report.md"], "the spill directory is not listed");
-
-        clean(0, None, false).unwrap();
-        assert!(
-            spill.join("shell-1.txt").exists(),
-            "keep = 0 still spares it"
-        );
-        assert!(!task.join("report.md").exists());
     }
 
     /// The one hard rule: an input a published bundle names is not scratch,

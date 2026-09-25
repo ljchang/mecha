@@ -319,11 +319,13 @@ server's history clear; `no-store` on every incognito route.
 ## 9. Build order
 
 0. **Fixes worth having in every chat** (independent, first; built in the PR
-   after #307): each served session spills into its own workspace
-   (`tool::spill_within` — not "removed at run end", as this line first
-   said: a spill is re-read on later turns of the same conversation, so its
-   lifetime is the session's), and `mecha work clean` sweeps week-stale
-   `$TMPDIR` spill directories one-shot runs leave; `log_dropped_reasoning` keeps its
+   after #307): each served session spills into its own directory under
+   the mecha home (`tool::session_spill_dir` — not "removed at run end", as
+   this line first said: a spill is re-read on later turns of the same
+   conversation, so its lifetime is the session's; and not inside the
+   workspace, which review found turns the jail's spill exception into an
+   escape through a planted symlink), and `mecha work clean` ages spilled
+   output out after a week; `log_dropped_reasoning` keeps its
    content-free fields (`reasoning_chars`, `looks_like_tool_call`,
    `finish_reason`) at `warn` — an empty turn is in no transcript, so that line
    is the only default-level record it happened — and moves the 400-character

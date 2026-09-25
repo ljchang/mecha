@@ -911,6 +911,10 @@ mod tests {
             fn enter(&self, _: &tracing::span::Id) {}
             fn exit(&self, _: &tracing::span::Id) {}
         }
+        // This claims the one process-wide subscriber slot for the whole lib
+        // test binary: a later test that installs a global subscriber of its
+        // own will find the slot taken and see nothing. Scope that test with
+        // `with_default`, or read events through this capture.
         static INSTALL: std::sync::Once = std::sync::Once::new();
         INSTALL.call_once(|| {
             // Nothing else in this crate's tests installs one; if something
