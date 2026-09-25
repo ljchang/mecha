@@ -1905,6 +1905,12 @@ only part that knows about both sides. Three decisions there:
   path, and a same-named sibling under the producer root is the wrong-bytes
   case to keep in mind when reviewing a Slack-staged publish.
 
+The board's taps (**Done**, **Drop**, **Next** on the `tasks` listing) are
+closures like any other surface's: they run `mecha tasks set` with `--surface
+slack`, are refused on a task closed since the card was composed, and reply
+with the closure record's readout — see *Closing a task is a recorded event*
+under Hooks.
+
 Reconnect is **make-before-break**: Slack rotates connections every few hours
 with about ten seconds' warning, and the replacement opens before the old one
 drains so no frame has nowhere to land. `link_disabled` is the exception —
@@ -2287,6 +2293,32 @@ now makes the move one recorded event:
   #293).
 - **`--surface` cannot claim `chat`**, and inside a run the flag is ignored:
   the surface of a run's closure is always `chat`.
+- **Slack closes with Done and Drop** (1c; `slack::actions::Action::TaskDone`
+  / `TaskDrop`, beside `TaskNext`). Each derives `mecha tasks set <id>
+  --status <literal> --surface slack --only-open`; the connector is a
+  systemd unit and no registered shell is above its child, so the tap is
+  rule 4 — the owner, on surface `slack` — and nothing a thread's model
+  authors can press it (the tap is a gated, signed owner, SLACK-ACTIONS §3).
+  **`--only-open` is the store-state guard SLACK-ACTIONS §5 asks of every
+  tap:** a card composed while the task was open, tapped after it was closed
+  elsewhere, is refused with nothing changed — Drop on a `done` task would
+  otherwise flip the verdict with no record (it crosses no line), and Next
+  would reopen it, which signs −1.0 against the session that did the work.
+  **The reply carries the readout from the record**, not from the child:
+  the executor parses only stdout (`kg_task_update`'s answer) and reads
+  stderr only on failure, so the appraisal printed there never reached
+  Slack. It now reads `ClosureStore::move_since` — the latest transition,
+  to the tapped status, written no earlier than the tap began, the same
+  bound the web board uses — and says which of *readout*, *nothing to
+  appraise*, *no readout written*, *no record found* or *unreadable* it is.
+- **The graph TUI closes through `tasks set` when opted in** (1c's graph
+  half, ruled A3 on 2026-09-25; ljchang/mecha-graph#21). With `[board]
+  close_through = "mecha"` in `~/.mecha-graph/config.toml`, `mecha-graph
+  tui` hands every close and reopen to `mecha tasks set … --surface
+  graph-tui` (`--only-open` on a close) and refuses — nothing written — when
+  the program is missing or the TUI is not on the default graph database.
+  Not opted in, it writes status directly as before, and that write is
+  still out of band: `settle_uncertain`'s three-way read exists for it.
 - **Reopen is the same event reversed** (`move: reopen`, `undoes` naming the
   closure it undoes) and fires `task_reopened`. The appraisal reads both back
   (1d, `appraisal::of_session`'s closure arm): a standing `done` closure is

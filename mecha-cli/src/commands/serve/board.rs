@@ -311,10 +311,7 @@ fn closure_readout(
 ) -> Option<serde_json::Value> {
     use mecha_core::closure::{ClosureStore, Entry};
     let store = ClosureStore::open_existing_default()?;
-    let (t, readout) = store.latest_with_readout(task).ok()??;
-    if t.to != to || t.at < began {
-        return None;
-    }
+    let (t, readout) = store.move_since(task, to, began).ok()??;
     let (readout, follow_up_staged, project) = match readout {
         Some(Entry::Readout {
             readout,
