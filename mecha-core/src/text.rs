@@ -4,8 +4,8 @@
 //! multi-byte character, and the same `&text[start..=end.min(start + 400)]`
 //! slice — cutting an unparseable model reply down for an error message —
 //! was written at three call sites (`frontdoor::extract`,
-//! `mail_triage::classify_with`, `appraisal::parse_appraiser_verdict`)
-//! before any of them guarded it. One of those three reads a stranger's free
+//! `mail_triage::classify_with`, and the counts-only appraiser's verdict
+//! parser, retired in row 2a-3) before any of them guarded it. One of those three reads a stranger's free
 //! text through the front door's extractor: an em-dash or a curly quote
 //! landing on that offset in a malformed extraction aborted the process, in
 //! the module whose whole job is being the safe boundary for outside input.
