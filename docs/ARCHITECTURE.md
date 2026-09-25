@@ -5222,8 +5222,37 @@ call per session). Its invariants:
   prints the prose with its taint label, control characters stripped line
   by line. Without an id it prints the store's counts, never its prose
   (`text_appraisals` in `--json`).
-- **`expected_act`** is R16's closed set beside the prose prediction, for
-  2b-2 to score against the owner's recorded act. It is lenient on load.
+- **`expected_act`** is R16's closed set beside the prose prediction (R33).
+  It is lenient on load.
+
+**The appraisal's prediction is scored against the owner's act, and only
+the owner's** (row 2b-2, R33, R37).
+
+- **The act, read by the harness.** `appraisal_store::observe` reads the act
+  on the appraised session's output from the stores that record it: the
+  session's model-authored drafts (released unchanged, edited, rejected),
+  closure records naming the session (closed, reopened), and workflow owner
+  dispositions for it (closed, reopened; a cancel reads as rejected). The
+  first act by time is the act.
+- **"No act" needs R37's window to close.** The window opens at the
+  session's end — `session_ended_at`, the transcript's last write taken at
+  the appraiser's read, or `at` for an older row, which can only close the
+  window late. It lasts the output's store patience
+  (`doctor::Patience::for_store` on `outbox_age` when the session staged
+  drafts, else `NO_STORE_PATIENCE_HOURS`). An act after the window is not
+  the act.
+- **Unknown is never "no act".** An unreadable outbox, closure or workflow
+  store, an unreadable charter where the outbox's patience is needed, or a
+  resolved draft with no readable time makes the answer `Unknown`, and
+  nothing is written.
+- **Each resolved score is written once**, under the store's lock, to
+  `scores.jsonl`, fixed at resolution: a later charter edit does not
+  re-score it. A miss is `surprise: true` beside the appraisal's `clean`,
+  situation and anchor, so a reader that acts (2e-6's priority) can take
+  clean ones only.
+- **Who writes and who reads.** `mecha distill` scores what has resolved
+  each pass, with no model call. `sessions appraise` reads coverage
+  (`expectations` in `--json`), and `hit_rate` is `None` over no scores.
 
 **The counts-only appraiser is retired into it** (row 2a-3, R25). Before,
 `appraise_with_model` ran a quarantined pass over `AppraiserEvidence` behind
