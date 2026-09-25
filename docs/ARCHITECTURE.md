@@ -4098,6 +4098,78 @@ when touching it:
   where it used to render `new Date(undefined)`. `mecha workflow commit`
   still requires both dates; an evidence commitment is undated unless the
   owner wrote dates on a record-shaped one.
+- **The situation brief is recorded, never sent (B1, built as 1h).**
+  `brief::SituationBrief` is what situation a run started in — the goal
+  chain, the board as counts and pointers, each pending commitment, local
+  time and quiet hours, seats, other runs in flight, `/slots` occupancy, a
+  voice call, the budget — assembled with no model call by
+  `brief::assemble_for_run` on the delegated, trigger and web doors (after
+  the anchor is seeded and the budget set) and carried on `RunContext::brief`
+  to `RunStats::brief`. **The loop copies it and never reads it**, so no
+  request is built from it, and the G4 scan below fails if any field, pointer
+  or count of it reaches either encoder; phase 3 delivers it into the first
+  user turn as words, never the prefix. Five things to keep. **The board is
+  read by the harness** (`setup::read_board_for_brief`, one `kg_task_list`
+  through the run's own surface whose answer never enters the conversation;
+  the same open-only read on every door — `tasks work` once reused its
+  closed-inclusive read, whose `truncated` could be set by closed history
+  alone — and, like every harness call to a tool, outside `pre_tool` hooks,
+  the policy rules and the approver, so a hook written to see graph reads
+  does not see this one: deliberate, and now on the interactive door too)
+  **and reduced by `brief::board_of` to counts and task ids** — no row's
+  name, no `waiting_on` (a person's name), no id that is not one token, and
+  no row string whole: a status narrows to the closed set or `other` and a
+  date is re-emitted from its parse, the run's own row included (a `due_at`
+  is writable through `kg_task_update`, and a front-door triage mints rows
+  from strangers' requests — found on review); a model fetching the same
+  rows through `kg_*` would arm taint. Runs with no brief are counted by the
+  session's recorded `kind`, never its title (`mecha run` titles a session
+  with the prompt's first words — found on review). **Every
+  reader that cannot run says so** (`Unread { why }`, in the harness's own
+  words, never a server's error text), a run with no anchor records
+  `GoalChain::NoAnchor`, and no absent file reads as a setting: no
+  `attention.toml` is `Quiet::Unset`, not the digest's 22–08 UTC default,
+  and a seat pool or marker directory that exists but cannot be read is
+  unread, which is why the brief reads through `Permits::read_live` and
+  `RunMarkers::live_names` rather than `live()`, whose empty list serves a
+  caller deciding whether to start — and one file down, a permit or marker
+  that will not parse is counted as `unreadable` beside the reading (it may
+  be a live seat or run), which reads the field as unread rather than one
+  fewer (found on review; `Permits::take` now writes temp-and-rename, so a
+  reader never sees a half-written permit and `live()` never sweeps one out
+  from under its holder). **The commitments come through the 1f
+  accessors** (`Homeostat::in_run_commitments`, withdrawn stores named),
+  never `workflow::Commitment` or `anticipation::RecordedCommitment` (the
+  workflow store is not read for guilt, so an undated workflow commitment
+  cannot reach the brief as a zero; an item whose own stamp will not parse
+  is recorded with no age and `owed: None`). **Each field is
+  lenient on its own** (`brief::lenient`), so a variant a later build adds
+  costs that field, and `SituationBrief::fields` tells the readout read,
+  unread and missing apart — `situation_brief` in `sessions health`, with
+  runs that carry no brief counted by surface. **The web door re-samples
+  the homeostat per turn**: it had inherited the snapshot `serve` took when
+  it built its agent, so every web turn recorded the backlog of the morning
+  the daemon started and a delta against it (found building 1h; the TUI,
+  `chat`, Slack and the unhosted voice slots still hold one snapshot per
+  process). **A person waits on the web door**, a spoken turn included, so
+  there the re-sample, the board read and `/slots` run together, and the
+  re-sample and the board both get `BRIEF_BOARD_TIMEOUT_INTERACTIVE` (2s,
+  against the unattended doors' 10s): the brief's I/O costs the slowest
+  read, never the sum, and a slow graph server or a large store walk costs
+  the brief a field rather than the person their answer (found on review).
+  A field's completeness counts a part its reader could not read as unread
+  — a served line ranked against a charter that did not load, a project
+  whose open count could not be taken, a board the server truncated or with
+  rows of no readable status — and a store whose waiting items outnumber
+  the 1f record's cap says so (`StoreBrief::capped`), since its `owed` is
+  then a floor. Statuses come from `closure::TASK_STATUSES` and
+  `is_closed_status`, the one mirror of the graph's set. Two readers
+  are new: `/slots` for a `kind = "local"` provider,
+  unread (never idle) on a renamed field, an empty list or `--no-slots`, on
+  `scripts/model-idle.sh`'s rule; and a voice call, from the stamp the
+  facade writes on every spoken turn (`brief::VoicePresence`, under
+  `runs/`), read as a call within `VOICE_CALL_WINDOW_SECS` — the facade sees
+  utterances, not calls, so five minutes is argued, not measured.
 - **The doctor reads against the owner's number, and names the line.**
   `doctor::Patience` is the harness constant (48h drafts, 24h questions, 72h
   requests) or the setpoint of the charter line whose sensor watches that
@@ -4601,8 +4673,14 @@ to catch it out of both, so the run test's silence is a finding. Budget facts �
 turns left, context remaining — are R21's permitted numbers and are not scanned
 for; the diagnostician's and the appraiser's quarantined briefs carry numbers by
 design and are not run requests. The scan only sees values the fixture holds:
-a new sensor, or a new path that could print one (a status line, the situation
-brief), extends the fixture's `world()` in the same change.
+a new sensor, or a new path that could print one (a status line), extends the
+fixture's `world()` in the same change. The situation brief did (1h): `world()`
+carries one built by the real producers over a 2,917-row board, the run
+carries it on `RunContext::brief`, the test asserts it lands on the record
+whole, and the scan adds its JSON, every field's JSON, its pointers, its
+counts, its local time and its voice reading — leaving out the zone name and
+weekday, which `date_context` already sends. When phase 3 delivers the brief,
+this scan is where its words are checked for numbers R21 does not allow.
 
 **Context retrieval preserves scope and provenance.** `goal_context` is private,
 on demand, and bounded to four active applicable rules and two historical examples.

@@ -2257,7 +2257,7 @@ pub(crate) fn steer_pump(
 /// *am I running* — and a second root would be a second thing to sweep.
 pub(crate) fn permits() -> Result<mecha_core::permit::Permits> {
     Ok(mecha_core::permit::Permits::new(
-        mecha_core::work::mecha_home()?.join("permits"),
+        mecha_core::permit::dir_under(&mecha_core::work::mecha_home()?),
         mecha_core::permit::DEFAULT_BACKGROUND_PERMITS,
     ))
 }
@@ -2271,7 +2271,7 @@ pub(crate) fn markers() -> Result<mecha_core::runmarker::RunMarkers> {
 /// Where task-run markers live under a mecha home — said once, for
 /// [`markers`] and for the closure guard's walk over every guard home.
 fn markers_dir_under(home: &std::path::Path) -> std::path::PathBuf {
-    home.join("taskruns")
+    mecha_core::runmarker::task_dir_under(home)
 }
 
 /// The agent, as the board names it. A node of kind `agent`, shipped with the
@@ -2910,6 +2910,22 @@ async fn work(
     if cx.budget.max_turns.is_none() {
         cx.budget.max_turns = Some(TASK_MAX_TURNS);
     }
+    // The situation brief (B1, 1h): recorded on the run, delivered nowhere.
+    // The board is read again, as the other two doors read it — open tasks
+    // only — rather than reusing the closed-inclusive read above: a server
+    // caps a long list after sorting closed rows last, so that answer can
+    // say `truncated` over closed history alone, and the brief would record
+    // this door's board as a floor where every open row was present (found
+    // on review). It is also the board after the move, which is the board
+    // the run is handed.
+    setup::brief_run(
+        &prepared.agent,
+        &prepared.config,
+        &prepared.provider_name,
+        &mut cx,
+        &convo,
+    )
+    .await;
     let outcome = crate::interrupt::run_interruptible_watching(
         &prepared.agent,
         &cx,

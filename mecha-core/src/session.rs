@@ -751,6 +751,20 @@ pub struct RunStats {
     /// afternoon — see `GOAL-SYSTEM-DESIGN.md` §12.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub homeostat: Option<crate::homeostat::Homeostat>,
+    /// The situation brief the run started with (`APPRAISAL-WIRING-DESIGN.md`
+    /// B1, built as 1h): the goal chain, the board as counts and pointers,
+    /// each pending commitment, local time and quiet hours, seats, runs in
+    /// flight, slot occupancy, a voice call, the budget. Recorded, never
+    /// sent (`crate::brief`). `None` on a row from before the field, on a
+    /// front-end that assembles none, and on a brief this build cannot read
+    /// (`brief::lenient_brief`) — each field inside is lenient on its own,
+    /// so a variant a later build adds costs that field, not the brief.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::brief::lenient_brief"
+    )]
+    pub brief: Option<Box<crate::brief::SituationBrief>>,
     /// What had entered the conversation by the end. Recorded here as well as
     /// in [`Record::Taint`] because this record is read on its own, by a
     /// reader that is counting rather than reconstructing.
@@ -839,6 +853,13 @@ impl RunStats {
             }
             (None, Some(theirs)) => self.homeostat = Some(theirs.clone()),
             _ => {}
+        }
+        // A condition, like the homeostat's: the first run that assembled
+        // one keeps it — an episode's later runs started in later situations,
+        // and a fold that kept the last would describe a start that is not
+        // the episode's.
+        if self.brief.is_none() {
+            self.brief = other.brief.clone();
         }
         self.turns += other.turns;
         self.usage.add(&other.usage);
@@ -1045,6 +1066,7 @@ impl RunStats {
                     .count() as u32,
             ),
             homeostat: o.homeostat.clone(),
+            brief: o.brief.clone().map(Box::new),
             taint: o.taint,
         }
     }
@@ -2079,6 +2101,7 @@ mod homeostat_record_tests {
             blocked_sends: 0,
             taint: crate::agent::Taint::default(),
             homeostat: None,
+            brief: None,
             stop_cause: crate::agent::StopCause::Completed,
             compactions: 0,
             usage_complete: true,
@@ -3131,6 +3154,7 @@ mod tests {
         let outcome = RunOutcome {
             duration_secs: None,
             homeostat: None,
+            brief: None,
             context_overflows: 0,
             boredom_notices: 0,
             step_escalations_attempted: 0,
@@ -3207,6 +3231,7 @@ mod tests {
             |turns: u32, calls: usize, errored: bool, ended_failed: bool, cause| RunOutcome {
                 duration_secs: None,
                 homeostat: None,
+                brief: None,
                 context_overflows: 0,
                 boredom_notices: 0,
                 step_escalations_attempted: 0,
@@ -3319,6 +3344,7 @@ mod tests {
         let mut incomplete = RunOutcome {
             duration_secs: None,
             homeostat: None,
+            brief: None,
             context_overflows: 0,
             boredom_notices: 0,
             step_escalations_attempted: 0,
@@ -3879,6 +3905,7 @@ mod tests {
             blocked_sends: 0,
             taint: crate::agent::Taint::default(),
             homeostat: None,
+            brief: None,
             stop_cause: crate::agent::StopCause::Completed,
             compactions: 0,
             usage_complete: true,

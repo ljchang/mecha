@@ -1695,6 +1695,82 @@ pub fn find_tool<'a>(
         .find(|t| t.name() == bare || t.name().ends_with(&format!("__{bare}")))
 }
 
+/// The board, read **by the harness** for the situation brief
+/// (`mecha_core::brief`, B1): one `kg_task_list` through the run's own tool
+/// surface, called here rather than by the model, so its answer never
+/// enters the conversation and arms no taint — the graph server is
+/// registered untrusted, and the same rows fetched by the model inside the
+/// run would. The answer goes to `brief::board_of`, which keeps counts and
+/// pointers and drops every row's prose.
+///
+/// `Err` is the reason in the harness's own words, never the server's: a
+/// refusal's text is the server's to write, and the reason is recorded.
+pub async fn read_board_for_brief(
+    registry: &Registry,
+    tctx: &mecha_core::tool::ToolCtx,
+    deadline: std::time::Duration,
+) -> std::result::Result<serde_json::Value, String> {
+    let Some(list) = find_tool(registry, "kg_task_list") else {
+        return Err("`kg_task_list` is not on this run's tool surface".into());
+    };
+    // Bounded: the brief is a record, and a graph server that hangs must
+    // cost the brief its board, never the run its start.
+    let call = list.call(serde_json::json!({ "include_closed": false }), tctx);
+    match tokio::time::timeout(deadline, call).await {
+        Err(_) => Err(format!(
+            "`kg_task_list` did not answer within {} ms",
+            deadline.as_millis()
+        )),
+        Ok(Err(_)) => Err("the `kg_task_list` call failed".into()),
+        Ok(Ok(out)) if out.is_error => Err("`kg_task_list` answered with an error".into()),
+        Ok(Ok(out)) => serde_json::from_str(&out.content)
+            .map_err(|_| "`kg_task_list` did not answer with JSON".into()),
+    }
+}
+
+/// How long the brief's board read may hold an unattended run's start — a
+/// delegated task or a trigger, where it is amortised over the run.
+pub const BRIEF_BOARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The same, for an interactive turn (a web chat, a spoken one): a person
+/// is waiting for the first word, so a slow graph server costs the brief its
+/// board after two seconds rather than the person ten (found on review).
+pub const BRIEF_BOARD_TIMEOUT_INTERACTIVE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The provider's address when it is a local llama-server — the one server
+/// here known to answer `/slots`, scoped the way `preflight_provider` scopes
+/// `/props` — and `None` for any other, which the brief records as having
+/// no slots of ours to count.
+pub fn local_server_for_brief(
+    config: &mecha_core::config::Config,
+    provider: &str,
+) -> Option<String> {
+    let (_, pcfg) = config.provider(Some(provider)).ok()?;
+    (pcfg.kind == "local").then(|| pcfg.base_url.clone())?
+}
+
+/// Assemble this run's situation brief and put it on the run's context —
+/// the one call the unattended front-ends make (`tasks work`, a trigger),
+/// after the anchor is seeded and the budget set, before the run. The board
+/// is read here, open tasks only, the same read on every door; the web door
+/// makes the same reads under the interactive deadline (`serve::chat`).
+pub async fn brief_run(
+    agent: &Agent,
+    config: &mecha_core::config::Config,
+    provider: &str,
+    cx: &mut mecha_core::agent::RunContext,
+    convo: &mecha_core::agent::Conversation,
+) {
+    let local = local_server_for_brief(config, provider);
+    // The two reads that wait on another process, taken together.
+    let (board, slots) = tokio::join!(
+        read_board_for_brief(agent.registry(), &cx.tools, BRIEF_BOARD_TIMEOUT),
+        mecha_core::brief::slots_for(local.as_deref()),
+    );
+    let brief = mecha_core::brief::assemble_for_run(agent, cx, convo, board, slots);
+    cx.brief = Some(Arc::new(brief));
+}
+
 /// Take a tool off a run's surface by its bare name, prefix or not.
 ///
 /// [`find_tool`]'s rule in the other direction, and it must stay that way:
