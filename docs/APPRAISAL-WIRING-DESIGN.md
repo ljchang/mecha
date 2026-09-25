@@ -780,6 +780,40 @@ one* (§7.4) — the unification changes which code computes guilt, not what may
 create a row. The wire formats are append-only, so the two old commitment
 shapes and the scalar stay readable leniently. Ruling R12.
 
+*Built as 1f:* `guilt::read_commitments` gives each staged draft, parked
+question and front-door request waiting on the owner its own value —
+`reading::excess` of its age over its patience (`doctor::Patience::for_store`:
+the age-kind line's setpoint on that store, else the doctor's 48h / 24h /
+72h) × `guilt::weight(rank)` = `1 / (1 + rank)`, a store no line watches
+ranked one past the last line — recorded per store on
+`Homeostat::commitments`, and `Homeostat::anticipated_guilt` is now
+`guilt::readout`, their maximum, taken at run start. Old rows keep the
+retired fold's number in the same field and still load;
+`Corpus::mean_anticipated_guilt` averages only rows carrying `commitments`,
+so the brief's mean is one formula's; `guilt_after_relief` is no longer
+written. `Decision`'s `ReviewCommitment` keys an age kind's line on its
+store's per-commitment guilt (`ToolCtx::goal_commitments`, through
+`Homeostat::in_run_commitments`, which drops a withdrawn line's store), and
+no consumer reads the readout — its one reader is the diagnostician's brief,
+whose line no longer says guilt moves with pressure. `workflow::Commitment`
+carries `expectation` and `consequence`, optional on the wire and written
+by `mecha workflow commit`. The invariants are `docs/ARCHITECTURE.md`'s
+"Guilt is per commitment". Left for later, named:
+
+- **The on-disk merge of the two commitment shapes.**
+  `anticipation::Commitment` (`{beneficiary, expectation, consequence}`,
+  strict owner input) keeps its own shape on the predictions it is already
+  recorded on; whether new predictions write the workflow record, and
+  whether old ones migrate, is the owner's call — a prediction whose
+  evidence stops parsing reads as unsupported history and blocks release.
+- **Workflow commitments in the guilt read.** No charter kind watches the
+  workflow store and the doctor has no constant for it; the commitment's
+  own `due_at` is the natural patience, which is a design choice, and the
+  store is absent on the live install.
+- **G2, A1, U1 and the retrospective label** read the same per-commitment
+  value when they are built (phases 3–4); nothing here builds them, and
+  `StoreGuilt` is the shape they read.
+
 #### X1. Keep the verdicts — extended by O4
 
 Every steer and validation probe writes a

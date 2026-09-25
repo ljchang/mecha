@@ -3926,12 +3926,12 @@ when touching it:
   `Unread`, not `Nothing`: `Corpus::scan` is `Ok` with `unreadable` counted
   and no rows for that, and the first cut read it as "no runs recorded"
   (found on review). `excess` is `e / (e + setpoint)` over the overshoot — zero within
-  the setpoint, half of maximal at twice it, never one — for the reason
-  `guilt::AGE_HALF_AT_HOURS` carries: a term that reaches `1.0` erases the
+  the setpoint, half of maximal at twice it, never one — for the reason the
+  retired guilt fold learned twice: a term that reaches `1.0` erases the
   others and the corpus reads a constant. A zero setpoint is refused at the
   parser, because nothing could ever be within it. **Recorded on
   `Homeostat::charter` at the start of every run**, from the *inherited*
-  backlog like `anticipated_guilt` (the charter is loaded there, global and
+  backlog like per-commitment guilt (the charter is loaded there, global and
   read-only, whether or not the prompt carried it); `None` is a row from
   before the field or a charter that did not load, `Some([])` a charter with
   no sensor, and a row whose readings this binary cannot parse loads as
@@ -3983,6 +3983,47 @@ when touching it:
   history. `sessions health` shows each line's level over-count beside
   the per-item variances and the delta counts (`charter_readings` in
   `--json`), the phase-1 readout this first produced.
+- **Guilt is per commitment, and the scalar is a readout (S7, R12, built as
+  1f).** A staged draft, a parked question and a front-door request
+  waiting on the owner are commitments **by construction** — a row in one
+  of those stores *is* the recorded commitment, so nothing new may create
+  one and a claim in fetched text still cannot (§7.4 did not move).
+  `guilt::read_commitments` reads them from the same `Backlog::survey` the
+  readings come from and gives each its own value: `reading::excess` of
+  its age over its **patience** — `doctor::Patience::for_store`, the one
+  definition the doctor's stuck-item findings use, so the owner's age-kind
+  setpoint on that store or else the harness constant (48h, 24h, 72h) —
+  times `guilt::weight` of the **rank** of that line, `1 / (1 + rank)`,
+  with a store no line watches ranked one past the last line (it must not
+  outweigh a store the owner put third; with no charter, weight one). The
+  front door is read as `requests_on_owner`, so a `needs_info` parked on
+  the stranger owes nothing — the retired scalar counted it. Recorded on
+  `Homeostat::commitments` per store (`guilt::StoreGuilt`: line, patience
+  as spelled, weight, `waiting` — `None` when unreadable — the undated
+  count, and up to `COMMITMENTS_RECORDED` items, undated first, then oldest);
+  `None` when the charter did not load, since patience and rank both come
+  from it. `Homeostat::anticipated_guilt` is now `guilt::readout`, the
+  largest per-commitment value (`None` when any store's maximum is
+  unknown), taken **at the start** off what the run inherited — `finish`
+  only takes the delta, and `guilt_after_relief` is no longer written.
+  Two formulas share the field, and `commitments` tells them apart: a
+  pre-1f row holds the old three-store OR (count, oldest age, context
+  pressure) and still loads, and `Corpus::mean_anticipated_guilt` averages
+  only rows that carry `commitments`, so the brief's mean is one formula's.
+  **No consumer reads the readout.** `Decision::assess` keys
+  `ReviewCommitment` for an age kind's line on `StoreGuilt::any_owed` of the
+  store that line weighs (handed in through `ToolCtx::goal_commitments`,
+  filled from `Homeostat::in_run_commitments`, which drops the store of a
+  withdrawn line beside the line), records the store's maximum as
+  `Gap::guilt`, and keeps the count kind on `Items::over` and the corpus
+  kind on its level; with no per-commitment record it falls back to
+  `Items::over`, which agrees for every age kind. The one reader of the
+  readout is the diagnostician's brief. `workflow::Commitment` carries the
+  absorbed `expectation` and `consequence` (optional on the wire, written
+  by `mecha workflow commit --expectation/--consequence`), while
+  `anticipation::Commitment` keeps its own shape on the predictions it is
+  already recorded on; the workflow store's commitments are not yet read
+  for guilt — no charter kind and no doctor constant gives them a patience.
 - **The doctor reads against the owner's number, and names the line.**
   `doctor::Patience` is the harness constant (48h drafts, 24h questions, 72h
   requests) or the setpoint of the charter line whose sensor watches that
@@ -4231,27 +4272,32 @@ refuse unsupported evidence-bearing runs until reconstruction is implemented.
 Silently dropping evidence would turn a different decision context into a false
 counterfactual result. Forecast calibration and efficacy remain unmeasured.
 
-**The backlog anticipated-guilt sensor reads only stores mecha itself writes.** An expectation is a
-*recorded* commitment (`outbox`, `questions`, `frontdoor` — exactly `backlog`'s
-own three), never a claimed one. That is the whole safety argument for §7.2's
-attack: a charter line like "don't let a colleague down" is a lever an injection
-can pull only if guilt can be talked into existing, and a sentence in a fetched
-page cannot write a row into `OutboxStore`. Do not widen this to the graph's
-`due_at` without also paying for a subprocess in the path of every run.
+**Anticipated guilt reads only stores mecha itself writes.** An expectation is a
+*recorded* commitment (`outbox`, `questions`, the front door's requests waiting
+on the owner — `backlog`'s own three), never a claimed one. That is the whole
+safety argument for §7.2's attack: a charter line like "don't let a colleague
+down" is a lever an injection can pull only if guilt can be talked into
+existing, and a sentence in a fetched page cannot write a row into
+`OutboxStore`. 1f moved guilt to one value per commitment and moved nothing
+about what may create one. Do not widen this to the graph's `due_at` without
+also paying for a subprocess in the path of every run.
 
-**Two sensors have a reader and no behavioural consumer, on purpose** — the
-homeostat's recorded pressure and `anticipated_guilt` are recorded on every
-run and rendered into the diagnostician's brief (`diagnose::Evidence`: peak
-pressure, mean guilt; withheld when `[agent] sensors_in_brief` is off, a
-stage lever), and nothing narrows a run on either. **Keep the two guilts
-apart.** `anticipated_guilt` is one scalar over the whole backlog's count
-and oldest age, and on a store with stale drafts it saturates (0.95–1.0 on
-every live run as of 2026-09-24). The charter reading (`Homeostat::charter`,
-`reading.rs`'s line-specific guilt) is per sensored line against the owner's
-setpoint, and it has more readers than the brief: `Decision::assess`, whose
-advice reaches the model only with `goal_guidance` and which reads the
-per-item form of every line not withdrawn as saturated, the doctor's
-saturation finding, and the owner's charter surfaces. Boredom's notices do reach the model,
+**Two readouts have a reader and no behavioural consumer, on purpose** — the
+homeostat's recorded pressure and the `anticipated_guilt` readout are recorded
+on every run and rendered into the diagnostician's brief (`diagnose::Evidence`:
+peak pressure, mean guilt; withheld when `[agent] sensors_in_brief` is off, a
+stage lever), and nothing narrows a run on either. **The guilt a consumer reads
+is per commitment** (`Homeostat::commitments`, the bullet above): the readout
+is only their maximum, and the scalar it replaced — one OR over the whole
+backlog's count, oldest age and context pressure — read 0.95–1.0 on every live
+run as of 2026-09-24, because the oldest draft pinned it. Since 1f the brief's
+guilt line no longer says it moves with pressure; it does not. The charter
+reading (`Homeostat::charter`, `reading.rs`'s line-specific level) is per
+sensored line against the owner's setpoint, and it has more readers than the
+brief: `Decision::assess`, whose advice reaches the model only with
+`goal_guidance` and which reads per-commitment guilt for an age kind's line and
+the per-item form of the others, for every line not withdrawn as saturated, the
+doctor's saturation finding, and the owner's charter surfaces. Boredom's notices do reach the model,
 in-run, as a templated line; they are the one sensor here with a consumer.
 An earlier version of this paragraph said all three shipped with no consumer,
 which was false against the tree by the time it was written. `runlog`'s rule
@@ -4470,9 +4516,11 @@ pins `Message::planning`, and
 pins block text — a fixture run with every sensor kind past its setpoint and
 `goal_guidance` on is steered, recorded to a session file, resumed, and every
 request it sent is scanned through both encoders' whole bodies (system prompt
-and tool specs included) for every rendering of its readings, setpoints, guilt,
-load and valence (`LineReading::summary`, `render_secs`, `Valence::compact`,
-fixed precisions, the stored JSON). Its control,
+and tool specs included) for every rendering of its readings, setpoints, guilt
+(the readout and every non-zero per-commitment value, which the fixture's
+stores each hold past their patience — and which also ride as `Gap::guilt`
+planning metadata), load and valence (`LineReading::summary`, `render_secs`,
+`Valence::compact`, fixed precisions, the stored JSON). Its control,
 `a_status_line_carrying_a_sensor_reading_is_caught_in_a_tool_result_or_a_user_turn`,
 injects each rendering into a tool result and a user turn and requires the scan
 to catch it out of both, so the run test's silence is a finding. Budget facts —

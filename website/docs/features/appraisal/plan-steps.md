@@ -142,8 +142,10 @@ goal_guidance = false  # opt in to fixed planning advice
 ```
 
 With `goal_guidance = true`, plan updates receive advice based on confirmed-goal
-alignment, remaining work, verification gaps and ordered charter sensor readings.
-The sensor numbers stay outside model prompts. Guidance is experimental and has
+alignment, remaining work, verification gaps and ordered charter sensor readings
+— for a line whose age sensor watches drafts, questions or requests, whether any
+[pending commitment](/docs/features/appraisal/reference#anticipated-guilt-and-why-it-reads-only-mechas-own-stores)
+it weighs is past its patience. The sensor numbers stay outside model prompts. Guidance is experimental and has
 not shown a benefit: the first Qwen 3.6 35B pilot tied at 36/36, and on harder
 tasks with a confirmed goal it did worse (see [the full pilot record](#the-pilot-record)).
 Use `--no-goal-guidance` to disable it for a comparison run.

@@ -116,7 +116,8 @@ counters:
 | `mem_available_kb` | `MemAvailable`. On unified-memory hardware this is the *only* memory sensor — `nvidia-smi` reports `[N/A]` for GPU memory on GB10, because there is one pool. |
 | `backlog`, `backlog_delta` | What was waiting on you when the run began, and whether the run moved it — net per store, and item by item (`flow`: how many the run added and how many it cleared, which a net of zero cannot tell apart from nothing happening). |
 | `peak_prompt_tokens`, `peak_context_pressure` | The **maximum** over the run's turns, not a sum — how close it came to the window. |
-| `anticipated_guilt` | A proxy for predicted error against someone else's expectation. |
+| `commitments` | Every pending commitment when the run began — each staged draft, parked question and front-door request waiting on you — with its own guilt value, grouped by store. Absent on older records or when the charter could not be loaded. |
+| `anticipated_guilt` | The largest of those per-commitment values: a readout, not something anything decides on. On records from before per-commitment guilt it holds an older single-number formula. |
 | `charter` | Readings of sensored charter lines when the run began; absent on older records or when the charter could not be loaded. A reading has [five states](/docs/features/appraisal/charter), and a missing one never counts as meeting the setpoint. Beside the level each carries a per-item reading (how many items wait, how many are past the setpoint), the run's own delta on that line's store, and whether the line was withdrawn from the run as saturated. |
 
 Three rules it inherits, each of which is a bug if undone:
@@ -135,11 +136,30 @@ Three rules it inherits, each of which is a bug if undone:
 
 > An expectation is a **recorded** commitment, never a claimed one.
 
-The sensor folds how long the oldest recorded commitment has waited against how
-much room the run had to act on it — and it reads exactly the stores the backlog
-already reads: [staged drafts](/docs/features/security/outbox), open questions, and
-[front-door](/docs/features/public-surface/frontdoor) requests accepted for triage. Never a
-third party's assertion that mecha owes them something.
+Guilt is computed **per commitment**, from exactly the stores the backlog
+already reads: [staged drafts](/docs/features/security/outbox), parked questions, and
+[front-door](/docs/features/public-surface/frontdoor) requests waiting on you. A row in
+one of those stores *is* the commitment; nothing else can create one, and never
+a third party's assertion that mecha owes them something.
+
+Each commitment's value is how far past its **patience** it has waited, times
+the **rank** of the charter line that sets that patience:
+
+- **Patience** is the setpoint of the [charter line](/docs/features/appraisal/charter)
+  whose age sensor watches that store — `outbox_age`, `question_latency` or
+  `request_closure` — or, where no line does, the same default `mecha doctor`
+  uses: 48 hours for a draft, 24 for a question, 72 for a request.
+- **Excess** is zero within the patience, half at twice it, and approaches but
+  never reaches one.
+- **Rank** weighs it: the top line counts in full, the second half as much, the
+  third a third. A store no line watches ranks below every line you wrote.
+
+A request parked on the requester (`needs_info`) owes nothing and carries no
+guilt. The recorded `anticipated_guilt` is only the largest value, kept for
+the diagnostic brief. The one in-run reader, the optional
+[planning guidance](/docs/features/appraisal/plan-steps), asks for a review
+when a commitment weighed by a charter line is past its patience, and never
+shows the model the number.
 
 That distinction is the entire safety argument. A charter line like *"don't let
 a colleague down"* is a lever an injection can pull only if guilt can be talked
