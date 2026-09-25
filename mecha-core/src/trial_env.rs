@@ -62,15 +62,15 @@ pub const MACHINE_TABLES: [&str; 7] = [
     "search",
 ];
 
-/// Tables a checked-out file may never set: the four a project layer is
+/// Tables a checked-out file may never set: the five a project layer is
 /// stripped of (`Config::merge_file`), for the reason given there — a file
 /// that arrives with a cloned repository must not name the Slack surface,
-/// the web surface, the mailbox, or `[harness] source_dir`, the authority a
-/// `ruminate` stage's diagnostician reads on which protections are
-/// load-bearing. An environment directory is resolved against a checkout,
+/// the web surface, the mailbox, the image server model-written prompts go
+/// to, or `[harness] source_dir`, the authority a `ruminate` stage's
+/// diagnostician reads on which protections are load-bearing. An environment directory is resolved against a checkout,
 /// so it is refused them outright rather than stripped with a warning
 /// (found on review).
-pub const OPERATOR_ONLY_TABLES: [&str; 4] = ["harness", "messages", "slack", "web"];
+pub const OPERATOR_ONLY_TABLES: [&str; 5] = ["harness", "image", "messages", "slack", "web"];
 
 /// Marks a finished store build, so a crash mid-build is a rebuild, not a
 /// half-seeded world.
@@ -816,9 +816,10 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
                 "{body}: {err:#}"
             );
         }
-        // And the four a checked-out file never sets.
+        // And the five a checked-out file never sets.
         for body in [
             "[harness]\nsource_dir = \"/elsewhere\"",
+            "[image]\nurl = \"http://127.0.0.1:9999\"",
             "[messages]\nenabled = true",
             "[slack]",
             "[web]",
