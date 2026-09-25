@@ -381,6 +381,10 @@ workspace**. Six decisions, each a bug if undone:
   interrupts only when the queue says *this* job is running: an older
   ComfyUI ignores `/interrupt`'s `prompt_id` and stops whatever executes.
 
+**Deploy order: binaries first, then `[image]`.** `ConfigLayer` denies
+unknown fields, so a binary older than this section refuses a config that has
+it — every mecha process, the cron triggers included.
+
 The model cannot see what it made — images enter a conversation on user turns
 only (§Images) — so the result says so and hands the seed back: revising is
 an edited prompt with the same seed. The web chat shows the picture under the
