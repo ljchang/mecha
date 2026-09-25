@@ -4771,7 +4771,37 @@ future schemas. `prepare_probe_in`, `mismatch::validate_recording`,
 `harness_probe::prepare_episode` (every recorded configuration), and replay
 refuse unsupported evidence-bearing runs until reconstruction is implemented.
 Silently dropping evidence would turn a different decision context into a false
-counterfactual result. Forecast calibration and efficacy remain unmeasured.
+counterfactual result. Efficacy remains unmeasured.
+
+**Every resolved prediction is a calibration point, and coverage comes before
+any rate** (`APPRAISAL-WIRING-DESIGN.md` X5, row 2b-1).
+`anticipation::Calibration::of` scores each prediction in the outbox by the
+response its assessment chose and by each concern kind it named.
+
+- **Only an owner-evidenced prediction is a forecast.** Staging writes a
+  `Source::Harness` placeholder from empty evidence on every model-authored
+  message. It always reads `clarify` and encodes nothing about the draft, so
+  it is counted in `harness_placeholders` and in no row. Pooled, it doubled
+  the coverage denominator, and a draft released without `outbox anticipate`
+  scored its placeholder as a `clarify` point (found on review of #319).
+- **A prediction is a point only when an outcome resolves it.** That means
+  `prediction_resolution` is `Observed` — the prediction the draft was
+  released under — and the active outcome names it.
+- **A materialised concern needs no further check.** An exposed error, a harm
+  or a missed expectation is the owner seeing it.
+- **A clean outcome needs a confirmed delivery** (`OutboxItem::delivery_confirmed`:
+  sent, and the last attempt `Delivered` by the release's acknowledgement or
+  by `outbox reconcile`). Without one, it is counted `delivery_unconfirmed`
+  and is not a point.
+- **Every other prediction is counted by why it is not yet a point**, by its
+  `Resolution`, so "no outcome yet" is coverage and never a calibration of
+  zero.
+- **`materialized_rate` is `None` over no points**, and every response and
+  kind is always present.
+- **The readout is store-wide.** `sessions appraise` prints the line and
+  carries `predictions` in `--json`, whatever `--days` narrowed the sessions
+  to, because an outcome can arrive long after its session. A short outbox
+  read marks every count a floor.
 
 **Anticipated guilt reads only stores mecha itself writes.** An expectation is a
 *recorded* commitment (`outbox`, `questions`, the front door's requests waiting
