@@ -653,6 +653,11 @@ pub fn triggers_broken_by(charter: &crate::charter::Charter) -> Vec<BrokenLink> 
         .unwrap_or_default()
 }
 
+/// The trigger store's directory under a mecha home, and its markers'
+/// directory under the store.
+const STORE_DIR: &str = "triggers";
+const LOCKS_DIR: &str = "locks";
+
 pub struct TriggerStore {
     root: PathBuf,
     /// Where an optional `serves` is checked. `None` is the owner's charter
@@ -677,7 +682,15 @@ impl TriggerStore {
         if let Ok(dir) = std::env::var("MECHA_TRIGGERS_DIR") {
             return Ok(PathBuf::from(dir));
         }
-        Ok(crate::work::mecha_home()?.join("triggers"))
+        Ok(crate::work::mecha_home()?.join(STORE_DIR))
+    }
+
+    /// Where the trigger store under a mecha home keeps its run markers —
+    /// for a reader that must look under more than one home (the closure
+    /// guard's `live_run_pids`), so the layout is said once, here (review of
+    /// #294).
+    pub fn locks_dir_under(home: &Path) -> PathBuf {
+        home.join(STORE_DIR).join(LOCKS_DIR)
     }
 
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
@@ -1030,7 +1043,7 @@ impl TriggerStore {
     }
 
     fn locks_dir(&self) -> PathBuf {
-        self.root.join("locks")
+        self.root.join(LOCKS_DIR)
     }
 
     /// The markers for this store's runs.
@@ -1556,6 +1569,16 @@ mod tests {
             "{broken:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_locks_under_a_home_are_the_ones_a_store_there_writes() {
+        let home = std::path::Path::new("/nonexistent/mecha-home");
+        let store = TriggerStore {
+            root: home.join(STORE_DIR),
+            charter: None,
+        };
+        assert_eq!(TriggerStore::locks_dir_under(home), store.locks_dir());
     }
 
     #[test]
