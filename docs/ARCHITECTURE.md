@@ -334,6 +334,78 @@ fallback answering a question about a picture it cannot see would be the
 quiet one. Pair a sighted primary with sighted fallbacks, or accept that
 fallback turns on image conversations fail.
 
+## Image generation
+
+`imagegen.rs` registers `image_generate` when `[image]` is configured: the
+model supplies a prompt, an optional negative prompt, a size from a closed set
+and an optional seed; a local server (ComfyUI running Qwen-Image 2.1 today)
+renders it; the PNG lands at `images/<stamp>-<seed>.png` in **the run's own
+workspace**. Six decisions, each a bug if undone:
+
+- **A builtin, not an MCP server, because of where the file lands.** An MCP
+  server is spawned once in one directory (`McpTool::fixed_workspace`), while
+  `mecha serve` jails each chat session separately and serves
+  `/api/chat/{key}/file` from that jail only — a server's output would sit
+  where the page cannot fetch it. A builtin writes through `ToolCtx::resolve`
+  into the jail the call carries. (MCP's 120 s `REQUEST_TIMEOUT` would also
+  have cut off any generation that loads the model cold.)
+- **The model never authors the workflow.** ComfyUI's `/prompt` runs any node
+  graph it is given, custom nodes included, so `comfy_graph` is fixed in code
+  and the prompt reaches it as a JSON string value. The tool is typed values
+  in, bytes out.
+- **No egress, earned in code.** The schema has no destination and
+  `loopback_url` refuses any server that is not this machine, and the client
+  follows no redirect and uses no proxy — a 307 on `/prompt` would re-send the
+  prompt wherever it pointed — so the `Capabilities::default()` declaration
+  cannot be configured into a lie, and
+  image generation keeps working in a conversation holding mail. `[image]` is
+  stripped from project layers, loudly, like `[web]`: a cloned repository must
+  not choose where model-written prompts go.
+- **Refuse to start without memory headroom** (`min_available_mb`, 16 GB). On
+  the GB10 the GPU allocates from the one pool everything else uses; the first
+  generation on this box, beside `llama-server` and a parallel link, was a
+  global OOM that killed `llama-server` and took the machine down. An
+  unreadable `/proc/meminfo` refuses rather than passes. After
+  `unload_after_secs` of idleness the tool asks the server to `/free` its
+  models, so ~15 GB is not held between requests. The timer lives in the
+  mecha process, so it serves `mecha serve` and the TUI; a one-shot
+  `mecha run` exits first and leaves the models loaded until the next
+  long-lived generation or a server restart.
+- **Read-only, by the owner's ruling (2026-09-25).** Web chats start
+  read-only, and a picture should be one request in any of them. The tool
+  changes nothing of the owner's: it creates new files under `images/` in the
+  run's own workspace and never opens an existing one (`create_new`), which is
+  `todo`'s footing. The cost, stated: an unattended trigger run with `[image]`
+  configured can generate too — GPU time, bounded by the memory check.
+- **Cancel reaches the server.** The call polls a job rather than holding one
+  request open; on the run's cancel token it deletes the job from the queue
+  and interrupts it, so Ctrl-C stops the GPU, not just the wait. It
+  interrupts only when the queue says *this* job is running: an older
+  ComfyUI ignores `/interrupt`'s `prompt_id` and stops whatever executes.
+
+**Deploy order: binaries first, then `[image]`.** `ConfigLayer` denies
+unknown fields, so a binary older than this section refuses a config that has
+it — every mecha process, the cron triggers included.
+
+The model cannot see what it made — images enter a conversation on user turns
+only (§Images) — so the result says so and hands the seed back: revising is
+an edited prompt with the same seed. The web chat shows the picture under the
+call, reading the path off the result's first line (`image: images/…png`),
+matched strictly so no other text in a preview is taken for a path to fetch
+(`web/test/generated-image.mjs`). The TUI shows the path.
+
+**The request is shaped like stable-diffusion.cpp's API, not ComfyUI's.**
+`Request` is prompt, size, steps, seed — model-agnostic — because that is the
+contract a second backend must meet, and ComfyUI's graphs change per model.
+The engine was chosen by measurement on 2026-09-25 (1024², cfg 1, **25 steps on
+both engines** — the shipped default is 40, which runs about 65–70 s warm):
+ComfyUI 42 s warm and 15 GB peak, spelling a sign right 3 of 3 times;
+stable-diffusion.cpp 71–80 s and 20–23 GB, right about half the time, and five
+days into its Qwen-Image 2.1 support. Its API is the better long-term fit and
+it becomes the second adapter when a re-run closes the gap. mistral.rs (FLUX
+only, no quantized diffusion) and candle (no Qwen-Image) could not run the
+model at all.
+
 ## Security model
 
 **The full trifecta map lives in `docs/TRIFECTA.md`** — the four ways a
