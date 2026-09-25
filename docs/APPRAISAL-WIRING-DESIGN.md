@@ -992,7 +992,9 @@ says "could not be read", a missing one says so, a floor says "at least";
 left out by stated rule. Later turns: the loop folds when the rendering
 differs from the **latest** brief in the transcript, so a web chat that is
 handed a fresh brief per turn says an unchanged situation once and a
-changed one again, append-only. A compaction cut strips the brief from the
+changed one again, append-only — time, voice, context used and `/slots`
+occupancy are bands, so only the board, seat holders and runs in flight
+re-fold it. A compaction cut strips the brief from the
 head, keeps it from the summariser and re-folds it in the tail, as it does
 the calendar reference, and each block's header says a later brief in the
 conversation replaces it. **Open for the owner:** delivery arms no taint.

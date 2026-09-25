@@ -163,7 +163,7 @@ Situation brief from the harness, as things stood when this run started; a later
 - Time: Friday afternoon for the owner; outside their quiet hours.
 - Background seats: 1 of 3 free; held by task-1, task-elsewhere.
 - Other runs in flight: delegated tasks task-elsewhere; no triggers (interactive chats are not counted).
-- Model server: 1 of 4 slots busy.
+- Model server: busy with other work, with a slot free.
 - Voice: the owner spoke to you within the last few minutes; a call may be in progress.
 - Budget: up to 200 turns; no output-token ceiling; no cost ceiling; no declared context window.
 ```
@@ -182,9 +182,10 @@ What the words may and may not say:
 - **Anything unknown is said to be unknown**: "could not be read", never
   "none". A count that may be short says "at least".
 
-In a long web chat, a new brief is sent only when its words change, and bands
-mean an unchanged situation is the same words turn after turn. Each brief
-says that a later one replaces it. After a
+In a long web chat, a new brief is sent only when its words change. The time,
+a voice call, how full the context is and how busy the model server is are
+bands, so their drift sends nothing new; a task starting or finishing, or your
+board changing, does. Each brief says that a later one replaces it. After a
 compaction the brief is put back rather than summarised.
 
 | Field | What it says |

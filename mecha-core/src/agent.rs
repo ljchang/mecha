@@ -1459,9 +1459,12 @@ impl Agent {
     ///   the latest brief equal to its rendering and does nothing.
     /// - **A long-lived conversation** (a web chat) is handed a fresh brief
     ///   per turn by its front-end, and folds it only when its words
-    ///   changed. The renderer speaks in bands, so an unchanged situation
-    ///   renders the same bytes and costs nothing; a changed one is a new
-    ///   block in that turn's message, and the old ones stay where they are.
+    ///   changed. Time, voice, context used and model-server occupancy are
+    ///   bands, so their drift re-folds nothing; the board's counts and ids,
+    ///   seat holders and runs in flight are exact, so a task starting or
+    ///   ending, or the board moving, is a new block in that turn's message
+    ///   — a change the run would act on — and the old ones stay where they
+    ///   are, each saying a later one replaces it.
     /// - **After a compaction cut**, `compact::rebuild` has dropped any brief
     ///   from the head and the summariser never saw one, so the call after
     ///   the cut puts this run's brief back — into the tail message, as the
