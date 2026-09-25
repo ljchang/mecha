@@ -1044,6 +1044,59 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// The forge direction (review of #294): a command that points
+    /// `MECHA_HOME` at a directory it owns and writes an `interactive` entry
+    /// there for its own pid must not shadow the real `delegated` one. Read
+    /// nearest-first, the forged entry won and the close was owner-approved.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_registration_forged_under_a_redirected_home_does_not_shadow_the_real_one() {
+        use crate::shell_registry::ShellRegistry;
+        let base = std::env::temp_dir().join(format!("mecha-forge-{}", uuid::Uuid::new_v4()));
+        let (fresh, owner) = (
+            base.join("fresh/runs/shells"),
+            base.join("owner/runs/shells"),
+        );
+        let real = ShellRegistry::open(owner.clone()).unwrap();
+        let forged = ShellRegistry::open(fresh.clone()).unwrap();
+        let _delegated = real
+            .register(std::process::id(), Some(RunPosture::Delegated), None)
+            .unwrap();
+        let _claimed = forged
+            .register(std::process::id(), Some(RunPosture::Interactive), None)
+            .unwrap();
+        let reading = ShellReading::from_roots(&[fresh.clone(), owner.clone()]);
+        assert!(
+            decide(&PostureReading::NotInRun, &reading, None, None).is_err(),
+            "{reading:?}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A non-interactive registration anywhere above refuses, however near
+    /// an interactive one sits — in one registry too (review of #294).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_interactive_entry_below_a_delegated_one_does_not_approve() {
+        use crate::shell_registry::ShellRegistry;
+        let base = std::env::temp_dir().join(format!("mecha-stacked-{}", uuid::Uuid::new_v4()));
+        let root = base.join("runs/shells");
+        let registry = ShellRegistry::open(root.clone()).unwrap();
+        let parent = parent_of(std::process::id()).expect("a test has a parent");
+        let _above = registry
+            .register(parent, Some(RunPosture::Delegated), None)
+            .unwrap();
+        let _here = registry
+            .register(std::process::id(), Some(RunPosture::Interactive), None)
+            .unwrap();
+        let reading = ShellReading::from_roots(std::slice::from_ref(&root));
+        assert!(
+            decide(&PostureReading::NotInRun, &reading, None, None).is_err(),
+            "{reading:?}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn the_posture_variable_reads_only_its_three_words() {
         assert_eq!(read_posture(None), PostureReading::NotInRun);

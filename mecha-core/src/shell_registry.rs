@@ -475,18 +475,42 @@ pub fn nearest_registered_ancestor_among(registries: &[ShellRegistry]) -> (Looku
 
 /// The walk behind [`nearest_registered_ancestor_among`] on a platform that
 /// can walk: from `start`, at most `depth` processes.
+///
+/// **The whole chain is read, not only the nearest registration** (review of
+/// #294). A command can set `MECHA_HOME` to a directory it owns and write an
+/// `interactive` entry there for its own pid — `proc_start` is readable from
+/// `/proc/$$/stat` — which, read nearest-first, shadowed the real `delegated`
+/// entry above it. So every pid up to the root is consulted in every
+/// registry, and the walk answers with the first of: an unreadable entry; a
+/// registration in any registry but this process's own (`Some(i)` with
+/// `i > 0`, which the caller reads as a redirect); a registration whose
+/// posture is not `interactive`. Only a chain whose every registration is
+/// interactive and in this process's own registry answers with its nearest.
 fn walk_from(registries: &[ShellRegistry], start: u32, depth: usize) -> (Lookup, Option<usize>) {
+    // No registry exists at all: nothing can be registered above anyone.
+    if registries.is_empty() {
+        return (Lookup::Absent, None);
+    }
     let mut pid = start;
+    let mut nearest: Option<(Entry, usize)> = None;
     for _ in 0..depth {
         for (i, registry) in registries.iter().enumerate() {
             match registry.lookup_checked(pid) {
                 Lookup::Absent => {}
+                Lookup::Registered(e) if i == 0 && e.posture() == Ok(RunPosture::Interactive) => {
+                    nearest.get_or_insert((e, i));
+                }
                 found => return (found, Some(i)),
             }
         }
         pid = match crate::closure::parent_of(pid) {
             Some(parent) => parent,
-            None => return (Lookup::Absent, None),
+            None => {
+                return match nearest {
+                    Some((e, i)) => (Lookup::Registered(e), Some(i)),
+                    None => (Lookup::Absent, None),
+                }
+            }
         };
     }
     // The bound ran out before the root did: the rest of the chain is
@@ -507,8 +531,9 @@ fn walk_from(registries: &[ShellRegistry], start: u32, depth: usize) -> (Lookup,
 /// in place, so the pid the `shell` tool registered is then the reader's own
 /// (found on review of #294: starting at the parent refused an interactive
 /// run's bare `mecha tasks set …`). Bounded, like `closure::run_ancestor`.
-/// Stops at the first pid whose entry is registered *or* unreadable: an
-/// unreadable registration nearer than any readable one is not skipped.
+/// Reads the whole chain (see `walk_from`): an interactive registration
+/// answers only when nothing above it is unreadable, non-interactive, or in
+/// another registry.
 pub fn nearest_registered_ancestor(registry: &ShellRegistry) -> Lookup {
     nearest_registered_ancestor_among(std::slice::from_ref(registry)).0
 }

@@ -2210,7 +2210,13 @@ now makes the move one recorded event:
   registration found only in the real one refuses whatever its posture
   (`ShellReading::Redirected`). A real home the database cannot give is not
   agreement: with `MECHA_HOME` set and no passwd entry to check it against,
-  `work::guard_homes` refuses (review of #294). Registration still writes under
+  `work::guard_homes` refuses (review of #294). **The whole chain is read,
+  not the nearest registration:** a command can write an `interactive`
+  entry for its own pid under a `MECHA_HOME` it chose, and read
+  nearest-first that shadowed the real `delegated` entry above it — so any
+  registration on the chain that is unreadable, not `interactive`, or found
+  outside this process's own registry refuses (`shell_registry::walk_from`,
+  review of #294). Registration still writes under
   `MECHA_HOME`, so a trial home keeps its own registry. **A nested front
   end is not a person:** `mecha chat`, `mecha run` and `mecha tui` stamp
   `interactive` only with a terminal on stdin *and* no registered shell
