@@ -2625,15 +2625,19 @@ voice, graph, the benchmark binary and the factory were not touched.
 server is now redundant — same value, and an explicit value wins — and is the
 owner's to delete; nothing depends on it either way.
 
-**Installed binaries lag main by two merges (verified 2026-09-25 by asking the
-artifacts, not their mtimes).** `~/.cargo/bin/mecha` carries #279 (its
-`setup --write` message says "is a hosted provider with its credential") and
-not #289 (which says "is a hosted provider, so nothing was probed"): the voice
-clone no-overwrite fix and the setup wording are merged and not installed.
-`~/.cargo/bin/mecha-graph-mcp` still contains `pkg shadow` twice, in the
-`kg_shadow_queue` tool text served to the model, so mecha-graph #19/#20 are
-merged and not installed: until it is reinstalled, the model is told to run a
-command that does not exist. Both are the `update` skill's job.
+**Installed from main, 2026-09-25 03:10Z (verified by asking the artifacts).**
+`~/.cargo/bin/mecha` is origin/main `6bfde499` (#289's setup wording present;
+#295 absent, so bwrap `memory_mb`/`cpus` are not yet in effect).
+`mecha-graph` and `mecha-graph-mcp` are mecha-graph main `883be7b`: `strings`
+finds no `pkg shadow` and finds `mecha-graph shadow --confirm`, and
+`tools/list` answers 13 tools; the shared `~/Github/mecha-graph` checkout was
+fast-forwarded to match and its `target/release/mecha-graph`, which the 01:30
+nightly execs, rebuilt. mecha-mail was unchanged since its 94cccc2b install.
+`mecha-slack`, `-triggers`, `-drain` and `-serve` restarted at 03:10:33Z with
+their startup lines seen; the voice worker was not (`scripts/voice` unchanged).
+Still behind: the web dist predates two `web/` changes on main
+(`SettingsCharter.svelte`, `Tasks.svelte`), and Claude Code sessions started
+before 03:10Z hold the old `graph` MCP child until restarted.
 
 ## What the measurements say
 
