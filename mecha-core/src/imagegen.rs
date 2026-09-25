@@ -176,6 +176,11 @@ pub struct Reference {
     pub bytes: Vec<u8>,
     /// File extension for the upload, from the sniffed type.
     pub ext: &'static str,
+    /// The seed this tool drew it with, when it is one of this tool's own
+    /// results — read off the *resolved* file, so every spelling of the same
+    /// path gives the same answer (found on review of #306: `./images/…` and
+    /// an absolute path slipped past a check on the raw string).
+    pub seed: Option<u64>,
 }
 
 /// At most this many references per call. The model takes ten; every one is
@@ -644,6 +649,7 @@ impl ComfyUi {
                 continue; // queued or running
             };
             if entry.pointer("/status/status_str").and_then(Value::as_str) == Some("error") {
+                self.forget(&id).await;
                 let why = entry
                     .pointer("/status/messages")
                     .map(|m| clip(&m.to_string()))
@@ -697,7 +703,15 @@ impl ComfyUi {
         if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
             return Err(anyhow!("the image server returned something that is not a PNG").into());
         }
+        // The server keeps every job's prompt and file names in memory until
+        // it restarts; the copy that matters is now in the workspace.
+        self.forget(&id).await;
         Ok(bytes)
+    }
+
+    /// Drop a job from the server's history. Best effort.
+    async fn forget(&self, id: &str) {
+        let _ = self.post_json("history", &json!({"delete": [id]})).await;
     }
 
     /// Ask the server to drop its models and free the memory they held.
@@ -751,6 +765,9 @@ async fn read_references(
     paths: &[String],
 ) -> std::result::Result<Vec<Reference>, String> {
     use tokio::io::AsyncReadExt;
+    // Where this tool saves, resolved the same way a reference is, so the
+    // comparison below is canonical path against canonical path.
+    let images_dir = ctx.resolve("images").ok();
     let mut out = Vec::with_capacity(paths.len());
     for raw in paths {
         let path = ctx
@@ -785,10 +802,17 @@ async fn read_references(
             .map_err(|e| format!("cannot read `{raw}`: {e}"))?;
         let ext = sniff_image(&bytes)
             .ok_or_else(|| format!("`{raw}` is not a PNG, JPEG or WebP image."))?;
+        let seed = match (path.parent(), path.file_name().and_then(|n| n.to_str())) {
+            (Some(parent), Some(name)) if Some(parent) == images_dir.as_deref() => {
+                seed_of_generated(&format!("images/{name}"))
+            }
+            _ => None,
+        };
         out.push(Reference {
             path: raw.clone(),
             bytes,
             ext,
+            seed,
         });
     }
     Ok(out)
@@ -997,6 +1021,11 @@ impl Tool for ImageGenerate {
             Ok(parsed) => parsed,
             Err(why) => return Ok(ToolOutput::err(why)),
         };
+        // Before reading anything: up to a hundred megabytes of references is
+        // itself a cost on the pool this check guards.
+        if let Err(why) = memory_verdict(mem_available_mb(), self.cfg.min_available_mb) {
+            return Ok(ToolOutput::err(why));
+        }
         req.references = match read_references(ctx, &paths).await {
             Ok(references) => references,
             Err(why) => return Ok(ToolOutput::err(why)),
@@ -1006,15 +1035,12 @@ impl Tool for ImageGenerate {
         // because "reuse the seed to keep the composition" is exactly what a
         // model learns from a text-to-image result.
         let mut reseeded = None;
-        if paths.iter().any(|p| seed_of_generated(p) == Some(req.seed)) {
+        if req.references.iter().any(|r| r.seed == Some(req.seed)) {
             let old = req.seed;
             while req.seed == old {
                 req.seed = fresh_seed();
             }
             reseeded = Some(old);
-        }
-        if let Err(why) = memory_verdict(mem_available_mb(), self.cfg.min_available_mb) {
-            return Ok(ToolOutput::err(why));
         }
         // A call that starts invalidates any idle timer already armed, so a
         // `/free` cannot land while this job is loading or running.
@@ -1818,6 +1844,60 @@ mod tests {
         assert!(
             !submitted.contains("\"seed\":7,"),
             "sampled at the reference's seed: {submitted}"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn any_spelling_of_the_reference_is_reseeded() {
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::write(dir.join("images/20260925-142604-7.png"), PNG).unwrap();
+        let absolute = dir.join("images/20260925-142604-7.png");
+        for spelling in [
+            "./images/20260925-142604-7.png".to_string(),
+            "images//20260925-142604-7.png".to_string(),
+            absolute.to_string_lossy().into_owned(),
+        ] {
+            let (url, seen) = fake(vec![done()], "200 OK").await;
+            let out = tool(&url)
+                .call(
+                    json!({"prompt": "edit", "seed": 7, "reference_images": [spelling]}),
+                    &ctx(&dir),
+                )
+                .await
+                .unwrap();
+            assert!(!out.is_error, "{spelling}: {}", out.content);
+            let submitted = seen
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|l| l.starts_with("POST /prompt"))
+                .cloned()
+                .unwrap();
+            assert!(
+                !submitted.contains("\"seed\":7,"),
+                "{spelling} sampled at the reference's seed"
+            );
+        }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_finished_job_is_dropped_from_the_servers_history() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let out = tool(&url)
+            .call(json!({"prompt": "a fox"}), &ctx(&dir))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.starts_with("POST /history") && l.contains("job-1")),
+            "the prompt was left in the server's history"
         );
         std::fs::remove_dir_all(dir).ok();
     }

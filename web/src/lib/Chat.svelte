@@ -880,8 +880,10 @@
   const workspaceFile = (path) => `/api/chat/${key}/file?path=${encodeURIComponent(path)}`;
 
   // Seed the input with the file to edit and leave the cursor after it.
+  // Anything already typed is kept after the prefix, never replaced.
   function editImage(path) {
-    draft = `Edit ${path}: `;
+    const typed = draft.trim();
+    draft = typed ? `Edit ${path}: ${typed}` : `Edit ${path}: `;
     queueMicrotask(() => {
       inputEl?.focus();
       inputEl?.setSelectionRange(draft.length, draft.length);
