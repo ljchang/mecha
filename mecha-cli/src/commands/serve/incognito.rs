@@ -74,21 +74,49 @@ const READABLE_SERVER: &str = "mail";
 /// Tools an incognito run may not dispatch: every registered tool that is
 /// not allowed. `tools` is the registry as `(name, read_only)`; `routed` the
 /// outbox's routed names, which stage a draft in every permission mode and
-/// so are withheld even when read-only.
+/// so are withheld even when read-only. `shell_confined` is
+/// [`Sandbox::writes_stay_in_workspace`](mecha_core::sandbox::Sandbox::writes_stay_in_workspace):
+/// `fs_*` are jailed to the room by `ToolCtx::resolve`, but `shell` only by
+/// the sandbox, and a command that can write outside the room leaves a trace
+/// `Room::remove` never sees (found on review of #321).
 pub fn withheld<'a>(
     tools: impl IntoIterator<Item = (&'a str, bool)>,
     routed: &[String],
+    shell_confined: bool,
 ) -> Vec<String> {
     let mail = format!("{READABLE_SERVER}__");
     tools
         .into_iter()
         .filter(|(name, read_only)| {
-            let allowed = ALLOWED_BUILTINS.contains(name)
+            let allowed = (ALLOWED_BUILTINS.contains(name) && (*name != "shell" || shell_confined))
                 || (name.starts_with(&mail) && *read_only && !routed.iter().any(|r| r == name));
             !allowed
         })
         .map(|(name, _)| name.to_string())
         .collect()
+}
+
+/// Whether the configured hooks allow an incognito chat. None of them runs
+/// in one — they receive tool input and output, and a hook's log is a trace
+/// (design §3.1) — which is harmless for an observer (`post_tool`,
+/// `session_end`) and not for a `pre_tool` hook: that is a deny gate, and a
+/// chat that silently skipped it would reach what the owner said it must
+/// not. So a `pre_tool` hook refuses the door rather than being dropped,
+/// the way a cloud provider does (found on review of #321).
+pub fn hooks_allow(config: &mecha_core::config::Config) -> std::result::Result<(), String> {
+    let gates = config
+        .hooks
+        .iter()
+        .filter(|h| h.event == "pre_tool")
+        .count();
+    if gates == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "{gates} `pre_tool` hook(s) are configured, and an incognito chat runs no hooks — \
+             it would skip a gate rather than record what passes through it"
+        ))
+    }
 }
 
 /// Whether this process's chat provider may serve an incognito chat: a
@@ -313,7 +341,11 @@ mod tests {
             ("a_tool_added_tomorrow", true),
         ];
         let routed = vec!["mail__calendar_create_event".to_string()];
-        let mut out = withheld(tools, &routed);
+        assert!(
+            withheld(tools, &routed, false).contains(&"shell".to_string()),
+            "an unconfined shell could write outside the room"
+        );
+        let mut out = withheld(tools, &routed, true);
         out.sort();
         assert_eq!(
             out,
@@ -327,6 +359,23 @@ mod tests {
                 "research",
             ]
         );
+    }
+
+    #[test]
+    fn a_pre_tool_hook_refuses_the_door_and_an_observer_does_not() {
+        use mecha_core::config::{Config, HookConfig};
+        let mut config = Config::default();
+        assert!(hooks_allow(&config).is_ok());
+        let hook = |event: &str| HookConfig {
+            event: event.into(),
+            command: "true".into(),
+            tools: vec![],
+            timeout_secs: None,
+        };
+        config.hooks = vec![hook("post_tool"), hook("session_end")];
+        assert!(hooks_allow(&config).is_ok());
+        config.hooks.push(hook("pre_tool"));
+        assert!(hooks_allow(&config).unwrap_err().contains("pre_tool"));
     }
 
     #[test]

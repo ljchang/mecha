@@ -332,13 +332,16 @@ impl ChatState {
     /// Open an incognito chat and return its key (`INCOGNITO-DESIGN.md`).
     ///
     /// Refused — with the reason, for the page to show — unless this
-    /// process's provider is a local server with no fallbacks and the room
-    /// can be made in RAM. The tools it may reach are the complement of an
-    /// allowlist, computed against the live registry here.
+    /// process's provider is a local server with no fallbacks, no `pre_tool`
+    /// hook would be skipped, and the room can be made in RAM. The tools it
+    /// may reach are the complement of an allowlist, computed against the
+    /// live registry here — and `shell` among them only where the sandbox
+    /// keeps its writes in the room.
     pub(super) async fn open_incognito(self: &Arc<Self>) -> Result<String> {
         anyhow::ensure!(!self.stopping.is_cancelled(), "server is shutting down");
         super::incognito::provider_is_local(&self.config, &self.provider_name)
             .map_err(|why| anyhow::anyhow!("an incognito chat needs a local model: {why}"))?;
+        super::incognito::hooks_allow(&self.config).map_err(|why| anyhow::anyhow!("{why}"))?;
         let rooms = super::incognito::rooms_root()?;
         let key = super::incognito::new_key();
         let room = Arc::new(super::incognito::Room::open(&rooms, &key)?);
@@ -355,6 +358,8 @@ impl ChatState {
                 .iter()
                 .map(|t| (t.name(), t.read_only())),
             &routed,
+            mecha_core::sandbox::Sandbox::new(self.config.sandbox.clone())
+                .writes_stay_in_workspace(),
         );
         let (events, _) = broadcast::channel(512);
         let questions = super::present::Questions::default();
