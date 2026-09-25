@@ -41,6 +41,8 @@ silently-degrading guard in another costume:
   swappable. §10 names the fix; software alone cannot promise it.
 - **The owner's own acts are theirs.** A picture downloaded to the phone, text
   copied out, a screenshot.
+- **llama-server's cache holds the conversation in RAM** until its slot is
+  reused or the server restarts — a process, not a file (§6.2).
 
 ---
 
@@ -76,7 +78,7 @@ yet on `main` when this was written, so §3.4's ComfyUI row, §5.1's
 | Title | `title::summarise` sends the owner's first turns to the model; stored as `Record::Title` | Titler off |
 | Situation brief (#305, merged the same day) | Assembled per run by reading the board through the graph server (`setup::read_board_for_brief` → `kg_task_list`) and other stores, recorded on `RunStats::brief` in the transcript's outcome | Not assembled: there is no outcome to put it on, and the board read is itself a graph call that says a run happened |
 | "Earlier" drawer | `chat::history` scans the transcript directory | Nothing to scan; the live list marks incognito and drops it on close |
-| Browser cache | `/api/*` sends **no `Cache-Control` at all** today | `no-store` on every incognito response and file (§4.4) |
+| Browser cache | `/api/*` sends no `Cache-Control` — deliberately (`serve/mod.rs::cache_headers`: a blanket header would be the middleware deciding policy for every handler) | `no-store` on every incognito response and file (§4.4) |
 | Browser storage | None: `web/src` uses no localStorage, sessionStorage, IndexedDB or service worker | Nothing to do — kept that way by a test |
 
 ### 3.2 Derived later from session files
@@ -179,19 +181,30 @@ storage API, so a later convenience cannot quietly add one.
 
 Incognito narrows the tool surface through the per-session **`withheld`** list
 that task chats already use — it reaches subagents too, so delegation cannot
-widen it. Withheld:
+widen it.
 
-- every outbox-routed tool (they stage in every mode, so the permission mode
-  cannot stop them);
-- every MCP tool that is not `readOnlyHint`;
-- the graph's tools, reads included, until §5.2 lands;
-- document creation and calendar holds;
-- `message_send`.
+**But the set is computed as a complement, never written down.** `withheld` is
+a denylist on purpose — its doc comment: the harness names what must never be
+called, and a denylist that forgets a tool leaves it reachable. That suits
+`kg_task_update`. It does not suit R3, whose never-call set grows every time an
+MCP server or an `[outbox] tools` entry is added. So incognito states an
+**allowlist**, and at session open `withheld` is filled with *every tool on the
+live registry that is not on it* (found on review of #307). A tool incognito
+has never heard of is withheld by default.
 
-Allowed: mail and calendar reads, `web_search` / `web_open` / `http_fetch`
-(R4), `image_generate` (§6.3), and the builtins, with `fs_*` and `shell`
-jailed to the tmpfs folder and still subject to the chat's read-only / ask /
-allow toggle.
+Allowed:
+
+- mail and calendar reads — MCP tools marked `readOnlyHint` from the mail
+  server, and only if not outbox-routed (routed tools stage in every mode, so
+  the permission mode cannot stop them);
+- `web_search` / `web_open` / `http_fetch` (R4);
+- `image_generate` (§6.3);
+- the builtins, with `fs_*` and `shell` jailed to the tmpfs folder and still
+  subject to the chat's read-only / ask / allow toggle.
+
+Everything else is withheld — which today means outbox-routed tools, every
+MCP tool without `readOnlyHint`, the graph's tools (reads included, until §5.2
+lands), document creation, calendar holds and `message_send`.
 
 **`http_fetch` will usually be refused, and that is correct.** It is
 `Egress::Chosen` — the model names the host — while `web_search` and
@@ -294,7 +307,9 @@ as an *ordinary* chat must find the canary in the transcript, or the scan is
 looking in the wrong place.
 
 Unit tests beside each mechanism: the withheld set (an outbox route and a
-non-read-only MCP tool are absent; a subagent inherits the absence); the
+non-read-only MCP tool are absent; a subagent inherits the absence; **a tool
+registered under a name incognito has never heard of is withheld** — the test
+that fails against a hand-written list); the
 cloud-provider refusal **and the absence of a failover wrapper on the
 incognito provider**; the tmpfs check; the crash sweep, including the image
 server's history clear; `no-store` on every incognito route.
@@ -309,7 +324,7 @@ server's history clear; `no-store` on every incognito route.
    `finish_reason`) at `warn` — an empty turn is in no transcript, so that line
    is the only default-level record it happened — and moves the 400-character
    `tail` to `debug`, where the full reasoning already is;
-   `Cache-Control: no-store` on `/api/*`; `reflect` and `distill` honour
+   `reflect` and `distill` honour
    `SessionKind::Test` for *admission* (the situation stamp must still not
    read `meta.kind` — `the_miner_reads_the_matched_keys_and_never_the_jail_or_the_kind`).
 1. **The session with no `Session`**: the incognito door, the `Option` through
