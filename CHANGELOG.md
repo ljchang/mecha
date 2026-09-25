@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   once a server is wired. (#243)
 
 - **A rule toward a goal that has closed is named, not silent** (R34).
-  A rule scoped to a task that is done, dropped or gone from the board, or
+  A rule scoped to a task that is done or dropped, or
   to a trigger that was removed or disabled, keeps its scope and loads
   nowhere until a lesson restated toward another goal widens it.
   `mecha rules list` now counts such rules at the top and marks each
@@ -30,8 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mecha learn` repeats the count, with the waiting reflections toward a
   closed goal, on every pass. The board is read only when a rule or
   reflection names a task; a board that cannot be read is reported as
-  unknown (`goal_unknown`), never as nothing dark. The roster's region
-  line prints a goal bare (`shell · trigger:morning`).
+  unknown (`goal_unknown`), never as nothing dark, and so is a task the
+  board no longer carries. The TUI and the web settings page call the
+  roster with `--no-board`, since neither can wait on an MCP start. The
+  roster's region line prints a goal bare (`shell · trigger:morning`).
 
 - **A learned rule can be scoped to a goal.** The front-end that owns a
   run hands `prepare` the goal it read from a store the owner wrote

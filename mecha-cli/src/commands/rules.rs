@@ -43,6 +43,13 @@ pub enum Cmd {
         /// Machine-readable, for `/learning`.
         #[arg(long)]
         json: bool,
+        /// Do not read the board: every `task:` goal is then unknown, never
+        /// open. For the TUI and the web settings page, which shell out to
+        /// this verb under budgets an MCP start cannot fit (the TUI blocks
+        /// its event loop on it; the web gives it ten seconds). Trigger
+        /// goals are still read, in place.
+        #[arg(long)]
+        no_board: bool,
     },
     /// Retire a rule by id (or unique prefix): kept in the file as evidence,
     /// never rendered into a prompt again.
@@ -59,7 +66,12 @@ pub enum Cmd {
     /// TUI's `Enter` on the Rules pane runs — a rule is the one record here
     /// that rides in every future prompt, so it is the one most worth
     /// reading in full.
-    Show { id: String },
+    Show {
+        id: String,
+        /// As on `list`: skip the board read. The TUI's `Enter` passes it.
+        #[arg(long)]
+        no_board: bool,
+    },
     /// Scan the ledger and stage retirement proposals for rules the
     /// bisection keeps convicting. Deterministic; review with `mecha
     /// proposals`.
@@ -82,16 +94,19 @@ pub enum Cmd {
 
 pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     let store = LearningStore::open(LearningStore::default_root()?)?;
-    match args.cmd.unwrap_or(Cmd::List { json: false }) {
-        Cmd::List { json } => {
-            let goals = goals_of(global, &all_rules(&store)).await;
+    match args.cmd.unwrap_or(Cmd::List {
+        json: false,
+        no_board: false,
+    }) {
+        Cmd::List { json, no_board } => {
+            let goals = goals_of(global, &all_rules(&store), !no_board).await;
             list(&store, json, &goals)
         }
         Cmd::Retire { id, reason } => retire(&store, &id, reason),
         Cmd::Restore { id } => restore(&store, &id),
-        Cmd::Show { id } => {
+        Cmd::Show { id, no_board } => {
             let (_, rules, i) = find_rule(&store, &id)?;
-            let goals = goals_of(global, &[rules[i].clone()]).await;
+            let goals = goals_of(global, &[rules[i].clone()], !no_board).await;
             show(&store, &id, &goals)
         }
         Cmd::ProposeRetirements {
@@ -262,7 +277,7 @@ pub(crate) async fn goal_stores(
             Ok(Ok(answer)) => BoardStatuses::of(&answer),
         }
     } else {
-        Err("not read: no goal in play names a task".to_string())
+        Err("the board was not read on this path".to_string())
     };
     let root = mecha_core::trigger::TriggerStore::default_root().map_err(|e| format!("{e:#}"));
     let trigger = move |name: &str| match &root {
@@ -272,13 +287,17 @@ pub(crate) async fn goal_stores(
     (board, trigger)
 }
 
-/// How long the roster waits on the board: the connection is an MCP server
-/// start, and the TUI and the web settings page shell out to `rules list`.
+/// How long the terminal roster and the learn log wait on the board: the
+/// connection is an MCP server start. The TUI and the web settings page
+/// never wait on it — their budgets cannot fit one (the TUI blocks its
+/// event loop on the shell-out; the web gives it ten seconds), so they pass
+/// `--no-board` (found on review).
 const BOARD_DEADLINE_SECS: u64 = 20;
 
 /// [`Goals`] for the active rules of `rules`, reading the board only when
-/// one of them names a task.
-async fn goals_of(global: &crate::GlobalOpts, rules: &[Rule]) -> Goals {
+/// one of them names a task and `board` allows it — without it a task goal
+/// is unknown, never open.
+async fn goals_of(global: &crate::GlobalOpts, rules: &[Rule], board: bool) -> Goals {
     let named: Vec<GoalKey> = rules
         .iter()
         .filter(|r| r.active())
@@ -288,7 +307,8 @@ async fn goals_of(global: &crate::GlobalOpts, rules: &[Rule]) -> Goals {
     if named.is_empty() {
         return Goals::new();
     }
-    let (board, trigger) = goal_stores(global, named.iter().any(GoalKey::needs_board)).await;
+    let read = board && named.iter().any(GoalKey::needs_board);
+    let (board, trigger) = goal_stores(global, read).await;
     let mut out = Goals::new();
     for g in named {
         out.entry(g.to_string())
