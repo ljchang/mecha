@@ -2667,7 +2667,7 @@ restarted.
 for #305's `no run in this corpus recorded one` and for #300's
 `slack_action_task_drop`, and 0 for #308's `text appraisals on record` and
 #303's `image_generate`, both merged later. `~/.mecha/web/dist` was rebuilt
-at 16:41Z and serves `index-BnMA0qiq.js`, which contains #304's `no deadline
+at 16:41Z and holds `index-BnMA0qiq.js`, which contains #304's `no deadline
 stated`. `mecha-graph` and `mecha-graph-mcp` (14:36Z) are mecha-graph
 `ecf067c8`, the #21 merge and that repo's `main` tip (`strings` finds
 `close_through` in both), and the nightly's
@@ -3717,7 +3717,8 @@ repeated here. What is open:
   **2d-1** (point-wise comparison) and **2a-2** (the distiller writes the
   appraisal) have branches `feat/goal-situation-key-2c-1`,
   `feat/pointwise-comparison-2d-1` and `feat/distiller-appraises-2a-2`,
-  which at 17:55Z held no commit past `main` and had no PR. 2a-2 was waiting
+  whose local refs at 18:03Z still pointed at `main` merges (`e35bb081`,
+  `e35bb081`, `f2efa162`), with nothing pushed and no PR. 2a-2 was waiting
   on R32 and 2b-2 on R33; both are now ruled.
 - **Phase 1's *done when* is unmeasured.** It asks for at least 60% of long
   real runs anchored, verdicts per week by channel, readings that vary run
