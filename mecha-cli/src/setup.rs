@@ -814,6 +814,7 @@ pub fn levers_off(opts: &GlobalOpts, cfg: &Config) -> Vec<Lever> {
             Lever::CompactValidate => !agent.compact_validate,
             Lever::PredictiveCompaction => !agent.predictive_compaction,
             Lever::CarriedState => !agent.carried_state,
+            Lever::SituationBrief => !agent.situation_brief,
         })
         .collect()
 }
@@ -842,6 +843,7 @@ pub fn switch_off(opts: &mut GlobalOpts, lever: Lever) {
         Lever::CompactValidate => opts.no_compact_validate = true,
         Lever::PredictiveCompaction => opts.no_predictive_compaction = true,
         Lever::CarriedState => opts.no_carried_state = true,
+        Lever::SituationBrief => opts.no_situation_brief = true,
     }
 }
 
@@ -908,7 +910,7 @@ fn step_escalation_enabled(cfg_value: bool, no_step_escalation: bool) -> bool {
     cfg_value && !no_step_escalation
 }
 
-/// The five `[agent]` switches a `--no-*` flag may narrow and never widen,
+/// The `[agent]` switches a `--no-*` flag may narrow and never widen,
 /// folded in one place, on the config the agent is then built from.
 /// [`levers_off`] does **not** call this: it reads the folded config the
 /// caller hands it, so the record is the agent's own value rather than a
@@ -928,6 +930,7 @@ pub(crate) fn fold_agent_switches(agent: &mut mecha_core::config::AgentConfig, o
     agent.compact_validate = agent.compact_validate && !opts.no_compact_validate;
     agent.predictive_compaction = agent.predictive_compaction && !opts.no_predictive_compaction;
     agent.carried_state = agent.carried_state && !opts.no_carried_state;
+    agent.situation_brief = agent.situation_brief && !opts.no_situation_brief;
 }
 
 /// The `ToolCtx` shape `compact_requested` already established: presence is
@@ -1750,21 +1753,26 @@ pub fn local_server_for_brief(
 }
 
 /// Assemble this run's situation brief and put it on the run's context —
-/// the one call the unattended front-ends make (`tasks work`, a trigger),
-/// after the anchor is seeded and the budget set, before the run. The board
-/// is read here, open tasks only, the same read on every door; the web door
-/// makes the same reads under the interactive deadline (`serve::chat`).
+/// the one call the front-ends outside `serve` make (`tasks work`, a
+/// trigger, `mecha run`), after the anchor is seeded and the budget set,
+/// before the run. The board is read here, open tasks only, the same read on
+/// every door, under `deadline` — [`BRIEF_BOARD_TIMEOUT`] where the run is
+/// unattended, [`BRIEF_BOARD_TIMEOUT_INTERACTIVE`] where a person waits;
+/// the web door makes the same reads itself (`serve::chat`). Assembled and
+/// recorded whatever `[agent] situation_brief` says: that lever decides
+/// only whether the loop delivers it.
 pub async fn brief_run(
     agent: &Agent,
     config: &mecha_core::config::Config,
     provider: &str,
     cx: &mut mecha_core::agent::RunContext,
     convo: &mecha_core::agent::Conversation,
+    deadline: std::time::Duration,
 ) {
     let local = local_server_for_brief(config, provider);
     // The two reads that wait on another process, taken together.
     let (board, slots) = tokio::join!(
-        read_board_for_brief(agent.registry(), &cx.tools, BRIEF_BOARD_TIMEOUT),
+        read_board_for_brief(agent.registry(), &cx.tools, deadline),
         mecha_core::brief::slots_for(local.as_deref()),
     );
     let brief = mecha_core::brief::assemble_for_run(agent, cx, convo, board, slots);
@@ -2173,12 +2181,14 @@ mod tests {
                 cfg.agent.compact_validate = cfg_value;
                 cfg.agent.predictive_compaction = cfg_value;
                 cfg.agent.carried_state = cfg_value;
+                cfg.agent.situation_brief = cfg_value;
                 let opts = GlobalOpts {
                     no_step_escalation: no_flag,
                     no_boredom: no_flag,
                     no_compact_validate: no_flag,
                     no_predictive_compaction: no_flag,
                     no_carried_state: no_flag,
+                    no_situation_brief: no_flag,
                     ..GlobalOpts::default()
                 };
                 let switches = [
@@ -2187,6 +2197,7 @@ mod tests {
                     Lever::CompactValidate,
                     Lever::PredictiveCompaction,
                     Lever::CarriedState,
+                    Lever::SituationBrief,
                 ];
 
                 // Unfolded: the record says what the config says, flag or no
@@ -2219,6 +2230,10 @@ mod tests {
                 );
                 assert_eq!(
                     cfg.agent.carried_state, expect,
+                    "cfg={cfg_value} flag={no_flag}"
+                );
+                assert_eq!(
+                    cfg.agent.situation_brief, expect,
                     "cfg={cfg_value} flag={no_flag}"
                 );
                 let folded = levers_off(&opts, &cfg);

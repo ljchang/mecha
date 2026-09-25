@@ -710,7 +710,11 @@ the table's eleven — it also carries the seven `force_reproducible` throws
 that the table lacked and D14's equivalence needed: `mcp`, `hooks`,
 `outbox`, `fallback`, `messages`, `compact_tool`, and `approval_rules`,
 which `Lever::bare` never throws (eval lifts it by its own explicit line,
-and a manifest refuses it in either direction). `plan_reinjection`,
+and a manifest refuses it in either direction). Later additions:
+`predictive_compaction` and `carried_state` got their switches, and
+`situation_brief` (`APPRAISAL-WIRING-DESIGN.md` 3a) delivers the recorded
+situation brief into the run's first user turn — it ships off, so its arm is
+`levers_on = ["situation_brief"]` against a control that leaves it off. `plan_reinjection`,
 `declared_checks` and `appraiser` are not levers until their switch
 exists. The stage levers as built are `reflect`, `learn`, `validate`,
 `retire`, `ruminate` and `sensors_in_brief` (`experiment::StageLever`).

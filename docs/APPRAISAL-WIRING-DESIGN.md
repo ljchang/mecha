@@ -334,7 +334,7 @@ not fall.
 
 | # | work | proposal |
 |---|---|---|
-| 3a | The situation brief delivered at run start, folded into the seed or first user turn — including a re-delegated task's previous attempts and why they were rejected | B1, I3, M5 |
+| 3a | The situation brief delivered at run start, folded into the seed or first user turn — including a re-delegated task's previous attempts and why they were rejected. *Built as 3a behind `situation_brief` (ships off); the previous attempts deferred to 3a-2* | B1, I3, M5 |
 | 3b | The agent's situation appraisal, in the run's own slot, after a surprise and before a consequential act | I3 |
 | 3c | Planning as joint optimization in the agent's reasoning, over every live goal and the described state; charter rank resolves conflicts | P1 |
 | 3d | **Plan-time comparison**: on anchored delegated and trigger runs, two candidate plans as text, validated deterministically — tracing to the goal, coverage of declared criteria, budget fit, charter conflicts, what won at similar points before; the loser kept as the fallback | N1 |
@@ -913,6 +913,39 @@ unhosted voice turns; a board read on a trigger whose `tools` allowlist
 leaves `kg_task_list` off its surface, which records the board as unread;
 and a workflow-store commitment, which guilt does not read yet (1f).
 
+*Delivered as 3a:* `brief::render` turns the record into words and bands
+per R21, and `Agent::fold_situation_brief` puts them (`brief::block`, the
+words behind a blank line) into the run's first user turn beside
+`date_context`'s reference, at the same three sites, never the prefix —
+the tools and system prompt are the same bytes with it on and off. Behind
+`harness::Lever::SituationBrief` (`[agent] situation_brief`), which **ships
+off**: this is §1's decision 7 — 1h was the shadow, 3a is the lever and the
+`mecha exp` arm, and on-by-default waits for the arms' measurement; `mecha
+eval` forces it off; recording stays unconditional. R21, field by field:
+budget facts are numbers; the board's counts and task ids are pointers and
+appear as they are; the commitments are band words, age bands and past the
+owner's patience or not, so that line carries no digit; a served line's
+rank is "highest-ranked" or not; quiet hours are inside or outside; the
+time of day is a band; a voice call is in progress or not. An unread field
+says "could not be read", a missing one says so, a floor says "at least";
+`/slots` for a provider that is not local and an unmeasured context are
+left out by stated rule. Later turns: the loop folds when the rendering
+differs from the **latest** brief in the transcript, so a web chat that is
+handed a fresh brief per turn says an unchanged situation once and a
+changed one again, append-only. A compaction cut strips the brief from the
+head, keeps it from the summariser and re-folds it in the tail, as it does
+the calendar reference. Two found building it: the experiment instrument
+runs trials through `mecha run`, which had no brief, so its two arms would
+have been one condition — `mecha run` now assembles, records and delivers
+one; and the OpenAI-compatible encoder joins a message's text blocks with
+nothing between them, hence the blank line. *Deferred:* M5, a re-delegated
+task's previous attempts, to **3a-2** — no existing record lists them (the
+closure store covers only attempts the owner closed and reopened, and a
+re-delegation without a closure leaves nothing to join), and a reopen's
+reason can be model-authored under `OwnerApproved`, which needs an
+authorship rule before it rides into a prompt. The G4 scan now runs with
+delivery off and on.
+
 #### G4. Numbers never reach the model
 
 Half of this is tested: `planning_sensor_metadata_never_reaches_either_provider`
@@ -1157,6 +1190,15 @@ the same task. Add pointers, not prose: the prior sessions' ids, their
 outcomes (valence, failed checks, whether a draft was rejected), and, through
 `goal_context`, the clean reflections stamped with that task. The second
 attempt at a rejected task should start from why the first was rejected.
+
+*Deferred from 3a to 3a-2* (it did not fall out of existing records): the
+closure store (1b) holds only attempts the owner closed and later reopened,
+so the common re-delegation — a run that ended without a closure — needs a
+session walk keyed on the task anchor, which no index serves yet; a reopen's
+`reason` is the owner's words only when its actor is `Owner`, and model text
+under `OwnerApproved`, so it needs an authorship rule before it rides into a
+prompt; and "valence" as an outcome is a number R21 keeps out of the brief, so
+the outcome has to be said as words (rejected, reopened, a check failed).
 
 #### P1. Planning as joint optimization across goals and state
 

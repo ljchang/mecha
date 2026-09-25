@@ -315,6 +315,9 @@ pub fn validate_recording(recorded: &crate::session::RunConfig) -> Result<()> {
         Lever::StepEscalation,
         Lever::GoalGuidance,
         Lever::Outbox,
+        // The repeat's context carries no brief, so a run that was handed
+        // one is not what the repeat reproduces.
+        Lever::SituationBrief,
     ] {
         ensure!(
             off.contains(&lever),

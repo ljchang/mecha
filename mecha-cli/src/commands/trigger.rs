@@ -1027,14 +1027,16 @@ async fn run_agent(
     let token = stop.map(CancellationToken::child_token).unwrap_or_default();
     let mut cx = RunContext::clone(prepared.agent.context()).with_cancel(token.clone());
     // The situation brief (B1, 1h), after the anchor is seeded: recorded on
-    // the run, delivered nowhere. The board is read here, by the harness,
-    // through this run's own surface — never by the model.
+    // the run, and delivered into its first user turn only behind
+    // `[agent] situation_brief` (3a). The board is read here, by the
+    // harness, through this run's own surface — never by the model.
     setup::brief_run(
         &prepared.agent,
         &prepared.config,
         &prepared.provider_name,
         &mut cx,
         &convo,
+        setup::BRIEF_BOARD_TIMEOUT,
     )
     .await;
     // The three ways a trigger run ends early say which they are: the
