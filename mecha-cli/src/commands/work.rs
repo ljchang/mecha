@@ -94,7 +94,14 @@ fn clean(keep: Option<usize>, producer: Option<&str>, dry_run: bool) -> Result<(
             mecha_core::config::Config::load(&cwd)?.work.keep
         }
     };
-    let report = work::clean(keep, producer, dry_run)?;
+    let mut report = work::clean(keep, producer, dry_run)?;
+    // Spill directories runs left under `$TMPDIR` (`work::stale_spills`). Not
+    // a producer, so a sweep narrowed to one producer leaves them alone.
+    if producer.is_none() {
+        report
+            .removed
+            .extend(work::clean_spills(&std::env::temp_dir(), dry_run)?);
+    }
     if report.removed.is_empty() && report.protected.is_empty() {
         println!("nothing to remove: every producer is within the last {keep}");
         return Ok(());

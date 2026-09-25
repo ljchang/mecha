@@ -1931,7 +1931,9 @@ async fn completion(
         review_hint: outbox_baseline
             .is_some()
             .then(|| SPOKEN_REVIEW_HINT.to_string()),
-        ..(*cx.tools).clone()
+        // Spilling into the workspace these slots share, like every served
+        // session, rather than the agent's `$TMPDIR` directory.
+        ..cx.tools.for_session(cx.tools.workspace.clone())
     });
     // The facade's own slot is the *second* door a spoken turn can take, and
     // it needs the same narrowing the hosted one got.
