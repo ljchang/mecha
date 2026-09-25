@@ -93,8 +93,16 @@ impl StepFeedback {
 pub struct Gap {
     #[serde(default, deserialize_with = "crate::goal::de_lenient")]
     pub goal: Option<GoalRef>,
-    /// Remaining sensor discrepancy; unknown is not zero. No causal credit.
+    /// Remaining sensor discrepancy — the level's `excess`, recorded as
+    /// evidence; unknown is not zero. No causal credit. Not what the action
+    /// is decided on where the line has a per-item reading (`items_over`).
     pub remaining: Option<f32>,
+    /// How many of the line's items were past the setpoint as the run
+    /// began (`reading::Items::over`) — the per-item form the action is
+    /// decided on (S5). `None` for a kind with no items and on a record
+    /// from before the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items_over: Option<u64>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -214,13 +222,23 @@ impl Decision {
             .map(|r| Gap {
                 goal: Some(GoalRef::Charter(r.line.clone())),
                 remaining: r.reading.excess(),
+                items_over: r.items.as_ref().map(|i| i.over),
             })
             .collect();
-        let charter_action = charter.iter().find_map(|g| match g.remaining {
-            None => Some(Action::GatherContext),
-            Some(e) if e > 0.0 => Some(Action::ReviewCommitment),
-            _ => None,
-        });
+        // Per item, never the level (S5): a line is a commitment to review
+        // when an item is past its setpoint. Unknown is still unknown — a
+        // reading that says nothing asks for context first. Only a kind
+        // with no items at all (the corpus rate) is judged on its level,
+        // because for it the level is the only form there is.
+        let charter_action = charter
+            .iter()
+            .find_map(|g| match (g.remaining, g.items_over) {
+                (None, _) => Some(Action::GatherContext),
+                (Some(_), Some(n)) if n > 0 => Some(Action::ReviewCommitment),
+                (Some(_), Some(_)) => None,
+                (Some(e), None) if e > 0.0 => Some(Action::ReviewCommitment),
+                _ => None,
+            });
         // Only against an anchor a plan could have named (`GoalRef::
         // a_plan_can_name`): under a trigger or request anchor every plan
         // goal differs by construction, and asking to reconcile it would
@@ -317,6 +335,9 @@ mod tests {
                 kind: SensorKind::OutboxAge,
                 setpoint: "1h".into(),
                 reading: Reading::Unread,
+                items: None,
+                delta: None,
+                withdrawn: false,
             },
             LineReading {
                 line: "second".into(),
@@ -327,6 +348,9 @@ mod tests {
                     over: true,
                     excess: 0.5,
                 },
+                items: None,
+                delta: None,
+                withdrawn: false,
             },
         ];
         let plan = crate::tool::todo::Plan::default();

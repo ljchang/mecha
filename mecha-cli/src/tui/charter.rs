@@ -414,6 +414,9 @@ mod tests {
             kind: mecha_core::charter::SensorKind::OutboxAge,
             setpoint: "24h".into(),
             reading: mecha_core::reading::Reading::Nothing,
+            items: None,
+            delta: None,
+            withdrawn: false,
         }])
         .unwrap();
         m.poll();
