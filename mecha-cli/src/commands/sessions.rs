@@ -1675,11 +1675,12 @@ fn health(
             None => "—".into(),
         };
         println!(
-            "  {:<19} `{}`: level past its setpoint in {} of {} informative run(s); a per-item \
+            "  {:<19} `{}` at {}: level past its setpoint in {} of {} informative run(s); a per-item \
              reading in {} run(s), waiting variance {}, past-setpoint variance {}; the queue moved in \
              {} of {} run(s) with a delta; withdrawn in {}",
             if i == 0 { "charter readings" } else { "" },
             v.line,
+            v.setpoint,
             v.level_over,
             v.informative,
             v.per_item_runs,

@@ -1581,7 +1581,7 @@ mod planning_metadata_tests {
                 charter: vec![crate::planning::Gap {
                     goal: Some(crate::goal::GoalRef::Charter("secret-sensor".into())),
                     remaining: Some(0.876543),
-                    items_over: None,
+                    items_over: Some(86_421),
                 }],
                 action: crate::planning::Action::Continue,
                 applied: false,
@@ -1603,6 +1603,7 @@ mod planning_metadata_tests {
             record.contains("secret-sensor"),
             "local recording retains the evidence"
         );
+        assert!(record.contains("86421"), "and the per-item count beside it");
         let loaded: Message = serde_json::from_str(&record).unwrap();
         assert_eq!(loaded, observed);
         let mut future = serde_json::to_value(observed).unwrap();
