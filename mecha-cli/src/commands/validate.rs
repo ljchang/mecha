@@ -88,7 +88,7 @@ pub struct Args {
 
 /// The active learned rules as a flat list, with what a bisection needs to
 /// rebuild a candidate block from any subset of them.
-struct RuleSurface {
+pub(crate) struct RuleSurface {
     /// `(domain, rule)`, in domain order — the ledger's `rule_ids` and the
     /// bisection's index space.
     flat: Vec<(String, Rule)>,
@@ -104,7 +104,7 @@ impl RuleSurface {
     /// would put mail-derived text in front of an agent with tools, and a
     /// ledger row naming its id would charge observations to a rule the
     /// measured run could never have had (found on review).
-    fn load(store: &LearningStore) -> Result<Self> {
+    pub(crate) fn load(store: &LearningStore) -> Result<Self> {
         let mut flat = Vec::new();
         let mut user_by_domain = BTreeMap::new();
         for domain in mecha_core::learning::RUN_DOMAINS {
@@ -126,7 +126,7 @@ impl RuleSurface {
     /// — the measured block for a probe over that run, and the bisection's
     /// space. A rule scoped to a tool the run never registered is not in
     /// the block, so it cannot be observed or convicted there.
-    fn carried(&self, run: &Situation) -> Vec<usize> {
+    pub(crate) fn carried(&self, run: &Situation) -> Vec<usize> {
         self.flat
             .iter()
             .enumerate()
@@ -152,7 +152,7 @@ impl RuleSurface {
     /// run path applies (`domain_rules_section_for`), because a hand-scoped
     /// user rule a real run in this situation drops must not ride in the
     /// measured arm either (found on review).
-    fn block_with(&self, selected: &[usize], run: &Situation) -> Option<String> {
+    pub(crate) fn block_with(&self, selected: &[usize], run: &Situation) -> Option<String> {
         let mut sections = Vec::new();
         for (domain, user) in &self.user_by_domain {
             let learned: Vec<Rule> = self

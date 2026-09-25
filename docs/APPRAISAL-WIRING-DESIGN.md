@@ -353,7 +353,7 @@ with a `mecha exp` arm against EXPERIMENT-DESIGN §15's appraisal-off preset
 | **2b-2** | **The appraisal's own prediction scored** when the same situation and goal next come round; a miss is a surprise, recorded for 2e-6's priority. The structural scorer is the owner's ruling of 2026-09-25: the record's `expected_act` (R16's closed set, added by 2a-2) against the owner's recorded act on the next session's output; the prose prediction is never scored. | X5 | 2a-2, 2b-1 | a fixture pair of sessions scores a hit and a miss on `expected_act` against the recorded act; a model never decides a score (R27) |
 | **2c-1** | **The goal joins `Situation`** as a recorded and scope key — recording, matching, replay and validation in one change; an absent goal never widens a scope. *Built as 2c-1 (2026-09-25): the key is the whole `GoalRef` the front-end handed `prepare`, recorded as `RunConfig::rules_goal`.* | M1 | 1a | the scope-key tests cover the goal on every door; a rule mined with no goal still matches as before |
 | **2c-2** | **Past clean appraisals retrieved.** `goal_context` serves up to three clean appraisals of the same situation and goal, on demand, never pushed — through `Clean` only. Measured against a control at matched budget, since retrieved memory can cost more than it returns. | I2 | 2a-2, 2c-1 | a clean appraisal of a matching session is served and a tainted one never is; the lever's arm runs against the control |
-| **2d-1** | **Point-wise comparison at informative decision points.** At a steer, a denial, a failed check, an edited or rejected draft, a surprise: `probe::drive_arm` runs K policies a short horizon from the point, and the owner's recorded verdict decides (new: a branch's draft against the released text). Each writes a 1g `Comparison` of a new kind. Points drawn uniformly until 2e-6 ranks them. | O1, R26, R27 | 1g | fixture points of each kind leave comparisons a second read returns; a point whose verdict no structural validator can pose is inconclusive, never judged |
+| **2d-1** | **Point-wise comparison at informative decision points.** At a steer, a denial, a failed check, an edited or rejected draft, a surprise: `probe::drive_arm` runs K policies a short horizon from the point, and the owner's recorded verdict decides (new: a branch's draft against the released text). Each writes a 1g `Comparison` of a new kind. Points drawn uniformly until 2e-6 ranks them. **Built as 2d-1** — `mecha sessions compare`; see O1 for what was built and what it left. | O1, R26, R27 | 1g | fixture points of each kind leave comparisons a second read returns; a point whose verdict no structural validator can pose is inconclusive, never judged |
 | **2d-2** | **The acceptance combination** (R26): a harness candidate is accepted when the point-wise comparison decides for it and the whole-session numeric comparison shows no regression, `WORK_FLOOR` intact. | O1, R26 | 2d-1 | a candidate that wins point-wise and regresses the floor is rejected; one that wins point-wise and holds is accepted |
 | **2d-3** | **The losing arm teaches.** A comparison's confirmed losing outcome is written into that session's appraisal as counterfactual reflection — a new pointer kind naming the comparison, which 2a-1's `Pointer::Unread` already round-trips. | O3 | 2a-2, 2d-1 | a decided comparison's loser appears on the session's appraisal, pointing at its comparison; an undecided one writes nothing |
 | **2e-1** | **The reflector's lessons against the appraisal's**, on the same interventions, by the validation probes already built — shadow, measurement only. R25's gate for 2a-4. | L2, R25 | 2a-2 | a report per intervention region: validation rate of each source's lessons, with the counts beneath it |
@@ -1213,6 +1213,26 @@ runs beside it. The combination for accepting a candidate (ruled): the
 point-wise comparison decides for it, and the numeric comparison shows no
 regression with `WORK_FLOOR` intact — the new evidence decides, the old
 guards against a candidate that wins a verdict by doing less.
+
+**Built as 2d-1** (`mecha sessions compare`; ARCHITECTURE "Point-wise
+comparison at decision points" holds the invariants). Six point kinds, each
+its own comparison `Kind`, found from records only: steer and denial
+(validators unchanged), an edited and a rejected draft (the new structural
+draft validator: an arm passes only by drafting the owner's released words,
+or — for a rejection — by ending without drafting; fails only by drafting
+the text the owner refused; anything else, every rewording included, is
+inconclusive, so no rewording can win), a failed check (posed only against
+an owner-bound criterion's pinned gold, through the artifact repeat) and a
+surprise (a forecast the run's own count missed). A declared check and a
+surprise have no structural validator, so they are stored `Unposed` —
+inconclusive, nothing driven, never judged. K ≤ 3 policies (the recorded
+prompt, today's deployed rules for the situation, none), four turns from
+the point, one background seat per point, eight driven points a pass by
+default, local model only (R29). Left for later: the candidate arm and the
+acceptance rule (2d-2), the losing arm into the appraisal (2d-3, O3), ranked
+points (2e-6), surprise sources beyond forecast misses (2b-1's resolved
+predictions, 2b-2's scored appraisal predictions), and the nightly wiring —
+a line in `scripts/ruminate.sh`, a deploy change offered rather than made.
 
 #### O3. The losing arm teaches
 
