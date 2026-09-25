@@ -224,20 +224,28 @@ impl RunMarkers {
     /// The pids of every run in flight in this directory — what
     /// `closure::run_ancestor` checks a process's ancestry against. Read-only:
     /// a dead marker is skipped rather than cleared, because the caller is a
-    /// check, not the run's owner. An unreadable directory is no runs, which
-    /// is the right direction for its one caller only because the posture
-    /// variable is checked beside it (`closure::decide`).
-    pub fn live_pids(&self) -> Vec<u32> {
-        let Ok(dir) = std::fs::read_dir(&self.dir) else {
-            return Vec::new();
+    /// check, not the run's owner. A directory that does not exist is no
+    /// runs (a fresh install); one that exists and cannot be read is an
+    /// error, because the closure guard's rule 1 reads this and an empty set
+    /// there switches it off (review of #294 — the posture variable that used
+    /// to be checked beside it is advisory now).
+    pub fn live_pids(&self) -> Result<Vec<u32>> {
+        let dir = match std::fs::read_dir(&self.dir) {
+            Ok(dir) => dir,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(anyhow::Error::new(e)
+                    .context(format!("reading run markers in {}", self.dir.display())))
+            }
         };
-        dir.flatten()
+        Ok(dir
+            .flatten()
             .filter(|e| e.path().extension().is_some_and(|x| x == "running"))
             .filter_map(|e| std::fs::read_to_string(e.path()).ok())
             .filter_map(|t| serde_json::from_str::<RunMarker>(&t).ok())
             .map(|m| m.pid)
             .filter(|pid| crate::process_alive(*pid))
-            .collect()
+            .collect())
     }
 
     /// Ask the run in flight to stop. `false` when there is nothing to stop,
@@ -259,6 +267,25 @@ impl RunMarkers {
 
 #[cfg(test)]
 mod tests {
+
+    /// No directory is no runs; a directory that cannot be read is an error,
+    /// never an empty set — the closure guard's rule 1 reads this (review of
+    /// #294).
+    #[test]
+    fn an_unreadable_marker_directory_is_an_error_not_no_runs() {
+        let base = std::env::temp_dir().join(format!("mecha-markers-{}", uuid::Uuid::new_v4()));
+        assert!(RunMarkers::new(base.join("absent"))
+            .live_pids()
+            .unwrap()
+            .is_empty());
+        // A file where the directory should be fails `read_dir` without
+        // depending on permission bits the test user might override.
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("file"), "x").unwrap();
+        assert!(RunMarkers::new(base.join("file")).live_pids().is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
