@@ -3808,6 +3808,9 @@ deferrals are not repeated here; S1, S8, S3 and O4 carry none, so what 1a,
       line settling an earlier uncertain move. ARCHITECTURE's Slack closure
       bullet and SLACK-ACTIONS-DESIGN §5 now say so; whether the order
       should change is the open part.
+    - Two doc comments still name the removed `is_fresh_closure` as if it
+      existed: one in `closure.rs` near `classify`, and one in
+      `closure_guard.rs`.
     - No doctor check reads the shell registry (`runs/shells`) itself;
       `check_shell_confinement` only reports a sandbox that mounts the guard
       directories.
