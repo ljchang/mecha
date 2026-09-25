@@ -233,7 +233,9 @@ pub async fn charter_save(State(_state): St, Json(body): Json<CharterSave>) -> R
 /// flagged: a surface that showed only the learned half would misdescribe
 /// what a run carries. They are not on trial and have no verbs here.
 pub async fn rules(State(_state): St) -> Response {
-    match super::self_cli_json(&["rules", "list", "--json"], false).await {
+    // `--no-board`: the roster's board read (R34) is an MCP start, longer
+    // than this call's budget; a task goal then reads unknown, never open.
+    match super::self_cli_json(&["rules", "list", "--json", "--no-board"], false).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
     }

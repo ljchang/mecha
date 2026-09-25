@@ -273,6 +273,13 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
 /// The absence of the graph is a *named* condition rather than a panic or an
 /// empty board: a machine with no `[[mcp]]` graph server has no tasks to show
 /// and needs to be told which of those two it is.
+/// The whole board, closed rows included — for a reader outside this
+/// module that needs task statuses (R34's closed-goal readout), through the
+/// same `call` every verb here uses.
+pub(crate) async fn read_board(global: &GlobalOpts) -> Result<Value> {
+    call(global, "kg_task_list", json!({ "include_closed": true })).await
+}
+
 async fn call(global: &GlobalOpts, tool: &str, args: Value) -> Result<Value> {
     let prepared = setup::prepare_tools(global, false).await?;
     call_with(&prepared, tool, args).await
