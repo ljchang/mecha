@@ -21,6 +21,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value there still wins). `mecha setup` reports an unset `[agent] timezone`
   once a server is wired. (#243)
 
+- **A learned rule can be scoped to a goal.** The front-end that owns a
+  run hands `prepare` the goal it read from a store the owner wrote
+  (`GlobalOpts::goal`: `tasks work` its task, a trigger run its trigger,
+  `run --goal` the owner's reference, a question continuation the asking
+  run's), the learned-rules block is matched toward it, and the run record
+  keeps what was matched (`RunConfig::rules_goal`) for the miner, the
+  backfill, the validator, the probe, the planning examples and the roster
+  to read — never the conversation's anchor. A rule learned from
+  reflections all toward one goal loads only in runs toward it, and widens
+  by restatement from another goal's batch. A run toward no goal matches no
+  goal-scoped rule, and a stored goal this build cannot name is kept
+  verbatim, matches nothing and is reported at startup. Rules from before
+  the key carry no goal and load under every goal as they did.
+  (`APPRAISAL-WIRING-DESIGN.md` 2c-1)
+
 - Mail is classified through the working day, not only overnight.
   `mecha-mail-classify-day.timer` runs the same sweep every 20 minutes,
   07:30–21:50 in the owner's zone, clear of the morning briefing and the

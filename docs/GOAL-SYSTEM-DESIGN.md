@@ -2002,6 +2002,17 @@ cheap lookup keyed on a recorded situation. Never by current valence.
 > scope key: the trigger, since how a lesson was learned is not where it
 > applies.
 
+> **Built 2026-09-25: the goal as a scope key** (`APPRAISAL-WIRING-DESIGN.md`
+> 2c-1, M1; §17.3's goal field). The key is the whole reference the
+> front-end handed `prepare` (`GlobalOpts::goal`), recorded as
+> `RunConfig::rules_goal` and read by the miner, backfill, validator, probe
+> and roster — never the conversation's anchor. An absent goal never widens:
+> a run toward none matches no goal-scoped rule, and a stored goal this
+> build cannot name is parked and matches nothing. Region and widening are
+> unchanged, so a lesson restated from a second goal's batch drops the key.
+> The charter line above a goal is not a key yet; it stays in the store
+> that owns it.
+
 ### 17.5 The validator these rulings are missing, and its template
 
 The tree validates at two tiers and neither is against a goal.
