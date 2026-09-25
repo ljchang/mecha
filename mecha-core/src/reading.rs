@@ -777,25 +777,31 @@ where
 /// which can only *shorten* a streak — the direction that leaves a line in
 /// front of the run, as it was before withdrawal existed.
 pub fn recorded_readings(dir: &std::path::Path) -> impl Iterator<Item = Vec<LineReading>> {
-    let scan = crate::runlog::Scan::default();
-    let listed = crate::session::Session::list_counting(dir)
-        .map(|(listed, _)| listed)
-        .unwrap_or_default();
-    listed
-        .into_iter()
-        .filter(move |(meta, _)| scan.admits(meta))
-        .take(crate::doctor::RUNS_WINDOW)
-        .flat_map(|(_, path)| {
-            let mut rows: Vec<Vec<LineReading>> =
-                crate::session::Session::outcomes_attributed(&path)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|(_, _, stats)| stats.homeostat?.charter)
-                    .collect();
-            // A session's runs are recorded oldest first.
-            rows.reverse();
-            rows
-        })
+    let dir = dir.to_path_buf();
+    // Lazy from the first step: even the listing — a header read per
+    // transcript — waits for the first row to be pulled, so a caller that
+    // pulls none (no line over its setpoint) touches nothing.
+    std::iter::once(()).flat_map(move |()| {
+        let scan = crate::runlog::Scan::default();
+        let listed = crate::session::Session::list_counting(&dir)
+            .map(|(listed, _)| listed)
+            .unwrap_or_default();
+        listed
+            .into_iter()
+            .filter(move |(meta, _)| scan.admits(meta))
+            .take(crate::doctor::RUNS_WINDOW)
+            .flat_map(|(_, path)| {
+                let mut rows: Vec<Vec<LineReading>> =
+                    crate::session::Session::outcomes_attributed(&path)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter_map(|(_, _, stats)| stats.homeostat?.charter)
+                        .collect();
+                // A session's runs are recorded oldest first.
+                rows.reverse();
+                rows
+            })
+    })
 }
 
 /// Withdraw the saturated lines from a run's readings: mark
@@ -940,12 +946,8 @@ pub fn read_charter(charter: &Charter, now: DateTime<Utc>) -> Vec<LineReading> {
     // The surface says what a run would see: a line withdrawn from runs is
     // marked here too, from the same rows, so the owner reads it where the
     // setpoint is edited — not only in the doctor.
-    if let Ok(home) = crate::work::mecha_home() {
-        withdraw_saturated(
-            &mut readings,
-            charter,
-            recorded_readings(&home.join("sessions")),
-        );
+    if let Ok(sessions) = crate::session::Session::default_dir() {
+        withdraw_saturated(&mut readings, charter, recorded_readings(&sessions));
     }
     readings
 }
