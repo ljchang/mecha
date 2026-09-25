@@ -535,7 +535,7 @@ async fn dispatch() -> Result<()> {
         Command::Trigger(args) => commands::trigger::execute(&cli.global, args).await,
         Command::Proposals(args) => commands::proposals::execute(args).await,
         Command::Review(args) => commands::review::execute(args).await,
-        Command::Rules(args) => commands::rules::execute(args).await,
+        Command::Rules(args) => commands::rules::execute(&cli.global, args).await,
         Command::Replay(args) => commands::replay::execute(&cli.global, args).await,
         Command::Tools(args) => commands::tools::execute(&cli.global, args).await,
         Command::Skills(args) => commands::skills::execute(&cli.global, args).await,
