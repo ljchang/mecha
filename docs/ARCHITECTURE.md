@@ -5049,6 +5049,42 @@ recorded clean taint and matching tools/workspace/surface. A startup snapshot
 examines at most 32 recent transcripts of at most 2 MB each and keeps 64 examples.
 It does not add unsolicited lesson delivery. Missing context is never a success.
 
+**Past clean appraisals are served through `goal_context`, on demand, and
+only behind their lever** (`APPRAISAL-WIRING-DESIGN.md` I2, built as 2c-2).
+`Lever::PastAppraisals` (`[agent] past_appraisals`, `--no-past-appraisals`)
+**ships off**: retrieved memory can cost more than it returns, so it is the
+lever stage of the design's shadow → measure → arm (§1 decision 7), `mecha
+eval` forces it off, and an experiment measures it as `levers_on =
+["past_appraisals"]` against a control; the environment directory's
+`appraisals/` is seeded into each trial home (`experiment::SEEDED`) so the
+two arms are two conditions. On, `setup::build` selects
+`appraisal_store::PastAppraisals` — only `Clean` values, so a tainted run's
+appraisal cannot be held, let alone served — keyed exactly as the run record
+will key this run (the `RulesCarried` it matched: tools, workspace, surface,
+goal; tools alone when the learned-rules lever is off, as the record then
+says). **The tool set is re-selected at run start** against the registry
+the loop carries (`PastAppraisals::for_registry` in `Agent::run_in`),
+because `tasks work` and a question continuation withhold `kg_task_update`
+after the block is rendered and the run record names the registry without
+it; keyed on the build's registry, a delegated task was never served a
+past run of the same task (found building it). The tool serves up to three,
+newest first, only to a request toward the goal they were selected for, as
+bounded prose (interpretation, prediction, three lessons, the count of
+grounded claims) beside `APPRAISAL_LIMIT`, which frames them as a model's
+interpretation of an earlier run — hearsay about the past, never a verified
+fact about this run and never an instruction. **Nothing reaches the
+prefix**: the tool's description and schema are unchanged, the answer with
+the lever off is the bytes it was before, and a test pins the tools and
+system prompt byte-identical on and off. **Taint:** the result is not
+`external` — a clean appraisal is a model's prose over a run that read no
+third-party content — and `goal_context` is already `private`, which is
+what a clean run's appraisal may carry (it may have read the owner's mail;
+R19 lets it reach retrieval; R35's reasoning, harness-delivered private
+words arm private, holds). An unreadable store is said in the answer
+(`past_appraisals_unread`), never served as none. A resumed session that
+was appraised may be served its own earlier appraisal, which is of the same
+situation and goal by construction.
+
 **A text appraisal is grounded before it is kept, carries its run's taint,
 and only the owner reads a tainted one** (`APPRAISAL-WIRING-DESIGN.md` I1,
 R18, R19; row 2a-1 the store, row 2a-2 its producer). An appraisal is

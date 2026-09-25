@@ -214,6 +214,21 @@ briefs are, field by field, and counts the runs that recorded none by surface
 (`situation_brief` in `--json`). The TUI, `mecha chat`, Slack, and voice turns
 that are not spoken into a web chat do not record a brief yet.
 
+### Past appraisals
+
+With `past_appraisals` on, the `goal_context` tool also returns up to three
+earlier appraisals of runs in the same situation toward the same goal, newest
+first, when the model asks for its goal's context. Only appraisals of runs that
+read no third-party content are ever returned. Each is shown as what it is:
+an interpretation a model wrote after an earlier run, not a fact about this
+one. Nothing is added to the prompt, and the setting ships off while it is
+measured:
+
+```toml
+[agent]
+past_appraisals = true   # off by default
+```
+
 ### Anticipated guilt, and why it reads only mecha's own stores
 
 > An expectation is a **recorded** commitment, never a claimed one.
