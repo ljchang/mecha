@@ -316,21 +316,27 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     // Where it happened, from what the miner already held:
                     // the tool window is registry names (it survives the
                     // user-evidence-only view for the same reason), the
-                    // surface and workspace are the run record's matched
-                    // ones — never `meta.kind`, never the jail. Set here
-                    // and not by the reflector, which saw prose.
+                    // surface, workspace and goal are the run record's
+                    // matched ones — never `meta.kind`, never the jail,
+                    // never the anchor (and never `r.goals` above, which a
+                    // plan names). Set here and not by the reflector, which
+                    // saw prose.
                     // The keys of the run record covering *this*
                     // intervention, not the session's first: a session may
                     // hold runs matched on different keys (a resumed
                     // question, a `/model` switch), and `config_covering`
                     // is the exact answer per message (found on review).
-                    let (matched_workspace, matched_surface) = keys_covering(&t, intervention.at);
-                    r.situation = Some(mecha_core::situation::Situation::recorded(
-                        &intervention.tools_before,
-                        intervention.trigger.as_str(),
-                        matched_surface,
-                        matched_workspace.as_deref(),
-                    ));
+                    let (matched_workspace, matched_surface, matched_goal) =
+                        keys_covering(&t, intervention.at);
+                    r.situation = Some(
+                        mecha_core::situation::Situation::recorded(
+                            &intervention.tools_before,
+                            intervention.trigger.as_str(),
+                            matched_surface,
+                            matched_workspace.as_deref(),
+                        )
+                        .toward(matched_goal),
+                    );
                     pending.push(r);
                 }
                 Ok(None) => {
@@ -477,8 +483,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 }
 
 /// The workspace and surface one run record says its block was matched
-/// against.
-type MatchedKeys = (Option<PathBuf>, Option<mecha_core::session::SessionKind>);
+/// against — the two keys the reconcile compares. The goal is not one of
+/// them: no row carried a goal before `rules_goal` existed, and every door
+/// stamps it from that field, so there is nothing to reconcile.
+type ReconciledKeys = (Option<PathBuf>, Option<mecha_core::session::SessionKind>);
 
 /// The keys a session's rules block was matched against, one entry per run
 /// record in order (`RunConfig::rules_workspace`, `rules_surface`) — what a
@@ -487,7 +495,7 @@ type MatchedKeys = (Option<PathBuf>, Option<mecha_core::session::SessionKind>);
 /// that declared neither; the vec is empty for a transcript with no run
 /// record at all. `Err` when the transcript cannot be read, which confirms
 /// nothing either way.
-fn matched_keys_of(path: &Path) -> std::result::Result<Vec<MatchedKeys>, String> {
+fn matched_keys_of(path: &Path) -> std::result::Result<Vec<ReconciledKeys>, String> {
     // Through `Session::read`, the same reader the miner holds, so the
     // reconcile and the miner cannot disagree about one record by parsing
     // it two ways (found on review). Every run record, in order: a stored
@@ -509,15 +517,22 @@ fn matched_keys_of(path: &Path) -> std::result::Result<Vec<MatchedKeys>, String>
 /// The keys of the run record covering message `at` of a transcript
 /// already read (`Transcript::config_covering`): what the miner and the
 /// backfill stamp on an intervention, since a session may hold runs
-/// matched on different keys. `(None, None)` for a transcript recorded
-/// before configs were kept.
+/// matched on different keys. The goal is `rules_goal`, what the block was
+/// matched toward — never the conversation's anchor. `(None, None, None)`
+/// for a transcript recorded before configs were kept.
 fn keys_covering(
     t: &mecha_core::session::Transcript,
     at: usize,
-) -> (Option<PathBuf>, Option<mecha_core::session::SessionKind>) {
+) -> mecha_core::learning::MatchedKeys {
     t.config_covering(at)
-        .map(|rc| (rc.rules_workspace.clone(), rc.rules_surface))
-        .unwrap_or((None, None))
+        .map(|rc| {
+            (
+                rc.rules_workspace.clone(),
+                rc.rules_surface,
+                rc.rules_goal.clone(),
+            )
+        })
+        .unwrap_or((None, None, None))
 }
 
 /// The first run record's keys off a transcript already read.
@@ -570,7 +585,7 @@ fn reconcile_recorded_keys(
     if present.is_empty() {
         return Ok(0);
     }
-    type Matched = Vec<MatchedKeys>;
+    type Matched = Vec<ReconciledKeys>;
     // What the record confirms for one recorded key: the key itself when
     // any attach presented it, else the first attach's — or none.
     fn confirmed<T: PartialEq + Clone>(
@@ -839,8 +854,9 @@ fn outbox_intervention(item: &mecha_core::outbox::OutboxItem) -> Intervention {
 /// session cannot be found or read, when no intervention in the transcript
 /// carries its trigger and text (a compaction since mining, or an outbox
 /// edit with no transcript), or when several do with different windows;
-/// absent is the honest reading and the pass never picks one. The goal is
-/// never backfilled.
+/// absent is the honest reading and the pass never picks one. The
+/// reflection's `goals` are never backfilled; its situation's goal key is,
+/// off the covering run record like the workspace and the surface.
 fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool) -> Result<()> {
     use mecha_core::learning::{backfill_situation, extract_interventions, Backfilled};
     let _lock = if dry_run { None } else { Some(store.lock()?) };
@@ -1138,6 +1154,82 @@ mod tests {
         assert_eq!(door.meta.kind, Some(SessionKind::Task));
         // No transcript at all: unreadable, not "none".
         assert!(matched_keys_of(&dir.join("missing.jsonl")).is_err());
+    }
+
+    /// The miner and the backfill stamp the goal the block was matched
+    /// toward (`RunConfig::rules_goal`), never the conversation's anchor —
+    /// a hand-over resumed on an older task keeps that task as its anchor
+    /// while the block was matched toward the one it was handed. Per run
+    /// record, like the other keys; a record with no goal gives none, and a
+    /// goal this build cannot name is stamped parked, never as none. Fails
+    /// on a read of `convo.goal_anchor`.
+    #[test]
+    fn the_miner_stamps_the_matched_goal_and_never_the_anchor() {
+        use mecha_core::message::Message;
+        use mecha_core::situation::GoalKey;
+        let dir = scratch("mecha-reflect-goal");
+        let s = session_on(&dir, "/jail", Some("/w"), Some(SessionKind::Task), None);
+        let handed = GoalKey::Named("task:t-handed".parse().unwrap());
+        s.append(&Record::Config(RunConfig {
+            rules_workspace: Some(PathBuf::from("/w")),
+            rules_surface: Some(SessionKind::Task),
+            rules_goal: Some(handed.clone()),
+            ..Default::default()
+        }))
+        .unwrap();
+        s.append(&Record::GoalAnchor {
+            goal: Some("task:t-older".parse().unwrap()),
+        })
+        .unwrap();
+        s.append(&Record::Message(Message::user("go on"))).unwrap();
+        let t = Session::read(&s.path).unwrap();
+        assert_eq!(
+            t.convo
+                .goal_anchor
+                .as_ref()
+                .map(|g| g.to_string())
+                .as_deref(),
+            Some("task:t-older")
+        );
+        let (_, _, goal) = keys_covering(&t, 0);
+        assert_eq!(
+            goal,
+            Some(handed.clone()),
+            "the matched goal, not the anchor"
+        );
+        // The first run record, matched toward none, covers nothing here;
+        // a transcript whose only record names none stamps none.
+        let none = session_on(&dir, "/jail", Some("/w"), Some(SessionKind::Tui), None);
+        none.append(&Record::GoalAnchor {
+            goal: Some("task:t-confirmed".parse().unwrap()),
+        })
+        .unwrap();
+        none.append(&Record::Message(Message::user("hi"))).unwrap();
+        assert_eq!(
+            keys_covering(&Session::read(&none.path).unwrap(), 0).2,
+            None
+        );
+        // A goal this build cannot name stays parked through the stamp.
+        let newer = session_on(&dir, "/jail", None, None, None);
+        newer
+            .append(&Record::Config(RunConfig {
+                rules_goal: Some(GoalKey::Unread("dream:x".into())),
+                ..Default::default()
+            }))
+            .unwrap();
+        newer.append(&Record::Message(Message::user("hi"))).unwrap();
+        let (_, _, parked) = keys_covering(&Session::read(&newer.path).unwrap(), 0);
+        assert_eq!(parked, Some(GoalKey::Unread("dream:x".into())));
+        let stamped =
+            mecha_core::situation::Situation::recorded(&["shell".into()], "denial", None, None)
+                .toward(parked);
+        assert!(!stamped
+            .scope()
+            .matches(&mecha_core::situation::Situation::of_run(
+                &["shell".into()],
+                None
+            )));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The pass over a store: a jailed row goes to the matched keys, a

@@ -414,6 +414,19 @@ pub struct RunConfig {
         deserialize_with = "de_lenient_kind"
     )]
     pub rules_surface: Option<SessionKind>,
+    /// The goal the rules block was matched toward (`RulesCarried::goal`,
+    /// from `GlobalOpts::goal` — the reference the front-end handed
+    /// `prepare`), beside the conversation's goal anchor, which is what
+    /// the run was for. The two differ where a hand-over resumes a session
+    /// anchored to an older task, or the owner confirms a goal mid-run; a
+    /// lesson stamped with the anchor would scope to a goal no match
+    /// presented. A goal this build cannot name is kept verbatim
+    /// ([`crate::situation::GoalKey::Unread`]) rather than read as none, so
+    /// the miner stamps a key that matches nothing instead of one that
+    /// matches every goal. `None` is a record from before the field, or a
+    /// front-end that declared none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules_goal: Option<crate::situation::GoalKey>,
     /// Which trial this run is one actor of (`docs/EXPERIMENT-DESIGN.md`
     /// §4). `None` for every ordinary run. Read off the environment the
     /// runner set (`experiment::EXPERIMENT_REF_ENV`) rather than handed in,
@@ -503,6 +516,7 @@ impl Default for RunConfig {
             rule_ids: Vec::new(),
             rules_workspace: None,
             rules_surface: None,
+            rules_goal: None,
         }
     }
 }
@@ -582,6 +596,7 @@ impl RunConfig {
             rule_ids: rules.map(|r| r.rule_ids.clone()).unwrap_or_default(),
             rules_workspace: rules.and_then(|r| r.workspace.clone()),
             rules_surface: rules.and_then(|r| r.surface),
+            rules_goal: rules.and_then(|r| r.goal.clone()),
         }
     }
 }
@@ -2468,6 +2483,57 @@ mod tests {
         assert!(crate::planning::examples(&dir, &elsewhere)
             .unwrap()
             .is_empty());
+
+        // The goal joins the example's scope like the other keys: a run
+        // matched toward task t2 supplies examples only to a run toward t2,
+        // while the run above, matched toward none, still supplies every run.
+        let toward_t2 = Session::create(&dir, meta_with_id("goal-examples-t2")).unwrap();
+        let t2 = || Some(crate::situation::GoalKey::Named("task:t2".parse().unwrap()));
+        toward_t2
+            .append(&Record::Config(RunConfig {
+                tools: vec!["todo".into()],
+                rules_workspace: Some(PathBuf::from("/project")),
+                rules_surface: Some(SessionKind::Task),
+                rules_goal: t2(),
+                ..Default::default()
+            }))
+            .unwrap();
+        let mut message = Message::user("result");
+        message.planning = Some(Feedback {
+            steps: vec![serde_json::from_value(serde_json::json!({
+                "step": "draft", "goal": "task:t2", "verification": "passed"
+            }))
+            .unwrap()],
+            decisions: Vec::new(),
+        });
+        toward_t2.append_messages(&[message]).unwrap();
+        toward_t2
+            .append(&Record::Taint(crate::agent::Taint::default()))
+            .unwrap();
+        let steps = |s: &crate::situation::Situation| {
+            let mut v: Vec<String> = crate::planning::examples(&dir, s)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.step)
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(steps(&situation), vec!["work"], "no goal presented");
+        assert_eq!(
+            steps(&situation.clone().toward(t2())),
+            vec!["draft", "work"]
+        );
+        assert_eq!(
+            steps(
+                &situation
+                    .clone()
+                    .toward(Some(crate::situation::GoalKey::Named(
+                        "task:t3".parse().unwrap()
+                    )))
+            ),
+            vec!["work"]
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -4153,6 +4219,26 @@ mod rules_arm_tests {
         let back: RunConfig =
             serde_json::from_str(&serde_json::to_string(&jailed).unwrap()).unwrap();
         assert_eq!(back.rules_workspace.as_deref(), Some(Path::new("/w")));
+        // The goal: absent before the field, round-trips when named, and a
+        // kind this build cannot name is kept — never read as no goal, which
+        // the miner would stamp as a key that matches every goal.
+        use crate::situation::GoalKey;
+        assert_eq!(old.rules_goal, None, "before the field: no key");
+        assert!(!serde_json::to_string(&old).unwrap().contains("rules_goal"));
+        let toward = RunConfig {
+            rules_goal: Some(GoalKey::Named("trigger:morning".parse().unwrap())),
+            ..Default::default()
+        };
+        let raw = serde_json::to_string(&toward).unwrap();
+        assert!(raw.contains(r#""rules_goal":"trigger:morning""#), "{raw}");
+        let back: RunConfig = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.rules_goal, toward.rules_goal);
+        let newer: RunConfig =
+            serde_json::from_str(r#"{"mecha_version":"0","rules_goal":"dream:x"}"#).unwrap();
+        assert_eq!(newer.rules_goal, Some(GoalKey::Unread("dream:x".into())));
+        assert!(serde_json::to_string(&newer)
+            .unwrap()
+            .contains(r#""rules_goal":"dream:x""#));
         assert!(old.rules_arm_note(None).contains("unknown"));
         assert!(!serde_json::to_string(&old).unwrap().contains("rules_hash"));
 
