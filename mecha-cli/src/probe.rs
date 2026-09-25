@@ -170,15 +170,18 @@ impl ProbePrep {
     }
 
     /// The situation the recorded run was in: the registry its `RunConfig`
-    /// names and the workspace its rules block was matched against — not
-    /// the jail, which on `serve` and Slack is a different path. What a
-    /// rules block for this probe is rendered against.
+    /// names and the workspace, surface and goal its rules block was matched
+    /// against — not the jail, which on `serve` and Slack is a different
+    /// path, and not the conversation's anchor. What a rules block for this
+    /// probe is rendered against, so a goal-scoped rule rides in the replay
+    /// of a run matched toward its goal and in no other.
     pub fn situation(&self) -> Situation {
         Situation::of_run(
             &self.recorded.tools,
             self.recorded.rules_workspace.as_deref(),
         )
         .on(self.recorded.rules_surface)
+        .toward(self.recorded.rules_goal.clone())
     }
 
     /// The tool names the recording carried — what a fidelity check must
@@ -263,6 +266,7 @@ impl ProbePrep {
             self.recorded.rules_surface,
             self.recorded.rules_workspace.as_deref(),
         )
+        .toward(self.recorded.rules_goal.clone())
     }
 
     /// A comparison over `arms`, keyed on this recording. Its verdict is
