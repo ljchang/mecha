@@ -12194,11 +12194,14 @@ mod tests {
         agent
             .set_appraisal_evidence(Evidence {
                 goal: Some(goal.clone()),
-                commitment: Some(Commitment {
-                    beneficiary: "PRIVATE PERSON".into(),
-                    expectation: "PRIVATE COMMITMENT".into(),
-                    consequence: "PRIVATE IMPACT".into(),
-                }),
+                commitment: Some(
+                    Commitment {
+                        beneficiary: "PRIVATE PERSON".into(),
+                        expectation: "PRIVATE COMMITMENT".into(),
+                        consequence: "PRIVATE IMPACT".into(),
+                    }
+                    .into(),
+                ),
                 verification: Verification::Passed,
                 verification_evidence: Some("PRIVATE CALENDAR RECEIPT".into()),
                 check_available: true,
@@ -12220,6 +12223,17 @@ mod tests {
             loaded.appraisal_evidence.as_ref().unwrap()["commitment"]["expectation"],
             "PRIVATE COMMITMENT"
         );
+        // A new write is the one commitment record (1f-2): the run's bound
+        // evidence was written in the legacy shape and is recorded as the
+        // workflow record, pointing at the goal and stating no date.
+        let run_commitment = &loaded.appraisal_evidence.as_ref().unwrap()["commitment"];
+        assert_eq!(run_commitment["party"], "PRIVATE PERSON");
+        assert_eq!(run_commitment["source"], "task:meeting");
+        assert!(
+            run_commitment.get("beneficiary").is_none(),
+            "{run_commitment}"
+        );
+        assert!(run_commitment.get("due_at").is_none(), "{run_commitment}");
         assert!(crate::mismatch::validate_recording(&loaded)
             .unwrap_err()
             .to_string()
@@ -12232,6 +12246,17 @@ mod tests {
         assert_eq!(p.source, Source::Owner);
         assert_eq!(p.evidence.verification, Verification::Unknown);
         assert!(p.assessment.kinds.contains(&Kind::Guilt));
+        // And the draft the run staged carries that record, not the
+        // legacy shape (the staging creation site, 1f-2).
+        assert!(
+            matches!(
+                &p.evidence.commitment,
+                Some(crate::anticipation::RecordedCommitment::Record(c))
+                    if c.party == "PRIVATE PERSON" && c.source == "task:meeting" && c.due_at.is_none()
+            ),
+            "{:?}",
+            p.evidence.commitment
+        );
         let tool_text = serde_json::to_string(&convo.messages[2]).unwrap();
         assert!(tool_text.contains("Anticipatory guidance"));
         assert!(!tool_text.contains("PRIVATE"));
