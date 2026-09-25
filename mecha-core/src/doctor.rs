@@ -184,6 +184,11 @@ fn owner_setpoint(
 /// its registered parent and edit `~/.mecha` directly, and a sandbox that
 /// mounts the mecha home hands a confined command the shell registry and the
 /// closure store (`APPRAISAL-WIRING-DESIGN.md` 1b-2).
+/// The directories under the mecha home the closure guard reads or writes:
+/// the shell registry (`runs/shells`), the closure store, and the task-run
+/// and trigger-run markers.
+const GUARD_DIRS: [&str; 4] = ["runs", "closures", "taskruns", "triggers"];
+
 pub fn check_shell_confinement(
     sandbox: &crate::sandbox::SandboxConfig,
     home: &Path,
@@ -200,7 +205,17 @@ pub fn check_shell_confinement(
         .chain(sandbox.readable.iter().map(|p| ("readable", p)))
     {
         let path = path.canonicalize().unwrap_or_else(|_| path.clone());
-        if home.starts_with(&path) || path.starts_with(&home) {
+        // Only what the closure guard reads counts: a mount that contains,
+        // or sits inside, one of those directories. `work/` (the run
+        // workspace root, which every backend mounts anyway) and `bundles/`
+        // (published artifacts) are part of the home and meant to be handed
+        // to a run — flagging them would keep `doctor` exiting 1 on a sound
+        // config (review of #294).
+        let reaches = GUARD_DIRS
+            .iter()
+            .map(|d| home.join(d))
+            .any(|guarded| guarded.starts_with(&path) || path.starts_with(&guarded));
+        if reaches {
             out.push(Finding {
                 component: "sandbox".to_string(),
                 // Broken, not Attention: inside a pid-namespaced sandbox the
@@ -4000,6 +4015,17 @@ mod tests {
             ..SandboxConfig::default()
         };
         assert!(check_shell_confinement(&confined, &home).is_empty());
+        // Parts of the home meant for a run are not the guard's stores.
+        confined.readable.push(home.join("bundles"));
+        confined.writable.push(home.join("work"));
+        assert!(
+            check_shell_confinement(&confined, &home).is_empty(),
+            "work/ and bundles/ are not what the guard reads"
+        );
+        let mut inside = confined.clone();
+        inside.readable.push(home.join("closures"));
+        let f = check_shell_confinement(&inside, &home);
+        assert_eq!(f.len(), 1, "{f:#?}");
         confined.readable.push(home.parent().unwrap().to_path_buf());
         let f = check_shell_confinement(&confined, &home);
         assert_eq!(f.len(), 1, "{f:#?}");
