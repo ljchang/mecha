@@ -26,6 +26,7 @@ use crate::probe::{drive_arm, prepare_probe_in};
 use crate::setup::Prepared;
 use anyhow::Result;
 use mecha_core::appraisal::{apply_probe, relabel, Appraisal, Cite, Probe};
+use mecha_core::comparison::{Arm, Comparison, ComparisonStore, Kind, Outcome, Role};
 use mecha_core::config::ProviderConfig;
 use mecha_core::counterfactual::ProbeVerdict;
 use mecha_core::learning::Intervention;
@@ -129,6 +130,9 @@ pub struct Tally {
     /// Never looked at, because the budget ran out first. Says nothing about
     /// the intervention at all.
     pub over_budget: usize,
+    /// What the comparison store did with every driven probe's comparison
+    /// (row 1g): kept, or refused for provenance — never silently neither.
+    pub stored: crate::probe::StoredTally,
 }
 
 impl Tally {
@@ -149,7 +153,36 @@ impl Tally {
         self.unavailable += other.unavailable;
         self.surface_lost += other.surface_lost;
         self.over_budget += other.over_budget;
+        self.stored.add(other.stored);
     }
+}
+
+/// A steer probe as a stored comparison: two arms from one recorded prefix.
+///
+/// The recording, with the owner's intervention, passes by construction —
+/// the intervention is the target the structural validator grades against —
+/// and the unsteered replay carries the verdict the probe drove. So the
+/// derived verdict reads `Separated` (the recording preferred) exactly when
+/// the steer was load-bearing, `Tied` when the run got there anyway, and
+/// `Inconclusive` when the replay posed no question: [`finding`]'s three
+/// answers, in the store's K-arm vocabulary. Both arms ran the recorded
+/// prompt, rules block and all, so both carry the recorded rules hash.
+pub(crate) fn steer_comparison(
+    prep: &crate::probe::ProbePrep,
+    i: &Intervention,
+    unsteered: &ProbeVerdict,
+    model: &str,
+) -> Result<Comparison> {
+    let policy = prep.recorded_rules_hash();
+    prep.comparison(
+        Kind::SteerProbe,
+        Some(prep.situation_at(&i.tools_before, i.trigger.as_str())),
+        vec![
+            Arm::new(Role::Recorded, policy.clone(), Outcome::Pass),
+            Arm::new(Role::WithoutIntervention, policy, Outcome::from(unsteered)),
+        ],
+        model,
+    )
 }
 
 /// Is this intervention one a structural replay can pose a question about?
@@ -179,8 +212,16 @@ pub(crate) fn replayable(t: mecha_core::learning::Trigger) -> bool {
 /// into `errors` is not an index into interventions — it happens to line up
 /// today only because the counter channel is usually empty, which is the kind
 /// of coincidence that holds until the first run that stopped on a loop.
+///
+/// Every driven probe's comparison is offered to `store` — the recording
+/// against its unsteered replay — and the store's provenance door decides
+/// whether it is kept (a tainted session, or one whose recorded surface is
+/// gone, leaves nothing). A write that fails is an error: the verdict was
+/// paid for.
+#[allow(clippy::too_many_arguments)]
 pub async fn probe_appraisal(
     prepared: &Prepared,
+    store: &ComparisonStore,
     provider_cfg: &ProviderConfig,
     model: &str,
     session_path: &Path,
@@ -287,6 +328,8 @@ pub async fn probe_appraisal(
             };
             skipped(&appraisal.session_id, i.at, &why);
         }
+        let comparison = steer_comparison(&prep, i, &verdict, model)?;
+        crate::probe::store_comparison(store, prep.provenance(), &comparison, &mut tally.stored)?;
         let found = finding(&verdict);
         tally.record(found);
         for e in appraisal
@@ -407,6 +450,208 @@ mod tests {
             ..Default::default()
         });
         assert_eq!((a.surface_lost, a.unavailable), (5, 5));
+    }
+
+    /// A steered session recorded the way `chat` writes one: a run config
+    /// naming its surface, the messages, a goal anchor, and a taint
+    /// checkpoint after the last message. `surface_kept` writes the recorded
+    /// surface's blob into the (moved) home's surface store.
+    fn steered_session(
+        home: &Path,
+        untrusted: bool,
+        surface_kept: bool,
+    ) -> (std::path::PathBuf, Intervention) {
+        use mecha_core::agent::Taint;
+        use mecha_core::message::{Block, Message};
+        use mecha_core::session::{Record, RunConfig, Session, SessionKind, SessionMeta};
+        use serde_json::json;
+        let specs = vec![
+            mecha_core::message::ToolSpec {
+                name: "fs_list".into(),
+                description: "List files.".into(),
+                input_schema: json!({"type": "object", "properties": {}}),
+            },
+            mecha_core::message::ToolSpec {
+                name: "fs_read".into(),
+                description: "Read a file.".into(),
+                input_schema: json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+            },
+        ];
+        if surface_kept {
+            mecha_core::surface::SurfaceStore::open_default()
+                .unwrap()
+                .record(&specs)
+                .unwrap();
+        }
+        let dir = home.join("sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+        let session = Session::create(
+            &dir,
+            SessionMeta {
+                id: Session::new_id(),
+                created_at: chrono::Utc::now(),
+                provider: "scripted".into(),
+                model: "scripted".into(),
+                workspace: home.to_path_buf(),
+                title: None,
+                kind: Some(SessionKind::Tui),
+            },
+        )
+        .unwrap();
+        session
+            .append(&Record::Config(RunConfig {
+                tools: specs.iter().map(|s| s.name.clone()).collect(),
+                tools_hash: Some(mecha_core::surface::fingerprint(&specs)),
+                rules_hash: Some("rules-then".into()),
+                rules_surface: Some(SessionKind::Tui),
+                ..Default::default()
+            }))
+            .unwrap();
+        session
+            .append(&Record::GoalAnchor {
+                goal: Some("task:t-audit".parse().unwrap()),
+            })
+            .unwrap();
+        let tool_use = |id: &str, name: &str, input: serde_json::Value| Block::ToolUse {
+            id: id.into(),
+            name: name.into(),
+            input,
+        };
+        let result = |id: &str, content: &str| Block::ToolResult {
+            tool_use_id: id.into(),
+            content: content.into(),
+            is_error: false,
+        };
+        let mut steer = Message::tool_results(vec![result("t1", "a.md b.md"), result("t2", "x")]);
+        steer
+            .content
+            .push(Block::text("change of plan: only summarize b.md"));
+        let messages = vec![
+            Message::user("audit the reports"),
+            Message::assistant(vec![
+                tool_use("t1", "fs_list", json!({})),
+                tool_use("t2", "fs_read", json!({"path": "/private/a.md"})),
+            ]),
+            steer,
+            Message::assistant(vec![tool_use("t3", "fs_read", json!({"path": "b.md"}))]),
+            Message::tool_results(vec![result("t3", "b")]),
+            Message::assistant(vec![Block::text("b.md says b")]),
+        ];
+        for m in &messages {
+            session.append(&Record::Message(m.clone())).unwrap();
+        }
+        session
+            .append(&Record::Taint(Taint {
+                untrusted,
+                private: true,
+            }))
+            .unwrap();
+        let steer = mecha_core::learning::extract_interventions(&messages)
+            .into_iter()
+            .find(|i| i.trigger == mecha_core::learning::Trigger::Steer)
+            .expect("the fixture holds a steer");
+        (session.path.clone(), steer)
+    }
+
+    /// Row 1g's acceptance, at the probe: a driven steer probe over a clean
+    /// session with a readable surface leaves a record a second read — a
+    /// fresh handle on the store — returns, keyed on the situation, the
+    /// goal kind and the call class, with the arms and the verdict the
+    /// probe found; a tainted session leaves none, and neither does one
+    /// whose recorded surface is gone. The verdict is supplied rather than
+    /// driven: what is under test is the recording's path to the store,
+    /// and driving needs a model.
+    #[test]
+    fn a_driven_steer_probe_leaves_a_record_and_a_tainted_one_leaves_none() {
+        use mecha_core::comparison::{ComparisonStore, Kind, Outcome, Role, Validator, Verdict};
+        let guard = crate::testenv::HomeGuard::new("comparisons-1g");
+        let home = guard.dir.clone();
+        let store = ComparisonStore::open_default().unwrap();
+
+        let (clean, i) = steered_session(&home, false, true);
+        let prep = crate::probe::prepare_probe_in(&clean, i.trigger.as_str(), &i.text)
+            .unwrap()
+            .expect("the clean steer prepares");
+        let mut stored = crate::probe::StoredTally::default();
+        let c = steer_comparison(&prep, &i, &ProbeVerdict::Fail, "scripted").unwrap();
+        crate::probe::store_comparison(&store, prep.provenance(), &c, &mut stored).unwrap();
+
+        let (tainted, i2) = steered_session(&home, true, true);
+        let prep2 = crate::probe::prepare_probe_in(&tainted, i2.trigger.as_str(), &i2.text)
+            .unwrap()
+            .expect("a tainted steer still prepares — the store is what refuses it");
+        let c2 = steer_comparison(&prep2, &i2, &ProbeVerdict::Fail, "scripted").unwrap();
+        crate::probe::store_comparison(&store, prep2.provenance(), &c2, &mut stored).unwrap();
+
+        // Written last, so the blob the clean fixtures cite is still there:
+        // this one cites the same surface, so remove the store to lose it.
+        std::fs::remove_dir_all(home.join("surfaces")).unwrap();
+        let (lost, i3) = steered_session(&home, false, false);
+        let prep3 = crate::probe::prepare_probe_in(&lost, i3.trigger.as_str(), &i3.text)
+            .unwrap()
+            .expect("prepares with no blob");
+        let c3 = steer_comparison(&prep3, &i3, &ProbeVerdict::Pass, "scripted").unwrap();
+        crate::probe::store_comparison(&store, prep3.provenance(), &c3, &mut stored).unwrap();
+
+        assert_eq!(
+            (
+                stored.written,
+                stored.refused_not_clean,
+                stored.refused_surface
+            ),
+            (1, 1, 1)
+        );
+        let rows = ComparisonStore::open_default()
+            .unwrap()
+            .comparisons()
+            .unwrap();
+        assert_eq!(rows.len(), 1, "only the clean, readable session: {rows:?}");
+        let row = &rows[0];
+        assert_eq!(row, &c);
+        assert_eq!(row.kind, Kind::SteerProbe);
+        assert_eq!(row.validator, Validator::StructuralSteer);
+        assert_eq!(row.verdict, Verdict::Separated, "Fail = load-bearing");
+        assert_eq!(row.preferred, vec![0]);
+        assert_eq!(
+            row.arms
+                .iter()
+                .map(|a| (a.role, a.outcome))
+                .collect::<Vec<_>>(),
+            vec![
+                (Role::Recorded, Outcome::Pass),
+                (Role::WithoutIntervention, Outcome::Fail)
+            ]
+        );
+        assert!(row
+            .arms
+            .iter()
+            .all(|a| a.policy.as_deref() == Some("rules-then")));
+        assert_eq!(row.goal_kind, Some(mecha_core::goal::GoalKind::Task));
+        let situation = row.situation.as_ref().expect("the steer's window is known");
+        assert_eq!(
+            situation.scope().tools,
+            vec!["fs_list".to_string(), "fs_read".to_string()]
+        );
+        assert_eq!(
+            situation.surface,
+            Some(mecha_core::session::SessionKind::Tui)
+        );
+        let call = row.call.as_ref().expect("the call the steer rode beside");
+        assert_eq!(
+            (call.tool.as_str(), call.args.as_slice()),
+            ("fs_read", &["path".to_string()][..])
+        );
+        assert_eq!(row.pointers.message_index, Some(2));
+        assert_eq!(row.pointers.call_index, Some(2));
+        let wire = std::fs::read_to_string(store.root().join("comparisons.jsonl")).unwrap();
+        for leaked in [
+            "/private/a.md",
+            "change of plan",
+            "audit the reports",
+            "t-audit",
+        ] {
+            assert!(!wire.contains(leaked), "{leaked} reached the store");
+        }
     }
 
     /// A followup has no counterfactual to drive — removing a later user turn
