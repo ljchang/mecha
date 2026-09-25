@@ -23,14 +23,15 @@ decided by the model:
 | **Anchor** | The confirmed pointer. It belongs to the conversation, so it carries across chat turns, and it survives resume and compaction. | recorded by the harness |
 | **Alignment** | Each later plan write is compared with the anchor; see [measuring goal drift](#measuring-goal-drift). | computed by the harness |
 
-**What happens today.** Every stage above the hypothesis depends on a run
-stating one, and the served local model rarely does: it writes a plan only when
-your own message asks for one, and none of the sessions recorded since the
-charter began asking for a goal sentence contains one. A delegated board task is handed its task id in the prompt, but
-today that id does not set the anchor; only `mecha run --goal`, an answered
-question, a question resume, and an owner-authored artifact case
-(`mecha run --mismatch-case`) do. Most runs therefore carry no confirmed goal,
-and their appraisal records no goal rather than guessing one.
+**What happens today.** A run the model plans on its own rarely states a goal:
+it writes a plan only when your own message asks for one. So the harness sets
+the anchor itself wherever it already holds the pointer — a delegated board
+task, a scheduled trigger, a front-door request — without waiting for the
+model (see [anchors the harness sets itself](#anchors-the-harness-sets-itself)).
+Beyond those, `mecha run --goal`, an answered question, a question resume and
+an owner-authored artifact case (`mecha run --mismatch-case`) set it.
+Interactive chats that start from none of these usually carry no confirmed
+goal, and their appraisal records no goal rather than guessing one.
 
 
 A `GoalRef` is a **pointer, never a copy**, and renders on the wire as
@@ -42,6 +43,8 @@ A `GoalRef` is a **pointer, never a copy**, and renders on the wire as
 | `task:<uid>` | A task on [the graph's board](/docs/reference/cli#tasks), by its node ID. |
 | `project:<uid>` | A parent project on the graph, by `project_id`, not its display name. |
 | `setpoint:<name>` | A homeostatic setpoint. Named so the wire format survives its arrival; no store yet. |
+| `trigger:<name>` | A [scheduled trigger](/docs/features/automation/triggers), by its file name. Set by the harness on every trigger run. |
+| `request:<seq>` | A front-door request, by its record number. Set by the harness on the triage run it starts. |
 
 A flat string rather than a nested object because the **model** writes it: it is
 one field on the `todo` and `ask_user` schemas, and malformed arguments are a metric the
@@ -91,6 +94,34 @@ how you confirm the goal it assumed; the release is recorded on the draft, but i
 is not yet counted as a confirmation in the numbers below. `sessions appraise --json` reports `goal_put_to_owner` and
 `goal_confirmed` for sessions with stored goal questions; these are not a count
 of every informal confirmation in chat.
+
+## Anchors the harness sets itself
+
+Some runs are handed their goal by a store you own, and the harness records it
+before the run starts, with no model involved:
+
+| Run | Anchor |
+|---|---|
+| A board task handed over with `mecha tasks work`, or opened from the web board | `task:<id>` |
+| A scheduled trigger | `trigger:<name>` |
+| A front-door triage run | `request:<seq>` |
+
+A hand-over or resume keeps the anchor its session already saved. What each of
+these serves further up stays where it lives: a task's project is on the board
+row, and a trigger may name the charter line it serves in its own file:
+
+```toml
+# ~/.mecha/triggers/morning.toml
+schedule = "0 7 * * 1-5"
+prompt = "Brief me on today."
+serves = "charter:protect-my-attention"   # optional
+```
+
+`serves` is never required. When present it must be a `charter:` line that
+exists in your charter; a missing line, or a charter that cannot be read,
+refuses the trigger at load, and `mecha trigger list` says why.
+`mecha sessions health --json` counts anchored runs by kind in
+`runs_anchored_by_kind`.
 
 ## Explicit goal confirmation for one-shot runs
 

@@ -597,6 +597,12 @@ pub struct KnownPointers {
     tasks: std::collections::BTreeSet<String>,
     projects: std::collections::BTreeSet<String>,
     charter: std::collections::BTreeSet<String>,
+    /// Trigger names in the owner's trigger store, and front-door request
+    /// ids (`seq`) in the front-door store: the stores behind the two
+    /// structural kinds (`APPRAISAL-WIRING-DESIGN.md` S1). Resolved like a
+    /// charter id — the pointer crosses whole only if its store holds it.
+    triggers: std::collections::BTreeSet<String>,
+    requests: std::collections::BTreeSet<String>,
     /// The board said its answer was short. The direction is safe — a row
     /// that did not arrive costs its pointer the kind word, never admits
     /// one — but a large board would otherwise degrade every pointer with
@@ -624,6 +630,21 @@ impl KnownPointers {
         self
     }
 
+    /// The trigger store's names — every trigger file that loads, since a
+    /// run could only have been anchored to one of those.
+    pub fn with_triggers(mut self, names: impl IntoIterator<Item = String>) -> KnownPointers {
+        self.triggers.extend(names);
+        self
+    }
+
+    /// The front-door store's request ids, as the `seq` a `request:` pointer
+    /// carries.
+    pub fn with_requests(mut self, seqs: impl IntoIterator<Item = i64>) -> KnownPointers {
+        self.requests
+            .extend(seqs.into_iter().map(|s| s.to_string()));
+        self
+    }
+
     /// From a `kg_task_list` answer taken with `include_closed`: every task
     /// id on it, and every `project_id` a row carries. A project no task
     /// was ever filed under is not on the board and does not cross — a
@@ -646,15 +667,18 @@ impl KnownPointers {
     }
 
     /// Whether a reference may cross whole: a charter id must be a line of
-    /// the loaded charter, a task or project id on the board; a setpoint
-    /// name is a model-written string with no store to resolve it against,
-    /// so it never crosses.
+    /// the loaded charter, a task or project id on the board, a trigger name
+    /// in the trigger store, a request id in the front-door store; a
+    /// setpoint name is a model-written string with no store to resolve it
+    /// against, so it never crosses.
     fn admits(&self, g: &crate::goal::GoalRef) -> bool {
         use crate::goal::GoalRef;
         match g {
             GoalRef::Charter(id) => self.charter.contains(id),
             GoalRef::Task(id) => self.tasks.contains(id),
             GoalRef::Project(id) => self.projects.contains(id),
+            GoalRef::Trigger(id) => self.triggers.contains(id),
+            GoalRef::Request(id) => self.requests.contains(id),
             GoalRef::Setpoint(_) => false,
         }
     }
@@ -1408,6 +1432,32 @@ mod tests {
         assert_eq!(meta["goal"], "charter");
         assert!(meta.get("serves_charter").is_none());
         assert_eq!(meta["goal_errors"][0]["goal"], "charter");
+    }
+
+    /// A trigger or request pointer crosses whole only when its own store
+    /// holds it — the harness seeded it from that store, and the boundary
+    /// checks rather than trusts that.
+    #[test]
+    fn a_trigger_or_request_pointer_crosses_only_when_its_store_holds_it() {
+        use crate::goal::GoalRef;
+        let known = KnownPointers::none()
+            .with_triggers(["morning".to_string()])
+            .with_requests([12]);
+        assert!(known.admits(&GoalRef::Trigger("morning".into())));
+        assert!(!known.admits(&GoalRef::Trigger("evening".into())));
+        assert!(known.admits(&GoalRef::Request("12".into())));
+        assert!(!known.admits(&GoalRef::Request("13".into())));
+        let trig = GoalRef::Trigger("morning".into());
+        let meta = meta_of(
+            &goal_appraisal(vec![trig.clone()], vec![trig.clone()], Some(trig.clone())),
+            &known,
+        );
+        assert_eq!(meta["goal"], "trigger:morning");
+        let meta = meta_of(
+            &goal_appraisal(vec![trig.clone()], vec![trig.clone()], Some(trig)),
+            &KnownPointers::none(),
+        );
+        assert_eq!(meta["goal"], "trigger", "unresolved: the kind word");
     }
 
     #[test]

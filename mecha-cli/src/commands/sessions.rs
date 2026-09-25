@@ -1410,9 +1410,18 @@ fn health(
             goals.anchored,
             goals.sensed
         );
+    } else if goals.anchored > 0 && goals.planned_unjudged > 0 {
+        // Planned, but only under anchors a plan cannot name: "none wrote a
+        // plan" would report *not judged* as *did not happen* (review).
+        println!(
+            "  goal drift          — ({} run(s) had a goal anchor; the {} that planned did so \
+             under a trigger or request anchor, which a plan cannot name, so drift is not \
+             judged)",
+            goals.anchored, goals.planned_unjudged
+        );
     } else if goals.anchored > 0 {
         println!(
-            "  goal drift          — ({} run(s) had a confirmed goal; none wrote a plan under it)",
+            "  goal drift          — ({} run(s) had a goal anchor; none wrote a plan under it)",
             goals.anchored
         );
     } else if goals.sensed > 0 {
@@ -1422,6 +1431,30 @@ fn health(
         );
     } else {
         println!("  goal drift          — (no run in this corpus recorded the sensor)");
+    }
+    if goals.planned > 0 && goals.planned_unjudged > 0 {
+        println!(
+            "                      ({} more run(s) planned under a trigger or request anchor; \
+             counted, not judged)",
+            goals.planned_unjudged
+        );
+    }
+    // Whether each anchor was structural (task, trigger, request) or
+    // confirmed (charter, a question answered) is the question the
+    // structural seeds exist to answer, and it keeps mattering once plans
+    // are written — so it is its own line, not one branch of the drift
+    // readout (found on review).
+    if goals.anchored > 0 {
+        let kinds: Vec<String> = corpus
+            .anchored_by_kind()
+            .iter()
+            .map(|(kind, n)| format!("{kind} {n}"))
+            .collect();
+        println!(
+            "  goal anchors        {} run(s): {}",
+            goals.anchored,
+            kinds.join(", ")
+        );
     }
 
     let by_model = corpus.by_model();
@@ -1461,7 +1494,7 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
     let (overflows, sensed) = corpus.context_overflows();
     let steps = corpus.step_totals();
     let goals = corpus.goal_totals();
-    serde_json::json!({
+    let mut out = serde_json::json!({
         "runs": corpus.len(),
         "sessions_read": corpus.sessions_read,
         // Store-wide, like the scan that produced it — a skipped file has no
@@ -1521,7 +1554,15 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
                 })
             })
             .collect::<Vec<_>>(),
-    })
+    });
+    // Beside `runs_with_a_goal_anchor`, added after the literal because the
+    // `json!` macro is at its recursion limit: which store each anchor came
+    // from — a structural seed (task, trigger, request) or an owner's
+    // confirmation (charter, project, or a task named in an answer).
+    out["runs_anchored_by_kind"] = serde_json::json!(corpus.anchored_by_kind());
+    // Planned under a trigger or request anchor: counted, never judged.
+    out["runs_planned_under_an_unjudged_anchor"] = serde_json::json!(goals.planned_unjudged);
+    out
 }
 
 /// A rate as a percentage, or `—` when it has no denominator. Never `0%`:
