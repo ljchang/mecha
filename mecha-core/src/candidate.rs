@@ -244,7 +244,13 @@ pub struct Judgement {
 #[serde(rename_all = "snake_case")]
 pub enum Guard {
     /// Nothing measured got worse. Includes a candidate that did not beat
-    /// the original: that is a missing win, never a regression.
+    /// the original: that is a missing win, never a regression. **And a
+    /// holdout with too little of the metric to confirm a gain**
+    /// ([`MIN_INFORMATIVE_HOLDOUT`]) — deliberately: such a holdout cannot
+    /// produce a win but can produce a loss, so it is a real regression
+    /// check; what it cannot do is *confirm*, and under R26/R36 confirming
+    /// is the point-wise comparison's job, not the numbers'. A holdout that
+    /// found a loss is `Regressed`; one that found none has held.
     Held,
     /// Something got worse. Vetoes any point-wise win.
     Regressed(Regression),
@@ -1825,6 +1831,42 @@ mod r36_tests {
                 "{guard:?}"
             );
         }
+    }
+
+    /// An uninformative holdout — no held-out episode had any of the
+    /// metric — cannot confirm a gain, so the numbers alone only propose;
+    /// but it found no loss, so it guards as held, and a point-wise win
+    /// carries the candidate. Pinned because it is the one numeric
+    /// `Propose` the guard reads as held (raised on review).
+    #[test]
+    fn an_uninformative_holdout_guards_as_held_and_a_point_wise_win_carries_it() {
+        let numeric = judge_drawn(
+            ChangeClass::Config,
+            &turns(),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (10, 4)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 0), (10, 0)),
+        );
+        assert!(
+            matches!(numeric.disposition, Disposition::Propose(ref why) if why.contains("to begin with")),
+            "{:?}",
+            numeric.disposition
+        );
+        assert_eq!(numeric.guard, Guard::Held);
+        let (combined, basis) = combine(ChangeClass::Config, numeric.clone(), &tally(4, 0, 0));
+        assert_eq!(
+            (combined.disposition, basis),
+            (Disposition::Accept, Basis::Pointwise)
+        );
+        let (fallback, basis) = combine(
+            ChangeClass::Config,
+            numeric.clone(),
+            &PointwiseTally::default(),
+        );
+        assert_eq!(
+            (fallback.disposition, basis),
+            (numeric.disposition, Basis::NumericOnly),
+            "without a point-wise decision it still only proposes"
+        );
     }
 
     /// A numeric rejection on a regression is final under every point-wise

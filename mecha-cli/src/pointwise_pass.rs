@@ -711,7 +711,8 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
 #[derive(Debug, Default)]
 pub struct CandidateEvidence {
     pub tally: mecha_core::candidate::PointwiseTally,
-    /// Why nothing was compared, when nothing was.
+    /// Why nothing was compared, when nothing was — or why the pass
+    /// stopped short of its budget.
     pub not_run: Option<String>,
     /// The comparison-store rows counted, driven now or reused.
     pub comparisons: Vec<String>,
@@ -798,7 +799,14 @@ fn reuse(
 /// each cause in its own words.
 fn empty_reason(out: &CandidateEvidence, seats_held: bool, lost_to_arms: usize) -> Option<String> {
     if out.tally != mecha_core::candidate::PointwiseTally::default() {
-        return None;
+        // Evidence, but perhaps less than the budget allowed: a pass cut
+        // short by held seats must not read like a thin corpus.
+        return seats_held.then(|| {
+            format!(
+                "stopped short: every background seat stayed held after {} point(s)",
+                out.tally.decided + out.tally.undecided
+            )
+        });
     }
     Some(if seats_held {
         "every background seat stayed held, so no point was driven".into()
@@ -1786,9 +1794,15 @@ mod tests {
         let mut some = CandidateEvidence::default();
         some.tally.count(Outcome::Pass, Outcome::Pass);
         assert_eq!(
-            empty_reason(&some, true, 2),
+            empty_reason(&some, false, 2),
             None,
             "evidence is not an empty pass"
+        );
+        assert!(
+            empty_reason(&some, true, 0)
+                .unwrap()
+                .contains("stopped short"),
+            "a pass cut short by held seats says so"
         );
     }
 

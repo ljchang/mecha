@@ -4062,7 +4062,10 @@ auto-accepts) now asks two questions of a config candidate, and
   metric past `REGRESSION_CEILING` — vetoes; `NewCost` (a cost from
   nothing) and `Unmeasured` (a slice below its floor) reach a person;
   `Held` includes "did not beat the original", which is a missing win and
-  never a regression. The guard is computed whatever the disposition, so a
+  never a regression — and so is a holdout with too little of the metric to
+  confirm a gain (`MIN_INFORMATIVE_HOLDOUT`): it can still find a loss, so it
+  guards; confirming is the point-wise half's job. The guard is computed
+  whatever the disposition, so a
   breach on numbers that did not carry the candidate still vetoes a
   point-wise win.
 - **The rule** (R36): for + held → `Accept` when `ChangeClass` allows
@@ -4074,7 +4077,10 @@ auto-accepts) now asks two questions of a config candidate, and
   cannot see. The basis, tally, reused and driven comparison ids, and any
   reason nothing ran go on `Measurement::pointwise`; `harness show` prints
   them, and a record from before reads "not recorded", never "numeric only".
-- **A pass that could not run is never evidence.** A provider off this
+- **A pass that could not run is never evidence** — and a pass that failed
+  (an unwritable store, a provider that will not build) is recorded as why
+  nothing was compared, never allowed to discard the whole-session
+  measurement already paid for (found on review). A provider off this
   machine (R29), no drawable point, a seat that never frees, and an
   owner-bound check point (it needs hooks, the outbox and messages off;
   the nightly line sets none) all leave the tally short, and a short tally

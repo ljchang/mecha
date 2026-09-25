@@ -784,5 +784,16 @@ mod tests {
         let mut elsewhere = row(&["a", "b"], "local");
         elsewhere.pointers.message_index = Some(4);
         assert!(!already_compared(&stored, &elsewhere));
+        // The same policies under other roles are other arms: a candidate's
+        // two arms share one rules hash and differ only by role.
+        let mut recast = row(&["a", "b"], "local");
+        recast.arms[0].role = Role::Candidate;
+        assert!(!already_compared(&stored, &recast));
+        let mut named = row(&["a", "b"], "local");
+        named.pointers.proposal_id = Some("hc-ledger".into());
+        assert!(
+            !already_compared(&stored, &named),
+            "a candidate's comparison is not the rules pass's"
+        );
     }
 }
