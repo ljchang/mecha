@@ -3706,7 +3706,9 @@ kept theirs only in rule-keyed ledgers.
 
 The record (`comparison::Comparison`) is closed sets and pointers only: the
 recorded `Situation` of the decision point (the miner's construction —
-`ProbePrep::situation_at` — so readers key on `Situation::scope`), the
+`ProbePrep::situation_at` — so readers key on `Situation::scope`; `None`
+when the probed reflection predates situations, because an empty-keyed
+`Situation` is standing and would match every run), the
 session's goal **kind** (`GoalRef::goal_kind`, never the id), a `CallClass`
 (the tool and the argument names its recorded schema declares — never a
 value, never an undeclared key), K `Arm`s (role, the rules hash it carried

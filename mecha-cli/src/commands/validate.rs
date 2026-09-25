@@ -758,9 +758,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         if let [baseline, with] = &verdicts[..] {
             let mut comparison = prep.comparison(
                 mecha_core::comparison::Kind::Validation,
-                r.situation
-                    .clone()
-                    .unwrap_or_else(|| prep.situation_at(&[], &r.trigger)),
+                // Unknown stays unknown (see `Comparison::situation`).
+                r.situation.clone(),
                 vec![
                     Arm::new(Role::RulesFree, Arm::no_block(), Outcome::from(baseline)),
                     Arm::new(

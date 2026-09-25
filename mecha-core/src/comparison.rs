@@ -297,9 +297,13 @@ pub struct Comparison {
     pub kind: Kind,
     /// The recorded situation of the decision point: the tool window, the
     /// trigger, and the matched surface and workspace. A reader keys on
-    /// [`Situation::scope`] (the trigger is recorded, never a key).
-    #[serde(default)]
-    pub situation: Situation,
+    /// [`Situation::scope`] (the trigger is recorded, never a key). `None`
+    /// is **unknown** — a reflection mined before situations were recorded —
+    /// and never "everywhere": an empty-keyed `Situation` is a standing
+    /// scope that matches every run, so an unknown one must not be spelled
+    /// as it, or a lesson about one tool would read as evidence about all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub situation: Option<Situation>,
     /// The kind of goal the session was anchored to; `None` when it named
     /// none — absent is recorded, never guessed.
     #[serde(default)]
@@ -329,7 +333,7 @@ impl Comparison {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         kind: Kind,
-        situation: Situation,
+        situation: Option<Situation>,
         goal_kind: Option<GoalKind>,
         call: Option<CallClass>,
         arms: Vec<Arm>,
@@ -609,7 +613,12 @@ mod tests {
         let specs = [spec("fs_read", json!({"path": {"type": "string"}}))];
         Comparison::new(
             Kind::SteerProbe,
-            Situation::recorded(&["fs_read".into()], "steer", None, None),
+            Some(Situation::recorded(
+                &["fs_read".into()],
+                "steer",
+                None,
+                None,
+            )),
             Some(GoalKind::Task),
             CallClass::of("fs_read", &json!({"path": "/secret/notes.txt"}), &specs),
             vec![
@@ -772,11 +781,32 @@ mod tests {
         assert_eq!(future.verdict, Verdict::Unknown);
         assert_eq!(future.arms[0].role, Role::Unknown);
         assert_eq!(future.arms[0].outcome, Outcome::Unknown);
-        assert_eq!(future.situation, Situation::default());
+        assert_eq!(future.situation, None, "absent is unknown, not standing");
         assert!(future.call.is_none());
         let summary = Summary::of(&rows);
         assert_eq!(summary.records, 3);
         assert_eq!(summary.by_kind.get("unknown"), Some(&2));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A comparison drawn from a reflection with no recorded situation keeps
+    /// it unknown through a write and a read: never the empty-keyed scope,
+    /// which is standing and would match every run (found on review).
+    #[test]
+    fn an_unknown_situation_stays_unknown_rather_than_standing() {
+        let root = temp_root("unknown-situation");
+        let store = ComparisonStore::open(&root).unwrap();
+        let mut c = steer_probe(Outcome::Fail);
+        c.situation = None;
+        store.record(clean(), &c).unwrap();
+        let raw = std::fs::read_to_string(store.ledger()).unwrap();
+        assert!(!raw.contains("\"situation\""), "{raw}");
+        let back = &store.comparisons().unwrap()[0];
+        assert_eq!(back.situation, None);
+        assert!(
+            Situation::default().is_standing(),
+            "the value unknown must not be"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

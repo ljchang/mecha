@@ -270,7 +270,7 @@ impl ProbePrep {
     pub fn comparison(
         &self,
         kind: Kind,
-        situation: Situation,
+        situation: Option<Situation>,
         arms: Vec<Arm>,
         model: &str,
     ) -> Result<Comparison> {
@@ -883,9 +883,9 @@ pub async fn probe_reflection(
     }
     let mut comparison = prep.comparison(
         Kind::Gate,
-        r.situation
-            .clone()
-            .unwrap_or_else(|| prep.situation_at(&[], &r.trigger)),
+        // Unknown stays unknown: a reflection from before situations were
+        // recorded has none, and an empty-keyed stand-in would be standing.
+        r.situation.clone(),
         policies
             .into_iter()
             .zip(&verdicts)
