@@ -172,6 +172,22 @@ pub fn edit_charter_with(
     })
 }
 
+/// One warning line per trigger a just-saved charter broke — its `serves`
+/// names a line the charter no longer has, so the trigger will not load and
+/// will not fire (review of #292). Empty when the charter does not load
+/// (the save's own arm already says so, and every trigger with a `serves`
+/// is then refused alike) or when no trigger is broken. The save stands:
+/// the owner may be mid-rename and fix the trigger next.
+pub fn charter_trigger_warnings(path: &std::path::Path) -> Vec<String> {
+    let Ok(charter) = mecha_core::charter::Charter::load(path) else {
+        return Vec::new();
+    };
+    mecha_core::trigger::triggers_broken_by(&charter)
+        .iter()
+        .map(mecha_core::trigger::BrokenLink::warning)
+        .collect()
+}
+
 pub fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }

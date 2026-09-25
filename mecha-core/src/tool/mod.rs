@@ -712,6 +712,13 @@ impl GoalTrack {
             return;
         };
         self.plan_writes.fetch_add(1, Relaxed);
+        // An anchor no plan can name (a trigger, a request) has no drift to
+        // judge — every named goal would read as a changed pointer — but the
+        // write still happened: counting it keeps "planned under an anchor it
+        // cannot judge" apart from "never planned" (found on review).
+        if !anchor.a_plan_can_name() {
+            return;
+        }
         match crate::goal::drift_of(&anchor, serves) {
             crate::goal::Drift::Same => {}
             crate::goal::Drift::Changed => {
@@ -2283,5 +2290,33 @@ mod jail_tests {
         // A fresh track carrying the anchor shares no counters with it.
         let carried = GoalTrack::carrying(track.anchor());
         assert_eq!(carried.snapshot().1, 0);
+    }
+
+    /// A trigger- or request-anchored run's plan cannot name its anchor, so
+    /// its plan writes are counted but not judged: on the old tree every
+    /// named goal here counted as a changed pointer (review of #292), and a
+    /// later cut that skipped the count made a planning run read as one that
+    /// never planned (the review after).
+    #[test]
+    fn a_plan_under_an_anchor_no_plan_can_name_is_not_judged() {
+        use crate::goal::GoalRef;
+        let track = GoalTrack::carrying(Some(GoalRef::Trigger("morning".into())));
+        track.note_plan(Some(&GoalRef::Charter("protect-my-attention".into())));
+        track.note_plan(None);
+        let (anchor, writes, drifted, unnamed) = track.snapshot();
+        assert_eq!(anchor, Some(GoalRef::Trigger("morning".into())));
+        assert_eq!((writes, drifted, unnamed), (2, 0, 0));
+    }
+
+    /// An owner-set `setpoint:` anchor stays judged: a plan serving
+    /// something else is drift, as it was before the structural kinds
+    /// arrived (review of #292 — an earlier cut had excluded it).
+    #[test]
+    fn a_plan_diverging_from_a_setpoint_anchor_is_still_drift() {
+        use crate::goal::GoalRef;
+        let track = GoalTrack::carrying(Some(GoalRef::Setpoint("attention-debt".into())));
+        track.note_plan(Some(&GoalRef::Task("x".into())));
+        let (_, writes, drifted, unnamed) = track.snapshot();
+        assert_eq!((writes, drifted, unnamed), (1, 1, 0));
     }
 }

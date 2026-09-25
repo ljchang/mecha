@@ -760,6 +760,14 @@ async fn triage(
         }
 
         let mut convo = mecha_core::agent::Conversation::new();
+        // The request this run was handed is its goal
+        // (`APPRAISAL-WIRING-DESIGN.md` S1) — the harness's pointer to its own
+        // record, never anything the stranger wrote.
+        super::run::seed_goal_anchor(
+            &mut convo,
+            super::run::structural_pointer(format!("request:{}", record.seq)),
+            Some(&session),
+        )?;
         let user = Message::user(triage_prompt(&brief));
         convo.push(user.clone());
         session.append(&mecha_core::session::Record::Message(user))?;
