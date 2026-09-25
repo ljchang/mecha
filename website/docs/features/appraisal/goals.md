@@ -123,6 +123,12 @@ refuses the trigger at load, and `mecha trigger list` says why.
 `mecha sessions health --json` counts anchored runs by kind in
 `runs_anchored_by_kind`.
 
+A board task, a trigger and a `run --goal` reference are also the goal the
+run's learned rules are matched against, so a lesson learned toward one goal
+can be scoped to it; see [where a rule loads](/docs/features/learning#where-a-rule-loads).
+A front-door triage run is anchored to its request but matches its rules
+with no goal, because one set of rules serves every request in the batch.
+
 ## Explicit goal confirmation for one-shot runs
 
 Use `mecha run --goal task:ID "your task"` to confirm the run's goal. The
