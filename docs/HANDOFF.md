@@ -2680,7 +2680,8 @@ the TUI to its direct write. `mecha-slack`, `-triggers`, `-drain` and
 `-serve` show `ActiveEnterTimestamp` 16:41:35Z; the voice worker was not
 restarted (11:31:38Z). mecha-mail and mecha-docs are unchanged since 03:03Z.
 **Merged and not installed:** #308 (2a-1, `appraisal_store.rs`, at
-`e35bb081`) and #303 (`image_generate`, at `5d613736`). `sessions health
+`e35bb081`), and from other lanes #303 (`image_generate`, `5d613736`) and
+#306 (its edits, `b1820b5d`). `sessions health
 --days 1` at 17:58Z read one real run since the install, briefed with all
 nine fields known and unanchored, which is too few to read phase 1's *done
 when* against.
