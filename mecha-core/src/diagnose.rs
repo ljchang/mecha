@@ -240,6 +240,250 @@ pub struct Evidence {
     /// change forever, and every night costs a measurement that was already
     /// paid for.
     pub history: Vec<String>,
+    /// The clean appraisals of the episodes this measurement draws from
+    /// (row 2f, L8), bounded ([`AppraisalNote`]). Empty by default: a brief
+    /// built from a corpus alone carries none, and nothing but
+    /// [`Evidence::with_appraisals`] adds one.
+    ///
+    /// **Only a [`Clean`] becomes a note** — [`AppraisalNote`]'s fields are
+    /// private and its one constructor takes `&Clean`, which only
+    /// `AppraisalStore::clean` can make. So a tainted run's appraisal cannot
+    /// reach this brief whatever the caller holds.
+    pub appraisals: Vec<AppraisalNote>,
+    /// Clean appraisals of those episodes the cap left out — said, never
+    /// silent.
+    pub appraisals_not_shown: usize,
+}
+
+// ─── Appraisals in the brief (row 2f) ───────────────────────────────────────
+//
+// The brief was counters and doctor's findings, and the module doc's first
+// rule was that it had nowhere to put content. L8 adds one kind, and only
+// one: the appraiser's own interpretation of a run that read no third-party
+// content (R19's clean door). What makes it admissible is where it comes
+// from, and the type carries that — not a rule at the call site:
+//
+// - **Clean only, structurally.** A note is built from `&Clean`; there is no
+//   other constructor.
+// - **The appraiser's words, never the run's.** The interpretation, the
+//   bearing per goal and the lessons ride; the claims' quotes — literal
+//   spans of what the run received — do not. Quotes are content in the
+//   sense the first rule means, and the diagnostician diagnoses the
+//   harness, not the owner's mail.
+// - **Words, not numbers** (R21): no valence, no score, no grounding
+//   counts — a model handed a number it could move drifts toward moving it.
+// - **Bounded, with the cut said.** At most [`APPRAISALS_IN_BRIEF`] notes;
+//   each interpretation at most [`APPRAISAL_INTERPRETATION_CHARS`], at most
+//   [`APPRAISAL_LESSONS_SHOWN`] lessons of [`APPRAISAL_LESSON_CHARS`] each.
+// - **A source for [`carries_over`].** A proposal lifting eight words of a
+//   note is refused as one lifting eight words of a fetched page is
+//   ([`lifted`]).
+// - **Private.** A clean run may have read the owner's files, and its
+//   appraisal can say so — `goal_context`'s reason for being `private`, one
+//   module over. A brief carrying a note opens a conversation already
+//   carrying private data ([`Evidence::conversation`]), so the interlock
+//   refuses a model-chosen send once the diagnostician reads the web.
+//
+// And the appraisal is evidence for what is *proposed*, never for what is
+// *accepted*: `candidate::judge_drawn` and `candidate::combine` read replay
+// pairs and the point-wise tally, and nothing here reaches either.
+
+use crate::appraisal_store::{Bearing, Clean, CleanRead};
+
+/// How many appraisals the brief carries at most.
+pub const APPRAISALS_IN_BRIEF: usize = 6;
+/// How much of one appraisal's interpretation rides.
+pub const APPRAISAL_INTERPRETATION_CHARS: usize = 600;
+/// How many of one appraisal's lessons ride, and how much of each.
+pub const APPRAISAL_LESSONS_SHOWN: usize = 2;
+pub const APPRAISAL_LESSON_CHARS: usize = 240;
+
+/// One clean appraisal as the brief carries it: the appraiser's own words,
+/// bounded. Private fields, one constructor ([`AppraisalNote::of`]) — see the
+/// block comment above.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppraisalNote {
+    session_id: String,
+    date: String,
+    interpretation: String,
+    /// `good for task:t1`, `bad for an unnamed goal` — bearings as words.
+    judged: Vec<String>,
+    lessons: Vec<String>,
+    /// A bound cut something from this appraisal.
+    clipped: bool,
+}
+
+impl AppraisalNote {
+    /// The note for one clean appraisal. The only way to make one.
+    pub fn of(clean: &Clean) -> AppraisalNote {
+        let a = clean.get();
+        let mut clipped = false;
+        let mut cut = |s: &str, max: usize| {
+            let s = s.trim();
+            if s.chars().count() > max {
+                clipped = true;
+            }
+            crate::step::ellipsize(s, max)
+        };
+        let interpretation = cut(&a.interpretation, APPRAISAL_INTERPRETATION_CHARS);
+        let lessons: Vec<String> = a
+            .lessons
+            .iter()
+            .filter(|l| !l.trim().is_empty())
+            .take(APPRAISAL_LESSONS_SHOWN)
+            .map(|l| cut(l, APPRAISAL_LESSON_CHARS))
+            .collect();
+        if a.lessons.iter().filter(|l| !l.trim().is_empty()).count() > APPRAISAL_LESSONS_SHOWN {
+            clipped = true;
+        }
+        let judged = a
+            .judgments
+            .iter()
+            .filter_map(|j| {
+                let way = match j.bearing {
+                    Bearing::Good => "good",
+                    Bearing::Bad => "bad",
+                    // A word a newer build wrote says nothing this reader
+                    // can repeat; it is left out rather than guessed.
+                    Bearing::Unknown => return None,
+                };
+                Some(match &j.goal {
+                    Some(goal) => format!("{way} for {goal}"),
+                    None => format!("{way} for a goal it could not name"),
+                })
+            })
+            .collect();
+        AppraisalNote {
+            session_id: a.session_id.clone(),
+            date: a.at.format("%Y-%m-%d").to_string(),
+            interpretation,
+            judged,
+            lessons,
+            clipped,
+        }
+    }
+
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    /// The note as the brief renders it — and so exactly the text
+    /// [`lifted`] checks a proposal against.
+    pub fn render(&self) -> String {
+        let mut out = format!(
+            "- session {} ({}): {}\n",
+            self.session_id, self.date, self.interpretation
+        );
+        if !self.judged.is_empty() {
+            out.push_str(&format!("  judged: {}\n", self.judged.join("; ")));
+        }
+        for l in &self.lessons {
+            out.push_str(&format!("  lesson: {l}\n"));
+        }
+        if self.clipped {
+            out.push_str("  (cut to fit this brief)\n");
+        }
+        out
+    }
+}
+
+/// The clean appraisals of `episodes`, as notes: at most
+/// [`APPRAISALS_IN_BRIEF`], newest first, one per session (the newest, if an
+/// older store holds two), and how many the cap left out.
+///
+/// Takes a [`CleanRead`] — the clean door's answer — and nothing else, so a
+/// tainted appraisal has no way in; and takes the episode ids from the
+/// caller's draw, so an appraisal of a session the draw did not select is
+/// never read here, however clean.
+pub fn appraisals_of(read: &CleanRead, episodes: &[String]) -> (Vec<AppraisalNote>, usize) {
+    let wanted: std::collections::BTreeSet<&str> = episodes.iter().map(String::as_str).collect();
+    let mut rows: Vec<&Clean> = read
+        .appraisals
+        .iter()
+        .filter(|c| wanted.contains(c.session_id.as_str()))
+        .collect();
+    rows.sort_by(|a, b| {
+        b.at.cmp(&a.at)
+            .then_with(|| a.session_id.cmp(&b.session_id))
+    });
+    let mut seen = std::collections::BTreeSet::new();
+    rows.retain(|c| seen.insert(c.session_id.clone()));
+    let not_shown = rows.len().saturating_sub(APPRAISALS_IN_BRIEF);
+    let notes = rows
+        .into_iter()
+        .take(APPRAISALS_IN_BRIEF)
+        .map(AppraisalNote::of)
+        .collect();
+    (notes, not_shown)
+}
+
+/// Does the proposal reproduce a run of words from anything the
+/// diagnostician read — a tool result, or an appraisal in its brief?
+///
+/// One check over one list of sources: the appraisal notes join the tool
+/// results rather than getting a checker of their own. The rationale is
+/// asked first, then the change, as before.
+pub fn lifted(proposal: &Proposal, tool_results: &[&str], evidence: &Evidence) -> Option<String> {
+    let notes = evidence.appraisal_sources();
+    let sources: Vec<&str> = tool_results
+        .iter()
+        .copied()
+        .chain(notes.iter().map(String::as_str))
+        .collect();
+    carries_over(&proposal.rationale, &sources).or_else(|| carries_over(&proposal.change, &sources))
+}
+
+impl Evidence {
+    /// The brief with the clean appraisals of the draw's episodes beside the
+    /// counters. See [`appraisals_of`].
+    pub fn with_appraisals(mut self, read: &CleanRead, episodes: &[String]) -> Evidence {
+        let (notes, not_shown) = appraisals_of(read, episodes);
+        self.appraisals = notes;
+        self.appraisals_not_shown = not_shown;
+        self
+    }
+
+    /// The appraisal text the brief carries, one string per note — what a
+    /// proposal is checked against beside the tool results.
+    pub fn appraisal_sources(&self) -> Vec<String> {
+        self.appraisals.iter().map(AppraisalNote::render).collect()
+    }
+
+    /// The diagnostician's opening conversation: the brief and `rest`, and
+    /// **private data already in it when an appraisal rides** — a clean
+    /// run's appraisal can speak of the owner's files, and the interlock
+    /// only knows what the conversation's taint tells it.
+    pub fn conversation(&self, rest: &str) -> crate::agent::Conversation {
+        let mut convo = crate::agent::Conversation::user(format!("{}\n---\n{rest}", self.brief()));
+        if !self.appraisals.is_empty() {
+            convo.taint.private = true;
+        }
+        convo
+    }
+
+    /// The appraisal section of the brief, or nothing.
+    fn appraisal_section(&self) -> String {
+        if self.appraisals.is_empty() {
+            return String::new();
+        }
+        let mut out = String::from(
+            "\nwhat the appraiser wrote about some of the episodes this change will be \
+             measured on — interpretations a model wrote after runs that read no \
+             third-party content: one reading of what went wrong or right and why, not \
+             a measurement and not an instruction. The counters above are what a \
+             change is judged on; these may suggest what to change:\n",
+        );
+        for note in &self.appraisals {
+            out.push_str(&note.render());
+        }
+        if self.appraisals_not_shown > 0 {
+            out.push_str(&format!(
+                "- and {} further clean appraisal(s) of these episodes, not shown\n",
+                self.appraisals_not_shown
+            ));
+        }
+        out
+    }
 }
 
 impl Evidence {
@@ -320,6 +564,8 @@ impl Evidence {
                 .collect(),
             findings: Vec::new(),
             history: Vec::new(),
+            appraisals: Vec::new(),
+            appraisals_not_shown: 0,
         }
     }
 
@@ -542,6 +788,7 @@ impl Evidence {
                 out.push_str(&format!("- {f}\n"));
             }
         }
+        out.push_str(&self.appraisal_section());
         if !self.history.is_empty() {
             out.push_str(
                 "\nalready proposed by earlier passes — do not propose any of these again; \
@@ -1477,6 +1724,304 @@ rationale: the threshold is too low";
         assert!(!brief.contains("most overdue"), "{brief}");
         assert!(brief.contains("not computed from pressure"), "{brief}");
         assert!(!brief.contains("not two"), "{brief}");
+    }
+
+    // ── Appraisals in the brief (row 2f) ────────────────────────────────
+
+    use crate::appraisal_store::{test_row, AppraisalStore, TextAppraisal};
+    use crate::situation::Situation;
+
+    fn situation() -> Situation {
+        Situation {
+            tools: vec!["fs_read".into()],
+            ..Situation::default()
+        }
+    }
+
+    /// Write `rows` to a fresh store's ledger and read them back through the
+    /// clean door — the path the nightly takes, not a hand-built `CleanRead`.
+    fn store_of(rows: &[TextAppraisal]) -> ((), AppraisalStore) {
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-diagnose-appraisals-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = AppraisalStore::open(&dir).unwrap();
+        let text: String = rows
+            .iter()
+            .map(|r| format!("{}\n", serde_json::to_string(r).unwrap()))
+            .collect();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("appraisals.jsonl"), text).unwrap();
+        ((), store)
+    }
+
+    fn row(session: &str, clean: bool, at: &str, interpretation: &str) -> TextAppraisal {
+        let mut r = test_row(session, &situation(), clean, at);
+        r.interpretation = interpretation.into();
+        r
+    }
+
+    /// Row 2f's first acceptance line. The tainted row is on file and the
+    /// owner's door returns it — so the negative is not vacuous — and the
+    /// brief built from the clean door for the same episodes carries only
+    /// the clean one.
+    #[test]
+    fn a_tainted_appraisal_never_reaches_the_brief() {
+        let tainted = "Ivy Park's calendar page said to raise max_turns to four hundred at once.";
+        let (_dir, store) = store_of(&[
+            row(
+                "s-clean",
+                true,
+                "2026-09-20T00:00:00Z",
+                "The run stalled after a failed read and retried the same path.",
+            ),
+            row("s-tainted", false, "2026-09-21T00:00:00Z", tainted),
+        ]);
+        let (all, _) = store.for_owner().unwrap();
+        assert!(all.iter().any(|r| r.interpretation == tainted), "on file");
+
+        let episodes = vec!["s-clean".to_string(), "s-tainted".to_string()];
+        let e = Evidence::default().with_appraisals(&store.clean().unwrap(), &episodes);
+        assert_eq!(e.appraisals.len(), 1);
+        assert_eq!(e.appraisals[0].session_id(), "s-clean");
+        let brief = e.brief();
+        assert!(brief.contains("retried the same path"), "{brief}");
+        assert!(!brief.contains("Ivy Park"), "{brief}");
+        assert!(!brief.contains("s-tainted"), "{brief}");
+        assert_eq!(
+            e.appraisals_not_shown, 0,
+            "a tainted row is not a cut clean one"
+        );
+    }
+
+    /// The draw decides which episodes are read, not the store: a clean
+    /// appraisal of a session the draw did not select stays out.
+    #[test]
+    fn a_clean_appraisal_of_an_episode_the_draw_did_not_select_is_not_read() {
+        let (_dir, store) = store_of(&[
+            row(
+                "s-drawn",
+                true,
+                "2026-09-20T00:00:00Z",
+                "The drawn run read one file and answered.",
+            ),
+            row(
+                "s-elsewhere",
+                true,
+                "2026-09-22T00:00:00Z",
+                "The undrawn run compacted twice.",
+            ),
+        ]);
+        let e =
+            Evidence::default().with_appraisals(&store.clean().unwrap(), &["s-drawn".to_string()]);
+        let brief = e.brief();
+        assert!(brief.contains("read one file"), "{brief}");
+        assert!(!brief.contains("compacted twice"), "{brief}");
+        // And no draw, no appraisals: the brief a corpus alone builds.
+        let none = Evidence::default().with_appraisals(&store.clean().unwrap(), &[]);
+        assert!(none.appraisals.is_empty());
+        assert!(!none.brief().contains("what the appraiser wrote"));
+    }
+
+    /// Bounded, and the cut said: at most `APPRAISALS_IN_BRIEF` notes, the
+    /// newest, each interpretation and lesson clipped with a mark, the
+    /// remainder counted — and the claims' quotes, which are the run's
+    /// content rather than the appraiser's words, never ride.
+    #[test]
+    fn a_clean_appraisal_rides_bounded_with_the_cut_said() {
+        let long = "word ".repeat(400);
+        let mut rows = Vec::new();
+        let mut episodes = Vec::new();
+        for i in 0..(APPRAISALS_IN_BRIEF + 3) {
+            let id = format!("s-{i:02}");
+            let mut r = row(
+                &id,
+                true,
+                &format!("2026-09-{:02}T00:00:00Z", 10 + i),
+                &format!("run {i}: {long}"),
+            );
+            r.lessons = vec![long.clone(), "second".into(), "lesson-three".into()];
+            r.claims = vec![crate::appraisal_store::Claim {
+                statement: "The owner asked for the date".into(),
+                pointer: crate::appraisal_store::Pointer::Turn(0),
+                quote: "Rowan Vale's appointment is on Thursday".into(),
+            }];
+            r.judgments = vec![crate::appraisal_store::Judgment {
+                goal: Some(crate::goal::GoalRef::Task("t1".into())),
+                bearing: Bearing::Bad,
+                because: vec![0],
+            }];
+            rows.push(r);
+            episodes.push(id);
+        }
+        let (_dir, store) = store_of(&rows);
+        let e = Evidence::default().with_appraisals(&store.clean().unwrap(), &episodes);
+        assert_eq!(e.appraisals.len(), APPRAISALS_IN_BRIEF);
+        assert_eq!(e.appraisals_not_shown, 3);
+        // Newest first: the three oldest are the ones left out.
+        assert_eq!(e.appraisals[0].session_id(), "s-08");
+        assert!(e.appraisals.iter().all(|n| n.session_id() > "s-02"));
+        let brief = e.brief();
+        assert!(brief.contains("3 further clean appraisal(s)"), "{brief}");
+        assert!(brief.contains("(cut to fit this brief)"), "{brief}");
+        assert!(brief.contains("judged: bad for task:t1"), "{brief}");
+        assert!(
+            !brief.contains("Rowan Vale"),
+            "a quote is the run's content: {brief}"
+        );
+        assert!(!brief.contains("lesson-three"), "two lessons at most");
+        let section = &brief[brief.find("what the appraiser wrote").unwrap()..];
+        let most = APPRAISALS_IN_BRIEF
+            * (APPRAISAL_INTERPRETATION_CHARS
+                + APPRAISAL_LESSONS_SHOWN * APPRAISAL_LESSON_CHARS
+                + 200);
+        assert!(
+            section.chars().count() < most,
+            "{} chars",
+            section.chars().count()
+        );
+    }
+
+    /// Row 2f's second acceptance line. The old check — tool results only —
+    /// lets the lifted rationale through; `lifted` refuses it.
+    #[test]
+    fn a_proposal_lifting_a_run_of_words_from_an_appraisal_is_refused() {
+        let (_dir, store) = store_of(&[row(
+            "s-1",
+            true,
+            "2026-09-20T00:00:00Z",
+            "The run kept re-reading the same notes file after each compaction instead of \
+             carrying the path forward.",
+        )]);
+        let e = Evidence::default().with_appraisals(&store.clean().unwrap(), &["s-1".to_string()]);
+        let proposal = Proposal {
+            class: ChangeClass::Config,
+            change: "compact_at_tokens=60000".into(),
+            metric: Metric::Compactions,
+            rationale: "it kept re-reading the same notes file after each compaction".into(),
+            reclassified: None,
+        };
+        let page = "An unrelated page about llama-server slots.";
+        assert_eq!(
+            carries_over(&proposal.rationale, &[page]),
+            None,
+            "not vacuous: tool results alone do not catch it"
+        );
+        let hit = lifted(&proposal, &[page], &e).expect("an appraisal is a source");
+        assert!(hit.contains("re-reading the same notes file"), "{hit}");
+
+        // A conclusion in the diagnostician's own words still passes.
+        let own = Proposal {
+            rationale: "a lower threshold would stop the rereads by compacting earlier".into(),
+            ..proposal.clone()
+        };
+        assert_eq!(lifted(&own, &[page], &e), None);
+        // And the tool-result half is unchanged.
+        let from_page = Proposal {
+            rationale: "per the page, an unrelated page about llama-server slots matters here"
+                .into(),
+            ..proposal
+        };
+        assert!(lifted(
+            &from_page,
+            &["see: an unrelated page about llama-server slots matters here"],
+            &Evidence::default()
+        )
+        .is_some());
+    }
+
+    /// A clean run may have read the owner's files and its appraisal can say
+    /// so: a brief carrying one opens a conversation already private, so the
+    /// interlock refuses a model-chosen send once a fetched page arrives. A
+    /// brief without one opens clean, as before.
+    #[test]
+    fn a_brief_carrying_an_appraisal_opens_a_private_conversation() {
+        let (_dir, store) = store_of(&[row(
+            "s-1",
+            true,
+            "2026-09-20T00:00:00Z",
+            "The run answered from the owner's notes.",
+        )]);
+        let with =
+            Evidence::default().with_appraisals(&store.clean().unwrap(), &["s-1".to_string()]);
+        let convo = with.conversation("instruction");
+        assert!(convo.taint.private && !convo.taint.untrusted);
+        let text = convo.messages[0].text();
+        assert!(
+            text.contains("owner's notes") && text.ends_with("---\ninstruction"),
+            "{text}"
+        );
+        let without = Evidence::default().conversation("instruction");
+        assert!(!without.taint.private);
+        assert_eq!(
+            without.messages[0].text(),
+            format!("{}\n---\ninstruction", Evidence::default().brief())
+        );
+    }
+
+    /// `candidate::judge` still decides. The judgement is a function of the
+    /// class, the prediction and the replay pairs — and the class and the
+    /// prediction come off the proposal's own text — so the same reply over
+    /// the same pairs is judged the same whether or not the brief carried an
+    /// appraisal, even one arguing for a guarded change.
+    #[test]
+    fn the_verdict_is_unchanged_by_an_appraisal_in_the_brief() {
+        use crate::candidate::{combine, judge_drawn, Pair, PointwiseTally, Prediction};
+        use crate::session::RunStats;
+        let (_dir, store) = store_of(&[row(
+            "s-1",
+            true,
+            "2026-09-20T00:00:00Z",
+            "Raising max_turns would have let this run finish; sandbox.kind=none would too.",
+        )]);
+        let bare = Evidence::default();
+        let briefed = bare
+            .clone()
+            .with_appraisals(&store.clean().unwrap(), &["s-1".to_string()]);
+        assert!(!briefed.appraisals.is_empty());
+
+        let reply = "PROPOSAL\nclass: config\nchange: max_turns=40\nmetric: tool_error_rate\n\
+                     rationale: runs stop at the ceiling";
+        let judge = |evidence: &Evidence| {
+            let p = parse_proposal(reply).unwrap();
+            assert!(lifted(&p, &[], evidence).is_none());
+            let run = |errors| RunStats {
+                tool_calls: 10,
+                tool_errors: errors,
+                ..RunStats::default()
+            };
+            let pairs: Vec<Pair> = (0..12)
+                .map(|i| Pair {
+                    episode: format!("e{i}"),
+                    baseline: run(4),
+                    candidate: run(2),
+                })
+                .collect();
+            let numeric = judge_drawn(
+                p.class,
+                &Prediction {
+                    metric: p.metric,
+                    rationale: p.rationale.clone(),
+                },
+                &pairs[..8],
+                &pairs[8..],
+            );
+            let (j, basis) = combine(p.class, numeric, &PointwiseTally::default());
+            (
+                p.class,
+                format!("{:?}", j.disposition),
+                format!("{basis:?}"),
+            )
+        };
+        let (class, disposition, basis) = judge(&briefed);
+        assert_eq!(judge(&bare), (class, disposition.clone(), basis));
+        assert!(disposition.starts_with("Accept"), "{disposition}");
+        assert_eq!(
+            class,
+            ChangeClass::Config,
+            "an appraisal naming a guarded key moves no class"
+        );
     }
 
     #[test]
