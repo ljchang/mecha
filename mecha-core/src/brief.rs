@@ -485,7 +485,9 @@ pub fn board_of(answer: Result<&Value, &str>, own_task: Option<&str>) -> Board {
         if is_overdue {
             c.overdue += 1;
             if let Some(id) = &id {
-                overdue.push((due.unwrap_or(NaiveDate::MIN), id.clone()));
+                // Undated last: a row flagged overdue with no date this
+                // build reads must not crowd out the oldest dated ones.
+                overdue.push((due.unwrap_or(NaiveDate::MAX), id.clone()));
             }
         }
         if let (Some(d), Some(t), Some(end)) = (due, today, week_end) {
@@ -1080,8 +1082,10 @@ impl Budget {
 
 /// Everything the brief is assembled from. The front-end supplies what only
 /// it holds — the board answer (read through its own tool surface), the
-/// local server's address, the budget — and [`assemble`] reads the rest from
-/// the stores under `home`.
+/// slot reading ([`slots_for`]), the budget — and [`assemble`] reads the
+/// rest from the stores under `home`. The two network-shaped reads come in
+/// already read, so a front-end can take them concurrently with each other
+/// and with anything else it waits on before the run.
 pub struct Inputs<'a> {
     pub now: DateTime<Utc>,
     pub home: &'a Path,
@@ -1095,15 +1099,23 @@ pub struct Inputs<'a> {
     pub homeostat: Option<&'a crate::homeostat::Homeostat>,
     /// `[agent] timezone`, as configured.
     pub zone: Option<&'a str>,
-    /// The provider's base URL when it is a local llama-server; `None`
-    /// records [`Slots::NotLocal`].
-    pub local_server: Option<&'a str>,
+    /// The slot reading, from [`slots_for`].
+    pub slots: Slots,
     pub budget: Budget,
 }
 
-/// Assemble the brief. No model call; one loopback HTTP request when the
-/// provider is a local server; otherwise directory reads.
-pub async fn assemble(inputs: Inputs<'_>) -> SituationBrief {
+/// The slot reading for a provider: `/slots` when it is a local
+/// llama-server (its base URL), [`Slots::NotLocal`] otherwise.
+pub async fn slots_for(local_server: Option<&str>) -> Slots {
+    match local_server {
+        Some(url) => read_slots(url).await,
+        None => Slots::NotLocal,
+    }
+}
+
+/// Assemble the brief. No model call and no network: directory reads over
+/// the stores under `home`.
+pub fn assemble(inputs: Inputs<'_>) -> SituationBrief {
     let Inputs {
         now,
         home,
@@ -1113,7 +1125,7 @@ pub async fn assemble(inputs: Inputs<'_>) -> SituationBrief {
         charter,
         homeostat,
         zone,
-        local_server,
+        slots,
         budget,
     } = inputs;
     let own_task = match anchor {
@@ -1138,25 +1150,23 @@ pub async fn assemble(inputs: Inputs<'_>) -> SituationBrief {
         time: Some(local_time(now, zone, policy)),
         seats: Some(seats_under(home)),
         runs: Some(runs_under(home, triggers_ref, anchor)),
-        slots: Some(match local_server {
-            Some(url) => read_slots(url).await,
-            None => Slots::NotLocal,
-        }),
+        slots: Some(slots),
         voice: Some(VoicePresence::under(home).read(now)),
         budget: Some(budget),
     }
 }
 
 /// The front-end's whole call: everything [`Inputs`] names that the agent,
-/// the run's context and the conversation already hold, plus the two things
-/// only the front-end has. The anchor is the conversation's (a seeded
-/// structural pointer, or one the owner confirmed), read after seeding.
-pub async fn assemble_for_run(
+/// the run's context and the conversation already hold, plus the two reads
+/// only the front-end can make (the board, the slots). The anchor is the
+/// conversation's (a seeded structural pointer, or one the owner
+/// confirmed), read after seeding.
+pub fn assemble_for_run(
     agent: &crate::agent::Agent,
     cx: &crate::agent::RunContext,
     convo: &crate::agent::Conversation,
     board: Result<Value, String>,
-    local_server: Option<&str>,
+    slots: Slots,
 ) -> SituationBrief {
     let home = crate::work::mecha_home();
     let charter = Charter::default_path()
@@ -1165,22 +1175,19 @@ pub async fn assemble_for_run(
     let anchor = convo.goal_anchor.clone();
     let budget = Budget::of(agent, cx, convo);
     match home {
-        Ok(home) => {
-            assemble(Inputs {
-                now: agent.now(),
-                home: &home,
-                triggers_root: crate::trigger::TriggerStore::default_root()
-                    .map_err(|e| format!("{e:#}")),
-                anchor: anchor.as_ref(),
-                board,
-                charter,
-                homeostat: cx.homeostat.as_ref(),
-                zone: agent.config().timezone.as_deref(),
-                local_server,
-                budget,
-            })
-            .await
-        }
+        Ok(home) => assemble(Inputs {
+            now: agent.now(),
+            home: &home,
+            triggers_root: crate::trigger::TriggerStore::default_root()
+                .map_err(|e| format!("{e:#}")),
+            anchor: anchor.as_ref(),
+            board,
+            charter,
+            homeostat: cx.homeostat.as_ref(),
+            zone: agent.config().timezone.as_deref(),
+            slots,
+            budget,
+        }),
         // No home, no stores: every store-backed field says so rather than
         // reading as empty.
         Err(e) => {
@@ -1211,10 +1218,7 @@ pub async fn assemble_for_run(
                     tasks: Flight::Unread { why: why.clone() },
                     triggers: Flight::Unread { why: why.clone() },
                 }),
-                slots: Some(match local_server {
-                    Some(url) => read_slots(url).await,
-                    None => Slots::NotLocal,
-                }),
+                slots: Some(slots),
                 voice: Some(Voice::Unread { why }),
                 budget: Some(budget),
             }
@@ -1267,11 +1271,21 @@ impl SituationBrief {
                 "goal",
                 of(&self.goal, |g| match g {
                     GoalChain::NoAnchor => false,
+                    // A part its reader could not read is `Unread`, this
+                    // variant's own rule: a line whose rank could not be
+                    // looked up (the charter did not load), or a project
+                    // whose open count could not be taken (found on review).
                     GoalChain::Anchored {
                         project, charter, ..
                     } => {
-                        matches!(project, Tier::Unread { .. })
-                            || matches!(charter, Lines::Unread { .. })
+                        matches!(
+                            project,
+                            Tier::Unread { .. } | Tier::Known { open: None, .. }
+                        ) || match charter {
+                            Lines::Unread { .. } => true,
+                            Lines::Named { lines } => lines.iter().any(|l| l.in_charter.is_none()),
+                            Lines::Unlinked => false,
+                        }
                     }
                 }),
             ),
@@ -1935,6 +1949,62 @@ mod tests {
         assert!(matches!(v.read(now()), Voice::Unread { .. }));
     }
 
+    /// A part of the chain its reader could not read makes the field
+    /// unread: a line ranked against a charter that did not load, a project
+    /// whose open count could not be taken. A read that found nothing —
+    /// an unlinked anchor, a line the loaded charter lacks — stays known.
+    #[test]
+    fn a_goal_chain_part_that_could_not_be_read_makes_the_field_unread() {
+        let state = |goal: GoalChain| {
+            SituationBrief {
+                assembled_at: now(),
+                goal: Some(goal),
+                board: None,
+                commitments: None,
+                time: None,
+                seats: None,
+                runs: None,
+                slots: None,
+                voice: None,
+                budget: None,
+            }
+            .fields()[0]
+                .1
+        };
+        let chain = |open: Option<u32>, in_charter: Option<bool>| GoalChain::Anchored {
+            anchor: "trigger:digest".into(),
+            project: Tier::Known {
+                id: "project-aurora".into(),
+                open,
+            },
+            charter: Lines::Named {
+                lines: vec![ServedLine {
+                    id: "craft".into(),
+                    rank: None,
+                    in_charter,
+                }],
+            },
+        };
+        assert_eq!(state(chain(Some(2), Some(false))), FieldState::Known);
+        assert_eq!(state(chain(Some(2), None)), FieldState::Unread);
+        assert_eq!(state(chain(None, Some(true))), FieldState::Unread);
+        let charter = Charter::parse(CHARTER).unwrap();
+        let unloaded = goal_chain(
+            Some(&GoalRef::Charter("replies".into())),
+            Err("x"),
+            Err("the charter did not parse"),
+            Err("x"),
+        );
+        assert_eq!(state(unloaded), FieldState::Unread);
+        let loaded = goal_chain(
+            Some(&GoalRef::Charter("replies".into())),
+            Err("x"),
+            Ok(&charter),
+            Err("x"),
+        );
+        assert_eq!(state(loaded), FieldState::Known);
+    }
+
     /// Each field loads leniently: a variant a later build adds costs that
     /// field (read back as missing), never the brief or the row it rides on.
     #[test]
@@ -2000,8 +2070,8 @@ mod tests {
 
     /// The whole assembler over a fixture home: every field present, the
     /// store-backed ones read from `home`.
-    #[tokio::test]
-    async fn assembly_reads_every_field_from_the_home_it_is_given() {
+    #[test]
+    fn assembly_reads_every_field_from_the_home_it_is_given() {
         let home = scratch("assemble");
         std::fs::create_dir_all(home.join("workflows")).unwrap();
         std::fs::write(
@@ -2020,7 +2090,7 @@ mod tests {
             charter: Ok(charter),
             homeostat: None,
             zone: Some("America/New_York"),
-            local_server: None,
+            slots: Slots::NotLocal,
             budget: Budget {
                 max_turns: 200,
                 max_output_tokens: None,
@@ -2029,8 +2099,7 @@ mod tests {
                 compact_at_tokens: None,
                 context_used_tokens: None,
             },
-        })
-        .await;
+        });
         let states: BTreeMap<_, _> = brief.fields().into_iter().collect();
         for f in FIELDS {
             assert_ne!(states[f], FieldState::Missing, "`{f}` was not recorded");

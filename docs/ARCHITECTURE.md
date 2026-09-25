@@ -4146,7 +4146,15 @@ when touching it:
   it built its agent, so every web turn recorded the backlog of the morning
   the daemon started and a delta against it (found building 1h; the TUI,
   `chat`, Slack and the unhosted voice slots still hold one snapshot per
-  process). Two readers are new: `/slots` for a `kind = "local"` provider,
+  process). **A person waits on the web door**, a spoken turn included, so
+  there the re-sample, the board read and `/slots` run together and the
+  board gets `BRIEF_BOARD_TIMEOUT_INTERACTIVE` (2s, against the unattended
+  doors' 10s): the brief's I/O costs the slowest read, never the sum, and a
+  slow graph server costs the brief its board rather than the person their
+  answer (found on review). A field's completeness counts a part its reader
+  could not read as unread — a served line ranked against a charter that
+  did not load, a project whose open count could not be taken. Two readers
+  are new: `/slots` for a `kind = "local"` provider,
   unread (never idle) on a renamed field, an empty list or `--no-slots`, on
   `scripts/model-idle.sh`'s rule; and a voice call, from the stamp the
   facade writes on every spoken turn (`brief::VoicePresence`, under

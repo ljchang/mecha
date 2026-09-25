@@ -1779,24 +1779,40 @@ fn begin_turn(
         // delta against it — and the brief's commitments are read from it.
         // Re-sampled per run, as a one-shot run's is at its own start; off
         // the async threads, since it walks the stores.
+        //
+        // The situation brief: recorded on the run, delivered nowhere; the
+        // board is read here by the harness, never by the model. A person
+        // is waiting on this turn — a spoken one too, since `begin_turn` is
+        // the hosted voice door — so the three reads run together and the
+        // board gets the interactive deadline: the worst case is the
+        // slowest read, not their sum (found on review).
+        let (homeostat, board, slots) = tokio::join!(
+            async {
+                if sampled {
+                    tokio::task::spawn_blocking(mecha_core::homeostat::Homeostat::at_start)
+                        .await
+                        .ok()
+                } else {
+                    None
+                }
+            },
+            crate::setup::read_board_for_brief(
+                agent.registry(),
+                &cx.tools,
+                crate::setup::BRIEF_BOARD_TIMEOUT_INTERACTIVE,
+            ),
+            mecha_core::brief::slots_for(local_server.as_deref()),
+        );
         if sampled {
-            cx.homeostat = tokio::task::spawn_blocking(mecha_core::homeostat::Homeostat::at_start)
-                .await
-                .ok();
+            cx.homeostat = homeostat;
         }
-        // The situation brief: recorded on the run, delivered nowhere. The
-        // board is read here by the harness, never by the model.
-        let board = crate::setup::read_board_for_brief(agent.registry(), &cx.tools).await;
-        cx.brief = Some(Arc::new(
-            mecha_core::brief::assemble_for_run(
-                &agent,
-                &cx,
-                &conversation,
-                board,
-                local_server.as_deref(),
-            )
-            .await,
-        ));
+        cx.brief = Some(Arc::new(mecha_core::brief::assemble_for_run(
+            &agent,
+            &cx,
+            &conversation,
+            board,
+            slots,
+        )));
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let forwarder = {
             let bcast = bcast.clone();

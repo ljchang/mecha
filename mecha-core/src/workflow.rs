@@ -1022,10 +1022,17 @@ impl WorkflowStore {
     /// for a digest that must fire somewhere and wrong for a record of
     /// whether it is inside *the owner's* quiet hours: nobody set those.
     pub fn policy_if_set(&self) -> Result<Option<AttentionPolicy>> {
-        match fs::metadata(self.root.join("attention.toml")) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            _ => self.policy().map(Some),
-        }
+        // One read, not a check then a read: a file gone between the two
+        // would come back as the default reported as the owner's (found on
+        // review).
+        let text = match fs::read_to_string(self.root.join("attention.toml")) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let policy: AttentionPolicy = toml::from_str(&text)?;
+        policy.validate()?;
+        Ok(Some(policy))
     }
     pub fn policy(&self) -> Result<AttentionPolicy> {
         let path = self.root.join("attention.toml");
