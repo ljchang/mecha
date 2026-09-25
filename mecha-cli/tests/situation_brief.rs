@@ -271,6 +271,55 @@ fn recorded_brief(home: &Path, prefix: &str) -> SituationBrief {
         .unwrap_or_else(|| panic!("the `{prefix}` run recorded no brief"))
 }
 
+/// How the door recorded the run (3a-3, R35): the harness text the loop
+/// folded into the owner's already-recorded turn — the calendar reference,
+/// and the brief when it is delivered — lands as an extension, never a
+/// whole-transcript rewrite; and the run's taint checkpoint has `private`
+/// armed exactly when the brief was delivered (the fixture model calls no
+/// tool, so nothing else can arm it).
+fn recorded_shape(home: &Path, prefix: &str, deliver: bool, what: &str) {
+    let listed = Session::list(&home.join("sessions")).unwrap();
+    let (_, path) = listed
+        .iter()
+        .find(|(meta, _)| meta.title.as_deref().is_some_and(|t| t.starts_with(prefix)))
+        .unwrap_or_else(|| panic!("no `{prefix}` session: {listed:?}"));
+    let records: Vec<Value> = std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let kinds: Vec<&str> = records
+        .iter()
+        .map(|r| r["record"].as_str().unwrap_or("?"))
+        .collect();
+    assert!(
+        !kinds.contains(&"rewrite"),
+        "{what}: a fold rewrote the transcript: {kinds:?}"
+    );
+    assert!(kinds.contains(&"extend"), "{what}: {kinds:?}");
+    let taint = records
+        .iter()
+        .rev()
+        .find(|r| r["record"] == "taint")
+        .unwrap_or_else(|| panic!("{what}: no taint checkpoint: {kinds:?}"));
+    assert_eq!(
+        taint["private"].as_bool().unwrap_or(false),
+        deliver,
+        "{what}: `private` is armed by the brief's delivery and nothing else here"
+    );
+    // And the file reads back with the brief in the owner's turn.
+    let (_, convo) = Session::load(path).unwrap();
+    let briefed = convo.messages.iter().any(|m| {
+        m.content.iter().any(|b| {
+            matches!(b, mecha_core::message::Block::Text { text }
+                if text.trim_start().starts_with(BRIEF_STEM))
+        })
+    });
+    assert_eq!(briefed, deliver, "{what}");
+    assert_eq!(convo.taint.private, deliver, "{what}");
+}
+
 /// What every run in this fixture home should read, whatever its kind.
 fn the_shared_situation(b: &SituationBrief, what: &str) {
     for (field, state) in b.fields() {
@@ -522,6 +571,7 @@ async fn delegated(deliver: bool) {
     assert!(!others.contains(&"task-1".to_string()), "{others:?}");
     assert_eq!(b.budget.as_ref().map(|x| x.max_turns), Some(200));
     delivery(&seen.lock().unwrap(), &b, deliver, "delegated");
+    recorded_shape(&home, "task: ", deliver, "delegated");
 }
 
 #[tokio::test]
@@ -569,6 +619,7 @@ async fn trigger(deliver: bool) {
     };
     assert_eq!(board.own, OwnTask::NotATask);
     delivery(&seen.lock().unwrap(), &b, deliver, "trigger");
+    recorded_shape(&home, "trigger: ", deliver, "trigger");
 }
 
 /// The one-shot door (3a): `mecha run` records a brief too — an
@@ -596,6 +647,7 @@ async fn a_one_shot_run_records_a_brief_and_delivers_it_behind_the_lever() {
         the_shared_situation(&b, "one-shot");
         assert_eq!(b.goal, Some(GoalChain::NoAnchor));
         delivery(&seen.lock().unwrap(), &b, deliver, "one-shot");
+        recorded_shape(&home, "What is waiting", deliver, "one-shot");
     }
 }
 
@@ -744,4 +796,5 @@ async fn web(deliver: bool) {
     );
     assert_eq!(b.budget.as_ref().map(|x| x.max_turns), Some(40));
     delivery(&seen.lock().unwrap(), &b, deliver, "web");
+    recorded_shape(&home, "web: ", deliver, "web");
 }

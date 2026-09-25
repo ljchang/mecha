@@ -4476,21 +4476,24 @@ when touching it:
   #309), and runs with delivery off and `cx.brief` cleared, structurally.
   Seat counts ("1 of 3 free") are a numeric resource fact beside the budget:
   a capacity the harness sets and how much of it is held, with no setpoint
-  and no score to move. **Delivery arms no taint today, and whether it should
-  is the owner's open question** (review of #309). The untrusted axis has
-  nothing to key on: nothing in the words came from outside — no board
-  row's prose, no server's error text; `board_of` narrows every value and
-  the render drops even the `why`. The private axis is the question. With
-  the lever on, board ids, commitment bands, the owner's quiet hours, seat
-  holders and runs in flight enter the conversation without arming
-  `private`, where fetching the same through `kg_task_list` arms it — so a
-  run that later arms `untrusted` could encode them into an `Egress::Chosen`
-  destination the interlock would otherwise refuse. The precedents cut both
-  ways: the charter block and a delegated task's own prompt (its name
-  included) ride unarmed; a `kg_*` read arms. Arming on delivery would make
-  every lever-on run start half-armed, so an arm would measure interlock
-  friction beside the brief. The lever ships off, so nothing is exposed
-  until the owner rules, and the ruling belongs in `docs/TRIFECTA.md`.
+  and no score to move. **Delivering the brief arms `private`** (R35, the
+  owner's ruling of 2026-09-25, built as 3a-3; `docs/TRIFECTA.md` has the
+  row). The words are board ids, commitment bands, the owner's quiet
+  hours, seat holders and runs in flight — what a `kg_task_list` read arms
+  `private` for — and left unarmed, a run that later read a hostile page
+  could encode them into an `Egress::Chosen` destination the interlock
+  would otherwise refuse. So `fold_situation_brief` reports whether the run
+  is delivering, and the loop arms `private` at each of its three sites and
+  writes it back to the conversation at once (the mailbox merge's rule, so
+  no early exit drops it); `Taint::arm_for_content` also arms from any
+  transcript holding a brief, the attached image's precedent, so a
+  conversation resumed with one arms at run start whatever its record
+  says. The untrusted axis stays unarmed: nothing in the words came from
+  outside — `board_of` narrows every value and the render drops even the
+  `why`. The cost is the ruling's, knowingly: a lever-on run is half-armed
+  from its first turn, so the interlock refuses a chosen send after any
+  untrusted read, and a `mecha exp` arm measures that friction with the
+  brief — the configuration that would ship.
   **Every stale brief says it is superseded**: a web chat can hold several,
   with no instants to rank them and no system-prompt guidance possible
   without touching the prefix, so each block's header says a later brief in
@@ -4500,19 +4503,24 @@ when touching it:
   assembles once per run (the web door once per turn, inside the joined 2s
   window 1h set), and the render is a pure function over the record — now
   that the brief is read, the 2s bound is what a person pays for it, and
-  still the right one. **A fold writes a `Record::Rewrite`, as the
-  calendar's does, and more often** (review of #309): every door records the
-  owner's message before the run, and the fold then edits that message, so
-  `record_transition`'s prefix check fails and the whole transcript is
-  written again — with `taint_checkpoints` cleared, so a clean early turn
-  classifies untrusted for `mecha learn` (§Timezones: "that record is not
-  cosmetic"). The calendar does this once a day; the brief does it on every
-  turn whose words changed, which on a web chat moving the board is most
-  turns — a transcript copy per turn and the taint timeline collapsed to
-  cumulative. It over-taints, never under, and the lever ships off; the fix
-  is 3a-3, having the door record the folded message (or a record that
-  appends blocks to the last message) so a fold is an append, and it is
-  owed before the lever ships on. *Deferred:* a re-delegated task's previous attempts
+  still the right one. **A fold is an extension on disk, not a rewrite**
+  (3a-3). Every door records the owner's message before the run and the
+  fold then edits that message, so `record_transition`'s prefix check used
+  to fail and write a whole-transcript `Record::Rewrite` — clearing
+  `taint_checkpoints`, so a clean early turn classified untrusted for
+  `mecha learn`, on every turn whose brief changed (review of #309). Now a
+  transition whose only change to recorded messages is blocks appended to
+  the last one writes `Record::Extend { index, blocks }` and then the new
+  tail (`session::extension_of`; any other edit is still a rewrite). The
+  loaders apply an extension only to the message the file ends on, and
+  drop only the checkpoints that covered it — in the order doors write, none
+  — so earlier turns keep their provenance; `messages_ever` admits the
+  folded blocks as their own entry. Lenient both ways: a build from before
+  the record skips the line and loads the owner's turn without the folded
+  harness text, which its own loop folds again; a block this build cannot
+  read costs that block; an extension naming any other message is skipped
+  with a warning. The calendar reference's fold rides the same path (see
+  §Timezones). *Deferred:* a re-delegated task's previous attempts
   (M5, to 3a-2 — no existing record lists them), and a brief on the TUI,
   `chat`, Slack and unhosted voice turns.
 - **The doctor reads against the owner's number, and names the line.**
@@ -6014,18 +6022,21 @@ and `clock::for_replay` pins a replay and both probes to it — per *run* rather
 than per session, since one `mecha serve` session held runs on either side of
 midnight. And the fold edits a message the session already wrote, so the first run of a
 conversation — and the first run of every new local day in a long-lived one —
-records a `Record::Rewrite` instead of an append; `record_transition` compares
-before to after rather than trusting a flag from the loop, so this was caught
-by construction rather than by noticing.
+used to record a `Record::Rewrite` instead of an append; `record_transition`
+compares before to after rather than trusting a flag from the loop, so this
+was caught by construction rather than by noticing.
 
-That record is not cosmetic. It carries the whole message list, so a
-multi-day `mecha serve` session accumulates a transcript copy per day, and
+That record was not cosmetic. It carried the whole message list, so a
+multi-day `mecha serve` session accumulated a transcript copy per day, and
 `TaintTimeline::from_records` clears `taint_checkpoints` on one — so the next
-`Record::Taint` covers the whole rewritten head with the run's cumulative
-taint. It over-taints, never under, which is the fail-closed direction and
-already the norm after any compaction; the cost is that a clean early
-correction in a session that later reads a hostile page classifies untrusted
-and is structurally excluded from `mecha learn`.
+`Record::Taint` covered the whole rewritten head with the run's cumulative
+taint, and a clean early correction in a session that later read a hostile
+page classified untrusted and was structurally excluded from `mecha learn`.
+Since 3a-3 the fold is a `Record::Extend` of the message it folded into
+(built for the situation brief, which folds far more often; the goal
+system's brief bullets), so it keeps the file append-only and the earlier
+checkpoints standing. A rewrite now means what it says: compaction,
+eviction, thinning, a rollback.
 
 **The reference never outranks the owner.** `GUIDANCE` concedes the date to
 the user on sight. The wording it replaced — "do not attach a conflicting
