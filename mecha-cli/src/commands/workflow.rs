@@ -350,8 +350,8 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             w.commitment = Some(Commitment {
                 party,
                 source,
-                due_at: due,
-                follow_up_at: follow_up,
+                due_at: Some(due),
+                follow_up_at: Some(follow_up),
                 expectation,
                 consequence,
             });

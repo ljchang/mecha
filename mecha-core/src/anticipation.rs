@@ -27,6 +27,14 @@ pub enum Verification {
 }
 
 /// This record is authored by the owner, not extracted from incoming messages.
+///
+/// **The legacy shape** (1f-2, ruling 2026-09-25: new writes only, no
+/// migration). It is what an owner writes in an appraisal evidence file,
+/// and what every prediction recorded before 1f-2 carries; both keep
+/// working unchanged. A new write converts it to the one commitment record
+/// ([`RecordedCommitment::Record`], `workflow::Commitment`) at the door
+/// ([`Evidence::into_record`]), and a record already on disk in this shape
+/// is read as it is and written back as it is — nothing is rewritten.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Commitment {
@@ -36,12 +44,123 @@ pub struct Commitment {
     pub consequence: String,
 }
 
+/// A commitment as evidence carries it: the one record a new write makes,
+/// or the legacy shape an older record — or an owner's input file — holds.
+///
+/// **Untagged, and the order is the rule.** The record is tried first,
+/// strictly (unknown keys refused, as all owner evidence is); the legacy
+/// shape second, strictly too. Each serialises back in its own shape, so a
+/// prediction recorded before 1f-2 round-trips byte-identical when its
+/// draft is rewritten for another reason, and its `assess` reads exactly as
+/// before — it only asks whether a commitment is there. A shape neither arm
+/// knows (a later binary's) fails the evidence, which the prediction
+/// history keeps as `History::Unknown` rather than losing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RecordedCommitment {
+    /// The one commitment record (`workflow::Commitment`): what every new
+    /// prediction writes. Its `source` is the goal pointer the evidence is
+    /// bound to, and it states no date — nothing machine-derived says "by
+    /// when".
+    Record(#[serde(deserialize_with = "strict_record")] crate::workflow::Commitment),
+    /// The shape predictions recorded before 1f-2 carry, and the one an
+    /// owner's evidence file may still be written in.
+    Legacy(Commitment),
+}
+
+impl From<Commitment> for RecordedCommitment {
+    fn from(c: Commitment) -> Self {
+        RecordedCommitment::Legacy(c)
+    }
+}
+
+impl From<crate::workflow::Commitment> for RecordedCommitment {
+    fn from(c: crate::workflow::Commitment) -> Self {
+        RecordedCommitment::Record(c)
+    }
+}
+
+impl RecordedCommitment {
+    /// Owner text bounds, per shape. A record on evidence must say what the
+    /// party expects and what failing it costs — the two fields the legacy
+    /// shape always required; the record makes them optional only for the
+    /// workflow store's own commitments.
+    fn validate(&self) -> Result<()> {
+        match self {
+            RecordedCommitment::Legacy(c) => {
+                for s in [&c.beneficiary, &c.expectation, &c.consequence] {
+                    bounded(s)?;
+                }
+            }
+            RecordedCommitment::Record(c) => {
+                bounded(&c.party)?;
+                bounded(&c.source)?;
+                let (Some(expectation), Some(consequence)) = (&c.expectation, &c.consequence)
+                else {
+                    anyhow::bail!("a commitment on evidence names its expectation and consequence");
+                };
+                bounded(expectation)?;
+                bounded(consequence)?;
+                if let (Some(due), Some(follow_up)) = (c.due_at, c.follow_up_at) {
+                    ensure!(
+                        follow_up <= due,
+                        "follow-up must be no later than the commitment deadline"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The party it is owed to, whichever shape holds it.
+    pub fn party(&self) -> &str {
+        match self {
+            RecordedCommitment::Record(c) => &c.party,
+            RecordedCommitment::Legacy(c) => &c.beneficiary,
+        }
+    }
+}
+
+/// The record arm, read strictly: owner evidence refuses an unknown key in
+/// the new shape exactly as it does in the old, so a misspelt field is an
+/// error and never a silently dropped fact.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictRecord {
+    party: String,
+    source: String,
+    #[serde(default)]
+    due_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    follow_up_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    expectation: Option<String>,
+    #[serde(default)]
+    consequence: Option<String>,
+}
+
+fn strict_record<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<crate::workflow::Commitment, D::Error> {
+    let r = StrictRecord::deserialize(d)?;
+    Ok(crate::workflow::Commitment {
+        party: r.party,
+        source: r.source,
+        due_at: r.due_at,
+        follow_up_at: r.follow_up_at,
+        expectation: r.expectation,
+        consequence: r.consequence,
+    })
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Evidence {
     #[serde(default, deserialize_with = "strict_goal")]
     pub goal: Option<GoalRef>,
-    pub commitment: Option<Commitment>,
+    /// The owner's recorded commitment, in either shape
+    /// ([`RecordedCommitment`]). A new write is always the record.
+    pub commitment: Option<RecordedCommitment>,
     pub verification: Verification,
     /// Local receipt/reference or owner's account of what was checked. Never prompted.
     pub verification_evidence: Option<String>,
@@ -59,9 +178,7 @@ impl Evidence {
                 self.goal.is_some(),
                 "a commitment requires a goal reference"
             );
-            for s in [&c.beneficiary, &c.expectation, &c.consequence] {
-                bounded(s)?;
-            }
+            c.validate()?;
         }
         if let Some(s) = &self.verification_evidence {
             bounded(s)?;
@@ -79,6 +196,53 @@ impl Evidence {
             );
         }
         Ok(())
+    }
+
+    /// The evidence as a new write records it (1f-2): validated, with its
+    /// commitment as the one record. A legacy-shaped commitment — the shape
+    /// an owner's evidence file is written in — becomes a
+    /// `workflow::Commitment` whose party is the beneficiary, whose
+    /// `source` is the goal pointer the evidence is bound to (structural,
+    /// never text), and which states **no date**: an evidence file names
+    /// none, and nothing here derives one. A record given as input must
+    /// already point at that goal, so every new write's `source` is the
+    /// same structural pointer.
+    ///
+    /// The door for every owner-evidence write — `BoundEvidence::new` (a
+    /// run's evidence, and so every draft it stages) and
+    /// `OutboxStore::anticipate` (a draft assessed by hand). It creates no
+    /// commitment: it only reshapes one the owner wrote (§7.4).
+    pub fn into_record(mut self) -> Result<Evidence> {
+        self.validate()?;
+        let Some(commitment) = self.commitment.take() else {
+            return Ok(self);
+        };
+        let source = self
+            .goal
+            .as_ref()
+            .expect("validate: a commitment has a goal")
+            .to_string();
+        self.commitment = Some(match commitment {
+            RecordedCommitment::Legacy(c) => {
+                RecordedCommitment::Record(crate::workflow::Commitment {
+                    party: c.beneficiary,
+                    source,
+                    due_at: None,
+                    follow_up_at: None,
+                    expectation: Some(c.expectation),
+                    consequence: Some(c.consequence),
+                })
+            }
+            RecordedCommitment::Record(c) => {
+                ensure!(
+                    c.source == source,
+                    "a commitment's source is the goal it is bound to ({source}), not {:?}",
+                    c.source
+                );
+                RecordedCommitment::Record(c)
+            }
+        });
+        Ok(self)
     }
 }
 fn bounded(s: &str) -> Result<()> {
@@ -316,7 +480,9 @@ pub struct BoundEvidence {
 }
 impl BoundEvidence {
     pub fn new(evidence: Evidence) -> Result<Self> {
-        evidence.validate()?;
+        // The new-write door: every draft this run stages inherits the one
+        // commitment record, never the legacy shape (1f-2).
+        let evidence = evidence.into_record()?;
         ensure!(
             evidence.goal.is_some(),
             "run evidence requires a confirmed goal"
@@ -364,11 +530,14 @@ mod tests {
     fn evidence() -> Evidence {
         Evidence {
             goal: Some(GoalRef::Task("meeting".into())),
-            commitment: Some(Commitment {
-                beneficiary: "attendees".into(),
-                expectation: "send the confirmed time".into(),
-                consequence: "attendees miss the meeting".into(),
-            }),
+            commitment: Some(
+                Commitment {
+                    beneficiary: "attendees".into(),
+                    expectation: "send the confirmed time".into(),
+                    consequence: "attendees miss the meeting".into(),
+                }
+                .into(),
+            ),
             check_available: true,
             check_cost_secs: Some(10),
             time_available_secs: Some(60),
@@ -420,5 +589,98 @@ mod tests {
         e.validate().unwrap();
         assert!(serde_json::from_str::<Evidence>(r#"{"label":"guilt"}"#).is_err());
         assert!(serde_json::from_str::<Evidence>(r#"{"verification":"future"}"#).is_err());
+    }
+
+    /// The new-write door (1f-2, ruling (b)): an owner's evidence file in
+    /// the legacy shape becomes the one commitment record — the beneficiary
+    /// as the party, the goal pointer as the source, no date — and the
+    /// assessment reads it exactly as it read the legacy shape.
+    #[test]
+    fn a_legacy_commitment_becomes_the_record_at_the_door_with_its_goal_and_no_date() {
+        let input: Evidence = serde_json::from_str(
+            r#"{"goal":"task:meeting","commitment":{"beneficiary":"attendees","expectation":"send the confirmed time","consequence":"attendees miss the meeting"},"check_available":true,"check_cost_secs":10,"time_available_secs":60}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            input.commitment,
+            Some(RecordedCommitment::Legacy(_))
+        ));
+        let recorded = input.clone().into_record().unwrap();
+        let Some(RecordedCommitment::Record(c)) = &recorded.commitment else {
+            panic!("a new write is the record: {:?}", recorded.commitment);
+        };
+        assert_eq!(c.party, "attendees");
+        assert_eq!(c.source, "task:meeting", "the goal pointer, never text");
+        assert_eq!((c.due_at, c.follow_up_at), (None, None), "no derived date");
+        assert_eq!(c.expectation.as_deref(), Some("send the confirmed time"));
+        assert_eq!(c.consequence.as_deref(), Some("attendees miss the meeting"));
+        assert_eq!(assess(&recorded, true), assess(&input, true));
+
+        let json = serde_json::to_value(&recorded).unwrap();
+        assert!(json["commitment"].get("beneficiary").is_none(), "{json}");
+        assert!(json["commitment"].get("due_at").is_none(), "{json}");
+        // Written in the record's shape, it reads back as the record.
+        let back: Evidence = serde_json::from_value(json).unwrap();
+        assert_eq!(back, recorded);
+        // And the door is idempotent.
+        assert_eq!(back.clone().into_record().unwrap(), back);
+
+        // Through `BoundEvidence` too — the door every staged draft of a
+        // run comes through.
+        let bound = BoundEvidence::new(input).unwrap();
+        assert!(matches!(
+            bound.snapshot().commitment,
+            Some(RecordedCommitment::Record(_))
+        ));
+        let goal = GoalRef::Task("meeting".into());
+        assert!(matches!(
+            bound.for_draft(Some(&goal)).unwrap().commitment,
+            Some(RecordedCommitment::Record(_))
+        ));
+    }
+
+    /// Owner evidence stays strict in the new shape: an unknown key is
+    /// refused, a record must say what is expected and what failing costs,
+    /// and its source must be the goal it is bound to — so no new write
+    /// carries a pointer anything but the harness chose.
+    #[test]
+    fn a_record_given_as_input_is_strict_and_must_point_at_its_goal() {
+        let with = |commitment: &str| {
+            serde_json::from_str::<Evidence>(&format!(
+                r#"{{"goal":"task:meeting","commitment":{commitment}}}"#
+            ))
+        };
+        assert!(
+            with(r#"{"party":"attendees","source":"task:meeting","expectation":"e","consequence":"c","deadline":"soon"}"#)
+                .is_err(),
+            "an unknown key in the record is refused, not dropped"
+        );
+        assert!(
+            with(r#"{"beneficiary":"attendees","expectation":"e","consequence":"c","extra":1}"#)
+                .is_err(),
+            "and in the legacy shape, as it always was"
+        );
+        let good = with(
+            r#"{"party":"attendees","source":"task:meeting","expectation":"e","consequence":"c"}"#,
+        )
+        .unwrap();
+        good.clone().into_record().unwrap();
+        let elsewhere = with(
+            r#"{"party":"attendees","source":"mail thread 7","expectation":"e","consequence":"c"}"#,
+        )
+        .unwrap();
+        assert!(
+            elsewhere.into_record().is_err(),
+            "source is the goal pointer"
+        );
+        let bare = with(r#"{"party":"attendees","source":"task:meeting"}"#).unwrap();
+        assert!(
+            bare.validate().is_err(),
+            "expectation and consequence are named"
+        );
+        let empty =
+            with(r#"{"party":" ","source":"task:meeting","expectation":"e","consequence":"c"}"#)
+                .unwrap();
+        assert!(empty.validate().is_err(), "bounded like the legacy fields");
     }
 }
