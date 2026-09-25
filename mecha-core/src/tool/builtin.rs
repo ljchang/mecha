@@ -575,9 +575,15 @@ impl Tool for Shell {
         // check, and the silently-degrading guard says a protection that
         // cannot run stops the run. Declared before the child so it is
         // dropped after it: the entry outlives the process it names.
-        let registry = match crate::shell_registry::ShellRegistry::default_root()
-            .and_then(crate::shell_registry::ShellRegistry::open)
-        {
+        // Under every guard home (`shell_registry::write_roots`), so a harness
+        // that itself runs under a `MECHA_HOME` is still found by a command
+        // that redirects again (review of #294).
+        let registries = match crate::shell_registry::write_roots().and_then(|roots| {
+            roots
+                .into_iter()
+                .map(crate::shell_registry::ShellRegistry::open)
+                .collect::<Result<Vec<_>>>()
+        }) {
             Ok(r) => r,
             Err(e) => {
                 return Ok(ToolOutput::err(format!(
@@ -586,7 +592,7 @@ impl Tool for Shell {
                 )))
             }
         };
-        let mut _registration: Option<crate::shell_registry::Registration> = None;
+        let mut _registrations: Vec<crate::shell_registry::Registration> = Vec::new();
         let mut child = match command.spawn() {
             Ok(c) => c,
             Err(e) => return Ok(ToolOutput::err(format!("cannot run command: {e}"))),
@@ -597,13 +603,17 @@ impl Tool for Shell {
         // answers `None` only after the child was awaited, so this is a shape
         // guarantee, not a live path.
         let registered = match child.id() {
-            Some(pid) => registry
-                .register(pid, ctx.run_posture, ctx.call_id.as_deref())
-                .map_err(|e| format!("{e:#}")),
+            Some(pid) => registries
+                .iter()
+                .map(|r| {
+                    r.register(pid, ctx.run_posture, ctx.call_id.as_deref())
+                        .map_err(|e| format!("{e:#}"))
+                })
+                .collect::<std::result::Result<Vec<_>, _>>(),
             None => Err("the command exited before it could be named".to_string()),
         };
         match registered {
-            Ok(r) => _registration = Some(r),
+            Ok(r) => _registrations = r,
             Err(e) => {
                 let _ = child.start_kill();
                 let _ = child.wait().await;

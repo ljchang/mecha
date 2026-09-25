@@ -57,9 +57,14 @@
 //! owner's home at all (`mecha tools` shows a `shell` that runs unconfined).
 //!
 //! **`MECHA_HOME` does not hide a registration.** Registration writes under
-//! `MECHA_HOME`, but the reader ([`guard_roots`]) also reads the registry
-//! under the owner's real home, taken from the password database for the
-//! current uid — never from `HOME` or `MECHA_HOME`, which the command sets.
+//! `MECHA_HOME` *and* the owner's real home ([`write_roots`]), and the
+//! reader ([`guard_roots`]) reads both, the real one taken from the password
+//! database for the current uid — never from `HOME` or `MECHA_HOME`, which
+//! the command sets. Writing both is what holds for a harness that itself
+//! runs under a `MECHA_HOME` (a trial arm): with the write only under the
+//! harness's home, a command that redirected again read two empty
+//! registries (review of #294). The same entry in both corroborates; an
+//! entry found only in the real one, or a disagreeing one, is a redirect.
 //! A registration found only there means the command redirected its own
 //! home, and `closure::decide` refuses it whatever the posture; the run
 //! markers are read the same way. Before this, `MECHA_HOME=/tmp/x mecha
@@ -386,8 +391,9 @@ pub fn ancestry_walkable() -> bool {
 /// ([`crate::work::owner_mecha_home`]) when that differs. The second is what
 /// makes `MECHA_HOME=/tmp/x mecha tasks set …` useless as a hiding place: a
 /// command inside a real run still finds its registration there (review of
-/// #293). Registration writes only under `mecha_home`, so a trial home and a
-/// test's fixture home keep their own registry. Under `cfg(test)`, the
+/// #293). Registration writes under the same roots ([`write_roots`]), so a
+/// harness that itself runs under a `MECHA_HOME` — a trial arm — is found by
+/// a command that redirects again (review of #294). Under `cfg(test)`, the
 /// hermetic per-process root alone.
 pub fn guard_roots() -> std::result::Result<Vec<PathBuf>, String> {
     #[cfg(test)]
@@ -406,6 +412,21 @@ pub fn guard_roots() -> std::result::Result<Vec<PathBuf>, String> {
                     .collect()
             })
             .map_err(|e| format!("{e:#}"))
+    }
+}
+
+/// Where the `shell` tool registers a command: every [`guard_roots`] root,
+/// so the write is symmetric with the read — a registration only under the
+/// harness's own home let a trial arm's command hide by setting `MECHA_HOME`
+/// again (review of #294). When the guard roots cannot be named (an
+/// override with no password-database entry to check it against), the
+/// harness's own root alone: every reader in that environment refuses on the
+/// same failure, so writing fewer places opens nothing — and `shell` keeps
+/// working there.
+pub fn write_roots() -> Result<Vec<PathBuf>> {
+    match guard_roots() {
+        Ok(roots) => Ok(roots),
+        Err(_) => Ok(vec![ShellRegistry::default_root()?]),
     }
 }
 
@@ -494,23 +515,41 @@ fn walk_from(registries: &[ShellRegistry], start: u32, depth: usize) -> (Lookup,
     let mut pid = start;
     let mut nearest: Option<(Entry, usize)> = None;
     for _ in 0..depth {
+        // Every registry at this pid. The harness registers a command under
+        // every guard home (`write_roots`), so the same entry in a later
+        // registry corroborates the one in this process's own; an entry
+        // only in a later one, or one that disagrees, is a redirect.
+        let mut own: Option<Entry> = None;
         for (i, registry) in registries.iter().enumerate() {
             match registry.lookup_checked(pid) {
                 Lookup::Absent => {}
-                Lookup::Registered(e) if i == 0 && e.posture() == Ok(RunPosture::Interactive) => {
-                    nearest.get_or_insert((e, i));
+                Lookup::Unreadable(why) => return (Lookup::Unreadable(why), Some(i)),
+                Lookup::Registered(e) if i == 0 => own = Some(e),
+                Lookup::Registered(e) => {
+                    let agrees = own.as_ref().is_some_and(|o| o.posture == e.posture);
+                    if !agrees {
+                        return (Lookup::Registered(e), Some(i));
+                    }
                 }
-                found => return (found, Some(i)),
             }
         }
-        pid = match crate::closure::parent_of(pid) {
-            Some(parent) => parent,
-            None => {
+        if let Some(e) = own {
+            if e.posture() != Ok(RunPosture::Interactive) {
+                return (Lookup::Registered(e), Some(0));
+            }
+            nearest.get_or_insert((e, 0));
+        }
+        pid = match crate::closure::parent_of_checked(pid) {
+            Ok(Some(parent)) => parent,
+            Ok(None) => {
                 return match nearest {
                     Some((e, i)) => (Lookup::Registered(e), Some(i)),
                     None => (Lookup::Absent, None),
                 }
             }
+            // An unreadable link is not the root: the rest of the chain is
+            // unknown, like a walk that runs out of steps (review of #294).
+            Err(why) => return (Lookup::Unreadable(why), None),
         };
     }
     // The bound ran out before the root did: the rest of the chain is

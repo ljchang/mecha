@@ -408,12 +408,25 @@ pub fn decide(
 /// The parent of `pid`, from `/proc/<pid>/stat`. `None` off Linux, for pid 1,
 /// and when the file cannot be read or parsed.
 pub fn parent_of(pid: u32) -> Option<u32> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parent_of_checked(pid).ok().flatten()
+}
+
+/// [`parent_of`], keeping "reached the root" (`Ok(None)`) apart from "could
+/// not read" (`Err`) — a walk that must not read an unreadable link as the
+/// end of the chain (review of #294).
+pub fn parent_of_checked(pid: u32) -> std::result::Result<Option<u32>, String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .map_err(|e| format!("process {pid}'s parent could not be read ({e})"))?;
     // The command name is in parentheses and may itself contain spaces or
     // parentheses, so the fields after it are read from the last `)`.
-    let rest = &stat[stat.rfind(')')? + 1..];
-    let ppid: u32 = rest.split_whitespace().nth(1)?.parse().ok()?;
-    (ppid > 1).then_some(ppid)
+    let ppid: Option<u32> = stat
+        .rfind(')')
+        .and_then(|at| stat[at + 1..].split_whitespace().nth(1))
+        .and_then(|p| p.parse().ok());
+    match ppid {
+        Some(ppid) => Ok((ppid > 1).then_some(ppid)),
+        None => Err(format!("process {pid}'s parent could not be parsed")),
+    }
 }
 
 /// The first ancestor of this process whose pid is in `run_pids`, if any.
@@ -1071,6 +1084,63 @@ mod tests {
             "{reading:?}"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A harness that itself runs under a `MECHA_HOME` — a trial arm —
+    /// registers under that home *and* the owner's (`write_roots`), so its
+    /// own commands read the entry corroborated, and a command that
+    /// redirects `MECHA_HOME` again still finds it (review of #294: the
+    /// write went only to the harness's home, so the redirect found two
+    /// empty registries and landed on rule 4).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_trial_arms_registration_is_found_by_a_command_that_redirects_again() {
+        use crate::shell_registry::ShellRegistry;
+        let base = std::env::temp_dir().join(format!("mecha-trial-{}", uuid::Uuid::new_v4()));
+        let (trial, owner, elsewhere) = (
+            base.join("trial/runs/shells"),
+            base.join("owner/runs/shells"),
+            base.join("elsewhere/runs/shells"),
+        );
+        let _held: Vec<_> = [&trial, &owner]
+            .into_iter()
+            .map(|root| {
+                ShellRegistry::open(root.clone())
+                    .unwrap()
+                    .register(std::process::id(), Some(RunPosture::Interactive), None)
+                    .unwrap()
+            })
+            .collect();
+        // The trial's own command: the same entry in both registries
+        // corroborates rather than reading as a redirect.
+        let own = ShellReading::from_roots(&[trial.clone(), owner.clone()]);
+        assert!(
+            matches!(
+                own,
+                ShellReading::Registered {
+                    posture: Ok(RunPosture::Interactive),
+                    ..
+                }
+            ),
+            "{own:?}"
+        );
+        // A command that points `MECHA_HOME` somewhere else still finds it.
+        let redirected = ShellReading::from_roots(&[elsewhere, owner.clone()]);
+        assert!(
+            matches!(redirected, ShellReading::Redirected { .. }),
+            "{redirected:?}"
+        );
+        assert!(decide(&PostureReading::NotInRun, &redirected, None, None).is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A parent link that cannot be read is not the root (review of #294).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_unreadable_parent_is_an_error_not_the_end_of_the_chain() {
+        assert!(parent_of_checked(u32::MAX).is_err());
+        assert_eq!(parent_of_checked(1), Ok(None));
+        assert!(parent_of_checked(std::process::id()).unwrap().is_some());
     }
 
     /// A non-interactive registration anywhere above refuses, however near
