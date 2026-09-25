@@ -105,8 +105,10 @@ fn past_appraisals(
     } else {
         Vec::new()
     };
+    if !served.is_empty() {
+        answer["appraisal_limit"] = json!(APPRAISAL_LIMIT);
+    }
     answer["past_appraisals"] = json!(served);
-    answer["appraisal_limit"] = json!(APPRAISAL_LIMIT);
 }
 
 #[cfg(test)]
@@ -203,6 +205,7 @@ mod tests {
         // Another goal: the set was selected for the run's goal, not this.
         let v: Value = serde_json::from_str(&ask(&ctx, "task:t-other").await.content).unwrap();
         assert!(v["past_appraisals"].as_array().unwrap().is_empty());
+        assert!(v.get("appraisal_limit").is_none(), "no framing on nothing");
 
         // A tainted appraisal of the same situation and goal is never served.
         ctx.goal_appraisals = Some(past("task:t-budget", false));
