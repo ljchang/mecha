@@ -278,9 +278,33 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         Some((tx, handle))
     };
 
+    // The situation brief (B1), on a one-shot too (3a): an experiment's
+    // trial is a `mecha run`, so without one here `[agent] situation_brief`
+    // would have nothing to deliver and its with and without arms would be
+    // one condition. Assembled when the run is recorded or delivery is on —
+    // a `--no-session` run with delivery off would read the board for a
+    // record nobody keeps. A person may be at the terminal, so there the
+    // board gets the interactive deadline.
+    let mut cx = mecha_core::agent::RunContext::clone(prepared.agent.context());
+    if session.is_some() || prepared.agent.config().situation_brief {
+        setup::brief_run(
+            &prepared.agent,
+            &prepared.config,
+            &prepared.provider_name,
+            &mut cx,
+            &convo,
+            if interactive {
+                setup::BRIEF_BOARD_TIMEOUT_INTERACTIVE
+            } else {
+                setup::BRIEF_BOARD_TIMEOUT
+            },
+        )
+        .await;
+    }
+
     let result = crate::interrupt::run_interruptible(
         &prepared.agent,
-        prepared.agent.context(),
+        &cx,
         &mut convo,
         events.as_ref().map(|(tx, _)| tx.clone()),
     )
