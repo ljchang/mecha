@@ -114,10 +114,10 @@ counters:
 |---|---|
 | `load_avg_1m` | One-minute load average. |
 | `mem_available_kb` | `MemAvailable`. On unified-memory hardware this is the *only* memory sensor — `nvidia-smi` reports `[N/A]` for GPU memory on GB10, because there is one pool. |
-| `backlog`, `backlog_delta` | What was waiting on you when the run began, and whether the run moved it. |
+| `backlog`, `backlog_delta` | What was waiting on you when the run began, and whether the run moved it — net per store, and item by item (`flow`: how many the run added and how many it cleared, which a net of zero cannot tell apart from nothing happening). |
 | `peak_prompt_tokens`, `peak_context_pressure` | The **maximum** over the run's turns, not a sum — how close it came to the window. |
 | `anticipated_guilt` | A proxy for predicted error against someone else's expectation. |
-| `charter` | Readings of sensored charter lines when the run began; absent on older records or when the charter could not be loaded. A reading has [five states](/docs/features/appraisal/charter), and a missing one never counts as meeting the setpoint. |
+| `charter` | Readings of sensored charter lines when the run began; absent on older records or when the charter could not be loaded. A reading has [five states](/docs/features/appraisal/charter), and a missing one never counts as meeting the setpoint. Beside the level each carries a per-item reading (how many items wait, how many are past the setpoint), the run's own delta on that line's store, and whether the line was withdrawn from the run as saturated. |
 
 Three rules it inherits, each of which is a bug if undone:
 

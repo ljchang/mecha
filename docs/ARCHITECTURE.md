@@ -3946,6 +3946,37 @@ when touching it:
   owner stepping into every run, and the doctor would say so in the second
   person (found on review). Splitting the two on the record is a
   wire-format addition nothing has needed yet.
+- **A consumer reads a line per item and per run, never as a level (S5,
+  built as 1e).** One stale draft pins an age kind's level — the oldest
+  item's age — so the live line read past its setpoint on 126 of 126 runs
+  whatever the queue did. Beside the level, a reading taken from a store
+  carries `reading::Items` (how many wait, how many are past the setpoint,
+  the oldest age, the stale ids up to `ITEMS_NAMED`), and at run end
+  `LineReading::delta` is the ids the run's window added and cleared,
+  with `BacklogDelta::flow` the same per store — a net difference reads a
+  run that staged one draft while another was sent as nothing. Both come
+  from `Backlog::survey`, one read per store, so the per-item form and the
+  level can never describe two states of one queue; the id list
+  (`backlog::Inventory`) is held in memory for `finish` and **never
+  recorded**, so a snapshot loaded from a file has none and cannot be
+  differenced against today's stores. `Decision::assess` keys its charter
+  action on `Items::over` (the level only for the corpus kind, which has
+  no items), and all three new fields are optional on the wire, absent
+  when unknown. **A saturated line is withdrawn from in-run consumers**:
+  `Homeostat::at_start` marks `withdrawn` on a line that reads past its
+  setpoint now *and* on each of the last `SATURATED_AFTER_RUNS`
+  informative recorded runs, and `Homeostat::in_run_readings` — the one
+  door `ToolCtx::goal_readings` is filled through — leaves it out; the
+  record keeps it whole, so the streak and the doctor's one finding
+  continue until the line is met. `reading::saturated` is the single
+  definition both use, lazy over rows newest first, and the run's rows
+  come from `reading::recorded_readings`, which streams the session store
+  under the doctor's own admission and window and is not read at all when
+  no line is over — the corpus kind's full scan stays a surface's cost.
+  A line within its setpoint now is never withdrawn, whatever its
+  history. `sessions health` shows each line's level over-count beside
+  the per-item variances and the delta counts (`charter_readings` in
+  `--json`), the phase-1 readout this first produced.
 - **The doctor reads against the owner's number, and names the line.**
   `doctor::Patience` is the harness constant (48h drafts, 24h questions, 72h
   requests) or the setpoint of the charter line whose sensor watches that
@@ -3954,9 +3985,12 @@ when touching it:
   to and fire only where a line names one. **Saturation is containment 5's
   second guard**: a line that has read past its setpoint on each of the last
   `reading::SATURATED_AFTER_RUNS` informative rows — same line, same kind,
-  same setpoint spelling, so an edited setpoint starts a fresh streak — is a
-  finding that says both things it could mean, because doctor cannot tell a
-  real debt from an hour where the owner meant a day. The first guard is the
+  same setpoint spelling, so an edited setpoint starts a fresh streak — is
+  **one** finding that says both things it could mean, because doctor cannot
+  tell a real debt from an hour where the owner meant a day, and names the
+  stale items the newest of those runs counted (`Items::stale`; nothing on
+  a row from before the field). It says the line is withheld from runs,
+  because the same `reading::saturated` decides the withdrawal. The first guard is the
   surfaces: `mecha charter`, the TUI detail and the web settings page show
   each sensor's reading beside its line through `reading::read_charter`,
   and the two JSON surfaces render one shape through `reading::lines_json`
@@ -4209,8 +4243,9 @@ and oldest age, and on a store with stale drafts it saturates (0.95–1.0 on
 every live run as of 2026-09-24). The charter reading (`Homeostat::charter`,
 `reading.rs`'s line-specific guilt) is per sensored line against the owner's
 setpoint, and it has more readers than the brief: `Decision::assess`, whose
-advice reaches the model only with `goal_guidance`, the doctor's saturation
-finding, and the owner's charter surfaces. Boredom's notices do reach the model,
+advice reaches the model only with `goal_guidance` and which reads the
+per-item form of every line not withdrawn as saturated, the doctor's
+saturation finding, and the owner's charter surfaces. Boredom's notices do reach the model,
 in-run, as a templated line; they are the one sensor here with a consumer.
 An earlier version of this paragraph said all three shipped with no consumer,
 which was false against the tree by the time it was written. `runlog`'s rule
