@@ -43,22 +43,38 @@ pub struct Event {
 /// S7, ruling R12, 1f): it carries what `anticipation::Commitment` held
 /// beside a draft's prediction — what the party expects and what failing it
 /// costs them — so an owner stating a commitment states it here whole. Only
-/// an owner command writes one (the module doc's rule, and §7.4's: an
-/// expectation is a recorded commitment, never a claimed one).
+/// the owner's own acts write one — `mecha workflow commit`, or appraisal
+/// evidence the owner authored (`anticipation::Evidence::into_record`) —
+/// the module doc's rule, and §7.4's: an expectation is a recorded
+/// commitment, never a claimed one.
 ///
 /// Both absorbed fields are optional on the wire, so a row written before
-/// them loads unchanged. `anticipation::Commitment` keeps its own shape on
-/// the predictions it is already recorded on. Ruled 2026-09-25 (new writes
-/// only, no migration): new predictions will write this record, the old
-/// shape stays on disk and is read leniently, and nothing is rewritten —
-/// owed as a follow-up to 1f (the design doc's S7 entry).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// them loads unchanged. Ruled 2026-09-25 (new writes only, no migration;
+/// built as 1f-2): a new prediction's commitment is this record
+/// (`anticipation::RecordedCommitment::Record`), `anticipation::Commitment`
+/// stays as the legacy shape — accepted as owner input and read wherever
+/// it is already on disk — and nothing is rewritten.
+///
+/// **The dates are optional, and an absent one means "no deadline stated"**
+/// (ruling (b), 2026-09-25): a commitment an owner states through appraisal
+/// evidence carries only the dates the owner wrote — none in the legacy
+/// shape — and nothing machine-derived may state a "by when" for it. An
+/// undated commitment is
+/// never overdue ([`Commitment::overdue`]) and never due for follow-up
+/// ([`Commitment::follow_up_due`]), and no reader treats the absence as a
+/// time — a dash is never zero. Rows written with dates serialise
+/// byte-identically: the fields keep their order and skip only when absent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Commitment {
     pub party: String,
     /// A pointer to the owner's instruction, mail thread, or other originating record.
     pub source: String,
-    pub due_at: DateTime<Utc>,
-    pub follow_up_at: DateTime<Utc>,
+    /// When it is owed. `None`: no deadline stated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_at: Option<DateTime<Utc>>,
+    /// When to follow up. `None`: no follow-up scheduled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_up_at: Option<DateTime<Utc>>,
     /// What the party expects, in the owner's words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expectation: Option<String>,
@@ -66,6 +82,21 @@ pub struct Commitment {
     /// judges it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consequence: Option<String>,
+}
+
+impl Commitment {
+    /// Past its deadline at `now`. An undated commitment has no deadline to
+    /// be past, so it is never overdue — the one place this is decided, so
+    /// no reader can compare a missing date as if it were a time.
+    pub fn overdue(&self, now: DateTime<Utc>) -> bool {
+        self.due_at.is_some_and(|due| due <= now)
+    }
+
+    /// Due for its follow-up at `now`. An undated commitment has no
+    /// follow-up scheduled, so it is never due for one.
+    pub fn follow_up_due(&self, now: DateTime<Utc>) -> bool {
+        self.follow_up_at.is_some_and(|at| at <= now)
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workflow {
@@ -429,7 +460,7 @@ impl Workflow {
                 self.state.as_str(),
                 "idle" | "running" | "awaiting_owner" | "failed" | "interrupted"
             )
-            || self.commitment.as_ref().is_some_and(|c| c.due_at <= now)
+            || self.commitment.as_ref().is_some_and(|c| c.overdue(now))
         {
             return "urgent";
         }
@@ -624,7 +655,7 @@ impl Workflow {
         let due = self
             .commitment
             .as_ref()
-            .is_some_and(|c| c.follow_up_at <= now);
+            .is_some_and(|c| c.follow_up_due(now));
         let changed = self
             .events
             .last()
@@ -1288,8 +1319,8 @@ mod tests {
         w.commitment = Some(Commitment {
             party: "Priya".into(),
             source: "owner instruction".into(),
-            follow_up_at: at("2026-09-08T20:00:00Z"),
-            due_at: at("2026-09-10T12:00:00Z"),
+            follow_up_at: Some(at("2026-09-08T20:00:00Z")),
+            due_at: Some(at("2026-09-10T12:00:00Z")),
             expectation: None,
             consequence: None,
         });
@@ -1482,9 +1513,79 @@ mod tests {
             r#"{"goal":"task:agenda","commitment":{"beneficiary":"the reading group","expectation":"the agenda before Friday","consequence":"the group meets unprepared"}}"#,
         )
         .unwrap();
-        let recorded = evidence.commitment.unwrap();
+        let Some(crate::anticipation::RecordedCommitment::Legacy(recorded)) = evidence.commitment
+        else {
+            panic!("the old shape reads as the legacy commitment");
+        };
         assert_eq!(recorded.beneficiary, "the reading group");
         assert_eq!(recorded.expectation, "the agenda before Friday");
+    }
+
+    /// A row the store wrote with dates, before they were optional, reads
+    /// and writes back byte-identical through the store's own serialiser
+    /// (ruling (b): nothing on disk is rewritten into another shape).
+    #[test]
+    fn a_dated_row_written_before_the_dates_were_optional_round_trips_byte_identical() {
+        // The compact commitment exactly as an earlier binary wrote it.
+        let old = r#"{"party":"the reading group","source":"owner instruction","due_at":"2026-09-10T12:00:00Z","follow_up_at":"2026-09-08T20:00:00Z"}"#;
+        let c: Commitment = serde_json::from_str(old).unwrap();
+        assert_eq!(serde_json::to_string(&c).unwrap(), old);
+
+        // And a whole workflow row, through the store's pretty writer.
+        let h = Home::new();
+        let mut w = h.workflow();
+        w.commitment = Some(c);
+        let written = serde_json::to_vec_pretty(&w).unwrap();
+        let text = String::from_utf8(written.clone()).unwrap();
+        assert!(
+            text.contains(
+                "\"due_at\": \"2026-09-10T12:00:00Z\",\n    \"follow_up_at\": \"2026-09-08T20:00:00Z\""
+            ),
+            "{text}"
+        );
+        let loaded: Workflow = serde_json::from_slice(&written).unwrap();
+        assert_eq!(serde_json::to_vec_pretty(&loaded).unwrap(), written);
+    }
+
+    /// An undated commitment states no deadline: it never makes a workflow
+    /// urgent, never schedules a follow-up, and is never read as a time. A
+    /// dated one past its dates does both — the control.
+    #[test]
+    fn an_undated_commitment_is_never_overdue_and_never_due_for_follow_up() {
+        let h = Home::new();
+        let now = at("2026-09-20T15:00:00Z");
+        let undated = Commitment {
+            party: "the reading group".into(),
+            source: "task:agenda".into(),
+            due_at: None,
+            follow_up_at: None,
+            expectation: Some("the agenda before Friday".into()),
+            consequence: Some("the group meets unprepared".into()),
+        };
+        assert!(!undated.overdue(now) && !undated.follow_up_due(now));
+        let policy = AttentionPolicy {
+            timezone: chrono_tz::UTC,
+            ..Default::default()
+        };
+        let mut w = h.workflow();
+        w.commitment = Some(undated.clone());
+        assert_ne!(w.section(now), "urgent", "no deadline, nothing overdue");
+        assert!(!w.tick(&policy, now), "no follow-up scheduled, no notice");
+        assert!(w.notice.is_none());
+        let json = serde_json::to_value(&undated).unwrap();
+        assert!(
+            json.get("due_at").is_none() && json.get("follow_up_at").is_none(),
+            "absent, never a zero date: {json}"
+        );
+
+        let mut dated = h.workflow();
+        dated.commitment = Some(Commitment {
+            due_at: Some(at("2026-09-19T12:00:00Z")),
+            follow_up_at: Some(at("2026-09-18T12:00:00Z")),
+            ..undated
+        });
+        assert_eq!(dated.section(now), "urgent");
+        assert!(dated.tick(&policy, now));
     }
 }
 
