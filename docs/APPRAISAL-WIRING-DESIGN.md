@@ -349,7 +349,7 @@ with a `mecha exp` arm against EXPERIMENT-DESIGN §15's appraisal-off preset
 | **2a-2** | **The distiller, extended, writes the appraisal** — in shadow: the store gains its producer and nothing reads it but the owner. New inputs to the pass: the goal chain and the charter's text (the anchor, 1h's recorded goal chain); the recorded brief at start and the homeostat at finish (1h); the owner's acts on the output — release, edit diff, reject reason (R16a), closure and reopen (1b, 1d); the signed errors (`appraisal::of_session`); step findings and the session's stored comparisons (1g); up to three past clean appraisals of the same situation and goal, through `Clean` only. The transcript it reads carries the referent ids the store dereferences (`result:<id>`, `turn:<n>`); a quote is a span of the whole result, not of the 300-character clip the renderer shows today. Judgments' goal references are resolved against `distill::KnownPointers` before recording. Runs where `distill` already runs, on the local model (R29), under a permit. The owner's readout of the prose (every appraisal, control characters stripped). | I1, I4, R18, R25, R29 | 2a-1 | on clean and tainted fixture sessions with a fixture model, each appraisal lands behind the right door; a past clean appraisal of the same situation reaches the next session's input and a tainted one never does; both R25 pins pass (ruled 2026-09-25: the appraisal is a follow-up turn on the cached prefix); seconds of a seat per session measured on real sessions — *built; see I1* |
 | **2a-3** | **The counts-only appraiser retired into it.** `sessions appraise --appraise` and `appraise_with_model` go; the counts it read (`AppraiserEvidence`) are already 2a-2's input as signed errors. Records carrying `channel: appraisal` / `cite: appraiser` still load and count. | I1, R25 | 2a-2 | no second model pass reads a session for the label; an old record with an appraiser error loads and is counted — *built; see I1* |
 | **2a-4** | **The reflector folded in** — only after 2e-1 measures its lessons no worse (R25). A reflection is an appraisal of a correction: the same pass writes both, still as a `Reflexion` with its `Origin`, so `learn`'s input and gate keep their shape. | I1, R25 | 2a-2, 2e-1 | 2e-1's measurement is on record; model passes per session fall from two to one; the learning store's provenance gate is unchanged (its tests pass untouched) |
-| **2b-1** | **Anticipation's predictions scored.** Every `Prediction` an `Outcome` resolves is a calibration point per kind; coverage is reported, never a calibration figure while outcomes are absent; a delivery positive only after `outbox reconcile`. | X5 | 1d | a fixture store with resolved and unresolved predictions reports coverage per kind and no rate over nothing |
+| **2b-1** | **Anticipation's predictions scored.** Every `Prediction` an `Outcome` resolves is a calibration point per kind; coverage is reported, never a calibration figure while outcomes are absent; a delivery positive only after `outbox reconcile`. | X5 | 1d | a fixture store with resolved and unresolved predictions reports coverage per kind and no rate over nothing — *built; see X5* |
 | **2b-2** | **The appraisal's own prediction scored** when the same situation and goal next come round; a miss is a surprise, recorded for 2e-6's priority. The structural scorer is the owner's ruling of 2026-09-25: the record's `expected_act` (R16's closed set, added by 2a-2) against the owner's recorded act on the next session's output; the prose prediction is never scored. | X5 | 2a-2, 2b-1 | a fixture pair of sessions scores a hit and a miss on `expected_act` against the recorded act; a model never decides a score (R27) |
 | **2c-1** | **The goal joins `Situation`** as a recorded and scope key — recording, matching, replay and validation in one change; an absent goal never widens a scope. *Built as 2c-1 (2026-09-25): the key is the whole `GoalRef` the front-end handed `prepare`, recorded as `RunConfig::rules_goal`.* | M1 | 1a | the scope-key tests cover the goal on every door; a rule mined with no goal still matches as before |
 | **2c-2** | **Past clean appraisals retrieved.** `goal_context` serves up to three clean appraisals of the same situation and goal, on demand, never pushed — through `Clean` only. Measured against a control at matched budget, since retrieved memory can cost more than it returns. *Built as 2c-2 (2026-09-25): `Lever::PastAppraisals`, shipping off; the measured run is owed.* | I2 | 2a-2, 2c-1 | a clean appraisal of a matching session is served and a tainted one never is; the lever's arm runs against the control |
@@ -1212,6 +1212,27 @@ the owner recording outcomes; until then it reports coverage, never a
 calibration figure. A delivery positive is scored only after
 `outbox reconcile` has confirmed delivery — the gate that already guards the
 post-delivery labels.
+
+*2b-1 built — anticipation's predictions scored.* `anticipation::Calibration`
+scores every prediction in the outbox per response (`proceed`, `verify`,
+`clarify`, `replan`) and per concern kind.
+
+- **Only an owner-evidenced prediction counts.** Staging's `Source::Harness`
+  placeholder, built from empty evidence, is counted apart and never scored.
+- **A point is the owner's recorded outcome on the prediction the draft was
+  released under.** A concern materialised (an exposed error, a harm, a
+  missed expectation), or the draft went out clean.
+- **Clean counts only on a confirmed delivery**: the release's
+  acknowledgement or `outbox reconcile`. A clean verdict without one is
+  counted `delivery_unconfirmed`.
+- **Everything else is counted by why it is not yet a point**: pending,
+  awaiting the owner's outcome, delivery unknown, changed, reassessed,
+  abandoned or unsupported.
+- **The rate is `None` over no points.** `sessions appraise` prints the
+  coverage line and `predictions` in `--json`, store-wide.
+- **Not built here:** a miss as a surprise, raising replay priority and
+  queuing a reflection. That comes with 2b-2's surprise record; it waits on
+  outcomes being recorded.
 
 *The text appraisal's own prediction (ruled by the owner, 2026-09-25).* A
 free-text prediction has no structural validator, and R27 forbids a model

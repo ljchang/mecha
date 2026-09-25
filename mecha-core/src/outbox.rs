@@ -306,6 +306,20 @@ impl OutboxItem {
             .is_some_and(|a| a.outcome == DeliveryOutcome::Unknown)
     }
 
+    /// Sent, and the last delivery attempt was confirmed delivered — by the
+    /// tool's acknowledgement on release, or by the owner through `mecha
+    /// outbox reconcile`. A draft marked sent with no attempt on record (a
+    /// release from before attempts were kept) is not confirmed: its
+    /// delivery was never established, only its status set. The gate a
+    /// *positive* calibration point waits on (X5, row 2b-1).
+    pub fn delivery_confirmed(&self) -> bool {
+        self.status == "sent"
+            && self
+                .delivery_attempts
+                .last()
+                .is_some_and(|a| a.outcome == DeliveryOutcome::Delivered)
+    }
+
     pub fn ensure_delivery_ready(&self) -> Result<()> {
         anyhow::ensure!(
             self.status == "pending",
@@ -2281,6 +2295,216 @@ mod tests {
         let loaded = store.item(&item.id).unwrap();
         assert_eq!(loaded.workspace.as_ref(), Some(&jail));
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Row 2b-1's acceptance, on a fixture store: resolved and unresolved
+    /// predictions report coverage per kind, a rate appears only over
+    /// points that exist, and a clean outcome is a point only once delivery
+    /// is confirmed — by the release's acknowledgement or by `outbox
+    /// reconcile`. Fails on the old build, which scored nothing.
+    #[test]
+    fn predictions_are_scored_as_outcomes_resolve_them_and_no_rate_is_given_over_nothing() {
+        use crate::anticipation::{
+            Calibration, Evidence, OutcomeInput, Response, Verdict, Verification,
+        };
+        let root = scratch("calibration");
+        let store = OutboxStore::open(&root).unwrap();
+        let stage = |n: u32| {
+            store
+                .stage(
+                    "mail_send",
+                    OutboxKind::Message,
+                    json!({"to": "alex.kim@example.org", "body": format!("The review is Thursday ({n}).")}),
+                    Taint::default(),
+                    Provenance {
+                        anticipation: None,
+                        filled_defaults: Vec::new(),
+                        session_id: None,
+                        workspace: None,
+                        call_id: None,
+                    },
+                )
+                .unwrap()
+        };
+        // `proceed`: a passed check. `verify`: an affordable check not run.
+        let proceed = Evidence {
+            verification: Verification::Passed,
+            verification_evidence: Some("the date matches the calendar".into()),
+            ..Evidence::default()
+        };
+        let verify = Evidence {
+            check_available: true,
+            check_cost_secs: Some(10),
+            time_available_secs: Some(600),
+            ..Evidence::default()
+        };
+        let predict = |id: &str, e: &Evidence| {
+            let item = store.anticipate(id, e.clone(), false).unwrap();
+            item.predictions
+                .last()
+                .and_then(|p| p.known())
+                .unwrap()
+                .clone()
+        };
+        let outcome = |id: &str, prediction: &str, verdict: Verdict| {
+            store
+                .record_outcome(
+                    id,
+                    OutcomeInput {
+                        prediction_id: prediction.into(),
+                        verdict,
+                        evidence: "Riley Park replied".into(),
+                        attributable_to_mecha: false,
+                        supersedes: None,
+                    },
+                )
+                .unwrap();
+        };
+        let release = |id: &str| {
+            store.begin_delivery(id).unwrap();
+            store
+                .resolve_with_output(id, "sent", None, Some("sent: msg-1".into()))
+                .unwrap();
+        };
+
+        // Nothing on record: coverage is zero, every rate is none.
+        let empty = Calibration::of(&[]);
+        assert_eq!(empty.total.predictions, 0);
+        assert_eq!(empty.by_response.len(), Response::ALL.len());
+        assert!(empty
+            .by_response
+            .values()
+            .chain(empty.by_kind.values())
+            .all(|c| c.materialized_rate.is_none()));
+
+        // A proceed draft that went out clean, on a confirmed delivery.
+        let a = stage(1);
+        let pa = predict(&a.id, &proceed);
+        assert_eq!(pa.assessment.response, Response::Proceed);
+        release(&a.id);
+        outcome(&a.id, &pa.id, Verdict::NoIssue);
+
+        // A verify draft whose concern materialised.
+        let b = stage(2);
+        let pb = predict(&b.id, &verify);
+        assert_eq!(pb.assessment.response, Response::Verify);
+        release(&b.id);
+        outcome(&b.id, &pb.id, Verdict::ExpectationMissed);
+
+        // A proceed draft still pending; one sent and awaiting the owner; one
+        // rejected.
+        let c = stage(3);
+        predict(&c.id, &proceed);
+        let f = stage(4);
+        predict(&f.id, &proceed);
+        release(&f.id);
+        let g = stage(5);
+        predict(&g.id, &proceed);
+        store.resolve(&g.id, "rejected", None).unwrap();
+
+        // Marked sent with no delivery attempt on record: the owner's "no
+        // issue" is not a clean point, because delivery was never confirmed.
+        let d = stage(6);
+        let pd = predict(&d.id, &proceed);
+        store.resolve(&d.id, "sent", None).unwrap();
+        outcome(&d.id, &pd.id, Verdict::NoIssue);
+
+        // A verify draft whose release went unacknowledged: delivery unknown
+        // until the owner reconciles it.
+        let e = stage(7);
+        let pe = predict(&e.id, &verify);
+        store.begin_delivery(&e.id).unwrap();
+
+        let read = |store: &OutboxStore| Calibration::of(&store.items().unwrap());
+        let before = read(&store);
+        assert_eq!(before.by_response["verify"].unscored.delivery_unknown, 1);
+        assert_eq!(before.by_response["verify"].scored, 1);
+
+        store
+            .reconcile_delivery(&e.id, DeliveryOutcome::Delivered, "seen in the sent folder")
+            .unwrap();
+        outcome(&e.id, &pe.id, Verdict::NoIssue);
+        let cal = read(&store);
+
+        let p = &cal.by_response["proceed"];
+        assert_eq!(p.predictions, 5);
+        assert_eq!((p.scored, p.clean, p.materialized), (1, 1, 0));
+        assert_eq!(p.materialized_rate, Some(0.0));
+        assert_eq!(p.unscored.pending, 1);
+        assert_eq!(p.unscored.awaiting_feedback, 1);
+        assert_eq!(p.unscored.abandoned, 1);
+        assert_eq!(p.unscored.delivery_unconfirmed, 1);
+
+        let v = &cal.by_response["verify"];
+        assert_eq!(v.predictions, 2);
+        assert_eq!((v.scored, v.clean, v.materialized), (2, 1, 1));
+        assert_eq!(v.materialized_rate, Some(0.5));
+        assert_eq!(v.unscored.delivery_unknown, 0, "reconciled");
+
+        // Staging recorded the harness's own placeholder on every draft:
+        // not a forecast, so in no row — the `clarify` row holds only what
+        // an owner assessed, which here is nothing, and so no rate.
+        assert_eq!(cal.harness_placeholders, 7);
+        for none in ["clarify", "replan"] {
+            let c = &cal.by_response[none];
+            assert_eq!((c.predictions, c.materialized_rate), (0, None), "{none}");
+        }
+        // Per concern kind: verify drafts named regret and curiosity.
+        assert_eq!(cal.by_kind["regret"].scored, 2);
+        assert_eq!(cal.by_kind["guilt"].predictions, 0);
+        assert_eq!(cal.by_kind["guilt"].materialized_rate, None);
+        assert_eq!(cal.total.predictions, 7);
+        assert_eq!(cal.total.scored, 3);
+        assert_eq!(cal.unreadable, 0);
+
+        // A draft released with only the harness's placeholder, and an
+        // outcome recorded against it: not a point, and in no row.
+        let h = stage(8);
+        let ph = h.predictions[0].known().unwrap().id.clone();
+        release(&h.id);
+        outcome(&h.id, &ph, Verdict::ExpectationMissed);
+        let after = read(&store);
+        assert_eq!(after.harness_placeholders, 8);
+        assert_eq!(after.total, cal.total, "the placeholder scored nothing");
+        assert_eq!(after.by_response["clarify"].predictions, 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A prediction record this build cannot read is counted apart and in
+    /// no kind's coverage; a readable one beside it is still counted.
+    #[test]
+    fn an_unreadable_prediction_is_counted_apart_never_as_a_kind() {
+        let root = scratch("calibration-unread");
+        let store = OutboxStore::open(&root).unwrap();
+        let item = store
+            .stage(
+                "mail_send",
+                OutboxKind::Message,
+                json!({"to": "dana.rowe@example.org", "body": "The review moved."}),
+                Taint::default(),
+                Provenance {
+                    anticipation: None,
+                    filled_defaults: Vec::new(),
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
+            )
+            .unwrap();
+        let mut item = store
+            .anticipate(&item.id, crate::anticipation::Evidence::default(), false)
+            .unwrap();
+        item.predictions.insert(
+            0,
+            crate::anticipation::History::Unknown(json!({"from": "a newer build"})),
+        );
+        let cal = crate::anticipation::Calibration::of(std::slice::from_ref(&item));
+        assert_eq!(cal.unreadable, 1);
+        // The owner's own `clarify` assessment; staging's placeholder apart.
+        assert_eq!(cal.total.predictions, 1);
+        assert_eq!(cal.by_response["clarify"].predictions, 1);
+        assert_eq!(cal.harness_placeholders, 1);
         let _ = std::fs::remove_dir_all(&root);
     }
 
