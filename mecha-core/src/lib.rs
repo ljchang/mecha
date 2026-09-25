@@ -80,6 +80,7 @@ pub mod harness;
 pub mod homeostat;
 pub mod hooks;
 pub mod image;
+pub mod imagegen;
 pub mod learning;
 pub mod mail_triage;
 pub mod mailbox;

@@ -865,6 +865,20 @@
   let uploading = $state(false);
   let attachments = $state([]); // workspace-relative paths, announced on send
 
+  // The file `image_generate` saved, read off the first line of its own
+  // result — matched strictly, so no other text in a preview is ever taken
+  // for a path to fetch. A refusal or failure has no picture.
+  function generatedImage(entry) {
+    if (entry.name !== 'image_generate' || entry.pending || entry.is_error || entry.blocked) {
+      return null;
+    }
+    const first = (entry.preview ?? '').split('\n', 1)[0];
+    const m = /^image: (images\/[A-Za-z0-9._-]+\.png)$/.exec(first);
+    return m ? m[1] : null;
+  }
+
+  const workspaceFile = (path) => `/api/chat/${key}/file?path=${encodeURIComponent(path)}`;
+
   async function uploadPicked(e) {
     const files = [...(e.target.files ?? [])];
     e.target.value = '';
@@ -1150,6 +1164,7 @@
              echo it, so this page displays them, never interprets them. -->
         {@const digest = toolDigest(entry.draft)}
         {@const detail = !!(entry.draft || entry.args || entry.preview)}
+        {@const picture = generatedImage(entry)}
         <div class="tool" class:err={entry.is_error} class:blocked={entry.blocked}>
           <button
             class="toolhead"
@@ -1209,6 +1224,14 @@
               <div class="tsep">answered with nothing</div>
             {/if}
           </div>
+        {/if}
+        <!-- Outside the disclosure: the picture is the answer, not a detail
+             of the call. Served from this session's own jail, images only
+             (serve/files.rs), so a tap opens it full size. -->
+        {#if picture}
+          <a class="genimg" href={workspaceFile(picture)} target="_blank" rel="noopener">
+            <img src={workspaceFile(picture)} alt="generated image" loading="lazy" />
+          </a>
         {/if}
       {:else if entry.kind === 'notice'}
         <div class="notice">{entry.text}</div>
@@ -1940,6 +1963,17 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     min-width: 0;
+  }
+  .genimg {
+    display: block;
+    margin: 4px 0 8px 18px;
+    max-width: min(100%, 512px);
+  }
+  .genimg img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 8px;
   }
   .toolpanel {
     display: flex;
