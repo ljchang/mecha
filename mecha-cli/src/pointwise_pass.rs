@@ -734,8 +734,17 @@ fn candidate_comparison(
 }
 
 /// Count a candidate's comparison already on record at this point, if
-/// there is one — a re-measurement pays for no point twice.
-fn reuse(on_record: &[Comparison], skeleton: &Comparison, out: &mut CandidateEvidence) -> bool {
+/// there is one — a re-measurement pays for no point twice. A reused point
+/// is a point compared, so it spends the same budget a driven one does:
+/// `POINTS_PER_CANDIDATE` is a ceiling on the evidence as much as on the
+/// cost, and a re-measurement that reused eight and drove eight more would
+/// decide on sixteen (found on review).
+fn reuse(
+    on_record: &[Comparison],
+    skeleton: &Comparison,
+    out: &mut CandidateEvidence,
+    budget: &mut usize,
+) -> bool {
     let Some(row) = pointwise::on_record(on_record, skeleton) else {
         return false;
     };
@@ -743,7 +752,23 @@ fn reuse(on_record: &[Comparison], skeleton: &Comparison, out: &mut CandidateEvi
         out.tally.count(baseline.outcome, candidate.outcome);
         out.comparisons.push(row.id.clone());
     }
+    *budget = budget.saturating_sub(1);
     true
+}
+
+/// Why a candidate's point-wise pass compared nothing, when it did not —
+/// each cause in its own words.
+fn empty_reason(out: &CandidateEvidence, seats_held: bool, lost_to_arms: usize) -> Option<String> {
+    if out.tally != mecha_core::candidate::PointwiseTally::default() {
+        return None;
+    }
+    Some(if seats_held {
+        "every background seat stayed held, so no point was driven".into()
+    } else if lost_to_arms > 0 {
+        format!("{lost_to_arms} point(s) were driven and each lost an arm that could not be driven")
+    } else {
+        "no posed point this machine could drive".into()
+    })
 }
 
 /// R26's point-wise half for a harness candidate, as R36 sizes it: up to
@@ -801,6 +826,12 @@ pub async fn compare_candidate(
     )?;
     let seats = crate::commands::tasks::permits()?;
     let mut budget = mecha_core::candidate::POINTS_PER_CANDIDATE;
+    // Why a pass may come back empty, kept apart: "the seats never freed"
+    // and "every arm failed" are machine facts, "no point to compare" is a
+    // fact about the corpus, and a reader months later must not take one
+    // for another (found on review).
+    let mut seats_held = false;
+    let mut lost_to_arms = 0usize;
     for Drawable { path, point } in pointwise::draw(pool, seed, |d| &d.point) {
         if budget == 0 {
             break;
@@ -827,12 +858,13 @@ pub async fn compare_candidate(
             model,
             candidate,
         )?;
-        if reuse(&on_record, &skeleton, &mut out) {
+        if reuse(&on_record, &skeleton, &mut out, &mut budget) {
             continue;
         }
         let what = format!("compare candidate {candidate} {}", point.kind.as_str());
         let Some(_seat) = take_seat(&seats, &what).await? else {
             eprintln!("the background seats stayed held; the point-wise comparison stops short");
+            seats_held = true;
             break;
         };
         budget -= 1;
@@ -857,6 +889,7 @@ pub async fn compare_candidate(
             }
         }
         if outcomes.len() != arms.len() {
+            lost_to_arms += 1;
             continue;
         }
         let comparison = candidate_comparison(&prep, &point, outcomes, model, candidate)?;
@@ -874,9 +907,7 @@ pub async fn compare_candidate(
             out.comparisons.push(comparison.id);
         }
     }
-    if out.tally == mecha_core::candidate::PointwiseTally::default() {
-        out.not_run = Some("no posed point this machine could drive".into());
-    }
+    out.not_run = empty_reason(&out, seats_held, lost_to_arms);
     Ok(out)
 }
 
@@ -1559,13 +1590,85 @@ mod tests {
             .unwrap()
         };
         let mut out = CandidateEvidence::default();
-        assert!(reuse(&rows, &skeleton("hc-ledger"), &mut out));
+        let mut budget = mecha_core::candidate::POINTS_PER_CANDIDATE;
+        assert!(reuse(&rows, &skeleton("hc-ledger"), &mut out, &mut budget));
         assert_eq!((out.tally.decided, out.tally.candidate_only), (1, 1));
         assert_eq!(out.comparisons, vec![c.id]);
+        assert_eq!(
+            budget,
+            mecha_core::candidate::POINTS_PER_CANDIDATE - 1,
+            "a reused point spends the budget a driven one does"
+        );
         let mut other = CandidateEvidence::default();
         assert!(
-            !reuse(&rows, &skeleton("hc-quarter"), &mut other),
+            !reuse(&rows, &skeleton("hc-quarter"), &mut other, &mut budget),
             "another candidate's verdict at the same point is not this one's"
+        );
+        assert_eq!(budget, mecha_core::candidate::POINTS_PER_CANDIDATE - 1);
+    }
+
+    /// A re-measurement that finds every point on record reuses exactly the
+    /// budget's worth and stops — never eight reused and eight more driven.
+    #[test]
+    fn a_re_measurement_reuses_no_more_than_the_budget() {
+        let guard = crate::testenv::HomeGuard::new("pointwise-reuse-budget");
+        let home = guard.dir.clone();
+        let id = session(&home, false);
+        let path = Session::find(&home.join("sessions"), &id).unwrap();
+        let transcript = Session::read(&path).unwrap();
+        let steer = pointwise::points_in(&id, &transcript.convo.messages, &[])
+            .into_iter()
+            .find(|p| p.kind == PointKind::Steer)
+            .unwrap();
+        let Plan::Posed(prep) = plan(&steer, &path, &BTreeMap::new(), None).unwrap() else {
+            panic!("a steer is posed");
+        };
+        let stored = candidate_comparison(
+            &prep,
+            &steer,
+            candidate_arms(&prep)
+                .into_iter()
+                .map(|(r, p)| Arm::new(r, p, Outcome::Pass))
+                .collect(),
+            "scripted",
+            "hc-ledger",
+        )
+        .unwrap();
+        let rows = vec![stored.clone()];
+        let mut out = CandidateEvidence::default();
+        let mut budget = mecha_core::candidate::POINTS_PER_CANDIDATE;
+        let mut reused = 0;
+        // The loop's own guard, over more on-record points than the budget.
+        for _ in 0..(2 * mecha_core::candidate::POINTS_PER_CANDIDATE) {
+            if budget == 0 {
+                break;
+            }
+            if reuse(&rows, &stored, &mut out, &mut budget) {
+                reused += 1;
+            }
+        }
+        assert_eq!(reused, mecha_core::candidate::POINTS_PER_CANDIDATE);
+        assert_eq!(
+            out.tally.decided,
+            mecha_core::candidate::POINTS_PER_CANDIDATE
+        );
+    }
+
+    /// An empty pass says why: a held seat, arms that could not be driven,
+    /// and an empty corpus are three findings, never one.
+    #[test]
+    fn an_empty_candidate_pass_names_its_cause() {
+        let empty = CandidateEvidence::default();
+        let why = |seats, lost| empty_reason(&empty, seats, lost).unwrap();
+        assert!(why(true, 0).contains("seat"));
+        assert!(why(false, 3).contains("3 point(s) were driven"));
+        assert!(why(false, 0).contains("no posed point"));
+        let mut some = CandidateEvidence::default();
+        some.tally.count(Outcome::Pass, Outcome::Pass);
+        assert_eq!(
+            empty_reason(&some, true, 2),
+            None,
+            "evidence is not an empty pass"
         );
     }
 
