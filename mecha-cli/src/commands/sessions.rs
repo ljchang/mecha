@@ -534,7 +534,9 @@ fn comparisons_on_record() -> OnRecord {
 fn comparisons_json(on_record: &OnRecord) -> serde_json::Value {
     match on_record {
         Err(e) => serde_json::json!({"read": false, "error": e}),
-        Ok(None) => serde_json::json!({"read": true, "records": 0, "separated_share": null}),
+        // No store yet is genuinely zero of everything: the same shape as
+        // an empty store, so a consumer never reads `null` (unknown) for it.
+        Ok(None) => comparisons_json(&Ok(Some((mecha_core::comparison::Summary::default(), 0)))),
         Ok(Some((summary, skipped))) => {
             let mut o = serde_json::to_value(summary).unwrap_or_default();
             if let Some(m) = o.as_object_mut() {
@@ -560,7 +562,7 @@ fn comparisons_line(on_record: &OnRecord) -> String {
             let kinds: Vec<String> = s.by_kind.iter().map(|(k, n)| format!("{k} {n}")).collect();
             format!(
                 "counterfactual comparisons on record: {}{} · separated {} of {} decided ({}) · \
-                 {} inconclusive · {} judge-decided{}",
+                 {} inconclusive · {} judge-decided{}{}",
                 s.records,
                 if kinds.is_empty() {
                     String::new()
@@ -574,6 +576,14 @@ fn comparisons_line(on_record: &OnRecord) -> String {
                     .unwrap_or_else(|| "—".into()),
                 s.inconclusive,
                 s.judge_decided,
+                if s.unreadable_verdict > 0 {
+                    format!(
+                        " · {} with a verdict this build cannot read",
+                        s.unreadable_verdict
+                    )
+                } else {
+                    String::new()
+                },
                 if *skipped > 0 {
                     format!(" · {skipped} unreadable line(s) skipped, so these are floors")
                 } else {
@@ -1718,6 +1728,16 @@ mod probe_readout_tests {
         let none = Ok(None);
         assert_eq!(comparisons_json(&none)["records"], 0);
         assert!(comparisons_json(&none)["separated_share"].is_null());
+        // No store yet and an empty store are one shape: every key present,
+        // zero where zero is the truth.
+        let fresh = Ok(Some((mecha_core::comparison::Summary::default(), 0)));
+        let keys =
+            |v: serde_json::Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        assert_eq!(
+            keys(comparisons_json(&none)),
+            keys(comparisons_json(&fresh))
+        );
+        assert_eq!(comparisons_json(&none)["separated"], 0);
         let empty = Ok(Some((mecha_core::comparison::Summary::default(), 2)));
         assert!(comparisons_json(&empty)["separated_share"].is_null());
         assert_eq!(comparisons_json(&empty)["read"], false, "two lines skipped");

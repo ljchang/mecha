@@ -136,7 +136,16 @@ async fn appraise_probe(home: &Path, work: &Path) -> Value {
     let out = tokio::time::timeout(
         Duration::from_secs(60),
         Command::new(env!("CARGO_BIN_EXE_mecha"))
-            .args(["sessions", "appraise", "--probe", "--json"])
+            // `--include-tests`: CI exports `MECHA_SESSION_KIND=test`, which
+            // marks the fixture sessions this process creates as smoke tests,
+            // and the corpus readers hide those by default.
+            .args([
+                "sessions",
+                "appraise",
+                "--probe",
+                "--json",
+                "--include-tests",
+            ])
             .env("MECHA_HOME", home)
             .env_remove("MECHA_SESSION_DIR")
             .env_remove("MECHA_LEARNING_DIR")
