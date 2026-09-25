@@ -43,7 +43,10 @@ pub async fn execute(args: Args) -> Result<()> {
     // confined away from the mecha home — what the closure guard leans on
     // (1b-2). Read from the global config, the one every front-end layers
     // on; a config that does not load is `check_charter`'s kind of finding,
-    // said here rather than skipped.
+    // said here rather than skipped. **Global layer only:** `[sandbox]` is not
+    // stripped from a project layer, so a directory's `mecha.toml` can set a
+    // wider sandbox for sessions there, and this check does not see it
+    // (review of #294) — doctor has no working directory to layer from.
     match mecha_core::config::Config::load_global() {
         Ok(cfg) => findings.extend(doctor::check_shell_confinement(&cfg.sandbox, &home)),
         Err(e) => findings.push(Finding {

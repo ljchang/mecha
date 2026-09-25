@@ -591,18 +591,26 @@ impl Tool for Shell {
             Ok(c) => c,
             Err(e) => return Ok(ToolOutput::err(format!("cannot run command: {e}"))),
         };
-        // `None` is a child that has already exited: nothing left to name.
-        if let Some(pid) = child.id() {
-            match registry.register(pid, ctx.run_posture, ctx.call_id.as_deref()) {
-                Ok(r) => _registration = Some(r),
-                Err(e) => {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
-                    return Ok(ToolOutput::err(format!(
-                        "refusing to run: the command could not be registered ({e:#}); it \
-                         was stopped as soon as it started."
-                    )));
-                }
+        // A child with no pid has already been reaped — but it may have left
+        // a grandchild, which is what the registry exists to place, so it is
+        // refused like a registration that failed (review of #294). tokio
+        // answers `None` only after the child was awaited, so this is a shape
+        // guarantee, not a live path.
+        let registered = match child.id() {
+            Some(pid) => registry
+                .register(pid, ctx.run_posture, ctx.call_id.as_deref())
+                .map_err(|e| format!("{e:#}")),
+            None => Err("the command exited before it could be named".to_string()),
+        };
+        match registered {
+            Ok(r) => _registration = Some(r),
+            Err(e) => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                return Ok(ToolOutput::err(format!(
+                    "refusing to run: the command could not be registered ({e}); it \
+                     was stopped as soon as it started."
+                )));
             }
         }
         let out_pipe = child.stdout.take();
