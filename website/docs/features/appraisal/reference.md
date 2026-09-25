@@ -156,7 +156,7 @@ does not change what the model provider caches. It looks like this (a
 delegated task, fictional):
 
 ```text
-Situation brief from the harness, as things stood when this run started. It describes; it asks nothing of you.
+Situation brief from the harness, as things stood when this run started; a later situation brief in this conversation replaces it. It describes; it asks nothing of you.
 - Goal: task task-1, under project project-aurora (2 open tasks there). No store links it to a charter line.
 - Board: 4 open tasks (1 inbox, 1 next, 2 waiting); 1 overdue (task-2); 2 due in the coming week (task-3, task-1); 2 tasks waiting on you; none waiting on someone else. Your own task is `waiting`, due 2026-09-30.
 - Waiting on the owner: one draft in the outbox, waiting over a day, past the owner's patience (charter line `replies`); no parked questions; no front-door requests.
@@ -174,7 +174,8 @@ What the words may and may not say:
   window. So are the board's counts and task ids, which mecha read itself.
 - **Anything the model could treat as a score is words.** Commitments waiting on
   you are counted in bands ("a few", "several"), aged in bands ("over a week"),
-  and said to be past your patience or not. That line never has a digit in it.
+  and said to be past your patience or not. That line prints no number of
+  its own; the only digits it can hold are in a charter line's id.
   A charter line's rank is "your highest-ranked" or not, never its position.
   Your quiet hours are inside or outside, not their times. A voice call is in
   progress or not.
@@ -182,7 +183,8 @@ What the words may and may not say:
   "none". A count that may be short says "at least".
 
 In a long web chat, a new brief is sent only when its words change, and bands
-mean an unchanged situation is the same words turn after turn. After a
+mean an unchanged situation is the same words turn after turn. Each brief
+says that a later one replaces it. After a
 compaction the brief is put back rather than summarised.
 
 | Field | What it says |

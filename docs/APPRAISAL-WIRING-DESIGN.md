@@ -983,7 +983,8 @@ off**: this is §1's decision 7 — 1h was the shadow, 3a is the lever and the
 eval` forces it off; recording stays unconditional. R21, field by field:
 budget facts are numbers; the board's counts and task ids are pointers and
 appear as they are; the commitments are band words, age bands and past the
-owner's patience or not, so that line carries no digit; a served line's
+owner's patience or not, so that line prints no number of its own (a
+charter line id it points at is the owner's spelling); a served line's
 rank is "highest-ranked" or not; quiet hours are inside or outside; the
 time of day is a band; a voice call is in progress or not. An unread field
 says "could not be read", a missing one says so, a floor says "at least";
@@ -993,10 +994,13 @@ differs from the **latest** brief in the transcript, so a web chat that is
 handed a fresh brief per turn says an unchanged situation once and a
 changed one again, append-only. A compaction cut strips the brief from the
 head, keeps it from the summariser and re-folds it in the tail, as it does
-the calendar reference. Delivery arms no taint: nothing in the words came
-from outside, and what is private in them is counts, bands and
-harness-minted ids, the charter block's class of standing context
-(`docs/ARCHITECTURE.md` says why arming would also confound the arm). Two
+the calendar reference, and each block's header says a later brief in the
+conversation replaces it. **Open for the owner:** delivery arms no taint.
+Nothing in the words came from outside, but board ids, commitment bands,
+quiet hours, seat holders and runs in flight enter the conversation without
+arming `private`, where a `kg_task_list` read of the same would arm it
+(review of #309; `docs/ARCHITECTURE.md` sets out both precedents and the
+cost of arming to the arm). The lever ships off until that is ruled. Two
 found building it: the experiment instrument
 runs trials through `mecha run`, which had no brief, so its two arms would
 have been one condition — `mecha run` now assembles, records and delivers
