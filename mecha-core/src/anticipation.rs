@@ -513,7 +513,8 @@ impl BoundEvidence {
 // ─── Calibration: every resolved prediction scored (X5, row 2b-1) ──────────
 
 impl Response {
-    /// Every variant, in the order a readout lists them.
+    /// Every variant. A readout lists them by wire name, not in this order;
+    /// `every_kind_and_response_is_in_all` keeps the list complete.
     pub const ALL: [Response; 4] = [
         Response::Proceed,
         Response::Verify,
@@ -523,7 +524,8 @@ impl Response {
 }
 
 impl Kind {
-    /// Every variant, in the order a readout lists them.
+    /// Every variant. A readout lists them by wire name, not in this order;
+    /// `every_kind_and_response_is_in_all` keeps the list complete.
     pub const ALL: [Kind; 6] = [
         Kind::Guilt,
         Kind::Embarrassment,
@@ -616,6 +618,15 @@ impl Calibrated {
 /// active one for it, and a clean outcome counts only on a confirmed
 /// delivery ([`crate::outbox::OutboxItem::delivery_confirmed`]). A concern
 /// that materialised needs no such check: the owner saw the harm.
+///
+/// **Only an owner-evidenced prediction is a forecast.** Staging records a
+/// `Source::Harness` prediction on every model-authored message, built from
+/// empty evidence when the run was given none: it always reads `clarify`
+/// and names no concern, so it encodes nothing about the draft. Counted in
+/// [`Calibration::harness_placeholders`] and in no row — pooled with the
+/// owner's assessments it doubled the coverage denominator, and a draft
+/// released without `outbox anticipate` scored its placeholder as a
+/// `clarify` point (found on review of #319).
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Calibration {
     /// Keyed by the response's wire name; every response is present, so a
@@ -628,6 +639,9 @@ pub struct Calibration {
     pub total: Calibrated,
     /// Prediction records this build cannot read — in no count above.
     pub unreadable: usize,
+    /// The harness's staging placeholders (`Source::Harness`) — in no count
+    /// above: not a forecast anyone made.
+    pub harness_placeholders: usize,
 }
 
 impl Calibration {
@@ -650,6 +664,10 @@ impl Calibration {
                     out.unreadable += 1;
                     continue;
                 };
+                if p.source == Source::Harness {
+                    out.harness_placeholders += 1;
+                    continue;
+                }
                 let (point, why) = score(item, p);
                 out.total.add(point, why);
                 if let Some(t) = out.by_response.get_mut(&name(&p.assessment.response)) {
@@ -711,6 +729,37 @@ fn strict_goal<'de, D: serde::Deserializer<'de>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A variant added to `Kind` or `Response` but not to its `ALL` would be
+    /// counted in the calibration's total and in no row, silently: the
+    /// exhaustive matches make a new variant a compile error here, where
+    /// the author then adds it to `ALL`, and the checks catch a duplicate
+    /// (review of #319, after `Lever::ALL`'s own guard).
+    #[test]
+    fn every_kind_and_response_is_in_all() {
+        for k in Kind::ALL {
+            match k {
+                Kind::Guilt
+                | Kind::Embarrassment
+                | Kind::Regret
+                | Kind::Disappointment
+                | Kind::Anxiety
+                | Kind::Curiosity => {}
+            }
+        }
+        for r in Response::ALL {
+            match r {
+                Response::Proceed | Response::Verify | Response::Clarify | Response::Replan => {}
+            }
+        }
+        let kinds: std::collections::BTreeSet<_> =
+            Kind::ALL.iter().map(crate::appraisal::enum_name).collect();
+        let responses: std::collections::BTreeSet<_> = Response::ALL
+            .iter()
+            .map(crate::appraisal::enum_name)
+            .collect();
+        assert_eq!((kinds.len(), responses.len()), (6, 4), "no duplicates");
+    }
     fn evidence() -> Evidence {
         Evidence {
             goal: Some(GoalRef::Task("meeting".into())),

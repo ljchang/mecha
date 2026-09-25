@@ -4776,6 +4776,12 @@ any rate** (`APPRAISAL-WIRING-DESIGN.md` X5, row 2b-1).
 `anticipation::Calibration::of` scores each prediction in the outbox by the
 response its assessment chose and by each concern kind it named.
 
+- **Only an owner-evidenced prediction is a forecast.** Staging writes a
+  `Source::Harness` placeholder from empty evidence on every model-authored
+  message. It always reads `clarify` and encodes nothing about the draft, so
+  it is counted in `harness_placeholders` and in no row. Pooled, it doubled
+  the coverage denominator, and a draft released without `outbox anticipate`
+  scored its placeholder as a `clarify` point (found on review of #319).
 - **A prediction is a point only when an outcome resolves it.** That means
   `prediction_resolution` is `Observed` — the prediction the draft was
   released under — and the active outcome names it.
