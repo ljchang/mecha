@@ -68,7 +68,12 @@ writing pass takes the store's writer lock *before* reading what has been mined,
 so two concurrent closes cannot mine the same session twice.
 
 `mecha reflect` also mines the [outbox](/docs/features/security/outbox): an item that was
-sent with edits yields a `writing`-domain reflection from `diff(staged, sent)`.
+sent with edits yields a `writing`-domain reflection from `diff(staged, sent)`,
+and a message draft you rejected **with a reason** (`mecha outbox reject <id>
+--reason "…"`) yields a `behavior`-domain reflection (trigger `reject`) from
+your words. When the draft was written while third-party content was in the
+conversation, the reflector sees only your reason and the tool name, never the
+draft.
 
 ### Reading the lessons before they are consolidated
 
@@ -417,6 +422,12 @@ mecha rules restore <id>
 mecha rules propose-retirements --min-attributed 3
 mecha rules propose-retirements --apply       # apply the measured verdict now
 ```
+
+`retire` and `restore` also append your verdict, against the rule's id, to
+`curation.jsonl` in the learning store — the one record that says *you* retired
+it (the retirement scan writes the same field) and that survives a restore.
+It is a verdict on the rule, never on any run; `mecha sessions appraise`
+counts it apart from the runs.
 
 `list` folds `validations.jsonl` into per-rule tallies and prints each rule's
 state, id, creation date, and what has been measured:

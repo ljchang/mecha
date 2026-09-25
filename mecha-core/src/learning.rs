@@ -493,6 +493,17 @@ impl Reflexion {
         if self.edited_at.is_some() {
             return Origin::Clean;
         }
+        self.provenance_as_mined()
+    }
+
+    /// [`Self::provenance`] without the owner's edit promotion: what the
+    /// *intervention* was, as the miner recorded it — the stored origin,
+    /// with a harness voice reclassified `Derived`. The appraisal reads this
+    /// one, because whether a follow-up was a correction is a fact about
+    /// the run, and the owner's later rewrite of the lesson is a verdict on
+    /// the reflector, never a run's score (R16g). Learning keeps reading
+    /// [`Self::provenance`]: there the promotion is the point.
+    pub fn provenance_as_mined(&self) -> Origin {
         match crate::agent::is_harness_voice(&self.intervention) {
             true => Origin::Derived,
             false => self.origin,
@@ -2569,6 +2580,16 @@ pub enum Trigger {
     /// producer consumes local planning metadata** — the firing implements
     /// phase C of the appraisal plan. See `extract_mismatches` for the producer.
     Mismatch,
+    /// The owner rejected an outbox draft **and said why**
+    /// (`APPRAISAL-WIRING-DESIGN.md` R16a): the reason reaches the reflector
+    /// as an owner correction. Like [`Trigger::Edit`], found in the outbox
+    /// item rather than a transcript, with no replayable intervention point.
+    /// It teaches `behavior` through the ordinary reflector — a rejection
+    /// says the draft should not have gone as it was, which is a correction
+    /// of what the assistant did, not only of its voice. It never signs an
+    /// appraisal error: the rejection already signs `-1.0` on the edit
+    /// channel, and the appraisal's reflection arm reads `followup` alone.
+    Reject,
 }
 
 impl Trigger {
@@ -2579,6 +2600,7 @@ impl Trigger {
             Trigger::Followup => "followup",
             Trigger::Edit => "edit",
             Trigger::Mismatch => "mismatch",
+            Trigger::Reject => "reject",
         }
     }
 
@@ -4915,7 +4937,12 @@ mod tests {
             system.contains("edit"),
             "the writing frame talks about edits"
         );
-        for t in [Trigger::Steer, Trigger::Denial, Trigger::Followup] {
+        for t in [
+            Trigger::Steer,
+            Trigger::Denial,
+            Trigger::Followup,
+            Trigger::Reject,
+        ] {
             let (system, domain) = reflector_frames(t);
             assert_eq!(domain, "behavior");
             assert_eq!(system, REFLECTOR_SYSTEM);
@@ -4924,6 +4951,7 @@ mod tests {
         assert_eq!(Trigger::Edit.domain(), "writing");
         assert_eq!(Trigger::Mismatch.domain(), "behavior");
         assert_eq!(Trigger::Mismatch.as_str(), "mismatch");
+        assert_eq!(Trigger::Reject.as_str(), "reject");
     }
 
     /// The writing domain consolidates with the writing frame; every other
