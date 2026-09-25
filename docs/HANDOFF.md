@@ -37,8 +37,9 @@ and phase 3's 3a (#309, behind a lever that ships off) followed the same
 day, then 2a-3 (#315), R34's closed-goal readout (#317), 3a-3 (#316,
 R35's arming and the fold as an append), 2c-2 (#320) and 2b-1 (#319). What
 each built is in HISTORY under 2026-09-24/25. `mecha` was reinstalled at
-21:01Z from `main` at `04b89ea0` and carries all of it but 2c-2 and 2b-1
-(*Machine state, dated* below). Six owner rulings of 2026-09-25 are rows R30–R35 of the design's
+21:01Z and carries all of it but 2c-2 and 2b-1: #316's and #317's literals
+are in the binary, and the build is reported as `04b89ea0` (*Machine
+state, dated* below). Six owner rulings of 2026-09-25 are rows R30–R35 of the design's
 §6. What is open, the follow-ups owed, the minors banked for the owner and
 the `CLAUDE.md` drift are at the top of *The goal system* below.
 The workspace on this branch merged with `8c0f5a9d` (no code differs from

@@ -45,7 +45,8 @@ as a `comparison::Comparison` (`~/.mecha/comparisons/`), keyed by situation,
 goal kind and call class, and written only for a clean session whose tool
 surface is still readable. **1d**, #299 (`9935f974`): the verdicts the owner
 already gives are read where they are recorded — closures and reopens (a
-reopen signs −1.0 at any age and withdraws the closure's +0.5), workflow
+reopen of a `done` closure signs −1.0 at any age and withdraws its +0.5; a
+reopened drop signs nothing), workflow
 close, cancel, reopen and failed verify, and a draft rejected with a reason
 (mined by the reflector in the owner's words) — and new `curation.rs` ledgers
 record rule and harness-candidate curation, which never moves a run's score
