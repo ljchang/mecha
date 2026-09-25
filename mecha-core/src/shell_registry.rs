@@ -466,11 +466,13 @@ pub enum Lookup {
 pub fn nearest_registered_ancestor_among(registries: &[ShellRegistry]) -> (Lookup, Option<usize>) {
     let me = std::process::id();
     if !ancestry_walkable() {
-        for (i, registry) in registries.iter().enumerate() {
-            match registry.lookup_checked(me) {
-                Lookup::Absent => {}
-                found => return (found, Some(i)),
-            }
+        // The same judgement `walk_from` makes at each pid, at the one pid
+        // this platform can name: a forged entry under a redirected
+        // `MECHA_HOME` must not win here either (review of #294).
+        match at_pid(registries, me) {
+            Err(answer) => return answer,
+            Ok(Some(e)) => return (Lookup::Registered(e), Some(0)),
+            Ok(None) => {}
         }
         for registry in registries {
             match registry.holds_live_entries() {
@@ -494,6 +496,40 @@ pub fn nearest_registered_ancestor_among(registries: &[ShellRegistry]) -> (Looku
     walk_from(registries, me, 64)
 }
 
+/// Every registry's reading at one pid, judged the way the closure guard
+/// needs it. `Err` is the answer the walk must stop with: an unreadable
+/// entry; an entry in any registry but this process's own that the own one
+/// does not corroborate (the harness registers under every guard home, so
+/// the same entry in a later registry agrees; one found only there, or a
+/// disagreeing one, is a redirect — `Some(i)` with `i > 0`); or an own entry
+/// whose posture is not `interactive`. `Ok(Some)` is an interactive entry in
+/// this process's own registry; `Ok(None)`, nothing at this pid.
+fn at_pid(
+    registries: &[ShellRegistry],
+    pid: u32,
+) -> std::result::Result<Option<Entry>, (Lookup, Option<usize>)> {
+    let mut own: Option<Entry> = None;
+    for (i, registry) in registries.iter().enumerate() {
+        match registry.lookup_checked(pid) {
+            Lookup::Absent => {}
+            Lookup::Unreadable(why) => return Err((Lookup::Unreadable(why), Some(i))),
+            Lookup::Registered(e) if i == 0 => own = Some(e),
+            Lookup::Registered(e) => {
+                let agrees = own.as_ref().is_some_and(|o| o.posture == e.posture);
+                if !agrees {
+                    return Err((Lookup::Registered(e), Some(i)));
+                }
+            }
+        }
+    }
+    match own {
+        Some(e) if e.posture() != Ok(RunPosture::Interactive) => {
+            Err((Lookup::Registered(e), Some(0)))
+        }
+        own => Ok(own),
+    }
+}
+
 /// The walk behind [`nearest_registered_ancestor_among`] on a platform that
 /// can walk: from `start`, at most `depth` processes.
 ///
@@ -515,29 +551,12 @@ fn walk_from(registries: &[ShellRegistry], start: u32, depth: usize) -> (Lookup,
     let mut pid = start;
     let mut nearest: Option<(Entry, usize)> = None;
     for _ in 0..depth {
-        // Every registry at this pid. The harness registers a command under
-        // every guard home (`write_roots`), so the same entry in a later
-        // registry corroborates the one in this process's own; an entry
-        // only in a later one, or one that disagrees, is a redirect.
-        let mut own: Option<Entry> = None;
-        for (i, registry) in registries.iter().enumerate() {
-            match registry.lookup_checked(pid) {
-                Lookup::Absent => {}
-                Lookup::Unreadable(why) => return (Lookup::Unreadable(why), Some(i)),
-                Lookup::Registered(e) if i == 0 => own = Some(e),
-                Lookup::Registered(e) => {
-                    let agrees = own.as_ref().is_some_and(|o| o.posture == e.posture);
-                    if !agrees {
-                        return (Lookup::Registered(e), Some(i));
-                    }
-                }
+        match at_pid(registries, pid) {
+            Err(answer) => return answer,
+            Ok(Some(e)) => {
+                nearest.get_or_insert((e, 0));
             }
-        }
-        if let Some(e) = own {
-            if e.posture() != Ok(RunPosture::Interactive) {
-                return (Lookup::Registered(e), Some(0));
-            }
-            nearest.get_or_insert((e, 0));
+            Ok(None) => {}
         }
         pid = match crate::closure::parent_of_checked(pid) {
             Ok(Some(parent)) => parent,
@@ -579,6 +598,43 @@ pub fn nearest_registered_ancestor(registry: &ShellRegistry) -> Lookup {
 
 #[cfg(test)]
 mod tests {
+
+    /// The judgement at one pid, which the off-Linux branch uses at the only
+    /// pid it can name — ungated, so macOS CI measures it (review of #294:
+    /// that branch took the first registry's entry, and a forged
+    /// `interactive` under a redirected `MECHA_HOME` won there).
+    #[test]
+    fn at_one_pid_a_forged_entry_does_not_outrank_the_real_one() {
+        let base = std::env::temp_dir().join(format!("mecha-atpid-{}", uuid::Uuid::new_v4()));
+        let (mine, real) = (
+            ShellRegistry::open(base.join("mine")).unwrap(),
+            ShellRegistry::open(base.join("real")).unwrap(),
+        );
+        let me = std::process::id();
+        let _real = real
+            .register(me, Some(RunPosture::Delegated), None)
+            .unwrap();
+        let _forged = mine
+            .register(me, Some(RunPosture::Interactive), None)
+            .unwrap();
+        let both = [mine, real];
+        assert!(
+            matches!(at_pid(&both, me), Err((Lookup::Registered(_), Some(1)))),
+            "a disagreeing entry in the real registry is a redirect"
+        );
+        let [mine, real] = both;
+        drop(_real);
+        let corroborated = real
+            .register(me, Some(RunPosture::Interactive), None)
+            .unwrap();
+        let both = [mine, real];
+        assert!(
+            matches!(at_pid(&both, me), Ok(Some(_))),
+            "the same entry corroborates"
+        );
+        drop(corroborated);
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     /// A walk that runs out of steps before the chain ends has not found
     /// "no registered shell"; it has not looked (review of #294). Depth 0 is

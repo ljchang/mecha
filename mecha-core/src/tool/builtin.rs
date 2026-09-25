@@ -584,7 +584,15 @@ impl Tool for Shell {
                 .map(crate::shell_registry::ShellRegistry::open)
                 .collect::<Result<Vec<_>>>()
         }) {
-            Ok(r) => r,
+            // No registry to write to is no protection: refused like one
+            // that could not be opened (review of #294).
+            Ok(r) if !r.is_empty() => r,
+            Ok(_) => {
+                return Ok(ToolOutput::err(
+                    "refusing to run: no shell registry to register the command in. \
+                     Nothing was executed.",
+                ))
+            }
             Err(e) => {
                 return Ok(ToolOutput::err(format!(
                     "refusing to run: the shell registry could not be opened ({e:#}). \
