@@ -73,19 +73,9 @@ pub const DEFAULT_POINTS: usize = 8;
 /// tunnel listening on loopback passes, as `imagegen::loopback_url` allows —
 /// the operator built it on purpose, and no URL can reveal it.
 pub fn on_this_machine(base_url: Option<&str>) -> bool {
-    let Some(url) = base_url.and_then(|u| reqwest::Url::parse(u).ok()) else {
-        return false;
-    };
-    match url
-        .host_str()
-        .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
-    {
-        Some(host) => match host.parse::<std::net::IpAddr>() {
-            Ok(ip) => ip.is_loopback(),
-            Err(_) => host.eq_ignore_ascii_case("localhost"),
-        },
-        None => false,
-    }
+    base_url
+        .and_then(|u| reqwest::Url::parse(u).ok())
+        .is_some_and(|url| crate::imagegen::is_loopback(&url))
 }
 
 /// What kind of decision point, which fixes the comparison's [`Kind`] and
@@ -230,6 +220,15 @@ pub fn points_in(session_id: &str, messages: &[Message], drafts: &[&OutboxItem])
         let Some(feedback) = &message.planning else {
             continue;
         };
+        // **One point per moment, not per step.** A comparison's pointers
+        // name a message and a call, never a step, so two steps of one kind
+        // on one message anchored to the same call (or to none — the todo
+        // tool files a tampered check with no call id) are one decision the
+        // model made, and would store as one row anyway: the second would
+        // read as "already compared" when it was never measured (found on
+        // review). Of such steps a failed owner-bound criterion is kept
+        // over a declared check, since it is the one a validator can pose.
+        let mut kept: Vec<(PointKind, Option<&str>, usize)> = Vec::new();
         for (step, f) in feedback.steps.iter().enumerate() {
             let kind = if f.learnable_failure() {
                 PointKind::FailedCheck
@@ -238,11 +237,21 @@ pub fn points_in(session_id: &str, messages: &[Message], drafts: &[&OutboxItem])
             } else {
                 continue;
             };
+            let anchor = f.call_id.as_deref();
+            match kept.iter_mut().find(|(k, a, _)| *k == kind && *a == anchor) {
+                Some(slot) => {
+                    let owner_bound = |i: usize| feedback.steps[i].criterion.is_some();
+                    if !owner_bound(slot.2) && owner_bound(step) {
+                        slot.2 = step;
+                    }
+                }
+                None => kept.push((kind, anchor, step)),
+            }
+        }
+        for (kind, anchor, step) in kept {
             // The call the feedback names, when the transcript still holds
             // it; the plan tool otherwise, as the mismatch miner records.
-            let tool = f
-                .call_id
-                .as_deref()
+            let tool = anchor
                 .and_then(|id| call_named(messages, id))
                 .unwrap_or_else(|| "todo".to_string());
             out.push(Point {
@@ -556,6 +565,57 @@ mod tests {
             tools(PointKind::Denial).last().map(String::as_str),
             Some("fs_write"),
             "the refused tool is the focus"
+        );
+    }
+
+    /// Two steps of one kind on one message, anchored to the same call or
+    /// to none, are one moment and one point — not two points of which the
+    /// store would keep the first and call the second "already compared".
+    /// Of such steps the owner-bound criterion is kept; a step anchored to
+    /// another call is its own point.
+    #[test]
+    fn steps_on_one_moment_are_one_point_and_the_owner_bound_one_is_kept() {
+        let tampered = |call: Option<&str>| StepFeedback {
+            call_id: call.map(String::from),
+            check_tampered: true,
+            ..step(Verification::Passed, None, None)
+        };
+        let owner_bound = StepFeedback {
+            criterion: Some(crate::mismatch::CriterionFeedback {
+                id: "result".into(),
+                artifact: "answer.json".into(),
+                pointer: "/ok".into(),
+                context: None,
+            }),
+            call_id: None,
+            ..step(Verification::Failed, None, None)
+        };
+        let mut feedback = Message::tool_results(vec![result("t5", "done")]);
+        feedback.planning = Some(Feedback {
+            steps: vec![
+                tampered(None),
+                tampered(None),
+                owner_bound,
+                tampered(Some("t5")),
+            ],
+            ..Default::default()
+        });
+        let messages = vec![
+            Message::user("total the quarter"),
+            Message::assistant(vec![tool_use("t5", "todo", json!({"op": "complete"}))]),
+            feedback,
+        ];
+        let points = points_in("s-ada", &messages, &[]);
+        let steps: Vec<(PointKind, &Locator)> =
+            points.iter().map(|p| (p.kind, &p.locator)).collect();
+        assert_eq!(
+            steps,
+            vec![
+                (PointKind::FailedCheck, &Locator::Step { step: 2 }),
+                (PointKind::FailedCheck, &Locator::Step { step: 3 }),
+            ],
+            "three unanchored steps are one moment, the owner-bound one kept; \
+             the anchored one is its own"
         );
     }
 

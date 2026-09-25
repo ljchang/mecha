@@ -3924,7 +3924,11 @@ through the store above (a `point-*` `Kind` per point kind).
   item — model-authored, `OutboxKind::Message`, anchored by its recorded
   `call_id`, and for an edit only when the edit survives `draft_form` (a
   whitespace edit separates nothing; a draft sent unchanged is approval, not
-  a point).
+  a point). **A point is a moment, not a step**: a comparison's pointers
+  name a message and a call, so steps of one kind on one message anchored
+  to the same call (or none) are one point, the owner-bound criterion kept
+  over a declared check — two would store as one row and the second would
+  read "already compared" without ever being measured (found on review).
 - **The owner's recorded verdict decides, through a structural validator
   only** (R27). Steer and denial reuse `StructuralSteer`/`StructuralDenial`.
   A draft point is `ProbeKind::Draft`, branched like a denial (the whole
@@ -3951,7 +3955,8 @@ through the store above (a `point-*` `Kind` per point kind).
   `HORIZON_TURNS` (4; the recording's own `max_turns` when lower), replayed
   under `Stop` like every probe. An arm that could not be driven loses the
   point: a comparison with a missing arm is a failed attempt, not a
-  comparison.
+  comparison, counted `drive_failed` (paid for) apart from `unavailable`
+  (refused before any seat or budget is spent).
 - **Drawn uniformly, charged per driven point.** The pool (clean sessions
   only — the store's taint rule asked at collection, its surface rule asked
   of the prepared point, both before any seat is taken) is sorted by
