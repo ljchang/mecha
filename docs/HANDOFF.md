@@ -31,8 +31,8 @@ record of where it stands. What remains after it, in the design's order
 (§9): step 4, ComfyUI's temp-file cleanup, until which `image_generate`
 stays withheld from an incognito chat (R6); step 5, the page (a
 New-incognito button, the banner, End, the locked permission chip, no
-voice — the search notice is step 3's, inside #321); step 6, the canary test carried through the
-page; and step 7, unrecorded reads in
+voice — the search notice is step 3's, inside #321); step 6, the canary test — written with step 1 and in #321, green
+in full only once step 5 lands; and step 7, unrecorded reads in
 mecha-graph (another repository), until which the graph stays withheld —
 every graph read logs its query text. Parked for the owner: a reload
 banner for a phone holding a stale bundle after a deploy (a refresh fixed
@@ -40,8 +40,8 @@ the one case seen); `mecha-core` pins `sha2 = "0.11"` in its own
 `Cargo.toml`, where a review minor would have it a workspace dependency;
 `comfyui.service` living only in `~/.config/systemd/user/`, where a review
 note suggests a copy in `scripts/` beside `start-moe-mtp.sh`; and a race between spawning a
-shell and registering it, seen as a flaky test and not fixed in product
-code.
+shell and registering it (`shell_registry::ShellRegistry`), seen as a flaky test and not
+fixed in product code. Also owed with #321's merge: its HISTORY entry.
 
 **2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2a-3, 2c-1, 2d-1,
 3a and 3a-3 merged and installed, with R34's readout; 2c-2 and 2b-1
