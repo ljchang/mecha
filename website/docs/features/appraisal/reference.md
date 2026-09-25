@@ -535,8 +535,7 @@ in it to put on a board.
 
 ## The paid pass
 
-Both are off by default, both are independent of each other, and both have their
-own ceiling.
+`--probe` is off by default and has its own ceiling.
 
 ### `--probe` — the counterfactual
 

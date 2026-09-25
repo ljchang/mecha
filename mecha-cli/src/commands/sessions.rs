@@ -87,7 +87,7 @@ pub enum Args {
 
         /// Print every text appraisal on record, newest first (`-n` caps
         /// how many).
-        #[arg(long, conflicts_with_all = ["probe", "appraise"])]
+        #[arg(long, conflicts_with = "probe")]
         text: bool,
 
         /// Only sessions started in the last N days.
