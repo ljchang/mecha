@@ -529,6 +529,16 @@ impl ComfyUi {
             );
         }
         let answer: Value = serde_json::from_str(&text)?;
+        // The server says which directory it used. Only temp is emptied when
+        // it starts; anywhere else, a private photo would outlive this call
+        // with nothing to clear it (found on review of #306).
+        let kind = answer.get("type").and_then(Value::as_str).unwrap_or("");
+        if kind != "temp" {
+            bail!(
+                "the image server filed {} as `{kind}` rather than temp, where nothing clears it",
+                reference.path
+            );
+        }
         if answer
             .get("subfolder")
             .and_then(Value::as_str)
@@ -1155,7 +1165,7 @@ mod tests {
         history: Vec<Value>,
         prompt_status: &'static str,
     ) -> (String, Arc<Mutex<Vec<String>>>) {
-        fake_running(history, prompt_status, true).await
+        fake_running(history, prompt_status, true, "temp").await
     }
 
     /// As [`fake`], with `GET /queue` reporting `job-1` as running or not —
@@ -1164,6 +1174,7 @@ mod tests {
         history: Vec<Value>,
         prompt_status: &'static str,
         running: bool,
+        upload_type: &'static str,
     ) -> (String, Arc<Mutex<Vec<String>>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1238,7 +1249,7 @@ mod tests {
                     } else if path.starts_with("/view?") {
                         reply("200 OK", "image/png", PNG)
                     } else if path == "/upload/image" {
-                        json_reply(json!({"name": "up.png", "subfolder": "", "type": "temp"}))
+                        json_reply(json!({"name": "up.png", "subfolder": "", "type": upload_type}))
                     } else if line.starts_with("GET /queue") {
                         let now = if running { "job-1" } else { "someone-else" };
                         json_reply(
@@ -1579,7 +1590,7 @@ mod tests {
         // `job-1` is queued behind another call's job. Cancelling it must take
         // it off the queue and leave the running job alone — an older server
         // ignores `/interrupt`'s body and would stop whatever is executing.
-        let (url, seen) = fake_running(vec![], "200 OK", false).await;
+        let (url, seen) = fake_running(vec![], "200 OK", false, "temp").await;
         let dir = tempdir();
         let token = CancellationToken::new();
         let mut c = ctx(&dir);
@@ -1889,6 +1900,34 @@ mod tests {
             out.is_error && out.content.contains("pipe.png"),
             "{}",
             out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn an_upload_filed_anywhere_but_temp_stops_the_job() {
+        let (url, seen) = fake_running(vec![done()], "200 OK", true, "input").await;
+        let dir = tempdir();
+        std::fs::write(dir.join("me.png"), PNG).unwrap();
+        let out = tool(&url)
+            .call(
+                json!({"prompt": "edit", "reference_images": ["me.png"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("rather than temp"),
+            "{}",
+            out.content
+        );
+        assert!(
+            !seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.starts_with("POST /prompt")),
+            "a job ran on a reference the server kept"
         );
         std::fs::remove_dir_all(dir).ok();
     }
