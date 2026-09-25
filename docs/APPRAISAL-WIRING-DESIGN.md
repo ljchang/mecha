@@ -515,7 +515,11 @@ widening.
 **Every ruling is settled** (2026-09-24; R30–R33 on 2026-09-25), except the
 parked items (R3, R8), the flag (R9), the deferred R7, the declined R2 and
 R29, which is not proposed.
-Phase 5's R28 waits on the bubblewrap upgrade, an ops step.
+Phase 5's R28 waited on the bubblewrap upgrade, an ops step; the workstation
+has run bubblewrap 0.13.0 from `/usr/local/bin` since 2026-09-25
+(`bwrap --version`, and #295 measured under it), so the prerequisite is met;
+both halves, the `--overlay` mount and the file tools' copy-on-write layer,
+are unbuilt.
 
 ---
 
