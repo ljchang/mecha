@@ -2,7 +2,9 @@
 
 **Status: designed and ruled 2026-09-24. Phase 1 (1a–1i) is built, merged and
 installed; phase 2 has begun with 2a-1, the text-appraisal store** (here §3,
-"Phase 2 as pull requests"). The rulings each phase waits on are in here §6. The evidence behind every claim here — what exists, what
+"Phase 2 as pull requests"). What each phase-1 row built, by PR, is in
+[`HISTORY.md`](HISTORY.md) under 2026-09-24/25, and what is open in
+`HANDOFF.md`'s goal-system section. The rulings each phase waits on are in here §6. The evidence behind every claim here — what exists, what
 reads it, what has been measured — is
 [`APPRAISAL-INVENTORY-RESEARCH.md`](APPRAISAL-INVENTORY-RESEARCH.md)
 (cited as *inventory §N*). `GOAL-SYSTEM-DESIGN.md` designs the signals and
@@ -341,11 +343,11 @@ with a `mecha exp` arm against EXPERIMENT-DESIGN §15's appraisal-off preset
 | PR | scope | proposals | depends on | acceptance |
 |---|---|---|---|---|
 | **2a-1** | **The text-appraisal record and store.** `appraisals.jsonl` beside the graph episode: one bounded interpretation, good/bad per goal, the claims it rests on (each a pointer and a quote), a prediction, goal hypotheses, lessons — labels only as words in the prose, no scalar. The write door grounds each claim through `grounding::admit` against what the run received (call results, the owner's turns — never the agent's own words) and drops, before storage, any that does not dereference, counting it by reason on the record; it stamps the taint and `Origin` read off the transcript, failing closed; a tainted run's appraisal is stored. Two read doors: `clean()` returns `Clean`, a type only the store can make, for learning, retrieval, credit and tenure; `for_owner()` returns every record. The graph episode's text pinned. `sessions appraise` counts the store. No producer. | I1, R17, R18, R19 | — | an appraisal of a clean fixture session reads back through a fresh handle via the clean door; one of a tainted session is stored and never returned by it; a claim whose pointer does not dereference is dropped before storage and counted; old and unknown variants load leniently, an unreadable origin as untrusted |
-| **2a-2** | **The distiller, extended, writes the appraisal** — in shadow: the store gains its producer and nothing reads it but the owner. New inputs to the pass: the goal chain and the charter's text (the anchor, 1h's recorded goal chain); the recorded brief at start and the homeostat at finish (1h); the owner's acts on the output — release, edit diff, reject reason (R16a), closure and reopen (1b, 1d); the signed errors (`appraisal::of_session`); step findings and the session's stored comparisons (1g); up to three past clean appraisals of the same situation and goal, through `Clean` only. The transcript it reads carries the referent ids the store dereferences (`result:<id>`, `turn:<n>`); a quote is a span of the whole result, not of the 300-character clip the renderer shows today. Judgments' goal references are resolved against `distill::KnownPointers` before recording. Runs where `distill` already runs, on the local model (R29), under a permit. The owner's readout of the prose (every appraisal, control characters stripped). | I1, I4, R18, R25, R29 | 2a-1 | on clean and tainted fixture sessions with a fixture model, each appraisal lands behind the right door; a past clean appraisal of the same situation reaches the next session's input and a tainted one never does; both R25 pins pass (see the open question below); seconds of a seat per session measured on real sessions |
+| **2a-2** | **The distiller, extended, writes the appraisal** — in shadow: the store gains its producer and nothing reads it but the owner. New inputs to the pass: the goal chain and the charter's text (the anchor, 1h's recorded goal chain); the recorded brief at start and the homeostat at finish (1h); the owner's acts on the output — release, edit diff, reject reason (R16a), closure and reopen (1b, 1d); the signed errors (`appraisal::of_session`); step findings and the session's stored comparisons (1g); up to three past clean appraisals of the same situation and goal, through `Clean` only. The transcript it reads carries the referent ids the store dereferences (`result:<id>`, `turn:<n>`); a quote is a span of the whole result, not of the 300-character clip the renderer shows today. Judgments' goal references are resolved against `distill::KnownPointers` before recording. Runs where `distill` already runs, on the local model (R29), under a permit. The owner's readout of the prose (every appraisal, control characters stripped). | I1, I4, R18, R25, R29 | 2a-1 | on clean and tainted fixture sessions with a fixture model, each appraisal lands behind the right door; a past clean appraisal of the same situation reaches the next session's input and a tainted one never does; both R25 pins pass (the prompt stays byte-identical, R32); seconds of a seat per session measured on real sessions |
 | **2a-3** | **The counts-only appraiser retired into it.** `sessions appraise --appraise` and `appraise_with_model` go; the counts it read (`AppraiserEvidence`) are already 2a-2's input as signed errors. Records carrying `channel: appraisal` / `cite: appraiser` still load and count. | I1, R25 | 2a-2 | no second model pass reads a session for the label; an old record with an appraiser error loads and is counted |
 | **2a-4** | **The reflector folded in** — only after 2e-1 measures its lessons no worse (R25). A reflection is an appraisal of a correction: the same pass writes both, still as a `Reflexion` with its `Origin`, so `learn`'s input and gate keep their shape. | I1, R25 | 2a-2, 2e-1 | 2e-1's measurement is on record; model passes per session fall from two to one; the learning store's provenance gate is unchanged (its tests pass untouched) |
 | **2b-1** | **Anticipation's predictions scored.** Every `Prediction` an `Outcome` resolves is a calibration point per kind; coverage is reported, never a calibration figure while outcomes are absent; a delivery positive only after `outbox reconcile`. | X5 | 1d | a fixture store with resolved and unresolved predictions reports coverage per kind and no rate over nothing |
-| **2b-2** | **The appraisal's own prediction scored** when the same situation and goal next come round; a miss is a surprise, recorded for 2e-6's priority. Needs a structural scorer first (open question below). | X5 | 2a-2, 2b-1 | a fixture pair of sessions scores a hit and a miss by the structural scorer; a model never decides a score (R27) |
+| **2b-2** | **The appraisal's own prediction scored** when the same situation and goal next come round; a miss is a surprise, recorded for 2e-6's priority. The structural scorer is the closed-set expected owner act of R33. | X5 | 2a-2, 2b-1 | a fixture pair of sessions scores a hit and a miss by the structural scorer; a model never decides a score (R27) |
 | **2c-1** | **The goal joins `Situation`** as a recorded and scope key — recording, matching, replay and validation in one change; an absent goal never widens a scope. | M1 | 1a | the scope-key tests cover the goal on every door; a rule mined with no goal still matches as before |
 | **2c-2** | **Past clean appraisals retrieved.** `goal_context` serves up to three clean appraisals of the same situation and goal, on demand, never pushed — through `Clean` only. Measured against a control at matched budget, since retrieved memory can cost more than it returns. | I2 | 2a-2, 2c-1 | a clean appraisal of a matching session is served and a tainted one never is; the lever's arm runs against the control |
 | **2d-1** | **Point-wise comparison at informative decision points.** At a steer, a denial, a failed check, an edited or rejected draft, a surprise: `probe::drive_arm` runs K policies a short horizon from the point, and the owner's recorded verdict decides (new: a branch's draft against the released text). Each writes a 1g `Comparison` of a new kind. Points drawn uniformly until 2e-6 ranks them. | O1, R26, R27 | 1g | fixture points of each kind leave comparisons a second read returns; a point whose verdict no structural validator can pose is inconclusive, never judged |
@@ -367,7 +369,8 @@ by door, claims dropped by grounding, lessons validated by source — goes in
 `sessions appraise` from the PR that first produces each number, as
 phase 1's did.
 
-**Two questions this plan does not settle, for the owner:**
+**Two questions this plan did not settle, both since ruled by the owner
+(2026-09-25; here §6, R32 and R33):**
 
 1. **What R25 pins, and whether decision 4's "no extra model call" still
    holds.** The graph extracts facts from the episode, which is the model's
@@ -378,14 +381,18 @@ phase 1's did.
    (the episode unchanged, one more generation, no second prefill). 2a-1
    pins both the body pushed and the prompt's hash
    (`the_distillers_episode_prompt_is_pinned`), so the choice is made by a
-   ruling and not by a test update.
+   ruling and not by a test update. *Ruled (R32):* the follow-up turn on
+   the same cached prefix. `DISTILLER_SYSTEM` stays byte-identical, and the
+   extra model call is taken deliberately over changing the episode's text.
 2. **How a text prediction is scored.** X5 as written scores anticipation's
    typed predictions. A free-text prediction has no structural validator,
    and R27 lets a model judge at most break a tie. One shape that would fit:
    a closed-set expectation beside the prose — an owner act from R16's table
    (released unchanged, edited, rejected, closed `done`, reopened, no act) —
    scored against the owner's recorded act. 2a-1's record is a wire format,
-   so the field can be added by 2a-2 without migrating anything.
+   so the field can be added by 2a-2 without migrating anything. *Ruled
+   (R33):* that shape. A closed-set expected owner act from R16's set sits
+   beside the prose, and 2b-2 scores it structurally.
 
 ### Phase 3 — Meaning in the run
 
@@ -500,9 +507,14 @@ widening.
 | R8 | parked | The harness may *propose* per-region autonomy grants | parked |
 | R29 | — | Sending transcripts to a cloud model for interpretation or rollouts | not proposed; the owner's privacy decision |
 | R9 | — | The charter line `be-the-best`: unboundedness is fine (lines are attractors); §15's narrower worry is a line whose object is the harness, held by the `Security` class | flagged once |
+| R30 | 1 | The graph TUI closes and reopens through mecha's closure event only when the owner's install opts in (`[board] close_through` in `~/.mecha-graph/config.toml`); opted in, it fails closed, refusing with nothing written when mecha is missing or the TUI is not on the default database; not opted in, standalone mecha-graph keeps its direct write. Option A3 of #300's five, not the catalogue's A3 | **ruled 2026-09-25**; built as mecha-graph#21 |
+| R31 | 1 | Commitments: new writes only, no migration — new predictions write `workflow::Commitment`, old shapes stay on disk and read leniently. Its `due_at` and `follow_up_at` are optional, an absent one meaning "no deadline stated"; the harness never derives a date, and dates the owner wrote on evidence pass through (S7) | **ruled 2026-09-25**, the dates refined on review of #304; built as 1f-2 (#304) |
+| R32 | 2 | What R25 pins: 2a-2's appraisal comes from a follow-up turn on the same cached prefix, so `DISTILLER_SYSTEM` and the episode stay byte-identical; the extra model call is taken deliberately over changing the episode's text (here §3, the first of phase 2's two questions) | **ruled 2026-09-25** |
+| R33 | 2 | How a text prediction is scored (2b-2): a closed-set expected owner act from R16's set sits beside the prose and is scored structurally against the act the owner records (here §3, the second question) | **ruled 2026-09-25** |
 
-**Every ruling is settled** (2026-09-24), except the parked items (R3, R8), the
-flag (R9), the deferred R7, the declined R2 and R29, which is not proposed.
+**Every ruling is settled** (2026-09-24; R30–R33 on 2026-09-25), except the
+parked items (R3, R8), the flag (R9), the deferred R7, the declined R2 and
+R29, which is not proposed.
 Phase 5's R28 waits on the bubblewrap upgrade, an ops step.
 
 ---
@@ -594,7 +606,9 @@ proposals are at the end.
   same branch, asking whether the steer was load-bearing — `regret` if the
   unsteered replay went elsewhere, `disappointment` if it got there anyway.
   **Computed on demand and discarded**: the appraisal is never stored, so a
-  verdict that cost a model run lives only in one readout.
+  verdict that cost a model run lives only in one readout. *(Stored since
+  1g, #298: each driven probe writes a `comparison::Comparison`; see
+  HISTORY, 2026-09-24/25.)*
 - **Harness rumination**: paired replay of a config candidate against the
   current harness, gated by `candidate::judge`.
 - **Artifact probes** (`probe::prepare_mismatch`): a reflection's lesson

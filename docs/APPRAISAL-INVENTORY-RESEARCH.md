@@ -1,5 +1,12 @@
 # The appraisal system as built — inventory, readers and the measured record
 
+*Addendum, 2026-09-25:* phase 1 of `APPRAISAL-WIRING-DESIGN.md` has since
+built several things this inventory records as missing — structural goal
+anchors, the closure record, stored steer-probe and validation verdicts,
+the owner's verdicts read, per-item readings, guilt per commitment and the
+recorded situation brief. The inventory below is as of its research date;
+what shipped is in [`HISTORY.md`](HISTORY.md) under 2026-09-24/25.
+
 Researched 2026-09-24 against `main` at `b6cfa73c`, refreshed at `9eea04e7`.
 One question: **what appraisal-related functionality exists across mecha and
 its sibling repositories, what reads each signal, and what has been
