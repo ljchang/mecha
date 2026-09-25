@@ -75,6 +75,37 @@ pub enum ProbeKind {
     Steer,
     /// The user refused a call. Pass iff the replay never repeats it.
     Denial { name: String, input: Value },
+    /// The run staged a draft the owner then rewrote or rejected
+    /// (`APPRAISAL-WIRING-DESIGN.md` O1, row 2d-1). The branch cuts before
+    /// the assistant turn that proposed the staging call, as a denial's
+    /// does, and [`draft_verdict`] grades what the arm drafts against what
+    /// the owner did. `staged` and the owner's released text are held in
+    /// memory for the length of the probe and never written anywhere: the
+    /// comparison record carries no text.
+    Draft {
+        /// The staging tool, by registry name.
+        tool: String,
+        /// The draft as the run staged it (`OutboxItem::args_before`).
+        staged: Value,
+        owner: OwnerAct,
+        /// The staging tool's recorded input schema, for the defaults the
+        /// loop pins into a staged call (`tool::with_schema_defaults`). A
+        /// replayed call carries the model's raw input and the stored draft
+        /// the pinned one; without the same fill, an arm that wrote the
+        /// owner's words would read as a different draft.
+        schema: Value,
+    },
+}
+
+/// What the owner did with a staged draft — the recorded verdict a draft
+/// point is graded against.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OwnerAct {
+    /// Sent after rewriting it: the arguments the release executed
+    /// (`OutboxItem::args`).
+    Released(Value),
+    /// Rejected: nothing was sent.
+    Rejected,
 }
 
 fn calls_before(messages: &[Message], m: usize) -> usize {
@@ -157,7 +188,10 @@ pub fn branch_at(messages: &[Message], point: &ProbePoint) -> Option<Branch> {
                 call_base: point.call_index,
             })
         }
-        ProbeKind::Denial { .. } => {
+        // A draft's staging call is a call the model *proposed*, like a
+        // refused one, so its branch regenerates the whole turn too: the
+        // question is what the arm would have drafted there.
+        ProbeKind::Denial { .. } | ProbeKind::Draft { .. } => {
             let a = assistant_holding(messages, point.call_index)?;
             Some(Branch {
                 seed: messages[..a].to_vec(),
@@ -240,6 +274,47 @@ pub fn locate_denial(messages: &[Message], reason: &str) -> Option<ProbePoint> {
     None
 }
 
+/// Locate a draft's staging call by the `tool_use` id the outbox recorded
+/// for it (`OutboxItem::call_id`) — identity by the harness's own anchor,
+/// never by matching the draft's text, which the loop's pinned defaults make
+/// differ from the recorded input (`outbox_source`'s lesson).
+///
+/// `message_index` is the assistant turn that proposed the call: the owner's
+/// verdict arrived outside the transcript, so there is no user message to
+/// point at. `None` when the id is absent or names a call to another tool —
+/// a point that does not fit its transcript is skipped, never graded.
+pub fn locate_staging(
+    messages: &[Message],
+    call_id: &str,
+    tool: &str,
+    staged: Value,
+    owner: OwnerAct,
+    schema: Value,
+) -> Option<ProbePoint> {
+    for (a, msg) in messages.iter().enumerate() {
+        if msg.role != Role::Assistant || msg.harness {
+            continue;
+        }
+        let uses = msg.tool_uses();
+        if let Some(offset) = uses.iter().position(|(id, _, _)| *id == call_id) {
+            if uses[offset].1 != tool {
+                return None;
+            }
+            return Some(ProbePoint {
+                message_index: a,
+                call_index: calls_before(messages, a) + offset,
+                kind: ProbeKind::Draft {
+                    tool: tool.to_string(),
+                    staged,
+                    owner,
+                    schema,
+                },
+            });
+        }
+    }
+    None
+}
+
 /// Truncate a transcript to the end of the run containing message `m`: the
 /// slice ends just before the next top-level user turn (one with no tool
 /// results). Later turns are a different question, and replaying them would
@@ -282,6 +357,12 @@ pub fn verdict(report: &ReplayReport, point: &ProbePoint) -> ProbeVerdict {
     match &point.kind {
         ProbeKind::Steer => steer_verdict(report, point),
         ProbeKind::Denial { name, input } => denial_verdict(report, point, name, input),
+        ProbeKind::Draft {
+            tool,
+            staged,
+            owner,
+            schema,
+        } => draft_verdict(report, point, tool, staged, owner, schema),
     }
 }
 
@@ -347,6 +428,99 @@ fn denial_verdict(
         ProbeVerdict::Fail
     } else {
         ProbeVerdict::Pass
+    }
+}
+
+/// A draft's arguments in the form two drafts are compared in: the schema's
+/// declared defaults filled (the loop's own pinning, so a raw replayed call
+/// and a stored draft meet on equal terms), `null` dropped (an omitted
+/// argument, as the fill reads it), and every string's whitespace runs
+/// collapsed to one space and trimmed. Nothing else — no case folding, no
+/// reordering, no similarity: a closed, fixed function a model's output
+/// cannot move.
+pub fn draft_form(schema: &Value, args: &Value) -> Value {
+    fn norm(v: &Value) -> Value {
+        match v {
+            Value::String(s) => Value::String(s.split_whitespace().collect::<Vec<_>>().join(" ")),
+            Value::Array(items) => Value::Array(items.iter().map(norm).collect()),
+            Value::Object(map) => Value::Object(
+                map.iter()
+                    .filter(|(_, v)| !v.is_null())
+                    .map(|(k, v)| (k.clone(), norm(v)))
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+    // Nulls out first, so an explicit `null` is filled like an absent key.
+    norm(&crate::tool::with_schema_defaults(schema, &norm(args)).0)
+}
+
+/// Grade one replayed arm at a draft point against the owner's recorded act.
+///
+/// **An arm passes only by producing the outcome the owner chose, fails only
+/// by producing the one the owner refused, and anything the owner never saw
+/// is inconclusive** — the rule that makes this validator structural rather
+/// than a similarity score a model could climb:
+///
+/// - **Released after an edit.** The arm's first call to the staging tool,
+///   in [`draft_form`], equal to the released arguments passes; equal to the
+///   draft the owner rewrote fails. Any other text — a rewording, however
+///   close — is a draft the owner never judged, so it is inconclusive, and
+///   so is an arm that stages nothing (the owner never judged a run that
+///   sends nothing either).
+/// - **Rejected.** An arm that stages the rejected draft fails. An arm that
+///   *ends on its own* (`StopCause::Completed`) without calling the staging
+///   tool produced the owner's outcome — nothing sent — and passes. An arm
+///   that stages different text, or was cut short by a divergence or the
+///   horizon before it chose, is inconclusive.
+///
+/// So no rewording can win: a pass needs the owner's own words, or the
+/// owner's own choice to send nothing, and there is no nearer-is-better to
+/// optimise toward.
+fn draft_verdict(
+    report: &ReplayReport,
+    point: &ProbePoint,
+    tool: &str,
+    staged: &Value,
+    owner: &OwnerAct,
+    schema: &Value,
+) -> ProbeVerdict {
+    let k = point.call_index;
+    if let Some(d) = report.structural().find(|d| d.index() < report.call_base) {
+        return ProbeVerdict::Inconclusive(format!(
+            "diverged at call #{} — inside the forced prefix (branch base #{}, staging \
+             call #{k}); the report does not branch where the point does",
+            d.index(),
+            report.call_base
+        ));
+    }
+    let drafted = report.replayed_calls.iter().find(|c| c.name == tool);
+    match (drafted, owner) {
+        (Some(call), _) => {
+            let form = draft_form(schema, &call.input);
+            if let OwnerAct::Released(sent) = owner {
+                if form == draft_form(schema, sent) {
+                    return ProbeVerdict::Pass;
+                }
+            }
+            if form == draft_form(schema, staged) {
+                ProbeVerdict::Fail
+            } else {
+                ProbeVerdict::Inconclusive("drafted text the owner never judged".into())
+            }
+        }
+        (None, OwnerAct::Rejected)
+            if report.stats.stop_cause == Some(crate::agent::StopCause::Completed) =>
+        {
+            ProbeVerdict::Pass
+        }
+        (None, OwnerAct::Rejected) => {
+            ProbeVerdict::Inconclusive("cut short before it chose whether to draft".into())
+        }
+        (None, OwnerAct::Released(_)) => {
+            ProbeVerdict::Inconclusive("staged nothing, which the owner never judged".into())
+        }
     }
 }
 
@@ -830,5 +1004,163 @@ mod tests {
             vec![trace("fs_write", json!({"path": "notes.md"}))],
         );
         assert_eq!(verdict(&sibling_repeat, &point), ProbeVerdict::Fail);
+    }
+
+    fn draft_point(owner: OwnerAct) -> ProbePoint {
+        ProbePoint {
+            message_index: 1,
+            call_index: 1,
+            kind: ProbeKind::Draft {
+                tool: "mail_send".into(),
+                staged: json!({"to": "dirk@example.invalid", "body": "Totals attached.", "urgent": false}),
+                owner,
+                schema: json!({"type": "object", "properties": {
+                    "to": {"type": "string"},
+                    "body": {"type": "string"},
+                    "urgent": {"type": "boolean", "default": false}
+                }}),
+            },
+        }
+    }
+
+    fn completed(calls: Vec<ToolCallTrace>) -> ReplayReport {
+        let mut r = branch_report(1, vec![], calls);
+        r.stats.stop_cause = Some(crate::agent::StopCause::Completed);
+        r
+    }
+
+    /// Row 2d-1's draft validator: the owner's released words pass, the
+    /// words they rewrote fail, and a rewording — however close — is a draft
+    /// the owner never judged. Whitespace and a pinned default are not a
+    /// different draft; case is.
+    #[test]
+    fn a_released_draft_passes_only_the_owners_words() {
+        let point = draft_point(OwnerAct::Released(json!({
+            "to": "dirk@example.invalid",
+            "body": "Totals attached; the Q3 sheet follows.",
+            "urgent": false
+        })));
+        let arm = |body: &str| {
+            completed(vec![trace(
+                "mail_send",
+                json!({"to": "dirk@example.invalid", "body": body}),
+            )])
+        };
+        assert_eq!(
+            verdict(&arm("Totals  attached;\nthe Q3 sheet follows. "), &point),
+            ProbeVerdict::Pass,
+            "whitespace and the schema's default are not a different draft"
+        );
+        assert_eq!(
+            verdict(&arm("Totals attached."), &point),
+            ProbeVerdict::Fail
+        );
+        for rewording in [
+            "Totals attached; the Q3 sheet follows soon.",
+            "totals attached; the Q3 sheet follows.",
+            "Here are the totals; the Q3 sheet follows.",
+        ] {
+            assert!(
+                matches!(
+                    verdict(&arm(rewording), &point),
+                    ProbeVerdict::Inconclusive(_)
+                ),
+                "a rewording is never a pass: {rewording}"
+            );
+        }
+        assert!(
+            matches!(
+                verdict(&completed(vec![]), &point),
+                ProbeVerdict::Inconclusive(_)
+            ),
+            "sending nothing is not what the owner judged"
+        );
+    }
+
+    /// A rejection passes an arm that ends without drafting, fails one that
+    /// drafts the rejected text, and leaves every other arm inconclusive —
+    /// a reworded draft, and an arm a divergence cut short.
+    #[test]
+    fn a_rejected_draft_passes_only_an_arm_that_chose_to_send_nothing() {
+        let point = draft_point(OwnerAct::Rejected);
+        assert_eq!(verdict(&completed(vec![]), &point), ProbeVerdict::Pass);
+        assert_eq!(
+            verdict(
+                &completed(vec![trace(
+                    "mail_send",
+                    json!({"to": "dirk@example.invalid", "body": "Totals attached.", "urgent": null})
+                )]),
+                &point
+            ),
+            ProbeVerdict::Fail,
+            "a null is an omitted argument, and the default fills it"
+        );
+        assert!(matches!(
+            verdict(
+                &completed(vec![trace(
+                    "mail_send",
+                    json!({"to": "dirk@example.invalid", "body": "Totals attached!"})
+                )]),
+                &point
+            ),
+            ProbeVerdict::Inconclusive(_)
+        ));
+        let cut_short = branch_report(1, vec![], vec![trace("fs_read", json!({"path": "x"}))]);
+        assert!(
+            matches!(verdict(&cut_short, &point), ProbeVerdict::Inconclusive(_)),
+            "an arm stopped before it chose is not a choice to send nothing"
+        );
+        let mismatched = branch_report(
+            1,
+            vec![Divergence::Tool {
+                index: 0,
+                expected: "fs_list".into(),
+                actual: "fs_read".into(),
+            }],
+            vec![],
+        );
+        assert!(matches!(
+            verdict(&mismatched, &point),
+            ProbeVerdict::Inconclusive(_)
+        ));
+    }
+
+    /// The staging call is found by the id the outbox recorded, and a
+    /// draft's branch regenerates the whole turn that proposed it.
+    #[test]
+    fn a_staging_call_is_located_by_its_recorded_id() {
+        let messages = vec![
+            Message::user("send the totals"),
+            Message::assistant(vec![tool_use("t1", "fs_read", json!({"path": "q3.csv"}))]),
+            Message::tool_results(vec![result("t1", "1,2,3", false)]),
+            Message::assistant(vec![
+                tool_use("t2", "fs_list", json!({})),
+                tool_use("t3", "mail_send", json!({"body": "Totals attached."})),
+            ]),
+            Message::tool_results(vec![
+                result("t2", "q3.csv", false),
+                result("t3", "staged for review", false),
+            ]),
+        ];
+        let locate = |id: &str, tool: &str| {
+            locate_staging(
+                &messages,
+                id,
+                tool,
+                json!({}),
+                OwnerAct::Rejected,
+                json!({}),
+            )
+        };
+        let p = locate("t3", "mail_send").unwrap();
+        assert_eq!((p.message_index, p.call_index), (3, 2));
+        let b = branch_at(&messages, &p).unwrap();
+        assert_eq!(b.seed.len(), 3, "cut before the staging turn");
+        assert_eq!(b.call_base, 1);
+        assert!(
+            locate("t3", "fs_list").is_none(),
+            "the id names another tool"
+        );
+        assert!(locate("t9", "mail_send").is_none());
     }
 }

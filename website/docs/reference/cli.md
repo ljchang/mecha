@@ -463,7 +463,7 @@ See [The charter](/docs/features/appraisal/charter).
 Inspect saved transcripts. Requires a subcommand.
 
 ```
-mecha sessions <list|show|path|stats|health|appraise> [OPTIONS]
+mecha sessions <list|show|path|stats|health|appraise|compare> [OPTIONS]
 ```
 
 | Subcommand | Flag | Description |
@@ -486,6 +486,9 @@ mecha sessions <list|show|path|stats|health|appraise> [OPTIONS]
 | `appraise` | `--max-probes <N>` | Ceiling on replays across the whole walk. Default `25`. Requires `--probe`. |
 | `appraise` | `--appraise` | Run the quarantined appraiser over each session's numeric evidence. **Paid**, and independent of `--probe`. |
 | `appraise` | `--max-appraisals <N>` | Ceiling on appraisals driven. Default `25`. Requires `--appraise`. |
+| `compare` | `--points <N>` | Most decision points to drive this pass. Default `8`. A point no structural validator can pose drives nothing and is not counted. **Paid** — up to three replays per point, on the local model only. |
+| `compare` | `--seed <N>` | Seed for the uniform draw of points. Defaults to today's day number, and is printed. |
+| `compare` | `--days <N>`, `-n`/`--limit <N>`, `--kind <KIND>`, `--include-tests`, `--json` | As for `appraise`. |
 
 `stats` totals token usage — and cost, where prices are configured — grouped by
 provider and model. Transcripts live in `~/.mecha/sessions` unless
@@ -517,6 +520,16 @@ project directory or name one with `--workspace`; from a home directory it
 refuses, because the jail would cover `~/.mecha`. See
 [the paid passes](/docs/features/appraisal/reference#the-two-paid-passes).
 
+`compare` asks a narrower question at the moments you already answered: at a
+steer, a denial, a failed check, a draft you rewrote or rejected, or a
+surprise, would the prompt the run carried, today's learned rules, or no
+rules have done what you decided? Each point's policies are replayed a few
+turns from it and graded by your recorded act, and one comparison per point
+lands in the comparison store — clean sessions only. A point nothing
+structural can grade is stored inconclusive and never judged by a model. It
+refuses a provider that is not on this machine, and, like `--probe`, needs a
+project directory. See [Point-wise comparison](/docs/features/learning#mecha-sessions-compare--policies-at-the-moments-you-decided).
+
 ```bash
 mecha sessions list -n 50
 mecha sessions show 20260805T091500 --json | jq -r 'select(.role == "user") | .content'
@@ -526,6 +539,7 @@ mecha sessions health --json | jq '.by_model'
 mecha sessions appraise --days 30
 mecha sessions appraise --days 7 --probe --max-probes 10
 mecha sessions appraise --json | jq '.labels'
+mecha sessions compare --points 4 --json | jq '.pass'
 cat "$(mecha sessions path 20260805T091500)"
 ```
 

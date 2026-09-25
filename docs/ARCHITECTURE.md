@@ -3859,6 +3859,68 @@ unreadable file as an error; `sessions appraise` prints the store's
 `comparison::Summary` on every call, with the separated share `null` over
 nothing decided.
 
+### Point-wise comparison at decision points
+
+`APPRAISAL-WIRING-DESIGN.md` O1, row 2d-1: `mecha sessions compare`
+(`pointwise_pass.rs`, over `mecha_core::pointwise`). Whole-session replay
+cannot grade a policy that changes behaviour — past the first divergence
+there is no world left to grade it in — so this compares policies at one
+moment the owner already answered, and writes one comparison per point
+through the store above (a `point-*` `Kind` per point kind).
+
+- **Points come from records, never from a model's account**
+  (`pointwise::points_in`): a steer and a denial from
+  `learning::extract_interventions`; a failed check (declared-check failure
+  or tampering) and a surprise (`StepFeedback::forecast_miss`) from the
+  harness's planning feedback; an edited or rejected draft from an outbox
+  item — model-authored, `OutboxKind::Message`, anchored by its recorded
+  `call_id`, and for an edit only when the edit survives `draft_form` (a
+  whitespace edit separates nothing; a draft sent unchanged is approval, not
+  a point).
+- **The owner's recorded verdict decides, through a structural validator
+  only** (R27). Steer and denial reuse `StructuralSteer`/`StructuralDenial`.
+  A draft point is `ProbeKind::Draft`, branched like a denial (the whole
+  staging turn regenerated), and graded by `counterfactual::draft_verdict`
+  (`ReleasedDraft`/`RejectedDraft`): **an arm passes only by producing the
+  outcome the owner chose** — the released arguments, or, for a rejection,
+  ending on its own (`StopCause::Completed`) without drafting — **fails
+  only by producing the one the owner refused** (the draft as staged), and
+  anything else is inconclusive, including every rewording and an arm cut
+  short before it chose. The comparison is equality in `draft_form` (schema
+  defaults filled the way the loop pins them, nulls dropped, whitespace
+  runs collapsed — nothing else), so there is no nearer-is-better for a
+  model to climb. A check point is posed only when an owner-bound criterion
+  failed in a recording carrying the owner's artifact case (the artifact
+  repeat against pinned gold, `ArtifactGold` — its horizon is the task, not
+  the point); a declared check is the agent's own (R11) and a surprise has
+  no owner act, so both are `Validator::Unposed`: **stored with no arms and
+  a derived `Inconclusive`, nothing driven, never judged**.
+- **The arms are policies** (`pointwise::distinct_policies`): the recorded
+  prompt (`WithoutIntervention`), the rules deployed today for the run's
+  situation (`Rules`, `validate`'s `RuleSurface`), and none (`RulesFree`) —
+  duplicates by prompt dropped, at most `ARMS_MAX` (3); fewer than two is
+  not driven. Each arm is `probe::drive_arm_within` under
+  `HORIZON_TURNS` (4; the recording's own `max_turns` when lower), replayed
+  under `Stop` like every probe. An arm that could not be driven loses the
+  point: a comparison with a missing arm is a failed attempt, not a
+  comparison.
+- **Drawn uniformly, charged per driven point.** The pool (clean sessions
+  only — the store's taint rule asked at collection, its surface rule asked
+  of the prepared point, both before any seat is taken) is sorted by
+  `Point::order` and shuffled with a printed seed (default: the day number)
+  by `pointwise::draw` until 2e-6 ranks it. `--points` (default 8) counts
+  driven points; unposed points cost nothing and are not charged. A point
+  already on record under the same policies and model
+  (`pointwise::already_compared`) is not compared again, so the nightly
+  cost falls on new points and new rule sets.
+- **One background seat per point** (`permit.rs`, `tasks::permits`), taken
+  before its arms and dropped after, waited on for up to five minutes and
+  then the rest of the pass deferred and counted — never the owner's
+  reserved seat. **Local model only** (R29): `pointwise::on_this_machine`
+  refuses a provider whose endpoint is not loopback before anything is read.
+- Not here: accepting a candidate from these comparisons (2d-2, R26), and
+  writing a losing arm into the session's appraisal (2d-3, O3).
+
 ## The goal system
 
 `docs/GOAL-SYSTEM-DESIGN.md` is the design and is deliberately not rewritten as
