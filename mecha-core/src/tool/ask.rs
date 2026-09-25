@@ -165,6 +165,9 @@ impl AskUserTool {
                 let serves = serves
                     .map(|s| s.parse::<GoalRef>().map_err(|e| format!("`serves`: {e}")))
                     .transpose()?;
+                if let Some(goal) = serves.as_ref().filter(|g| !g.a_plan_can_name()) {
+                    return Err(GoalRef::not_a_plans_to_name(goal));
+                }
                 Ok(Some(GoalHypothesis { sentence, serves }))
             }
         }
@@ -545,6 +548,15 @@ mod tests {
             (
                 json!({"question": "which?", "goal": ["not", "a", "string"]}),
                 "`goal` must be a string",
+            ),
+            // Kinds only the harness seeds, never a model (review of #292).
+            (
+                json!({"question": "which?", "goal": "finish it", "serves": "trigger:morning"}),
+                "set by the harness",
+            ),
+            (
+                json!({"question": "which?", "goal": "finish it", "serves": "request:1"}),
+                "set by the harness",
             ),
         ] {
             let (tool, canned) = tool(Some("x"));

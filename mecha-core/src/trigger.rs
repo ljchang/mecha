@@ -261,6 +261,46 @@ pub struct Trigger {
     /// record; this is delivery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify: Option<String>,
+
+    /// The charter line this trigger serves, as `charter:<id>` — optional,
+    /// never required (`APPRAISAL-WIRING-DESIGN.md` R1). A trigger run is
+    /// anchored to the trigger itself (`trigger:<name>`) whether or not this
+    /// is set; this is the owner saying which standing priority that
+    /// scheduled work is for, where they want to say it. Checked against the
+    /// loaded charter when the trigger loads ([`Trigger::check_serves`]), so
+    /// a renamed or deleted line refuses the trigger rather than pointing at
+    /// nothing. Read from this file when needed, never copied onto the run's
+    /// anchor — the file is the one place it can be true.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_serves"
+    )]
+    pub serves: Option<crate::goal::GoalRef>,
+}
+
+/// A trigger's `serves`, read **strictly**: the file is owner-written, so a
+/// typo is refused where the owner will see it (`mecha trigger list`), not
+/// dropped the way a record written by a newer binary is. Only a charter line
+/// may be named — the pointer is the owner's link from scheduled work to a
+/// standing priority, and a board task or project is the wrong tier for a
+/// schedule that recurs.
+fn de_serves<'de, D>(d: D) -> std::result::Result<Option<crate::goal::GoalRef>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let Some(text) = Option::<String>::deserialize(d)? else {
+        return Ok(None);
+    };
+    let goal: crate::goal::GoalRef = text.parse().map_err(D::Error::custom)?;
+    match goal {
+        crate::goal::GoalRef::Charter(_) => Ok(Some(goal)),
+        other => Err(D::Error::custom(format!(
+            "`serves = \"{other}\"` — a trigger may only serve a charter line, as \
+             `serves = \"charter:<id>\"`"
+        ))),
+    }
 }
 
 fn is_default_catch_up(c: &CatchUp) -> bool {
@@ -296,6 +336,7 @@ impl Trigger {
             timeout: None,
             catch_up: CatchUp::default(),
             notify: None,
+            serves: None,
         }
     }
 
@@ -332,6 +373,34 @@ impl Trigger {
         }
         if let Some(t) = &self.timeout {
             parse_duration(t).with_context(|| format!("trigger `{}`: bad timeout", self.name))?;
+        }
+        Ok(())
+    }
+
+    /// The charter line `serves` names must be a line of the charter —
+    /// pure over the charter (or why it could not be read), so a test needs
+    /// no home directory. A charter that cannot be read refuses a trigger
+    /// that names a line: the owner asked for a link nothing can check, and
+    /// unknown is never clean. A trigger with no `serves` never reads it.
+    pub fn check_serves(
+        &self,
+        charter: std::result::Result<&crate::charter::Charter, &str>,
+    ) -> Result<()> {
+        let Some(crate::goal::GoalRef::Charter(id)) = &self.serves else {
+            return Ok(());
+        };
+        match charter {
+            Ok(c) => anyhow::ensure!(
+                c.lines().iter().any(|l| &l.id == id),
+                "trigger `{}` serves `charter:{id}`, which is not a line of your charter \
+                 (`mecha charter` lists them)",
+                self.name
+            ),
+            Err(why) => anyhow::bail!(
+                "trigger `{}` serves `charter:{id}`, and the charter could not be read to \
+                 check it: {why}",
+                self.name
+            ),
         }
         Ok(())
     }
@@ -540,8 +609,57 @@ impl RunRecord {
     }
 }
 
+/// A trigger whose `serves` names a charter line the charter no longer has.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BrokenLink {
+    pub trigger: String,
+    pub reason: String,
+}
+
+impl BrokenLink {
+    /// The name a row carries when the walk itself could not finish — no
+    /// trigger was checked, so none can be named.
+    pub const UNCHECKED: &'static str = "(unchecked)";
+
+    pub fn unchecked(reason: String) -> Self {
+        BrokenLink {
+            trigger: Self::UNCHECKED.to_string(),
+            reason,
+        }
+    }
+
+    /// The one line every charter-save surface prints for this row.
+    pub fn warning(&self) -> String {
+        if self.trigger == Self::UNCHECKED {
+            format!(
+                "triggers not checked against the saved charter: {}",
+                self.reason
+            )
+        } else {
+            format!(
+                "trigger `{}` will not fire: {} — `mecha trigger edit {}` fixes it",
+                self.trigger, self.reason, self.trigger
+            )
+        }
+    }
+}
+
+/// [`TriggerStore::broken_by`] over the owner's trigger store — called after
+/// every successful charter save, on every surface that saves one. An absent
+/// store has no triggers to break.
+pub fn triggers_broken_by(charter: &crate::charter::Charter) -> Vec<BrokenLink> {
+    TriggerStore::open_existing_default()
+        .map(|s| s.broken_by(charter))
+        .unwrap_or_default()
+}
+
 pub struct TriggerStore {
     root: PathBuf,
+    /// Where an optional `serves` is checked. `None` is the owner's charter
+    /// (`Charter::default_path`), the only one a real store ever reads — a
+    /// charter has no configurable path. `Some` exists for tests, so a check
+    /// against a scratch charter never reads the owner's.
+    charter: Option<PathBuf>,
 }
 
 /// Holds the store's writer lock for as long as it lives.
@@ -565,7 +683,10 @@ impl TriggerStore {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         crate::create_private_dir(&root).with_context(|| format!("creating {}", root.display()))?;
-        Ok(TriggerStore { root })
+        Ok(TriggerStore {
+            root,
+            charter: None,
+        })
     }
 
     pub fn open_default() -> Result<Self> {
@@ -576,7 +697,10 @@ impl TriggerStore {
     /// state as a side effect.
     pub fn open_existing_default() -> Option<Self> {
         let root = Self::default_root().ok()?;
-        root.is_dir().then_some(TriggerStore { root })
+        root.is_dir().then_some(TriggerStore {
+            root,
+            charter: None,
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -599,6 +723,7 @@ impl TriggerStore {
     pub fn list(&self) -> Result<(Vec<Trigger>, Vec<String>)> {
         let mut out = Vec::new();
         let mut problems = Vec::new();
+        let mut charter: Option<std::result::Result<crate::charter::Charter, String>> = None;
         let entries = match std::fs::read_dir(&self.root) {
             Ok(e) => e,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((out, problems)),
@@ -614,7 +739,16 @@ impl TriggerStore {
                 .and_then(|s| s.to_str())
                 .unwrap_or_default()
                 .to_string();
-            match self.load_path(&path, &name) {
+            // The charter is read once per listing, and only when some
+            // trigger carries a `serves` — not once per file.
+            let checked = self.parse_path(&path, &name).and_then(|t| {
+                if t.serves.is_some() {
+                    let c = charter.get_or_insert_with(|| self.load_charter());
+                    t.check_serves(c.as_ref().map_err(String::as_str))?;
+                }
+                Ok(t)
+            });
+            match checked {
                 Ok(t) => out.push(t),
                 Err(e) => problems.push(format!("{}: {e:#}", path.display())),
             }
@@ -623,7 +757,63 @@ impl TriggerStore {
         Ok((out, problems))
     }
 
+    /// Every trigger whose `serves` no longer resolves against `charter` —
+    /// the charter just saved — by name with the reason (found on review of
+    /// #292: renaming or deleting a line silently stopped every trigger that
+    /// served it, while the charter save reported success). Files are parsed
+    /// as `load_path` parses them minus the `serves` check, so a trigger
+    /// that fails *only* there is reported; one that fails to parse for any
+    /// other reason is already refused and reported by `list` and the
+    /// doctor, and is not this function's business. A store that cannot be
+    /// listed is different: nothing else on the charter-save path would say
+    /// so, and an empty answer reads as "nothing broken" on all three
+    /// surfaces, so it comes back as one `(unchecked)` row naming the failure
+    /// (unknown is never clean; review of #292).
+    pub fn broken_by(&self, charter: &crate::charter::Charter) -> Vec<BrokenLink> {
+        let entries = match std::fs::read_dir(&self.root) {
+            Ok(entries) => entries,
+            Err(e) => {
+                return vec![BrokenLink::unchecked(format!(
+                    "could not read the trigger store {} ({e}); \
+                     `mecha trigger list` shows any that no longer load",
+                    self.root.display()
+                ))];
+            }
+        };
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string();
+            let Ok(trigger) = self.parse_path(&path, &name) else {
+                continue;
+            };
+            if let Err(e) = trigger.check_serves(Ok(charter)) {
+                out.push(BrokenLink {
+                    trigger: name,
+                    reason: format!("{e:#}"),
+                });
+            }
+        }
+        out.sort_by(|a, b| a.trigger.cmp(&b.trigger));
+        out
+    }
+
     fn load_path(&self, path: &Path, name: &str) -> Result<Trigger> {
+        let trigger = self.parse_path(path, name)?;
+        self.check_serves(&trigger)?;
+        Ok(trigger)
+    }
+
+    /// Parse and validate a trigger file, everything `load_path` checks
+    /// except `serves`.
+    fn parse_path(&self, path: &Path, name: &str) -> Result<Trigger> {
         let text = std::fs::read_to_string(path)?;
         let mut trigger: Trigger = toml::from_str(&text)?;
         trigger.name = name.to_string();
@@ -639,6 +829,46 @@ impl TriggerStore {
         Ok(trigger)
     }
 
+    /// Check a trigger's optional `serves` against the charter — the one
+    /// check `load_path` and `save` both run, so a file `mecha trigger edit`
+    /// accepts is one the daemon will load (found on review: `save` checked
+    /// only `validate`, and a typo'd slug saved, then silently stopped the
+    /// trigger firing — the divergence `Charter::parse` closed for the
+    /// charter itself). Reads the owner's charter at `Charter::default_path`,
+    /// not a path derived from this store's root, so a store opened at a
+    /// scratch root still consults the real charter unless
+    /// [`Self::with_charter`] says otherwise.
+    ///
+    /// A missing `charter.toml` loads as an empty charter (`Charter::load`),
+    /// so on a machine with no charter the refusal reads "not a line of your
+    /// charter"; "could not be read" is for a charter that exists and fails
+    /// to load.
+    fn check_serves(&self, trigger: &Trigger) -> Result<()> {
+        if trigger.serves.is_none() {
+            return Ok(());
+        }
+        let charter = self.load_charter();
+        trigger.check_serves(charter.as_ref().map_err(String::as_str))
+    }
+
+    /// The charter `serves` is checked against — the owner's, or a test's.
+    fn load_charter(&self) -> std::result::Result<crate::charter::Charter, String> {
+        match &self.charter {
+            Some(p) => crate::charter::Charter::load(p),
+            None => crate::charter::Charter::default_path()
+                .and_then(|p| crate::charter::Charter::load(&p)),
+        }
+        .map_err(|e| format!("{e:#}"))
+    }
+
+    /// Check `serves` against this charter file instead of the owner's —
+    /// tests only.
+    #[cfg(test)]
+    fn with_charter(mut self, path: impl Into<PathBuf>) -> Self {
+        self.charter = Some(path.into());
+        self
+    }
+
     pub fn get(&self, name: &str) -> Result<Trigger> {
         let path = self.path_of(name);
         anyhow::ensure!(path.exists(), "no trigger named `{name}`");
@@ -651,6 +881,7 @@ impl TriggerStore {
 
     pub fn save(&self, trigger: &Trigger) -> Result<()> {
         trigger.validate()?;
+        self.check_serves(trigger)?;
         let path = self.path_of(&trigger.name);
         let tmp = path.with_extension("toml.tmp");
         std::fs::write(&tmp, toml::to_string_pretty(trigger)?)?;
@@ -865,6 +1096,67 @@ mod tests {
 
     fn utc(s: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    /// `APPRAISAL-WIRING-DESIGN.md` R1: a trigger *may* name the charter line
+    /// it serves. Absent is fine and never read; a charter line parses; any
+    /// other kind, or a malformed pointer, is refused at parse — the file is
+    /// the owner's, so a typo is surfaced rather than dropped.
+    #[test]
+    fn a_trigger_may_name_the_charter_line_it_serves_and_nothing_else() {
+        let base = "schedule = \"0 7 * * *\"\nprompt = \"brief me\"\n";
+        let plain: Trigger = toml::from_str(base).unwrap();
+        assert_eq!(plain.serves, None);
+        let linked: Trigger = toml::from_str(&format!(
+            "{base}serves = \"charter:protect-my-attention\"\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            linked.serves,
+            Some(crate::goal::GoalRef::Charter("protect-my-attention".into()))
+        );
+        for bad in [
+            "task:t1",
+            "trigger:morning",
+            "charter:two words",
+            "nonsense",
+        ] {
+            let err = toml::from_str::<Trigger>(&format!("{base}serves = \"{bad}\"\n"))
+                .expect_err(bad)
+                .to_string();
+            assert!(!err.is_empty(), "{bad}");
+        }
+        // And it round-trips as the same one string on save.
+        let saved = toml::to_string_pretty(&linked).unwrap();
+        assert!(
+            saved.contains("serves = \"charter:protect-my-attention\""),
+            "{saved}"
+        );
+    }
+
+    /// The link is checked against the charter the owner actually has: a
+    /// line that exists passes, a renamed or deleted one refuses the
+    /// trigger, and a charter that cannot be read refuses it too — a link
+    /// nothing can check is not a link. A trigger with no `serves` is never
+    /// affected, whatever state the charter is in.
+    #[test]
+    fn a_serves_link_is_checked_against_the_loaded_charter() {
+        let charter = crate::charter::Charter::parse(
+            "[[line]]\nid = \"protect-my-attention\"\ntext = \"Guard my attention.\"\n",
+        )
+        .unwrap();
+        let mut t = daily_7am("morning");
+        assert!(
+            t.check_serves(Err("unreadable")).is_ok(),
+            "no link, no read"
+        );
+        t.serves = Some(crate::goal::GoalRef::Charter("protect-my-attention".into()));
+        assert!(t.check_serves(Ok(&charter)).is_ok());
+        t.serves = Some(crate::goal::GoalRef::Charter("gone-line".into()));
+        let err = t.check_serves(Ok(&charter)).unwrap_err().to_string();
+        assert!(err.contains("not a line of your charter"), "{err}");
+        let err = t.check_serves(Err("parse error")).unwrap_err().to_string();
+        assert!(err.contains("could not be read"), "{err}");
     }
 
     fn daily_7am(name: &str) -> Trigger {
@@ -1192,6 +1484,108 @@ mod tests {
         assert_eq!("2h".parse::<CatchUp>().unwrap().to_string(), "2h");
         assert_eq!("never".parse::<CatchUp>().unwrap(), CatchUp::Never);
         assert!("sometimes".parse::<CatchUp>().is_err());
+    }
+
+    /// The accept path and the load path agree about `serves`: a trigger
+    /// naming a line the charter lacks is refused on save, with the load
+    /// path's own message, instead of saving and then never firing. On the
+    /// old tree `save` checked only `validate` and this saved.
+    #[test]
+    fn a_trigger_serving_a_missing_line_is_refused_on_save_not_after() {
+        let root = scratch("serves-save");
+        std::fs::create_dir_all(&root).unwrap();
+        let charter = root.join("charter.toml");
+        std::fs::write(
+            &charter,
+            "[[line]]\nid = \"protect-my-attention\"\ntext = \"Protect my attention.\"\n",
+        )
+        .unwrap();
+        let store = TriggerStore::open(root.join("triggers"))
+            .unwrap()
+            .with_charter(&charter);
+
+        let mut t = daily_7am("briefing");
+        t.serves = Some(crate::goal::GoalRef::Charter("typo".into()));
+        let err = store.save(&t).unwrap_err().to_string();
+        assert!(err.contains("not a line of your charter"), "{err}");
+        assert!(!store.exists("briefing"), "nothing was written");
+
+        t.serves = Some(crate::goal::GoalRef::Charter("protect-my-attention".into()));
+        store.save(&t).unwrap();
+        assert!(store.exists("briefing"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Renaming or deleting a charter line is the edit that breaks a
+    /// trigger's `serves`, and it happens in the *other* file — so a charter
+    /// save asks which triggers it broke (review of #292). A kept line breaks
+    /// nothing; a trigger with no `serves` is never reported.
+    #[test]
+    fn a_charter_save_reports_the_triggers_whose_serves_it_broke() {
+        let root = scratch("serves-broken-by");
+        std::fs::create_dir_all(&root).unwrap();
+        let charter_path = root.join("charter.toml");
+        std::fs::write(
+            &charter_path,
+            "[[line]]\nid = \"protect-my-attention\"\ntext = \"Protect my attention.\"\n",
+        )
+        .unwrap();
+        let store = TriggerStore::open(root.join("triggers"))
+            .unwrap()
+            .with_charter(&charter_path);
+        let mut linked = daily_7am("briefing");
+        linked.serves = Some(crate::goal::GoalRef::Charter("protect-my-attention".into()));
+        store.save(&linked).unwrap();
+        store.save(&daily_7am("plain")).unwrap();
+
+        let kept = crate::charter::Charter::parse(
+            "[[line]]\nid = \"protect-my-attention\"\ntext = \"Reworded.\"\n",
+        )
+        .unwrap();
+        assert!(store.broken_by(&kept).is_empty());
+
+        let renamed = crate::charter::Charter::parse(
+            "[[line]]\nid = \"guard-my-attention\"\ntext = \"Protect my attention.\"\n",
+        )
+        .unwrap();
+        let broken = store.broken_by(&renamed);
+        assert_eq!(broken.len(), 1, "{broken:?}");
+        assert_eq!(broken[0].trigger, "briefing");
+        assert!(
+            broken[0].reason.contains("not a line of your charter"),
+            "{broken:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_unreadable_trigger_store_is_unchecked_not_clean() {
+        // A root that is a file, not a directory: `read_dir` fails the way
+        // an unreadable store does, without depending on permission bits the
+        // test user might override.
+        let root = std::env::temp_dir().join(format!(
+            "mecha-trigger-unreadable-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&root, "not a directory").unwrap();
+        let store = TriggerStore {
+            root: root.clone(),
+            charter: None,
+        };
+        let charter = crate::charter::Charter::parse(
+            "[[line]]\nid = \"guard-my-attention\"\ntext = \"Protect my attention.\"\n",
+        )
+        .unwrap();
+        let broken = store.broken_by(&charter);
+        assert_eq!(broken.len(), 1, "{broken:?}");
+        assert_eq!(broken[0].trigger, BrokenLink::UNCHECKED);
+        assert!(broken[0].warning().starts_with("triggers not checked"));
+        assert!(broken[0].reason.contains("could not read"), "{broken:?}");
+        let _ = std::fs::remove_file(&root);
     }
 
     #[test]

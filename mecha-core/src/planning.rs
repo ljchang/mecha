@@ -221,7 +221,12 @@ impl Decision {
             Some(e) if e > 0.0 => Some(Action::ReviewCommitment),
             _ => None,
         });
-        let action = if anchor.is_some() && anchor != plan.goal {
+        // Only against an anchor a plan could have named (`GoalRef::
+        // a_plan_can_name`): under a trigger or request anchor every plan
+        // goal differs by construction, and asking to reconcile it would
+        // fire on every plan write.
+        let action = if anchor.as_ref().is_some_and(|a| a.a_plan_can_name()) && anchor != plan.goal
+        {
             Action::ClarifyGoal
         } else if let Some(a) = charter_action {
             a
@@ -360,6 +365,21 @@ mod tests {
             )
             .action,
             Action::ClarifyGoal
+        );
+        // A trigger anchor is one no plan can name, so a plan under it is
+        // never asked to reconcile with it (review of #292): the decision
+        // falls through to the charter reading, as with no anchor at all.
+        assert_eq!(
+            Decision::assess(
+                &plan,
+                Some(GoalRef::Trigger("morning".into())),
+                Some(&readings),
+                None,
+                &Default::default(),
+                true
+            )
+            .action,
+            Action::ReviewCommitment
         );
         assert!(!Action::ReviewCommitment.guidance().contains("7200"));
     }

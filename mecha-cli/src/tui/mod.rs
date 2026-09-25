@@ -7038,8 +7038,14 @@ fn suspend_and_edit_charter(
             }
             Ok(CharterEdit::Unchanged) => "unchanged".to_string(),
             Ok(CharterEdit::Saved) => {
-                "saved — rides in the prompt from the next session (/model rebuilds this one)"
-                    .to_string()
+                let mut s =
+                    "saved — rides in the prompt from the next session (/model rebuilds this one)"
+                        .to_string();
+                for w in crate::editor::charter_trigger_warnings(&path) {
+                    s.push_str(" · ");
+                    s.push_str(&w);
+                }
+                s
             }
             Ok(CharterEdit::SavedButInvalid(e)) => format!(
                 "saved, but it will NOT load: {e} — every run starts uncharted until this is fixed (e re-edits)"
@@ -7055,9 +7061,16 @@ fn suspend_and_edit_charter(
                 // what a session keeps.
                 editor_error = Some(error.clone());
                 match loads {
-                    None => format!(
-                        "the editor exited with an error ({error}), but the file changed and loads"
-                    ),
+                    None => {
+                        let mut s = format!(
+                            "the editor exited with an error ({error}), but the file changed and loads"
+                        );
+                        for w in crate::editor::charter_trigger_warnings(&path) {
+                            s.push_str(" · ");
+                            s.push_str(&w);
+                        }
+                        s
+                    }
                     Some(le) => format!(
                         "the editor exited with an error ({error}); the file changed and will NOT load: {le}"
                     ),
