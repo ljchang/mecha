@@ -204,7 +204,7 @@ pub struct Draw {
 /// independent of the selection because there was nothing to choose between.
 /// Four is enough for the two draws to differ and small enough that the walk
 /// stays bounded, which is `runlog::Scan`'s constraint.
-const POOL_MULTIPLE: usize = 4;
+pub(crate) const POOL_MULTIPLE: usize = 4;
 
 /// How to split what the pool can supply between holdout and selection.
 ///
