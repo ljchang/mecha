@@ -517,6 +517,83 @@ fn first_line(s: &str) -> String {
     }
 }
 
+/// What the comparison store holds: `Ok(None)` when there is no store yet,
+/// `Err` when it could not be read — a finding, not an empty store.
+type OnRecord = std::result::Result<Option<(mecha_core::comparison::Summary, usize)>, String>;
+
+fn comparisons_on_record() -> OnRecord {
+    let Some(store) = mecha_core::comparison::ComparisonStore::open_existing_default() else {
+        return Ok(None);
+    };
+    store
+        .comparisons_counting()
+        .map(|(rows, skipped)| Some((mecha_core::comparison::Summary::of(&rows), skipped)))
+        .map_err(|e| format!("{e:#}"))
+}
+
+fn comparisons_json(on_record: &OnRecord) -> serde_json::Value {
+    match on_record {
+        Err(e) => serde_json::json!({"read": false, "error": e}),
+        // No store yet is genuinely zero of everything: the same shape as
+        // an empty store, so a consumer never reads `null` (unknown) for it.
+        Ok(None) => comparisons_json(&Ok(Some((mecha_core::comparison::Summary::default(), 0)))),
+        Ok(Some((summary, skipped))) => {
+            let mut o = serde_json::to_value(summary).unwrap_or_default();
+            if let Some(m) = o.as_object_mut() {
+                // Fully read only when no line was skipped.
+                m.insert("read".into(), serde_json::json!(*skipped == 0));
+                m.insert("skipped_lines".into(), serde_json::json!(skipped));
+                // `null` over nothing decided — a dash is never zero.
+                m.insert(
+                    "separated_share".into(),
+                    serde_json::json!(summary.separated_share()),
+                );
+            }
+            o
+        }
+    }
+}
+
+fn comparisons_line(on_record: &OnRecord) -> String {
+    match on_record {
+        Err(e) => format!("counterfactual comparisons: the store could not be read ({e})"),
+        Ok(None) => "counterfactual comparisons on record: none yet".into(),
+        Ok(Some((s, skipped))) => {
+            let kinds: Vec<String> = s.by_kind.iter().map(|(k, n)| format!("{k} {n}")).collect();
+            format!(
+                "counterfactual comparisons on record: {}{} · separated {} of {} decided ({}) · \
+                 {} inconclusive · {} judge-decided{}{}",
+                s.records,
+                if kinds.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", kinds.join(" · "))
+                },
+                s.separated,
+                s.separated + s.tied,
+                s.separated_share()
+                    .map(|r| format!("{:.0}%", r * 100.0))
+                    .unwrap_or_else(|| "—".into()),
+                s.inconclusive,
+                s.judge_decided,
+                if s.unreadable_verdict > 0 {
+                    format!(
+                        " · {} with a verdict this build cannot read",
+                        s.unreadable_verdict
+                    )
+                } else {
+                    String::new()
+                },
+                if *skipped > 0 {
+                    format!(" · {skipped} unreadable line(s) skipped, so these are floors")
+                } else {
+                    String::new()
+                }
+            )
+        }
+    }
+}
+
 /// The `--json` probe block.
 ///
 /// Rendered from `Tally` itself rather than a hand-listed set of keys: a
@@ -767,6 +844,10 @@ async fn appraise(
             // `mecha validate` and `mecha replay` do; the agent it builds is
             // discarded and only its registry is borrowed.
             let prepared = crate::setup::prepare(global, false).await?;
+            // Opened before any arm is driven: a store that cannot be
+            // created fails the pass before it pays for verdicts it could
+            // not keep (row 1g).
+            let comparisons = mecha_core::comparison::ComparisonStore::open_default()?;
             let wanted: usize = per_session_probe_input.iter().map(|(_, i)| i.len()).sum();
             // The honest ceiling, not `wanted`: `probe_appraisal` checks
             // `replayable(trigger)` before spending budget, so a `followup` or
@@ -787,6 +868,7 @@ async fn appraise(
             for (a, (path, interventions)) in appraisals.iter_mut().zip(&per_session_probe_input) {
                 let t = crate::appraisal_probe::probe_appraisal(
                     &prepared,
+                    &comparisons,
                     provider_cfg,
                     &model,
                     path,
@@ -948,6 +1030,10 @@ async fn appraise(
     // never inside them — no appraisal above took them as input.
     let curation = mecha_core::curation::load_default();
 
+    // The comparison store, read back after the paid passes so a `--probe`
+    // pass's own rows are in it (row 1g). Free, so it is read every time.
+    let stored = comparisons_on_record();
+
     if json {
         println!(
             "{}",
@@ -1010,6 +1096,7 @@ async fn appraise(
                 // reader that cannot tell them apart is the bug this whole
                 // rung exists to avoid.
                 "probe": probe.then(|| probe_json(tally, budget)),
+                "comparisons": comparisons_json(&stored),
                 // Same "absent, not zero" rule as `probe`: whether the flag
                 // ran at all is a different fact from what it found.
                 "appraiser": run_appraiser.then(|| serde_json::json!({
@@ -1082,6 +1169,9 @@ async fn appraise(
              `--include-tests` shows them)\n"
         );
     }
+    // A fact about a store, not about these sessions, so it is printed
+    // before the early return — an empty walk still has a store to report.
+    println!("  {}\n", comparisons_line(&stored));
     if appraisals.is_empty() {
         return Ok(());
     }
@@ -1244,6 +1334,9 @@ async fn appraise(
             "    {:<16} {:>5}  — budget ran out first",
             "not reached", tally.over_budget
         );
+        if let Some(line) = tally.stored.line() {
+            println!("    {line}");
+        }
     }
 
     if run_appraiser {
@@ -1712,6 +1805,11 @@ mod probe_readout_tests {
             unavailable: 6,
             surface_lost: 7,
             over_budget: 8,
+            stored: crate::probe::StoredTally {
+                written: 10,
+                refused_not_clean: 11,
+                refused_surface: 12,
+            },
         };
         let rendered = probe_json(tally, 9);
         let rendered = rendered.as_object().expect("an object");
@@ -1727,5 +1825,34 @@ mod probe_readout_tests {
         }
         assert_eq!(rendered["surface_lost"], 7);
         assert_eq!(rendered["budget_left"], 9);
+        assert_eq!(rendered["stored"]["refused_not_clean"], 11);
+    }
+
+    /// The store's readout: an unreadable store says so rather than reading
+    /// as empty, no store yet is zero records with no rate, and the rate is
+    /// `null` until something was decided.
+    #[test]
+    fn the_comparison_readout_keeps_unreadable_apart_from_empty() {
+        use super::{comparisons_json, comparisons_line};
+        let unreadable = Err("permission denied".to_string());
+        assert_eq!(comparisons_json(&unreadable)["read"], false);
+        assert!(comparisons_line(&unreadable).contains("could not be read"));
+        let none = Ok(None);
+        assert_eq!(comparisons_json(&none)["records"], 0);
+        assert!(comparisons_json(&none)["separated_share"].is_null());
+        // No store yet and an empty store are one shape: every key present,
+        // zero where zero is the truth.
+        let fresh = Ok(Some((mecha_core::comparison::Summary::default(), 0)));
+        let keys =
+            |v: serde_json::Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        assert_eq!(
+            keys(comparisons_json(&none)),
+            keys(comparisons_json(&fresh))
+        );
+        assert_eq!(comparisons_json(&none)["separated"], 0);
+        let empty = Ok(Some((mecha_core::comparison::Summary::default(), 2)));
+        assert!(comparisons_json(&empty)["separated_share"].is_null());
+        assert_eq!(comparisons_json(&empty)["read"], false, "two lines skipped");
+        assert!(comparisons_line(&empty).contains("(—)"));
     }
 }

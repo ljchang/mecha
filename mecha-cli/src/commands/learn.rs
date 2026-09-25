@@ -591,6 +591,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             };
 
             let mut lines = Vec::new();
+            // Named before the probes so each stored comparison (row 1g)
+            // can point at the proposal that records what the gate did.
+            let proposal_id = Session::new_id();
+            // Opened before any arm is driven: a store that cannot be created
+            // fails the gate before it pays for verdicts it could not keep.
+            let comparisons = mecha_core::comparison::ComparisonStore::open_default()?;
+            let mut stored = probe::StoredTally::default();
             let (mut improved, mut regressed, mut unchanged, mut inconclusive) =
                 (0u32, 0u32, 0u32, 0u32);
             let mut measured = 0u32;
@@ -616,7 +623,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                         skipped += 1;
                         lines.push(format!("{} [{}]: skipped — {why}", r.id, r.trigger));
                     }
-                    probe::ProbeResult::Verdicts(b, t) => {
+                    probe::ProbeResult::Verdicts(b, t, drawn) => {
+                        let (mut comparison, provenance) = *drawn;
+                        comparison.pointers.proposal_id = Some(proposal_id.clone());
+                        probe::store_comparison(
+                            &comparisons,
+                            provenance,
+                            &comparison,
+                            &mut stored,
+                        )?;
                         // Counted only when the pair *graded* — `compare`
                         // returns `None` on an inconclusive arm. A pair that
                         // ran and concluded nothing is not evidence, and
@@ -668,6 +683,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 )
             });
             let evidence = lines.join("\n");
+            // Beside the evidence, not in it: the proposal records what the
+            // gate measured, the store what it kept.
+            if let Some(line) = stored.line() {
+                println!("{domain}: {line}");
+            }
 
             // A candidate that makes any probe worse than what is deployed
             // is refused in both modes — recorded with its evidence, though,
@@ -692,7 +712,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             // did not, since the gate's probes never reach the validation
             // ledger.
             let proposal = Proposal {
-                id: Session::new_id(),
+                id: proposal_id,
                 domain: domain.clone(),
                 status: status.into(),
                 reflexion_ids: ids.clone(),

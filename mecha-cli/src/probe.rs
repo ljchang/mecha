@@ -25,8 +25,12 @@
 //! regression.
 
 use crate::setup::Prepared;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use mecha_core::agent::{Agent, RunContext};
+use mecha_core::comparison::{
+    Arm, CallClass, Comparison, ComparisonStore, Kind, Outcome, Pointers, Provenance, Recorded,
+    Refusal, Role, Validator,
+};
 use mecha_core::config::{PermissionMode, ProviderConfig};
 use mecha_core::counterfactual::{
     branch_at, locate_denial, locate_steer, truncate_after_run, verdict, Branch, ProbePoint,
@@ -44,8 +48,10 @@ use tokio_util::sync::CancellationToken;
 
 /// What probing one reflection produced.
 pub enum ProbeResult {
-    /// Baseline arm first, treatment arm second.
-    Verdicts(ProbeVerdict, ProbeVerdict),
+    /// Baseline arm first, treatment arm second, and the comparison the pair
+    /// makes — with the recording's provenance, which decides whether the
+    /// store keeps it.
+    Verdicts(ProbeVerdict, ProbeVerdict, Box<(Comparison, Provenance)>),
     /// The probe could not be run; the reason is for the human reading the
     /// report. A skip is never evidence for either arm.
     Skipped(String),
@@ -63,6 +69,21 @@ pub struct ProbePrep {
     recorded_specs: Vec<mecha_core::message::ToolSpec>,
     base_system: String,
     recorded_system: String,
+    /// What a comparison stored from this probe is keyed and gated on, read
+    /// off the same transcript pass — see [`ProbePrep::comparison`].
+    keys: ComparisonKeys,
+}
+
+/// The recording's side of a stored comparison: where it happened, what it
+/// served, whether it may be kept at all.
+struct ComparisonKeys {
+    session_id: String,
+    /// Of the whole session: end-of-session taint and surface readability.
+    provenance: Provenance,
+    goal_kind: Option<mecha_core::goal::GoalKind>,
+    message_index: Option<usize>,
+    call_index: Option<usize>,
+    call: Option<CallClass>,
 }
 
 enum ProbeMethod {
@@ -206,6 +227,125 @@ impl ProbePrep {
     pub fn recorded_specs(&self) -> &[mecha_core::message::ToolSpec] {
         &self.recorded_specs
     }
+
+    /// Whether a comparison drawn from this recording may be stored: the
+    /// session's end-of-run taint and its surface's readability.
+    pub fn provenance(&self) -> Provenance {
+        self.keys.provenance
+    }
+
+    /// The validator that grades this probe's arms — decided by the method,
+    /// so a caller cannot label a judge-graded followup as structural.
+    pub fn validator(&self) -> Validator {
+        match &self.method {
+            ProbeMethod::Trace { point, .. } => match point.kind {
+                mecha_core::counterfactual::ProbeKind::Steer => Validator::StructuralSteer,
+                mecha_core::counterfactual::ProbeKind::Denial { .. } => Validator::StructuralDenial,
+            },
+            ProbeMethod::Followup { .. } => Validator::Judge,
+            ProbeMethod::Artifact { .. } => Validator::ArtifactGold,
+        }
+    }
+
+    /// The rules hash the recorded run carried — the policy of an arm that
+    /// runs the recorded prompt as it was.
+    pub fn recorded_rules_hash(&self) -> Option<String> {
+        self.recorded.rules_hash.clone()
+    }
+
+    /// The situation recorded at an intervention whose tool window is
+    /// `tools_before`, on the keys the covering run record was matched on —
+    /// the same construction the miner stamps on a reflection.
+    pub fn situation_at(&self, tools_before: &[String], trigger: &str) -> Situation {
+        Situation::recorded(
+            tools_before,
+            trigger,
+            self.recorded.rules_surface,
+            self.recorded.rules_workspace.as_deref(),
+        )
+    }
+
+    /// A comparison over `arms`, keyed on this recording. Its verdict is
+    /// derived from the arms (`Verdict::of`), never passed in.
+    pub fn comparison(
+        &self,
+        kind: Kind,
+        situation: Option<Situation>,
+        arms: Vec<Arm>,
+        model: &str,
+    ) -> Result<Comparison> {
+        Ok(Comparison::new(
+            kind,
+            situation,
+            self.keys.goal_kind,
+            self.keys.call.clone(),
+            arms,
+            self.validator(),
+            Pointers {
+                session_id: self.keys.session_id.clone(),
+                message_index: self.keys.message_index,
+                call_index: self.keys.call_index,
+                tools_hash: self.recorded.tools_hash.clone(),
+                input_hash: Some(self.input_hash()?),
+                ..Pointers::default()
+            },
+            model,
+        ))
+    }
+}
+
+/// What the comparison store did with a pass's comparisons, counted apart:
+/// a refusal is not a write, and a pass that refused everything must not
+/// read as one that had nothing to store.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct StoredTally {
+    pub written: usize,
+    /// The session held third-party content, or its taint is unknown.
+    pub refused_not_clean: usize,
+    /// The recorded tool surface is not readable.
+    pub refused_surface: usize,
+}
+
+impl StoredTally {
+    pub fn count(&mut self, r: Recorded) {
+        match r {
+            Recorded::Written => self.written += 1,
+            Recorded::Refused(Refusal::NotClean) => self.refused_not_clean += 1,
+            Recorded::Refused(Refusal::SurfaceUnreadable) => self.refused_surface += 1,
+        }
+    }
+
+    pub fn add(&mut self, other: StoredTally) {
+        self.written += other.written;
+        self.refused_not_clean += other.refused_not_clean;
+        self.refused_surface += other.refused_surface;
+    }
+
+    /// One line for a report; `None` when no comparison was offered at all.
+    pub fn line(&self) -> Option<String> {
+        (self.written + self.refused_not_clean + self.refused_surface > 0).then(|| {
+            format!(
+                "{} comparison(s) stored; not stored: {} from a session that was not clean, \
+                 {} with no readable tool surface",
+                self.written, self.refused_not_clean, self.refused_surface
+            )
+        })
+    }
+}
+
+/// Store one comparison drawn from `prep`, through the store's provenance
+/// door. An I/O failure is an error — the caller paid for this verdict.
+pub fn store_comparison(
+    store: &ComparisonStore,
+    provenance: Provenance,
+    comparison: &Comparison,
+    tally: &mut StoredTally,
+) -> Result<()> {
+    let r = store
+        .record(provenance, comparison)
+        .with_context(|| format!("storing comparison in {}", store.root().display()))?;
+    tally.count(r);
+    Ok(())
 }
 
 /// Load the recording behind a steer/denial reflection. `Err(reason)` in the
@@ -336,12 +476,46 @@ pub fn prepare_probe_in(
         .as_deref()
         .and_then(|h| mecha_core::surface::SurfaceStore::open_default()?.load(h))
         .unwrap_or_default();
+    // The decision point's call: for a denial the refused call, for a steer
+    // the last call before it — the results the steer rode in beside. A
+    // followup is a later user turn and sits at no call.
+    let (call_index, call) = match &method {
+        ProbeMethod::Trace {
+            trajectory, point, ..
+        } => {
+            let call = match &point.kind {
+                mecha_core::counterfactual::ProbeKind::Denial { name, input } => {
+                    CallClass::of(name, input, &recorded_specs)
+                }
+                mecha_core::counterfactual::ProbeKind::Steer => point
+                    .call_index
+                    .checked_sub(1)
+                    .and_then(|i| trajectory.calls.get(i))
+                    .and_then(|c| CallClass::of(&c.name, &c.input, &recorded_specs)),
+            };
+            (Some(point.call_index), call)
+        }
+        ProbeMethod::Followup { .. } | ProbeMethod::Artifact { .. } => (None, None),
+    };
+    let keys = ComparisonKeys {
+        session_id: transcript.meta.id.clone(),
+        provenance: Provenance::of_transcript(
+            &transcript,
+            recorded.tools_hash.as_deref(),
+            &recorded_specs,
+        ),
+        goal_kind: transcript.convo.goal_anchor.as_ref().map(|g| g.goal_kind()),
+        message_index: Some(message_index),
+        call_index,
+        call,
+    };
     Ok(Ok(ProbePrep {
         method,
         recorded,
         recorded_specs,
         base_system,
         recorded_system,
+        keys,
     }))
 }
 
@@ -416,10 +590,24 @@ fn prepare_mismatch(sessions_dir: &Path, r: &Reflexion) -> Result<Result<ProbePr
         mecha_core::mismatch::validate_recording(&recorded)?;
         let registry = mecha_core::mismatch::registry(&recorded.tools)?;
         let recorded_system = recorded.system_prompt.clone().unwrap_or_default();
+        let recorded_specs = registry.specs();
+        let keys = ComparisonKeys {
+            session_id: transcript.meta.id.clone(),
+            provenance: Provenance::of_transcript(
+                &transcript,
+                recorded.tools_hash.as_deref(),
+                &recorded_specs,
+            ),
+            goal_kind: transcript.convo.goal_anchor.as_ref().map(|g| g.goal_kind()),
+            message_index: Some(at),
+            call_index: None,
+            call: None,
+        };
         Ok(ProbePrep {
             base_system: strip_rules_block(&recorded_system),
             recorded_system,
-            recorded_specs: registry.specs(),
+            recorded_specs,
+            keys,
             recorded,
             method: ProbeMethod::Artifact {
                 case,
@@ -649,6 +837,26 @@ pub async fn probe_reflection(
         Err(why) => return Ok(ProbeResult::Skipped(why)),
     };
     let (baseline_block, treatment_block) = arms(&prep.situation())?;
+    // The arms as policies, for the stored comparison: the current set (or
+    // none, when nothing rides in this situation) against the candidate.
+    let policies = [
+        (
+            if baseline_block.is_some() {
+                Role::Rules
+            } else {
+                Role::RulesFree
+            },
+            Some(mecha_core::learning::rules_hash(
+                baseline_block.as_deref().unwrap_or_default(),
+            )),
+        ),
+        (
+            Role::Candidate,
+            Some(mecha_core::learning::rules_hash(
+                treatment_block.as_deref().unwrap_or_default(),
+            )),
+        ),
+    ];
     // Two identical arms measure nothing and would grade as "unchanged" —
     // a verdict the caller counts. Reachable once rules are scoped: a
     // candidate whose new rules match no tool the recorded run carried
@@ -673,9 +881,26 @@ pub async fn probe_reflection(
             Err(why) => return Ok(ProbeResult::Skipped(why)),
         }
     }
+    let mut comparison = prep.comparison(
+        Kind::Gate,
+        // Unknown stays unknown: a reflection from before situations were
+        // recorded has none, and an empty-keyed stand-in would be standing.
+        r.situation.clone(),
+        policies
+            .into_iter()
+            .zip(&verdicts)
+            .map(|((role, policy), v)| Arm::new(role, policy, Outcome::from(v)))
+            .collect(),
+        model,
+    )?;
+    comparison.pointers.reflection_id = Some(r.id.clone());
     let treatment = verdicts.pop().expect("two arms drove");
     let baseline = verdicts.pop().expect("two arms drove");
-    Ok(ProbeResult::Verdicts(baseline, treatment))
+    Ok(ProbeResult::Verdicts(
+        baseline,
+        treatment,
+        Box::new((comparison, prep.provenance())),
+    ))
 }
 
 /// Fold a pair of arm verdicts into the label the reports print, updating the
