@@ -208,6 +208,10 @@ const PROMPT_CAP: usize = 4_000;
 /// Consecutive failed status polls before a job is abandoned.
 const POLL_FAILURES: u32 = 3;
 
+/// How many polls to wait for an interrupted job to reach the server's
+/// history before deleting it from there.
+const FORGET_WAIT_POLLS: u32 = 10;
+
 /// ComfyUI's graph for one generation with Qwen-Image 2.1 — text to image,
 /// or an edit when `uploaded` names reference images already on the server.
 ///
@@ -476,8 +480,25 @@ impl ComfyUi {
             .any(|job| job.get(1).and_then(Value::as_str) == Some(id))
         {
             let _ = self.post_json("interrupt", &json!({"prompt_id": id})).await;
+            // `/interrupt` answers when the flag is set, not when the job has
+            // stopped; the server writes the interrupted job into its history
+            // as it unwinds, after that. A delete sent now arrives before the
+            // record exists and deletes nothing, leaving the prompt behind
+            // (found on review of #306). So wait, briefly, for the record.
+            for _ in 0..FORGET_WAIT_POLLS {
+                let recorded = self
+                    .get_json(&format!("history/{id}"))
+                    .await
+                    .ok()
+                    .is_some_and(|h| h.get(id).is_some());
+                if recorded {
+                    break;
+                }
+                tokio::time::sleep(self.poll).await;
+            }
         }
-        // A cancelled or interrupted job is still recorded, prompt and all.
+        // A cancelled or interrupted job is still recorded, prompt and all. A
+        // job taken off the queue before it ran never reaches the history.
         self.forget(id).await;
     }
 
@@ -1181,6 +1202,9 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&seen);
         let history = Arc::new(Mutex::new(std::collections::VecDeque::from(history)));
+        // Like the real server: an interrupted job is written to the history
+        // only after `/interrupt` has answered.
+        let interrupted = Arc::new(std::sync::atomic::AtomicBool::new(false));
         tokio::spawn(async move {
             loop {
                 let Ok((mut sock, _)) = listener.accept().await else {
@@ -1188,6 +1212,7 @@ mod tests {
                 };
                 let log = Arc::clone(&log);
                 let history = Arc::clone(&history);
+                let interrupted = Arc::clone(&interrupted);
                 tokio::spawn(async move {
                     let mut req = Vec::new();
                     let mut tmp = [0u8; 8192];
@@ -1239,6 +1264,9 @@ mod tests {
                                 .to_string()
                                 .as_bytes(),
                         )
+                    } else if path.starts_with("/history/") && interrupted.load(Ordering::SeqCst) {
+                        json_reply(json!({"job-1": {"status": {"status_str": "error",
+                            "completed": false}, "outputs": {}}}))
                     } else if path.starts_with("/history/") {
                         let next = history.lock().unwrap().pop_front().unwrap_or(json!({}));
                         if next == json!("fail") {
@@ -1250,6 +1278,9 @@ mod tests {
                         reply("200 OK", "image/png", PNG)
                     } else if path == "/upload/image" {
                         json_reply(json!({"name": "up.png", "subfolder": "", "type": upload_type}))
+                    } else if path == "/interrupt" {
+                        interrupted.store(true, Ordering::SeqCst);
+                        json_reply(json!({}))
                     } else if line.starts_with("GET /queue") {
                         let now = if running { "job-1" } else { "someone-else" };
                         json_reply(
@@ -1580,6 +1611,16 @@ mod tests {
             seen.iter()
                 .any(|l| l.starts_with("POST /history") && l.contains("job-1")),
             "a cancelled job left its prompt in the server's history"
+        );
+        // And the delete waited for the record: a history read sits between
+        // the interrupt and the delete, or the delete raced the record.
+        let at = |p: &str| seen.iter().position(|l| l.starts_with(p)).unwrap();
+        let (interrupt, delete) = (at("POST /interrupt"), at("POST /history"));
+        assert!(
+            seen[interrupt..delete]
+                .iter()
+                .any(|l| l.starts_with("GET /history/job-1")),
+            "the delete was sent before the interrupted job reached the history: {seen:?}"
         );
         assert!(!dir.join("images").exists(), "nothing saved");
         std::fs::remove_dir_all(dir).ok();
