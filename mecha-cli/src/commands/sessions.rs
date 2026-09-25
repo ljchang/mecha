@@ -747,7 +747,7 @@ fn text_appraisal_readout(session: Option<&str>, limit: Option<usize>, json: boo
         }
         None => rows,
     };
-    rows.sort_by(|a, b| b.at.cmp(&a.at));
+    rows.sort_by_key(|r| std::cmp::Reverse(r.at));
     if let Some(n) = limit {
         rows.truncate(n);
     }
