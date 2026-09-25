@@ -176,7 +176,7 @@ pub(crate) fn steer_comparison(
     let policy = prep.recorded_rules_hash();
     prep.comparison(
         Kind::SteerProbe,
-        prep.situation_at(&i.tools_before, i.trigger.as_str()),
+        Some(prep.situation_at(&i.tools_before, i.trigger.as_str())),
         vec![
             Arm::new(Role::Recorded, policy.clone(), Outcome::Pass),
             Arm::new(Role::WithoutIntervention, policy, Outcome::from(unsteered)),
@@ -627,12 +627,13 @@ mod tests {
             .iter()
             .all(|a| a.policy.as_deref() == Some("rules-then")));
         assert_eq!(row.goal_kind, Some(mecha_core::goal::GoalKind::Task));
+        let situation = row.situation.as_ref().expect("the steer's window is known");
         assert_eq!(
-            row.situation.scope().tools,
+            situation.scope().tools,
             vec!["fs_list".to_string(), "fs_read".to_string()]
         );
         assert_eq!(
-            row.situation.surface,
+            situation.surface,
             Some(mecha_core::session::SessionKind::Tui)
         );
         let call = row.call.as_ref().expect("the call the steer rode beside");

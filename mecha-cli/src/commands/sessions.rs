@@ -517,14 +517,6 @@ fn first_line(s: &str) -> String {
     }
 }
 
-/// The `--json` probe block.
-///
-/// Rendered from `Tally` itself rather than a hand-listed set of keys: a
-/// channel added to the struct and forgotten here reads as zero, and zero on a
-/// no-finding channel is the opposite of the truth it hides. Extracted so
-/// `the_probe_readout_renders_every_channel` can pin *this* function — a test
-/// that serializes a `Tally` of its own proves only that the derive works, and
-/// would stay green while this was rewritten back to `json!({...})`.
 /// What the comparison store holds: `Ok(None)` when there is no store yet,
 /// `Err` when it could not be read — a finding, not an empty store.
 type OnRecord = std::result::Result<Option<(mecha_core::comparison::Summary, usize)>, String>;
@@ -592,6 +584,14 @@ fn comparisons_line(on_record: &OnRecord) -> String {
     }
 }
 
+/// The `--json` probe block.
+///
+/// Rendered from `Tally` itself rather than a hand-listed set of keys: a
+/// channel added to the struct and forgotten here reads as zero, and zero on a
+/// no-finding channel is the opposite of the truth it hides. Extracted so
+/// `the_probe_readout_renders_every_channel` can pin *this* function — a test
+/// that serializes a `Tally` of its own proves only that the derive works, and
+/// would stay green while this was rewritten back to `json!({...})`.
 fn probe_json(tally: crate::appraisal_probe::Tally, budget: usize) -> serde_json::Value {
     let mut o = serde_json::to_value(tally).unwrap_or_default();
     if let Some(m) = o.as_object_mut() {
