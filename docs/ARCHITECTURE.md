@@ -387,6 +387,29 @@ workspace**. Six decisions, each a bug if undone:
 unknown fields, so a binary older than this section refuses a config that has
 it — every mecha process, the cron triggers included.
 
+**Editing is the same tool with `reference_images`**: up to four workspace
+paths — a photo the owner attached (`inbox/`) or an earlier result
+(`images/`) — each resolved through the jail, capped at 25 MB, and sniffed by
+magic number (PNG, JPEG, WebP) before anything reaches the server. They are
+uploaded to ComfyUI's *temp* directory, which it empties on start, so a
+private photo is not left in its `input/`; the encoder takes the VAE and splices
+them in as latents, and the canvas follows the first reference's shape unless
+a size is asked for. The pixels go to the loopback server and never into the
+conversation, so the capabilities do not change. Two rules:
+
+- **An edit always samples at a fresh seed.** Measured on 2026-09-25: four
+  edits sampled at the seed that drew the reference came back as near-copies,
+  the instruction barely landing, across every model file tried; the same
+  edit at a fresh seed was clean. The rule is keyed on "this is an edit", not
+  on recognising the file — a first cut read the seed off the saved file's
+  name, and a re-attached download or renamed copy carried the same seed with
+  no name to read it from (found on review of #306). A seed the model passes
+  with references is replaced and the result says so; structural, because a
+  text-to-image result tells the model its seed keeps the composition.
+- **The web chat's Edit button starts a sentence, it does not send one** —
+  `Edit images/…png: ` in the input, cursor after it. The path is what lets
+  the model name the right reference; the change is the owner's to describe.
+
 The model cannot see what it made — images enter a conversation on user turns
 only (§Images) — so the result says so and hands the seed back: revising is
 an edited prompt with the same seed. The web chat shows the picture under the
@@ -663,7 +686,8 @@ match when several fit with different tool windows; `set_situations`
 writes only where the field is absent and stamps
 `situation_recomputed_at`, so a situation recorded at mining is never
 overwritten and the pass is idempotent. Absent is honest and never a
-guess: the goal is not backfilled, and a reflection with no transcript (an
+guess: the reflection's `goals` are not backfilled (its situation's goal
+key is, off the run record like the other keys), and a reflection with no transcript (an
 outbox edit) or whose intervention a compaction has since removed keeps
 batching as standing. At run start
 `setup::build` renders the block after builtins, MCP servers and subagents
@@ -679,13 +703,16 @@ matched the block against (`setup::prepare_tools` canonicalises it) and
 the surface the front-end told it (`GlobalOpts::surface`, set by the
 front-end that owns the run and never by a flag; the test override marks
 the session record and never the match, or every `mecha exp` trial and
-smoke test would render a block with no surface-scoped rule). The
+smoke test would render a block with no surface-scoped rule), and since
+2026-09-25 the goal the front-end handed it (`GlobalOpts::goal`; below). The
 workspace is matched exactly (a jail is not a prefix) and so is the
 surface, and a run that records neither matches neither. **The recorded
 key is the matched key by construction:** the run record keeps them as
-`RunConfig::rules_workspace` and `rules_surface`, and the miner, the
-backfill, the validator's region and the probe read those — never the
-session's jail and never `SessionMeta::kind`, which differ from them
+`RunConfig::rules_workspace`, `rules_surface` and `rules_goal`, and the miner, the
+backfill, the validator's region, the probe, the planning examples and the
+appraisal store's situation read those — never the
+session's jail, never `SessionMeta::kind` and never the conversation's goal
+anchor, which differ from them
 wherever one block serves many sessions (`serve` renders against the
 producer root and jails each session below it, and its board door
 records a task while the block was matched as web; Slack renders against
@@ -706,7 +733,28 @@ conviction in one workspace narrows the rule to the one it held in. A
 rule scoped before the key carries no workspace and rides in every
 workspace as it did — rewritable only by a batch whose region has none
 either, so a single-workspace batch shows it as context rather than
-narrowing it on no conviction. `Situation::scope` and
+narrowing it on no conviction. **The goal is a scope key** (built
+2026-09-25 as `APPRAISAL-WIRING-DESIGN.md` 2c-1, proposal M1): the whole
+reference, kind and id (`trigger:morning`), since the design keys on *the
+same goal* and the kind alone would repeat the surface. It is what the
+front-end handed `prepare` from a store the owner wrote — `tasks work` its
+task, a trigger run its trigger, `run --goal` the owner's pointer, a
+question continuation the asking run's recorded one; `serve` and the front
+door render one block for many runs and the conversational front-ends have
+no structural goal, so they declare none — and a rule scoped to it loads
+only in a run matched toward that goal. **An absent goal never widens a
+scope** (APPRAISAL-RESEARCH §8.4): a run toward none, or toward a goal this
+build cannot name, matches no goal-scoped rule; a stored goal this build
+cannot name is kept verbatim (`situation::GoalKey::Unread`) on the scope
+and on the run record, matches nothing, is reported at startup and by the
+roster, and is never read as none. A rule mined with no goal — every one
+before the key — loads under every goal as it did. Region and widening
+needed no edit: members toward different goals share none, so the region
+drops the key and a verbatim restatement from another goal's batch widens
+by intersection. Nothing is reconciled: no row carried a goal before
+`rules_goal`, and every door stamps it from that field. The block is still
+rendered once, at `prepare`, so no goal toggles the prefix mid-run.
+`Situation::scope` and
 `Situation::matches` are pinned together by a test so a key cannot join
 one without the other. The incident: 42 of
 45 reflections were `behavior`, and a lesson about `shell` refused in one
@@ -4937,6 +4985,14 @@ row's `project_id`, a trigger's charter line its file's optional `serves`
 at load by `Trigger::check_serves`, refusing the trigger when the line is
 missing or the charter unreadable). One pointer, the tier the run was handed;
 the chain above it is read from the stores that own it.
+**The anchor is not the scope key.** A learned rule is matched toward the
+goal the front-end handed `prepare` (`GlobalOpts::goal`, recorded as
+`RunConfig::rules_goal`; the learning paragraph under *Security model*),
+which is the anchor's structural seed where the front-end has one — `tasks
+work`, a trigger run, `run --goal` — and none on `serve` and the front door,
+whose one block serves many anchored runs. The two can differ within a run
+(a hand-over resumed on an older task, a goal the owner confirms mid-run),
+and what a lesson is stamped with is what the block was matched on.
 
 **`tasks.rs::appraise_session_with` deliberately does not call `appraisal::for_session`**,
 which does the identical assembly. `for_session` folds "could not read the file"
