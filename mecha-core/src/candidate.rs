@@ -230,6 +230,46 @@ pub struct Judgement {
     /// that improves its metric by attempting less has not improved anything.
     pub work_baseline: u64,
     pub work_candidate: u64,
+    /// The numeric comparison read as a **guard** rather than a decider
+    /// (R26, refined by R36): is the candidate worse somewhere? Typed apart
+    /// from `disposition`, because "did not beat the original" — a missing
+    /// win — and "made something worse" — a regression — are opposite
+    /// findings once a point-wise win can carry a candidate the numbers did
+    /// not. See [`combine`].
+    pub guard: Guard,
+}
+
+/// The numeric comparison as R26's no-regression guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Guard {
+    /// Nothing measured got worse. Includes a candidate that did not beat
+    /// the original: that is a missing win, never a regression.
+    Held,
+    /// Something got worse. Vetoes any point-wise win.
+    Regressed(Regression),
+    /// A cost appeared on a metric the candidate did not predict, from
+    /// nothing: the intended effect of some changes and a regression for
+    /// others, so a person's call whatever the point-wise comparison said.
+    NewCost(Metric),
+    /// Too few paired episodes in a slice to rule a regression out —
+    /// unknown is never clean, so a point-wise win over it reaches a person.
+    Unmeasured,
+}
+
+/// What got worse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Regression {
+    /// Work fell below [`WORK_FLOOR`]: a gain bought by attempting less —
+    /// the "do nothing" policy that wins every rejected-draft point.
+    WorkFloor,
+    /// The predicted metric itself came out worse on more episodes than it
+    /// came out better, in either slice.
+    PredictedMetric,
+    /// A metric the candidate did not predict rose past
+    /// [`REGRESSION_CEILING`].
+    UnpredictedMetric(Metric),
 }
 
 /// Below this many paired episodes in a slice, a difference is not evidence.
@@ -354,14 +394,11 @@ pub fn is_holdout(episode: &str, holdout_in: u64) -> bool {
 /// it would make one of the four overridable knobs unusable by construction.
 /// See the branch itself.
 fn guard_regressions<'a>(
-    j: Judgement,
+    mut j: Judgement,
     predicted: Metric,
     pairs: impl Iterator<Item = &'a Pair> + Clone,
 ) -> Judgement {
-    if j.disposition != Disposition::Accept {
-        return j;
-    }
-    // **Every metric is examined before anything is returned, because the two
+    // **Every metric is examined before anything is decided, because the two
     // outcomes are not equally serious and they were racing on array order.**
     // A `0 → nonzero` proposal returned immediately, so a genuine ratio breach
     // on a metric later in `Metric::ALL` was never reached: the reviewer got
@@ -369,11 +406,9 @@ fn guard_regressions<'a>(
     // which" and never saw that something else had also doubled. `Compactions`
     // sits at index 3 and `MalformedArgs` at 5, so the pair that hides the
     // worse finding behind the milder one is reachable rather than theoretical.
-    //
-    // A `Reject` still returns as soon as it is found — it is the strongest
-    // verdict available and nothing later can outrank it. Only the `Propose`
-    // waits.
-    let mut appeared: Option<String> = None;
+    // A breach outranks an appearance wherever either sits in the order.
+    let mut breach: Option<(Metric, f64, f64)> = None;
+    let mut appeared: Option<(Metric, f64)> = None;
     for metric in Metric::ALL {
         if metric == predicted {
             continue;
@@ -383,15 +418,8 @@ fn guard_regressions<'a>(
         };
         let (before, after) = (total(|p| &p.baseline), total(|p| &p.candidate));
         if before > 0.0 {
-            if after > before * REGRESSION_CEILING {
-                return Judgement {
-                    disposition: Disposition::Reject(format!(
-                        "predicted a lower {predicted:?} and got one, but {metric:?} rose from \
-                         {before:.2} to {after:.2} across the same episodes: a win paid for on \
-                         a metric nobody was watching is not a win"
-                    )),
-                    ..j
-                };
+            if after > before * REGRESSION_CEILING && breach.is_none() {
+                breach = Some((metric, before, after));
             }
         } else if after > 0.0 && appeared.is_none() {
             // **A cost appearing from nothing reaches a person; it does not
@@ -409,21 +437,45 @@ fn guard_regressions<'a>(
             // happening, which is the point" from "malformed arguments
             // appeared, which is not" — and a reader can. So it never
             // auto-accepts, and it never silently refuses either.
-            appeared = Some(format!(
-                "predicted a lower {predicted:?} and got one, but {metric:?} rose from \
-                 nothing to {after:.2} across the same episodes — a cost that was not there \
-                 before. That is the intended effect for some changes and a regression for \
-                 others, and only a person can tell which"
-            ));
+            appeared = Some((metric, after));
         }
     }
-    match appeared {
-        Some(why) => Judgement {
-            disposition: Disposition::Propose(why),
-            ..j
-        },
-        None => j,
+    // The typed guard (R26's no-regression half, R36), whatever the
+    // disposition: a breach is a regression even on a candidate the numbers
+    // did not carry, because a point-wise win may be about to.
+    match (breach, appeared) {
+        (Some((metric, _, _)), _) => {
+            if !matches!(j.guard, Guard::Regressed(_)) {
+                j.guard = Guard::Regressed(Regression::UnpredictedMetric(metric));
+            }
+        }
+        (None, Some((metric, _))) => {
+            if matches!(j.guard, Guard::Held | Guard::Unmeasured) {
+                j.guard = Guard::NewCost(metric);
+            }
+        }
+        (None, None) => {}
     }
+    // The disposition, exactly as before the guard was typed: only an
+    // `Accept` is touched.
+    if j.disposition != Disposition::Accept {
+        return j;
+    }
+    if let Some((metric, before, after)) = breach {
+        j.disposition = Disposition::Reject(format!(
+            "predicted a lower {predicted:?} and got one, but {metric:?} rose from \
+             {before:.2} to {after:.2} across the same episodes: a win paid for on \
+             a metric nobody was watching is not a win"
+        ));
+    } else if let Some((metric, after)) = appeared {
+        j.disposition = Disposition::Propose(format!(
+            "predicted a lower {predicted:?} and got one, but {metric:?} rose from \
+             nothing to {after:.2} across the same episodes — a cost that was not there \
+             before. That is the intended effect for some changes and a regression for \
+             others, and only a person can tell which"
+        ));
+    }
+    j
 }
 
 pub fn judge(
@@ -563,12 +615,27 @@ pub fn judge_slices<T>(
     let work_baseline = sum(&selection, |(b, _)| b) + sum(&holdout, |(b, _)| b);
     let work_candidate = sum(&selection, |(_, c)| c) + sum(&holdout, |(_, c)| c);
 
+    // The guard, in the order a regression outranks thin evidence: a loss a
+    // small slice *found* is still a loss (the ordering the holdout check
+    // below keeps too). "Did not beat" — selection wins equal to losses — is
+    // held, not regressed.
+    let guard = if work_baseline > 0 && (work_candidate as f64) < work_baseline as f64 * WORK_FLOOR
+    {
+        Guard::Regressed(Regression::WorkFloor)
+    } else if sel.losses > sel.wins || hold.losses > hold.wins {
+        Guard::Regressed(Regression::PredictedMetric)
+    } else if sel.total() < MIN_SELECTION_PAIRS || hold.total() < MIN_HOLDOUT_PAIRS {
+        Guard::Unmeasured
+    } else {
+        Guard::Held
+    };
     let judgement = |disposition| Judgement {
         disposition,
         selection: sel.clone(),
         holdout: hold.clone(),
         work_baseline,
         work_candidate,
+        guard,
     };
 
     // Order matters: a guardrail breach is a rejection whatever the score, and
@@ -634,6 +701,163 @@ pub fn judge_slices<T>(
         )));
     }
     judgement(Disposition::Accept)
+}
+
+// ─── R26 as refined by R36: point-wise decides, the numbers guard ──────────
+
+/// Decided points a point-wise comparison needs before it may decide for or
+/// against a candidate (R36). A decided point is one where both arms reached
+/// a pass or a fail under a structural validator; an inconclusive or unposed
+/// one says nothing either way. Four matches [`MIN_HOLDOUT_PAIRS`] — the
+/// smallest slice this gate already lets confirm anything — and there is no
+/// separate holdout (R36): every point is graded against the owner's own
+/// recorded verdict, which nothing selected.
+pub const MIN_DECIDED_POINTS: usize = 4;
+
+/// Points a candidate is compared at in one measurement (R36): 2d-1's
+/// default budget, so a measured candidate costs at most what one nightly
+/// `sessions compare` pass does.
+pub const POINTS_PER_CANDIDATE: usize = crate::pointwise::DEFAULT_POINTS;
+
+/// What a candidate's point-wise comparison found, counted over the points
+/// driven for it: at each, the baseline arm (the run's recorded config) and
+/// the candidate arm (the same, with the change applied).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PointwiseTally {
+    /// Both arms reached a pass or a fail.
+    #[serde(default)]
+    pub decided: usize,
+    /// Of those, the candidate passed where the baseline failed.
+    #[serde(default)]
+    pub candidate_only: usize,
+    /// Of those, the baseline passed where the candidate failed.
+    #[serde(default)]
+    pub baseline_only: usize,
+    /// Points compared where an arm was inconclusive — no evidence either way.
+    #[serde(default)]
+    pub undecided: usize,
+}
+
+/// Which way a point-wise comparison went (R36).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PointwiseVerdict {
+    /// At least [`MIN_DECIDED_POINTS`] decided, and strictly more
+    /// candidate-only passes than baseline-only ones.
+    For,
+    /// At least [`MIN_DECIDED_POINTS`] decided, and strictly more
+    /// baseline-only passes.
+    Against,
+    /// Too few decided points, or as many each way (ties included).
+    Undecided,
+}
+
+impl PointwiseTally {
+    /// Count one compared point from its two arms' outcomes, baseline first.
+    pub fn count(
+        &mut self,
+        baseline: crate::comparison::Outcome,
+        candidate: crate::comparison::Outcome,
+    ) {
+        use crate::comparison::Outcome::{Fail, Pass};
+        match (baseline, candidate) {
+            (Pass, Fail) => {
+                self.decided += 1;
+                self.baseline_only += 1;
+            }
+            (Fail, Pass) => {
+                self.decided += 1;
+                self.candidate_only += 1;
+            }
+            (Pass, Pass) | (Fail, Fail) => self.decided += 1,
+            _ => self.undecided += 1,
+        }
+    }
+
+    pub fn verdict(&self) -> PointwiseVerdict {
+        if self.decided < MIN_DECIDED_POINTS {
+            return PointwiseVerdict::Undecided;
+        }
+        match self.candidate_only.cmp(&self.baseline_only) {
+            std::cmp::Ordering::Greater => PointwiseVerdict::For,
+            std::cmp::Ordering::Less => PointwiseVerdict::Against,
+            std::cmp::Ordering::Equal => PointwiseVerdict::Undecided,
+        }
+    }
+}
+
+/// What decided a combined verdict — recorded on the measurement, so a
+/// reader can tell a point-wise decision from today's numeric-only one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Basis {
+    /// The point-wise comparison decided, for or against; the numbers
+    /// guarded.
+    Pointwise,
+    /// The point-wise comparison did not decide, so the numeric gate's own
+    /// verdict stands unchanged (R36, keeping the 2026-08-22 auto-accept).
+    NumericOnly,
+    /// A basis a newer build wrote.
+    #[serde(other)]
+    Unknown,
+}
+
+/// R26's acceptance rule as R36 refines it — pure, like the rest of the gate:
+///
+/// 1. **Point-wise for, and the numbers held** → `Accept`, when the class
+///    may be accepted by measurement at all; a `Security` or `Architecture`
+///    change still `Propose`s however it scored (a lane must not promote
+///    itself — the same `auto_acceptable` the numeric gate asks). The numbers "hold" when [`Guard::Held`]: nothing got worse,
+///    even if they did not beat the original. A regression
+///    ([`Guard::Regressed`]) rejects — the guard against winning a verdict
+///    by doing less — and a new cost or too few episodes to rule one out
+///    reaches a person.
+/// 2. **Point-wise against** → `Reject`, however the numbers came out.
+/// 3. **Point-wise undecided** → the numeric gate's verdict, unchanged,
+///    recorded as [`Basis::NumericOnly`].
+pub fn combine(
+    class: ChangeClass,
+    numeric: Judgement,
+    pointwise: &PointwiseTally,
+) -> (Judgement, Basis) {
+    let p = pointwise;
+    let points = format!(
+        "{} candidate-only and {} baseline-only pass(es) over {} decided point(s)",
+        p.candidate_only, p.baseline_only, p.decided
+    );
+    let disposition = match (pointwise.verdict(), numeric.guard) {
+        (PointwiseVerdict::Undecided, _) => return (numeric, Basis::NumericOnly),
+        (PointwiseVerdict::Against, _) => Disposition::Reject(format!(
+            "lost point-wise ({points}): at the owner's own decision points the current \
+             harness did what the owner decided more often than the candidate did"
+        )),
+        (PointwiseVerdict::For, Guard::Regressed(r)) => Disposition::Reject(format!(
+            "won point-wise ({points}) but the numeric comparison regressed ({r:?}): a \
+             verdict won by doing less is not a win (R26)"
+        )),
+        (PointwiseVerdict::For, Guard::NewCost(m)) => Disposition::Propose(format!(
+            "won point-wise ({points}), but {m:?} rose from nothing across the replayed \
+             episodes — the intended effect for some changes and a regression for others"
+        )),
+        (PointwiseVerdict::For, Guard::Unmeasured) => Disposition::Propose(format!(
+            "won point-wise ({points}), but too few episodes paired to rule a numeric \
+             regression out"
+        )),
+        (PointwiseVerdict::For, Guard::Held) if !class.auto_acceptable() => {
+            Disposition::Propose(format!(
+                "won point-wise ({points}) with no numeric regression, but a {class:?} change \
+                 is a person's decision however it scored"
+            ))
+        }
+        (PointwiseVerdict::For, Guard::Held) => Disposition::Accept,
+    };
+    (
+        Judgement {
+            disposition,
+            ..numeric
+        },
+        Basis::Pointwise,
+    )
 }
 
 /// Pair two arms by episode id, dropping anything that ran in only one.
@@ -1266,5 +1490,348 @@ mod prioritised_tests {
         // reached through the new entry point.
         let j = judge_drawn(ChangeClass::Config, &prediction, &selection, &holdout[..1]);
         assert!(matches!(j.disposition, Disposition::Propose(_)));
+    }
+}
+
+/// R26's acceptance rule as R36 refines it (row 2d-2): point-wise decides,
+/// the numbers guard, and an undecided point-wise pass leaves today's gate
+/// alone.
+#[cfg(test)]
+mod r36_tests {
+    use super::*;
+    use crate::comparison::Outcome;
+    use crate::counterfactual::{verdict, OwnerAct, ProbeKind, ProbePoint, ProbeVerdict};
+    use crate::replay_run::ReplayReport;
+    use serde_json::json;
+
+    fn run(tool_calls: u32, turns: u32) -> RunStats {
+        RunStats {
+            tool_calls,
+            turns,
+            ..RunStats::default()
+        }
+    }
+
+    /// `n` paired episodes: every baseline `(calls, turns)`, every candidate
+    /// `(calls', turns')`.
+    fn pairs(n: usize, tag: &str, baseline: (u32, u32), candidate: (u32, u32)) -> Vec<Pair> {
+        (0..n)
+            .map(|i| Pair {
+                episode: format!("{tag}-{i}"),
+                baseline: run(baseline.0, baseline.1),
+                candidate: run(candidate.0, candidate.1),
+            })
+            .collect()
+    }
+
+    fn turns() -> Prediction {
+        Prediction {
+            metric: Metric::Turns,
+            rationale: "fewer turns".into(),
+        }
+    }
+
+    fn tally(candidate_only: usize, baseline_only: usize, both: usize) -> PointwiseTally {
+        let mut t = PointwiseTally::default();
+        for _ in 0..candidate_only {
+            t.count(Outcome::Fail, Outcome::Pass);
+        }
+        for _ in 0..baseline_only {
+            t.count(Outcome::Pass, Outcome::Fail);
+        }
+        for _ in 0..both {
+            t.count(Outcome::Pass, Outcome::Pass);
+        }
+        t
+    }
+
+    /// One rejected-draft point, graded by the real structural validator.
+    fn rejected_draft() -> ProbePoint {
+        ProbePoint {
+            message_index: 5,
+            call_index: 2,
+            kind: ProbeKind::Draft {
+                tool: "mail_send".into(),
+                staged: json!({"to": "cleo@example.invalid", "body": "Q3 is done."}),
+                owner: OwnerAct::Rejected,
+                schema: json!({"type": "object", "properties": {}}),
+            },
+        }
+    }
+
+    fn arm(calls: Vec<crate::agent::ToolCallTrace>) -> ReplayReport {
+        ReplayReport {
+            divergences: Vec::new(),
+            replayed_calls: calls,
+            recorded_calls: 3,
+            turns: 0,
+            stopped_early: false,
+            final_text: String::new(),
+            stats: RunStats {
+                stop_cause: Some(crate::agent::StopCause::Completed),
+                ..RunStats::default()
+            },
+            call_base: 2,
+        }
+    }
+
+    /// **The do-nothing policy.** A candidate that makes the agent stop
+    /// before it drafts wins every rejected-draft point — the baseline
+    /// drafts the refused mail again, the candidate ends without drafting,
+    /// and the structural validator passes exactly that — so point-wise it
+    /// decides *for* the candidate. It did so by attempting less: its tool
+    /// calls fall to a fifth, below `WORK_FLOOR`. R26's numeric half is what
+    /// refuses it. Point-wise alone would have accepted it, which is the
+    /// assertion that fails without the combined rule.
+    #[test]
+    fn a_do_nothing_policy_that_wins_every_rejected_draft_point_is_refused() {
+        let point = rejected_draft();
+        let redrafts = arm(vec![crate::agent::ToolCallTrace {
+            name: "mail_send".into(),
+            input: json!({"to": "cleo@example.invalid", "body": "Q3 is done."}),
+            is_error: false,
+            denied: false,
+            unknown: false,
+            staged: true,
+        }]);
+        let does_nothing = arm(Vec::new());
+        assert_eq!(verdict(&redrafts, &point), ProbeVerdict::Fail);
+        assert_eq!(verdict(&does_nothing, &point), ProbeVerdict::Pass);
+        let mut points = PointwiseTally::default();
+        for _ in 0..POINTS_PER_CANDIDATE {
+            points.count(
+                Outcome::from(&verdict(&redrafts, &point)),
+                Outcome::from(&verdict(&does_nothing, &point)),
+            );
+        }
+        assert_eq!(
+            points.verdict(),
+            PointwiseVerdict::For,
+            "it wins every point"
+        );
+
+        // Fewer turns — the metric it predicted — bought with a fifth of the
+        // work on every replayed episode.
+        let numeric = judge_drawn(
+            ChangeClass::Config,
+            &turns(),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (2, 1)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (2, 1)),
+        );
+        assert_eq!(numeric.guard, Guard::Regressed(Regression::WorkFloor));
+        let (combined, basis) = combine(ChangeClass::Config, numeric, &points);
+        assert_eq!(basis, Basis::Pointwise);
+        assert!(
+            matches!(&combined.disposition, Disposition::Reject(why) if why.contains("WorkFloor")),
+            "a point-wise win bought by doing less is refused: {:?}",
+            combined.disposition
+        );
+    }
+
+    /// **The veto.** A point-wise loss rejects a candidate the numbers
+    /// accept outright.
+    #[test]
+    fn a_point_wise_loss_rejects_even_when_the_numbers_win() {
+        let numeric = judge_drawn(
+            ChangeClass::Config,
+            &turns(),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (10, 4)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (10, 4)),
+        );
+        assert_eq!(numeric.disposition, Disposition::Accept, "the numbers win");
+        let (combined, basis) = combine(ChangeClass::Config, numeric, &tally(1, 3, 1));
+        assert_eq!(basis, Basis::Pointwise);
+        assert!(
+            matches!(combined.disposition, Disposition::Reject(ref why) if why.contains("lost point-wise")),
+            "{:?}",
+            combined.disposition
+        );
+    }
+
+    /// **The fallback.** An undecided point-wise pass — too few decided
+    /// points, or as many each way — leaves the numeric verdict exactly as
+    /// it was, and says it was numeric only.
+    #[test]
+    fn an_undecided_point_wise_pass_leaves_the_numeric_verdict_unchanged() {
+        let accepted = judge_drawn(
+            ChangeClass::Config,
+            &turns(),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (10, 4)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (10, 4)),
+        );
+        let rejected = judge_drawn(
+            ChangeClass::Config,
+            &turns(),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (10, 6)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (10, 6)),
+        );
+        assert!(matches!(rejected.disposition, Disposition::Reject(_)));
+        for numeric in [accepted, rejected] {
+            for undecided in [
+                PointwiseTally::default(),
+                tally(3, 0, 0),
+                tally(2, 2, 3),
+                tally(0, 0, 8),
+            ] {
+                assert_eq!(undecided.verdict(), PointwiseVerdict::Undecided);
+                let (combined, basis) = combine(ChangeClass::Config, numeric.clone(), &undecided);
+                assert_eq!(basis, Basis::NumericOnly);
+                assert_eq!(combined.disposition, numeric.disposition);
+            }
+        }
+    }
+
+    /// A point-wise win over numbers that did not beat the original, but
+    /// made nothing worse, is accepted: "did not beat" is a missing win, not
+    /// a regression (the row's acceptance: "wins point-wise and holds").
+    #[test]
+    fn a_point_wise_win_over_numbers_that_held_is_accepted() {
+        let numeric = judge_drawn(
+            ChangeClass::Config,
+            &turns(),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (10, 6)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (10, 6)),
+        );
+        assert!(
+            matches!(numeric.disposition, Disposition::Reject(ref why) if why.contains("did not beat")),
+            "the numbers alone did not carry it"
+        );
+        assert_eq!(numeric.guard, Guard::Held, "and nothing got worse");
+        let (combined, basis) = combine(ChangeClass::Config, numeric, &tally(3, 1, 2));
+        assert_eq!(
+            (combined.disposition, basis),
+            (Disposition::Accept, Basis::Pointwise)
+        );
+    }
+
+    /// The typed split. A tie is held; worse on the predicted metric, work
+    /// below the floor, and an unpredicted metric past the ceiling are each
+    /// a regression; a cost from nothing is a new cost; too few episodes is
+    /// unmeasured — and a regression a thin slice found still regressed.
+    #[test]
+    fn the_guard_types_a_regression_apart_from_a_missing_win() {
+        let guard = |sel: Vec<Pair>, hold: Vec<Pair>| {
+            judge_drawn(ChangeClass::Config, &turns(), &sel, &hold).guard
+        };
+        let n = MIN_SELECTION_PAIRS;
+        let h = MIN_HOLDOUT_PAIRS;
+        assert_eq!(
+            guard(
+                pairs(n, "s", (10, 6), (10, 6)),
+                pairs(h, "h", (10, 6), (10, 6))
+            ),
+            Guard::Held
+        );
+        assert_eq!(
+            guard(
+                pairs(n, "s", (10, 6), (10, 8)),
+                pairs(h, "h", (10, 6), (10, 6))
+            ),
+            Guard::Regressed(Regression::PredictedMetric)
+        );
+        assert_eq!(
+            guard(
+                pairs(n, "s", (10, 6), (10, 4)),
+                pairs(h, "h", (10, 6), (10, 8))
+            ),
+            Guard::Regressed(Regression::PredictedMetric),
+            "a holdout loss"
+        );
+        assert_eq!(
+            guard(
+                pairs(n, "s", (10, 6), (5, 4)),
+                pairs(h, "h", (10, 6), (5, 4))
+            ),
+            Guard::Regressed(Regression::WorkFloor)
+        );
+        assert_eq!(
+            guard(
+                pairs(2, "s", (10, 6), (10, 6)),
+                pairs(1, "h", (10, 6), (10, 6))
+            ),
+            Guard::Unmeasured
+        );
+        assert_eq!(
+            guard(pairs(2, "s", (10, 6), (10, 8)), Vec::new()),
+            Guard::Regressed(Regression::PredictedMetric),
+            "a loss a thin slice found is still a loss"
+        );
+        let erroring = |mut p: Vec<Pair>, before: u32, after: u32| {
+            for x in &mut p {
+                x.baseline.tool_errors = before;
+                x.candidate.tool_errors = after;
+            }
+            p
+        };
+        assert_eq!(
+            guard(
+                erroring(pairs(n, "s", (10, 6), (10, 6)), 2, 5),
+                erroring(pairs(h, "h", (10, 6), (10, 6)), 2, 5)
+            ),
+            Guard::Regressed(Regression::UnpredictedMetric(Metric::ToolErrorRate)),
+            "found even on numbers that did not carry the candidate"
+        );
+        assert_eq!(
+            guard(
+                erroring(pairs(n, "s", (10, 6), (10, 6)), 0, 1),
+                erroring(pairs(h, "h", (10, 6), (10, 6)), 0, 1)
+            ),
+            Guard::NewCost(Metric::ToolErrorRate)
+        );
+    }
+
+    /// A point-wise win still reaches a person when the numbers cannot rule
+    /// a regression out, when a cost appeared from nothing, or when the class
+    /// is one measurement may never accept — a lane must not promote itself.
+    #[test]
+    fn a_point_wise_win_never_promotes_a_class_or_an_unguarded_candidate() {
+        let held = judge_drawn(
+            ChangeClass::Config,
+            &turns(),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (10, 6)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (10, 6)),
+        );
+        let win = tally(4, 0, 0);
+        for class in [ChangeClass::Security, ChangeClass::Architecture] {
+            let (combined, _) = combine(class, held.clone(), &win);
+            assert!(
+                matches!(combined.disposition, Disposition::Propose(_)),
+                "{class:?}: {:?}",
+                combined.disposition
+            );
+        }
+        for guard in [Guard::Unmeasured, Guard::NewCost(Metric::Compactions)] {
+            let numeric = Judgement {
+                guard,
+                ..held.clone()
+            };
+            let (combined, _) = combine(ChangeClass::Config, numeric, &win);
+            assert!(
+                matches!(combined.disposition, Disposition::Propose(_)),
+                "{guard:?}"
+            );
+        }
+    }
+
+    /// The thresholds: four decided points, strictly more one way.
+    #[test]
+    fn deciding_needs_four_decided_points_and_a_strict_majority() {
+        assert_eq!(MIN_DECIDED_POINTS, 4);
+        assert_eq!(tally(1, 0, 2).verdict(), PointwiseVerdict::Undecided);
+        assert_eq!(tally(1, 0, 3).verdict(), PointwiseVerdict::For);
+        assert_eq!(tally(0, 1, 3).verdict(), PointwiseVerdict::Against);
+        assert_eq!(tally(2, 2, 0).verdict(), PointwiseVerdict::Undecided);
+        let mut t = PointwiseTally::default();
+        for (b, c) in [
+            (Outcome::Inconclusive, Outcome::Pass),
+            (Outcome::Pass, Outcome::Unknown),
+        ] {
+            t.count(b, c);
+        }
+        assert_eq!(
+            (t.decided, t.undecided),
+            (0, 2),
+            "an inconclusive arm decides nothing"
+        );
     }
 }

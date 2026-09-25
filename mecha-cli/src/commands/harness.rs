@@ -375,6 +375,34 @@ enum Verdict {
 /// handful of runs and not about the harness — so rejecting on it would be
 /// refusing a proposal for want of evidence, which this design calls an
 /// absence of a verdict rather than a verdict. Thin evidence stages.
+/// One line for `harness show`: what the point-wise half of R26 found, and
+/// whether it or the numbers alone decided. A measurement from before the
+/// field says so — unknown, not "numeric only".
+fn pointwise_line(p: Option<&mecha_core::harness::PointwiseEvidence>) -> String {
+    let Some(p) = p else {
+        return "not recorded (measured before R36)".into();
+    };
+    let t = &p.tally;
+    format!(
+        "{} candidate-only, {} baseline-only over {} decided point(s), {} undecided — {:?}; \
+         decided by {}{}",
+        t.candidate_only,
+        t.baseline_only,
+        t.decided,
+        t.undecided,
+        t.verdict(),
+        match p.basis {
+            mecha_core::candidate::Basis::Pointwise => "the point-wise comparison",
+            mecha_core::candidate::Basis::NumericOnly => "the numbers alone",
+            mecha_core::candidate::Basis::Unknown => "a basis this build cannot read",
+        },
+        p.not_run
+            .as_deref()
+            .map(|why| format!(" ({why})"))
+            .unwrap_or_default()
+    )
+}
+
 fn measurement_verdict(runs: usize, no_headroom: bool) -> Verdict {
     if !measurable(runs) {
         return Verdict::CorpusTooSmall;
@@ -682,7 +710,37 @@ async fn measure(
         metric: cand.metric,
         rationale: cand.rationale.clone(),
     };
-    let judgement = judge_drawn(cand.class, &prediction, &selection_pairs, &holdout_pairs);
+    let numeric = judge_drawn(cand.class, &prediction, &selection_pairs, &holdout_pairs);
+    // R26 as R36 refines it (row 2d-2): the owner's own decision points,
+    // driven under the recorded config and under the change, decide; the
+    // numbers above guard. Undecided hands the verdict back to `numeric`
+    // unchanged, recorded as numeric only. Seeded like the draw, so a
+    // re-measurement draws the same points and reuses their comparisons.
+    let evidence = crate::pointwise_pass::compare_candidate(
+        &prepared,
+        provider_cfg,
+        model,
+        &change,
+        &cand.id,
+        draw.seed,
+    )
+    .await?;
+    let (judgement, basis) = mecha_core::candidate::combine(cand.class, numeric, &evidence.tally);
+    eprintln!(
+        "point-wise: {} candidate-only, {} baseline-only over {} decided point(s) \
+         ({} undecided) — {:?}; decided by {:?}{}",
+        evidence.tally.candidate_only,
+        evidence.tally.baseline_only,
+        evidence.tally.decided,
+        evidence.tally.undecided,
+        evidence.tally.verdict(),
+        basis,
+        evidence
+            .not_run
+            .as_deref()
+            .map(|why| format!(" ({why})"))
+            .unwrap_or_default()
+    );
     let episodes: Vec<String> = selection_pairs
         .iter()
         .chain(holdout_pairs.iter())
@@ -707,6 +765,12 @@ async fn measure(
 
     if let Some(measurement) = cand.measurement.as_mut() {
         measurement.arm_receipts = arm_receipts;
+        measurement.pointwise = Some(mecha_core::harness::PointwiseEvidence {
+            tally: evidence.tally,
+            basis,
+            not_run: evidence.not_run,
+            comparisons: evidence.comparisons,
+        });
     }
 
     println!(
@@ -850,6 +914,7 @@ fn show(id: &str) -> Result<()> {
         println!("selection:  {}", m.selection);
         println!("holdout:    {}", m.holdout);
         println!("work:       {} → {}", m.work_baseline, m.work_candidate);
+        println!("point-wise: {}", pointwise_line(m.pointwise.as_ref()));
         // Named by slice, because "which episodes confirmed this" is the
         // question a reader of a measurement actually has.
         let held: std::collections::HashSet<&str> =

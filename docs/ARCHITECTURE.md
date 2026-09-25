@@ -3746,7 +3746,8 @@ config plus the candidate change, recorded tool results both times, whole
 trajectory, `RunStats` as the label; the pool is four times the wanted count
 and the draw is `judge_drawn`'s two slices, not a hash partition) → judge →
 dispose. A config change that wins on selection, is confirmed on the holdout,
-and holds the work guardrail **auto-accepts** (§13.3, the owner ruling);
+and holds the work guardrail **auto-accepts** (§13.3, the owner ruling) —
+unless the point-wise comparison below decides, for or against (R26, R36);
 everything else stages for review or is rejected with the evidence attached.
 
 The decisions that carry it, each a bug if undone:
@@ -4022,8 +4023,56 @@ through the store above (a `point-*` `Kind` per point kind).
   then the rest of the pass deferred and counted — never the owner's
   reserved seat. **Local model only** (R29): `pointwise::on_this_machine`
   refuses a provider whose endpoint is not loopback before anything is read.
-- Not here: accepting a candidate from these comparisons (2d-2, R26), and
-  writing a losing arm into the session's appraisal (2d-3, O3).
+- Not here: writing a losing arm into the session's appraisal (2d-3, O3).
+
+### A candidate is accepted point-wise, guarded by the numbers
+
+`APPRAISAL-WIRING-DESIGN.md` R26, completed by R36; row 2d-2. Harness
+rumination's measurement (`commands/harness.rs::measure`, the one path that
+auto-accepts) now asks two questions of a config candidate, and
+`candidate::combine` — pure, beside the rest of the gate — answers from both:
+
+- **The point-wise half** (`pointwise_pass::compare_candidate`): up to
+  `candidate::POINTS_PER_CANDIDATE` (8) posed points, drawn with the
+  measurement's own seed, each driven twice — the recorded config
+  (`WithoutIntervention`) and the same with the change applied
+  (`Candidate`, through `probe::drive_arm_under`) — under the recorded
+  prompt, a `HORIZON_TURNS` horizon from the point, one background seat per
+  point. The horizon binds *after* the change (`probe::within_horizon`), so
+  a `max_turns` candidate cannot lengthen an arm, and a `compact_at_tokens`
+  one reaches the run context the way the whole-session arm's does. Each
+  comparison is stored with the candidate in `Pointers::proposal_id` — two
+  candidates share every rules hash at a point, so the dedup key
+  (`pointwise::on_record`) includes it — and a re-measurement reuses a
+  stored verdict rather than paying for it again. The tally
+  (`candidate::PointwiseTally`) decides **for** at `MIN_DECIDED_POINTS` (4)
+  decided points and strictly more candidate-only passes than
+  baseline-only, **against** symmetrically, and is otherwise **undecided**.
+- **The numeric half, typed as a guard** (`Judgement::guard`,
+  `candidate::Guard`), apart from its disposition: `Regressed` — work below
+  `WORK_FLOOR`, the predicted metric worse in either slice, an unpredicted
+  metric past `REGRESSION_CEILING` — vetoes; `NewCost` (a cost from
+  nothing) and `Unmeasured` (a slice below its floor) reach a person;
+  `Held` includes "did not beat the original", which is a missing win and
+  never a regression. The guard is computed whatever the disposition, so a
+  breach on numbers that did not carry the candidate still vetoes a
+  point-wise win.
+- **The rule** (R36): for + held → `Accept` when `ChangeClass` allows
+  auto-accept at all (a `Security` or `Architecture` change still stages —
+  a lane must not promote itself); for + anything else → the guard's reject
+  or proposal; **against → `Reject` whatever the numbers**; **undecided →
+  the numeric verdict unchanged**, recorded `Basis::NumericOnly` — the
+  2026-08-22 auto-accept stands for every candidate the short horizon
+  cannot see. The basis, tally, reused and driven comparison ids, and any
+  reason nothing ran go on `Measurement::pointwise`; `harness show` prints
+  them, and a record from before reads "not recorded", never "numeric only".
+- **A pass that could not run is never evidence.** A provider off this
+  machine (R29), no drawable point, a seat that never frees, and an
+  owner-bound check point (it needs hooks, the outbox and messages off;
+  the nightly line sets none) all leave the tally short, and a short tally
+  is undecided — the numbers decide as they always did. The "do nothing"
+  policy that wins every rejected-draft point is what the guard exists
+  for: it wins point-wise by attempting less, and `WORK_FLOOR` refuses it.
 
 ## The goal system
 

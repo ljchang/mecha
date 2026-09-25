@@ -354,7 +354,7 @@ with a `mecha exp` arm against EXPERIMENT-DESIGN §15's appraisal-off preset
 | **2c-1** | **The goal joins `Situation`** as a recorded and scope key — recording, matching, replay and validation in one change; an absent goal never widens a scope. *Built as 2c-1 (2026-09-25): the key is the whole `GoalRef` the front-end handed `prepare`, recorded as `RunConfig::rules_goal`.* | M1 | 1a | the scope-key tests cover the goal on every door; a rule mined with no goal still matches as before |
 | **2c-2** | **Past clean appraisals retrieved.** `goal_context` serves up to three clean appraisals of the same situation and goal, on demand, never pushed — through `Clean` only. Measured against a control at matched budget, since retrieved memory can cost more than it returns. | I2 | 2a-2, 2c-1 | a clean appraisal of a matching session is served and a tainted one never is; the lever's arm runs against the control |
 | **2d-1** | **Point-wise comparison at informative decision points.** At a steer, a denial, a failed check, an edited or rejected draft, a surprise: `probe::drive_arm` runs K policies a short horizon from the point, and the owner's recorded verdict decides (new: a branch's draft against the released text). Each writes a 1g `Comparison` of a new kind. Points drawn uniformly until 2e-6 ranks them. **Built as 2d-1** — `mecha sessions compare`; see O1 for what was built and what it left. | O1, R26, R27 | 1g | fixture points of each kind leave comparisons a second read returns; a point whose verdict no structural validator can pose is inconclusive, never judged |
-| **2d-2** | **The acceptance combination** (R26): a harness candidate is accepted when the point-wise comparison decides for it and the whole-session numeric comparison shows no regression, `WORK_FLOOR` intact. | O1, R26 | 2d-1 | a candidate that wins point-wise and regresses the floor is rejected; one that wins point-wise and holds is accepted |
+| **2d-2** | **The acceptance combination** (R26): a harness candidate is accepted when the point-wise comparison decides for it and the whole-session numeric comparison shows no regression, `WORK_FLOOR` intact. **Built as 2d-2**, with R36's completion: point-wise against rejects, and point-wise undecided leaves the numeric verdict unchanged. | O1, R26 | 2d-1 | a candidate that wins point-wise and regresses the floor is rejected; one that wins point-wise and holds is accepted |
 | **2d-3** | **The losing arm teaches.** A comparison's confirmed losing outcome is written into that session's appraisal as counterfactual reflection — a new pointer kind naming the comparison, which 2a-1's `Pointer::Unread` already round-trips. | O3 | 2a-2, 2d-1 | a decided comparison's loser appears on the session's appraisal, pointing at its comparison; an undecided one writes nothing |
 | **2e-1** | **The reflector's lessons against the appraisal's**, on the same interventions, by the validation probes already built — shadow, measurement only. R25's gate for 2a-4. | L2, R25 | 2a-2 | a report per intervention region: validation rate of each source's lessons, with the counts beneath it |
 | **2e-2** | **`learn` fed clean appraisals** — lessons and interpretations as material, successes included, through `Clean` only; a stage lever with `stages_off` against reflector-only learning. | L2, R19 | 2e-1 | a tainted appraisal's lesson never reaches a batch (a test on the type); the lever's arm runs |
@@ -490,7 +490,8 @@ widening.
 | R7 | — | Draft expiry | **deferred** until the system stabilises |
 | R20 | 2 | The guard on credit and tenure from text: the owner's verdict overrides; grounded claims from clean runs only; a measured lever with a revert first | **ruled 2026-09-24** |
 | R25 | 2 | I1 is the distiller extended; the counts-only appraiser is retired into it; the reflector folds in only after its lessons measure no worse; the graph episode's text stays unchanged | **ruled 2026-09-24** |
-| R26 | 2 | Point-wise comparison at informative decision points, decided by the owner's recorded verdicts, is added **beside** the existing whole-session numeric comparison, which stays; behaviour-changing policies are also measured on fixtures. They combine as O1 sets out: a candidate is accepted when the point-wise comparison decides for it and the numeric comparison shows no regression (`WORK_FLOOR` intact) | **ruled 2026-09-24: both, combined as O1 proposes** |
+| R26 | 2 | Point-wise comparison at informative decision points, decided by the owner's recorded verdicts, is added **beside** the existing whole-session numeric comparison, which stays; behaviour-changing policies are also measured on fixtures. They combine as O1 sets out: a candidate is accepted when the point-wise comparison decides for it and the numeric comparison shows no regression (`WORK_FLOOR` intact) | **ruled 2026-09-24: both, combined as O1 proposes**; refined by **R36** (what happens when the point-wise comparison does not decide) |
+| R36 | 2 | R26's combination, completed: point-wise **for** the candidate (at least 4 decided points, strictly more candidate-only passes than baseline-only ones, no separate holdout) and **no numeric regression** — work above `WORK_FLOOR`, no unpredicted metric past `REGRESSION_CEILING`, the predicted metric not worse in either slice; "did not beat the original" is a missing win, not a regression — **accepts**, when the class may be accepted by measurement at all; point-wise **against** **rejects** whatever the numbers say; point-wise **undecided** leaves the numeric gate's verdict **unchanged**, recorded as numeric only, which keeps the 2026-08-22 auto-accept of config rumination. Up to 8 points per measured candidate, inside `harness measure`, under 2d-1's seat rules | **ruled 2026-09-25** (the owner, on 2d-2's shape question); built as 2d-2 |
 | R21 | 3 | State reaches the agent as described state, on the user-turn or tool-result slot, never the prefix. Budget *facts* may be numbers — turns left, context remaining; anything a model could treat as a *score to move* stays words: sensor readings against setpoints, per-commitment guilt, valence, priorities | **ruled 2026-09-24** |
 | R22 | 3 | An in-run situation appraisal is part of the run: it inherits its taint, shapes the plan, and never widens a permission or chooses an action | **ruled 2026-09-24** |
 | R35 | 3 | Delivering the situation brief arms `private` taint — fail-closed, the same as reading the board through `kg_task_list` (raised on review of #309) | **ruled 2026-09-25**; built as 3a-3 |
@@ -509,7 +510,7 @@ widening.
 | R9 | — | The charter line `be-the-best`: unboundedness is fine (lines are attractors); §15's narrower worry is a line whose object is the harness, held by the `Security` class | flagged once |
 | R34 | 2 | A rule scoped to a goal that closes keeps its scope (`task:<uid>`) and widens only on evidence, by §17.4's restatement; such rules are made **visible**, not left silent | **ruled 2026-09-25; built** — `mecha rules list` counts and marks them `LOADS NOWHERE`, `mecha learn` repeats the count each pass, an unreadable board is its own finding |
 
-**Every ruling is settled** (2026-09-24; R35 on 2026-09-25), except the parked items (R3, R8), the
+**Every ruling is settled** (2026-09-24; R35 and R36 on 2026-09-25), except the parked items (R3, R8), the
 flag (R9), the deferred R7, the declined R2 and R29, which is not proposed.
 Phase 5's R28 waits on the bubblewrap upgrade, an ops step.
 
@@ -1303,6 +1304,17 @@ acceptance rule (2d-2), the losing arm into the appraisal (2d-3, O3), ranked
 points (2e-6), surprise sources beyond forecast misses (2b-1's resolved
 predictions, 2b-2's scored appraisal predictions), and the nightly wiring —
 a line in `scripts/ruminate.sh`, a deploy change offered rather than made.
+
+**R36 completes the combination** (ruled 2026-09-25, built as 2d-2 in
+`candidate::combine`): point-wise for and no numeric regression accepts;
+point-wise against rejects; point-wise undecided leaves today's numeric
+verdict unchanged and records it as numeric only — so a config candidate
+whose effect the short horizon cannot see (`max_turns`, `compact_at_tokens`)
+is judged exactly as before, and the 2026-08-22 auto-accept stands. The
+numeric half is typed as a guard (`candidate::Guard`): a regression vetoes a
+point-wise win, a missing win does not. Owner-bound check points need hooks,
+the outbox and messages off to run, which the nightly line does not set, so
+there they count as undecided — never for or against.
 
 #### O3. The losing arm teaches
 
