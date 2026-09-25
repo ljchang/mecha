@@ -314,6 +314,8 @@ fn unposed(
     });
     let comparison = Comparison::new(
         point.kind.comparison_kind(),
+        // `ProbePrep::situation_at`'s construction, from the same covering
+        // record: the surface, workspace and goal the run was matched on.
         config.map(|c| {
             Situation::recorded(
                 &point.tools_before,
@@ -321,6 +323,7 @@ fn unposed(
                 c.rules_surface,
                 c.rules_workspace.as_deref(),
             )
+            .toward(c.rules_goal.clone())
         }),
         transcript.convo.goal_anchor.as_ref().map(|g| g.goal_kind()),
         call,
@@ -841,6 +844,9 @@ mod tests {
                 system_prompt: Some(format!("You are mecha.\n\n{RULES}")),
                 rules_hash: Some(mecha_core::learning::rules_hash(RULES)),
                 rules_surface: Some(SessionKind::Tui),
+                rules_goal: Some(mecha_core::situation::GoalKey::Named(
+                    "task:t-ledger".parse().unwrap(),
+                )),
                 max_turns: 8,
                 ..Default::default()
             }))
@@ -1059,6 +1065,16 @@ mod tests {
         for c in &rows {
             assert_eq!(c.pointers.session_id, id);
             assert_eq!(c.goal_kind, Some(mecha_core::goal::GoalKind::Task));
+            // The goal key the run was matched on (`rules_goal`, #311), on
+            // posed and unposed points alike — never the anchor rebuilt.
+            assert_eq!(
+                c.situation.as_ref().and_then(|s| s.goal.clone()),
+                Some(mecha_core::situation::GoalKey::Named(
+                    "task:t-ledger".parse().unwrap()
+                )),
+                "{:?}",
+                c.kind
+            );
             if c.validator == Validator::Unposed {
                 assert_eq!(c.model, "", "no model drove an unposed point");
                 continue;
