@@ -555,6 +555,13 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
             prepared = Some(crate::setup::prepare(global, false).await?);
         }
         let live = prepared.as_ref().expect("prepared above");
+        // Both asked before the budget or a seat is spent: neither answer
+        // can change by driving.
+        if let Some(why) = planned.unrunnable_under(live) {
+            eprintln!("· {} {}: {why}", point.session_id, point.kind.as_str());
+            tally.unavailable += 1;
+            continue;
+        }
         let lost = planned.lost_recorded_tools(live.agent.registry());
         if !lost.is_empty() {
             eprintln!(
