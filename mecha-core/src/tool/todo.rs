@@ -1631,7 +1631,10 @@ impl Tool for TodoTool {
                     None
                 } else {
                     match raw.parse::<GoalRef>() {
-                        Ok(goal) => Some(goal),
+                        Ok(goal) if goal.a_plan_can_name() => Some(goal),
+                        Ok(goal) => {
+                            return Ok(ToolOutput::err(GoalRef::not_a_plans_to_name(&goal)))
+                        }
                         Err(e) => return Ok(ToolOutput::err(format!("`serves`: {e}"))),
                     }
                 }
@@ -1830,6 +1833,32 @@ mod tests {
         let items = tool.items_in(&ctx.workspace);
         assert_eq!(items.len(), 1, "a write replaces the whole list");
         assert_eq!(items[0].content, "b");
+    }
+
+    #[tokio::test]
+    async fn a_plan_cannot_name_what_only_the_harness_seeds() {
+        // A trigger name and a front-door seq are guessable; the harness
+        // seeds them when it starts a run, and a plan that could name one
+        // could put an invented pointer into the graph (review of #292).
+        for serves in ["trigger:morning", "request:1"] {
+            let tool = TodoTool::new();
+            let out = tool
+                .call(
+                    json!({
+                        "items": [{"content": "draft the reply", "status": "in_progress"}],
+                        "serves": serves,
+                    }),
+                    &ToolCtx::default(),
+                )
+                .await
+                .unwrap();
+            assert!(out.is_error, "{serves}: {}", out.content);
+            assert!(
+                out.content.contains("set by the harness"),
+                "{}",
+                out.content
+            );
+        }
     }
 
     #[tokio::test]

@@ -245,7 +245,7 @@ fn list() -> Result<()> {
     let store = open()?;
     let (triggers, problems) = store.list()?;
     for p in &problems {
-        eprintln!("mecha: unreadable trigger — {p}");
+        eprintln!("mecha: trigger will not load — {p}");
     }
     if triggers.is_empty() {
         println!(
@@ -384,6 +384,16 @@ fn show(name: &str, last: bool) -> Result<()> {
     if let Some(n) = &t.notify {
         println!("  notify      {n}");
     }
+    // The run's own anchor is always `trigger:<name>`; this is the owner's
+    // optional link from it to a standing priority, checked at load.
+    println!(
+        "  goal        trigger:{}{}",
+        t.name,
+        t.serves
+            .as_ref()
+            .map(|s| format!(" (serves {s})"))
+            .unwrap_or_default()
+    );
     println!("  file        {}", store.path_of(&t.name).display());
     println!("\nprompt:\n{}", indent(&t.prompt));
 
@@ -431,7 +441,10 @@ fn print_answer(run: &RunRecord) -> Result<()> {
 
 fn next(name: Option<&str>, count: usize) -> Result<()> {
     let store = open()?;
-    let (triggers, _) = store.list()?;
+    let (triggers, problems) = store.list()?;
+    for p in &problems {
+        eprintln!("mecha: trigger will not load — {p}");
+    }
     let tz = config_tz();
     for t in triggers.iter().filter(|t| name.is_none_or(|n| t.name == n)) {
         println!("{} [{}]", t.name, t.tz(tz));
@@ -666,7 +679,7 @@ async fn tick(
     let store = open()?;
     let (triggers, problems) = store.list()?;
     for p in &problems {
-        eprintln!("mecha: unreadable trigger — {p}");
+        eprintln!("mecha: trigger will not load — {p}");
     }
     let tz = config_tz();
     let now = Utc::now();
@@ -782,7 +795,7 @@ async fn daemon(global: &GlobalOpts) -> Result<()> {
     let store = open()?;
     let (triggers, problems) = store.list()?;
     for p in &problems {
-        eprintln!("mecha: unreadable trigger — {p}");
+        eprintln!("mecha: trigger will not load — {p}");
     }
     println!(
         "mecha trigger daemon · {} trigger(s), {} enabled · ticking every minute",
@@ -988,6 +1001,15 @@ async fn run_agent(
     // A fresh conversation, so nothing — including taint — carries over from
     // yesterday's run of the same trigger.
     let mut convo = Conversation::new();
+    // The trigger itself is the run's goal (`APPRAISAL-WIRING-DESIGN.md` S1):
+    // the owner wrote the file, so the pointer is structural, never a
+    // model's. What the trigger serves further up — its optional charter
+    // `serves` — stays on the trigger file and is read from there.
+    super::run::seed_goal_anchor(
+        &mut convo,
+        super::run::structural_pointer(format!("trigger:{}", t.name)),
+        Some(&session),
+    )?;
     let user = Message::user(&t.prompt);
     convo.push(user.clone());
     session.append(&Record::Message(user))?;

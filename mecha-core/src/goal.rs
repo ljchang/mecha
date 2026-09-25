@@ -13,16 +13,26 @@
 //! module deliberately holds no title, status or due date. A second copy of
 //! somebody else's record is the thing that can disagree with it.
 //!
-//! **Four kinds, because there are four horizons** — a standing commitment,
-//! a project, a current concern, a homeostatic setpoint. `Task`, `Project`
-//! and `Charter` have stores behind them; `Setpoint` is named here because
-//! the wire format below has to survive its arrival, and because a reference
-//! whose kinds are invented one at a time acquires a fifth spelling of the
-//! same idea. `Project` arrived last (`docs/GOAL-SYSTEM-DESIGN.md` §17.7
-//! item 5): the board already files a task under a project the graph holds
-//! as a parent node, so the persistent tier between the charter and a task
-//! is a pointer to that node — no new store, and the tiers read charter →
-//! project → task → step.
+//! **Four horizons** — a standing commitment, a project, a current concern,
+//! a homeostatic setpoint. `Task`, `Project` and `Charter` have stores
+//! behind them; `Setpoint` is named here because the wire format below has
+//! to survive its arrival, and because a reference whose kinds are invented
+//! one at a time acquires a fifth spelling of the same idea. `Project`
+//! arrived later (`docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 5): the board
+//! already files a task under a project the graph holds as a parent node, so
+//! the persistent tier between the charter and a task is a pointer to that
+//! node — no new store, and the tiers read charter → project → task → step.
+//!
+//! **Two more kinds name what a run was handed, not a horizon**
+//! (`docs/APPRAISAL-WIRING-DESIGN.md` S1): `Trigger`, an owner-written
+//! scheduled prompt by its file stem, and `Request`, a front-door request by
+//! its record id. Both are stores mecha itself writes, and both exist so a
+//! scheduled or front-door run can carry a structural anchor instead of
+//! waiting for a model to name one — the harness holds the pointer before
+//! the run starts. They are the tier the run was handed, like `Task`; what
+//! each serves further up (a trigger's optional charter `serves`, a task's
+//! project) stays in the store that owns it and is read from there, never
+//! copied onto the pointer.
 //!
 //! ## The wire format, and why parsing has two policies
 //!
@@ -75,6 +85,12 @@ pub enum GoalRef {
     Task(String),
     /// A homeostatic setpoint, by name. No store yet.
     Setpoint(String),
+    /// A scheduled trigger, by its file stem in the trigger store — the
+    /// owner-written prompt a trigger run was handed.
+    Trigger(String),
+    /// A front-door request, by its record id — the request a triage run
+    /// was handed.
+    Request(String),
 }
 
 impl GoalRef {
@@ -85,6 +101,8 @@ impl GoalRef {
             GoalRef::Project(_) => "project",
             GoalRef::Task(_) => "task",
             GoalRef::Setpoint(_) => "setpoint",
+            GoalRef::Trigger(_) => "trigger",
+            GoalRef::Request(_) => "request",
         }
     }
 
@@ -94,7 +112,9 @@ impl GoalRef {
             GoalRef::Charter(id)
             | GoalRef::Project(id)
             | GoalRef::Task(id)
-            | GoalRef::Setpoint(id) => id,
+            | GoalRef::Setpoint(id)
+            | GoalRef::Trigger(id)
+            | GoalRef::Request(id) => id,
         }
     }
 
@@ -166,6 +186,42 @@ pub enum Drift {
     Same,
     Changed,
     Unnamed,
+}
+
+impl GoalRef {
+    /// Whether a plan's `serves` is judged against this kind of anchor.
+    /// A `trigger:` or `request:` anchor is the structural tier a run was
+    /// *handed* (S1), not a goal the plan is steered toward: the `todo`
+    /// schema's description offers `task:` and `charter:`, so a trigger run
+    /// that names the charter line its work serves is serving the anchor,
+    /// yet pointer equality would score it a changed pointer — and nearly
+    /// every such plan with it. The parser does accept any kind, and
+    /// `goal_context` hands the anchor back as `confirmed_goal`, so a plan
+    /// *can* echo one; this is about what the comparison means, not what
+    /// can be written. A `setpoint:` anchor is different — the owner sets
+    /// it by hand (`run --goal setpoint:x`) and a plan diverging from it is
+    /// drift worth counting — so it stays judged (found on review of #292,
+    /// after an earlier cut excluded it too). Drift is measured, and
+    /// `planning::Decision` asks to clarify the goal, only against these.
+    pub fn a_plan_can_name(&self) -> bool {
+        matches!(
+            self,
+            GoalRef::Charter(_) | GoalRef::Task(_) | GoalRef::Project(_) | GoalRef::Setpoint(_)
+        )
+    }
+
+    /// The refusal a tool returns when a model's `serves` names a kind only
+    /// the harness seeds. A trigger name is a short owner slug and a request
+    /// `seq` a small integer, so either is guessable, and `distill` would
+    /// resolve a guessed one and cross it to the graph whole (review of
+    /// #292) — the kind is refused, not the guess checked.
+    pub fn not_a_plans_to_name(goal: &GoalRef) -> String {
+        format!(
+            "`serves`: `{goal}` is set by the harness when it starts a run, never by a \
+             plan; name a `charter:`, `task:`, `project:` or `setpoint:` reference, or \
+             leave `serves` out"
+        )
+    }
 }
 
 pub fn drift_of(anchor: &GoalRef, current: Option<&GoalRef>) -> Drift {
@@ -287,8 +343,11 @@ impl FromStr for GoalRef {
             "project" => Ok(GoalRef::Project(id.to_string())),
             "task" => Ok(GoalRef::Task(id.to_string())),
             "setpoint" => Ok(GoalRef::Setpoint(id.to_string())),
+            "trigger" => Ok(GoalRef::Trigger(id.to_string())),
+            "request" => Ok(GoalRef::Request(id.to_string())),
             other => Err(ParseGoalRefError(format!(
-                "`{other}` is not a kind of goal; expected charter, project, task or setpoint"
+                "`{other}` is not a kind of goal; expected charter, project, task, setpoint, \
+                 trigger or request"
             ))),
         }
     }
@@ -298,6 +357,18 @@ impl FromStr for GoalRef {
 mod tests {
     use super::*;
 
+    /// A trigger- or request-anchored run's plan can never name its
+    /// anchor, so no plan write under it is judged (review of #292).
+    #[test]
+    fn only_anchors_a_plan_can_name_are_comparable() {
+        for g in ["task:t", "charter:c", "project:p", "setpoint:s"] {
+            assert!(g.parse::<GoalRef>().unwrap().a_plan_can_name(), "{g}");
+        }
+        for g in ["trigger:morning", "request:12"] {
+            assert!(!g.parse::<GoalRef>().unwrap().a_plan_can_name(), "{g}");
+        }
+    }
+
     #[test]
     fn a_reference_round_trips_through_its_wire_form() {
         for original in [
@@ -305,10 +376,35 @@ mod tests {
             GoalRef::Project("proj-teaching".into()),
             GoalRef::Charter("do-no-harm".into()),
             GoalRef::Setpoint("attention-debt".into()),
+            GoalRef::Trigger("morning".into()),
+            GoalRef::Request("req-01J8ZK".into()),
         ] {
             let rendered = original.to_string();
             assert_eq!(rendered.parse::<GoalRef>().unwrap(), original);
         }
+    }
+
+    /// The two structural kinds (`APPRAISAL-WIRING-DESIGN.md` S1) survive a
+    /// record the way the others do — `trigger:morning` read back out of a
+    /// stored anchor is the same pointer — while a record naming a kind this
+    /// binary has not heard of still costs only the reference.
+    #[test]
+    fn a_trigger_or_request_anchor_survives_a_record_and_an_unknown_kind_does_not() {
+        #[derive(serde::Deserialize)]
+        struct Row {
+            #[serde(default, deserialize_with = "de_lenient")]
+            goal: Option<GoalRef>,
+        }
+        let t: Row = serde_json::from_str(r#"{"goal":"trigger:morning"}"#).unwrap();
+        assert_eq!(t.goal, Some(GoalRef::Trigger("morning".into())));
+        let r: Row = serde_json::from_str(r#"{"goal":"request:req-1"}"#).unwrap();
+        assert_eq!(r.goal, Some(GoalRef::Request("req-1".into())));
+        let u: Row = serde_json::from_str(r#"{"goal":"epic:7"}"#).unwrap();
+        assert_eq!(u.goal, None);
+        assert_eq!(
+            serde_json::to_string(&GoalRef::Trigger("morning".into())).unwrap(),
+            r#""trigger:morning""#
+        );
     }
 
     #[test]

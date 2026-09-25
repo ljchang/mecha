@@ -475,10 +475,33 @@ impl Corpus {
     /// turn a run that provably drifted into one that had no goal (found
     /// on review). The degrade costs `anchored`, the field that is
     /// genuinely unknown for such a row, and nothing else.
+    ///
+    /// **And only anchors a plan could name** (`GoalRef::a_plan_can_name`):
+    /// a trigger- or request-anchored run's writes are counted but never
+    /// classified, so they belong to [`Self::planned_unjudged`], not to the
+    /// drift population. An anchor this build cannot read stays here, on the
+    /// rule above.
     fn planned_under_an_anchor(&self) -> impl Iterator<Item = &RunRow> {
-        self.rows
-            .iter()
-            .filter(|r| r.stats.goal_plan_writes.is_some_and(|w| w > 0))
+        self.rows.iter().filter(|r| {
+            r.stats.goal_plan_writes.is_some_and(|w| w > 0)
+                && r.stats
+                    .goal_anchor
+                    .as_ref()
+                    .is_none_or(|g| g.a_plan_can_name())
+        })
+    }
+
+    /// Rows that wrote a plan under an anchor no plan can name — planned,
+    /// and not judged for drift. Kept apart so a corpus of trigger runs that
+    /// all plan does not read as "none wrote a plan" (found on review).
+    fn planned_unjudged(&self) -> impl Iterator<Item = &RunRow> {
+        self.rows.iter().filter(|r| {
+            r.stats.goal_plan_writes.is_some_and(|w| w > 0)
+                && r.stats
+                    .goal_anchor
+                    .as_ref()
+                    .is_some_and(|g| !g.a_plan_can_name())
+        })
     }
 
     /// Of those, rows that *named* a goal on at least one write under the
@@ -510,6 +533,21 @@ impl Corpus {
         )
     }
 
+    /// Anchored rows by the anchor's kind — `task`, `trigger`, `request`,
+    /// `charter`, `project` — so the share a structural seed supplies
+    /// (`APPRAISAL-WIRING-DESIGN.md` S1) is readable beside the share an
+    /// owner confirmed by hand. Only kinds that occur appear; an anchor this
+    /// build cannot read is not in `anchored` either, so the two agree.
+    pub fn anchored_by_kind(&self) -> BTreeMap<&'static str, usize> {
+        let mut out = BTreeMap::new();
+        for row in self.anchored() {
+            if let Some(goal) = &row.stats.goal_anchor {
+                *out.entry(goal.kind()).or_insert(0) += 1;
+            }
+        }
+        out
+    }
+
     /// The totals [`goal_drift_rate`](Self::goal_drift_rate) is over, each
     /// denominator named: see [`GoalTotals`].
     pub fn goal_totals(&self) -> GoalTotals {
@@ -521,6 +559,7 @@ impl Corpus {
                 .count(),
             anchored: self.anchored().count(),
             planned: self.planned_under_an_anchor().count(),
+            planned_unjudged: self.planned_unjudged().count(),
             named: self.named_under_an_anchor().count(),
             plan_writes: self
                 .planned_under_an_anchor()
@@ -728,6 +767,9 @@ pub struct GoalTotals {
     /// `Corpus::planned_under_an_anchor`); it may therefore exceed
     /// `anchored` on a corpus written by a newer build.
     pub planned: usize,
+    /// Rows that wrote a plan under an anchor no plan can name (a trigger,
+    /// a request): planned, but outside the drift population.
+    pub planned_unjudged: usize,
     /// Of those, rows that named a goal on at least one write — the drift
     /// rate's denominator; a run whose writes all named nothing is in
     /// `planned` and not here.
@@ -1045,6 +1087,73 @@ mod tests {
     /// an anchor stood *and* a plan was written under it — and totals
     /// beside it. An anchored run that never planned is not in the
     /// denominator; a sensed run with no anchor is not either.
+    /// `APPRAISAL-WIRING-DESIGN.md` S1's readout: anchored runs counted by
+    /// the store the anchor came from, agreeing with `anchored`.
+    #[test]
+    fn anchored_runs_are_counted_by_the_kind_of_their_anchor() {
+        use crate::goal::GoalRef;
+        let dir = tmpdir();
+        let with = |anchor: Option<GoalRef>| {
+            let mut st = stats(4, 0, false, StopCause::Completed);
+            st.goal_anchor = anchor;
+            st.goal_plan_writes = Some(0);
+            st
+        };
+        session_with(
+            &dir,
+            "20260924T000000-kinds",
+            "opus",
+            vec![
+                with(Some(GoalRef::Task("t1".into()))),
+                with(Some(GoalRef::Trigger("morning".into()))),
+                with(Some(GoalRef::Trigger("morning".into()))),
+                with(Some(GoalRef::Request("12".into()))),
+                with(None),
+            ],
+        );
+        let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
+        let kinds = corpus.anchored_by_kind();
+        assert_eq!(kinds.get("task"), Some(&1));
+        assert_eq!(kinds.get("trigger"), Some(&2));
+        assert_eq!(kinds.get("request"), Some(&1));
+        assert_eq!(kinds.values().sum::<usize>(), corpus.goal_totals().anchored);
+    }
+
+    /// A trigger-anchored run that wrote plans is planned, not "never
+    /// planned": its writes are counted apart from the drift population, so
+    /// the readout can say they were not judged instead of saying nobody
+    /// planned (review of #292). On the old tree note_plan skipped the
+    /// count, `goal_plan_writes` was 0, and `planned_unjudged` did not exist.
+    #[test]
+    fn plans_under_an_anchor_no_plan_can_name_are_counted_apart_from_drift() {
+        use crate::goal::GoalRef;
+        let dir = tmpdir();
+        let planned = |anchor: GoalRef, writes: u32| {
+            let mut st = stats(4, 0, false, StopCause::Completed);
+            st.goal_anchor = Some(anchor);
+            st.goal_plan_writes = Some(writes);
+            st.goal_drift_writes = Some(0);
+            st.goal_unnamed_writes = Some(0);
+            st
+        };
+        session_with(
+            &dir,
+            "20260924T000001-unjudged",
+            "opus",
+            vec![
+                planned(GoalRef::Trigger("morning".into()), 3),
+                planned(GoalRef::Request("12".into()), 1),
+                planned(GoalRef::Task("t1".into()), 2),
+            ],
+        );
+        let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
+        let totals = corpus.goal_totals();
+        assert_eq!(totals.anchored, 3);
+        assert_eq!(totals.planned, 1, "only the task anchor is judged");
+        assert_eq!(totals.planned_unjudged, 2);
+        assert_eq!(totals.plan_writes, 2, "drift sums over the judged rows");
+    }
+
     #[test]
     fn goal_drift_reads_unknown_before_the_sensor_and_over_anchored_planned_runs_after() {
         use crate::goal::GoalRef;
@@ -1087,6 +1196,7 @@ mod tests {
                 sensed: 4,
                 anchored: 3,
                 planned: 2,
+                planned_unjudged: 0,
                 named: 2,
                 plan_writes: 5,
                 drift_writes: 1,

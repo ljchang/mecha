@@ -165,7 +165,15 @@ permission_mode = "read-only"
 catch_up = "3h"
 timeout = "20m"
 notify = 'notify-send "mecha briefing"'
+serves = "charter:protect-my-attention"   # optional
 ```
+
+Every trigger run is recorded with the trigger itself as its
+[goal](/docs/features/appraisal/goals) (`trigger:<name>`). The optional
+`serves` names the [charter](/docs/features/appraisal/charter) line the
+scheduled work is for; it must be a `charter:` line that exists, and a trigger
+naming a missing line — or one whose charter cannot be read — is refused at
+load, with the reason on `mecha trigger list`.
 
 ### 3. Read-only unless the file says otherwise
 
