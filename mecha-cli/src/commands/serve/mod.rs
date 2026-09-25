@@ -604,6 +604,9 @@ async fn security_headers(request: Request<axum::body::Body>, next: Next) -> Res
 /// `Last-Modified` for a heuristic to work from, their freshness is the
 /// store's business rather than this layer's, and a blanket header here
 /// would be this middleware quietly deciding policy for every handler.
+/// A path segment that starts an incognito key (`incognito::KEY_PREFIX`).
+const INCOGNITO_KEY_SEGMENT: &str = "/incognito-";
+
 async fn cache_headers(request: Request<axum::body::Body>, next: Next) -> Response {
     // Taken before the request is consumed. Matching on "not an asset"
     // rather than on `/` alone is what catches the other unhashed entry
@@ -620,7 +623,7 @@ async fn cache_headers(request: Request<axum::body::Body>, next: Next) -> Respon
     // carries.
     let is_incognito = {
         let path = request.uri().path();
-        path.starts_with("/api/incognito") || path.contains(&format!("/{}", incognito::KEY_PREFIX))
+        path.starts_with("/api/incognito") || path.contains(INCOGNITO_KEY_SEGMENT)
     };
     let mut response = next.run(request).await;
     if is_api {
@@ -1728,12 +1731,18 @@ mod boundary_tests {
             std::fs::create_dir(&dir).ok()?;
             let previous = std::env::var_os("XDG_RUNTIME_DIR");
             std::env::set_var("XDG_RUNTIME_DIR", &dir);
-            if super::incognito::rooms_root().is_err() {
+            if let Err(e) = super::incognito::rooms_root() {
                 match &previous {
                     Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
                     None => std::env::remove_var("XDG_RUNTIME_DIR"),
                 }
                 let _ = std::fs::remove_dir_all(&dir);
+                // In CI a skipped test reads exactly like a passing one.
+                assert!(
+                    std::env::var_os("MECHA_TEST_REQUIRE_BACKENDS").is_none(),
+                    "MECHA_TEST_REQUIRE_BACKENDS is set and no RAM-backed room can be made: {e:#}"
+                );
+                eprintln!("skipped: no RAM-backed room here ({e:#})");
                 return None;
             }
             Some(RuntimeDir(dir, previous))
@@ -1798,7 +1807,6 @@ mod boundary_tests {
     async fn an_incognito_chat_leaves_no_trace_and_an_ordinary_one_does() {
         let home = crate::testenv::HomeGuard::new("incognito-trace");
         let Some(runtime) = RuntimeDir::new() else {
-            eprintln!("skipped: /dev/shm is not tmpfs here");
             return;
         };
         const CANARY: &str = "KUMQUAT-7731";
@@ -1924,6 +1932,22 @@ mod boundary_tests {
         );
         assert!(chat.close_incognito(&fresh).await);
         drop(runtime);
+    }
+
+    #[tokio::test]
+    async fn stopping_the_server_closes_every_incognito_chat() {
+        let _home = crate::testenv::HomeGuard::new("incognito-stop");
+        let Some(_runtime) = RuntimeDir::new() else {
+            return;
+        };
+        let chat = chat::test_chat_answering("noted", true);
+        let key = chat.open_incognito().await.unwrap();
+        let room = chat.room_of(&key).await.unwrap();
+        chat.stop().await;
+        assert!(!room.root.exists(), "the room is gone at shutdown");
+        // Out of the map as well, so a run still finishing sees it closed
+        // and removes whatever it spilled on the way out.
+        assert!(chat.room_of(&key).await.is_none());
     }
 
     #[tokio::test]

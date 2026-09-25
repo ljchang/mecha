@@ -38,8 +38,9 @@ pub fn is_incognito_key(key: &str) -> bool {
     key.starts_with(KEY_PREFIX)
 }
 
-/// A fresh key: the prefix and 22 random hex digits (88 bits), which fills
-/// the 32 characters `chat::valid_key` allows. Never reused, never `main`.
+/// A fresh key: the prefix and 22 hex digits of a v4 UUID — 82 random bits,
+/// since the version and variant nibbles fall in that span — which fills the
+/// 32 characters `chat::valid_key` allows. Never reused, never `main`.
 pub fn new_key() -> String {
     let hex = uuid::Uuid::new_v4().simple().to_string();
     format!("{KEY_PREFIX}{}", &hex[..32 - KEY_PREFIX.len()])
@@ -193,7 +194,7 @@ pub struct Room {
     pub key: String,
     /// The room itself — removed whole when the chat closes.
     pub root: PathBuf,
-    /// The jail.
+    /// The jail: `<root>/<key>`, so its directory name is the session key.
     pub workspace: PathBuf,
     /// Beside the jail, never in it.
     pub spill: PathBuf,
@@ -204,7 +205,12 @@ impl Room {
     /// Open a room for `key` under `rooms`, owner-only.
     pub fn open(rooms: &Path, key: &str) -> Result<Room> {
         let root = rooms.join(key);
-        let workspace = root.join("workspace");
+        // The jail is named for the key: `present::WebAsker` routes an
+        // `ask_user` card by the jail's directory name, which for every web
+        // session is its key. A jail called `workspace` sent an incognito
+        // question nowhere — or to an ordinary chat of that name, carrying
+        // this conversation's words with it (found on review of #321).
+        let workspace = root.join(key);
         let spill = root.join("spill");
         for dir in [rooms, root.as_path(), workspace.as_path(), spill.as_path()] {
             mecha_core::create_private_dir(dir)
@@ -359,8 +365,14 @@ mod tests {
     #[test]
     fn a_room_is_owner_only_and_removed_whole_and_a_sweep_clears_leftovers() {
         let rooms = std::env::temp_dir().join(format!("mecha-rooms-{}", uuid::Uuid::new_v4()));
-        let room = Room::open(&rooms, &new_key()).unwrap();
+        let key = new_key();
+        let room = Room::open(&rooms, &key).unwrap();
         assert!(room.workspace.is_dir() && room.spill.is_dir());
+        // `WebAsker` routes by the jail's directory name; it must be the key.
+        assert_eq!(
+            room.workspace.file_name().unwrap().to_str(),
+            Some(key.as_str())
+        );
         assert!(
             !room.spill.starts_with(&room.workspace),
             "the spill is beside the jail"
