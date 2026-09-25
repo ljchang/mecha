@@ -1071,6 +1071,20 @@ fn approver_for(mode: PermissionMode, retained: &Arc<dyn Approver>) -> Arc<dyn A
     }
 }
 
+/// Stamp the posture a permission mode means on the agent's own context
+/// (S8, review of #293): the TUI is a surface with a person present, but
+/// only `ask` asks them, so a session switched to `allow` or `read-only` is
+/// `unattended` from its next command on — whether by `/mode` or by a
+/// `/model` rebuild, which prepares from config and would otherwise restore
+/// the file's mode instead of the session's.
+fn stamp_posture(agent: &mut mecha_core::agent::Agent, mode: PermissionMode) {
+    agent.ctx_mut().run_posture = Some(crate::setup::posture_for(
+        Some(mecha_core::session::SessionKind::Tui),
+        true,
+        mode,
+    ));
+}
+
 /// The tools that belong to this *front-end* rather than to the agent's
 /// configuration.
 ///
@@ -3024,6 +3038,7 @@ async fn apply_switch(
             return Ok(());
         };
         agent.set_approver(approver_for(mode, approver));
+        stamp_posture(agent, mode);
         app.mode = mode;
         app.transcript
             .push(Entry::Notice(format!("mode {}", mode_name(mode))));
@@ -3109,6 +3124,7 @@ async fn apply_switch(
     // for rather than a tool call an hour later.
     let max_upload_mb = prepared.config.slack.max_upload_mb;
     install_frontend_tools(&mut prepared.agent, asker, session, max_upload_mb);
+    stamp_posture(&mut prepared.agent, app.mode);
     let tools_changed = prepared.agent.registry().len() != live.agent.registry().len();
     *live = Live::new(prepared, opts);
     app.mcp_on = !live.opts.no_mcp;
@@ -5062,6 +5078,23 @@ fn reload_tasks(app: &mut App, status: Option<String>) {
     }
 }
 
+/// What the closure appraisal said about the move just made on `task`, from
+/// the closure record — `None` when the latest record is not this move, or
+/// the task had nothing to appraise.
+fn closure_readout(task: &str, to: &str, began: chrono::DateTime<chrono::Utc>) -> Option<String> {
+    use mecha_core::closure::ClosureStore;
+    let store = ClosureStore::open_existing_default()?;
+    let (t, readout) = store.latest_with_readout(task).ok()??;
+    // Written after this keypress began, or it is an earlier move's record:
+    // a repeated key crosses no line and records nothing (review).
+    if t.to != to || t.at < began {
+        return None;
+    }
+    // Whichever parts the readout carries — a project's reading stands on its
+    // own when the closed task had no appraisal of its own (review of #293).
+    mecha_core::closure::readout_line(readout.as_ref())
+}
+
 fn tasks_cli(args: &[&str]) -> Result<String> {
     let mut full = vec!["tasks"];
     full.extend_from_slice(args);
@@ -6424,8 +6457,15 @@ fn run_task_action(app: &mut App, key: char) -> Result<()> {
     let Some((id, was)) = selected else {
         return Ok(());
     };
-    let note = match tasks_cli(&["set", &id, "--status", status]) {
-        Ok(_) => format!("{was} → {status}"),
+    let began = chrono::Utc::now();
+    let note = match tasks_cli(&["set", &id, "--status", status, "--surface", "tui"]) {
+        // A closure's appraisal is read back from the closure record (S8):
+        // `self_cli` keeps the child's stdout, and the appraisal was only
+        // ever on its stderr.
+        Ok(_) => match closure_readout(&id, status, began) {
+            Some(readout) => format!("{was} → {status} · {readout}"),
+            None => format!("{was} → {status}"),
+        },
         Err(e) => format!("could not set {status}: {e}"),
     };
     reload_tasks(app, Some(note));

@@ -12,23 +12,43 @@ attach to the agent **without** anyone editing `agent.rs`.
 
 ```toml
 [[hook]]
-event = "pre_tool"                     # pre_tool | post_tool | session_end
+event = "pre_tool"                     # see "The events" below
 tools = ["shell"]                      # empty means every tool
 command = "~/.mecha/hooks/no-force-push.sh"
 timeout_secs = 10                      # default
 ```
 
-Each hook runs via `sh -c`, as you, in the workspace. The order in config is
-the order they run; for `pre_tool` the first denial wins and later hooks do not
+Each hook runs via `sh -c`, as you — a run's hooks in the run's workspace, a
+task's hooks in `~/.mecha`. The order in config is the order they run; for
+`pre_tool` and `pre_task_close` the first denial wins and later hooks do not
 fire.
 
-## The three events
+## The events
+
+Three belong to a run, and three to the task board:
 
 | Event | Payload on stdin | Can it decide? |
 |---|---|---|
 | `pre_tool` | `event`, `tool`, `input` | Yes — exit 2 denies the call |
 | `post_tool` | `event`, `tool`, `input`, `is_error`, `content` (first 4000 chars) | No |
 | `session_end` | `event`, `session_id`, `path` | No |
+| `pre_task_close` | `event`, `record` — the move about to be recorded | Yes — exit 2 refuses to close or reopen the task |
+| `task_closed` | `event`, `record` — the move, plus the closure's `readout`, `follow_up_staged` and `project_readout` | No |
+| `task_reopened` | `event`, `record` — the move, with `undoes` naming the closure it reopens | No |
+
+A hook's `tools = [...]` list applies to `pre_tool` and `post_tool` only. The
+three task events are not tool calls, so a task hook runs for every close or
+reopen whatever its `tools` list says.
+
+A task event fires wherever the task is closed or reopened — the terminal,
+the TUI, the web board, Slack, or a chat where you approved the agent running
+`mecha tasks set` — because every one of them goes through the same
+recorded event. The `record` is the line written to
+`~/.mecha/closures/closures.jsonl`:
+
+```json
+{"event": "task_closed", "record": {"id": "close-…", "task": "task-1a2b3c4d", "from": "next", "to": "done", "move": "close", "actor": "owner", "surface": "web", "sessions": ["20260924T…"], "at": "2026-09-24T…", "readout": "Pride · +1.0 (1 positive, 0 negative signals)", "follow_up_staged": false}}
+```
 
 ```json
 {"event": "pre_tool", "tool": "shell", "input": {"command": "git push --force"}}
@@ -87,9 +107,13 @@ hook that never reads stdin blocks the write once the payload outgrows the
 pipe buffer, so a `pre_tool` hook fed a large `fs_write` input hung the run
 forever with the timeout never starting.
 
-`post_tool` and `session_end` are **observers**. Their failures are logged and
-swallowed, because an observer must not be load-bearing. If something has to
-be able to stop a call, it is a `pre_tool` hook.
+`pre_task_close` fails closed the same way: a hook that cannot run refuses the
+close, and nothing is recorded or moved.
+
+`post_tool`, `session_end`, `task_closed` and `task_reopened` are
+**observers**. Their failures are logged and swallowed, because an observer
+must not be load-bearing. If something has to be able to stop a call, it is a
+`pre_tool` hook; if it has to be able to stop a closure, `pre_task_close`.
 
 ## A hook denial reads differently from a human denial
 

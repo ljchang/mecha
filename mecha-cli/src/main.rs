@@ -110,6 +110,11 @@ pub struct GlobalOpts {
     /// shipped binary renders, and records that it did.
     #[arg(skip)]
     pub surface: Option<mecha_core::session::SessionKind>,
+    /// The run's posture, when the front-end knows better than
+    /// `setup::posture_for` would guess from the surface — `tasks work` and
+    /// a question resume are `delegated` whatever their approver.
+    #[arg(skip)]
+    pub run_posture: Option<mecha_core::closure::RunPosture>,
 
     /// Only carry these skills (repeatable). Names are matched exactly.
     ///

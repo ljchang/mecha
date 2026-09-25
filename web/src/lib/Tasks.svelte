@@ -6,6 +6,8 @@
   // one tap from where it was, and the tool surface has no delete.
   let data = $state(null);
   let error = $state(null);
+  // The appraisal of the task just closed, when there was one (S8).
+  let closureNote = $state(null);
   let filter = $state('actionable');
   let selected = $state(null);
   let adding = $state(false);
@@ -515,6 +517,9 @@
 
   async function setStatus(task, status) {
     busy = true;
+    // The note belongs to at most one tap: a refused move must not sit
+    // under another task's earlier readout.
+    closureNote = null;
     try {
       const res = await fetch('/api/tasks/set', {
         method: 'POST',
@@ -522,6 +527,18 @@
         body: JSON.stringify({ task, status }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
+      // A closure's appraisal, read back from the closure record — the
+      // page never saw the child's stderr, where it used to be printed.
+      const answer = await res.json().catch(() => null);
+      const c = answer?.closure;
+      // Whichever parts the record carries: a project's reading stands on its
+      // own when the closed task had no appraisal of its own.
+      const parts = [
+        c?.readout,
+        c?.follow_up_staged ? 'a follow-up was staged' : null,
+        c?.project,
+      ].filter(Boolean);
+      closureNote = parts.length ? `${task}: ${parts.join(' · ')}` : null;
       selected = null;
       await load();
     } catch (e) {
@@ -732,7 +749,7 @@
       <div class="drawer-head"><span class="drawer-title">Views</span></div>
       <div class="drawer-scroll">
         {#each filters as [name, _, blurb]}
-          <button class="drow" class:dactive={filter === name} onclick={() => { filter = name; drawer = false; }}>
+          <button class="drow" class:dactive={filter === name} onclick={() => { filter = name; drawer = false; closureNote = null; }}>
             <span class="dname">{name}</span>
             <span class="dcount">{count(name) || ''}</span>
             <!-- The one view whose blurb is not a constant. "Blocked on
@@ -752,6 +769,7 @@
 
   <div class="scroll">
     {#if error}<div class="warnline">{@render hazardGlyph()}<span>{error}</span></div>{/if}
+    {#if closureNote}<div class="noteline">{closureNote}</div>{/if}
     {#if data === null && !error}
       <div class="empty">reaching the graph…</div>
     {/if}
@@ -1195,6 +1213,7 @@
   .whenchip { font-family: var(--mono); font-size: 11px; color: var(--accent-400); background: var(--surface); border: 1px solid var(--accent-400); border-radius: var(--radius-chip); padding: 7px 10px; min-height: 36px; cursor: pointer; }
   .morebtn { align-self: flex-start; background: none; border: none; color: var(--text-muted); font-size: 12px; padding: 4px 0; min-height: 32px; cursor: pointer; text-decoration: underline; }
   .warnline { display: flex; gap: 8px; font-size: 12px; color: var(--hazard); line-height: 1.45; }
+  .noteline { font-family: var(--mono); font-size: 11px; color: var(--text-muted); line-height: 1.45; }
   .empty { color: var(--text-muted); font-size: 14px; padding: 20px 0; text-align: center; }
   .footnote { font-size: 11px; color: var(--text-muted); text-align: center; padding-top: 6px; }
   .fab { position: absolute; right: 20px; bottom: 20px; width: 56px; height: 56px; border-radius: 14px; background: var(--accent-400); border: none; display: flex; align-items: center; justify-content: center; cursor: pointer; }

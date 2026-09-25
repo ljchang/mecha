@@ -249,8 +249,23 @@ async fn the_environment_a_server_actually_sees_is_the_allowlist() {
     let allowed: BTreeSet<String> = BASE
         .iter()
         .map(|s| s.to_string())
-        .chain([passthrough.clone(), "MECHA_EXPLICIT_TOKEN".to_string()])
+        .chain([
+            passthrough.clone(),
+            "MECHA_EXPLICIT_TOKEN".to_string(),
+            // The harness's own stamp: a fact about the server, not a secret
+            // (review of #293) — and always `unknown`.
+            mecha_core::closure::POSTURE_ENV.to_string(),
+        ])
         .collect();
+    assert!(
+        reported.lines().any(|l| l
+            == format!(
+                "{}={}",
+                mecha_core::closure::POSTURE_ENV,
+                mecha_core::closure::RunPosture::UNKNOWN
+            )),
+        "the server was not stamped with the posture nobody can vouch for"
+    );
 
     // **First, our side of the boundary, which is the part this project
     // controls.** `mcp.rs` calls `env_clear()` and then hands over exactly

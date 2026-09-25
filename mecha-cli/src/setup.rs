@@ -100,7 +100,42 @@ pub struct PreparedTools {
     /// — and paraphrasing somebody's conversation because it got long is
     /// their decision, not one a tool may take on their behalf.
     pub compact_requested: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Whether a person is in this run's conversation — stamped on every
+    /// command its `shell` runs (`closure::POSTURE_ENV`), so `mecha tasks
+    /// set` run from inside a run can tell the owner's approval from a lane
+    /// closing its own task. See [`posture_for`].
+    pub posture: mecha_core::closure::RunPosture,
     pub _mcp: Vec<Arc<McpClient>>,
+}
+
+/// The posture a front-end's run gets, unless it names one
+/// (`GlobalOpts::run_posture`). A delegated task is always `delegated`,
+/// whatever its approver: a closure is the owner's verdict on it. A chat,
+/// the TUI or `mecha run` with a person at the approver is `interactive` —
+/// and only while the approver actually **asks** them: `mode` is the
+/// resolved permission mode, so `-y`, `permission_mode = "allow"` or a TUI
+/// switched out of `ask` is `unattended`, as `serve::chat::web_posture`
+/// already treats a web chat with approvals off (found on review of #293:
+/// `interactive` alone said a prompt *could* reach a person, not that it
+/// would). Everything else — triggers, the front door, mail, Slack, voice,
+/// and the web before a session says otherwise (`serve::chat` stamps its
+/// own) — is `unattended`, the direction that refuses.
+pub fn posture_for(
+    surface: Option<mecha_core::session::SessionKind>,
+    interactive: bool,
+    mode: PermissionMode,
+) -> mecha_core::closure::RunPosture {
+    use mecha_core::closure::RunPosture;
+    use mecha_core::session::SessionKind as K;
+    match surface {
+        Some(K::Task) => RunPosture::Delegated,
+        Some(K::Chat | K::Tui | K::Run | K::Test) | None
+            if interactive && mode == PermissionMode::Ask =>
+        {
+            RunPosture::Interactive
+        }
+        _ => RunPosture::Unattended,
+    }
 }
 
 /// Build an agent. `interactive` decides whether an un-approved tool call can
@@ -281,6 +316,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         // place that decides it. `Agent::run_in` mints a fresh `Mutex` per
         // run regardless — this initial one is never actually read from.
         step_escalation: step_escalation_slot(cfg.agent.step_escalation),
+        run_posture: Some(tools.posture),
         ..ToolCtx::default()
     };
 
@@ -382,14 +418,15 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // (`tasks set` itself is unaffected: it calls through `prepare_tools`'s
     // registry directly, which this — the model-facing build — never touches.)
     //
-    // One handle downstream of here is guarded on purpose, not by accident:
-    // the copy `tasks work` and `questions` later pull back off this
-    // registry via `withhold_tool` — D5's "the harness's hand" — is the
-    // wrapped one, so `move_task` cannot perform a closure either. That is
-    // the rule, not a limitation: the harness moves a task to `waiting` or
-    // back to its pre-run status, and a closure is the *owner's* act on
-    // every path — the day `move_task` is asked to carry `done`, the guard's
-    // refusal is the correct answer and `tasks set` is the correct caller.
+    // The guard refuses *every* status write through the wrapped
+    // `kg_task_update` (review of #293: a model could otherwise reopen a
+    // closed task with nothing recorded). The copy `tasks work` and
+    // `questions` pull back off this registry via `withhold_tool` — D5's
+    // "the harness's hand" — is the wrapped one, and `move_task` reaches
+    // past the guard through `Tool::unguarded` to move a task to `waiting`
+    // or back to its pre-run status. It enforces the closure rule itself:
+    // a closing status is refused there too, because a closure is the
+    // *owner's* act on every path and `tasks set` is its one caller.
     crate::closure_guard::guard(&mut registry);
     for profile in &cfg.subagents {
         if opts.tool_profile.is_some() {
@@ -1356,6 +1393,11 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
             .context("sandbox preflight failed — refusing to run `shell` unconfined")?;
     }
 
+    // `cfg` is final here: `-y` and `--read-only` were folded into
+    // `cfg.tools.permission_mode` above.
+    let posture = opts
+        .run_posture
+        .unwrap_or_else(|| posture_for(opts.surface, interactive, cfg.tools.permission_mode));
     Ok(PreparedTools {
         registry,
         denials,
@@ -1367,6 +1409,7 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         skill,
         mailbox,
         compact_requested,
+        posture,
         _mcp: clients,
     })
 }
@@ -1911,10 +1954,53 @@ mod surface_only_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_subagent, excluded_by_allowlist, fold_agent_switches, levers_off,
+        build_subagent, excluded_by_allowlist, fold_agent_switches, levers_off, posture_for,
         step_escalation_enabled, step_escalation_slot,
     };
     use crate::GlobalOpts;
+
+    /// Only a surface with a person at the approver is interactive; a
+    /// delegated task never is, whatever its approver; and everything else is
+    /// the direction that refuses a closure (S8).
+    #[test]
+    fn a_run_is_interactive_only_with_a_person_at_the_approver() {
+        use mecha_core::closure::RunPosture as P;
+        use mecha_core::config::PermissionMode;
+        use mecha_core::session::SessionKind as K;
+        let ask = PermissionMode::Ask;
+        assert_eq!(posture_for(Some(K::Task), true, ask), P::Delegated);
+        assert_eq!(posture_for(Some(K::Task), false, ask), P::Delegated);
+        for k in [K::Chat, K::Tui, K::Run] {
+            assert_eq!(posture_for(Some(k), true, ask), P::Interactive, "{k:?}");
+            assert_eq!(posture_for(Some(k), false, ask), P::Unattended, "{k:?}");
+            // Approvals off: nobody is asked, so nobody is present (review
+            // of #293 — `-y`, `permission_mode = "allow"`, a TUI switched
+            // out of `ask`). On the old tree these read `interactive`.
+            for mode in [PermissionMode::Allow, PermissionMode::ReadOnly] {
+                assert_eq!(
+                    posture_for(Some(k), true, mode),
+                    P::Unattended,
+                    "{k:?} {mode:?}"
+                );
+            }
+        }
+        for k in [
+            K::Trigger,
+            K::Frontdoor,
+            K::Mail,
+            K::Slack,
+            K::Voice,
+            K::Web,
+        ] {
+            assert_eq!(posture_for(Some(k), true, ask), P::Unattended, "{k:?}");
+        }
+        assert_eq!(posture_for(None, true, ask), P::Interactive);
+        assert_eq!(posture_for(None, false, ask), P::Unattended);
+        assert_eq!(
+            posture_for(None, true, PermissionMode::Allow),
+            P::Unattended
+        );
+    }
     use mecha_core::config::Config;
     use mecha_core::harness::Lever;
 

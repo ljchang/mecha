@@ -35,6 +35,13 @@ fn response_id(msg: &Value) -> Option<u64> {
 }
 
 /// A live connection to one MCP server.
+/// The run posture every MCP server — and everything it spawns — is stamped
+/// with. See the comment where [`McpClient::build_command`] sets it.
+const SERVER_POSTURE: (&str, &str) = (
+    crate::closure::POSTURE_ENV,
+    crate::closure::RunPosture::UNKNOWN,
+);
+
 pub struct McpClient {
     name: String,
     /// Whether tools register as `<name>__<tool>` (the collision-proof
@@ -102,7 +109,13 @@ impl McpClient {
                 None => sandbox.clone(),
             };
             confined
-                .wrap_argv(&cfg.command, &cfg.args, workspace, workspace)
+                .wrap_argv_with_env(
+                    &cfg.command,
+                    &cfg.args,
+                    workspace,
+                    workspace,
+                    &[SERVER_POSTURE],
+                )
                 .with_context(|| format!("confining MCP server `{}`", cfg.name))?
         } else {
             let mut c = tokio::process::Command::new(&cfg.command);
@@ -132,6 +145,12 @@ impl McpClient {
             command.env("MECHA_TZ", zone);
         }
         command.envs(&cfg.env);
+        // Last, so no `env` line can name it: a server outlives the run that
+        // started it and serves whichever run holds the agent, so no run's
+        // posture is true of it — and unstamped would read as the owner at a
+        // terminal, the worse forgery `closure::decide` names (review of
+        // #293). `unknown` refuses a closure from anything the server spawns.
+        command.env(SERVER_POSTURE.0, SERVER_POSTURE.1);
 
         Ok(command)
     }
@@ -794,6 +813,44 @@ mod tests {
     /// because the leak was never about one variable — `envs()` layered onto
     /// the inherited environment, so *everything* crossed, provider keys
     /// included, and the call site looked right.
+    /// An MCP server serves whichever run holds the agent, so its children
+    /// carry the posture nobody can vouch for — and a config `env` line
+    /// cannot name a better one (review of #293: unstamped read as the owner
+    /// at a terminal).
+    #[tokio::test]
+    async fn a_server_is_stamped_unknown_whatever_its_config_says() {
+        let cfg = McpServerConfig {
+            name: "nosy".into(),
+            command: "/usr/bin/env".into(),
+            args: vec!["-0".into()],
+            env: [(
+                crate::closure::POSTURE_ENV.to_string(),
+                "interactive".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let mut cmd = McpClient::build_command(&cfg, &unconfined(), Path::new("/tmp")).unwrap();
+        let out = cmd
+            .stdout(std::process::Stdio::piped())
+            .output()
+            .await
+            .unwrap();
+        assert!(out.status.success(), "env did not run");
+        let expected = format!(
+            "{}={}",
+            crate::closure::POSTURE_ENV,
+            crate::closure::RunPosture::UNKNOWN
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let seen: Vec<_> = stdout
+            .split('\0')
+            .filter(|e| e.starts_with(crate::closure::POSTURE_ENV))
+            .collect();
+        assert_eq!(seen, vec![expected.as_str()], "{seen:?}");
+    }
+
     #[tokio::test]
     async fn the_child_environment_is_an_allowlist_not_an_inheritance() {
         let ours: std::collections::BTreeSet<String> = std::env::vars().map(|(k, _)| k).collect();
@@ -834,7 +891,11 @@ mod tests {
         let allowed: std::collections::BTreeSet<String> = BASE
             .iter()
             .map(|s| s.to_string())
-            .chain([passthrough.clone(), "MECHA_EXPLICIT_TOKEN".to_string()])
+            .chain([
+                passthrough.clone(),
+                "MECHA_EXPLICIT_TOKEN".to_string(),
+                crate::closure::POSTURE_ENV.to_string(),
+            ])
             .collect();
 
         let leaked: Vec<_> = child.difference(&allowed).collect();

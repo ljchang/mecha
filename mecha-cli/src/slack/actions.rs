@@ -189,6 +189,10 @@ impl Action {
                 id.clone(),
                 "--status".into(),
                 "done".into(),
+                // The closure record's surface (S8) — a literal, like the
+                // status: the tap picks a verb, never composes one.
+                "--surface".into(),
+                "slack".into(),
             ],
             Action::TaskNext { id } => vec![
                 "mecha".into(),
@@ -197,6 +201,10 @@ impl Action {
                 id.clone(),
                 "--status".into(),
                 "next".into(),
+                // The closure record's surface (S8) — a literal, like the
+                // status: the tap picks a verb, never composes one.
+                "--surface".into(),
+                "slack".into(),
             ],
             Action::FrontdoorClose { seq, reason } => vec![
                 "mecha".into(),
@@ -1506,6 +1514,8 @@ mod tests {
                 "task-1a2b3c4d".into(),
                 "--status".into(),
                 "done".into(),
+                "--surface".into(),
+                "slack".into(),
             ]
         );
         let next = Action::from_payload(ids::TASK_NEXT, "task-1a2b3c4d").unwrap();

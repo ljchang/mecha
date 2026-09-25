@@ -1312,6 +1312,30 @@ pub async fn send(
     }
 }
 
+/// The run posture of one web turn (S8): a chat about a board task is its
+/// delegated lane, and only a turn whose approver will actually *ask* the
+/// person in front of the page is interactive. Voice's approve-all and a
+/// session mode other than `ask` (`allow`, or `read-only` — set from the page
+/// through `POST /api/chat/{key}/mode`) both ask nobody, so both are
+/// unattended — the same rule `setup::posture_for` keys on the resolved
+/// permission mode (found on review of #293: this read only the voice flag,
+/// so a chat switched to `allow` stamped `interactive` and a model's
+/// `mecha tasks set` recorded the owner's approval with nobody asked).
+fn web_posture(
+    task_chat: bool,
+    approve_all: bool,
+    mode: PermissionMode,
+) -> mecha_core::closure::RunPosture {
+    use mecha_core::closure::RunPosture;
+    if task_chat {
+        RunPosture::Delegated
+    } else if approve_all || mode != PermissionMode::Ask {
+        RunPosture::Unattended
+    } else {
+        RunPosture::Interactive
+    }
+}
+
 /// Which door a turn came through, and what that changes about it.
 struct TurnOpts {
     request_id: Option<String>,
@@ -1653,6 +1677,22 @@ fn begin_turn(
         review_hint: opts
             .spoken
             .then(|| crate::voice::SPOKEN_REVIEW_HINT.to_string()),
+        // Per turn, like the approver below: a web chat about a board task is
+        // that task's lane (it withholds `kg_task_update`, D6), a turn with
+        // approvals off — voice, or the session's mode set away from `ask` —
+        // has nobody at the approver, and only a turn that asks the person
+        // in front of the page is interactive (`closure::decide`). The mode
+        // is read here, at the start of the turn, so a change from the page
+        // takes effect on the next turn; a change mid-turn does not re-stamp
+        // the turn already running.
+        // Either signal marks a task chat: `withheld` is the broader one (a
+        // resumed delegation keeps it with `task: None`), and `task` is the
+        // belt for a session created before its init was applied (review).
+        run_posture: Some(web_posture(
+            ws.task.is_some() || ws.withheld.iter().any(|t| t == "kg_task_update"),
+            opts.approve_all,
+            *ws.mode.lock().unwrap_or_else(|e| e.into_inner()),
+        )),
         ..(*chat.agent.ctx()).clone()
     });
     cx.approver = if opts.approve_all {
@@ -2698,6 +2738,22 @@ pub async fn sessions(State(state): Chat) -> axum::response::Response {
 
 #[cfg(test)]
 mod tests {
+    /// A chat about a board task is its lane whatever the page's mode; a
+    /// turn whose approver asks nobody — voice's approve-all, or the session
+    /// mode set to `allow` or `read-only` — is unattended; only `ask` outside
+    /// a task chat is interactive (S8; review of #293: the mode was ignored).
+    #[test]
+    fn a_web_turn_is_interactive_only_with_approvals_on_outside_a_task_chat() {
+        use super::PermissionMode::{Allow, Ask, ReadOnly};
+        use mecha_core::closure::RunPosture as P;
+        assert_eq!(super::web_posture(false, false, Ask), P::Interactive);
+        assert_eq!(super::web_posture(false, false, Allow), P::Unattended);
+        assert_eq!(super::web_posture(false, false, ReadOnly), P::Unattended);
+        assert_eq!(super::web_posture(false, true, Ask), P::Unattended);
+        assert_eq!(super::web_posture(true, false, Ask), P::Delegated);
+        assert_eq!(super::web_posture(true, true, Allow), P::Delegated);
+    }
+
     /// A spoken turn is the owner's words with the voice preamble *prefixed
     /// onto them*, in the same conversation as the typed turns (D3) — so it
     /// is not a block the core filter can drop, and the door that added the
