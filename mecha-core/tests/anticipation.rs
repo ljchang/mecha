@@ -45,11 +45,14 @@ impl Drop for Fixture {
 fn evidence() -> Evidence {
     Evidence {
         goal: Some(GoalRef::Task("meeting".into())),
-        commitment: Some(Commitment {
-            beneficiary: "attendees".into(),
-            expectation: "send the confirmed time".into(),
-            consequence: "attendees miss the meeting".into(),
-        }),
+        commitment: Some(
+            Commitment {
+                beneficiary: "attendees".into(),
+                expectation: "send the confirmed time".into(),
+                consequence: "attendees miss the meeting".into(),
+            }
+            .into(),
+        ),
         expected_outcome: Some("accurate invitation".into()),
         check_available: true,
         check_cost_secs: Some(10),
@@ -551,4 +554,65 @@ fn owner_evidence_preserves_plan_verification_and_expectations() {
             }
         }
     }
+}
+
+/// Ruling (b), 1f-2, both halves through the real store. The `outbox
+/// anticipate` creation site writes the one commitment record (party, the
+/// goal pointer as source, no date) even from an owner's legacy-shaped
+/// evidence file; and a prediction an older binary recorded in the legacy
+/// shape still reads as known history — assessed exactly as before, not
+/// blocking release — and is written back in its own shape when the draft
+/// is rewritten for another reason. If the legacy shape stopped parsing,
+/// the prediction would read as `History::Unknown` and this fails.
+#[test]
+fn new_predictions_write_the_record_and_a_legacy_one_on_disk_reads_and_stays_as_it_was() {
+    let f = Fixture::new();
+    let _lock = f.store.lock().unwrap();
+    let draft = f.draft();
+    let item = f.store.anticipate(&draft.id, evidence(), false).unwrap();
+    let path = f.root.join(format!("{}.json", item.id));
+    let mut raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let last = raw["predictions"].as_array().unwrap().len() - 1;
+    let written = raw["predictions"][last]["evidence"]["commitment"].clone();
+    assert_eq!(written["party"], "attendees");
+    assert_eq!(written["source"], "task:meeting");
+    assert!(written.get("beneficiary").is_none(), "{written}");
+    assert!(written.get("due_at").is_none() && written.get("follow_up_at").is_none());
+    let new_kinds = item.predictions[last]
+        .known()
+        .unwrap()
+        .assessment
+        .kinds
+        .clone();
+
+    // What an older binary wrote on that same prediction.
+    let legacy = json!({
+        "beneficiary": "attendees",
+        "expectation": "send the confirmed time",
+        "consequence": "attendees miss the meeting",
+    });
+    raw["predictions"][last]["evidence"]["commitment"] = legacy.clone();
+    let before = raw["predictions"][last].clone();
+    std::fs::write(&path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
+
+    let loaded = f.store.item(&item.id).unwrap();
+    let p = loaded.predictions[last]
+        .known()
+        .expect("the legacy shape still reads as known history");
+    assert!(matches!(
+        p.evidence.commitment,
+        Some(mecha_core::anticipation::RecordedCommitment::Legacy(_))
+    ));
+    assert_eq!(p.assessment.kinds, new_kinds, "assessed exactly as before");
+    loaded
+        .ensure_prediction_ready()
+        .expect("a legacy prediction does not block release");
+
+    // A rewrite for another reason leaves it in its own shape.
+    f.store.resolve(&item.id, "rejected", None).unwrap();
+    let after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(after["predictions"][last], before, "nothing is rewritten");
+    assert_eq!(after["predictions"][last]["evidence"]["commitment"], legacy);
 }
