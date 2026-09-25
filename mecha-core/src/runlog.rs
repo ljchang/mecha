@@ -42,6 +42,11 @@ pub struct RunRow {
     pub provider: String,
     pub model: String,
     pub title: Option<String>,
+    /// The surface the session was opened through, as its header recorded
+    /// it — `None` on a session from before the field, or a kind this build
+    /// cannot read. The one authority on surface: a title is prose (`mecha
+    /// run` titles its session with the prompt's first words).
+    pub kind: Option<SessionKind>,
     /// Where the session was rooted.
     ///
     /// **Recorded in every transcript header since the store existed, and read
@@ -248,6 +253,7 @@ impl Corpus {
                     provider,
                     model,
                     title: meta.title.clone(),
+                    kind: meta.kind,
                     workspace: meta.workspace.clone(),
                     run: i as u32 + 1,
                     stats: s,
@@ -551,13 +557,7 @@ impl Corpus {
         }
         for row in &self.rows {
             let Some(brief) = &row.stats.brief else {
-                let surface = row
-                    .title
-                    .as_deref()
-                    .and_then(|t| t.split_once(": "))
-                    .map(|(prefix, _)| prefix)
-                    .filter(|p| !p.is_empty() && !p.contains(' '))
-                    .unwrap_or("other");
+                let surface = row.kind.map(SessionKind::as_str).unwrap_or("unknown");
                 *out.unbriefed_by_surface
                     .entry(surface.to_string())
                     .or_insert(0) += 1;
@@ -906,7 +906,8 @@ pub struct BriefCompleteness {
     pub complete_rate: Option<f64>,
     /// Per field, over the briefed runs.
     pub fields: BTreeMap<&'static str, FieldCounts>,
-    /// Runs with no brief, by the surface their session's title names.
+    /// Runs with no brief, by the surface their session recorded
+    /// (`SessionKind`), `unknown` where it recorded none.
     pub unbriefed_by_surface: BTreeMap<String, usize>,
 }
 
@@ -987,6 +988,7 @@ mod workspace_tests {
             provider: "local".into(),
             model: model.into(),
             title: None,
+            kind: None,
             workspace: PathBuf::from(ws),
             run: 1,
             stats: RunStats::default(),
@@ -1038,29 +1040,34 @@ mod workspace_tests {
         let mut partial = full.clone();
         partial.board = Some(Board::Unread { why: "x".into() });
         partial.slots = None;
-        let briefed = |b: SituationBrief, title: &str| {
+        let briefed = |b: SituationBrief, kind: SessionKind| {
             let mut r = row("/tmp", "m");
-            r.title = Some(title.into());
+            r.kind = Some(kind);
             r.stats.brief = Some(Box::new(b));
             r
         };
-        let bare = |title: Option<&str>| {
+        // The surface is the recorded kind, never the title: a `mecha run`
+        // titles its session with the prompt's first words, so a title
+        // that reads like another surface's prefix must not move the bucket.
+        let bare = |kind: Option<SessionKind>, title: &str| {
             let mut r = row("/tmp", "m");
-            r.title = title.map(str::to_string);
+            r.kind = kind;
+            r.title = Some(title.into());
             r
         };
         let corpus = Corpus {
             rows: vec![
-                briefed(full, "task: Write it"),
-                briefed(partial, "web: hello"),
-                bare(Some("voice: call")),
-                bare(Some("voice: again")),
-                bare(None),
+                briefed(full, SessionKind::Task),
+                briefed(partial, SessionKind::Web),
+                bare(Some(SessionKind::Voice), "voice: call"),
+                bare(Some(SessionKind::Voice), "voice: again"),
+                bare(Some(SessionKind::Run), "task: check the deploy"),
+                bare(None, "web: from before the field"),
             ],
             ..Default::default()
         };
         let c = corpus.brief_completeness();
-        assert_eq!((c.runs, c.briefed, c.complete), (5, 2, 1));
+        assert_eq!((c.runs, c.briefed, c.complete), (6, 2, 1));
         assert_eq!(c.complete_rate, Some(0.5));
         assert_eq!(
             c.fields["board"],
@@ -1079,7 +1086,12 @@ mod workspace_tests {
             }
         );
         assert_eq!(c.unbriefed_by_surface["voice"], 2);
-        assert_eq!(c.unbriefed_by_surface["other"], 1);
+        assert_eq!(
+            c.unbriefed_by_surface["run"], 1,
+            "not `task`, whatever the title"
+        );
+        assert_eq!(c.unbriefed_by_surface["unknown"], 1);
+        assert!(!c.unbriefed_by_surface.contains_key("task"));
         // A rate over nothing is not a rate.
         assert_eq!(Corpus::default().brief_completeness().complete_rate, None);
     }

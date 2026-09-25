@@ -4075,8 +4075,14 @@ when touching it:
   read by the harness** (`setup::read_board_for_brief`, one `kg_task_list`
   through the run's own surface whose answer never enters the conversation)
   **and reduced by `brief::board_of` to counts and task ids** — no row's
-  name, no `waiting_on` (a person's name), no id that is not one token; a
-  model fetching the same rows through `kg_*` would arm taint. **Every
+  name, no `waiting_on` (a person's name), no id that is not one token, and
+  no row string whole: a status narrows to the closed set or `other` and a
+  date is re-emitted from its parse, the run's own row included (a `due_at`
+  is writable through `kg_task_update`, and a front-door triage mints rows
+  from strangers' requests — found on review); a model fetching the same
+  rows through `kg_*` would arm taint. Runs with no brief are counted by the
+  session's recorded `kind`, never its title (`mecha run` titles a session
+  with the prompt's first words — found on review). **Every
   reader that cannot run says so** (`Unread { why }`, in the harness's own
   words, never a server's error text), a run with no anchor records
   `GoalChain::NoAnchor`, and no absent file reads as a setting: no
