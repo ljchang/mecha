@@ -862,6 +862,11 @@ and the taint snapshot is recorded on the episode's `meta` instead, where
 review can see it. Unknown taint is recorded as unknown, never clean.
 Idempotent at both ends: `distilled.jsonl` in the learning store (same
 writer lock), and the graph's `(source, source_id)` key makes a re-push an update.
+The same pass also writes the session's **text appraisal**, in a follow-up
+turn on the episode call's own conversation. It runs on the local model only
+and in shadow; an appraisal that fails never touches the episode's push or
+its ledger. The invariants are in the goal-system section's text-appraisal
+paragraph.
 
 The distiller also reports **corrections** — moments the user said the graph
 holds something wrong — as `meta.corrections`, `[{wrong, right?, about?,
@@ -4811,12 +4816,12 @@ It does not add unsolicited lesson delivery. Missing context is never a success.
 
 **A text appraisal is grounded before it is kept, carries its run's taint,
 and only the owner reads a tainted one** (`APPRAISAL-WIRING-DESIGN.md` I1,
-R18, R19; row 2a-1 — the store, whose producer is 2a-2). An appraisal is
+R18, R19; row 2a-1 the store, row 2a-2 its producer). An appraisal is
 prose (R17): `appraisal_store::TextAppraisal` holds one bounded
 interpretation, good/bad per goal (`Bearing`, nothing finer — a magnitude is
 the number R17 took out), the claims it rests on, a prediction, goal
 hypotheses and lessons, in `~/.mecha/appraisals/appraisals.jsonl` (flock,
-append, `sync_data`). Four decisions, each a bug if undone:
+append, `sync_data`), one per session. Four decisions, each a bug if undone:
 
 - **The write door grounds, and a caller cannot skip it.**
   `AppraisalStore::record` takes a `Draft` and a `SessionEvidence`, never a
@@ -4860,12 +4865,64 @@ append, `sync_data`). Four decisions, each a bug if undone:
   read is kept verbatim (`Pointer::Unread`) and grounds nothing, a torn line
   costs itself and is counted, an unreadable file is an error.
 
-The graph episode stays as it is (R25), pinned twice in `distill.rs`: the
-body pushed is the reply's `episode` verbatim with no appraisal field in the
-body or the meta, and `DISTILLER_SYSTEM`'s hash is fixed, so a change to
-what the graph extracts from is a ruling, not a test update. `sessions
-appraise` prints the store's counts — records, clean and not, claims kept
-and dropped by reason (`text_appraisals` in `--json`) — and never its prose.
+The graph episode stays as it is (R25), pinned twice in `distill.rs`. The
+body pushed is the reply's `episode` verbatim, with no appraisal field in
+the body or the meta. `DISTILLER_SYSTEM`'s hash is fixed, so a change to
+what the graph extracts from is a ruling, not a test update.
+
+**The producer is a follow-up turn on the episode call, in shadow** (row
+2a-2; the owner's ruling of 2026-09-25 amends decision 4 to one extra model
+call per session). Its invariants:
+
+- **The follow-up extends the episode call's request, never rebuilds it.**
+  `Distiller::appraise` sends `QuarantinedPass::follow_up`: `ask`'s own
+  request (frame and first turn byte for byte), the reply verbatim with its
+  reasoning, then the appraisal asked in one new user turn. Nothing enters
+  but the pass's own question and answer, and there are still no tools.
+  llama-server picks the slot by longest-common-prefix similarity, so the
+  follow-up lands where the episode's prompt is cached. Measured on eight
+  real sessions: the whole episode prompt came from cache every time, and
+  each follow-up still cost 20–137 s of a seat, nearly all generation. The
+  appraisal instructions ride in the user turn, so the pinned frame never
+  moves. `the_appraisal_follow_up_reuses_the_episode_calls_prefix_byte_for_byte`
+  checks the encoder's bytes.
+- **The episode call's transcript is not given ids.** Re-rendering it would
+  change what the graph extracts from. The follow-up instead lists the
+  referents by the ids the write door dereferences: `turn:<n>` for the
+  owner's words, then `result:<id>` for each result, whole up to a per-item
+  and a total cap, with any cut said. A quote can come from past the
+  renderer's 300-character clip.
+- **What the appraiser is shown and what its record is stamped with are one
+  read.** `SessionEvidence::read_with_transcript` returns the parsed
+  transcript beside the evidence. A second read of a growing session could
+  show the model an untrusted result the stamped provenance never covered.
+- **Every input is read by the harness from a store; the model fetches
+  nothing.** `render_appraisal_inputs` says each input in words. A signed
+  error appears by direction, channel, agency and pointer, never by
+  magnitude, and no sensor reading or setpoint is printed (G4, R21). An
+  unreadable store is said, never shown as empty. Past appraisals come only
+  through `CleanRead::same_situation_and_goal`, which holds `Clean`s. It
+  matches the situation key with 2c-1's goal key exactly: nothing widens,
+  and an unnameable goal or surface matches nothing.
+- **The write door owns what the model wrote.**
+  - It resolves each judgment's goal against `distill::KnownPointers`
+    (unresolved ones are counted, not guessed).
+  - It deduplicates and caps `because` and flags the cut.
+  - It refuses a second appraisal of a session under its lock
+    (`Recorded::AlreadyOnRecord`), because the distill ledger and the graph
+    push can each fail after an appraisal was written.
+  - `parse_appraisal_reply` is whole-or-nothing: a key in the wrong shape
+    stores nothing and is counted.
+- **Local only, seated, and never in the episode's way.** It runs only when
+  the distill provider is `kind = "local"` (R29), and holds one background
+  seat (`permit.rs`) for the pair of calls. Any failure on the appraisal leg
+  costs only itself: the episode is pushed and ledgered as before.
+- **The owner's readout.** `sessions appraise <session>` (or `--text`)
+  prints the prose with its taint label, control characters stripped line
+  by line. Without an id it prints the store's counts, never its prose
+  (`text_appraisals` in `--json`).
+- **`expected_act`** is R16's closed set beside the prose prediction, for
+  2b-2 to score against the owner's recorded act. It is lenient on load.
 
 **Attribution follows the event.** `appraisal::attribute_events` uses the plan at
 the intervention or staging point and typed question/reflection links. Ambiguous
