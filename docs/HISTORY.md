@@ -126,7 +126,12 @@ delivery and the loop arms `private` at each fold site, and
 attached image's precedent); and a fold is now a `Record::Extend` of the
 message the door already recorded rather than a whole-transcript
 `Record::Rewrite` that cleared the taint checkpoints, the calendar
-reference's fold included. The lever still ships off.
+reference's fold included. The lever still ships off. **2c-2**, #320
+(`6f8e69ca`, 21:36Z): `goal_context` serves up to three past clean
+appraisals of the run's situation and goal, on demand and never pushed,
+selected at setup through `Clean` only (`appraisal_store::PastAppraisals`)
+and behind `Lever::PastAppraisals` (`[agent] past_appraisals`), which ships
+off; the measured run against a control is still owed.
 **2a-3**, #315 (`0692dc79`, 20:32Z): the counts-only appraiser
 (`appraise_with_model`) is retired into 2a-2's text appraisal; `sessions
 appraise --appraise` stays as a hidden, deprecated no-op, and old records
