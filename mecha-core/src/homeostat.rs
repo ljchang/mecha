@@ -37,11 +37,12 @@
 //!   request. Whatever eventually shows this to a model puts it in the turn
 //!   tail or in a tool result.
 //!
-//! **Deliberately not sampled yet: llama-server's `/slots`.** It is the best
-//! load signal available — occupancy directly rather than by proxy — but it is
-//! an HTTP call, and nothing reads it yet. A sensor with no consumer should not
-//! put a request in the path of every run's start; it goes in beside whatever
-//! first needs it.
+//! **Not sampled here: llama-server's `/slots`.** It is the best load signal
+//! available — occupancy directly rather than by proxy — but it is an HTTP
+//! call, and the homeostat is sampled wherever a front-end records a session.
+//! The situation brief is what first needed it (`brief::read_slots`, 1h),
+//! and reads it on the three doors that assemble one, for a local provider
+//! only.
 //!
 //! [`RunContext`]: crate::agent::RunContext
 

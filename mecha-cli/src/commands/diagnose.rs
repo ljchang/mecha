@@ -697,6 +697,7 @@ mod tests {
             provider: provider.into(),
             model: model.into(),
             title: None,
+            kind: None,
             workspace: std::path::PathBuf::from("/tmp"),
             run: 0,
             stats: Default::default(),

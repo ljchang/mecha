@@ -132,6 +132,33 @@ Three rules it inherits, each of which is a bug if undone:
   messages with the cache breakpoint on the last system block, so a per-turn
   value there would re-pay the whole prefix — tools included — on every request.
 
+### The situation brief
+
+A delegated task, a trigger run and a web chat turn also record a **situation
+brief** beside the conditions (`brief` on the run's outcome record): what
+situation the run started in, assembled by mecha with no model call. It is
+recorded and **not yet sent to the model**. A later phase will put it into the
+run's first message as words, never the system prompt. Until then a test fails
+if any part of it reaches a request.
+
+| Field | What it says |
+|---|---|
+| `goal` | The chain above the run's goal: the task, its project (read off the board row, with how many tasks are open under it), and the charter lines it serves (a trigger's `serves`, ranked by your charter). A run with no goal records `no_anchor`, not an empty chain. |
+| `board` | Your board as counts and pointers: open tasks by status, how many are overdue or due this week, how many the agent holds, the ids of the overdue and soon-due ones, and the run's own task row. mecha reads it itself before the run. No task's name or who it waits on is kept, and the model never fetches it (a fetch by the model would mark the conversation as holding untrusted content). |
+| `commitments` | Each pending commitment (a staged draft, a parked question, a request waiting on you) with its age and whether it is past its patience. Stores withdrawn from the run as saturated are named. |
+| `time` | The local time in your `[agent] timezone` and whether it is inside the quiet hours you set (`workflows/attention.toml`). No file means no quiet hours are recorded, not the digest's 22–08 UTC default. |
+| `seats` | How many background seats on the model are held, and by what. |
+| `runs` | Other delegated tasks and trigger runs in flight. |
+| `slots` | How many of the local model server's slots are busy, from `GET /slots`, when the provider is `kind = "local"`. |
+| `voice` | Whether a voice call is in progress: the voice facade took a turn in the last five minutes. |
+| `budget` | The run's turn, token and cost ceilings, its context window and compaction threshold. |
+
+Every field that could not be read says so, with the reason, and never reads
+as empty or zero. `mecha sessions health` reports how complete the recorded
+briefs are, field by field, and counts the runs that recorded none by surface
+(`situation_brief` in `--json`). The TUI, `mecha chat`, `mecha run`, Slack,
+and voice turns that are not spoken into a web chat do not record a brief yet.
+
 ### Anticipated guilt, and why it reads only mecha's own stores
 
 > An expectation is a **recorded** commitment, never a claimed one.

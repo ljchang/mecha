@@ -1692,6 +1692,39 @@ fn health(
         );
     }
 
+    // 1h's phase-1 readout: how complete the recorded situation briefs are,
+    // per field, and which surfaces record none — a count, never a smaller
+    // denominator the reader cannot see.
+    let briefs = corpus.brief_completeness();
+    if briefs.briefed == 0 {
+        println!("  situation brief     — (no run in this corpus recorded one)");
+    } else {
+        println!(
+            "  situation brief     {} of {} run(s) briefed; {} complete ({})",
+            briefs.briefed,
+            briefs.runs,
+            briefs.complete,
+            pct(briefs.complete_rate)
+        );
+        let fields: Vec<String> = briefs
+            .fields
+            .iter()
+            .map(|(f, c)| format!("{f} {}/{}/{}", c.known, c.unread, c.missing))
+            .collect();
+        println!(
+            "                      read/unread/missing: {}",
+            fields.join(" · ")
+        );
+    }
+    if !briefs.unbriefed_by_surface.is_empty() {
+        let none: Vec<String> = briefs
+            .unbriefed_by_surface
+            .iter()
+            .map(|(s, n)| format!("{s} {n}"))
+            .collect();
+        println!("                      no brief: {}", none.join(", "));
+    }
+
     let by_model = corpus.by_model();
     if by_model.len() > 1 {
         // A blended rate across models is true and useless: neither model
@@ -1800,6 +1833,9 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
     // S5's phase-1 readout, per sensored line: the level's over-count beside
     // the per-item variances (`null` under two rows) and the delta counts.
     out["charter_readings"] = serde_json::json!(corpus.reading_variation());
+    // 1h's phase-1 readout: per brief field, read / unread / missing over
+    // the briefed runs; `complete_rate` is `null` over none.
+    out["situation_brief"] = serde_json::json!(corpus.brief_completeness());
     out
 }
 

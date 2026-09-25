@@ -164,13 +164,72 @@ impl Permits {
             std::process::id(),
             uuid::Uuid::new_v4().simple()
         ));
-        std::fs::write(&path, serde_json::to_string_pretty(&permit)?)?;
+        // Temp-sibling-and-rename, so no reader sees a half-written permit:
+        // `live` sweeps a file it cannot parse as a seat held for nobody, and
+        // a torn one caught mid-write would have been deleted under its
+        // holder (found on review). The `.tmp` extension is not `.permit`,
+        // so neither reader looks at the file until it is whole.
+        let tmp = path.with_extension("permit.tmp");
+        std::fs::write(&tmp, serde_json::to_string_pretty(&permit)?)?;
+        std::fs::rename(&tmp, &path)?;
         Ok(Ok(Held { path }))
     }
 
     pub fn capacity(&self) -> usize {
         self.capacity
     }
+
+    /// The live holders, **read-only and fallible** — the situation brief's
+    /// reader (`brief.rs`), which must tell "no seat is held" from "the pool
+    /// could not be read". [`live`](Self::live) answers both with an empty
+    /// list, which is right for a caller deciding whether to start and
+    /// wrong for a record: an unreadable pool recorded as idle is the
+    /// dash-read-as-zero this project keeps finding. A directory that does
+    /// not exist is no holders (a fresh install); a dead holder is skipped,
+    /// not swept — a reader is not the pool's owner. **And one file down**:
+    /// a `.permit` that cannot be read or parsed is neither a live seat nor
+    /// an absent one, so it is counted in [`PoolRead::unreadable`] rather
+    /// than dropped — dropped, it read as one seat fewer (found on review).
+    pub fn read_live(&self) -> Result<PoolRead> {
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(PoolRead::default()),
+            Err(e) => {
+                return Err(anyhow::Error::new(e)
+                    .context(format!("reading the seat pool in {}", self.dir.display())))
+            }
+        };
+        let mut out = PoolRead::default();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|x| x.to_str()) != Some("permit") {
+                continue;
+            }
+            match std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|t| serde_json::from_str::<Permit>(&t).ok())
+            {
+                Some(p) if crate::process_alive(p.pid) => out.live.push(p),
+                Some(_) => {}
+                None => out.unreadable += 1,
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// [`Permits::read_live`]'s answer: the live holders, and how many permit
+/// files could not be read — each of which may be a live seat.
+#[derive(Debug, Default)]
+pub struct PoolRead {
+    pub live: Vec<Permit>,
+    pub unreadable: usize,
+}
+
+/// Where a mecha home keeps its seat pool — said once, for `mecha tasks`
+/// and for the situation brief's reader.
+pub fn dir_under(home: &Path) -> PathBuf {
+    home.join("permits")
 }
 
 #[cfg(test)]

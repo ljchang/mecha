@@ -55,6 +55,21 @@ pub struct RunMarker {
     pub session: Option<String>,
 }
 
+/// Where a mecha home keeps its delegated-task run markers — said once, for
+/// `mecha tasks`, the closure guard's walk over every guard home, and the
+/// situation brief's reader.
+pub fn task_dir_under(home: &Path) -> PathBuf {
+    home.join("taskruns")
+}
+
+/// [`RunMarkers::live_names`]'s answer: the runs in flight, and how many
+/// markers could not be read — each of which may be one.
+#[derive(Debug, Default)]
+pub struct LiveNames {
+    pub names: Vec<String>,
+    pub unreadable: usize,
+}
+
 /// A directory of run markers, keyed by whatever the caller calls its runs.
 pub struct RunMarkers {
     dir: PathBuf,
@@ -246,6 +261,45 @@ impl RunMarkers {
             .map(|m| m.pid)
             .filter(|pid| crate::process_alive(*pid))
             .collect())
+    }
+
+    /// The names of every run in flight in this directory, sorted — the
+    /// situation brief's "runs in flight" reader. Read-only like
+    /// [`live_pids`](Self::live_pids) and fallible for the same reason: a
+    /// directory that does not exist is no runs, one that cannot be read is
+    /// an error, never an empty list. A marker that cannot be read or parsed
+    /// is counted in `unreadable`, never dropped: it may be a live run
+    /// (found on review, on `Permits::read_live`'s shape).
+    pub fn live_names(&self) -> Result<LiveNames> {
+        let dir = match std::fs::read_dir(&self.dir) {
+            Ok(dir) => dir,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(LiveNames::default()),
+            Err(e) => {
+                return Err(anyhow::Error::new(e)
+                    .context(format!("reading run markers in {}", self.dir.display())))
+            }
+        };
+        let mut out = LiveNames::default();
+        for entry in dir.flatten() {
+            let path = entry.path();
+            if !path.extension().is_some_and(|x| x == "running") {
+                continue;
+            }
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_string);
+            let marker = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|t| serde_json::from_str::<RunMarker>(&t).ok());
+            match (name, marker) {
+                (Some(name), Some(m)) if crate::process_alive(m.pid) => out.names.push(name),
+                (Some(_), Some(_)) => {}
+                _ => out.unreadable += 1,
+            }
+        }
+        out.names.sort();
+        Ok(out)
     }
 
     /// Ask the run in flight to stop. `false` when there is nothing to stop,

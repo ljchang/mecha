@@ -51,6 +51,7 @@ pub mod appraisal;
 pub mod backlog;
 pub mod batch;
 pub mod boredom;
+pub mod brief;
 pub mod cache_lens;
 pub mod candidate;
 pub mod capture;
