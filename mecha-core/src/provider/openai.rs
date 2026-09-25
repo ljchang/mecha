@@ -515,11 +515,18 @@ fn dropped_reasoning(produced_output: bool, reasoning: &str) -> Option<DroppedRe
 
 fn log_dropped_reasoning(produced_output: bool, reasoning: &str, finish: Option<&str>) {
     if let Some(d) = dropped_reasoning(produced_output, reasoning) {
+        // Content-free at the default level. An empty turn is in no
+        // transcript, so this line is the only default-level record that one
+        // happened — but the model's reasoning is conversation content, and
+        // the default level is journald's for every web, Slack and voice turn
+        // `serve` runs. The tail went with the whole trace to debug
+        // (INCOGNITO-DESIGN §9 step 0), already whole in the debug line
+        // below: the counts classify a silence, and nothing at warn explains
+        // one.
         tracing::warn!(
             reasoning_chars = d.chars,
             looks_like_tool_call = d.looks_like_tool_call,
             finish_reason = finish.unwrap_or("<absent>"),
-            tail = d.tail,
             "turn produced no output but the response carried reasoning_content"
         );
         // The whole trace, at debug, because the tail is enough to classify a
@@ -844,6 +851,108 @@ mod tests {
     /// One SSE chunk carrying a delta for choice 0.
     fn chunk(delta: Value) -> Value {
         json!({"choices": [{"index": 0, "delta": delta}]})
+    }
+
+    /// Everything this thread logged at or below `max`, rendered — through a
+    /// minimal subscriber, because `tracing-subscriber` is not a dependency
+    /// here and the property is about what reaches the log, not what the code
+    /// means to send.
+    ///
+    /// Installed once, process-wide, and never dropped, with events kept per
+    /// emitting thread. A scoped subscriber was flaky (3 of 6 runs): other
+    /// tests hit the same callsite from threads with no subscriber, and
+    /// `tracing`'s process-wide interest cache could skip the event before
+    /// the scoped one was asked. A global one is always in that cache.
+    fn logged_at(max: tracing::Level, f: impl FnOnce()) -> String {
+        use std::cell::RefCell;
+        thread_local! {
+            static LINES: RefCell<Vec<(tracing::Level, String)>> = const { RefCell::new(Vec::new()) };
+        }
+        struct Capture;
+        struct Fields<'a>(&'a mut String);
+        impl tracing::field::Visit for Fields<'_> {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.0.push_str(&format!("{}={:?} ", field.name(), value));
+            }
+        }
+        // Only this module's events: installed process-wide, a capture that
+        // took every event slowed every test's logging, and exposed a timing
+        // race in the shell registry's test (0 of 12 on main, 1 in 10 here).
+        // `never` elsewhere is cached, so other callsites cost nothing.
+        fn ours(meta: &tracing::Metadata<'_>) -> bool {
+            meta.target()
+                .starts_with(module_path!().trim_end_matches("::tests"))
+        }
+        impl tracing::Subscriber for Capture {
+            fn register_callsite(
+                &self,
+                meta: &'static tracing::Metadata<'static>,
+            ) -> tracing::subscriber::Interest {
+                if ours(meta) {
+                    tracing::subscriber::Interest::always()
+                } else {
+                    tracing::subscriber::Interest::never()
+                }
+            }
+            fn enabled(&self, meta: &tracing::Metadata<'_>) -> bool {
+                ours(meta)
+            }
+            fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+            fn event(&self, event: &tracing::Event<'_>) {
+                let mut line = String::new();
+                event.record(&mut Fields(&mut line));
+                let level = *event.metadata().level();
+                LINES.with(|l| l.borrow_mut().push((level, line)));
+            }
+            fn enter(&self, _: &tracing::span::Id) {}
+            fn exit(&self, _: &tracing::span::Id) {}
+        }
+        // This claims the one process-wide subscriber slot for the whole lib
+        // test binary: a later test that installs a global subscriber of its
+        // own will find the slot taken and see nothing. Scope that test with
+        // `with_default`, or read events through this capture.
+        static INSTALL: std::sync::Once = std::sync::Once::new();
+        INSTALL.call_once(|| {
+            // Nothing else in this crate's tests installs one; if something
+            // ever does, this capture sees nothing and the test says so.
+            let _ = tracing::subscriber::set_global_default(Capture);
+        });
+        LINES.with(|l| l.borrow_mut().clear());
+        f();
+        LINES.with(|l| {
+            l.borrow()
+                .iter()
+                .filter(|(level, _)| *level <= max)
+                .map(|(_, line)| format!("{line}\n"))
+                .collect()
+        })
+    }
+
+    #[test]
+    fn dropped_reasoning_reaches_the_default_log_as_counts_only() {
+        // The default level is journald's for every turn `serve` runs; the
+        // model's reasoning is conversation content and must not land there.
+        let reasoning = format!("{} the secret is KUMQUAT-7731", "thinking ".repeat(20));
+        let at_warn = logged_at(tracing::Level::WARN, || {
+            log_dropped_reasoning(false, &reasoning, Some("stop"))
+        });
+        assert!(
+            at_warn.contains("reasoning_chars"),
+            "the empty turn is still recorded: {at_warn}"
+        );
+        assert!(
+            !at_warn.contains("KUMQUAT"),
+            "reasoning reached the default log: {at_warn}"
+        );
+        // Diagnosis still has it, one level down.
+        let at_debug = logged_at(tracing::Level::DEBUG, || {
+            log_dropped_reasoning(false, &reasoning, Some("stop"))
+        });
+        assert!(at_debug.contains("KUMQUAT"), "{at_debug}");
     }
 
     #[test]
