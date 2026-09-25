@@ -3796,7 +3796,8 @@ deferrals are not repeated here; S1, S8, S3 and O4 carry none, so what 1a,
   `graph_fact_rejections: null`; ARCHITECTURE's goal-system section says
   why.
 - **Minors banked across the arc, for the owner to weigh.** Each was
-  re-checked against `f2efa162`.
+  re-checked against `f2efa162` and again after merging `6e6f03ba`; 2a-2
+  (#314) closed a thirteenth, `Judgment::because` being uncapped.
   - *Closure (1b, 1b-2, 1c).*
     - The web board's `POST /api/tasks/set` (`serve::board::task_set`)
       does not pass `--only-open`, so a stale web card has none of the
@@ -3845,9 +3846,6 @@ deferrals are not repeated here; S1, S8, S3 and O4 carry none, so what 1a,
       the goal pointer in `Evidence::into_record`, which is reached through
       `Agent::set_appraisal_evidence` after `setup::prepare` has started
       the MCP servers, not with the other evidence checks before it.
-  - *The appraisal store (2a-1).* `Judgment::because` has no length bound:
-    indices are filtered to kept claims but neither deduplicated nor
-    capped. 2a-2, the producer, is to close it.
 - **`CLAUDE.md` has drifted, and editing it is the owner's call.**
   - The goal-system headline says the homeostat and `anticipated_guilt` are
     sensors whose only reader is the diagnostician's brief. Since 1e and 1f,
