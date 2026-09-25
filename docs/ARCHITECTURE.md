@@ -4351,9 +4351,14 @@ when touching it:
   delivers one too** (3a): an experiment's trial is a `mecha run`, and
   without a brief there the lever's two arms were one condition; it assembles
   when the run is recorded or delivery is on, with the interactive board
-  deadline at a terminal. The artifact-repeat probe refuses a recording made
-  with delivery on (`mismatch::validate_recording`), since its context
-  carries no brief. **Delivery arms no taint today, and whether it should
+  deadline at a terminal. The artifact-repeat probe refuses a recording
+  whose transcript holds a brief (`mismatch::validate_transcript` — asked of
+  the transcript, because a recording from before the lever cannot name it
+  in `levers_off`, and requiring that refused every stored case; review of
+  #309), and runs with delivery off and `cx.brief` cleared, structurally.
+  Seat counts ("1 of 3 free") are a numeric resource fact beside the budget:
+  a capacity the harness sets and how much of it is held, with no setpoint
+  and no score to move. **Delivery arms no taint today, and whether it should
   is the owner's open question** (review of #309). The untrusted axis has
   nothing to key on: nothing in the words came from outside — no board
   row's prose, no server's error text; `board_of` narrows every value and
