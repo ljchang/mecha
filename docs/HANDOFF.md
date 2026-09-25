@@ -3729,9 +3729,11 @@ the mechanism and every decision. What it left standing:
 and 3a are in flight.** The authority is `APPRAISAL-WIRING-DESIGN.md`: §3
 holds the plan as pull requests with their order, and §6 the rulings,
 including R30–R33 of 2026-09-25. What phase 1 built is in HISTORY under
-2026-09-24/25. Each catalogue entry the phase built (S5, S7, B1, G4) ends with
-a *Built as* paragraph naming what that PR deferred; those deferrals are not
-repeated here. What is open:
+2026-09-24/25. Four of the catalogue entries phase 1 built (S5, S7, B1 and
+G4) end with a *Built as* paragraph naming what that PR deferred, and those
+deferrals are not repeated here; S1, S8, S3 and O4 carry none, so what 1a,
+1b, 1d and 1g deferred is in their PR bodies (#292, #293 and #294, #299,
+#298), save 1d's graph channel below. What is open:
 
 - **In flight, unmerged.** **3a** is PR #309 (`feat/brief-delivered-3a`):
   the brief delivered as words in the run's first user turn behind
