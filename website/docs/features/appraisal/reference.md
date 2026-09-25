@@ -528,12 +528,15 @@ launder exactly that provenance. Citing the id costs the reader one lookup and
 costs nothing here.
 
 **Where the readout appears depends on where you close the task.** In a
-terminal it is printed as above. A task closed from the web board runs the
-same closure appraisal, and any follow-up it stages appears on the board, but
-the readout line itself is not shown on the page today. Slack's Done tap also
-runs it, and the readout is not shown in the Slack reply either. A task closed
-from `mecha-graph tui` changes the board directly and does not run closure
-appraisal at all.
+terminal it is printed as above. The web board and Slack read it back from
+the closure record (below) and show it beside the task: on the page after the
+status change, and in the reply to Slack's **Done** or **Drop** tap. A Slack
+tap on a task you have since closed somewhere else changes nothing and says
+so, rather than turning a `done` into a `dropped` or reopening it. A task
+closed from `mecha-graph tui` goes through the same closure when
+`~/.mecha-graph/config.toml` has `[board] close_through = "mecha"`, and the
+appraisal shows in the TUI's status line; without that setting the TUI
+changes the board directly and no closure appraisal runs.
 
 **And the trigger itself is owner-only, structurally.** A model cannot close a
 board task: on every model-facing registry the graph's task tool is wrapped so

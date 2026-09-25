@@ -103,6 +103,16 @@ pub enum Cmd {
         /// Why, when closing or reopening — kept on the closure record.
         #[arg(long)]
         reason: Option<String>,
+        /// Refuse, with nothing changed, unless the task is open going in.
+        /// **Set by a surface whose control was composed from an earlier
+        /// board read**, never typed: a Slack card's Done, Drop or Next
+        /// tapped after the task was closed elsewhere would otherwise flip
+        /// `done` to `dropped` — a verdict the closure record cannot see,
+        /// since it crosses no line — or reopen it, which signs against the
+        /// session that did the work. The card was composed while the task
+        /// was open; the row, read at tap time, is what decides (1c).
+        #[arg(long, hide = true, requires = "status")]
+        only_open: bool,
     },
     /// Read what the task was captured from — the mail that asked, the
     /// stranger's request, the conversation it fell out of.
@@ -200,10 +210,11 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             session,
             surface,
             reason,
+            only_open,
         } => {
             set(
                 global, &task, status, due, defer, context, waiting_on, project, session, surface,
-                reason,
+                reason, only_open,
             )
             .await
         }
@@ -513,6 +524,7 @@ async fn set(
     session: Option<String>,
     surface: Option<String>,
     reason: Option<String>,
+    only_open: bool,
 ) -> Result<()> {
     let mut args = json!({ "task": task });
     let refiled = project.is_some();
@@ -603,6 +615,9 @@ async fn set(
     // leave the closure permanently unconfirmed (review of #293).
     if let Some(b) = before.as_ref() {
         settle_uncertain(task, b["status"].as_str());
+        if only_open {
+            only_if_open(task, b["status"].as_str())?;
+        }
     }
     let moving = match (status.as_deref(), before.as_ref()) {
         (Some(to), Some(b)) => mecha_core::closure::classify(b["status"].as_str(), to),
@@ -713,6 +728,23 @@ async fn set(
     Ok(())
 }
 
+/// `--only-open`: the row going in must be open, or nothing changes. A row
+/// that carries no status is not proof it is open — unknown is never clean —
+/// so it refuses too.
+fn only_if_open(task: &str, status: Option<&str>) -> Result<()> {
+    match status {
+        Some(s) if mecha_core::closure::is_closed_status(s) => bail!(
+            "{task} is already {s} — this control was composed while it was open; \
+             nothing was changed"
+        ),
+        Some(_) => Ok(()),
+        None => bail!(
+            "{task}'s status could not be read, so whether it is still open cannot be told; \
+             nothing was changed"
+        ),
+    }
+}
+
 /// A move across the open/closed line that has been decided on and recorded,
 /// and whose board write is about to happen — the write-ahead half of
 /// `closure.rs`. `abort` withdraws the record when the write fails; `finish`
@@ -820,7 +852,8 @@ fn settle_uncertain(task: &str, board_status: Option<&str>) {
     };
     // Three-way, because a board at neither end of the move is evidence of
     // nothing: something else moved the row (the graph TUI writes status out
-    // of band until PR 1c), or the row did not say. Only the *from* status
+    // of band unless `[board] close_through` routes it here — 1c, A3), or the
+    // row did not say. Only the *from* status
     // is evidence the move did not land; anything else — `None` included —
     // leaves the transition uncertain rather than withdrawing a move that may
     // have happened (unknown is never clean; found on review of #293).

@@ -66,6 +66,8 @@ inherit a decision made for this one.
 | `frontdoor needs-info <seq>` | reversible, needs free text | modal | 2 |
 | `frontdoor close <seq>` | terminal for a stranger's request, requires a reason | modal, two-step | 2 |
 | `mecha-mail import <legacy>` (doctor remedy) | additive credential move | one-tap | 2 |
+| `tasks set <id> --status done` / `dropped` (board **Done** / **Drop**) | a closure — local, reaches nobody, undone by a reopen; recorded with surface `slack` (APPRAISAL-WIRING S8) | one-tap, refused on a task already closed (§5) | Done shipped; Drop 1c |
+| `tasks set <id> --status next` (board **Next**, inbox rows) | local, reversible | one-tap, refused on a closed task (§5) | shipped |
 | `mecha-mail auth <account>` | `needs_terminal` — an OAuth flow | **never a button** (§below) | — |
 | `mecha outbox review` / `frontdoor list` (doctor remedies) | terminal surfaces | translated, not spawned (§6) | 2 |
 | `trigger delete` | destructive — the schedule is gone | **never** | — |
@@ -313,6 +315,7 @@ bug, `connector.rs:246`).
 | `trigger cancel` | A sentinel file the runner polls (`commands/trigger.rs:930`) — writing it twice is writing it once. `cancel` of a non-running trigger reports "not running" (`trigger.rs:198`). Idempotent by construction. |
 | `trigger enable/disable` | Setting a flag to its current value is a no-op (`trigger.rs:604`). Idempotent by construction. |
 | `frontdoor close` / `needs-info` (phase 2) | The state machine refuses transitions from terminal states, same shape as the outbox's pending check; the modal's submit carries the seq, re-resolved against the store. |
+| task Done / Drop / Next (1c) | `--only-open`: `tasks set` reads the row before it moves it and refuses, with nothing changed or recorded, unless it is still open. A double tap is the second press finding it closed; a stale card is the same. Without it a Drop on a `done` task changed the verdict with no closure record (it crosses no line), and a Next reopened it — which the appraisal signs −1.0 against the session that did the work. |
 
 **Buttons are retired eagerly everywhere**, extending the rules the connector
 already enforces: controls rewritten at completion because "a Stop button for a
@@ -366,6 +369,11 @@ Per action, the store that answers:
   in the TUI. The row is the record; a second copy could disagree with it.
 - **trigger cancel/enable/disable** — the trigger file and the running marker,
   re-read.
+- **task Done / Drop / Next** — `kg_task_update`'s own answer, which `tasks
+  set` passes through on stdout (the graph has no local file to re-read); and
+  for a closure, the closure record (`ClosureStore::move_since`: this tap's
+  move, no older), whose readout line is the appraisal the child printed on
+  the stderr this executor reads only on failure (1c).
 
 Where the outcome lands: **the card, updated in place**, exactly as approval
 and draft cards already resolve into "`x` sent by @who" terminal records. A

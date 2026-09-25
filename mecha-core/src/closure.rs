@@ -731,6 +731,24 @@ impl ClosureStore {
             .find(|e| matches!(e, Entry::Readout { of, .. } if *of == t.id));
         Ok(Some((t, readout)))
     }
+
+    /// [`Self::latest_with_readout`], kept only when that latest transition
+    /// moved `task` to `to` no earlier than `since` — the move a request that
+    /// began at `since` made, and `None` when it made none. A repeated tap
+    /// crosses no line and records nothing, so without the time bound it
+    /// would show the earlier tap's appraisal as its own (review of #293, on
+    /// the web board, which reads the record the same way — and so does
+    /// Slack's closure reply).
+    pub fn move_since(
+        &self,
+        task: &str,
+        to: &str,
+        since: DateTime<Utc>,
+    ) -> Result<Option<(Transition, Option<Entry>)>> {
+        Ok(self
+            .latest_with_readout(task)?
+            .filter(|(t, _)| t.to == to && t.at >= since))
+    }
 }
 
 /// One line for a surface, built from whichever parts a readout carries —
@@ -928,6 +946,28 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A surface reads back only the move its own request made: the latest
+    /// transition, to the status it asked for, written no earlier than the
+    /// request began. A repeated tap records nothing and must not borrow the
+    /// earlier tap's readout.
+    #[test]
+    fn a_move_since_is_only_the_move_this_request_made() {
+        let s = store();
+        let t = close("t1");
+        s.append(&Entry::Transition(t.clone())).unwrap();
+        let before = t.at - chrono::Duration::seconds(1);
+        let after = t.at + chrono::Duration::seconds(1);
+        let (found, _) = s.move_since("t1", "done", before).unwrap().unwrap();
+        assert_eq!(found.id, t.id);
+        assert_eq!(s.move_since("t1", "done", after).unwrap(), None, "too old");
+        assert_eq!(
+            s.move_since("t1", "dropped", before).unwrap(),
+            None,
+            "another status"
+        );
+        assert_eq!(s.move_since("t2", "done", before).unwrap(), None);
     }
 
     /// A newer build's surface, actor, move or line kind loads as `unknown`
