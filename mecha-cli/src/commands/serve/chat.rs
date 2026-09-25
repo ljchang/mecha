@@ -1786,12 +1786,21 @@ fn begin_turn(
         // the hosted voice door — so the three reads run together and the
         // board gets the interactive deadline: the worst case is the
         // slowest read, not their sum (found on review).
+        // The store walk is bounded too, at the same deadline: a sample
+        // that does not come back in time records no homeostat and the
+        // brief's commitments as unread, which is the honest reading
+        // (found on review). The blocking walk itself runs on; only this
+        // turn stops waiting for it.
         let (homeostat, board, slots) = tokio::join!(
             async {
                 if sampled {
-                    tokio::task::spawn_blocking(mecha_core::homeostat::Homeostat::at_start)
-                        .await
-                        .ok()
+                    tokio::time::timeout(
+                        crate::setup::BRIEF_BOARD_TIMEOUT_INTERACTIVE,
+                        tokio::task::spawn_blocking(mecha_core::homeostat::Homeostat::at_start),
+                    )
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
                 } else {
                     None
                 }
