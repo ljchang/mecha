@@ -1662,6 +1662,36 @@ fn health(
         );
     }
 
+    // S5's phase-1 readout: each sensored line's level beside its per-item
+    // reading and the run's delta, so a line pinned past its setpoint reads
+    // as the constant it is while what moves under it stays visible.
+    let variation = corpus.reading_variation();
+    if variation.is_empty() {
+        println!("  charter readings    — (no run in this corpus recorded a charter reading)");
+    }
+    for (i, v) in variation.iter().enumerate() {
+        let var = |x: Option<f64>| match x {
+            Some(x) => format!("{x:.2}"),
+            None => "—".into(),
+        };
+        println!(
+            "  {:<19} `{}` at {}: level past its setpoint in {} of {} informative run(s); a per-item \
+             reading in {} run(s), waiting variance {}, past-setpoint variance {}; the queue moved in \
+             {} of {} run(s) with a delta; withdrawn in {}",
+            if i == 0 { "charter readings" } else { "" },
+            v.line,
+            v.setpoint,
+            v.level_over,
+            v.informative,
+            v.per_item_runs,
+            var(v.waiting_variance),
+            var(v.over_variance),
+            v.moved_runs,
+            v.delta_runs,
+            v.withdrawn_runs,
+        );
+    }
+
     let by_model = corpus.by_model();
     if by_model.len() > 1 {
         // A blended rate across models is true and useless: neither model
@@ -1767,6 +1797,9 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
     out["runs_anchored_by_kind"] = serde_json::json!(corpus.anchored_by_kind());
     // Planned under a trigger or request anchor: counted, never judged.
     out["runs_planned_under_an_unjudged_anchor"] = serde_json::json!(goals.planned_unjudged);
+    // S5's phase-1 readout, per sensored line: the level's over-count beside
+    // the per-item variances (`null` under two rows) and the delta counts.
+    out["charter_readings"] = serde_json::json!(corpus.reading_variation());
     out
 }
 

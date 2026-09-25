@@ -498,7 +498,9 @@ describes neither, and a rate with no denominator prints `—` rather than `0%`.
 Transcripts written before the outcome record carry none, so the corpus fills as
 you use it. `health` also reports [goal drift](/docs/features/appraisal/goals#measuring-goal-drift)
 and [null/reopened steps](/docs/features/appraisal/plan-steps#null-steps-and-reopened-steps),
-with per-run rates and explicit denominators. See [Run quality](/docs/features/learning/run-quality).
+with per-run rates and explicit denominators, and each sensored
+[charter line](/docs/features/appraisal/charter)'s level beside its per-item
+reading (`charter_readings` in `--json`). See [Run quality](/docs/features/learning/run-quality).
 
 `appraise` is the third question: not what runs cost, nor how they went, but how
 they went **against what they were for** — the signed error per channel and the

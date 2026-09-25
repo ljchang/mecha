@@ -1670,7 +1670,9 @@ impl Agent {
             tools.plan_feedback = Some(Arc::new(std::sync::Mutex::new(
                 crate::planning::Feedback::default(),
             )));
-            tools.goal_readings = cx.homeostat.as_ref().and_then(|h| h.charter.clone());
+            // Withdrawn (saturated) lines never reach an in-run consumer
+            // (S5); the record keeps them in full.
+            tools.goal_readings = cx.homeostat.as_ref().and_then(|h| h.in_run_readings());
             tools.goal_guidance = self.cfg.goal_guidance;
             tools.step_checks = self
                 .cfg
@@ -9324,6 +9326,80 @@ mod tests {
             assert_eq!(last.unverified_steps, usize::from(!enabled));
             assert!(crate::learning::extract_mismatches(&convo.messages, &[]).is_empty());
         }
+    }
+
+    /// S5: a line withdrawn as saturated never reaches the run's in-run
+    /// consumer. The plan's decision sees only the line that was not
+    /// withdrawn — so it continues rather than asking, on every plan write
+    /// of every run, to review the commitment that has been stale for ten
+    /// runs — while the run's record still carries the withdrawn reading.
+    #[tokio::test]
+    async fn a_withdrawn_line_never_reaches_the_plans_decision() {
+        use crate::reading::{Items, LineReading, Observed, Reading};
+        let (agent, _) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "plan".into(),
+                        name: "todo".into(),
+                        input: json!({"items":[{"content":"work","status":"in_progress"}]}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(crate::tool::todo::TodoTool::new())],
+            PermissionMode::Allow,
+        );
+        let line = |id: &str, over: bool, withdrawn: bool| LineReading {
+            line: id.into(),
+            kind: crate::charter::SensorKind::OutboxAge,
+            setpoint: "24h".into(),
+            reading: if over {
+                Reading::Observed {
+                    value: Observed::Seconds(5 * 86_400),
+                    over: true,
+                    excess: 0.8,
+                }
+            } else {
+                Reading::Nothing
+            },
+            items: Some(Items {
+                waiting: u64::from(over),
+                over: u64::from(over),
+                ..Default::default()
+            }),
+            delta: None,
+            withdrawn,
+        };
+        let mut cx = (*agent.cx).clone();
+        // No backlog: `finish` must not read this machine's stores.
+        cx.homeostat = Some(crate::homeostat::Homeostat {
+            charter: Some(vec![line("stale", true, true), line("met", false, false)]),
+            ..Default::default()
+        });
+        let mut convo = Conversation::user("go");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        let decision = convo
+            .messages
+            .iter()
+            .filter_map(|m| m.planning.as_ref())
+            .flat_map(|f| &f.decisions)
+            .next()
+            .expect("the plan write was assessed");
+        assert_eq!(
+            decision
+                .charter
+                .iter()
+                .map(|g| g.goal.clone())
+                .collect::<Vec<_>>(),
+            vec![Some(crate::goal::GoalRef::Charter("met".into()))],
+            "the withdrawn line is not in the decision's input"
+        );
+        assert_eq!(decision.action, crate::planning::Action::Continue);
+        let recorded = outcome.homeostat.unwrap().charter.unwrap();
+        assert_eq!(recorded.len(), 2, "the record keeps the withdrawn line");
+        assert!(recorded[0].withdrawn);
     }
 
     #[tokio::test]
