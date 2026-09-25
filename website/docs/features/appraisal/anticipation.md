@@ -54,6 +54,15 @@ Use the actual task reference and facts for your run. These fields record your
 assessment; the harness does not verify an estimate merely because it is in the
 file. Third-party assertions are not imported as commitments.
 
+The `commitment` shape above keeps working. mecha records it as the same
+commitment record `mecha workflow commit` writes: the beneficiary becomes the
+`party`, the file's `goal` becomes its `source`, and it states **no deadline** —
+the file names none, and mecha never invents one. You may also write the record
+shape directly (`party`, `source`, `expectation`, `consequence`); its `source`
+must then be the file's `goal`. Unknown keys are refused in either shape.
+Drafts assessed before this change keep their original commitment exactly as
+recorded, and still release normally.
+
 ```bash
 mecha run --goal task:meeting --appraisal-evidence meeting-evidence.json \
   "Check the meeting time and draft the invitation"
