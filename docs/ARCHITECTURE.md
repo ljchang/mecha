@@ -3234,6 +3234,16 @@ Three decisions:
   may carry a `bundle.json` with a `"sources": [...]` array — and a mirror that
   does not exist protects nothing, which is correct rather than a stub.
 
+**A session that owns a workspace spills into it** — `<workspace>/.spill/`
+(`tool::spill_within`) — so an oversized tool result saved in full lives as
+long as the session's other files and is inside no other session's jail.
+`mecha serve` and the Slack connector clone one agent's context for every
+turn, and before this every session they served shared a single `$TMPDIR`
+spill directory that any of them could read and nothing removed. A one-shot
+process still spills under `$TMPDIR`; `mecha work clean` removes those a week
+stale (`work::stale_spills`: this program's prefix and a UUID, directories
+only, never a symlink).
+
 Entries are counted, not files: a rendered bundle is a directory. The producer
 directory itself is never removed — an empty one is a directory, not an absence,
 and deleting it would just make tomorrow's run recreate it.
