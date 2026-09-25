@@ -1061,6 +1061,12 @@ impl TriggerStore {
         self.markers().running(name)
     }
 
+    /// The pids of every trigger run in flight — see
+    /// [`crate::runmarker::RunMarkers::live_pids`].
+    pub fn live_run_pids(&self) -> Vec<u32> {
+        self.markers().live_pids()
+    }
+
     /// Ask the run in flight to stop. Returns false when there is nothing to
     /// stop, so a caller can say so rather than pretending.
     pub fn request_cancel(&self, name: &str) -> Result<bool> {

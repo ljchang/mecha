@@ -1874,6 +1874,7 @@ mod tests {
                 skill: None,
                 mailbox: None,
                 compact_requested: None,
+                posture: mecha_core::closure::RunPosture::Unattended,
                 _mcp: Vec::new(),
             },
             ctx: mecha_core::tool::ToolCtx::default(),

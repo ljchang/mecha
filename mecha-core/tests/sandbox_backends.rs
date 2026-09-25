@@ -309,3 +309,67 @@ async fn files_written_inside_the_sandbox_stay_yours_on_the_host() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The run's posture must arrive inside every confining backend (S8, review
+/// of #293): bwrap starts from `--clearenv` and a container starts empty, so
+/// a parent-side `Command::env` never reaches either — `command_with_env`
+/// reconstructs the variable for each, and only a run through the real
+/// backend proves the reconstruction. If it were lost, every closure from an
+/// owner's chat would read `unknown` and be refused on a sandboxed machine.
+#[tokio::test]
+async fn the_run_posture_reaches_a_command_in_every_confining_backend() {
+    use mecha_core::closure::POSTURE_ENV;
+    async fn stamped(sandbox: &Sandbox, dir: &std::path::Path) -> String {
+        let out = sandbox
+            .command_with_env(
+                &format!("printf %s \"${POSTURE_ENV}\""),
+                dir,
+                dir,
+                &[(POSTURE_ENV, "delegated")],
+            )
+            .expect("building the confined command")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .await
+            .expect("running the confined command");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    if !unavailable("bwrap", bwrap_present()) {
+        let dir = tmpdir("posture-bwrap");
+        let sandbox = Sandbox::new(SandboxConfig {
+            kind: Backend::Bwrap,
+            ..Default::default()
+        });
+        // A bwrap that cannot run here (user namespaces blocked) is the
+        // preflight test's subject, not this one's.
+        // `unavailable` so `MECHA_TEST_REQUIRE_BACKENDS=1` turns this skip
+        // into a failure, like every other skip in this file.
+        let works = sandbox.preflight(&dir).await.is_ok();
+        if !unavailable("bwrap (preflight fails here)", works) {
+            assert_eq!(
+                stamped(&sandbox, &dir).await,
+                "delegated",
+                "bwrap dropped the posture"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    if !(unavailable("docker", docker_available())
+        || unavailable(IMAGE, docker_image_present(IMAGE)))
+    {
+        let dir = tmpdir("posture-docker");
+        assert_eq!(
+            stamped(&docker(working()), &dir).await,
+            "delegated",
+            "the container dropped the posture"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

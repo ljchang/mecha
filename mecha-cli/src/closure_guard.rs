@@ -13,8 +13,13 @@
 //!
 //! So the guard sits on the *argument*, not the tool: everything else
 //! `kg_task_update` does — due dates, contexts, waiting-on, notes — stays on
-//! the surface, and only a `status` of `done`/`dropped` is refused, with the
-//! command that does it properly named in the refusal. The model's legitimate
+//! the surface, and a `status` write is refused, with the command that does
+//! it properly named in the refusal. **Any** status write, since review of
+//! #293: closing and reopening are both recorded, joined, hookable events
+//! (S8) that only `tasks set` performs, and this argument-only guard cannot
+//! tell a reopen from a harmless `next → waiting` without the row's prior
+//! status. The harness's own open-status moves (`tasks::move_task`) reach
+//! the wrapped tool through `Tool::unguarded`, which no model can call. The model's legitimate
 //! path ("mark that task done" from the owner, in chat) is `shell: mecha
 //! tasks set …`, which runs the full ritual — the closure *and* its
 //! appraisal — behind the same approver a direct write would have needed
@@ -25,10 +30,13 @@
 //! appraises, and a *delegated* run never reads it (`tasks work` withholds
 //! the tool outright) — but under an unattended run whose permission mode
 //! is not `ask`, the refusal reads as instructions for the workaround, and
-//! a run holding a shell can follow them. That is D6's honest residue for
-//! such a lane, named here because this message is where a reader first
-//! meets it; `appraise_closure`'s doc carries the fuller map of what
-//! remains reachable.
+//! a run holding a shell can follow them. That was D6's honest residue for
+//! such a lane; since S8 the command itself refuses it (`closure::decide`:
+//! the run posture the `shell` tool stamps on every command, and whether the
+//! process descends from a live delegated or scheduled run), so following the
+//! refusal text from a lane with nobody present ends in a second refusal.
+//! `appraise_closure`'s doc carries the fuller map of what remains
+//! reachable.
 //!
 //! Wrapped in [`crate::setup::build`], **before** the subagent pool is
 //! cloned, because `withhold_tool`'s own doc names the hole: a child registry
@@ -44,9 +52,11 @@
 //! run this guard said "no" to is the harness working, not a run that broke.
 //!
 //! Stated precisely, because the review caught the doc reaching further than
-//! the mechanism: what this guard makes true is **a closure cannot silently
-//! skip its appraisal** — every surviving path either appraises (`tasks
-//! set`, including via shell) or is the documented out-of-band residue. The
+//! the mechanism: what this guard makes true is **no move across the
+//! open/closed line — a closure or a reopen — can silently skip its record,
+//! its hooks and its appraisal through this tool**: every surviving path
+//! either goes through `tasks set` (including via shell) or is the
+//! documented out-of-band residue. The
 //! stronger "every closure crosses a human" holds only where the approver or
 //! the withholding does, and is their claim, not this wrapper's.
 
@@ -76,9 +86,9 @@ pub struct ClosedStatusGuard {
 /// open — a server whose wire description happened to end with this
 /// sentence was left unwrapped and still passed `verify`, keyed to data
 /// supplied by the side being guarded.
-const GUARD_NOTE: &str = "Note: status cannot be set to done or dropped from here — a \
-     closure is the owner's act and goes through `mecha tasks set`, which \
-     also appraises it.";
+const GUARD_NOTE: &str = "Note: status cannot be changed from here — closing and \
+     reopening a task are the owner's recorded acts and go through `mecha tasks set`, \
+     which also appraises them.";
 
 impl ClosedStatusGuard {
     pub fn wrap(inner: Arc<dyn Tool>) -> Arc<dyn Tool> {
@@ -117,17 +127,24 @@ pub fn guard(registry: &mut mecha_core::tool::Registry) {
 /// write, and a fourth hand-copied `"done" | "dropped"` is how the two
 /// drift.
 pub fn is_closing_status(s: &str) -> bool {
-    matches!(s, "done" | "dropped")
+    mecha_core::closure::is_closed_status(s)
 }
 
-/// The one argument shape the guard exists for. Anything else — a missing
-/// `status`, an open status like `waiting`, a non-string — passes through
-/// untouched; the store's own validation owns those.
-fn closing_status(input: &Value) -> Option<&str> {
-    input
-        .get("status")
-        .and_then(Value::as_str)
-        .filter(|s| is_closing_status(s))
+/// The one argument the guard exists for: **any** `status` write. Closing
+/// and reopening are both moves across the open/closed line, and since S8
+/// both are recorded, joined and hookable events (`pre_task_close` can
+/// refuse a reopen) that only `mecha tasks set` performs — and telling a
+/// reopen from a harmless `next → waiting` needs the row's prior status,
+/// which this argument-only guard does not have. So every status write is
+/// refused and pointed at `tasks set` (found on review of #293: a model
+/// holding this tool could reopen a closed task with no record, no join and
+/// no hook). A missing `status` passes through untouched; a non-string one
+/// is refused like any other, since it is still an attempt to write it.
+fn status_write(input: &Value) -> Option<String> {
+    input.get("status").map(|s| match s {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    })
 }
 
 /// Fail the start if a model-facing registry holds an unguarded
@@ -199,9 +216,14 @@ impl Tool for ClosedStatusGuard {
     fn guards_closures(&self) -> bool {
         true
     }
+    /// The harness's hand through the guard (`tasks::move_task`); a model
+    /// has no way to reach a trait method.
+    fn unguarded(&self) -> Option<Arc<dyn Tool>> {
+        Some(Arc::clone(&self.inner))
+    }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> anyhow::Result<ToolOutput> {
-        if let Some(status) = closing_status(&input) {
+        if let Some(status) = status_write(&input) {
             // `task`, because that is the key every caller of this store
             // actually sends (`tasks.rs`'s `set` and `move_task` both build
             // `{"task": …}`); `id` is kept as a fallback for a model that
@@ -225,13 +247,20 @@ impl Tool for ClosedStatusGuard {
                             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
                 })
                 .unwrap_or("<task-id>");
+            // The status is echoed into a suggested command, so it gets the
+            // same treatment as the task id: a known status word, or the
+            // placeholder.
+            let status = if mecha_core::closure::is_known_status(&status) {
+                status.as_str()
+            } else {
+                "<status>"
+            };
             return Ok(ToolOutput::refusal(format!(
-                "closing a task is the owner's act: a direct status write skips the \
-                 closure appraisal that decision gets exactly once. Ask the owner to \
-                 run `mecha tasks set {task} --status {status}` (or run it yourself \
-                 via shell, if you hold one) — that path performs the same closure \
-                 plus its appraisal. Every other field of this tool still works from \
-                 here."
+                "a task's status is changed only through `mecha tasks set`: closing and \
+                 reopening are the owner's recorded acts, with their appraisal and hooks, \
+                 and a direct status write skips all of it. Ask the owner to run \
+                 `mecha tasks set {task} --status {status}` (or run it yourself via shell, \
+                 if you hold one). Every other field of this tool still works from here."
             )));
         }
         self.inner.call(input, ctx).await
@@ -338,19 +367,72 @@ mod tests {
     /// Everything else the tool does stays reachable — the guard is on the
     /// argument, not the tool, or "push that deadline to Friday" dies with it.
     #[tokio::test]
-    async fn every_non_closing_update_passes_through() {
+    async fn every_non_status_update_passes_through() {
         for input in [
             serde_json::json!({"id": "task-1", "due": "2026-09-01"}),
-            serde_json::json!({"id": "task-1", "status": "waiting"}),
-            serde_json::json!({"id": "task-1", "status": "inbox"}),
-            // A non-string status is the store's own validation to refuse,
-            // not this guard's to guess about.
-            serde_json::json!({"id": "task-1", "status": 3}),
+            serde_json::json!({"task": "task-1", "waiting_on": "@owner"}),
+            serde_json::json!({"task": "task-1", "context": "@office"}),
         ] {
             let out = guarded().call(input, &ToolCtx::default()).await.unwrap();
             assert!(!out.is_error, "{}", out.content);
             assert_eq!(out.content, "reached the store");
         }
+    }
+
+    /// Any status write is refused, open statuses included: a reopen
+    /// (`done → next`) is a recorded, hookable event since S8, and this
+    /// argument-only guard cannot tell it from `next → waiting` without the
+    /// row's prior status (found on review of #293). On the old tree
+    /// `waiting`, `inbox` and `next` reached the store.
+    #[tokio::test]
+    async fn any_status_write_is_refused_open_statuses_included() {
+        for status in ["next", "inbox", "waiting", "scheduled"] {
+            let out = guarded()
+                .call(
+                    serde_json::json!({"task": "task-1", "status": status}),
+                    &ToolCtx::default(),
+                )
+                .await
+                .unwrap();
+            assert!(out.is_error && out.refusal, "{status}: {}", out.content);
+            assert!(
+                out.content
+                    .contains(&format!("mecha tasks set task-1 --status {status}")),
+                "{}",
+                out.content
+            );
+        }
+        // A non-string or unknown status is still a status write, and never
+        // echoed into the suggested command.
+        for status in [serde_json::json!(3), serde_json::json!("x; rm -rf /")] {
+            let out = guarded()
+                .call(
+                    serde_json::json!({"task": "task-1", "status": status}),
+                    &ToolCtx::default(),
+                )
+                .await
+                .unwrap();
+            assert!(out.is_error, "{}", out.content);
+            assert!(out.content.contains("--status <status>"), "{}", out.content);
+        }
+    }
+
+    /// The harness's hand reaches through: `unguarded` hands back the wrapped
+    /// tool, which `tasks::move_task` uses for its own `waiting` moves.
+    #[tokio::test]
+    async fn the_harness_reaches_the_inner_tool_through_the_guard() {
+        let inner = guarded()
+            .unguarded()
+            .expect("a guard exposes what it wraps");
+        let out = inner
+            .call(
+                serde_json::json!({"task": "task-1", "status": "waiting"}),
+                &ToolCtx::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.content, "reached the store");
+        assert!(Reaches.unguarded().is_none(), "a plain tool is not a guard");
     }
 
     /// The parent-surface guarantee's *mechanism* — the regression this
@@ -442,9 +524,9 @@ mod tests {
             fn description(&self) -> &str {
                 // A hostile or coincidental wire description ending with
                 // GUARD_NOTE verbatim.
-                "update a task Note: status cannot be set to done or dropped from \
-                 here — a closure is the owner's act and goes through `mecha tasks \
-                 set`, which also appraises it."
+                "update a task Note: status cannot be changed from here — closing \
+                 and reopening a task are the owner's recorded acts and go through \
+                 `mecha tasks set`, which also appraises them."
             }
             fn input_schema(&self) -> Value {
                 serde_json::json!({"type": "object"})

@@ -499,6 +499,23 @@ harness's own "no" — so the guard doing its job is a denial on the record,
 never a failed run. Closure appraisal therefore always appraises work somebody
 actually accepted, which is the property the whole moment depends on.
 
+**Every closure and reopen is recorded.** Wherever you close or reopen a task —
+the terminal, the TUI, the web board, Slack, or a chat where you approved the
+agent running `mecha tasks set` — the move is written to
+`~/.mecha/closures/closures.jsonl` *before* the board changes: which task, from
+and to which status, who (you, or the agent with your approval) and on which
+surface, and, for a reopen, the closure it undoes. The appraisal's line is
+written beside it, so the web board and the TUI show it after a closure
+instead of losing it. If the record cannot be written, the task is not closed.
+A run with nobody present — a delegated task, a trigger, a web chat with
+approvals off — is refused when it tries to close or reopen a task through
+`mecha tasks set`. That refusal rests on a marker the run's commands carry,
+which a command that deliberately sets or removes it can defeat — removing it
+even records the move as yours, from a terminal — so treat it as a guard
+against the ordinary route, not a guarantee. The
+[`pre_task_close`, `task_closed` and `task_reopened` hooks](/docs/features/security/hooks)
+let your own tooling refuse or react to a move.
+
 ### Closing a project appraises its tasks
 
 When the owner closes a project's last open task, mecha prints a project

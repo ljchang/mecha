@@ -280,7 +280,57 @@ pub async fn task_set(State(state): St, Json(body): Json<TaskSetBody>) -> Respon
     if args.len() == 3 {
         return (StatusCode::BAD_REQUEST, "nothing to change\n").into_response();
     }
-    verb(&state, &args).await
+    // The surface lands on the closure record (S8), and the closure's
+    // readout is read back from that record: the child's stderr, where the
+    // appraisal used to be printed, never reached this page.
+    args.extend(["--surface", "web"]);
+    // The readout is this request's only if its record was written after
+    // the request began: a repeated tap crosses no line and records nothing,
+    // and must not show the earlier tap's appraisal as its own (review).
+    let began = chrono::Utc::now();
+    let out = match super::review::verb_output(&state, &args).await {
+        Ok(out) => out,
+        Err(refusal) => return *refusal,
+    };
+    let closure = body
+        .status
+        .as_deref()
+        .and_then(|to| closure_readout(&body.task, to, began));
+    Json(serde_json::json!({ "ok": true, "output": out.trim(), "closure": closure }))
+        .into_response()
+}
+
+/// The move this request just made, and what the closure appraisal said,
+/// read back from the closure record — or `None` when the latest record for
+/// the task is not this move (a status change that crossed no line, or a
+/// record older than the request that could not have been written by it).
+fn closure_readout(
+    task: &str,
+    to: &str,
+    began: chrono::DateTime<chrono::Utc>,
+) -> Option<serde_json::Value> {
+    use mecha_core::closure::{ClosureStore, Entry};
+    let store = ClosureStore::open_existing_default()?;
+    let (t, readout) = store.latest_with_readout(task).ok()??;
+    if t.to != to || t.at < began {
+        return None;
+    }
+    let (readout, follow_up_staged, project) = match readout {
+        Some(Entry::Readout {
+            readout,
+            follow_up_staged,
+            project,
+            ..
+        }) => (readout, follow_up_staged, project),
+        _ => (None, false, None),
+    };
+    Some(serde_json::json!({
+        "move": t.kind,
+        "to": t.to,
+        "readout": readout,
+        "follow_up_staged": follow_up_staged,
+        "project": project,
+    }))
 }
 
 #[derive(serde::Deserialize)]
