@@ -60,7 +60,10 @@ silently-degrading guard in another costume:
 ## 3. The audit: every trace a web chat leaves today
 
 Taken against the tree on 2026-09-25. Each row is closed by a mechanism in §4–§6
-or named in §10. Symbols, not line numbers.
+or named in §10. Symbols, not line numbers. **The image rows are the exception:**
+`image_generate`, `[image]` and the ComfyUI adapter are in #303 and #306, not
+yet on `main` when this was written, so §3.4's ComfyUI row, §5.1's
+`image_generate`, §6.3 and §9 step 4 depend on that stack landing first.
 
 ### 3.1 Written by the web chat path itself
 
@@ -97,7 +100,8 @@ mark, not in this design.
 | **Graph reads** (`kg_search`, `kg_entity`, …) | **`query_log` stores the query text**; `retrieval_touch` counts what was returned (mecha-graph `ledger.rs`) | Refused until mecha-graph has an unrecorded read path (§5.2) |
 | Docs create, `calendar_hold` | A new Google file or calendar hold | Refused |
 | Mail and calendar reads | `mecha-mail` keeps nothing on reads; the provider's API sees the request | Allowed (R3; §1 limit) |
-| Web search, `web_open`, `http_fetch` | The query reaches SearXNG (which forwards upstream), Exa or Tavily | Search allowed with notice (R4) |
+| `web_search`, `web_open` | The query reaches SearXNG (which forwards upstream), Exa or Tavily | Allowed with notice (R4) |
+| `http_fetch` | The request reaches whatever host the model named | Allowed, and refused by the interlock once the chat holds private and untrusted content (§5.1) |
 | Hooks | `pre_tool`/`post_tool` receive tool input and output; `session_end` runs `distill` | Not run |
 
 ### 3.4 Other processes
@@ -141,9 +145,17 @@ the one mark that exists.
   owner turn or tool completion (R5); `mecha serve` exiting. Closing cancels a
   run in flight, drops the `Conversation`, removes the tmpfs folder, and
   deletes the image server's copies (§6.3).
-- **Crash.** tmpfs does not survive a reboot; on the next `serve` start, any
-  incognito folder left from a crashed process is removed before the door
-  opens.
+- **Crash.** A `SIGKILL`, an OOM kill or a power loss never runs the close
+  path. tmpfs does not survive a reboot, so power loss is covered there. For a
+  `serve` that died while the machine stayed up, the incognito folder is the
+  marker: it also holds a manifest of the image server's file names this
+  session created (tmpfs, so the manifest is no trace of its own). On the next
+  `serve` start, before the door opens, every leftover folder is swept —
+  its manifest's files deleted from the image server's temp directory and its
+  folder removed — and, if any were found, the image server's history is
+  cleared outright (`POST /history {"clear": true}`), since which entries were
+  incognito's is exactly what was not written down. If the image server is
+  down at sweep time, `serve` says so; its own restart empties both.
 
 ### 4.3 One folder, in RAM
 
@@ -181,6 +193,14 @@ Allowed: mail and calendar reads, `web_search` / `web_open` / `http_fetch`
 jailed to the tmpfs folder and still subject to the chat's read-only / ask /
 allow toggle.
 
+**`http_fetch` will usually be refused, and that is correct.** It is
+`Egress::Chosen` — the model names the host — while `web_search` and
+`web_open` are `Blind`. Incognito's typical conversation reads the owner's
+mail (private) and then searches (untrusted), which is exactly the shape the
+trifecta interlock arms; from then on it refuses `http_fetch` ahead of the
+approver. That is the interlock working, not incognito broken — there is no
+switch to look for, and `web_open` reads a search result's page without it.
+
 ### 5.2 Graph reads need an unrecorded path
 
 R3 allows graph reads, but mecha-graph records every read's query text
@@ -208,6 +228,17 @@ bytes and change nothing.
 An incognito session is refused on a cloud provider, and the model chip is
 locked. A cloud provider's retention is the provider's; "no trace" cannot be
 promised about someone else's servers.
+
+**The chip lock is not the mechanism — `fallbacks` would bypass it.**
+`setup::build_agent` wraps the primary in `provider::Failover` whenever
+`[provider] fallbacks` is non-empty, and `serve` builds one agent for the
+process. A `RateLimit`, `Overloaded`, `ServerError` or `Transport` failure on
+the local server would then re-issue the whole incognito conversation to
+whatever `fallbacks` names — on this machine, a cloud provider — and nothing
+would notice. So incognito runs get **their own provider, built with
+`no_fallback`** (the flag exists), and the door refuses to open if even that
+provider is not local. §8's test asserts the incognito provider has no
+failover, not just that the chip is locked (found on review of #307).
 
 ### 6.2 llama-server's cache
 
@@ -264,17 +295,23 @@ looking in the wrong place.
 
 Unit tests beside each mechanism: the withheld set (an outbox route and a
 non-read-only MCP tool are absent; a subagent inherits the absence); the
-cloud-provider refusal; the tmpfs check; the crash sweep; `no-store` on every
-incognito route.
+cloud-provider refusal **and the absence of a failover wrapper on the
+incognito provider**; the tmpfs check; the crash sweep, including the image
+server's history clear; `no-store` on every incognito route.
 
 ---
 
 ## 9. Build order
 
 0. **Fixes worth having in every chat** (independent, first): per-session spill
-   directories removed at run end; `log_dropped_reasoning` logs content only at
-   `debug`; `Cache-Control: no-store` on `/api/*`; `reflect` and `distill`
-   honour `SessionKind::Test`.
+   directories removed at run end; `log_dropped_reasoning` keeps its
+   content-free fields (`reasoning_chars`, `looks_like_tool_call`,
+   `finish_reason`) at `warn` — an empty turn is in no transcript, so that line
+   is the only default-level record it happened — and moves the 400-character
+   `tail` to `debug`, where the full reasoning already is;
+   `Cache-Control: no-store` on `/api/*`; `reflect` and `distill` honour
+   `SessionKind::Test` for *admission* (the situation stamp must still not
+   read `meta.kind` — `the_miner_reads_the_matched_keys_and_never_the_jail_or_the_kind`).
 1. **The session with no `Session`**: the incognito door, the `Option` through
    `begin_turn`, the titler and the situation brief, the lifecycle and the
    30-minute timeout, the crash sweep.
