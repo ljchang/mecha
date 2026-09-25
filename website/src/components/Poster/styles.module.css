@@ -6,12 +6,6 @@
   display: block;
   width: 100%;
   height: auto;
-}
-
-/* A plate is a sheet of paper, so it gets a sheet's edge. On the light theme
-   that edge is only drawn when there is no cutout to show instead. */
-.plateOnly img,
-[data-theme='dark'] .poster img {
   border: 1px solid var(--ifm-color-emphasis-200);
   border-radius: 4px;
 }

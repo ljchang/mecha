@@ -1,56 +1,96 @@
 .features {
-  display: flex;
-  align-items: stretch;
-  padding: 3rem 0;
+  padding: 3rem 0 3.5rem;
   width: 100%;
 }
 
-.features .col {
-  display: flex;
-  margin-bottom: 1.5rem;
+.keyLabel {
+  display: block;
+  margin-bottom: 0.9rem;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.68rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ifm-color-emphasis-600);
 }
 
-.card {
-  border: 1px solid var(--ifm-color-emphasis-200);
-  border-radius: var(--ifm-global-radius);
-  padding: 1.5rem;
-  width: 100%;
-  background: var(--ifm-background-surface-color);
-  transition:
-    border-color var(--ifm-transition-fast) ease,
-    transform var(--ifm-transition-fast) ease;
+/* Three columns of ruled rows. The rules are drawn by each cell's top edge,
+   so a row that wraps to a new line still starts on a line. */
+.key {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  column-gap: 2.5rem;
 }
 
-.card:hover {
-  border-color: var(--ifm-color-primary);
-  transform: translateY(-2px);
+.part {
+  display: grid;
+  grid-template-columns: 2.25rem minmax(0, 1fr);
+  gap: 1rem;
+  padding: 1.4rem 0 1.6rem;
+  border-top: 1px solid var(--ifm-color-emphasis-300);
 }
 
-.cardTitle {
-  font-size: 1.15rem;
-  margin-bottom: 0.75rem;
+/* The poster's key numbers are boxed: 01 in a square. */
+.partNo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 1.6rem;
+  border: 1px solid var(--ifm-color-emphasis-500);
+  border-radius: 2px;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.74rem;
+  font-weight: 500;
+  color: var(--ifm-heading-color);
 }
 
-.cardTitle a {
+.partTitle {
+  font-size: 1.08rem;
+  margin: 0.1rem 0 0.55rem;
+}
+
+.partTitle a {
   color: var(--ifm-heading-color);
   text-decoration: none;
 }
 
-.cardTitle a:hover {
+.partTitle a:hover {
   color: var(--ifm-color-primary);
 }
 
-.cardBody {
+.partBody {
   color: var(--ifm-color-emphasis-700);
   margin-bottom: 0;
-  font-size: 0.95rem;
+  font-size: 0.93rem;
   line-height: 1.6;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .card,
-  .card:hover {
-    transition: none;
-    transform: none;
+[data-theme='dark'] .keyLabel,
+[data-theme='dark'] .partBody {
+  color: var(--mecha-text-muted);
+}
+
+[data-theme='dark'] .part {
+  border-top-color: rgba(233, 233, 237, 0.12);
+}
+
+[data-theme='dark'] .partNo {
+  border-color: var(--mecha-accent-700);
+  color: var(--mecha-accent-400);
+}
+
+.part:hover .partNo {
+  border-color: var(--ifm-color-primary);
+}
+
+@media screen and (max-width: 996px) {
+  .key {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media screen and (max-width: 640px) {
+  .key {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

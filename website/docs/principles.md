@@ -1,6 +1,6 @@
 ---
 title: Design principles
-sidebar_position: 2
+sidebar_position: 7.5
 description: The rules mecha's code keeps, why each one exists, and the things deliberately left out.
 ---
 
