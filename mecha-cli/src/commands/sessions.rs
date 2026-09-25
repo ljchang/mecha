@@ -75,7 +75,21 @@ pub enum Args {
     ///
     /// Observation only: nothing consumes these, and the number worth reading
     /// is how many come back with no label at all.
+    ///
+    /// Given a session id (or unique prefix), prints that session's text
+    /// appraisal instead — the interpretation, its grounded claims, the
+    /// prediction and lessons, with its taint label — clean or not: the
+    /// owner's readout reads every appraisal (R19). `--text` prints every
+    /// text appraisal on record the same way, newest first.
     Appraise {
+        /// A session id or unique prefix: print its text appraisal.
+        session: Option<String>,
+
+        /// Print every text appraisal on record, newest first (`-n` caps
+        /// how many).
+        #[arg(long, conflicts_with_all = ["probe", "appraise"])]
+        text: bool,
+
         /// Only sessions started in the last N days.
         #[arg(long)]
         days: Option<i64>,
@@ -165,6 +179,28 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         } => health(&dir, days, limit, json, kind, include_tests)?,
 
         Args::Appraise {
+            session: Some(_),
+            probe: true,
+            ..
+        }
+        | Args::Appraise {
+            session: Some(_),
+            appraise: true,
+            ..
+        } => anyhow::bail!(
+            "a session id prints that session's text appraisal; --probe and --appraise walk \
+             the corpus — run them without one"
+        ),
+
+        Args::Appraise {
+            session,
+            text,
+            limit,
+            json,
+            ..
+        } if session.is_some() || text => text_appraisal_readout(session.as_deref(), limit, json)?,
+
+        Args::Appraise {
             days,
             limit,
             json,
@@ -174,6 +210,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             max_probes,
             appraise: run_appraiser,
             max_appraisals,
+            ..
         } => {
             appraise(
                 global,
@@ -671,6 +708,190 @@ fn text_appraisals_line(on_record: &AppraisalsOnRecord) -> String {
             )
         }
     }
+}
+
+/// `mecha sessions appraise <session>` and `--text` — the owner's readout of
+/// the text appraisals' prose (row 2a-2). Every appraisal, clean or not,
+/// with its taint label beside it: the owner's surfaces read every record
+/// (R19), and a tainted one is labelled, never hidden. An unreadable store
+/// is an error, never "none on record".
+fn text_appraisal_readout(session: Option<&str>, limit: Option<usize>, json: bool) -> Result<()> {
+    use mecha_core::appraisal_store::AppraisalStore;
+    let rows = match AppraisalStore::open_existing_default() {
+        None => Vec::new(),
+        Some(store) => {
+            let (rows, skipped) = store
+                .for_owner()
+                .context("the text-appraisal store could not be read")?;
+            if skipped > 0 {
+                eprintln!("mecha: {skipped} unreadable appraisal line(s) skipped");
+            }
+            rows
+        }
+    };
+    let mut rows: Vec<_> = match session {
+        Some(prefix) => {
+            let hits: Vec<_> = rows
+                .into_iter()
+                .filter(|r| !r.session_id.is_empty() && r.session_id.starts_with(prefix))
+                .collect();
+            let sessions: std::collections::BTreeSet<&str> =
+                hits.iter().map(|r| r.session_id.as_str()).collect();
+            if sessions.len() > 1 {
+                anyhow::bail!(
+                    "{prefix:?} names {} appraised sessions; give more of the id",
+                    sessions.len()
+                );
+            }
+            hits
+        }
+        None => rows,
+    };
+    rows.sort_by(|a, b| b.at.cmp(&a.at));
+    if let Some(n) = limit {
+        rows.truncate(n);
+    }
+    if json {
+        let out: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|r| {
+                let mut v = serde_json::to_value(r).unwrap_or_default();
+                if let Some(m) = v.as_object_mut() {
+                    m.insert("clean".into(), serde_json::json!(r.is_clean()));
+                }
+                v
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+    if rows.is_empty() {
+        match session {
+            Some(prefix) => println!("no text appraisal is on record for session {prefix:?}"),
+            None => println!("no text appraisal is on record"),
+        }
+        return Ok(());
+    }
+    for (n, r) in rows.iter().enumerate() {
+        if n > 0 {
+            println!();
+        }
+        print!("{}", render_text_appraisal(r));
+    }
+    Ok(())
+}
+
+/// One text appraisal for a terminal, every field from the record passed
+/// through `strip_ansi_and_controls` line by line — the prose is a model's,
+/// read from a transcript that may have held a stranger's text, and a
+/// terminal (or the dated logfile a nightly writes) is exactly where an
+/// escape sequence or a bare `\r` would rewrite the taint label beside it.
+fn render_text_appraisal(r: &mecha_core::appraisal_store::TextAppraisal) -> String {
+    use crate::logs::strip_ansi_and_controls as clean;
+    use std::fmt::Write as _;
+    let para = |s: &str, indent: &str| -> String {
+        s.trim()
+            .split('\n')
+            .map(|l| format!("{indent}{}", clean(l)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut out = String::new();
+    let label = if r.is_clean() {
+        "clean — the clean door serves it"
+    } else if matches!(r.taint, Some(t) if t.untrusted) {
+        "NOT CLEAN — third-party content entered the run; the owner's to read, never served clean"
+    } else {
+        "NOT CLEAN — the run's provenance is unknown; the owner's to read, never served clean"
+    };
+    let _ = writeln!(
+        out,
+        "text appraisal {} · session {} · {} · {}",
+        clean(&r.id),
+        clean(&r.session_id),
+        r.at.format("%Y-%m-%d %H:%M UTC"),
+        clean(&r.model)
+    );
+    let _ = writeln!(out, "  {label}");
+    let mut about = Vec::new();
+    if let Some(a) = &r.anchor {
+        about.push(format!("anchor {}", clean(&a.to_string())));
+    }
+    if let Some(s) = &r.situation {
+        about.push(format!("situation {}", clean(&s.describe())));
+    }
+    if !about.is_empty() {
+        let _ = writeln!(out, "  {}", about.join(" · "));
+    }
+    let _ = writeln!(out, "interpretation:\n{}", para(&r.interpretation, "  "));
+    for j in &r.judgments {
+        let bearing = mecha_core::appraisal::enum_name(&j.bearing);
+        let goal = j
+            .goal
+            .as_ref()
+            .map(|g| clean(&g.to_string()))
+            .unwrap_or_else(|| "no resolved goal".into());
+        let because: Vec<String> = j.because.iter().map(|i| (i + 1).to_string()).collect();
+        let _ = writeln!(
+            out,
+            "judgment: {bearing} for {goal}{}",
+            if because.is_empty() {
+                " — no grounded claim supports it".into()
+            } else {
+                format!(" — claims {}", because.join(", "))
+            }
+        );
+    }
+    for (n, c) in r.claims.iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "claim {}: {} — {}: \"{}\"",
+            n + 1,
+            clean(&c.statement),
+            clean(&c.pointer.to_string()),
+            clean(&c.quote)
+        );
+    }
+    if let Some(p) = &r.prediction {
+        let _ = writeln!(out, "prediction:\n{}", para(p, "  "));
+    }
+    if let Some(a) = r.expected_act {
+        let _ = writeln!(out, "expected owner act: {}", a.wire());
+    }
+    for h in &r.goal_hypotheses {
+        let _ = writeln!(out, "goal hypothesis: {}", para(h, "").trim_start());
+    }
+    for l in &r.lessons {
+        let _ = writeln!(out, "lesson: {}", para(l, "").trim_start());
+    }
+    let g = &r.grounding;
+    let reasons: Vec<String> = g
+        .dropped_by
+        .iter()
+        .map(|(k, n)| format!("{k} {n}"))
+        .collect();
+    let _ = writeln!(
+        out,
+        "grounding: {} claim(s) offered, {} dropped{}{}{}",
+        g.offered,
+        g.dropped,
+        if reasons.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", reasons.join(", "))
+        },
+        if r.goals_unresolved > 0 {
+            format!(" · {} goal(s) did not resolve", r.goals_unresolved)
+        } else {
+            String::new()
+        },
+        if r.clipped {
+            " · a bound cut something"
+        } else {
+            ""
+        }
+    );
+    out
 }
 
 /// The `--json` probe block.
