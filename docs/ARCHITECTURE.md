@@ -2274,6 +2274,15 @@ brief (which reads the board through the graph server) do not run.
   one server is the assumption). The jail is `<room>/<key>`: `WebAsker`
   routes an `ask_user` card by the jail's directory name, which must be the
   session key.
+- **`shell` only where the sandbox keeps its writes in the room.** `fs_*` are
+  jailed by `ToolCtx::resolve`; `shell` only by the sandbox, and
+  `Sandbox::writes_stay_in_workspace` is true for `bwrap` and `docker` with no
+  extra `writable` paths — not for `none`, and not for `landlock`, which
+  shares the host's `/tmp`. Elsewhere `shell` is withheld with the rest.
+- **A `pre_tool` hook refuses the door.** No hook runs in an incognito chat
+  (a hook's log is a trace); an observer is simply not run, but a deny gate
+  skipped would widen the chat past what the owner allowed, so its presence
+  refuses the chat the way a cloud provider does (`incognito::hooks_allow`).
 - **It reaches an allowlist.** `withheld` is filled with the complement of a
   few builtins, search, and the mail server's read-only, un-routed tools —
   against the live registry, so a tool added tomorrow is withheld without

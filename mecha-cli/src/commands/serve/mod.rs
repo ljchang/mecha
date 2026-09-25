@@ -573,6 +573,10 @@ async fn security_headers(request: Request<axum::body::Body>, next: Next) -> Res
     response
 }
 
+/// A path segment that starts an incognito key: `/` + `incognito::KEY_PREFIX`
+/// (a test holds them together).
+const INCOGNITO_KEY_SEGMENT: &str = "/incognito-";
+
 /// `Cache-Control` for the built app — and the two halves take opposite
 /// rules, because they are opposite kinds of file.
 ///
@@ -604,9 +608,6 @@ async fn security_headers(request: Request<axum::body::Body>, next: Next) -> Res
 /// `Last-Modified` for a heuristic to work from, their freshness is the
 /// store's business rather than this layer's, and a blanket header here
 /// would be this middleware quietly deciding policy for every handler.
-/// A path segment that starts an incognito key (`incognito::KEY_PREFIX`).
-const INCOGNITO_KEY_SEGMENT: &str = "/incognito-";
-
 async fn cache_headers(request: Request<axum::body::Body>, next: Next) -> Response {
     // Taken before the request is consumed. Matching on "not an asset"
     // rather than on `/` alone is what catches the other unhashed entry
@@ -623,7 +624,11 @@ async fn cache_headers(request: Request<axum::body::Body>, next: Next) -> Respon
     // carries.
     let is_incognito = {
         let path = request.uri().path();
-        path.starts_with("/api/incognito") || path.contains(INCOGNITO_KEY_SEGMENT)
+        // `/api/sessions` too: the list carries an open incognito chat's
+        // key, its flag and its live taint (found on review of #321).
+        path.starts_with("/api/incognito")
+            || path == "/api/sessions"
+            || path.contains(INCOGNITO_KEY_SEGMENT)
     };
     let mut response = next.run(request).await;
     if is_api {
@@ -1932,6 +1937,24 @@ mod boundary_tests {
         );
         assert!(chat.close_incognito(&fresh).await);
         drop(runtime);
+    }
+
+    #[test]
+    fn the_no_store_needle_is_the_key_prefix() {
+        assert_eq!(INCOGNITO_KEY_SEGMENT, format!("/{}", incognito::KEY_PREFIX));
+    }
+
+    #[tokio::test]
+    async fn the_session_list_is_not_cached() {
+        let _home = crate::testenv::HomeGuard::new("incognito-list");
+        let app = app(chat::test_chat());
+        let list = app.clone().oneshot(get("/api/sessions")).await.unwrap();
+        assert_eq!(
+            list.headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .map(|v| v.to_str().unwrap()),
+            Some("no-store")
+        );
     }
 
     #[tokio::test]
