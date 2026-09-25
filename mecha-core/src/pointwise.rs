@@ -411,20 +411,35 @@ pub fn distinct_policies(candidates: Vec<Policy>) -> Vec<Policy> {
 /// it has not measured, not on the same verdict again. A different rule set
 /// or model is a different measurement and is not a match.
 pub fn already_compared(rows: &[Comparison], probe: &Comparison) -> bool {
-    let policies = |c: &Comparison| {
-        let mut p: Vec<Option<String>> = c.arms.iter().map(|a| a.policy.clone()).collect();
+    on_record(rows, probe).is_some()
+}
+
+/// The stored comparison of this point under these arms by this model, for
+/// this candidate — what [`already_compared`] asks, returned so a caller
+/// that needs the verdict (a candidate's re-measurement, R36) can reuse it
+/// rather than pay for it again. The arms are matched as (role, policy)
+/// pairs, and the candidate by `Pointers::proposal_id`: two harness
+/// candidates share every rules hash at a point and differ only there.
+pub fn on_record<'a>(rows: &'a [Comparison], probe: &Comparison) -> Option<&'a Comparison> {
+    let arms = |c: &Comparison| {
+        let mut p: Vec<(String, Option<String>)> = c
+            .arms
+            .iter()
+            .map(|a| (crate::appraisal::enum_name(&a.role), a.policy.clone()))
+            .collect();
         p.sort();
         p
     };
-    let wanted = policies(probe);
-    rows.iter().any(|r| {
+    let wanted = arms(probe);
+    rows.iter().find(|r| {
         r.kind == probe.kind
             && r.validator == probe.validator
             && r.model == probe.model
             && r.pointers.session_id == probe.pointers.session_id
             && r.pointers.message_index == probe.pointers.message_index
             && r.pointers.call_index == probe.pointers.call_index
-            && policies(r) == wanted
+            && r.pointers.proposal_id == probe.pointers.proposal_id
+            && arms(r) == wanted
     })
 }
 
@@ -769,5 +784,16 @@ mod tests {
         let mut elsewhere = row(&["a", "b"], "local");
         elsewhere.pointers.message_index = Some(4);
         assert!(!already_compared(&stored, &elsewhere));
+        // The same policies under other roles are other arms: a candidate's
+        // two arms share one rules hash and differ only by role.
+        let mut recast = row(&["a", "b"], "local");
+        recast.arms[0].role = Role::Candidate;
+        assert!(!already_compared(&stored, &recast));
+        let mut named = row(&["a", "b"], "local");
+        named.pointers.proposal_id = Some("hc-ledger".into());
+        assert!(
+            !already_compared(&stored, &named),
+            "a candidate's comparison is not the rules pass's"
+        );
     }
 }
