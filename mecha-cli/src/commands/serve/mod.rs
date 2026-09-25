@@ -42,6 +42,7 @@ mod board;
 mod chat;
 mod files;
 mod frontdoor;
+mod incognito;
 mod mail;
 mod present;
 mod proposals;
@@ -131,7 +132,11 @@ pub async fn execute(args: Args) -> Result<()> {
     let assets = args.assets.or(config.web.assets.clone());
 
     let chat = match chat::ChatState::build().await {
-        Ok(c) => Some(Arc::new(c)),
+        Ok(c) => {
+            let c = Arc::new(c);
+            c.spawn_incognito_reaper();
+            Some(c)
+        }
         Err(e) => {
             tracing::warn!("chat is unavailable: {e:#}");
             eprintln!("warning: chat is unavailable — the dashboard still serves.\n  {e:#}");
@@ -306,6 +311,11 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/sessions", get(chat::sessions))
         .route("/api/history", get(chat::history))
         .route("/api/resume", axum::routing::post(chat::resume))
+        .route("/api/incognito", axum::routing::post(chat::open_incognito))
+        .route(
+            "/api/incognito/{key}/end",
+            axum::routing::post(chat::end_incognito),
+        )
         .route("/api/chat/{key}", get(chat::transcript).post(chat::open))
         .route("/api/chat/{key}/send", axum::routing::post(chat::send))
         .route("/api/chat/{key}/cancel", axum::routing::post(chat::cancel))
@@ -603,8 +613,23 @@ async fn cache_headers(request: Request<axum::body::Body>, next: Next) -> Respon
     // from the broader match.)
     let is_asset = request.uri().path().starts_with("/assets/");
     let is_api = request.uri().path().starts_with("/api/");
+    // An incognito chat's every response — its transcript, its events, the
+    // pictures in it — is kept out of the browser's cache (R6, design §4.4).
+    // `/api/` is otherwise left to its handlers, deliberately (below); this
+    // is the one exception, keyed on the prefix every incognito key and door
+    // carries.
+    let is_incognito = {
+        let path = request.uri().path();
+        path.starts_with("/api/incognito") || path.contains(&format!("/{}", incognito::KEY_PREFIX))
+    };
     let mut response = next.run(request).await;
     if is_api {
+        if is_incognito {
+            response.headers_mut().insert(
+                axum::http::header::CACHE_CONTROL,
+                HeaderValue::from_static("no-store"),
+            );
+        }
         return response;
     }
     // **Only a response that is actually the file gets a freshness policy.**
@@ -1663,6 +1688,281 @@ mod boundary_tests {
     }
     async fn body(response: Response) -> serde_json::Value {
         serde_json::from_slice(&to_bytes(response.into_body(), 100_000).await.unwrap()).unwrap()
+    }
+
+    /// Every file under `dir` whose bytes contain `needle`.
+    fn files_containing(dir: &std::path::Path, needle: &str) -> Vec<PathBuf> {
+        let mut hits = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            let Ok(read) = std::fs::read_dir(&d) else {
+                continue;
+            };
+            for entry in read.flatten() {
+                let path = entry.path();
+                let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                    continue;
+                };
+                if meta.is_dir() {
+                    stack.push(path);
+                } else if meta.is_file()
+                    && std::fs::read(&path)
+                        .is_ok_and(|b| b.windows(needle.len()).any(|w| w == needle.as_bytes()))
+                {
+                    hits.push(path);
+                }
+            }
+        }
+        hits
+    }
+
+    /// Point `XDG_RUNTIME_DIR` at a fresh directory on `/dev/shm` for the
+    /// guard's lifetime; `None` where `/dev/shm` is not tmpfs, and the caller
+    /// skips. Under the `HomeGuard` lock, which serialises every test that
+    /// moves process environment.
+    struct RuntimeDir(PathBuf, Option<std::ffi::OsString>);
+    impl RuntimeDir {
+        fn new() -> Option<Self> {
+            let shm = PathBuf::from("/dev/shm");
+            let dir = shm.join(format!("mecha-incognito-test-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&dir).ok()?;
+            let previous = std::env::var_os("XDG_RUNTIME_DIR");
+            std::env::set_var("XDG_RUNTIME_DIR", &dir);
+            if super::incognito::rooms_root().is_err() {
+                match &previous {
+                    Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+                    None => std::env::remove_var("XDG_RUNTIME_DIR"),
+                }
+                let _ = std::fs::remove_dir_all(&dir);
+                return None;
+            }
+            Some(RuntimeDir(dir, previous))
+        }
+    }
+    impl Drop for RuntimeDir {
+        fn drop(&mut self) {
+            match &self.1 {
+                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn json_post(uri: &str, json: String) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(TAILSCALE_LOGIN, "owner@example.com")
+            .header("x-mecha-request", "1")
+            .header("content-type", "application/json")
+            .body(Body::from(json))
+            .unwrap()
+    }
+
+    fn get(uri: &str) -> Request<Body> {
+        Request::builder()
+            .uri(uri)
+            .header(TAILSCALE_LOGIN, "owner@example.com")
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    /// Send `text` into `key` and wait for the answer to land.
+    async fn converse(app: &Router, key: &str, text: &str) {
+        let sent = app
+            .clone()
+            .oneshot(json_post(
+                &format!("/api/chat/{key}/send"),
+                serde_json::json!({ "text": text }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert!(sent.status().is_success(), "{}", sent.status());
+        for _ in 0..200 {
+            let t = app
+                .clone()
+                .oneshot(get(&format!("/api/chat/{key}")))
+                .await
+                .unwrap();
+            let v = body(t).await;
+            if v["running"] == false && v["held_by_run"] == false {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!("the turn in {key} never finished");
+    }
+
+    #[tokio::test]
+    async fn an_incognito_chat_leaves_no_trace_and_an_ordinary_one_does() {
+        let home = crate::testenv::HomeGuard::new("incognito-trace");
+        let Some(runtime) = RuntimeDir::new() else {
+            eprintln!("skipped: /dev/shm is not tmpfs here");
+            return;
+        };
+        const CANARY: &str = "KUMQUAT-7731";
+        let app = app(chat::test_chat_answering("noted", true));
+
+        // Open through its own door.
+        let opened = app
+            .clone()
+            .oneshot(post("/api/incognito", ""))
+            .await
+            .unwrap();
+        assert_eq!(opened.status(), StatusCode::OK);
+        assert_eq!(
+            opened
+                .headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .map(|v| v.to_str().unwrap()),
+            Some("no-store")
+        );
+        let key = body(opened).await["key"].as_str().unwrap().to_string();
+        assert!(key.starts_with(incognito::KEY_PREFIX), "{key}");
+
+        // A turn and an upload, both carrying the canary.
+        converse(&app, &key, &format!("remember {CANARY} for me")).await;
+        let uploaded = app
+            .clone()
+            .oneshot(json_post(
+                &format!("/api/chat/{key}/upload?name={CANARY}.txt"),
+                CANARY.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert!(uploaded.status().is_success(), "{}", uploaded.status());
+        let read = app
+            .clone()
+            .oneshot(get(&format!("/api/chat/{key}")))
+            .await
+            .unwrap();
+        assert_eq!(
+            read.headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .map(|v| v.to_str().unwrap()),
+            Some("no-store")
+        );
+        let v = body(read).await;
+        assert_eq!(v["incognito"], true);
+        assert!(
+            v.to_string().contains(CANARY),
+            "the conversation is live in memory"
+        );
+
+        // While open: nothing in the mecha home, everything in the room.
+        assert!(
+            files_containing(&home.dir, CANARY).is_empty(),
+            "{:?}",
+            files_containing(&home.dir, CANARY)
+        );
+        assert!(
+            !files_containing(&runtime.0, CANARY).is_empty(),
+            "the upload is in the room"
+        );
+
+        // End: the room goes, and the key is dead.
+        let ended = app
+            .clone()
+            .oneshot(post(&format!("/api/incognito/{key}/end"), ""))
+            .await
+            .unwrap();
+        assert_eq!(ended.status(), StatusCode::NO_CONTENT);
+        assert!(
+            files_containing(&runtime.0, CANARY).is_empty(),
+            "the room is gone"
+        );
+        assert!(files_containing(&home.dir, CANARY).is_empty());
+        let reopened = app
+            .clone()
+            .oneshot(json_post(
+                &format!("/api/chat/{key}/send"),
+                serde_json::json!({ "text": "still there?" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            !reopened.status().is_success(),
+            "a closed key does not reopen"
+        );
+        let revived = app
+            .clone()
+            .oneshot(post(&format!("/api/chat/{key}"), ""))
+            .await
+            .unwrap();
+        assert!(
+            !revived.status().is_success(),
+            "nor through the ordinary door"
+        );
+
+        // The vacuity check: the same turn in an ordinary chat is recorded,
+        // so the scan above was looking where a trace would be.
+        converse(&app, "main", &format!("remember {CANARY} for me")).await;
+        assert!(
+            !files_containing(&home.dir, CANARY).is_empty(),
+            "an ordinary chat's transcript carries the canary"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_idle_incognito_chat_closes_itself_and_a_recent_one_does_not() {
+        let _home = crate::testenv::HomeGuard::new("incognito-idle");
+        let Some(runtime) = RuntimeDir::new() else {
+            return;
+        };
+        let chat = chat::test_chat_answering("noted", true);
+        let stale = chat.open_incognito().await.unwrap();
+        let fresh = chat.open_incognito().await.unwrap();
+        let stale_room = chat.room_of(&stale).await.unwrap();
+        stale_room.backdate(incognito::IDLE + std::time::Duration::from_secs(1));
+        assert_eq!(chat.reap_idle_incognito().await, 1);
+        assert!(!stale_room.root.exists(), "the idle room is gone");
+        assert!(chat.room_of(&stale).await.is_none());
+        assert!(
+            chat.room_of(&fresh).await.is_some(),
+            "a recent chat stays open"
+        );
+        assert!(chat.close_incognito(&fresh).await);
+        drop(runtime);
+    }
+
+    #[tokio::test]
+    async fn incognito_refuses_a_model_that_is_not_on_this_machine() {
+        let _home = crate::testenv::HomeGuard::new("incognito-cloud");
+        let Some(_runtime) = RuntimeDir::new() else {
+            return;
+        };
+        let app = app(chat::test_chat_answering("noted", false));
+        let opened = app
+            .clone()
+            .oneshot(post("/api/incognito", ""))
+            .await
+            .unwrap();
+        assert_eq!(opened.status(), StatusCode::CONFLICT);
+        let why = String::from_utf8(to_bytes(opened.into_body(), 10_000).await.unwrap().to_vec())
+            .unwrap();
+        assert!(why.contains("local model"), "{why}");
+    }
+
+    #[tokio::test]
+    async fn end_is_only_for_an_open_incognito_chat() {
+        let _home = crate::testenv::HomeGuard::new("incognito-end");
+        let app = app(chat::test_chat());
+        let ordinary = app
+            .clone()
+            .oneshot(post("/api/incognito/main/end", ""))
+            .await
+            .unwrap();
+        assert_eq!(ordinary.status(), StatusCode::BAD_REQUEST);
+        let unknown = app
+            .clone()
+            .oneshot(post(
+                &format!("/api/incognito/{}/end", incognito::new_key()),
+                "",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
