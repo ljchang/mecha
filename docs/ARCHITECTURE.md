@@ -754,6 +754,29 @@ drops the key and a verbatim restatement from another goal's batch widens
 by intersection. Nothing is reconciled: no row carried a goal before
 `rules_goal`, and every door stamps it from that field. The block is still
 rendered once, at `prepare`, so no goal toggles the prefix mid-run.
+**A rule toward a goal that has closed is seen, not silent** (R34, the
+owner's ruling of 2026-09-25): it keeps its `task:<uid>` scope and widens
+only by §17.4's restatement, and the readout names it. `GoalKey::liveness`
+reads a `task:` goal against the board (`kg_task_list` with closed rows:
+a closed status; a task the answer does not carry is unknown, not closed,
+since an answer can be short without saying so — `tasks::project_closed_by`'s
+lesson) and a `trigger:`
+goal against the trigger store (removed or disabled, read in place by
+`TriggerStore::state_at`); `LearningStore::closed_goals` counts the active
+rules and waiting reflections toward one. `mecha rules list` counts them
+at the top and marks each `LOADS NOWHERE` with why (`goal_closed` in
+`--json`) — the presented-keys walk alone cannot, since the run that mined
+the rule presented its goal — and `mecha learn` says the same on every
+pass. The board is read over MCP, so only when a key in play names a task
+and under a deadline; doctor does not carry it, because doctor reads
+stores in place and never starts a server, and the TUI's `/learning` and
+the web settings page shell out to the roster with `--no-board`, since
+neither budget fits an MCP start (the TUI blocks its event loop on the
+call). Neither of those renders `loads_nowhere` in its list today; the
+TUI's `Enter` shows the rule's line, trigger goals read, task goals
+unknown. A board that cannot be read is
+its own line and makes a task-scoped rule's `loads_nowhere` unknown
+(`goal_unknown`), never "not dark".
 `Situation::scope` and
 `Situation::matches` are pinned together by a test so a key cannot join
 one without the other. The incident: 42 of

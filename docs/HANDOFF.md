@@ -22,8 +22,8 @@ maps which document holds what.
 
 ## Where the work is
 
-**2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2c-1, 2d-1 and 3a
-merged and installed; 2a-3 merged.** `APPRAISAL-WIRING-DESIGN.md` (#291) is the authority, with
+**2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2a-3, 2c-1, 2d-1 and
+3a merged and installed; R34's readout merged.** `APPRAISAL-WIRING-DESIGN.md` (#291) is the authority, with
 its rulings in §6. Phase 1's rows 1a–1i landed as #292–#294, #297–#302, #304
 and #305 (plus mecha-graph#21 for the graph TUI's half of 1c; #303 is
 `image_generate`, another lane's, not recorded here). The phase was meant to
@@ -33,9 +33,9 @@ valence; and 1e and 1f change what `planning::Decision::assess` reads for
 `ReviewCommitment`, which reaches a run only under `goal_guidance` (off by
 default). Phase 2's 2a-1 (#308), 2a-2 (#314), 2c-1 (#311) and 2d-1 (#312)
 and phase 3's 3a (#309, behind a lever that ships off) followed the same
-day, then 2a-3 (#315). What each built is in HISTORY under 2026-09-24/25.
-`mecha` is installed at `6e6f03ba` (19:49Z), which carries all of it but
-2a-3 (*Machine state, dated* below). Six owner rulings of 2026-09-25 are rows R30–R35 of the design's
+day, then 2a-3 (#315) and R34's closed-goal readout (#317). What each built
+is in HISTORY under 2026-09-24/25. `mecha` is installed at `0692dc79`
+(20:37Z), which carries all of it but #317 (*Machine state, dated* below). Six owner rulings of 2026-09-25 are rows R30–R35 of the design's
 §6. What is open, the follow-ups owed, the minors banked for the owner and
 the `CLAUDE.md` drift are at the top of *The goal system* below.
 The workspace on this branch merged with `0692dc79` (no code differs from
@@ -2715,13 +2715,22 @@ table, first. The image arc itself is that lane's to record.
 `rules_goal`, each a literal no earlier build carries. The web dist was
 not rebuilt and still holds `index-Cq2ArbMx.js` (18:02:48Z). `mecha-slack`,
 `-triggers`, `-drain` and `-serve` show `ActiveEnterTimestamp` 19:49:06Z;
-the voice worker still 11:31:38Z. Of the appraisal arc, 2a-3 (#315,
-`0692dc79`, merged 20:32Z) is merged and not installed. What starts happening on this build: the `session_end` hook
+the voice worker still 11:31:38Z. What starts happening on this build: the `session_end` hook
 (`nohup mecha distill -p local … &`, already detached as 2a-2 requires) and
 the nightly `"$MECHA" distill -p "$PROVIDER"` in `scripts/ruminate.sh` now also write a text appraisal per
 session when the provider is `kind = "local"` (R29), about a minute of a
 seat each. `[agent] situation_brief` is unset
 in `~/.mecha/config.toml`, so the brief is recorded but not delivered.
+
+**Reinstalled from main, 2026-09-25 20:37Z, by the image-generation lane:
+2a-3 and #313 (verified 20:49Z by asking the artifacts).**
+`~/.cargo/bin/mecha` (20:37:04Z) is `0692dc79`, the #315 merge: `strings
+~/.cargo/bin/mecha | grep -c` prints 1 for #315's `is retired (row 2a-3)`,
+and still 7 for `expected_act` and 1 for `point-steer`. `mecha-slack`,
+`-triggers`, `-drain` and `-serve` show `ActiveEnterTimestamp` 20:37:15Z;
+the web dist still holds `index-Cq2ArbMx.js`. **Merged and not installed:**
+#317 (R34's closed-goal readout, `8b0acbe8`, merged 20:44Z); its
+`widens only when the lesson is` literal prints 0.
 
 ## What the measurements say
 
@@ -3738,8 +3747,9 @@ the mechanism and every decision. What it left standing:
 
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
-**2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2c-1, 2d-1 and 3a
-shipped and are installed; 2a-3 is merged, not installed.** The authority is `APPRAISAL-WIRING-DESIGN.md`:
+**2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2a-3, 2c-1, 2d-1
+and 3a shipped and are installed; R34's readout (#317) is merged, not
+installed.** The authority is `APPRAISAL-WIRING-DESIGN.md`:
 §3 holds the plan as pull requests with their order, and §6 the rulings,
 including R30–R35 of 2026-09-25. What each row built is in HISTORY under
 2026-09-24/25. Four of the catalogue entries phase 1 built (S5, S7, B1 and
@@ -3789,14 +3799,6 @@ deferrals are not repeated here; S1, S8, S3 and O4 carry none, so what 1a,
   brief complete on a sample. Read `sessions health` and `sessions appraise`
   after some days on a build carrying phase 1 (installed since 16:41Z); at
   17:58Z one real run had been recorded on one.
-- **Owed by R34: a readout of rules whose goal is closed.** 2c-1 (#311)
-  scopes a rule learned inside a task to `task:<uid>`, and the owner ruled
-  that it stays there and widens only by evidence (§17.4's consolidation
-  widening). Once the task closes, no run declares that goal again, and the
-  roster's `LOADS NOWHERE` check (`rules.rs`'s `loads_nowhere`) still calls
-  the rule loadable, because the task's past runs presented the key. The
-  follow-up is a count of active rules whose goal is closed. Nothing on the
-  live store is affected yet: at #311's merge no reflection carried a goal.
 - **1d's graph channel is unreadable from mecha.** Rejected graph facts
   from `agent:mecha` episodes (L7's input) need a read-only mecha-graph verb
   that returns rejected candidates with their origin episode, or the review

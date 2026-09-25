@@ -6612,13 +6612,23 @@ fn load_learning(pane: learning::Pane) -> Result<Vec<learning::Row>> {
     // must stay visible. Rules and Proposals need no such flag: a retired
     // rule stays in `rules list`'s output, and a proposal is never dropped
     // at all.
+    let text = self_cli(&learning_list_args(pane))?;
+    learning::rows_from_json(pane, &text)
+}
+
+/// The argv `load_learning` runs for `pane`.
+fn learning_list_args(pane: learning::Pane) -> Vec<&'static str> {
     let mut args: Vec<&str> = vec![pane.verb(), "list"];
     if pane == learning::Pane::Reflections {
         args.push("--all");
     }
+    // The roster reads the board over MCP for a rule toward a task (R34);
+    // this call blocks the event loop, so it never does.
+    if pane == learning::Pane::Rules {
+        args.push("--no-board");
+    }
     args.push("--json");
-    let text = self_cli(&args)?;
-    learning::rows_from_json(pane, &text)
+    args
 }
 
 /// Reload the current pane and put the cursor back on the same record.
@@ -6733,7 +6743,11 @@ fn handle_learning_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 modal.detail_scroll = 0;
             } else if let Some(row) = modal.selected().cloned() {
                 let verb = modal.pane.verb();
-                match self_cli(&[verb, "show", &row.id]) {
+                let mut args = vec![verb, "show", &row.id];
+                if modal.pane == learning::Pane::Rules {
+                    args.push("--no-board");
+                }
+                match self_cli(&args) {
                     Ok(text) => {
                         if let Some(m) = &mut app.learning {
                             m.detail = Some(text);
@@ -11098,5 +11112,15 @@ mod tests {
         let painted = painted.trim_end_matches('\u{2502}');
         assert_eq!(painted.trim_end(), "class");
         assert_eq!(layout.cursor_col as usize, "class".len());
+    }
+
+    /// The Rules pane never waits on the board: its roster call blocks the
+    /// event loop, and an MCP start there froze the TUI (found on review of
+    /// the R34 readout). Fails if `--no-board` is dropped from the argv.
+    #[test]
+    fn the_rules_pane_never_reads_the_board() {
+        let args = learning_list_args(learning::Pane::Rules);
+        assert_eq!(args, vec!["rules", "list", "--no-board", "--json"]);
+        assert!(!learning_list_args(learning::Pane::Reflections).contains(&"--no-board"));
     }
 }

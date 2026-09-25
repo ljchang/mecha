@@ -128,7 +128,10 @@ only live producer (the appraiser's `other`/`world` verdict); `label_of`
 still derives it, so older records read as before. #313 (`5fa722fe`,
 another lane's) made `reflect` and `distill` pass over test sessions, so
 neither the reflector nor 2a-2's appraiser reads a `MECHA_SESSION_KIND=test`
-run.
+run. #317 (`8b0acbe8`, 20:44Z) built R34's readout: a rule scoped to a goal
+that has closed keeps its scope, and `mecha rules list` marks it `LOADS
+NOWHERE` with why, `mecha learn` repeats the count each pass
+(`learning::ClosedGoals`), and an unreadable board is its own finding.
 Separately, at 03:29Z that morning, #295 (`c4c916d1`) made `[sandbox] memory_mb` and `cpus` real
 under bwrap through a `systemd-run --user --scope` (`Sandbox::bwrap_launcher`)
 and made landlock refuse them (see *Traps*). What the arc left open is in
