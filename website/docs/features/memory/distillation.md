@@ -146,6 +146,47 @@ hypothesis, the owner's answer, and the charter line's text stay in mecha.
 Appraisal metadata is omitted when there is no outcome to appraise, as with
 some older transcripts.
 
+## The same pass writes the session's appraisal
+
+After the episode, the distiller is asked one more question on the same
+conversation: what the session *meant* — a [text
+appraisal](/docs/features/appraisal/reference#text-appraisals). It is a
+follow-up turn, not a new pass. The episode's prompt is unchanged, so what the
+graph extracts from is unchanged. The local model server still holds the
+episode call's prompt, so only the reply and the new question are read again.
+
+The follow-up carries what the transcript does not show, all read by mecha
+from its own stores and never fetched by the model:
+
+- what the run was for, and your charter's text;
+- the situation it started and finished in;
+- what you did with its output — released, edited (with the edit),
+  rejected (with your reason), closed or reopened;
+- the outcomes mecha recorded, by direction only, never a number;
+- any comparisons drawn from the session;
+- up to three earlier appraisals of the same situation and goal, from clean
+  sessions only.
+
+Last come the **referents**, each by the id a claim cites: every result the
+run received, whole rather than clipped, and your own words, turn by turn.
+
+A few things hold:
+
+- **It runs on the local model only.** Distilling with any other provider
+  appraises nothing, and says so.
+- **It holds a background seat** for the episode call and its follow-up
+  together.
+- **It stores one appraisal per session.** A re-run finds the one on record
+  and makes no model call for it.
+- **It is shadow.** Nothing reads an appraisal yet except you:
+  `mecha sessions appraise <session>` prints one, with its taint label beside
+  it. An appraisal that fails costs only itself — the episode goes to the
+  graph either way.
+
+The follow-up adds real time to each session, mostly generation. Measured on
+eight real sessions it took 20–137 s of a seat, a median of about a minute,
+with the episode's whole prompt read from the server's cache each time.
+
 ## Distillation is not learning
 
 The provenance rule here is deliberately different from the one
@@ -226,3 +267,14 @@ reflect → distill → validate --unprocessed-only --cover 1
 
 It can also be fired directly from a hook at session close. Either way it is
 idempotent, so running it twice costs one ledger read.
+
+**Fire it detached from a hook.** On the local model it waits for a
+background seat, then spends about a minute per session on the appraisal. A
+`session_end` hook runs under its own timeout, so run distill in the
+background and let the hook return at once:
+
+```toml
+[[hook]]
+event = "session_end"
+command = "nohup mecha distill -p local >/dev/null 2>&1 &"
+```

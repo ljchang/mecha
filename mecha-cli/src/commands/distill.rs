@@ -14,6 +14,7 @@
 use crate::logs::strip_ansi_and_controls;
 use crate::GlobalOpts;
 use anyhow::{bail, Context, Result};
+use mecha_core::appraisal_store::{AppraisalStore, Recorded, SessionEvidence};
 use mecha_core::config::Config;
 use mecha_core::distill::{self, Distiller};
 use mecha_core::learning::LearningStore;
@@ -70,6 +71,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     if let Some(limit) = args.limit {
         todo.truncate(limit);
     }
+    // Oldest first, once the limit has chosen the newest: a session's
+    // appraisal reads the clean appraisals of earlier sessions in the same
+    // situation (row 2a-2), so an earlier session must be on record before
+    // a later one is appraised — in one night's batch as across nights.
+    todo.reverse();
     if todo.is_empty() {
         println!("nothing to distill: every session is already in the graph's ledger");
         return Ok(());
@@ -103,6 +109,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let provider = mecha_core::provider::build(provider_cfg)?;
     let model = global.model.clone().or_else(|| provider_cfg.model.clone());
     let distiller = Distiller::new(provider, model);
+    // The appraisal reads the whole transcript, so it runs on the local
+    // model only (R29: sending transcripts to a cloud model for
+    // interpretation is the owner's privacy decision, not proposed). A
+    // distill run on another provider still distills; it appraises nothing,
+    // and says so.
+    let local = provider_cfg.kind == "local";
     eprintln!(
         "distilling with {} ({provider_name}) → {}",
         distiller.model(),
@@ -253,6 +265,24 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         },
     );
 
+    // The appraisal leg's stores, read once per run (row 2a-2): every store
+    // the signed errors read — closures and workflows too, so the owner's
+    // acts on a task reach the appraiser, where the episode's tag above
+    // reads drafts only and stays as it was — and the comparisons drawn
+    // from each session. Best-effort, and an unreadable one is said to the
+    // appraiser rather than read as empty.
+    let appraiser = if local {
+        Some(Appraiser::open())
+    } else {
+        eprintln!(
+            "mecha: {provider_name} is not a local provider — sessions are distilled but not \
+             appraised (R29: an appraisal reads the whole transcript, and transcripts stay on \
+             the local model)"
+        );
+        None
+    };
+    let mut tally = AppraisalTally::default();
+
     let mut distilled = 0usize;
     let mut skipped = 0usize;
     // Counted apart from `distilled`: a carrier is an episode the
@@ -267,7 +297,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // this loop used to pay four complete read-and-parse passes per
         // session (`load`, `taint_timeline`, then `for_session`'s own read
         // and second timeline read).
-        let transcript = match Session::read(path) {
+        //
+        // The appraisal's evidence comes off the same read (row 2a-2): the
+        // transcript the appraiser is shown and the provenance its record
+        // is stamped with must be one snapshot of a file that may still be
+        // growing.
+        let (transcript, evidence) = match SessionEvidence::read_with_transcript(path) {
             Ok(t) => t,
             Err(e) => {
                 // Not this command's bug to fix; leave it unmarked so a later
@@ -320,7 +355,39 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         .map(|built| built.appraisal);
 
         let rendered = distill::render_for_distill(&convo.messages, 6000, 18000);
-        match distiller.distill(&rendered).await {
+        // One background seat for the pair of calls (`permit.rs`): the
+        // episode and its appraisal run back to back on one conversation,
+        // so the second lands on the slot holding the first's prefix. Only
+        // on the local model: the seats are llama-server's, and a provider
+        // elsewhere holds none of them.
+        let seat = if local {
+            take_seat(&meta.id).await
+        } else {
+            None
+        };
+        let turn = distiller.distill_turn(&rendered).await;
+        if let (Some(appraiser), Ok(turn)) = (&appraiser, &turn) {
+            // Shadow: whatever happens on this leg, the episode leg below is
+            // unchanged — an appraisal that fails costs only itself.
+            appraiser
+                .appraise(
+                    &distiller,
+                    turn,
+                    &transcript,
+                    &evidence,
+                    AppraisalContext {
+                        session_id: &meta.id,
+                        created_at: meta.created_at.to_rfc3339(),
+                        charter: charter.as_ref(),
+                        charter_unreadable,
+                        known: &known,
+                    },
+                    &mut tally,
+                )
+                .await;
+        }
+        drop(seat);
+        match turn.map(|t| t.distilled) {
             Ok(Some(out)) => {
                 // Decide what may leave BEFORE writing the body: a carrier
                 // describing a withheld correction would launder the claim
@@ -508,5 +575,283 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
          (nothing durable); ledger: {}",
         store.root().join("distilled.jsonl").display()
     );
+    if appraiser.is_some() {
+        println!("{}", tally.line());
+    }
     Ok(())
+}
+
+/// Take a background seat, waiting for one if all are held — a nightly or
+/// a detached `session_end` hook can wait; nothing interactive runs this.
+/// The pool is a latency control, not a guard (`permit.rs`), so a pool that
+/// cannot be read is said and the calls go ahead unseated.
+async fn take_seat(session: &str) -> Option<mecha_core::permit::Held> {
+    let pool = match super::tasks::permits() {
+        Ok(pool) => pool,
+        Err(e) => {
+            eprintln!("mecha: the seat pool could not be opened ({e:#}); distilling unseated");
+            return None;
+        }
+    };
+    let what = format!("distill {session}");
+    let mut said: Option<std::time::Instant> = None;
+    loop {
+        match pool.take(&what) {
+            Ok(Ok(held)) => return Some(held),
+            Ok(Err(holders)) => {
+                if said.is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(300)) {
+                    said = Some(std::time::Instant::now());
+                    eprintln!(
+                        "mecha: all {} background model seat(s) are held ({}); waiting",
+                        pool.capacity(),
+                        holders
+                            .iter()
+                            .map(|p| p.what.as_deref().unwrap_or("unnamed"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+            Err(e) => {
+                eprintln!("mecha: a seat could not be taken ({e:#}); distilling unseated");
+                return None;
+            }
+        }
+    }
+}
+
+/// What the appraisal leg did this run (row 2a-2), for the closing line.
+#[derive(Default)]
+struct AppraisalTally {
+    written_clean: usize,
+    written_not_clean: usize,
+    already: usize,
+    /// Replies that stored nothing, by why.
+    malformed: std::collections::BTreeMap<String, usize>,
+    /// The provider failed on the follow-up, or the store could not be
+    /// read or written.
+    failed: usize,
+    /// Wall-clock seconds of a seat the follow-up calls added, and the
+    /// prompt tokens they sent and read from the server's cache.
+    seconds: f64,
+    /// Follow-up calls the provider answered — every one paid for, whatever
+    /// became of its reply.
+    calls: usize,
+    prompt_tokens: u64,
+    cached_tokens: u64,
+}
+
+impl AppraisalTally {
+    fn line(&self) -> String {
+        let malformed: usize = self.malformed.values().sum();
+        let calls = self.calls;
+        let why: Vec<String> = self
+            .malformed
+            .iter()
+            .map(|(k, n)| format!("{k} {n}"))
+            .collect();
+        format!(
+            "appraised {} session(s) ({} clean, {} not clean — the owner's alone) · {} already on \
+             record · {} malformed, nothing stored{} · {} failed · {:.1}s of a seat over {} \
+             follow-up call(s), {} of {} prompt token(s) from the server's cache",
+            self.written_clean + self.written_not_clean,
+            self.written_clean,
+            self.written_not_clean,
+            self.already,
+            malformed,
+            if why.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", why.join(", "))
+            },
+            self.failed,
+            self.seconds,
+            calls,
+            self.cached_tokens,
+            self.prompt_tokens,
+        )
+    }
+}
+
+/// The per-session facts the appraisal leg needs from the run's loop.
+struct AppraisalContext<'a> {
+    session_id: &'a str,
+    created_at: String,
+    charter: Option<&'a mecha_core::charter::Charter>,
+    charter_unreadable: bool,
+    known: &'a distill::KnownPointers,
+}
+
+/// The appraisal leg's stores, opened once per run.
+struct Appraiser {
+    /// `Err` when the store cannot be opened: every session this run is
+    /// counted as failed, and the episode leg is untouched.
+    store: std::result::Result<AppraisalStore, String>,
+    stores: mecha_core::appraisal::Stores,
+    comparisons: std::result::Result<Vec<mecha_core::comparison::Comparison>, String>,
+}
+
+impl Appraiser {
+    fn open() -> Appraiser {
+        let store = AppraisalStore::open_default().map_err(|e| format!("{e:#}"));
+        if let Err(e) = &store {
+            eprintln!("mecha: the appraisal store could not be opened ({e}); appraising nothing");
+        }
+        let comparisons = match mecha_core::comparison::ComparisonStore::open_existing_default() {
+            None => Ok(Vec::new()),
+            Some(s) => match s.comparisons_counting() {
+                Ok((rows, 0)) => Ok(rows),
+                Ok((_, skipped)) => Err(format!("{skipped} line(s) could not be read")),
+                Err(e) => Err(format!("{e:#}")),
+            },
+        };
+        Appraiser {
+            store,
+            stores: mecha_core::appraisal::Stores::load(),
+            comparisons,
+        }
+    }
+
+    /// Appraise one session on the episode call's conversation and record
+    /// it through the store's one door. Every outcome is counted; nothing
+    /// here can stop the episode leg.
+    #[allow(clippy::too_many_arguments)]
+    async fn appraise(
+        &self,
+        distiller: &Distiller,
+        turn: &distill::EpisodeTurn,
+        transcript: &mecha_core::session::Transcript,
+        evidence: &SessionEvidence,
+        cx: AppraisalContext<'_>,
+        tally: &mut AppraisalTally,
+    ) {
+        let id = cx.session_id;
+        let store = match &self.store {
+            Ok(store) => store,
+            Err(_) => {
+                tally.failed += 1;
+                return;
+            }
+        };
+        // One appraisal per session: asked before the model call the door
+        // would refuse. A store that cannot answer is a failure, not "none".
+        match store.on_record(evidence.session_id()) {
+            Ok(Some(_)) => {
+                tally.already += 1;
+                return;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("· {id} — appraisal: the store could not be read ({e:#})");
+                tally.failed += 1;
+                return;
+            }
+        }
+        let drafts = self.stores.drafts_of(id);
+        let signed = mecha_core::appraisal::for_transcript(
+            transcript,
+            id,
+            cx.created_at,
+            self.stores.records(&drafts),
+            None,
+        )
+        .map(|built| built.appraisal);
+        let (brief, homeostat) = distill::AppraisalInputs::situation_of(transcript);
+        let comparisons: Vec<&mecha_core::comparison::Comparison> = self
+            .comparisons
+            .as_ref()
+            .map(|rows| {
+                rows.iter()
+                    .filter(|c| c.pointers.session_id == id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Past appraisals through the clean door only: a tainted one has no
+        // way into another session's input.
+        let clean = store.clean();
+        let past = clean
+            .as_ref()
+            .map(|read| {
+                read.same_situation_and_goal(evidence, mecha_core::appraisal_store::PAST_SHOWN)
+            })
+            .unwrap_or_default();
+        let inputs = distill::render_appraisal_inputs(&distill::AppraisalInputs {
+            evidence,
+            charter: cx.charter,
+            charter_unreadable: cx.charter_unreadable,
+            brief,
+            homeostat,
+            drafts: &drafts,
+            outbox_unreadable: self.stores.outbox_unreadable,
+            signed: signed.as_ref(),
+            comparisons: &comparisons,
+            comparisons_unreadable: self.comparisons.is_err(),
+            past: &past,
+            past_unreadable: clean.is_err(),
+            known: cx.known,
+        });
+        let answered = match distiller.appraise(turn, &inputs).await {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("· {id} — appraisal failed: {e:#}");
+                tally.failed += 1;
+                return;
+            }
+        };
+        tally.calls += 1;
+        tally.seconds += answered.elapsed.as_secs_f64();
+        tally.prompt_tokens += answered.usage.total_input();
+        tally.cached_tokens += answered.usage.cache_read_input_tokens;
+        let draft = match answered.draft {
+            Ok(d) => d,
+            Err(why) => {
+                eprintln!(
+                    "· {id} — appraisal reply unusable ({}); nothing stored",
+                    why.wire()
+                );
+                *tally.malformed.entry(why.wire()).or_default() += 1;
+                return;
+            }
+        };
+        match store.record(evidence, draft, distiller.model(), cx.known) {
+            Ok(Recorded::Written {
+                clean, grounding, ..
+            }) => {
+                if clean {
+                    tally.written_clean += 1;
+                } else {
+                    tally.written_not_clean += 1;
+                }
+                println!(
+                    "· {id} — appraised ({}; {} of {} claim(s) grounded) in {:.1}s of a seat, {} \
+                     of {} prompt token(s) from the server's cache (the episode call: {:.1}s, \
+                     {} prompt token(s))",
+                    if clean {
+                        "clean"
+                    } else {
+                        "not clean: the owner's alone"
+                    },
+                    grounding.offered - grounding.dropped,
+                    grounding.offered,
+                    answered.elapsed.as_secs_f64(),
+                    answered.usage.cache_read_input_tokens,
+                    answered.usage.total_input(),
+                    turn.elapsed.as_secs_f64(),
+                    turn.usage.total_input(),
+                );
+            }
+            Ok(Recorded::AlreadyOnRecord { .. }) => tally.already += 1,
+            Ok(Recorded::Empty) => {
+                *tally
+                    .malformed
+                    .entry("no_interpretation".into())
+                    .or_default() += 1
+            }
+            Err(e) => {
+                eprintln!("· {id} — the appraisal could not be recorded: {e:#}");
+                tally.failed += 1;
+            }
+        }
+    }
 }

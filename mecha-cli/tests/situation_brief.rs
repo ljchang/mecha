@@ -1,9 +1,13 @@
-//! Row 1h's acceptance through the real binary (`docs/APPRAISAL-WIRING-
+//! Rows 1h and 3a through the real binary (`docs/APPRAISAL-WIRING-
 //! DESIGN.md` B1): on fixture runs of each kind — a delegated task
 //! (`mecha tasks work`), a trigger (`mecha trigger run`) and a web chat
-//! turn (`mecha serve`) — over a seeded board, charter and backlog, the
-//! recorded situation brief carries every field, and no brief text appears
-//! in any request the provider received.
+//! turn (`mecha serve`), plus a one-shot (`mecha run`, the door an
+//! experiment's trial goes through) — over a seeded board, charter and
+//! backlog, the recorded situation brief carries every field. With
+//! `[agent] situation_brief` off (the default) no brief text appears in any
+//! request the provider received; with it on, the brief's words
+//! (`brief::render` of exactly the recorded brief) ride the run's user turn
+//! and never the system prompt, and still no row prose or record key does.
 //!
 //! No network and no real model: the provider is a loopback fixture that
 //! answers `/v1/chat/completions`, answers `/slots` as a four-slot
@@ -115,7 +119,7 @@ async fn fixture_model() -> (String, Arc<Mutex<Vec<String>>>, tokio::task::JoinH
 
 /// A fixture home: charter, backlog, board, a trigger that serves a line,
 /// the owner's quiet hours, a held seat, a run in flight and a voice turn.
-fn seed(root: &Path, base_url: &str) -> PathBuf {
+fn seed(root: &Path, base_url: &str, deliver: bool) -> PathBuf {
     let home = root.join("home");
     let board = root.join("board");
     std::fs::create_dir_all(&home).unwrap();
@@ -204,7 +208,7 @@ fn seed(root: &Path, base_url: &str) -> PathBuf {
             "default_provider = \"fixture\"\n\
              [providers.fixture]\nkind = \"local\"\nbase_url = \"{base_url}\"\n\
              model = \"fixture\"\nmax_retries = 0\n\
-             [agent]\ntimezone = \"America/New_York\"\n\
+             [agent]\ntimezone = \"America/New_York\"\nsituation_brief = {deliver}\n\
              [tools]\nenabled = [\"fs_read\"]\n\
              [sandbox]\nkind = \"none\"\n\
              [outbox]\ntools = [\"mail_send\"]\n\
@@ -333,24 +337,116 @@ fn the_shared_situation(b: &SituationBrief, what: &str) {
     );
 }
 
+/// Board rows' prose, which the brief never held. (`tasks work` hands the
+/// run its own task's name in the prompt, by design and outside the brief,
+/// so these are checked against the brief's words rather than the body.)
+const ROW_PROSE: [&str; 4] = ["Morgan Reyes", "Alex Kim", "seminar room", "lab reports"];
+
+/// What reaches the model either way: none of the brief's record keys.
+const NEVER: [&str; 7] = [
+    "overdue_ids",
+    "due_soon_ids",
+    "waiting_on_agent",
+    "in_call",
+    "no_turn_seen",
+    "assembled_at",
+    "last_turn_secs",
+];
+
+/// Every string in a request body, one per line.
+fn leaves(v: &Value, out: &mut String) {
+    match v {
+        Value::String(s) => {
+            out.push_str(s);
+            out.push('\n');
+        }
+        Value::Array(a) => a.iter().for_each(|v| leaves(v, out)),
+        Value::Object(o) => o.values().for_each(|v| leaves(v, out)),
+        _ => {}
+    }
+}
+
+/// The door's delivery, by the lever: with it on, the words of exactly the
+/// recorded brief are in a user message of every request (once each — the
+/// run's first user turn states it, and no later turn re-states an unchanged
+/// situation), never in the system message; with it off, nothing of the
+/// brief is anywhere.
+fn delivery(seen: &[String], b: &SituationBrief, deliver: bool, what: &str) {
+    assert!(!seen.is_empty(), "{what}: the fixture model saw no request");
+    if !deliver {
+        return no_brief_in_requests(seen, what);
+    }
+    let words = render(b);
+    for prose in ROW_PROSE {
+        assert!(
+            !words.contains(prose),
+            "{what}: `{prose}` in the brief: {words}"
+        );
+    }
+    // The run's own requests: a title request (`serve` names the
+    // conversation from the owner's words) is a side call the brief must
+    // stay out of, and does — the title reads owner turns only.
+    let (runs, side): (Vec<&String>, Vec<&String>) =
+        seen.iter().partition(|b| b.contains("## What day it is"));
+    assert!(!runs.is_empty(), "{what}: no run request");
+    for body in side {
+        assert!(
+            !body.contains(BRIEF_STEM),
+            "{what}: a side request carried the brief"
+        );
+    }
+    for body in runs {
+        for needle in NEVER {
+            assert!(
+                !body.contains(needle),
+                "{what}: `{needle}` reached a provider request: {body}"
+            );
+        }
+        // Never run on from the text before it: the encoder joins blocks
+        // with nothing between them.
+        assert!(
+            body.contains(&format!("\\n\\n{BRIEF_STEM}")),
+            "{what}: the brief is not set off from the text before it"
+        );
+        let v: Value = serde_json::from_str(body).unwrap();
+        let mut in_user = 0;
+        for m in v["messages"].as_array().unwrap() {
+            let mut text = String::new();
+            leaves(&m["content"], &mut text);
+            if m["role"] == "user" {
+                in_user += text.matches(words.as_str()).count();
+            } else {
+                assert!(
+                    !text.contains(BRIEF_STEM),
+                    "{what}: the brief reached a {} message",
+                    m["role"]
+                );
+            }
+        }
+        assert_eq!(
+            in_user, 1,
+            "{what}: the brief's words, once, in a user turn: {body}"
+        );
+    }
+}
+
 /// Nothing of the brief reached the model: no pointer it keeps, no row's
-/// name it dropped, none of its record keys.
+/// name it dropped, none of its record keys, none of its words.
 fn no_brief_in_requests(seen: &[String], what: &str) {
     assert!(!seen.is_empty(), "{what}: the fixture model saw no request");
     for body in seen {
-        for needle in [
-            ELSEWHERE,
-            "project-aurora",
-            "task-2",
-            "task-3",
-            "overdue_ids",
-            "due_soon_ids",
-            "waiting_on_agent",
-            "in_call",
-            "no_turn_seen",
-            "assembled_at",
-            "last_turn_secs",
-        ] {
+        assert!(
+            !body.contains(BRIEF_STEM),
+            "{what}: the brief's words reached a provider request: {body}"
+        );
+        for needle in NEVER {
+            assert!(
+                !body.contains(needle),
+                "{what}: `{needle}` reached a provider request: {body}"
+            );
+        }
+        // The pointers the brief keeps, which only its delivery may send.
+        for needle in [ELSEWHERE, "project-aurora", "task-2", "task-3"] {
             assert!(
                 !body.contains(needle),
                 "{what}: `{needle}` reached a provider request: {body}"
@@ -361,12 +457,21 @@ fn no_brief_in_requests(seen: &[String], what: &str) {
 
 #[tokio::test]
 async fn a_delegated_run_records_every_field_and_sends_none() {
+    delegated(false).await
+}
+
+#[tokio::test]
+async fn a_delegated_run_delivers_its_brief_behind_the_lever() {
+    delegated(true).await
+}
+
+async fn delegated(deliver: bool) {
     if !python3() {
         return;
     }
     let root = Root(std::env::temp_dir().join(format!("mecha-brief-task-{}", Session::new_id())));
     let (base_url, seen, server) = fixture_model().await;
-    let home = seed(&root.0, &base_url);
+    let home = seed(&root.0, &base_url, deliver);
     let out = mecha(
         &home,
         &root.0.join("work"),
@@ -416,18 +521,27 @@ async fn a_delegated_run_records_every_field_and_sends_none() {
     };
     assert!(!others.contains(&"task-1".to_string()), "{others:?}");
     assert_eq!(b.budget.as_ref().map(|x| x.max_turns), Some(200));
-    no_brief_in_requests(&seen.lock().unwrap(), "delegated");
+    delivery(&seen.lock().unwrap(), &b, deliver, "delegated");
 }
 
 #[tokio::test]
 async fn a_trigger_run_records_every_field_and_sends_none() {
+    trigger(false).await
+}
+
+#[tokio::test]
+async fn a_trigger_run_delivers_its_brief_behind_the_lever() {
+    trigger(true).await
+}
+
+async fn trigger(deliver: bool) {
     if !python3() {
         return;
     }
     let root =
         Root(std::env::temp_dir().join(format!("mecha-brief-trigger-{}", Session::new_id())));
     let (base_url, seen, server) = fixture_model().await;
-    let home = seed(&root.0, &base_url);
+    let home = seed(&root.0, &base_url, deliver);
     let out = mecha(&home, &root.0.join("work"), &["trigger", "run", "digest"]).await;
     server.abort();
     ok(&out, "trigger run");
@@ -454,7 +568,35 @@ async fn a_trigger_run_records_every_field_and_sends_none() {
         unreachable!()
     };
     assert_eq!(board.own, OwnTask::NotATask);
-    no_brief_in_requests(&seen.lock().unwrap(), "trigger");
+    delivery(&seen.lock().unwrap(), &b, deliver, "trigger");
+}
+
+/// The one-shot door (3a): `mecha run` records a brief too — an
+/// experiment's trial is a `mecha run`, so without one the lever's two arms
+/// would be one condition — and delivers it behind the same lever.
+#[tokio::test]
+async fn a_one_shot_run_records_a_brief_and_delivers_it_behind_the_lever() {
+    if !python3() {
+        return;
+    }
+    for deliver in [false, true] {
+        let root =
+            Root(std::env::temp_dir().join(format!("mecha-brief-run-{}", Session::new_id())));
+        let (base_url, seen, server) = fixture_model().await;
+        let home = seed(&root.0, &base_url, deliver);
+        let out = mecha(
+            &home,
+            &root.0.join("work"),
+            &["run", "--no-stream", "What is waiting on me?"],
+        )
+        .await;
+        server.abort();
+        ok(&out, "run");
+        let b = recorded_brief(&home, "What is waiting");
+        the_shared_situation(&b, "one-shot");
+        assert_eq!(b.goal, Some(GoalChain::NoAnchor));
+        delivery(&seen.lock().unwrap(), &b, deliver, "one-shot");
+    }
 }
 
 /// The web door, through a real `mecha serve`: a chat turn records a brief
@@ -463,12 +605,21 @@ async fn a_trigger_run_records_every_field_and_sends_none() {
 /// started: a draft staged after `serve` came up is in the brief.
 #[tokio::test]
 async fn a_web_run_records_every_field_and_sends_none() {
+    web(false).await
+}
+
+#[tokio::test]
+async fn a_web_run_delivers_its_brief_behind_the_lever() {
+    web(true).await
+}
+
+async fn web(deliver: bool) {
     if !python3() {
         return;
     }
     let root = Root(std::env::temp_dir().join(format!("mecha-brief-web-{}", Session::new_id())));
     let (base_url, seen, server) = fixture_model().await;
-    let home = seed(&root.0, &base_url);
+    let home = seed(&root.0, &base_url, deliver);
     let reserve = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = reserve.local_addr().unwrap().port();
     drop(reserve);
@@ -592,5 +743,5 @@ async fn a_web_run_records_every_field_and_sends_none() {
         "a draft staged after `serve` started should be in this turn's brief: {drafts:?}"
     );
     assert_eq!(b.budget.as_ref().map(|x| x.max_turns), Some(40));
-    no_brief_in_requests(&seen.lock().unwrap(), "web");
+    delivery(&seen.lock().unwrap(), &b, deliver, "web");
 }
