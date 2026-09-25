@@ -590,7 +590,11 @@ pub struct CommitmentItem {
 /// The commitments, read through the 1f accessors on the run's homeostat —
 /// [`Homeostat::in_run_commitments`](crate::homeostat::Homeostat::in_run_commitments)
 /// for what a run is shown, `commitments` only for which stores it left
-/// out — never off the stores' raw types, which another lane is reshaping.
+/// out — never off `workflow::Commitment` or
+/// `anticipation::RecordedCommitment`. An item whose age is unknown (its
+/// stamp would not parse) is recorded with no age and `owed: None`, never
+/// as a zero; the workflow store's commitments, undated ones included, are
+/// not read for guilt yet (1f) and so are not here.
 pub fn commitments_of(h: Option<&crate::homeostat::Homeostat>) -> Commitments {
     let Some(h) = h else {
         return Commitments::Unread {

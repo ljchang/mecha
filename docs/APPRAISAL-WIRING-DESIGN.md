@@ -800,16 +800,33 @@ carries `expectation` and `consequence`, optional on the wire and written
 by `mecha workflow commit`. The invariants are `docs/ARCHITECTURE.md`'s
 "Guilt is per commitment". Left for later, named:
 
-- **The on-disk merge of the two commitment shapes — ruled, and owed as a
-  follow-up PR.** `anticipation::Commitment` (`{beneficiary, expectation,
-  consequence}`, strict owner input) keeps its own shape on the predictions
-  it is already recorded on in 1f. **Ruled by the owner 2026-09-25: new
-  writes only, no migration** — new predictions write the
-  `workflow::Commitment` record; the old `anticipation::Commitment` shapes
-  stay on disk and are read leniently; nothing is rewritten. The leniency
-  is load-bearing: a prediction whose evidence stops parsing reads as
-  unsupported history and blocks release. That change is **owed as its own
-  PR after 1f**, not part of it.
+- **The on-disk merge of the two commitment shapes — ruled, and built as
+  1f-2.** **Ruled by the owner 2026-09-25: new writes only, no
+  migration** — new predictions write the `workflow::Commitment` record;
+  the old `anticipation::Commitment` shapes stay on disk and are read
+  leniently; nothing is rewritten. The leniency is load-bearing: a
+  prediction whose evidence stops parsing reads as unsupported history and
+  blocks release. **And ruling (b), the same day**, on the shape question
+  building it raised — the record required `source`, `due_at` and
+  `follow_up_at`, which owner evidence never had: the two dates become
+  optional on `workflow::Commitment`, an absent one meaning "no deadline
+  stated" (never overdue, never due for follow-up, never read as zero);
+  `source` is the structural pointer the evidence is attached to, never
+  model text; nothing machine-derived states a "by when"; and old evidence
+  files keep working unchanged as input. *Built as 1f-2:* evidence carries
+  `anticipation::RecordedCommitment` (`Record` | `Legacy`, each written back
+  in its own shape); `Evidence::into_record` — called by
+  `BoundEvidence::new` and `OutboxStore::anticipate`, the only doors owner
+  evidence enters by — writes the record with the beneficiary as party
+  and the evidence's goal pointer as source; every reader of the dates
+  goes through `Commitment::overdue` / `follow_up_due`; the web Today page
+  says "no deadline stated". **Dates are only ever the owner's** (ruled on
+  review of #304, 2026-09-25): a legacy-shaped commitment gets no date; a
+  record-shaped one carries only the dates the owner wrote, passed through
+  unchanged, which is consistent with (b) because they are owner-stated,
+  not machine-derived; and the harness never supplies a date. `mecha
+  workflow commit` still requires its dates (`docs/ARCHITECTURE.md`,
+  "Every new prediction's commitment is the one record").
 - **Workflow commitments in the guilt read.** No charter kind watches the
   workflow store and the doctor has no constant for it; the commitment's
   own `due_at` is the natural patience, which is a design choice, and the
