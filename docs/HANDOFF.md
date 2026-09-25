@@ -2626,8 +2626,10 @@ server is now redundant — same value, and an explicit value wins — and is th
 owner's to delete; nothing depends on it either way.
 
 **Installed from main, 2026-09-25 03:10Z (verified by asking the artifacts).**
-`~/.cargo/bin/mecha` is origin/main `6bfde499` (#289's setup wording present;
-#295 absent, so bwrap `memory_mb`/`cpus` are not yet in effect).
+`~/.cargo/bin/mecha` was origin/main `6bfde499` at 03:10Z (#289's setup
+wording present), then another lane installed `c4c916d1` at 03:30Z after #295
+merged: its added "did not take effect under bwrap" is in the binary, so the
+bwrap `memory_mb`/`cpus` limits in `~/.mecha/config.toml` are enforced.
 `mecha-graph` and `mecha-graph-mcp` are mecha-graph main `883be7b`: `strings`
 finds no `pkg shadow` and finds `mecha-graph shadow --confirm`, and
 `tools/list` answers 13 tools; the shared `~/Github/mecha-graph` checkout was
