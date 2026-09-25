@@ -852,8 +852,8 @@ fn settle_uncertain(task: &str, board_status: Option<&str>) {
     };
     // Three-way, because a board at neither end of the move is evidence of
     // nothing: something else moved the row (the graph TUI writes status out
-    // of band until it closes through mecha — 1c's graph half, awaiting the
-    // owner's call on its shape), or the row did not say. Only the *from* status
+    // of band unless `[board] close_through` routes it here — 1c, A3), or the
+    // row did not say. Only the *from* status
     // is evidence the move did not land; anything else — `None` included —
     // leaves the transition uncertain rather than withdrawing a move that may
     // have happened (unknown is never clean; found on review of #293).

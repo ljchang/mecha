@@ -451,8 +451,8 @@ fn a_stale_slack_tap_on_a_closed_task_changes_nothing() {
 
 /// 1c's acceptance, the mecha end of the graph-TUI half: `--surface
 /// graph-tui` is a surface a caller may name, and the closure it makes is
-/// recorded under it. (How `mecha-graph tui` reaches this is the owner's
-/// call — see the PR.)
+/// recorded under it — what `mecha-graph tui` runs when `[board]
+/// close_through` opts it in (A3, ljchang/mecha-graph#21).
 #[test]
 fn a_graph_tui_closure_is_recorded_on_the_graph_tui_surface() {
     let Some(f) = Fixture::new("") else { return };
