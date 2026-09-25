@@ -14,6 +14,44 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-24/25 — the docs, checked against the code, and the code that
+failed its own docs.** The owner asked for a clearer account of appraisal and
+then for the whole site to be organised and audited. #273 (`37af1a52`) added
+*How appraisal works* (the harness background, the pipeline as a figure, the
+label as a decision tree, every signal's sign and agency against
+`appraisal::of_session`, and what has and has not been measured) and split
+the 1,235-line appraisal page into charter, goals, plan steps and
+anticipation. #278 (`9eea04e7`) regrouped the features into ten sections, with
+the graph under Memory and the factory as the public surface, every old URL
+forwarded by `@docusaurus/plugin-client-redirects`. A seven-lane audit then
+checked about a thousand claims against the code. #280 (`ef594716`), #283
+(`06a408e9`) and #288 (`84693af3`) corrected what it found, moved Rust listings
+and incident stories into ARCHITECTURE.md (two new sections: session records
+and replay, voice preferences), and added pages for delegated tasks and
+messages between agents. The wrong claims that mattered most were security
+ones: the security page and ARCHITECTURE both said a subagent starts clean
+(`Subagent::call` seeds its taint from `ctx.taint`), the replay page said a
+replay may be less armed (unknown provenance counts as external,
+`replay_run`), the intro said the graph is encrypted at rest (it is opt-in),
+and the docs' outbox lists left `factory__surface_push` unstaged.
+
+Some findings were code, not prose. #279 (`c9460213`) expands a leading `~` in
+every config path and in `[[mcp]]` `command`/`args` (`ConfigLayer::expand_home`),
+because the mail and documents pages' own snippets named a literal `~`
+directory and the servers never spawned; fixes `mecha setup`'s documents
+remedy (`mecha-docs auth personal` failed); and makes `/entity` and `/mail`
+visible in `/help`. #289 (`6bfde499`) closes a race in the web voice-clone
+upload, which promised never to overwrite but checked and then renamed
+(`place_new` hard-links into place). In mecha-graph, #19 (`1b8dbf99`) retired
+the `pkg` name everywhere a user or the model reads it (the `kg_shadow_queue`
+note told the model to run `pkg shadow`, which does not exist) and fixed the
+TUI editor writing to the pre-rename `~/pkg`; #20 (`883be7b2`) made clippy
+clean under `-D warnings`, added the repo's first build-and-test CI with a
+pinned toolchain, and removed DuckDB from the docs because nothing uses it.
+Three audit findings were wrong on checking and were not applied
+(`context_window` does not feed overflow recovery; `mecha msg` has no `read`
+or `who`; the documents TUI paste strips all whitespace).
+
 **2026-09-24 — the outbox had clogged, and the reason was one missing
 argument.** #272 (`97188f8b`). The owner reported the web outbox could not
 approve a draft, that approving took two presses, and that Send did nothing.
@@ -7293,6 +7331,12 @@ always re-running one command against two starting points.
   the config file and `sessions health --json` over a version string: ask
   the thing that will actually run.
 
+**A negative control that leaves the evidence in place is not one.** To show
+a source-walking test would catch a missing line, the line was commented out,
+and the test still passed: it matched on text, and the comment still held the
+text. Deleting the line made it fail. When sabotaging a check, remove what
+the check reads, not what the code executes.
+
 ### Learning
 
 **2026-08-30 — the safeguard's release condition was satisfied by the
@@ -8380,6 +8424,12 @@ timestamp, which distinguished "the new token is also bad" from "the new
 token never arrived" — twice it was the latter. **Use `printf '%s'`, and
 check the timestamp before re-running anything.**
 
+- **An audit's findings are claims, and get the same check.** Of about eighty
+  doc findings from seven read-only lanes, three were wrong against the code
+  (overflow recovery does not read `context_window`; `mecha msg` has no
+  `read`/`who`; the documents paste strips all whitespace, not just the
+  ends). Each fixing lane was told to verify before editing and to report
+  skips, which is how they were caught rather than written into the docs.
 
 ### Environment
 
@@ -9199,6 +9249,22 @@ is *verify the running thing, never the repo*; this is the same rule turned
 around, and the check is to read the file when a loaded instruction contests
 something you just changed.
 
+**A word-boundary rename misses snake_case compounds.** `\bpkg\b` renamed
+every `pkg` and skipped `pkg__kg_search`, because `_` is a word character,
+so the one name a consumer types survived a rename meant to remove it. After
+a rename, grep the bare stem with no boundaries and read every hit.
+
+**A build that prefers a local checkout diverges from CI without saying so.**
+`sync-graph-docs.mjs` read a sibling private checkout first and fetched the
+public repo only when it was absent. The private one had stopped receiving
+docs on 2026-09-02, so every local docs build published stale graph pages
+while CI, which has no sibling, published the right ones. When a build has a
+local fast path, check which source it actually read.
+
+**An unpinned toolchain under `-D warnings` fails every open PR on release
+day.** mecha-graph's first CI used `stable`; Rust 1.98 added
+`chunks_exact_to_as_chunks` and the job went red on code the PR had not
+touched. Pin the toolchain and move it in its own change.
 
 ### A merge, made under a standing authorization, can race a fix in flight elsewhere
 

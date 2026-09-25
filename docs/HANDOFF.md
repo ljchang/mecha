@@ -2625,6 +2625,16 @@ voice, graph, the benchmark binary and the factory were not touched.
 server is now redundant — same value, and an explicit value wins — and is the
 owner's to delete; nothing depends on it either way.
 
+**Installed binaries lag main by two merges (verified 2026-09-25 by asking the
+artifacts, not their mtimes).** `~/.cargo/bin/mecha` carries #279 (its
+`setup --write` message says "is a hosted provider with its credential") and
+not #289 (which says "is a hosted provider, so nothing was probed"): the voice
+clone no-overwrite fix and the setup wording are merged and not installed.
+`~/.cargo/bin/mecha-graph-mcp` still contains `pkg shadow` twice, in the
+`kg_shadow_queue` tool text served to the model, so mecha-graph #19/#20 are
+merged and not installed: until it is reinstalled, the model is told to run a
+command that does not exist. Both are the `update` skill's job.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -2795,9 +2805,7 @@ is recoverable without the checkout's cwd. Record:
   backup), and Hermes's entry was repointed the same way (its key is still
   `pkg`). Restart Hermes and any long-lived Claude Code session to drop the
   old server processes; mecha itself was already on the public binary. The
-  `update` skill's paragraph on the two repos says the rest. Owed in the
-  mecha-graph repo, not here: `docs/integrations.md`'s "Consumers (MCP)"
-  section still tells a reader to add `pkg-mcp` from the private path.
+  `update` skill's paragraph on the two repos says the rest.
 - **When #153 and #158 merge, restart `mecha-voice-worker` — and check the
   shared checkout first, every time.** The unit's `WorkingDirectory` is
   `~/Github/mecha` and its `ExecStart` runs `scripts/voice/worker.py` from
@@ -4362,12 +4370,14 @@ repeated here.
   by `mecha distill` for a human to chase with `mecha gossip --entity
   <about>`, never auto-run. See HISTORY's 2026-08-27/28 entry for the
   four-round review saga on top of it). **Review-queue salience — the rest
-  of §10 — is still unbuilt**: it needs the private
-  `personalized_knowledge_graph` repository (a different codebase mecha only
-  reaches through the MCP tool surface) to read `meta.affect`/
-  `meta.goal_errors` back and reorder pkg's review queue on them. Not
-  started, and not scoped beyond `GOAL-SYSTEM-DESIGN.md` §10's own paragraph
-  naming it. (Rung 10, the charter, landed as #100; rung 8 landed as #99 and
+  of §10 — is still unbuilt**: it needs mecha-graph (now the public
+  `~/Github/mecha-graph`, a different codebase mecha only reaches through the
+  MCP tool surface) to read `meta.affect`/`meta.goal_errors` back and reorder
+  its review queue on them. Re-checked 2026-09-24: nothing in mecha-graph's
+  core, MCP server or CLI reads either field, and the user docs
+  (`features/memory/distillation.md`) now say they are recorded and unread.
+  Not started, and not scoped beyond `GOAL-SYSTEM-DESIGN.md` §10's own
+  paragraph naming it. (Rung 10, the charter, landed as #100; rung 8 landed as #99 and
   #103 — see the summary paragraph above for what shipped.)
 
 **Two things named rather than done**, recorded so they are not rediscovered
@@ -5112,6 +5122,17 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   `~/Github/personalized_knowledge_graph` (paths baked into mecha's config
   `command =`, two crontab lines, and the gitignored OPERATIONS.md), and
   mecha's ARCHITECTURE.md still says "pkg" in narrative spots.
+
+- **mecha-graph's `.githooks/pre-commit` describes a CI that does not exist.**
+  It argues from a `rust: [stable, "1.89"]` matrix, a rustfmt job "there the
+  whole time" and a `CONTRIBUTING` file; the real `.github/workflows/ci.yml`
+  (added by mecha-graph #20, 2026-09-25) pins one toolchain, `RUST_TOOLCHAIN`
+  1.98.1, and runs test, clippy and rustfmt. Reconcile the hook's comment
+  with the workflow.
+- **mecha-graph has no `rust-version`, and #20 raised the real floor to 1.88**
+  (`<[u8]>::as_chunks`, five LE-f32 decodes in `embed`, `linkers` and
+  `precheck`). Nothing would notice a build on an older toolchain failing;
+  state it in `Cargo.toml` or add an MSRV job.
 
 ### Larger, and deliberately not started
 
