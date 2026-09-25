@@ -2442,22 +2442,32 @@ mod tests {
         assert_eq!(v.materialized_rate, Some(0.5));
         assert_eq!(v.unscored.delivery_unknown, 0, "reconciled");
 
-        // Staging recorded the harness's own `clarify` prediction on every
-        // draft, and the owner's assessment replaced it before release:
-        // seven predictions, none of them a point, and so no rate.
-        let c = &cal.by_response["clarify"];
-        assert_eq!((c.predictions, c.scored), (7, 0));
-        assert_eq!(c.unscored.reassessed, 7);
-        assert_eq!(c.materialized_rate, None, "no rate over nothing");
-        let r = &cal.by_response["replan"];
-        assert_eq!((r.predictions, r.materialized_rate), (0, None));
+        // Staging recorded the harness's own placeholder on every draft:
+        // not a forecast, so in no row — the `clarify` row holds only what
+        // an owner assessed, which here is nothing, and so no rate.
+        assert_eq!(cal.harness_placeholders, 7);
+        for none in ["clarify", "replan"] {
+            let c = &cal.by_response[none];
+            assert_eq!((c.predictions, c.materialized_rate), (0, None), "{none}");
+        }
         // Per concern kind: verify drafts named regret and curiosity.
         assert_eq!(cal.by_kind["regret"].scored, 2);
         assert_eq!(cal.by_kind["guilt"].predictions, 0);
         assert_eq!(cal.by_kind["guilt"].materialized_rate, None);
-        assert_eq!(cal.total.predictions, 14);
+        assert_eq!(cal.total.predictions, 7);
         assert_eq!(cal.total.scored, 3);
         assert_eq!(cal.unreadable, 0);
+
+        // A draft released with only the harness's placeholder, and an
+        // outcome recorded against it: not a point, and in no row.
+        let h = stage(8);
+        let ph = h.predictions[0].known().unwrap().id.clone();
+        release(&h.id);
+        outcome(&h.id, &ph, Verdict::ExpectationMissed);
+        let after = read(&store);
+        assert_eq!(after.harness_placeholders, 8);
+        assert_eq!(after.total, cal.total, "the placeholder scored nothing");
+        assert_eq!(after.by_response["clarify"].predictions, 0);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -2491,9 +2501,10 @@ mod tests {
         );
         let cal = crate::anticipation::Calibration::of(std::slice::from_ref(&item));
         assert_eq!(cal.unreadable, 1);
-        // Staging's own prediction and the owner's, both `clarify`.
-        assert_eq!(cal.total.predictions, 2);
-        assert_eq!(cal.by_response["clarify"].predictions, 2);
+        // The owner's own `clarify` assessment; staging's placeholder apart.
+        assert_eq!(cal.total.predictions, 1);
+        assert_eq!(cal.by_response["clarify"].predictions, 1);
+        assert_eq!(cal.harness_placeholders, 1);
         let _ = std::fs::remove_dir_all(&root);
     }
 

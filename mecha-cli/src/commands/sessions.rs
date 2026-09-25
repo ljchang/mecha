@@ -1004,7 +1004,15 @@ fn predictions_line(
     let t = &calibration.total;
     if t.predictions == 0 && calibration.unreadable == 0 {
         return format!(
-            "anticipation's predictions: none on record{}",
+            "anticipation's predictions: none on record{}{}",
+            if calibration.harness_placeholders > 0 {
+                format!(
+                    " ({} staging placeholder(s) with no owner evidence, which forecast nothing)",
+                    calibration.harness_placeholders
+                )
+            } else {
+                String::new()
+            },
             if outbox_unreadable {
                 " (the outbox could not be fully read, so this is a floor)"
             } else {
@@ -1050,6 +1058,13 @@ fn predictions_line(
             format!(
                 " · {} unreadable prediction record(s)",
                 calibration.unreadable
+            )
+        } else {
+            String::new()
+        } + &if calibration.harness_placeholders > 0 {
+            format!(
+                " · {} staging placeholder(s) with no owner evidence, in no count",
+                calibration.harness_placeholders
             )
         } else {
             String::new()

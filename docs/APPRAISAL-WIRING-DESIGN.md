@@ -1217,6 +1217,8 @@ post-delivery labels.
 scores every prediction in the outbox per response (`proceed`, `verify`,
 `clarify`, `replan`) and per concern kind.
 
+- **Only an owner-evidenced prediction counts.** Staging's `Source::Harness`
+  placeholder, built from empty evidence, is counted apart and never scored.
 - **A point is the owner's recorded outcome on the prediction the draft was
   released under.** A concern materialised (an exposed error, a harm, a
   missed expectation), or the draft went out clean.

@@ -191,12 +191,15 @@ exposed error, a harm or a missed expectation) or went out clean.
 - **Every other prediction is shown as coverage**, never as a score: not
   sent, awaiting your outcome, delivery unknown, changed, reassessed,
   abandoned or unsupported.
+- **Only an assessment you supplied is a forecast.** When a run is given no
+  evidence, mecha stages each message draft with a placeholder prediction
+  built from nothing. The placeholder is counted apart and never scored.
 - **A rate appears only where there is something to rate.** Until you record
   outcomes, the readout shows coverage alone, and `materialized_rate` is
   `null` in `--json`.
 
 ```text
-  anticipation's predictions: 3 scored of 14 (proceed 1/5 scored, concern materialised 0% · verify 2/2 scored, concern materialised 50% · clarify 0/7 scored, no rate) · not yet a point: 1 awaiting the owner's outcome, 1 not sent, …
+  anticipation's predictions: 3 scored of 7 (proceed 1/5 scored, concern materialised 0% · verify 2/2 scored, concern materialised 50%) · not yet a point: 1 awaiting the owner's outcome, 1 not sent, … · 7 staging placeholder(s) with no owner evidence, in no count
 ```
 
 ## Where this is available

@@ -88,7 +88,11 @@ async fn the_readout_reports_prediction_coverage_and_no_rate_over_nothing() {
     let before = appraise(&home, &work).await;
     let p = &before["predictions"];
     assert_eq!(p["read"], true, "{p:#}");
-    assert_eq!(p["total"]["predictions"], 2, "{p:#}");
+    assert_eq!(p["total"]["predictions"], 1, "{p:#}");
+    assert_eq!(
+        p["harness_placeholders"], 1,
+        "staging's own, in no row: {p:#}"
+    );
     assert_eq!(p["total"]["scored"], 0);
     assert!(p["total"]["materialized_rate"].is_null(), "{p:#}");
     for (_, c) in p["by_response"].as_object().unwrap() {
@@ -128,7 +132,8 @@ async fn the_readout_reports_prediction_coverage_and_no_rate_over_nothing() {
     assert_eq!(proceed["materialized_rate"], 0.0);
     assert_eq!(proceed["unscored"]["pending"], 1);
     let clarify = &p["by_response"]["clarify"];
-    assert_eq!(clarify["unscored"]["reassessed"], 2, "{p:#}");
+    assert_eq!(clarify["predictions"], 0, "{p:#}");
     assert!(clarify["materialized_rate"].is_null());
+    assert_eq!(p["harness_placeholders"], 2);
     assert!(p["by_response"]["replan"]["materialized_rate"].is_null());
 }
