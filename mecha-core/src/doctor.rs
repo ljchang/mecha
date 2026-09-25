@@ -31,7 +31,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// How bad a finding is. Declared broken-first so the derived order is the
 /// display order: what is broken outranks what merely wants attention.
@@ -173,6 +173,94 @@ fn owner_setpoint(
         sensor.setpoint_text.clone(),
         line.id.clone(),
     ))
+}
+
+/// Whether a confined `shell` is confined away from the mecha home. Not a
+/// store, so not in [`examine`]: the caller hands in the loaded `[sandbox]`.
+/// An unconfined `shell` is not a finding: it is the stock default, and a
+/// finding on every install would keep `doctor` exiting 1 forever (review of
+/// #294) — `mecha tools` says it instead. The closure guard (`closure::decide`) and the provenance of
+/// every closure record lean on it — an unconfined `shell` can detach from
+/// its registered parent and edit `~/.mecha` directly, and a sandbox that
+/// mounts the mecha home hands a confined command the shell registry and the
+/// closure store (`APPRAISAL-WIRING-DESIGN.md` 1b-2).
+/// `path` with its longest existing prefix canonicalized and the rest kept —
+/// so a configured path that does not exist yet compares on the same side of
+/// a symlink as the home does (macOS's `/var` → `/private/var` made a missing
+/// `closures/` under an existing home never match it; found in CI on #294).
+fn resolve_existing_prefix(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut at = path;
+    loop {
+        if let Ok(real) = at.canonicalize() {
+            return rest.iter().rev().fold(real, |p: PathBuf, c| p.join(c));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                at = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
+/// The directories under the mecha home the closure guard reads or writes:
+/// the shell registry (`runs/shells`), the closure store, and the task-run
+/// and trigger-run markers.
+const GUARD_DIRS: [&str; 4] = ["runs", "closures", "taskruns", "triggers"];
+
+pub fn check_shell_confinement(
+    sandbox: &crate::sandbox::SandboxConfig,
+    home: &Path,
+) -> Vec<Finding> {
+    let mut out = Vec::new();
+    if sandbox.kind == crate::sandbox::Backend::None {
+        return out;
+    }
+    let home = resolve_existing_prefix(home);
+    for (how, path) in sandbox
+        .writable
+        .iter()
+        .map(|p| ("writable", p))
+        .chain(sandbox.readable.iter().map(|p| ("readable", p)))
+    {
+        let path = resolve_existing_prefix(path);
+        // Only what the closure guard reads counts: a mount that contains,
+        // or sits inside, one of those directories. `work/` (the run
+        // workspace root, which every backend mounts anyway) and `bundles/`
+        // (published artifacts) are part of the home and meant to be handed
+        // to a run — flagging them would keep `doctor` exiting 1 on a sound
+        // config (review of #294).
+        let reaches = GUARD_DIRS
+            .iter()
+            .map(|d| home.join(d))
+            .any(|guarded| guarded.starts_with(&path) || path.starts_with(&guarded));
+        if reaches {
+            out.push(Finding {
+                component: "sandbox".to_string(),
+                // Broken, not Attention: inside a pid-namespaced sandbox the
+                // ancestry walk cannot see the host-side registration, so the
+                // guard's only protection there is that the home is not
+                // mounted — with it mounted, a confined command that clears
+                // the posture variable is recorded as the owner (review of
+                // #294). The protection is failing now, not overdue.
+                severity: Severity::Broken,
+                summary: format!("the sandbox mounts the mecha home ({how})"),
+                detail: format!(
+                    "`{}` in `[sandbox] {how}` contains or sits inside {}, so a confined \
+                     command can reach the shell registry and the closure store the \
+                     closure guard reads — and inside the sandbox's pid namespace the \
+                     guard cannot see the harness's registration, so such a command can \
+                     be recorded as the owner. Mount something narrower.",
+                    path.display(),
+                    home.display()
+                ),
+                remedy: None,
+            });
+        }
+    }
+    out
 }
 
 /// Examine every store under `home` and report what is wrong.
@@ -3927,6 +4015,71 @@ mod tests {
             .as_ref()
             .expect("names the one verb that still opens it");
         assert_eq!(remedy.argv, ["mecha", "trigger", "edit", "morning"]);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A configured path that does not exist yet, reached through a symlink
+    /// the home resolves past, still counts — macOS's `/var` → `/private/var`
+    /// hid it in CI; a symlinked home shows the same thing on Linux.
+    #[cfg(unix)]
+    #[test]
+    fn a_mount_through_a_symlink_to_a_missing_guard_dir_is_still_reported() {
+        use crate::sandbox::{Backend, SandboxConfig};
+        let base = std::env::temp_dir().join(format!(
+            "mecha-doctor-symlink-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let real = base.join("real");
+        std::fs::create_dir_all(real.join("home")).unwrap();
+        std::os::unix::fs::symlink(&real, base.join("link")).unwrap();
+        let home = base.join("link").join("home");
+        let confined = SandboxConfig {
+            kind: Backend::Bwrap,
+            readable: vec![home.join("closures")],
+            ..SandboxConfig::default()
+        };
+        let f = check_shell_confinement(&confined, &home);
+        assert_eq!(f.len(), 1, "{f:#?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_sandbox_mounting_the_home_is_reported_and_the_stock_default_is_not() {
+        use crate::sandbox::{Backend, SandboxConfig};
+        let home = home("shell-confinement");
+        // The default config: no finding, so `doctor` can exit 0 on a stock
+        // install (review of #294).
+        assert!(check_shell_confinement(&SandboxConfig::default(), &home).is_empty());
+        let unconfined = SandboxConfig {
+            kind: Backend::None,
+            ..SandboxConfig::default()
+        };
+        assert!(check_shell_confinement(&unconfined, &home).is_empty());
+
+        let mut confined = SandboxConfig {
+            kind: Backend::Bwrap,
+            ..SandboxConfig::default()
+        };
+        assert!(check_shell_confinement(&confined, &home).is_empty());
+        // Parts of the home meant for a run are not the guard's stores.
+        confined.readable.push(home.join("bundles"));
+        confined.writable.push(home.join("work"));
+        assert!(
+            check_shell_confinement(&confined, &home).is_empty(),
+            "work/ and bundles/ are not what the guard reads"
+        );
+        let mut inside = confined.clone();
+        inside.readable.push(home.join("closures"));
+        let f = check_shell_confinement(&inside, &home);
+        assert_eq!(f.len(), 1, "{f:#?}");
+        confined.readable.push(home.parent().unwrap().to_path_buf());
+        let f = check_shell_confinement(&confined, &home);
+        assert_eq!(f.len(), 1, "{f:#?}");
+        assert!(f[0].summary.contains("mounts the mecha home"), "{f:#?}");
         let _ = std::fs::remove_dir_all(&home);
     }
 

@@ -12,13 +12,16 @@
 //! override for its location (`MECHA_CLOSURES_DIR` was removed on review of
 //! #293): the `mecha tasks set` that writes it can be a descendant of a
 //! model's `shell`, and a location the command text could redirect is a
-//! record the command text could hide while the real board moves. **One
-//! override remains, and it is residue:** the root is `work::mecha_home()`,
-//! which honours `MECHA_HOME`, so a command that sets it writes the record
-//! into another home — and, since `tasks::live_run_pids` reads its marker
-//! directories from the same home, empties the ancestry check too (found on
-//! review of #293; see [`decide`]). Tests reach a scratch store through
-//! `MECHA_HOME` or [`ClosureStore::open`]. The kinds of line:
+//! record the command text could hide while the real board moves. The root
+//! is `work::mecha_home()`, which honours `MECHA_HOME`, and on #293 that was
+//! residue: a command that set it wrote the record into another home and,
+//! since the run markers came from the same home, emptied the ancestry check
+//! too (found on review of #293). #294 closes it on the read side — the
+//! shell registry and the markers are read under the owner's real home as
+//! well, so a run's command that redirects its home is refused before
+//! anything is written ([`ShellReading::Redirected`]). Tests reach a
+//! scratch store through `MECHA_HOME` or [`ClosureStore::open`]. The kinds
+//! of line:
 //!
 //! - a [`Transition`] — written **before** the board row moves. It names the
 //!   task, the move (`from` → `to`), who made it and on which surface, the
@@ -46,10 +49,13 @@
 //! a run with nobody present must not be able to make one — not through the
 //! graph tool (`closure_guard::ClosedStatusGuard` already refuses a model's
 //! status write) and not through `shell: mecha tasks set` either, which is the
-//! residue `closure_guard.rs` names. Two signals decide it, see [`decide`]:
-//! the run posture the harness stamps on every shell command it runs
-//! ([`POSTURE_ENV`]), and whether any ancestor of this process is a live
-//! delegated or scheduled run (its run marker's pid). Both fail closed.
+//! residue `closure_guard.rs` names. Three signals decide it, see [`decide`]:
+//! the nearest ancestor of this process that the `shell` tool registered,
+//! with the posture of the run that spawned it
+//! ([`crate::shell_registry`] — written by the harness, out of reach of the
+//! command text); whether any ancestor is a live delegated or scheduled run
+//! (its run marker's pid); and [`POSTURE_ENV`], now advisory: a process that
+//! claims a run no registration confirms is refused. All fail closed.
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -204,77 +210,223 @@ pub fn posture_from_env() -> PostureReading {
     read_posture(std::env::var(POSTURE_ENV).ok().as_deref())
 }
 
+/// What the `shell` registry says about this process: the nearest ancestor
+/// the harness registered, and the posture it recorded for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShellReading {
+    /// No registered shell among this process and its ancestors, in a
+    /// registry that exists and could be read (or does not exist yet).
+    NotRegistered,
+    /// The registry, or a registration on this process's chain, could not
+    /// be read. Refused: unknown is never clean (review of #294).
+    Unreadable(String),
+    /// A registered shell; `posture` is `Err` with the recorded word when
+    /// this build cannot read it (including `unknown`).
+    Registered {
+        pid: u32,
+        posture: std::result::Result<RunPosture, String>,
+    },
+    /// A registered shell found only in the owner's real registry while this
+    /// process reads a different `MECHA_HOME`: a command inside a run that
+    /// pointed its own reads somewhere else. Refused whatever the posture —
+    /// a run's command does not get to choose where its closure is recorded
+    /// (review of #293).
+    Redirected { pid: u32, root: PathBuf },
+}
+
+impl ShellReading {
+    /// Read the registry at its default location. A registry that does not
+    /// exist yet holds no registration; one that exists and cannot be read,
+    /// or a registration on this process's chain that cannot be parsed, is
+    /// [`ShellReading::Unreadable`].
+    ///
+    /// The registries read are [`crate::shell_registry::guard_roots`]: the
+    /// one under `MECHA_HOME` and, when that differs, the owner's real one.
+    pub fn from_registry() -> Self {
+        match crate::shell_registry::guard_roots() {
+            Err(why) => ShellReading::Unreadable(why),
+            Ok(roots) => Self::from_roots(&roots),
+        }
+    }
+
+    /// Read the registries at `roots`, the first being this process's own
+    /// (`MECHA_HOME`'s). A registration found first in any later root is
+    /// [`ShellReading::Redirected`].
+    pub fn from_roots(roots: &[PathBuf]) -> Self {
+        use crate::shell_registry::{nearest_registered_ancestor_among, Lookup, ShellRegistry};
+        let mut open = Vec::new();
+        let mut at = Vec::new();
+        for (i, root) in roots.iter().enumerate() {
+            match ShellRegistry::open_existing(root.clone()) {
+                Err(why) => return ShellReading::Unreadable(why),
+                Ok(None) => {}
+                Ok(Some(registry)) => {
+                    open.push(registry);
+                    at.push(i);
+                }
+            }
+        }
+        match nearest_registered_ancestor_among(&open) {
+            (Lookup::Absent, _) => ShellReading::NotRegistered,
+            (Lookup::Unreadable(why), _) => ShellReading::Unreadable(why),
+            (Lookup::Registered(e), Some(i)) if at[i] > 0 => ShellReading::Redirected {
+                pid: e.pid,
+                root: roots[at[i]].clone(),
+            },
+            (Lookup::Registered(e), _) => ShellReading::Registered {
+                pid: e.pid,
+                posture: e.posture(),
+            },
+        }
+    }
+}
+
+const OWNERS_ACT: &str = "closing or reopening a task is the owner's act — close it from the \
+     board, the TUI, Slack or a terminal";
+
 /// Who made a move, on which surface — or why it may not be made.
 ///
-/// `ancestor_run` is the pid of a live delegated or scheduled run this
-/// process descends from, if any ([`run_ancestor`]). It is checked first, so
-/// a run that strips the posture variable from its command's environment is
-/// still refused as that run's child — **unless the command also sets
-/// `MECHA_HOME`**: the marker directories `tasks::live_run_pids` reads come
-/// from `work::mecha_home()`, so a redirected home yields no live runs and
-/// this check finds nothing (found on review of #293).
+/// **The posture comes from the harness, not the environment**
+/// (`docs/APPRAISAL-WIRING-DESIGN.md` 1b-2, the owner's option A on the
+/// review of #293). The `shell` tool registers every command it spawns
+/// ([`crate::shell_registry`]), so `shell` — the nearest registered ancestor
+/// — says what run this command belongs to in a way the command text cannot
+/// forge. [`POSTURE_ENV`] (`env`) was that signal until the review found a
+/// command could set it itself (`MECHA_RUN_POSTURE=interactive mecha tasks
+/// set …`) and be recorded `owner-approved`; it is now advisory. In order:
 ///
-/// An MCP server and everything it spawns read `unknown` and are refused:
-/// the harness stamps every server so (`mcp::McpClient::build_command`),
-/// because a server outlives any one run's posture.
+/// 1. `ancestor_run`, a live delegated or scheduled run's marker pid above
+///    this process ([`run_ancestor`]), refuses — kept from #293.
+/// 2. A registered shell with the interactive posture is the owner's
+///    approval: `owner-approved`, surface `chat`, whatever `--surface` says.
+/// 3. A registered shell with any other posture, or one this build cannot
+///    read, refuses.
+/// 4. No registered shell and no [`POSTURE_ENV`]: not in a run at all — the
+///    owner's own terminal or a surface's child — `owner`, on the flagged
+///    surface.
 ///
-/// **What this does not close, named** (found on review of #293). The
-/// posture is an environment variable the command string itself can set:
-/// `MECHA_RUN_POSTURE=interactive mecha tasks set …` in a delegated or
-/// unattended run's `bash -lc` overrides the stamp, and where the run holds
-/// no marker (a web task chat, an approvals-off chat, a front-door or mail
-/// run) the ancestry check has nothing to find — so the move is allowed and
-/// recorded `owner-approved`. The stripping direction is the worse forgery:
-/// `env -u MECHA_RUN_POSTURE mecha tasks set …` from an unmarked lane reads
-/// [`PostureReading::NotInRun`] and records `owner` on surface `cli`, as if a
-/// person had typed it into a terminal. Detaching also escapes the ancestry
-/// check for a marked run. This guard stops a run that follows the refusal
-/// text; it does not stop one that names the variable. A confined `shell`
-/// without the owner's `~/.mecha` or the graph cannot reach the store at
-/// all. `MECHA_HOME` is the same residue one variable over: set on the same
-/// command line, it redirects both the closure store (so the record lands in
-/// another home while the real board moves) and the marker directories the
-/// ancestry check reads. PR #294 (stacked on this one) replaces the variable
-/// with a harness-written shell registry the command text cannot set, and
-/// consults the owner's real home rather than a redirectable one.
+///    Checked before 4 and 5: a registry, or a registration on this
+///    process's chain, that cannot be read is refused whatever the variable
+///    says — an I/O fault must not read as the owner's terminal (review of
+///    #294: unknown is never clean).
+/// 5. No registered shell but [`POSTURE_ENV`] set: a process claiming a run
+///    no registration confirms. Refused: the legitimate way to carry the
+///    variable is to be a registered shell's descendant, so its presence
+///    without one is either a registration the harness could not write
+///    (which the `shell` tool refuses to run without) or a forgery.
+///
+/// An MCP server and what it spawns *with its environment* meet rule 5: the
+/// harness stamps every server `unknown` (`mcp::McpClient::build_command`)
+/// and never registers one, because a server outlives any one run's posture
+/// (review of #293). That is the one place the variable is still
+/// load-bearing: a server is spawned by the agent process, not by a
+/// registered shell, so a child it starts with a cleared environment reads
+/// `(NotRegistered, NotInRun)` — rule 4, the owner — with no detaching
+/// needed (review of #294). A server is third-party code the owner chose to
+/// run; confining it (`sandbox = true`, with the mecha home unmounted) is
+/// what takes the store out of its reach.
+///
+/// **What this does not close, named.** A command that detaches from its
+/// shell, so it is reparented away from the registered pid, *and* clears
+/// the variable reads as rule 4. The registry's location has no environment
+/// override of its own (review of #294), and `MECHA_HOME` no longer hides a
+/// registration either: the registry and the run markers are read under the
+/// owner's real home too — from the password database, never `HOME` — and a
+/// registration found only there is [`ShellReading::Redirected`], refused
+/// (review of #293). Off Linux the ancestry cannot be walked, so a
+/// registered shell anywhere refuses (`shell_registry`'s module doc). A
+/// nested front-end is named there too. An unconfined
+/// `shell` can do these, and can edit `~/.mecha` directly besides; the
+/// answer to all of them is the sandbox —
+/// bwrap and docker run the command in a pid namespace with no `~/.mecha`
+/// mounted, and landlock does not grant the owner's home (`mecha doctor`
+/// reports a `[sandbox]` that mounts the mecha home; `mecha tools` shows
+/// an unconfined `shell`, the default).
 pub fn decide(
-    posture: &PostureReading,
+    env: &PostureReading,
+    shell: &ShellReading,
     ancestor_run: Option<u32>,
     flagged: Option<Surface>,
 ) -> std::result::Result<(Actor, Surface), String> {
     if let Some(pid) = ancestor_run {
         return Err(format!(
             "this command is running inside a delegated or scheduled run (process {pid}); \
-             closing or reopening a task is the owner's act — close it from the board, \
-             the TUI, Slack or a terminal"
+             {OWNERS_ACT}"
         ));
     }
-    match posture {
-        PostureReading::NotInRun => Ok((Actor::Owner, flagged.unwrap_or(Surface::Cli))),
-        PostureReading::InRun(RunPosture::Interactive) => Ok((Actor::OwnerApproved, Surface::Chat)),
-        PostureReading::InRun(p) => Err(format!(
-            "this command is running inside a {} run, with nobody in the conversation; \
-             closing or reopening a task is the owner's act — close it from the board, \
-             the TUI, Slack or a terminal",
+    match (shell, env) {
+        (
+            ShellReading::Registered {
+                posture: Ok(RunPosture::Interactive),
+                ..
+            },
+            _,
+        ) => Ok((Actor::OwnerApproved, Surface::Chat)),
+        (
+            ShellReading::Registered {
+                pid,
+                posture: Ok(p),
+            },
+            _,
+        ) => Err(format!(
+            "this command was run by a {} run's shell (process {pid}), with nobody in the \
+             conversation; {OWNERS_ACT}",
             p.as_str()
         )),
-        PostureReading::Unreadable(v) => Err(format!(
-            "this command was started by a run whose posture is {v:?}, which is not one \
-             this build can read; refusing to close or reopen a task on its behalf — \
-             closing or reopening a task is the owner's act"
+        (
+            ShellReading::Registered {
+                pid,
+                posture: Err(word),
+            },
+            _,
+        ) => Err(format!(
+            "this command was run by a shell (process {pid}) whose run posture is {word:?}, \
+             which is not one this build can read; refusing to close or reopen a task on its \
+             behalf — {OWNERS_ACT}"
+        )),
+        (ShellReading::Redirected { pid, root }, _) => Err(format!(
+            "this command was run by a shell (process {pid}) registered in {}, but it reads \
+             a different MECHA_HOME — a command inside a run cannot redirect where its \
+             closure is recorded; {OWNERS_ACT}",
+            root.display()
+        )),
+        (ShellReading::Unreadable(why), _) => Err(format!(
+            "the harness's shell registry could not be read ({why}), so this command's run \
+             posture is unknown; refusing to close or reopen a task — {OWNERS_ACT}"
+        )),
+        (ShellReading::NotRegistered, PostureReading::NotInRun) => {
+            Ok((Actor::Owner, flagged.unwrap_or(Surface::Cli)))
+        }
+        (ShellReading::NotRegistered, _) => Err(format!(
+            "this command carries {POSTURE_ENV} but no registered mecha shell is among its \
+             ancestors — a run's posture is read from the harness's registry, never from the \
+             variable alone; {OWNERS_ACT}"
         )),
     }
 }
 
 /// The parent of `pid`, from `/proc/<pid>/stat`. `None` off Linux, for pid 1,
 /// and when the file cannot be read or parsed.
-fn parent_of(pid: u32) -> Option<u32> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+pub fn parent_of(pid: u32) -> Option<u32> {
+    parent_of_checked(pid).ok().flatten()
+}
+
+/// [`parent_of`], keeping "reached the root" (`Ok(None)`) apart from "could
+/// not read" (`Err`) — a walk that must not read an unreadable link as the
+/// end of the chain (review of #294).
+pub fn parent_of_checked(pid: u32) -> std::result::Result<Option<u32>, String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .map_err(|e| format!("process {pid}'s parent could not be read ({e})"))?;
     // The command name is in parentheses and may itself contain spaces or
     // parentheses, so the fields after it are read from the last `)`.
-    let rest = &stat[stat.rfind(')')? + 1..];
-    let ppid: u32 = rest.split_whitespace().nth(1)?.parse().ok()?;
-    (ppid > 1).then_some(ppid)
+    let ppid: Option<u32> = stat
+        .rfind(')')
+        .and_then(|at| stat[at + 1..].split_whitespace().nth(1))
+        .and_then(|p| p.parse().ok());
+    match ppid {
+        Some(ppid) => Ok((ppid > 1).then_some(ppid)),
+        None => Err(format!("process {pid}'s parent could not be parsed")),
+    }
 }
 
 /// The first ancestor of this process whose pid is in `run_pids`, if any.
@@ -788,29 +940,231 @@ mod tests {
     }
 
     #[test]
-    fn only_an_interactive_run_or_no_run_may_close() {
+    fn only_a_registered_interactive_shell_or_no_run_may_close() {
         use PostureReading as P;
+        use ShellReading as S;
+        let shell = |p: std::result::Result<RunPosture, String>| S::Registered {
+            pid: 4242,
+            posture: p,
+        };
+        // Rule 4: no registered shell, no variable — the owner's terminal or
+        // a surface's own child, on the flagged surface.
         assert_eq!(
-            decide(&P::NotInRun, None, Some(Surface::Web)),
+            decide(&P::NotInRun, &S::NotRegistered, None, Some(Surface::Web)),
             Ok((Actor::Owner, Surface::Web))
         );
         assert_eq!(
-            decide(&P::NotInRun, None, None),
+            decide(&P::NotInRun, &S::NotRegistered, None, None),
             Ok((Actor::Owner, Surface::Cli))
         );
-        // A chat's shell: the owner's approval, and the flag cannot claim a
-        // person's button.
+        // Rule 2: a registered interactive shell is the owner's approval,
+        // whatever the flag or the variable claims.
         assert_eq!(
-            decide(&P::InRun(RunPosture::Interactive), None, Some(Surface::Web)),
+            decide(
+                &P::NotInRun,
+                &shell(Ok(RunPosture::Interactive)),
+                None,
+                Some(Surface::Web)
+            ),
             Ok((Actor::OwnerApproved, Surface::Chat))
         );
+        // Rule 3: any other registered posture refuses — including when the
+        // command set the variable to `interactive` itself (#293's review).
         for p in [RunPosture::Unattended, RunPosture::Delegated] {
-            assert!(decide(&P::InRun(p), None, None).is_err());
+            assert!(decide(
+                &P::InRun(RunPosture::Interactive),
+                &shell(Ok(p)),
+                None,
+                None
+            )
+            .is_err());
+            assert!(decide(&P::NotInRun, &shell(Ok(p)), None, None).is_err());
         }
-        assert!(decide(&P::Unreadable("unknown".into()), None, None).is_err());
-        // An ancestor run wins over everything, including a stripped
-        // variable reading as "not in a run".
-        assert!(decide(&P::NotInRun, Some(4242), None).is_err());
+        assert!(decide(&P::NotInRun, &shell(Err("unknown".into())), None, None).is_err());
+        // An unreadable registry refuses even with no variable —
+        // it must not read as the owner's terminal (review of #294).
+        assert!(decide(
+            &P::NotInRun,
+            &S::Unreadable("EACCES".into()),
+            None,
+            Some(Surface::Cli)
+        )
+        .is_err());
+        // Rule 5: the variable with no registration behind it refuses, in
+        // every value, `interactive` first.
+        for env in [
+            P::InRun(RunPosture::Interactive),
+            P::InRun(RunPosture::Delegated),
+            P::Unreadable("unknown".into()),
+        ] {
+            assert!(
+                decide(&env, &S::NotRegistered, None, None).is_err(),
+                "{env:?}"
+            );
+        }
+        // Rule 1: a live run marker above this process wins over everything.
+        assert!(decide(
+            &P::NotInRun,
+            &shell(Ok(RunPosture::Interactive)),
+            Some(4243),
+            None
+        )
+        .is_err());
+        assert!(decide(&P::NotInRun, &S::NotRegistered, Some(4243), None).is_err());
+    }
+
+    /// `MECHA_HOME=/tmp/fresh mecha tasks set …` under a registered
+    /// delegated shell (review of #293). The first root is the redirected
+    /// home, empty; the second the owner's real one, holding the shell. Read
+    /// from the first alone — all the old reader did — the command is the
+    /// owner at their terminal; read from both, it is refused, and so is a
+    /// redirected *interactive* shell: a run's command does not choose where
+    /// its closure is recorded.
+    #[test]
+    fn a_command_that_redirects_mecha_home_is_still_refused() {
+        use crate::shell_registry::ShellRegistry;
+        let base = std::env::temp_dir().join(format!("mecha-redirect-{}", uuid::Uuid::new_v4()));
+        let (fresh, owner) = (
+            base.join("fresh/runs/shells"),
+            base.join("owner/runs/shells"),
+        );
+        let registry = ShellRegistry::open(owner.clone()).unwrap();
+        for posture in [RunPosture::Delegated, RunPosture::Interactive] {
+            let _held = registry
+                .register(std::process::id(), Some(posture), None)
+                .unwrap();
+            let old = ShellReading::from_roots(std::slice::from_ref(&fresh));
+            assert_eq!(old, ShellReading::NotRegistered);
+            assert_eq!(
+                decide(&PostureReading::NotInRun, &old, None, None),
+                Ok((Actor::Owner, Surface::Cli)),
+                "the hole this closes"
+            );
+            let now = ShellReading::from_roots(&[fresh.clone(), owner.clone()]);
+            assert_eq!(
+                now,
+                ShellReading::Redirected {
+                    pid: std::process::id(),
+                    root: owner.clone()
+                }
+            );
+            assert!(decide(&PostureReading::NotInRun, &now, None, None).is_err());
+            // Not redirected: the same registration in this process's own
+            // root reads as before.
+            let own = ShellReading::from_roots(&[owner.clone(), fresh.clone()]);
+            assert!(matches!(own, ShellReading::Registered { .. }), "{own:?}");
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The forge direction (review of #294): a command that points
+    /// `MECHA_HOME` at a directory it owns and writes an `interactive` entry
+    /// there for its own pid must not shadow the real `delegated` one. Read
+    /// nearest-first, the forged entry won and the close was owner-approved.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_registration_forged_under_a_redirected_home_does_not_shadow_the_real_one() {
+        use crate::shell_registry::ShellRegistry;
+        let base = std::env::temp_dir().join(format!("mecha-forge-{}", uuid::Uuid::new_v4()));
+        let (fresh, owner) = (
+            base.join("fresh/runs/shells"),
+            base.join("owner/runs/shells"),
+        );
+        let real = ShellRegistry::open(owner.clone()).unwrap();
+        let forged = ShellRegistry::open(fresh.clone()).unwrap();
+        let _delegated = real
+            .register(std::process::id(), Some(RunPosture::Delegated), None)
+            .unwrap();
+        let _claimed = forged
+            .register(std::process::id(), Some(RunPosture::Interactive), None)
+            .unwrap();
+        let reading = ShellReading::from_roots(&[fresh.clone(), owner.clone()]);
+        assert!(
+            decide(&PostureReading::NotInRun, &reading, None, None).is_err(),
+            "{reading:?}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A harness that itself runs under a `MECHA_HOME` — a trial arm —
+    /// registers under that home *and* the owner's (`write_roots`), so its
+    /// own commands read the entry corroborated, and a command that
+    /// redirects `MECHA_HOME` again still finds it (review of #294: the
+    /// write went only to the harness's home, so the redirect found two
+    /// empty registries and landed on rule 4).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_trial_arms_registration_is_found_by_a_command_that_redirects_again() {
+        use crate::shell_registry::ShellRegistry;
+        let base = std::env::temp_dir().join(format!("mecha-trial-{}", uuid::Uuid::new_v4()));
+        let (trial, owner, elsewhere) = (
+            base.join("trial/runs/shells"),
+            base.join("owner/runs/shells"),
+            base.join("elsewhere/runs/shells"),
+        );
+        let _held: Vec<_> = [&trial, &owner]
+            .into_iter()
+            .map(|root| {
+                ShellRegistry::open(root.clone())
+                    .unwrap()
+                    .register(std::process::id(), Some(RunPosture::Interactive), None)
+                    .unwrap()
+            })
+            .collect();
+        // The trial's own command: the same entry in both registries
+        // corroborates rather than reading as a redirect.
+        let own = ShellReading::from_roots(&[trial.clone(), owner.clone()]);
+        assert!(
+            matches!(
+                own,
+                ShellReading::Registered {
+                    posture: Ok(RunPosture::Interactive),
+                    ..
+                }
+            ),
+            "{own:?}"
+        );
+        // A command that points `MECHA_HOME` somewhere else still finds it.
+        let redirected = ShellReading::from_roots(&[elsewhere, owner.clone()]);
+        assert!(
+            matches!(redirected, ShellReading::Redirected { .. }),
+            "{redirected:?}"
+        );
+        assert!(decide(&PostureReading::NotInRun, &redirected, None, None).is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A parent link that cannot be read is not the root (review of #294).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_unreadable_parent_is_an_error_not_the_end_of_the_chain() {
+        assert!(parent_of_checked(u32::MAX).is_err());
+        assert_eq!(parent_of_checked(1), Ok(None));
+        assert!(parent_of_checked(std::process::id()).unwrap().is_some());
+    }
+
+    /// A non-interactive registration anywhere above refuses, however near
+    /// an interactive one sits — in one registry too (review of #294).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_interactive_entry_below_a_delegated_one_does_not_approve() {
+        use crate::shell_registry::ShellRegistry;
+        let base = std::env::temp_dir().join(format!("mecha-stacked-{}", uuid::Uuid::new_v4()));
+        let root = base.join("runs/shells");
+        let registry = ShellRegistry::open(root.clone()).unwrap();
+        let parent = parent_of(std::process::id()).expect("a test has a parent");
+        let _above = registry
+            .register(parent, Some(RunPosture::Delegated), None)
+            .unwrap();
+        let _here = registry
+            .register(std::process::id(), Some(RunPosture::Interactive), None)
+            .unwrap();
+        let reading = ShellReading::from_roots(std::slice::from_ref(&root));
+        assert!(
+            decide(&PostureReading::NotInRun, &reading, None, None).is_err(),
+            "{reading:?}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

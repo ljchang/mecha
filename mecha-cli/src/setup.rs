@@ -129,13 +129,42 @@ pub fn posture_for(
     use mecha_core::session::SessionKind as K;
     match surface {
         Some(K::Task) => RunPosture::Delegated,
-        Some(K::Chat | K::Tui | K::Run | K::Test) | None
-            if interactive && mode == PermissionMode::Ask =>
-        {
+        Some(K::Chat | K::Tui | K::Run | K::Test) if interactive && mode == PermissionMode::Ask => {
             RunPosture::Interactive
         }
+        // A surface nobody named is unknown, and unknown is never clean: a
+        // new front end that forgets to name itself refuses rather than
+        // closing (review of #293).
         _ => RunPosture::Unattended,
     }
+}
+
+/// Whether a front end has a person at it, for its posture: its stdin is a
+/// terminal **and** no run's `shell` started it. A `mecha chat` piped from a
+/// delegated run's shell would otherwise read its approvals from the pipe
+/// and stamp `interactive` on its own shell's children — a nested front end
+/// forging the owner's approval (review of #294). A registration found
+/// anywhere on the chain, or one that cannot be read, is not a person.
+/// The shell registry's reading of this process, taken once and latched for
+/// its life — the one reading every front end's posture uses (`prepare_tools`,
+/// the TUI's re-stamp on `/mode` and `/model`, and `serve`). Read at the first
+/// front end's start, so a front end a run's shell started, then detached and
+/// reparented, is still not a person when it re-stamps later (review of #294:
+/// the TUI re-read it live and could stamp `interactive` after the run's
+/// shell was gone). Off Linux the registry answers `Unreadable` while any
+/// run's shell is live, so a front end started then stays unattended until
+/// restarted.
+pub fn startup_shell_reading() -> &'static mecha_core::closure::ShellReading {
+    static READING: std::sync::OnceLock<mecha_core::closure::ShellReading> =
+        std::sync::OnceLock::new();
+    READING.get_or_init(mecha_core::closure::ShellReading::from_registry)
+}
+
+pub fn front_end_interactive(
+    stdin_is_terminal: bool,
+    shell: &mecha_core::closure::ShellReading,
+) -> bool {
+    stdin_is_terminal && *shell == mecha_core::closure::ShellReading::NotRegistered
 }
 
 /// Build an agent. `interactive` decides whether an un-approved tool call can
@@ -1395,9 +1424,10 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
 
     // `cfg` is final here: `-y` and `--read-only` were folded into
     // `cfg.tools.permission_mode` above.
-    let posture = opts
-        .run_posture
-        .unwrap_or_else(|| posture_for(opts.surface, interactive, cfg.tools.permission_mode));
+    let posture = opts.run_posture.unwrap_or_else(|| {
+        let person = front_end_interactive(interactive, startup_shell_reading());
+        posture_for(opts.surface, person, cfg.tools.permission_mode)
+    });
     Ok(PreparedTools {
         registry,
         denials,
@@ -1954,10 +1984,52 @@ mod surface_only_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_subagent, excluded_by_allowlist, fold_agent_switches, levers_off, posture_for,
-        step_escalation_enabled, step_escalation_slot,
+        build_subagent, excluded_by_allowlist, fold_agent_switches, front_end_interactive,
+        levers_off, posture_for, step_escalation_enabled, step_escalation_slot,
     };
     use crate::GlobalOpts;
+
+    /// A front end is a person only with a terminal and no run's shell above
+    /// it: a nested or piped one refuses a closure (review of #294).
+    #[test]
+    fn a_nested_or_piped_front_end_is_never_interactive() {
+        use mecha_core::closure::{RunPosture as P, ShellReading as S};
+        use mecha_core::config::PermissionMode;
+        use mecha_core::session::SessionKind as K;
+        let ask = PermissionMode::Ask;
+        // `mecha chat` with its stdin piped: on the old tree `chat` passed
+        // `true` whatever its stdin was, and this read `interactive`.
+        let piped = front_end_interactive(false, &S::NotRegistered);
+        assert_eq!(posture_for(Some(K::Chat), piped, ask), P::Unattended);
+        // A terminal, but started by a run's shell (a pty fed by the run).
+        for shell in [
+            S::Registered {
+                pid: 7,
+                posture: Ok(P::Delegated),
+            },
+            S::Registered {
+                pid: 7,
+                posture: Ok(P::Interactive),
+            },
+            S::Redirected {
+                pid: 7,
+                root: "/home/o/.mecha/runs/shells".into(),
+            },
+            S::Unreadable("EACCES".into()),
+        ] {
+            let person = front_end_interactive(true, &shell);
+            for k in [K::Chat, K::Tui, K::Run] {
+                assert_eq!(
+                    posture_for(Some(k), person, ask),
+                    P::Unattended,
+                    "{shell:?}"
+                );
+            }
+        }
+        // The owner's own terminal.
+        let owner = front_end_interactive(true, &S::NotRegistered);
+        assert_eq!(posture_for(Some(K::Chat), owner, ask), P::Interactive);
+    }
 
     /// Only a surface with a person at the approver is interactive; a
     /// delegated task never is, whatever its approver; and everything else is
@@ -1994,7 +2066,7 @@ mod tests {
         ] {
             assert_eq!(posture_for(Some(k), true, ask), P::Unattended, "{k:?}");
         }
-        assert_eq!(posture_for(None, true, ask), P::Interactive);
+        assert_eq!(posture_for(None, true, ask), P::Unattended);
         assert_eq!(posture_for(None, false, ask), P::Unattended);
         assert_eq!(
             posture_for(None, true, PermissionMode::Allow),

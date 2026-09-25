@@ -1,7 +1,15 @@
 //! Closing or reopening a board task is one recorded event (S8,
 //! `docs/APPRAISAL-WIRING-DESIGN.md`), exercised through the real binary
 //! against the fixture board server — no provider, no network.
-use mecha_core::closure::{Actor, ClosureStore, Entry, Move, Surface};
+// **These cases read the owner's real registry too.** The fixture sets
+// `MECHA_HOME`, so `work::guard_homes` names the fixture *and* the real
+// `~/.mecha`; run from inside a mecha run's own `shell`, a live registration
+// there sits above the test process and a case that expects the owner's
+// close to succeed reads `Redirected` and fails. Run the suite from a plain
+// terminal, not from a mecha session's `shell` (review of #294).
+
+use mecha_core::closure::{Actor, ClosureStore, Entry, Move, RunPosture, Surface};
+use mecha_core::shell_registry::{Registration, ShellRegistry};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -59,6 +67,12 @@ impl Fixture {
     }
 
     fn command(&self, args: &[&str], posture: Option<&str>) -> Output {
+        self.command_with(args, posture, &[])
+    }
+
+    /// As [`Self::command`], with extra environment the command text could
+    /// have exported — what a model's `bash -lc` hands the binary.
+    fn command_with(&self, args: &[&str], posture: Option<&str>, env: &[(&str, &str)]) -> Output {
         let mut c = Command::new(env!("CARGO_BIN_EXE_mecha"));
         c.args(args)
             .current_dir(self.root.join("work"))
@@ -67,6 +81,9 @@ impl Fixture {
             .env_remove(mecha_core::closure::POSTURE_ENV);
         if let Some(p) = posture {
             c.env(mecha_core::closure::POSTURE_ENV, p);
+        }
+        for (k, v) in env {
+            c.env(k, v);
         }
         c.output().unwrap()
     }
@@ -77,6 +94,20 @@ impl Fixture {
         )
         .unwrap();
         board["tasks"][0]["status"].as_str().unwrap().to_string()
+    }
+
+    /// The fixture home's shell registry (`MECHA_HOME/runs/shells`).
+    fn shells(&self) -> ShellRegistry {
+        ShellRegistry::open(self.root.join("home/runs/shells")).unwrap()
+    }
+
+    /// Register *this test process* as a `shell` the harness spawned, with
+    /// `posture` — so every `mecha` this test then spawns has a registered
+    /// shell as its parent, exactly as a command a run's `shell` tool ran.
+    fn under_shell(&self, posture: Option<RunPosture>) -> Registration {
+        self.shells()
+            .register(std::process::id(), posture, Some("call-test"))
+            .unwrap()
     }
 
     fn store(&self) -> ClosureStore {
@@ -164,24 +195,31 @@ fn a_closure_and_its_reopen_are_recorded_and_joined() {
 
 /// The residue `closure_guard.rs` named: a run with nobody present used to be
 /// able to close its own task through `shell: mecha tasks set`. It is refused
-/// now, before anything is recorded or moved.
+/// now, before anything is recorded or moved — the posture read from the
+/// harness's shell registry, not from the command's environment (1b-2).
+// Needs the `/proc` ancestry walk (Linux only); off Linux the registry
+// fails closed instead, pinned by the test at the end of this file.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_run_with_nobody_present_cannot_close_through_the_shell() {
     let Some(f) = Fixture::new("") else { return };
-    for posture in ["delegated", "unattended", "unknown"] {
+    for (posture, stamp) in [
+        (Some(RunPosture::Delegated), "delegated"),
+        (Some(RunPosture::Unattended), "unattended"),
+        (None, "unknown"),
+    ] {
+        let _shell = f.under_shell(posture);
         refused(
-            &f.command(
-                &["tasks", "set", "task-1", "--status", "done"],
-                Some(posture),
-            ),
+            &f.command(&["tasks", "set", "task-1", "--status", "done"], Some(stamp)),
             "owner",
         );
-        assert_eq!(f.status(), "next", "{posture}: the board must not move");
+        assert_eq!(f.status(), "next", "{stamp}: the board must not move");
     }
     assert!(records(&f.root).is_empty(), "a refusal records nothing");
 
     // A chat the owner is in may, behind its approver — recorded as such,
     // and the surface cannot be claimed.
+    let _shell = f.under_shell(Some(RunPosture::Interactive));
     ok(&f.command(
         &[
             "tasks",
@@ -199,6 +237,102 @@ fn a_run_with_nobody_present_cannot_close_through_the_shell() {
         (closed.actor, closed.surface),
         (Actor::OwnerApproved, Surface::Chat)
     );
+}
+
+/// #293's review: a delegated run's command could set the posture variable
+/// itself — `MECHA_RUN_POSTURE=interactive mecha tasks set …` — and be
+/// recorded `owner-approved`. The registered shell's posture wins over the
+/// variable, so it is refused. Fails on #293's code, which read the variable.
+// Needs the `/proc` ancestry walk (Linux only); off Linux the registry
+// fails closed instead, pinned by the test at the end of this file.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_delegated_shell_that_sets_the_variable_itself_is_still_refused() {
+    let Some(f) = Fixture::new("") else { return };
+    let _shell = f.under_shell(Some(RunPosture::Delegated));
+    refused(
+        &f.command(
+            &["tasks", "set", "task-1", "--status", "done"],
+            Some("interactive"),
+        ),
+        "delegated run's shell",
+    );
+    assert_eq!(f.status(), "next");
+    assert!(records(&f.root).is_empty());
+}
+
+/// Review of #294: the registry's reader used to honour `MECHA_SHELLS_DIR`,
+/// so a delegated run's command could point it at an empty directory, drop
+/// the posture variable, and read as the owner's terminal (rule 4). The
+/// location has no override now: the command is still refused under its
+/// registered delegated shell. Fails on the head that honoured the variable.
+// Needs the `/proc` ancestry walk (Linux only); off Linux the registry
+// fails closed instead, pinned by the test at the end of this file.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_command_cannot_point_the_registry_somewhere_else() {
+    let Some(f) = Fixture::new("") else { return };
+    let _shell = f.under_shell(Some(RunPosture::Delegated));
+    let decoy = f.root.join("decoy-shells");
+    std::fs::create_dir_all(&decoy).unwrap();
+    refused(
+        &f.command_with(
+            &["tasks", "set", "task-1", "--status", "done"],
+            None,
+            &[("MECHA_SHELLS_DIR", decoy.to_str().unwrap())],
+        ),
+        "delegated run's shell",
+    );
+    assert_eq!(f.status(), "next");
+    assert!(records(&f.root).is_empty());
+}
+
+/// The variable with no registered shell behind it is a claim no marker
+/// confirms, and refuses in every value — `interactive` first.
+#[test]
+fn a_claimed_posture_with_no_registered_shell_is_refused() {
+    let Some(f) = Fixture::new("") else { return };
+    for stamp in ["interactive", "delegated"] {
+        refused(
+            &f.command(&["tasks", "set", "task-1", "--status", "done"], Some(stamp)),
+            "no registered mecha shell",
+        );
+    }
+    assert_eq!(f.status(), "next");
+    assert!(records(&f.root).is_empty());
+}
+
+/// Registering the *shell child*, not the hosting process: the owner's own
+/// close — a `serve` board tap, whose parent is no registered shell — goes
+/// through as the owner even while another run's delegated shell is live
+/// and registered elsewhere.
+// Needs the `/proc` ancestry walk (Linux only); off Linux the registry
+// fails closed instead, pinned by the test at the end of this file.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_owner_close_is_unaffected_by_another_runs_registered_shell() {
+    let Some(f) = Fixture::new("") else { return };
+    let mut other = Command::new("sleep").arg("30").spawn().unwrap();
+    let _elsewhere = f
+        .shells()
+        .register(other.id(), Some(RunPosture::Delegated), None)
+        .unwrap();
+    ok(&f.command(
+        &[
+            "tasks",
+            "set",
+            "task-1",
+            "--status",
+            "done",
+            "--surface",
+            "web",
+        ],
+        None,
+    ));
+    let closed = f.store().latest_closure("task-1").unwrap().unwrap();
+    assert_eq!((closed.actor, closed.surface), (Actor::Owner, Surface::Web));
+    let _ = other.kill();
+    let _ = other.wait();
 }
 
 #[test]
@@ -446,4 +580,65 @@ fn an_uncertain_closure_with_the_board_at_neither_end_stays_uncertain() {
             .map(|t| t.id),
         Some(id)
     );
+}
+
+/// The `shell` tool registers the pid of the process it spawned, and `bash
+/// -lc '<one simple command>'` execs that command in place — so for a bare
+/// `mecha tasks set …` the registered pid *is* the reader's own. The walk
+/// must check its own pid first; on the previous head it started at the
+/// parent, missed the registration, and refused an interactive run's
+/// legitimate close under rule 5 (review of #294). `exec` makes the
+/// in-place replacement deterministic here, and the shell waits on stdin so
+/// the registration is written before the binary starts, as it is in the
+/// harness (where `mecha tasks set`'s startup outlasts the write).
+#[test]
+fn a_command_exec_d_in_place_by_its_registered_shell_finds_its_own_registration() {
+    use std::io::Write;
+    let Some(f) = Fixture::new("") else {
+        return;
+    };
+    let mut child = Command::new("bash")
+        .args([
+            "-c",
+            "read -r _; exec \"$0\" tasks set task-1 --status done",
+            env!("CARGO_BIN_EXE_mecha"),
+        ])
+        .current_dir(f.root.join("work"))
+        .env("MECHA_HOME", f.root.join("home"))
+        .env("MECHA_SESSION_KIND", "test")
+        .env(mecha_core::closure::POSTURE_ENV, "interactive")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _registration = f
+        .shells()
+        .register(child.id(), Some(RunPosture::Interactive), Some("call-exec"))
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    ok(&out);
+    let closed = f.store().latest_closure("task-1").unwrap().unwrap();
+    assert_eq!(
+        (closed.actor, closed.surface),
+        (Actor::OwnerApproved, Surface::Chat)
+    );
+}
+
+/// Off Linux there is no `/proc` to walk, so the check sees only the
+/// command's own pid; with any live shell registered it refuses rather than
+/// guess the command is the owner's (the fail-closed choice, documented on
+/// `closure::decide`). The cost, named: the owner's own terminal cannot close
+/// a task while a run's shell is live.
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn off_linux_a_live_registered_shell_refuses_a_close_it_cannot_place() {
+    let Some(f) = Fixture::new("") else {
+        return;
+    };
+    let _shell = f.under_shell(Some(RunPosture::Interactive));
+    let out = f.command(&["tasks", "set", "task-1", "--status", "done"], None);
+    assert!(!out.status.success(), "must be refused off Linux");
+    assert_eq!(f.status(), "next", "nothing moved");
 }

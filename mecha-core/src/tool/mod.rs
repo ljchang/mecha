@@ -647,10 +647,11 @@ pub struct ToolCtx {
     pub goal_examples: Vec<crate::planning::Example>,
     pub step_checks: Option<std::sync::Arc<std::sync::Mutex<Vec<crate::step::CheckRequest>>>>,
     /// Whether a person is in this run's conversation, stamped by the
-    /// front-end (`setup::posture_for`). The `shell` tool hands it to every
-    /// command as `closure::POSTURE_ENV`, so `mecha tasks set` can refuse a
-    /// closure a run with nobody present tries to make. `None` is unknown and
-    /// reaches the command as `unknown`, which refuses.
+    /// front-end (`setup::posture_for`). The `shell` tool registers every
+    /// command it spawns with it (`shell_registry`), which is what `mecha
+    /// tasks set` reads to refuse a closure a run with nobody present tries
+    /// to make; it is also stamped as `closure::POSTURE_ENV`, now advisory.
+    /// `None` registers and stamps as `unknown`, which refuses.
     pub run_posture: Option<crate::closure::RunPosture>,
 }
 

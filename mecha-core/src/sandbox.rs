@@ -228,34 +228,18 @@ impl Sandbox {
     ) -> Result<tokio::process::Command> {
         let argv = ["-lc".to_string(), command.to_string()];
         match self.cfg.kind {
-            Backend::None | Backend::Landlock => {
+            Backend::None => {
                 let mut c = self.command(command, workspace, cwd)?;
                 for (k, v) in env {
                     c.env(k, v);
                 }
                 Ok(c)
             }
-            Backend::Bwrap => {
-                let mut a = self.bwrap_args(workspace, cwd)?;
-                for (k, v) in env {
-                    a.extend(["--setenv".to_string(), k.to_string(), v.to_string()]);
-                }
-                let mut c = tokio::process::Command::new("bwrap");
-                c.args(a).arg("--").arg("bash").args(argv);
-                Ok(c)
-            }
-            Backend::Docker => {
-                // `docker_args` ends with the image; `-e` must precede it.
-                let mut a = self.docker_args(workspace, cwd)?;
-                let image = a.pop();
-                for (k, v) in env {
-                    a.extend(["-e".to_string(), format!("{k}={v}")]);
-                }
-                a.extend(image);
-                let mut c = tokio::process::Command::new("docker");
-                c.args(a).arg("bash").args(argv);
-                Ok(c)
-            }
+            // One construction for every confining backend: the explicit-argv
+            // path already reconstructs the environment past bwrap's
+            // `--clearenv`, docker's fresh container and landlock's clear
+            // (review of #293: a second copy was a drift risk).
+            _ => self.wrap_argv_with_env("bash", &argv, workspace, cwd, env),
         }
     }
 
