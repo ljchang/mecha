@@ -138,6 +138,25 @@ impl ProbePrep {
         )
     }
 
+    /// Why this probe cannot be driven under `prepared` at all, asked before
+    /// any seat or budget is spent on it: an artifact repeat executes its
+    /// task, so it runs only with the levers the recording ran without —
+    /// hooks, the outbox and messages — thrown off, as `mecha validate`'s
+    /// mismatch probes require. `None` for every replayed probe.
+    pub fn unrunnable_under(&self, prepared: &Prepared) -> Option<String> {
+        if !matches!(self.method, ProbeMethod::Artifact { .. }) {
+            return None;
+        }
+        [
+            mecha_core::harness::Lever::Hooks,
+            mecha_core::harness::Lever::Outbox,
+            mecha_core::harness::Lever::Messages,
+        ]
+        .into_iter()
+        .find(|lever| !prepared.levers_off.contains(lever))
+        .map(|lever| format!("artifact probes require {lever:?} disabled, as in the recording"))
+    }
+
     /// Whether the surface store still holds the blob this recording cites,
     /// in words for the refusal message: it is the difference between a tool
     /// the recording described and one it only named.
@@ -789,16 +808,8 @@ pub async fn drive_arm_within(
         reflection_id,
     } = &prep.method
     {
-        for lever in [
-            mecha_core::harness::Lever::Hooks,
-            mecha_core::harness::Lever::Outbox,
-            mecha_core::harness::Lever::Messages,
-        ] {
-            if !prepared.levers_off.contains(&lever) {
-                return Ok(Err(format!(
-                    "artifact probes require {lever:?} disabled, as in the recording"
-                )));
-            }
+        if let Some(why) = prep.unrunnable_under(prepared) {
+            return Ok(Err(why));
         }
         let mut cfg = prepared.config.agent.clone();
         let system_hash = mecha_core::learning::rules_hash(&system);
