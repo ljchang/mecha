@@ -1474,7 +1474,11 @@ impl Agent {
     /// Append-only either way: a folded block never moves, so each request
     /// is still a byte prefix of the next, and nothing here touches the
     /// tools or the system prompt — the cached prefix is the same bytes
-    /// with the lever on and off.
+    /// with the lever on and off. **Not append-only on disk**: the message
+    /// folded into was already recorded by the door, so each fold makes the
+    /// run's record a whole-transcript `Record::Rewrite`, as the calendar's
+    /// does once a day — here once per changed brief (3a-3 in the design
+    /// doc, owed before the lever ships on).
     fn fold_situation_brief(&self, cx: &RunContext, messages: &mut Vec<Message>) {
         if !self.cfg.situation_brief {
             return;

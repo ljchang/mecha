@@ -1002,7 +1002,11 @@ Nothing in the words came from outside, but board ids, commitment bands,
 quiet hours, seat holders and runs in flight enter the conversation without
 arming `private`, where a `kg_task_list` read of the same would arm it
 (review of #309; `docs/ARCHITECTURE.md` sets out both precedents and the
-cost of arming to the arm). The lever ships off until that is ruled. Two
+cost of arming to the arm). The lever ships off until that is ruled. **Owed before it ships on
+(3a-3):** each fold edits a message the door already recorded, so it
+writes a whole-transcript `Record::Rewrite` and clears the taint
+checkpoints — once a day for the calendar, but on every turn whose brief
+changed for a web chat (review of #309; `docs/ARCHITECTURE.md`). Two
 found building it: the experiment instrument
 runs trials through `mecha run`, which had no brief, so its two arms would
 have been one condition — `mecha run` now assembles, records and delivers

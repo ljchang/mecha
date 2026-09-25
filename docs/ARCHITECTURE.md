@@ -4382,7 +4382,19 @@ when touching it:
   assembles once per run (the web door once per turn, inside the joined 2s
   window 1h set), and the render is a pure function over the record — now
   that the brief is read, the 2s bound is what a person pays for it, and
-  still the right one. *Deferred:* a re-delegated task's previous attempts
+  still the right one. **A fold writes a `Record::Rewrite`, as the
+  calendar's does, and more often** (review of #309): every door records the
+  owner's message before the run, and the fold then edits that message, so
+  `record_transition`'s prefix check fails and the whole transcript is
+  written again — with `taint_checkpoints` cleared, so a clean early turn
+  classifies untrusted for `mecha learn` (§Timezones: "that record is not
+  cosmetic"). The calendar does this once a day; the brief does it on every
+  turn whose words changed, which on a web chat moving the board is most
+  turns — a transcript copy per turn and the taint timeline collapsed to
+  cumulative. It over-taints, never under, and the lever ships off; the fix
+  is 3a-3, having the door record the folded message (or a record that
+  appends blocks to the last message) so a fold is an append, and it is
+  owed before the lever ships on. *Deferred:* a re-delegated task's previous attempts
   (M5, to 3a-2 — no existing record lists them), and a brief on the TUI,
   `chat`, Slack and unhosted voice turns.
 - **The doctor reads against the owner's number, and names the line.**
