@@ -3563,8 +3563,9 @@ mod tests {
         mecha_core::runmarker::RunMarkers::new(owner.join("taskruns"))
             .mark_running("task-1a2b3c4d", None)
             .unwrap();
-        let only_redirected = live_run_pids_in(&[redirected.join("taskruns")]);
-        let both = live_run_pids_in(&[redirected.join("taskruns"), owner.join("taskruns")]);
+        let only_redirected = live_run_pids_in(&[redirected.join("taskruns")]).unwrap();
+        let both =
+            live_run_pids_in(&[redirected.join("taskruns"), owner.join("taskruns")]).unwrap();
         let _ = std::fs::remove_dir_all(&base);
         assert!(only_redirected.is_empty());
         assert!(both.contains(&std::process::id()), "{both:?}");
