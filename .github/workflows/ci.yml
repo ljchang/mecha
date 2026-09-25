@@ -215,7 +215,9 @@ jobs:
           echo "images: $(docker images --format '{{.Repository}}:{{.Tag}}' | tr '\n' ' ')"
           echo "-- proving bwrap actually runs, not just that it is installed:"
           bwrap --ro-bind / / --unshare-all true && echo "bwrap: WORKS" || echo "bwrap: PRESENT BUT NON-FUNCTIONAL"
-          systemd-run --user --scope --quiet --collect -p MemoryMax=64M true && echo "user scope: WORKS" || echo "user scope: NON-FUNCTIONAL"
+          systemd-run --user --scope --quiet --collect -p MemoryMax=64M -p CPUQuota=100% \
+            sh -c 'p=$(sed -n "s/^0:://p" /proc/self/cgroup); echo "scope cgroup: $(cat /sys/fs/cgroup$p/memory.max) / $(cat /sys/fs/cgroup$p/cpu.max)"' \
+            && echo "user scope: WORKS" || echo "user scope: NON-FUNCTIONAL"
 
       - name: Integration tests, with skips promoted to failures
         env:
