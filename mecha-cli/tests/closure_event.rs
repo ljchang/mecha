@@ -1,6 +1,13 @@
 //! Closing or reopening a board task is one recorded event (S8,
 //! `docs/APPRAISAL-WIRING-DESIGN.md`), exercised through the real binary
 //! against the fixture board server — no provider, no network.
+// **These cases read the owner's real registry too.** The fixture sets
+// `MECHA_HOME`, so `work::guard_homes` names the fixture *and* the real
+// `~/.mecha`; run from inside a mecha run's own `shell`, a live registration
+// there sits above the test process and a case that expects the owner's
+// close to succeed reads `Redirected` and fails. Run the suite from a plain
+// terminal, not from a mecha session's `shell` (review of #294).
+
 use mecha_core::closure::{Actor, ClosureStore, Entry, Move, RunPosture, Surface};
 use mecha_core::shell_registry::{Registration, ShellRegistry};
 use serde_json::{json, Value};
