@@ -267,3 +267,14 @@ reflect → distill → validate --unprocessed-only --cover 1
 
 It can also be fired directly from a hook at session close. Either way it is
 idempotent, so running it twice costs one ledger read.
+
+**Fire it detached from a hook.** On the local model it waits for a
+background seat, then spends about a minute per session on the appraisal. A
+`session_end` hook runs under its own timeout, so run distill in the
+background and let the hook return at once:
+
+```toml
+[[hook]]
+event = "session_end"
+command = "nohup mecha distill -p local >/dev/null 2>&1 &"
+```

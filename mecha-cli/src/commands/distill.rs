@@ -349,8 +349,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let rendered = distill::render_for_distill(&convo.messages, 6000, 18000);
         // One background seat for the pair of calls (`permit.rs`): the
         // episode and its appraisal run back to back on one conversation,
-        // so the second lands on the slot holding the first's prefix.
-        let seat = take_seat(&meta.id).await;
+        // so the second lands on the slot holding the first's prefix. Only
+        // on the local model: the seats are llama-server's, and a provider
+        // elsewhere holds none of them.
+        let seat = if local {
+            take_seat(&meta.id).await
+        } else {
+            None
+        };
         let turn = distiller.distill_turn(&rendered).await;
         if let (Some(appraiser), Ok(turn)) = (&appraiser, &turn) {
             // Shadow: whatever happens on this leg, the episode leg below is
@@ -621,6 +627,9 @@ struct AppraisalTally {
     /// Wall-clock seconds of a seat the follow-up calls added, and the
     /// prompt tokens they sent and read from the server's cache.
     seconds: f64,
+    /// Follow-up calls the provider answered — every one paid for, whatever
+    /// became of its reply.
+    calls: usize,
     prompt_tokens: u64,
     cached_tokens: u64,
 }
@@ -628,7 +637,7 @@ struct AppraisalTally {
 impl AppraisalTally {
     fn line(&self) -> String {
         let malformed: usize = self.malformed.values().sum();
-        let calls = self.written_clean + self.written_not_clean + malformed;
+        let calls = self.calls;
         let why: Vec<String> = self
             .malformed
             .iter()
@@ -782,6 +791,7 @@ impl Appraiser {
                 return;
             }
         };
+        tally.calls += 1;
         tally.seconds += answered.elapsed.as_secs_f64();
         tally.prompt_tokens += answered.usage.total_input();
         tally.cached_tokens += answered.usage.cache_read_input_tokens;
