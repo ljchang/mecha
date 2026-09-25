@@ -726,7 +726,14 @@ async fn measure(
     // and not paid for at all when no point-wise outcome could change the
     // verdict (a numeric rejection on a regression).
     let evidence = if mecha_core::candidate::pointwise_can_change(&numeric) {
-        crate::pointwise_pass::compare_candidate(
+        // **A point-wise pass that fails is not a failed measurement.** The
+        // whole-session replay above is already paid for; an unwritable
+        // comparison store or a provider that will not build must not
+        // discard it with no `Measurement` stored (found on review — the
+        // shape of the nothing-paired early return above). The error is
+        // recorded as why nothing was compared, the tally is empty, and an
+        // empty tally is undecided: the numbers decide, as they always did.
+        match crate::pointwise_pass::compare_candidate(
             &prepared,
             provider_cfg,
             model,
@@ -738,7 +745,17 @@ async fn measure(
                 sessions,
             },
         )
-        .await?
+        .await
+        {
+            Ok(evidence) => evidence,
+            Err(e) => {
+                eprintln!("point-wise comparison failed: {e:#}");
+                crate::pointwise_pass::CandidateEvidence {
+                    not_run: Some(format!("the point-wise pass failed: {e:#}")),
+                    ..Default::default()
+                }
+            }
+        }
     } else {
         crate::pointwise_pass::CandidateEvidence {
             not_run: Some(

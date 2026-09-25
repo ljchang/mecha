@@ -296,6 +296,7 @@ the candidate's change applied. The two readings combine:
 |---|---|---|
 | decides **for** the change (at least 4 decided points, more where only the change did what you decided) | nothing got worse | **accept** — if the kind of change may be accepted by measurement at all |
 | decides for the change | something got worse | **reject** |
+| decides for the change | a cost appeared from nothing, or too few episodes to tell | **propose** — you decide |
 | decides **against** the change | anything | **reject** |
 | does not decide | anything | the numeric verdict above, unchanged, and recorded as numeric only |
 
