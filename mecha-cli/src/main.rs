@@ -110,6 +110,19 @@ pub struct GlobalOpts {
     /// shipped binary renders, and records that it did.
     #[arg(skip)]
     pub surface: Option<mecha_core::session::SessionKind>,
+    /// Set by the front-end that owns the run, never by a flag of its own:
+    /// the goal the run was handed from a store the owner wrote — `tasks
+    /// work` its task, a trigger run its trigger, `run --goal` the owner's
+    /// pointer, a question continuation the asking run's recorded one — so
+    /// `setup::build` can match the learned-rules block toward it and record
+    /// what it matched (`RunConfig::rules_goal`). A front-end whose one
+    /// block serves many runs (`serve`, the front door), or whose runs have
+    /// no structural goal, sets none, which matches no goal-scoped rule.
+    /// Never the conversation's anchor, which can name another goal once the
+    /// block is rendered — a resumed hand-over's older task, a goal the owner
+    /// confirms mid-run.
+    #[arg(skip)]
+    pub goal: Option<mecha_core::goal::GoalRef>,
     /// The run's posture, when the front-end knows better than
     /// `setup::posture_for` would guess from the surface — `tasks work` and
     /// a question resume are `delegated` whatever their approver.

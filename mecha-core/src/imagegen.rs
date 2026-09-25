@@ -5,8 +5,9 @@
 //! node graph it is handed — nodes that write files, fetch URLs, or run a
 //! custom node's code. So the graph is fixed here, in code, and the model
 //! supplies typed values only: a prompt, a negative prompt, a size from a
-//! closed set, a seed. The prompt reaches the graph as a JSON string value, so
-//! nothing in it can become a node.
+//! closed set, a seed, and workspace paths of reference images to edit. The
+//! prompt reaches the graph as a JSON string value, so nothing in it can
+//! become a node; a reference reaches it as a name the server chose.
 //!
 //! **No egress, and the declaration is earned rather than asserted.** The
 //! schema has no destination field and [`loopback_url`] refuses any server not
@@ -22,7 +23,9 @@
 //!
 //! **The model cannot see what it made** — images enter a conversation on user
 //! turns only (`ARCHITECTURE.md` §Images) — so the result says so, and gives
-//! the seed back: revising means editing the prompt and reusing the seed.
+//! the seed back. Revising a new image means editing the prompt and reusing
+//! its seed; editing one means passing it in `reference_images`, and an edit
+//! always samples at a fresh seed (see `call`).
 //!
 //! The request is shaped like stable-diffusion.cpp's native API (prompt, size,
 //! steps, seed in; PNG bytes out; a job that can be cancelled) rather than
@@ -159,10 +162,45 @@ impl Size {
 pub struct Request {
     pub prompt: String,
     pub negative: String,
-    pub width: u32,
-    pub height: u32,
+    /// Width and height, or `None` to follow the first reference's shape —
+    /// which is only ever `None` when there is a reference to follow.
+    pub size: Option<(u32, u32)>,
     pub steps: u32,
     pub seed: u64,
+    /// Images to edit or draw from, in order: `<image1>` is the first.
+    pub references: Vec<Reference>,
+}
+
+/// A reference image, read out of the run's workspace.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reference {
+    /// The workspace-relative path it was named by, for the result text.
+    pub path: String,
+    pub bytes: Vec<u8>,
+    /// File extension for the upload, from the sniffed type.
+    pub ext: &'static str,
+}
+
+/// At most this many references per call. The model takes ten; every one is
+/// a VAE encode and a slice of the sequence on the shared memory pool, and
+/// four covers "edit this, in the style of that".
+const MAX_REFERENCES: usize = 4;
+
+/// A reference larger than this is refused rather than read. A phone photo
+/// is well under it; the node resizes to about 1024² anyway.
+const MAX_REFERENCE_BYTES: u64 = 25 * 1024 * 1024;
+
+/// The image type of `bytes`, by magic number, as an upload extension.
+fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("jpg")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("webp")
+    } else {
+        None
+    }
 }
 
 const PROMPT_CAP: usize = 4_000;
@@ -170,30 +208,59 @@ const PROMPT_CAP: usize = 4_000;
 /// Consecutive failed status polls before a job is abandoned.
 const POLL_FAILURES: u32 = 3;
 
-/// ComfyUI's graph for one text-to-image generation with Qwen-Image 2.1.
+/// How many polls to wait for an interrupted job to reach the server's
+/// history before deleting it from there.
+const FORGET_WAIT_POLLS: u32 = 10;
+
+/// ComfyUI's graph for one generation with Qwen-Image 2.1 — text to image,
+/// or an edit when `uploaded` names reference images already on the server.
 ///
 /// `PreviewImage` rather than `SaveImage`: the server writes to its temp
 /// directory instead of keeping a second, permanent copy in `output/` — the
-/// copy that matters is the one in the run's workspace.
-pub fn comfy_graph(cfg: &ImageConfig, req: &Request) -> Value {
-    json!({
+/// copy that matters is the one in the run's workspace. References are read
+/// from the temp directory too (`[temp]`), which the server empties when it
+/// starts, so a private photo is not left in its `input/` folder.
+///
+/// With references the encoder takes the VAE (it splices each reference into
+/// the sequence as latents) and, unless a size was asked for, its own latent
+/// output is the canvas: sized to the first reference, because sampling at
+/// any other size shifts the edit (the node's own guidance).
+pub fn comfy_graph(cfg: &ImageConfig, req: &Request, uploaded: &[String]) -> Value {
+    let mut encode = json!({
+        "clip": ["clip", 0], "prompt": req.prompt, "negative_prompt": req.negative,
+        "resolution": 1024});
+    let mut graph = json!({
         "unet": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": cfg.diffusion_model}},
         "clip": {"class_type": "CLIPLoader", "inputs": {
             "clip_name": cfg.text_encoder, "type": "qwen_image", "device": "default"}},
         "vae": {"class_type": "VAELoader", "inputs": {"vae_name": cfg.vae}},
-        "encode": {"class_type": "TextEncodeQwenImage21", "inputs": {
-            "clip": ["clip", 0], "prompt": req.prompt, "negative_prompt": req.negative,
-            "resolution": 1024}},
-        "latent": {"class_type": "EmptyLatentImage", "inputs": {
-            "width": req.width, "height": req.height, "batch_size": 1}},
-        "sample": {"class_type": "KSampler", "inputs": {
-            "model": ["unet", 0], "positive": ["encode", 0], "negative": ["encode", 1],
-            "latent_image": ["latent", 0], "seed": req.seed, "steps": req.steps,
-            // Guidance off: the reference setting. Above 1 doubles every step.
-            "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0}},
         "decode": {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": ["vae", 0]}},
         "out": {"class_type": "PreviewImage", "inputs": {"images": ["decode", 0]}},
-    })
+    });
+    for (i, name) in uploaded.iter().enumerate() {
+        let node = format!("ref{}", i + 1);
+        graph[&node] =
+            json!({"class_type": "LoadImage", "inputs": {"image": format!("{name} [temp]")}});
+        encode[format!("images.image_{}", i + 1)] = json!([node, 0]);
+    }
+    if !uploaded.is_empty() {
+        encode["vae"] = json!(["vae", 0]);
+    }
+    let canvas = match req.size {
+        Some((width, height)) => {
+            graph["latent"] = json!({"class_type": "EmptyLatentImage", "inputs": {
+                "width": width, "height": height, "batch_size": 1}});
+            json!(["latent", 0])
+        }
+        None => json!(["encode", 2]),
+    };
+    graph["encode"] = json!({"class_type": "TextEncodeQwenImage21", "inputs": encode});
+    graph["sample"] = json!({"class_type": "KSampler", "inputs": {
+        "model": ["unet", 0], "positive": ["encode", 0], "negative": ["encode", 1],
+        "latent_image": canvas, "seed": req.seed, "steps": req.steps,
+        // Guidance off: the reference setting. Above 1 doubles every step.
+        "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0}});
+    graph
 }
 
 /// Whether there is room to start, as a sentence for the model if not.
@@ -413,7 +480,106 @@ impl ComfyUi {
             .any(|job| job.get(1).and_then(Value::as_str) == Some(id))
         {
             let _ = self.post_json("interrupt", &json!({"prompt_id": id})).await;
+            // `/interrupt` answers when the flag is set, not when the job has
+            // stopped; the server writes the interrupted job into its history
+            // as it unwinds, after that. A delete sent now arrives before the
+            // record exists and deletes nothing, leaving the prompt behind
+            // (found on review of #306). So wait, briefly, for the record.
+            for _ in 0..FORGET_WAIT_POLLS {
+                let recorded = self
+                    .get_json(&format!("history/{id}"))
+                    .await
+                    .ok()
+                    .is_some_and(|h| h.get(id).is_some());
+                if recorded {
+                    break;
+                }
+                tokio::time::sleep(self.poll).await;
+            }
         }
+        // A cancelled or interrupted job is still recorded, prompt and all. A
+        // job taken off the queue before it ran never reaches the history.
+        self.forget(id).await;
+    }
+
+    /// Put one reference in the server's temp directory under a name nobody
+    /// chose, and return the name the server filed it under. Multipart by
+    /// hand: one file and one field do not justify a crate feature.
+    async fn upload(&self, reference: &Reference) -> Result<String> {
+        let boundary = format!("mecha-{:08x}{:08x}", fresh_seed(), fresh_seed());
+        let filename = format!(
+            "mecha-{:08x}{:08x}.{}",
+            fresh_seed(),
+            fresh_seed(),
+            reference.ext
+        );
+        let mut body = Vec::with_capacity(reference.bytes.len() + 512);
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; \
+                 filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(&reference.bytes);
+        body.extend_from_slice(
+            format!(
+                "\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"type\"\r\n\r\n\
+                 temp\r\n--{boundary}--\r\n"
+            )
+            .as_bytes(),
+        );
+        let res = self
+            .http
+            .post(self.endpoint("upload/image")?)
+            .timeout(Duration::from_secs(60))
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(body)
+            .send()
+            .await?;
+        let status = res.status();
+        let text = res.text().await?;
+        if !status.is_success() {
+            bail!(
+                "uploading {} failed ({status}): {}",
+                reference.path,
+                clip(&text)
+            );
+        }
+        let answer: Value = serde_json::from_str(&text)?;
+        // The server says which directory it used. Only temp is emptied when
+        // it starts; anywhere else, a private photo would outlive this call
+        // with nothing to clear it (found on review of #306).
+        let kind = answer.get("type").and_then(Value::as_str).unwrap_or("");
+        if kind != "temp" {
+            bail!(
+                "the image server filed {} as `{kind}` rather than temp, where nothing clears it",
+                reference.path
+            );
+        }
+        if answer
+            .get("subfolder")
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.is_empty())
+        {
+            bail!(
+                "the image server filed {} under a subfolder",
+                reference.path
+            );
+        }
+        answer
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                anyhow!(
+                    "the image server did not name the upload of {}",
+                    reference.path
+                )
+            })
     }
 
     async fn generate(
@@ -424,10 +590,14 @@ impl ComfyUi {
         timeout: Duration,
     ) -> std::result::Result<Vec<u8>, Failure> {
         self.preflight(cfg).await?;
+        let mut uploaded = Vec::with_capacity(req.references.len());
+        for reference in &req.references {
+            uploaded.push(self.upload(reference).await?);
+        }
         let (status, body) = self
             .post_json(
                 "prompt",
-                &json!({"prompt": comfy_graph(cfg, req), "client_id": "mecha"}),
+                &json!({"prompt": comfy_graph(cfg, req, &uploaded), "client_id": "mecha"}),
             )
             .await?;
         if !status.is_success() {
@@ -492,6 +662,7 @@ impl ComfyUi {
                 continue; // queued or running
             };
             if entry.pointer("/status/status_str").and_then(Value::as_str) == Some("error") {
+                self.forget(&id).await;
                 let why = entry
                     .pointer("/status/messages")
                     .map(|m| clip(&m.to_string()))
@@ -511,14 +682,25 @@ impl ComfyUi {
                 None if entry.pointer("/status/completed").and_then(Value::as_bool)
                     == Some(true) =>
                 {
+                    self.forget(&id).await;
                     return Err(
                         anyhow!("the image server finished the job without an image").into(),
-                    )
+                    );
                 }
                 None => continue,
             }
         };
 
+        // Forgotten whether or not the fetch works: the server keeps every
+        // job's prompt and file names in memory until it restarts, and the
+        // copy that matters is the one in the workspace (or none at all).
+        let fetched = self.fetch(&image).await;
+        self.forget(&id).await;
+        Ok(fetched?)
+    }
+
+    /// The finished image's bytes, checked to be a PNG.
+    async fn fetch(&self, image: &Value) -> Result<Vec<u8>> {
         let field = |k: &str| {
             image
                 .get(k)
@@ -536,16 +718,20 @@ impl ComfyUi {
             .get(url)
             .timeout(Duration::from_secs(60))
             .send()
-            .await
-            .map_err(anyhow::Error::from)?;
+            .await?;
         if !res.status().is_success() {
-            return Err(anyhow!("fetching the finished image failed ({})", res.status()).into());
+            bail!("fetching the finished image failed ({})", res.status());
         }
-        let bytes = res.bytes().await.map_err(anyhow::Error::from)?.to_vec();
+        let bytes = res.bytes().await?.to_vec();
         if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-            return Err(anyhow!("the image server returned something that is not a PNG").into());
+            bail!("the image server returned something that is not a PNG");
         }
         Ok(bytes)
+    }
+
+    /// Drop a job from the server's history. Best effort.
+    async fn forget(&self, id: &str) {
+        let _ = self.post_json("history", &json!({"delete": [id]})).await;
     }
 
     /// Ask the server to drop its models and free the memory they held.
@@ -588,6 +774,62 @@ async fn save(ctx: &ToolCtx, seed: u64, bytes: &[u8]) -> Result<String> {
         }
     }
     bail!("no free file name under images/ for this second")
+}
+
+/// Read each reference out of the run's workspace, through the path jail.
+///
+/// The pixels go to the loopback server and nowhere else — never into the
+/// conversation, so nothing here arms taint; the result names paths only.
+async fn read_references(
+    ctx: &ToolCtx,
+    paths: &[String],
+) -> std::result::Result<Vec<Reference>, String> {
+    use tokio::io::AsyncReadExt;
+    let mut out = Vec::with_capacity(paths.len());
+    for raw in paths {
+        let path = ctx
+            .resolve(raw)
+            .map_err(|e| format!("`{raw}` is not a file in the workspace: {e:#}"))?;
+        let mut options = tokio::fs::OpenOptions::new();
+        options.read(true);
+        // A workspace can hold a FIFO (`shell: mkfifo`), and opening one
+        // waits for a writer forever — before the `is_file` refusal below can
+        // run. Open without waiting, then refuse anything that is not a
+        // regular file, as `read_file_window` does (found on review of #306).
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+        let file = options
+            .open(&path)
+            .await
+            .map_err(|e| format!("cannot open `{raw}`: {e}"))?;
+        let meta = file
+            .metadata()
+            .await
+            .map_err(|e| format!("cannot read `{raw}`: {e}"))?;
+        if !meta.is_file() {
+            return Err(format!("`{raw}` is not a file."));
+        }
+        if meta.len() > MAX_REFERENCE_BYTES {
+            return Err(format!(
+                "`{raw}` is {} MB; references are capped at {} MB.",
+                meta.len() / (1024 * 1024),
+                MAX_REFERENCE_BYTES / (1024 * 1024)
+            ));
+        }
+        let mut bytes = Vec::with_capacity(meta.len() as usize);
+        file.take(MAX_REFERENCE_BYTES)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|e| format!("cannot read `{raw}`: {e}"))?;
+        let ext = sniff_image(&bytes)
+            .ok_or_else(|| format!("`{raw}` is not a PNG, JPEG or WebP image."))?;
+        out.push(Reference {
+            path: raw.clone(),
+            bytes,
+            ext,
+        });
+    }
+    Ok(out)
 }
 
 pub struct ImageGenerate {
@@ -636,7 +878,9 @@ impl ImageGenerate {
         self
     }
 
-    fn request(&self, input: &Value) -> std::result::Result<Request, String> {
+    /// The call's input, validated, and the reference paths still to read —
+    /// reading needs the run's workspace, which [`Self::call`] has.
+    fn request(&self, input: &Value) -> std::result::Result<(Request, Vec<String>), String> {
         let prompt = input
             .get("prompt")
             .and_then(Value::as_str)
@@ -660,11 +904,28 @@ impl ImageGenerate {
                 "`negative_prompt` is over {PROMPT_CAP} characters."
             ));
         }
+        let references: Vec<String> = match input.get("reference_images") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .collect::<Option<_>>()
+                .ok_or("`reference_images` must be a list of paths.")?,
+            Some(_) => return Err("`reference_images` must be a list of paths.".into()),
+        };
+        if references.len() > MAX_REFERENCES {
+            return Err(format!(
+                "At most {MAX_REFERENCES} reference images per call, not {}.",
+                references.len()
+            ));
+        }
         let size = match input.get("size").and_then(Value::as_str) {
-            None => Size::Square,
-            Some(s) => Size::parse(s).ok_or_else(|| {
+            // An edit follows its first reference's shape unless asked not to.
+            None if !references.is_empty() => None,
+            None => Some(Size::Square),
+            Some(s) => Some(Size::parse(s).ok_or_else(|| {
                 format!("`size` must be square, landscape or portrait, not `{s}`.")
-            })?,
+            })?),
         };
         let seed = match input.get("seed") {
             None | Some(Value::Null) => fresh_seed(),
@@ -672,15 +933,17 @@ impl ImageGenerate {
                 .as_u64()
                 .ok_or_else(|| "`seed` must be a whole number, zero or more.".to_string())?,
         };
-        let (width, height) = size.dims();
-        Ok(Request {
-            prompt: prompt.to_string(),
-            negative: negative.to_string(),
-            width,
-            height,
-            steps: self.cfg.steps,
-            seed,
-        })
+        Ok((
+            Request {
+                prompt: prompt.to_string(),
+                negative: negative.to_string(),
+                size: size.map(Size::dims),
+                steps: self.cfg.steps,
+                seed,
+                references: Vec::new(),
+            },
+            references,
+        ))
     }
 
     fn arm_unload(&self) {
@@ -707,10 +970,12 @@ impl Tool for ImageGenerate {
     }
 
     fn description(&self) -> &str {
-        "Generate an image from a text description with the local image model and save it \
-         as a PNG in the workspace. Takes about a minute. It renders text inside images \
-         well — put the exact words in quotes. You will not see the result; the user will. \
-         To revise one, call again with an edited prompt and the same seed."
+        "Generate an image with the local image model, or edit one, and save the result as a \
+         PNG in the workspace. Takes about a minute. It renders text inside images well — put \
+         the exact words in quotes. To edit, pass the picture's path in reference_images (one \
+         the user attached, or an earlier result) and say in the prompt what to change and \
+         what to keep, e.g. \"Keep <image1> unchanged except: the jacket is now yellow\". You \
+         will not see the result; the user will."
     }
 
     fn input_schema(&self) -> Value {
@@ -728,12 +993,18 @@ impl Tool for ImageGenerate {
                 "size": {
                     "type": "string",
                     "enum": ["square", "landscape", "portrait"],
-                    "description": "Default \"square\" (1024×1024). landscape is 1344×768, portrait 768×1344."
+                    "description": "Default \"square\" (1024×1024); an edit defaults to its first reference's shape. landscape is 1344×768, portrait 768×1344."
+                },
+                "reference_images": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": MAX_REFERENCES,
+                    "description": "Workspace paths of images to edit or draw from — an attached picture (inbox/...) or an earlier result (images/...). The first is the one being edited; refer to them as <image1>, <image2> in the prompt."
                 },
                 "seed": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "A seed from an earlier result keeps its composition while the prompt changes. Omit for a new image."
+                    "description": "Without reference_images, an earlier result's seed keeps its composition while the prompt changes. Omit it for a new image. An edit always uses a fresh seed, so it is ignored there."
                 }
             },
             "required": ["prompt"]
@@ -760,12 +1031,37 @@ impl Tool for ImageGenerate {
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
-        let req = match self.request(&input) {
-            Ok(req) => req,
+        let (mut req, paths) = match self.request(&input) {
+            Ok(parsed) => parsed,
             Err(why) => return Ok(ToolOutput::err(why)),
         };
+        // Before reading anything: up to a hundred megabytes of references is
+        // itself a cost on the pool this check guards.
         if let Err(why) = memory_verdict(mem_available_mb(), self.cfg.min_available_mb) {
             return Ok(ToolOutput::err(why));
+        }
+        req.references = match read_references(ctx, &paths).await {
+            Ok(references) => references,
+            Err(why) => return Ok(ToolOutput::err(why)),
+        };
+        // An edit always samples at a fresh seed. The seed that drew a picture
+        // starts from the noise that drew it, and the model redraws it rather
+        // than editing it — measured on 2026-09-25: four edits sampled at the
+        // reference's seed came back as near-copies on every model file
+        // tried; the same edit at a fresh seed was clean. Keyed on "this is an
+        // edit", not on recognising the file: a re-attached download or a
+        // renamed copy carries the same seed and no name to read it from
+        // (found on review of #306). Enforced here rather than asked for,
+        // because a text-to-image result tells the model its seed keeps the
+        // composition.
+        let mut reseeded = None;
+        if !req.references.is_empty() {
+            if let Some(asked) = input.get("seed").and_then(Value::as_u64) {
+                while req.seed == asked {
+                    req.seed = fresh_seed();
+                }
+                reseeded = Some(asked);
+            }
         }
         // A call that starts invalidates any idle timer already armed, so a
         // `/free` cannot land while this job is loading or running.
@@ -811,19 +1107,40 @@ impl Tool for ImageGenerate {
                 )))
             }
         };
-        Ok(ToolOutput::ok(format!(
-            "image: {path}\n\
-             Generated a {}×{} image in {} s (seed {}, {} steps) and saved it to {path} in the \
-             workspace. You cannot see it; the user can, so do not describe what it shows. To \
-             revise it, call image_generate again with an edited prompt and seed {} to keep \
-             the composition.",
-            req.width,
-            req.height,
-            started.elapsed().as_secs(),
-            req.seed,
-            req.steps,
-            req.seed
-        )))
+        let secs = started.elapsed().as_secs();
+        let size = match req.size {
+            Some((w, h)) => format!("{w}×{h}"),
+            None => "reference-shaped".to_string(),
+        };
+        let mut text = format!("image: {path}\n");
+        if req.references.is_empty() {
+            text.push_str(&format!(
+                "Generated a {size} image in {secs} s (seed {}, {} steps) and saved it to {path} \
+                 in the workspace. You cannot see it; the user can, so do not describe what it \
+                 shows. To revise it, call image_generate again with an edited prompt and seed {} \
+                 to keep the composition, or edit it by passing {path} in reference_images.",
+                req.seed, req.steps, req.seed
+            ));
+        } else {
+            let sources: Vec<&str> = req.references.iter().map(|r| r.path.as_str()).collect();
+            text.push_str(&format!(
+                "Edited {} into a {size} image in {secs} s (seed {}, {} steps) and saved it to \
+                 {path} in the workspace; the original is unchanged. You cannot see it; the user \
+                 can, so do not describe what it shows. To change it further, edit {path} next.",
+                sources.join(", "),
+                req.seed,
+                req.steps
+            ));
+        }
+        if let Some(asked) = reseeded {
+            text.push_str(&format!(
+                " (Seed {asked} was not used: an edit always starts from a fresh seed, because \
+                 the seed that drew a picture redraws it instead of editing it. Seed {} was \
+                 used.)",
+                req.seed
+            ));
+        }
+        Ok(ToolOutput::ok(text))
     }
 }
 
@@ -869,7 +1186,7 @@ mod tests {
         history: Vec<Value>,
         prompt_status: &'static str,
     ) -> (String, Arc<Mutex<Vec<String>>>) {
-        fake_running(history, prompt_status, true).await
+        fake_running(history, prompt_status, true, "temp").await
     }
 
     /// As [`fake`], with `GET /queue` reporting `job-1` as running or not —
@@ -878,12 +1195,16 @@ mod tests {
         history: Vec<Value>,
         prompt_status: &'static str,
         running: bool,
+        upload_type: &'static str,
     ) -> (String, Arc<Mutex<Vec<String>>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&seen);
         let history = Arc::new(Mutex::new(std::collections::VecDeque::from(history)));
+        // Like the real server: an interrupted job is written to the history
+        // only after `/interrupt` has answered.
+        let interrupted = Arc::new(std::sync::atomic::AtomicBool::new(false));
         tokio::spawn(async move {
             loop {
                 let Ok((mut sock, _)) = listener.accept().await else {
@@ -891,6 +1212,7 @@ mod tests {
                 };
                 let log = Arc::clone(&log);
                 let history = Arc::clone(&history);
+                let interrupted = Arc::clone(&interrupted);
                 tokio::spawn(async move {
                     let mut req = Vec::new();
                     let mut tmp = [0u8; 8192];
@@ -942,6 +1264,9 @@ mod tests {
                                 .to_string()
                                 .as_bytes(),
                         )
+                    } else if path.starts_with("/history/") && interrupted.load(Ordering::SeqCst) {
+                        json_reply(json!({"job-1": {"status": {"status_str": "error",
+                            "completed": false}, "outputs": {}}}))
                     } else if path.starts_with("/history/") {
                         let next = history.lock().unwrap().pop_front().unwrap_or(json!({}));
                         if next == json!("fail") {
@@ -951,6 +1276,11 @@ mod tests {
                         }
                     } else if path.starts_with("/view?") {
                         reply("200 OK", "image/png", PNG)
+                    } else if path == "/upload/image" {
+                        json_reply(json!({"name": "up.png", "subfolder": "", "type": upload_type}))
+                    } else if path == "/interrupt" {
+                        interrupted.store(true, Ordering::SeqCst);
+                        json_reply(json!({}))
                     } else if line.starts_with("GET /queue") {
                         let now = if running { "job-1" } else { "someone-else" };
                         json_reply(
@@ -1023,12 +1353,23 @@ mod tests {
         assert_eq!(caps.egress, crate::tool::Egress::None);
         // Runs in a read-only chat without an approval (the owner's ruling).
         assert!(t.read_only());
-        // And the schema has nowhere to put a destination.
+        // And the schema has nowhere to put a destination. `reference_images`
+        // names *sources*, and each goes through the path jail: reading a
+        // workspace file into a loopback server sends nothing anywhere.
         let schema = t.input_schema();
         let props = schema["properties"].as_object().unwrap();
         let mut keys: Vec<_> = props.keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["negative_prompt", "prompt", "seed", "size"]);
+        assert_eq!(
+            keys,
+            [
+                "negative_prompt",
+                "prompt",
+                "reference_images",
+                "seed",
+                "size"
+            ]
+        );
     }
 
     #[test]
@@ -1047,12 +1388,12 @@ mod tests {
         let req = Request {
             prompt: hostile.into(),
             negative: String::new(),
-            width: 1024,
-            height: 1024,
+            size: Some((1024, 1024)),
             steps: 40,
             seed: 7,
+            references: Vec::new(),
         };
-        let g = comfy_graph(&cfg, &req);
+        let g = comfy_graph(&cfg, &req, &[]);
         let mut classes: Vec<_> = g
             .as_object()
             .unwrap()
@@ -1114,14 +1455,81 @@ mod tests {
         assert!(t
             .request(&json!({"prompt": "x".repeat(PROMPT_CAP + 1)}))
             .is_err());
-        let r = t
+        assert!(t
+            .request(&json!({"prompt": "x", "reference_images": "images/a.png"}))
+            .is_err());
+        assert!(t
+            .request(&json!({"prompt": "x", "reference_images": [1]}))
+            .is_err());
+        let five = vec!["images/a.png"; MAX_REFERENCES + 1];
+        assert!(t
+            .request(&json!({"prompt": "x", "reference_images": five}))
+            .is_err());
+        let (r, paths) = t
             .request(&json!({"prompt": " a fox ", "size": "portrait", "seed": 3}))
             .unwrap();
         assert_eq!(
-            (r.prompt.as_str(), r.width, r.height, r.seed),
-            ("a fox", 768, 1344, 3)
+            (r.prompt.as_str(), r.size, r.seed, paths.len()),
+            ("a fox", Some((768, 1344)), 3, 0)
         );
         assert_eq!(r.steps, 40);
+        // No size: square for a new image, the reference's shape for an edit.
+        let (r, _) = t.request(&json!({"prompt": "x"})).unwrap();
+        assert_eq!(r.size, Some((1024, 1024)));
+        let (r, paths) = t
+            .request(&json!({"prompt": "x", "reference_images": ["inbox/me.jpg"]}))
+            .unwrap();
+        assert_eq!((r.size, paths), (None, vec!["inbox/me.jpg".to_string()]));
+    }
+
+    #[test]
+    fn an_edit_graph_loads_its_references_from_temp_and_samples_on_their_shape() {
+        let cfg = ImageConfig::default();
+        let req = Request {
+            prompt: "Keep <image1> unchanged except the jacket".into(),
+            negative: String::new(),
+            size: None,
+            steps: 40,
+            seed: 9,
+            references: Vec::new(),
+        };
+        let g = comfy_graph(&cfg, &req, &["a.png".into(), "b.jpg".into()]);
+        assert_eq!(g["ref1"]["class_type"], "LoadImage");
+        assert_eq!(g["ref1"]["inputs"]["image"], "a.png [temp]");
+        assert_eq!(g["ref2"]["inputs"]["image"], "b.jpg [temp]");
+        let enc = &g["encode"]["inputs"];
+        assert_eq!(enc["images.image_1"], json!(["ref1", 0]));
+        assert_eq!(enc["images.image_2"], json!(["ref2", 0]));
+        assert_eq!(enc["vae"], json!(["vae", 0]));
+        assert_eq!(g["sample"]["inputs"]["latent_image"], json!(["encode", 2]));
+        assert!(
+            g.get("latent").is_none(),
+            "no empty canvas when following the reference"
+        );
+        // A size asked for gets its own canvas even with references.
+        let sized = Request {
+            size: Some((1344, 768)),
+            ..req
+        };
+        let g = comfy_graph(&cfg, &sized, &["a.png".into()]);
+        assert_eq!(g["sample"]["inputs"]["latent_image"], json!(["latent", 0]));
+        assert_eq!(g["latent"]["inputs"]["width"], 1344);
+        // And text-to-image has no references, no VAE on the encoder.
+        let plain = Request {
+            size: Some((1024, 1024)),
+            ..sized
+        };
+        let g = comfy_graph(&cfg, &plain, &[]);
+        assert!(g.get("ref1").is_none() && g["encode"]["inputs"].get("vae").is_none());
+    }
+
+    #[test]
+    fn only_real_images_are_sniffed_as_images() {
+        assert_eq!(sniff_image(PNG), Some("png"));
+        assert_eq!(sniff_image(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0]), Some("jpg"));
+        assert_eq!(sniff_image(b"RIFF\0\0\0\0WEBPVP8 "), Some("webp"));
+        assert_eq!(sniff_image(b"<svg xmlns=..."), None);
+        assert_eq!(sniff_image(b"#!/bin/sh"), None);
     }
 
     #[tokio::test]
@@ -1199,6 +1607,21 @@ mod tests {
         assert!(seen
             .iter()
             .any(|l| l.starts_with("POST /interrupt") && l.contains("job-1")));
+        assert!(
+            seen.iter()
+                .any(|l| l.starts_with("POST /history") && l.contains("job-1")),
+            "a cancelled job left its prompt in the server's history"
+        );
+        // And the delete waited for the record: a history read sits between
+        // the interrupt and the delete, or the delete raced the record.
+        let at = |p: &str| seen.iter().position(|l| l.starts_with(p)).unwrap();
+        let (interrupt, delete) = (at("POST /interrupt"), at("POST /history"));
+        assert!(
+            seen[interrupt..delete]
+                .iter()
+                .any(|l| l.starts_with("GET /history/job-1")),
+            "the delete was sent before the interrupted job reached the history: {seen:?}"
+        );
         assert!(!dir.join("images").exists(), "nothing saved");
         std::fs::remove_dir_all(dir).ok();
     }
@@ -1208,7 +1631,7 @@ mod tests {
         // `job-1` is queued behind another call's job. Cancelling it must take
         // it off the queue and leave the running job alone — an older server
         // ignores `/interrupt`'s body and would stop whatever is executing.
-        let (url, seen) = fake_running(vec![], "200 OK", false).await;
+        let (url, seen) = fake_running(vec![], "200 OK", false, "temp").await;
         let dir = tempdir();
         let token = CancellationToken::new();
         let mut c = ctx(&dir);
@@ -1347,6 +1770,205 @@ mod tests {
         assert!(
             !reached.load(Ordering::SeqCst),
             "the client followed a redirect off the loopback address it was vetted for"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn an_attached_photo_is_edited_through_a_temp_upload() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("inbox/me.jpg"), [0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]).unwrap();
+        let out = tool(&url)
+            .call(
+                json!({"prompt": "Keep <image1> unchanged except: a sunset sky",
+                       "reference_images": ["inbox/me.jpg"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("Edited inbox/me.jpg"),
+            "{}",
+            out.content
+        );
+        let seen = seen.lock().unwrap().clone();
+        let upload = seen
+            .iter()
+            .find(|l| l.starts_with("POST /upload/image"))
+            .unwrap();
+        assert!(
+            upload.contains("name=\"type\"") && upload.contains("temp"),
+            "{upload}"
+        );
+        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        assert!(submitted.contains("up.png [temp]"), "{submitted}");
+        assert!(
+            std::fs::read(dir.join("inbox/me.jpg"))
+                .unwrap()
+                .starts_with(&[0xFF, 0xD8]),
+            "the original is untouched"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_reference_outside_the_workspace_or_not_an_image_is_refused_before_any_upload() {
+        let (url, seen) = fake(vec![], "200 OK").await;
+        let dir = tempdir();
+        std::fs::write(dir.join("notes.txt"), "just text").unwrap();
+        let t = tool(&url);
+        for bad in [
+            "../outside.png",
+            "/etc/hostname",
+            "notes.txt",
+            "missing.png",
+        ] {
+            let out = t
+                .call(
+                    json!({"prompt": "x", "reference_images": [bad]}),
+                    &ctx(&dir),
+                )
+                .await
+                .unwrap();
+            assert!(
+                out.is_error && out.content.contains(bad),
+                "{bad}: {}",
+                out.content
+            );
+        }
+        assert!(
+            !seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.contains("/upload/image") || l.contains("/prompt")),
+            "nothing reached the server"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn an_edit_never_samples_at_the_seed_it_was_given() {
+        // Wherever the reference came from: this tool's own result, or a
+        // re-attached copy under a name that carries no seed at all.
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("images/20260925-142604-7.png"), PNG).unwrap();
+        std::fs::write(dir.join("inbox/download.png"), PNG).unwrap();
+        for reference in ["images/20260925-142604-7.png", "inbox/download.png"] {
+            let (url, seen) = fake(vec![done()], "200 OK").await;
+            let out = tool(&url)
+                .call(
+                    json!({"prompt": "same fox, yellow raincoat", "seed": 7,
+                           "reference_images": [reference]}),
+                    &ctx(&dir),
+                )
+                .await
+                .unwrap();
+            assert!(!out.is_error, "{reference}: {}", out.content);
+            assert!(
+                out.content.contains("Seed 7 was not used"),
+                "{}",
+                out.content
+            );
+            let submitted = seen
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|l| l.starts_with("POST /prompt"))
+                .cloned()
+                .unwrap();
+            assert!(
+                !submitted.contains("\"seed\":7,"),
+                "{reference} sampled at the seed it was given: {submitted}"
+            );
+        }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_finished_job_is_dropped_from_the_servers_history() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let out = tool(&url)
+            .call(json!({"prompt": "a fox"}), &ctx(&dir))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.starts_with("POST /history") && l.contains("job-1")),
+            "the prompt was left in the server's history"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_fifo_named_as_a_reference_is_refused_rather_than_waited_on() {
+        use std::os::unix::fs::OpenOptionsExt;
+        let (url, _) = fake(vec![], "200 OK").await;
+        let dir = tempdir();
+        let fifo = dir.join("pipe.png");
+        let cpath = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
+        // SAFETY: a valid NUL-terminated path; mkfifo only creates the node.
+        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
+        let t = tool(&url);
+        let c = ctx(&dir);
+        let call = t.call(
+            json!({"prompt": "edit", "reference_images": ["pipe.png"]}),
+            &c,
+        );
+        let out = match tokio::time::timeout(Duration::from_secs(5), call).await {
+            Ok(out) => out.unwrap(),
+            Err(_) => {
+                // Release the reader stuck in `open` so the runtime can shut
+                // down, then fail rather than hang the suite.
+                let _ = std::fs::OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&fifo);
+                panic!("opening a FIFO blocked the call");
+            }
+        };
+        assert!(
+            out.is_error && out.content.contains("pipe.png"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn an_upload_filed_anywhere_but_temp_stops_the_job() {
+        let (url, seen) = fake_running(vec![done()], "200 OK", true, "input").await;
+        let dir = tempdir();
+        std::fs::write(dir.join("me.png"), PNG).unwrap();
+        let out = tool(&url)
+            .call(
+                json!({"prompt": "edit", "reference_images": ["me.png"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("rather than temp"),
+            "{}",
+            out.content
+        );
+        assert!(
+            !seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.starts_with("POST /prompt")),
+            "a job ran on a reference the server kept"
         );
         std::fs::remove_dir_all(dir).ok();
     }

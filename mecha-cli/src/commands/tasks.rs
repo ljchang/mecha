@@ -2619,11 +2619,21 @@ async fn work(
     // Not sniffed from stdin. A tty check would make the posture depend on
     // how the process happened to be launched, which is exactly the kind of
     // thing that is right in testing and wrong in the shipped unit file.
+    //
+    // The board row this run was handed, parsed once: the goal the rules
+    // block is matched toward, and the anchor seeded below when the
+    // conversation carries none.
+    let task_goal = super::run::structural_pointer(format!("task:{task_id}"));
     let opts = GlobalOpts {
         surface: Some(mecha_core::session::SessionKind::Task),
         // Delegated whatever the approver: attended or not, this run is the
         // lane whose closure would be its own verdict (D6, S8).
         run_posture: Some(mecha_core::closure::RunPosture::Delegated),
+        // The task, never the anchor a resumed session saved: the block is
+        // matched toward the row this run was handed, and the record keeps
+        // that (`RunConfig::rules_goal`) even where `--resume` keeps an
+        // older anchor below.
+        goal: task_goal.clone(),
         ..global.clone()
     };
     let mut prepared = setup::prepare(&opts, !unattended).await?;
@@ -2776,11 +2786,7 @@ async fn work(
     // anchor is the owner's earlier confirmation, and the board row, not the
     // anchor, is what this run was handed.
     if convo.goal_anchor.is_none() {
-        super::run::seed_goal_anchor(
-            &mut convo,
-            super::run::structural_pointer(format!("task:{task_id}")),
-            Some(&session),
-        )?;
+        super::run::seed_goal_anchor(&mut convo, task_goal, Some(&session))?;
     }
 
     // **D13.** `ask_user` is registered here, and only here, because this is

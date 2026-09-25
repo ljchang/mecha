@@ -124,6 +124,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let interactive = std::io::stdin().is_terminal() && !args.json;
     let opts = GlobalOpts {
         surface: Some(mecha_core::session::SessionKind::Run),
+        // The owner's `--goal`, the one this run is matched toward. A
+        // resume without it keeps the saved anchor (below) but declares no
+        // goal to `prepare`: the block is rendered before the session is
+        // read, and a key guessed from it would be one no match presented.
+        goal: args.goal.clone(),
         ..global.clone()
     };
     let mut prepared = setup::prepare(&opts, interactive).await?;
