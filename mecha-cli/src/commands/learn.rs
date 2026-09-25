@@ -843,7 +843,10 @@ fn widened(
     let keys = |r: &mecha_core::learning::Rule| {
         r.scope.as_ref().map_or(0, |s| {
             let s = s.scope();
-            s.tools.len() + usize::from(s.workspace.is_some()) + usize::from(s.surface.is_some())
+            s.tools.len()
+                + usize::from(s.workspace.is_some())
+                + usize::from(s.surface.is_some())
+                + usize::from(s.goal.is_some())
         })
     };
     after
@@ -899,11 +902,24 @@ mod tests {
             )),
             ..scoped(id, tools)
         };
+        let toward = |id: &str, tools: &[&str], g: &str| Rule {
+            scope: Some(
+                Situation::of_run(
+                    &tools.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
+                    None,
+                )
+                .toward(Some(mecha_core::situation::GoalKey::Named(
+                    g.parse().unwrap(),
+                ))),
+            ),
+            ..scoped(id, tools)
+        };
         let before = vec![
             scoped("a", &["shell"]),
             scoped("b", &["fs_read"]),
             scoped("d", &["shell"]),
             at("e", &["shell"], "/a"),
+            toward("f", &["shell"], "trigger:morning"),
         ];
         let mut after = vec![
             scoped("a", &[]),
@@ -914,6 +930,8 @@ mod tests {
             // Same tools, workspace dropped: a widening, and one the
             // tool count alone could not see (fails on the old closure).
             scoped("e", &["shell"]),
+            // Same tools, goal dropped: a widening too.
+            scoped("f", &["shell"]),
         ];
         after.push(Rule {
             text: "No id.".into(),
@@ -931,6 +949,11 @@ mod tests {
                 (
                     "Rule e.".to_string(),
                     "shell · /a".to_string(),
+                    "shell".to_string()
+                ),
+                (
+                    "Rule f.".to_string(),
+                    "shell · for trigger:morning".to_string(),
                     "shell".to_string()
                 ),
             ]
