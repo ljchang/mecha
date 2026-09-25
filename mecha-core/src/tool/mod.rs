@@ -642,6 +642,11 @@ pub struct ToolCtx {
     pub verified_steps: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     pub plan_feedback: Option<std::sync::Arc<std::sync::Mutex<crate::planning::Feedback>>>,
     pub goal_readings: Option<Vec<crate::reading::LineReading>>,
+    /// The run's pending commitments with their own guilt, as the run began
+    /// (`Homeostat::in_run_commitments`, S7) — what `Decision::assess`
+    /// keys `ReviewCommitment` on. Harness-only, like `goal_readings`: no
+    /// value here is ever rendered into a request.
+    pub goal_commitments: Option<Vec<crate::guilt::StoreGuilt>>,
     pub goal_guidance: bool,
     pub goal_lessons: Vec<crate::planning::Lesson>,
     pub goal_examples: Vec<crate::planning::Example>,
@@ -827,6 +832,7 @@ impl Default for ToolCtx {
             verified_steps: Default::default(),
             plan_feedback: None,
             goal_readings: None,
+            goal_commitments: None,
             goal_guidance: false,
             goal_lessons: Vec::new(),
             goal_examples: Vec::new(),

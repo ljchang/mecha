@@ -780,6 +780,61 @@ one* (§7.4) — the unification changes which code computes guilt, not what may
 create a row. The wire formats are append-only, so the two old commitment
 shapes and the scalar stay readable leniently. Ruling R12.
 
+*Built as 1f:* `guilt::read_commitments` gives each staged draft, parked
+question and front-door request waiting on the owner its own value —
+`reading::excess` of its age over its patience (`doctor::Patience::for_store`:
+the age-kind line's setpoint on that store, else the doctor's 48h / 24h /
+72h) × `guilt::weight(rank)` = `1 / (1 + rank)`, a store no line watches
+ranked one past the last line — recorded per store on
+`Homeostat::commitments`, and `Homeostat::anticipated_guilt` is now
+`guilt::readout`, their maximum, taken at run start. Old rows keep the
+retired fold's number in the same field and still load;
+`Corpus::mean_anticipated_guilt` averages only rows carrying `commitments`,
+so the brief's mean is one formula's; `guilt_after_relief` is no longer
+written. `Decision`'s `ReviewCommitment` keys an age kind's line on its
+store's per-commitment guilt (`ToolCtx::goal_commitments`, through
+`Homeostat::in_run_commitments`, which drops a withdrawn line's store), and
+no consumer reads the readout — its one reader is the diagnostician's brief,
+whose line no longer says guilt moves with pressure. `workflow::Commitment`
+carries `expectation` and `consequence`, optional on the wire and written
+by `mecha workflow commit`. The invariants are `docs/ARCHITECTURE.md`'s
+"Guilt is per commitment". Left for later, named:
+
+- **The on-disk merge of the two commitment shapes — ruled, and built as
+  1f-2.** **Ruled by the owner 2026-09-25: new writes only, no
+  migration** — new predictions write the `workflow::Commitment` record;
+  the old `anticipation::Commitment` shapes stay on disk and are read
+  leniently; nothing is rewritten. The leniency is load-bearing: a
+  prediction whose evidence stops parsing reads as unsupported history and
+  blocks release. **And ruling (b), the same day**, on the shape question
+  building it raised — the record required `source`, `due_at` and
+  `follow_up_at`, which owner evidence never had: the two dates become
+  optional on `workflow::Commitment`, an absent one meaning "no deadline
+  stated" (never overdue, never due for follow-up, never read as zero);
+  `source` is the structural pointer the evidence is attached to, never
+  model text; nothing machine-derived states a "by when"; and old evidence
+  files keep working unchanged as input. *Built as 1f-2:* evidence carries
+  `anticipation::RecordedCommitment` (`Record` | `Legacy`, each written back
+  in its own shape); `Evidence::into_record` — called by
+  `BoundEvidence::new` and `OutboxStore::anticipate`, the only doors owner
+  evidence enters by — writes the record with the beneficiary as party
+  and the evidence's goal pointer as source; every reader of the dates
+  goes through `Commitment::overdue` / `follow_up_due`; the web Today page
+  says "no deadline stated". **Dates are only ever the owner's** (ruled on
+  review of #304, 2026-09-25): a legacy-shaped commitment gets no date; a
+  record-shaped one carries only the dates the owner wrote, passed through
+  unchanged, which is consistent with (b) because they are owner-stated,
+  not machine-derived; and the harness never supplies a date. `mecha
+  workflow commit` still requires its dates (`docs/ARCHITECTURE.md`,
+  "Every new prediction's commitment is the one record").
+- **Workflow commitments in the guilt read.** No charter kind watches the
+  workflow store and the doctor has no constant for it; the commitment's
+  own `due_at` is the natural patience, which is a design choice, and the
+  store is absent on the live install.
+- **G2, A1, U1 and the retrospective label** read the same per-commitment
+  value when they are built (phases 3–4); nothing here builds them, and
+  `StoreGuilt` is the shape they read.
+
 #### X1. Keep the verdicts — extended by O4
 
 Every steer and validation probe writes a

@@ -1998,6 +1998,12 @@ only part that knows about both sides. Three decisions there:
   path, and a same-named sibling under the producer root is the wrong-bytes
   case to keep in mind when reviewing a Slack-staged publish.
 
+The board's taps (**Done**, **Drop**, **Next** on the `tasks` listing) are
+closures like any other surface's: they run `mecha tasks set` with `--surface
+slack`, are refused on a task closed since the card was composed, and reply
+with the closure record's readout — see *Closing a task is a recorded event*
+under Hooks.
+
 Reconnect is **make-before-break**: Slack rotates connections every few hours
 with about ten seconds' warning, and the replacement opens before the old one
 drains so no frame has nowhere to land. `link_disabled` is the exception —
@@ -2380,6 +2386,32 @@ now makes the move one recorded event:
   #293).
 - **`--surface` cannot claim `chat`**, and inside a run the flag is ignored:
   the surface of a run's closure is always `chat`.
+- **Slack closes with Done and Drop** (1c; `slack::actions::Action::TaskDone`
+  / `TaskDrop`, beside `TaskNext`). Each derives `mecha tasks set <id>
+  --status <literal> --surface slack --only-open`; the connector is a
+  systemd unit and no registered shell is above its child, so the tap is
+  rule 4 — the owner, on surface `slack` — and nothing a thread's model
+  authors can press it (the tap is a gated, signed owner, SLACK-ACTIONS §3).
+  **`--only-open` is the store-state guard SLACK-ACTIONS §5 asks of every
+  tap:** a card composed while the task was open, tapped after it was closed
+  elsewhere, is refused with nothing changed — Drop on a `done` task would
+  otherwise flip the verdict with no record (it crosses no line), and Next
+  would reopen it, which signs −1.0 against the session that did the work.
+  **The reply carries the readout from the record**, not from the child:
+  the executor parses only stdout (`kg_task_update`'s answer) and reads
+  stderr only on failure, so the appraisal printed there never reached
+  Slack. It now reads `ClosureStore::move_since` — the latest transition,
+  to the tapped status, written no earlier than the tap began, the same
+  bound the web board uses — and says which of *readout*, *nothing to
+  appraise*, *no readout written*, *no record found* or *unreadable* it is.
+- **The graph TUI closes through `tasks set` when opted in** (1c's graph
+  half, ruled A3 on 2026-09-25; ljchang/mecha-graph#21). With `[board]
+  close_through = "mecha"` in `~/.mecha-graph/config.toml`, `mecha-graph
+  tui` hands every close and reopen to `mecha tasks set … --surface
+  graph-tui` (`--only-open` on a close) and refuses — nothing written — when
+  the program is missing or the TUI is not on the default graph database.
+  Not opted in, it writes status directly as before, and that write is
+  still out of band: `settle_uncertain`'s three-way read exists for it.
 - **Reopen is the same event reversed** (`move: reopen`, `undoes` naming the
   closure it undoes) and fires `task_reopened`. The appraisal reads both back
   (1d, `appraisal::of_session`'s closure arm): a standing `done` closure is
@@ -4019,12 +4051,12 @@ when touching it:
   `Unread`, not `Nothing`: `Corpus::scan` is `Ok` with `unreadable` counted
   and no rows for that, and the first cut read it as "no runs recorded"
   (found on review). `excess` is `e / (e + setpoint)` over the overshoot — zero within
-  the setpoint, half of maximal at twice it, never one — for the reason
-  `guilt::AGE_HALF_AT_HOURS` carries: a term that reaches `1.0` erases the
+  the setpoint, half of maximal at twice it, never one — for the reason the
+  retired guilt fold learned twice: a term that reaches `1.0` erases the
   others and the corpus reads a constant. A zero setpoint is refused at the
   parser, because nothing could ever be within it. **Recorded on
   `Homeostat::charter` at the start of every run**, from the *inherited*
-  backlog like `anticipated_guilt` (the charter is loaded there, global and
+  backlog like per-commitment guilt (the charter is loaded there, global and
   read-only, whether or not the prompt carried it); `None` is a row from
   before the field or a charter that did not load, `Some([])` a charter with
   no sensor, and a row whose readings this binary cannot parse loads as
@@ -4076,6 +4108,89 @@ when touching it:
   history. `sessions health` shows each line's level over-count beside
   the per-item variances and the delta counts (`charter_readings` in
   `--json`), the phase-1 readout this first produced.
+- **Guilt is per commitment, and the scalar is a readout (S7, R12, built as
+  1f).** A staged draft, a parked question and a front-door request
+  waiting on the owner are commitments **by construction** — a row in one
+  of those stores *is* the recorded commitment, so nothing new may create
+  one and a claim in fetched text still cannot (§7.4 did not move).
+  `guilt::read_commitments` reads them from the same `Backlog::survey` the
+  readings come from and gives each its own value: `reading::excess` of
+  its age over its **patience** — `doctor::Patience::for_store`, the one
+  definition the doctor's stuck-item findings use, so the owner's age-kind
+  setpoint on that store or else the harness constant (48h, 24h, 72h) —
+  times `guilt::weight` of the **rank** of that line, `1 / (1 + rank)`,
+  with a store no line watches ranked one past the last line (it must not
+  outweigh a store the owner put third; with no charter, weight one). The
+  front door is read as `requests_on_owner`, so a `needs_info` parked on
+  the stranger owes nothing — the retired scalar counted it. Recorded on
+  `Homeostat::commitments` per store (`guilt::StoreGuilt`: line, patience
+  as spelled, weight, `waiting` — `None` when unreadable — the undated
+  count, and up to `COMMITMENTS_RECORDED` items, oldest first and undated
+  last, so the cap never drops a known overdue commitment for ones of
+  unknown standing — found on review, when undated-first let 32 torn stamps
+  hide every overdue draft from `any_owed`); `None` when the charter did
+  not load, since patience and rank both come
+  from it. `Homeostat::anticipated_guilt` is now `guilt::readout`, the
+  largest per-commitment value (`None` when any store's maximum is
+  unknown), taken **at the start** off what the run inherited — `finish`
+  only takes the delta, and `guilt_after_relief` is no longer written.
+  Two formulas share the field, and `commitments` tells them apart: a
+  pre-1f row holds the old three-store OR (count, oldest age, context
+  pressure) and still loads, and `Corpus::mean_anticipated_guilt` averages
+  only rows that carry `commitments`, so the brief's mean is one formula's.
+  **No consumer reads the readout.** `Decision::assess` keys
+  `ReviewCommitment` for an age kind's line on `StoreGuilt::any_owed` of the
+  store that line weighs (handed in through `ToolCtx::goal_commitments`,
+  filled from `Homeostat::in_run_commitments`, which drops the store of a
+  withdrawn line beside the line), records the store's maximum as
+  `Gap::guilt`, and keeps the count kind on `Items::over` and the corpus
+  kind on its level; with no per-commitment record it falls back to
+  `Items::over`, which agrees for every age kind. The one reader of the
+  readout is the diagnostician's brief. `workflow::Commitment` carries the
+  absorbed `expectation` and `consequence` (optional on the wire, written
+  by `mecha workflow commit --expectation/--consequence`); the workflow
+  store's commitments are not yet read for guilt — no charter kind and no
+  doctor constant gives them a patience.
+- **Every new prediction's commitment is the one record, and the legacy
+  shape is read, never rewritten (1f-2; rulings 2026-09-25: new writes
+  only, no migration, and (b) optional dates).** Appraisal evidence
+  carries `anticipation::RecordedCommitment`, an untagged enum: `Record`
+  (`workflow::Commitment`, read through a strict mirror so an unknown key
+  is refused as all owner evidence refuses one) tried first, `Legacy`
+  (`anticipation::Commitment`, `{beneficiary, expectation, consequence}`)
+  second. Each serialises in its own shape, so a prediction an older
+  binary recorded reads as known history, assesses exactly as before
+  (`assess` only asks whether a commitment is there) and is written back
+  byte-for-byte when its draft is rewritten for another reason — if the
+  legacy arm ever stopped parsing, the prediction would become
+  `History::Unknown` and block release until reassessed. **The new-write
+  door is `Evidence::into_record`**, called by the two places owner
+  evidence enters — `BoundEvidence::new` (a run's `--appraisal-evidence`,
+  and through `for_draft` every draft that run stages) and
+  `OutboxStore::anticipate` (`mecha outbox anticipate`). It turns a
+  legacy-shaped commitment into the record with the beneficiary as
+  `party`, the evidence's **goal pointer as `source`** (structural, never
+  text; a record given as input must already point there). **Dates are
+  only ever the owner's** (ruled 2026-09-25): a legacy-shaped commitment
+  gets **no date**, since that shape has none to carry; a record-shaped
+  commitment carries **only the `due_at` / `follow_up_at` the owner wrote**,
+  passed through unchanged (checked only that follow-up is no later than
+  due); and **the harness never supplies one** — no "by when" is derived
+  from `time_available_secs` or anything else. It reshapes a commitment the
+  owner wrote; it creates none, so §7.4 does not move. Harness-authored
+  evidence (the staging default, `Decision::assess`) carries no
+  commitment at all.
+- **An absent commitment date means "no deadline stated", and a dash is
+  never a time.** `workflow::Commitment::due_at` and `follow_up_at` are
+  `Option` (ruling (b)), skipped when absent so a dated row written before
+  the change round-trips byte-identical. Every reader goes through
+  `Commitment::overdue` / `Commitment::follow_up_due`, which answer `false`
+  for an undated commitment: `Workflow::section` never files it as urgent,
+  `Workflow::tick` never raises a follow-up notice for it, and the web
+  Today page says "no deadline stated" (`web/src/lib/commitment.js`)
+  where it used to render `new Date(undefined)`. `mecha workflow commit`
+  still requires both dates; an evidence commitment is undated unless the
+  owner wrote dates on a record-shaped one.
 - **The doctor reads against the owner's number, and names the line.**
   `doctor::Patience` is the harness constant (48h drafts, 24h questions, 72h
   requests) or the setpoint of the charter line whose sensor watches that
@@ -4324,27 +4439,32 @@ refuse unsupported evidence-bearing runs until reconstruction is implemented.
 Silently dropping evidence would turn a different decision context into a false
 counterfactual result. Forecast calibration and efficacy remain unmeasured.
 
-**The backlog anticipated-guilt sensor reads only stores mecha itself writes.** An expectation is a
-*recorded* commitment (`outbox`, `questions`, `frontdoor` — exactly `backlog`'s
-own three), never a claimed one. That is the whole safety argument for §7.2's
-attack: a charter line like "don't let a colleague down" is a lever an injection
-can pull only if guilt can be talked into existing, and a sentence in a fetched
-page cannot write a row into `OutboxStore`. Do not widen this to the graph's
-`due_at` without also paying for a subprocess in the path of every run.
+**Anticipated guilt reads only stores mecha itself writes.** An expectation is a
+*recorded* commitment (`outbox`, `questions`, the front door's requests waiting
+on the owner — `backlog`'s own three), never a claimed one. That is the whole
+safety argument for §7.2's attack: a charter line like "don't let a colleague
+down" is a lever an injection can pull only if guilt can be talked into
+existing, and a sentence in a fetched page cannot write a row into
+`OutboxStore`. 1f moved guilt to one value per commitment and moved nothing
+about what may create one. Do not widen this to the graph's `due_at` without
+also paying for a subprocess in the path of every run.
 
-**Two sensors have a reader and no behavioural consumer, on purpose** — the
-homeostat's recorded pressure and `anticipated_guilt` are recorded on every
-run and rendered into the diagnostician's brief (`diagnose::Evidence`: peak
-pressure, mean guilt; withheld when `[agent] sensors_in_brief` is off, a
-stage lever), and nothing narrows a run on either. **Keep the two guilts
-apart.** `anticipated_guilt` is one scalar over the whole backlog's count
-and oldest age, and on a store with stale drafts it saturates (0.95–1.0 on
-every live run as of 2026-09-24). The charter reading (`Homeostat::charter`,
-`reading.rs`'s line-specific guilt) is per sensored line against the owner's
-setpoint, and it has more readers than the brief: `Decision::assess`, whose
-advice reaches the model only with `goal_guidance` and which reads the
-per-item form of every line not withdrawn as saturated, the doctor's
-saturation finding, and the owner's charter surfaces. Boredom's notices do reach the model,
+**Two readouts have a reader and no behavioural consumer, on purpose** — the
+homeostat's recorded pressure and the `anticipated_guilt` readout are recorded
+on every run and rendered into the diagnostician's brief (`diagnose::Evidence`:
+peak pressure, mean guilt; withheld when `[agent] sensors_in_brief` is off, a
+stage lever), and nothing narrows a run on either. **The guilt a consumer reads
+is per commitment** (`Homeostat::commitments`, the bullet above): the readout
+is only their maximum, and the scalar it replaced — one OR over the whole
+backlog's count, oldest age and context pressure — read 0.95–1.0 on every live
+run as of 2026-09-24, because the oldest draft pinned it. Since 1f the brief's
+guilt line no longer says it moves with pressure; it does not. The charter
+reading (`Homeostat::charter`, `reading.rs`'s line-specific level) is per
+sensored line against the owner's setpoint, and it has more readers than the
+brief: `Decision::assess`, whose advice reaches the model only with
+`goal_guidance` and which reads per-commitment guilt for an age kind's line and
+the per-item form of the others, for every line not withdrawn as saturated, the
+doctor's saturation finding, and the owner's charter surfaces. Boredom's notices do reach the model,
 in-run, as a templated line; they are the one sensor here with a consumer.
 An earlier version of this paragraph said all three shipped with no consumer,
 which was false against the tree by the time it was written. `runlog`'s rule
@@ -4563,9 +4683,11 @@ pins `Message::planning`, and
 pins block text — a fixture run with every sensor kind past its setpoint and
 `goal_guidance` on is steered, recorded to a session file, resumed, and every
 request it sent is scanned through both encoders' whole bodies (system prompt
-and tool specs included) for every rendering of its readings, setpoints, guilt,
-load and valence (`LineReading::summary`, `render_secs`, `Valence::compact`,
-fixed precisions, the stored JSON). Its control,
+and tool specs included) for every rendering of its readings, setpoints, guilt
+(the readout and every non-zero per-commitment value, which the fixture's
+stores each hold past their patience — and which also ride as `Gap::guilt`
+planning metadata), load and valence (`LineReading::summary`, `render_secs`,
+`Valence::compact`, fixed precisions, the stored JSON). Its control,
 `a_status_line_carrying_a_sensor_reading_is_caught_in_a_tool_result_or_a_user_turn`,
 injects each rendering into a tool result and a user turn and requires the scan
 to catch it out of both, so the run test's silence is a finding. Budget facts —
