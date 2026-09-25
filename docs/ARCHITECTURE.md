@@ -4055,12 +4055,44 @@ when touching it:
   `Items::over`, which agrees for every age kind. The one reader of the
   readout is the diagnostician's brief. `workflow::Commitment` carries the
   absorbed `expectation` and `consequence` (optional on the wire, written
-  by `mecha workflow commit --expectation/--consequence`), while
-  `anticipation::Commitment` keeps its own shape on the predictions it is
-  already recorded on — ruled 2026-09-25 as new writes only, no migration,
-  with the switch of new predictions owed as a follow-up PR (the design
-  doc's S7 entry); the workflow store's commitments are not yet read
-  for guilt — no charter kind and no doctor constant gives them a patience.
+  by `mecha workflow commit --expectation/--consequence`); the workflow
+  store's commitments are not yet read for guilt — no charter kind and no
+  doctor constant gives them a patience.
+- **Every new prediction's commitment is the one record, and the legacy
+  shape is read, never rewritten (1f-2; rulings 2026-09-25: new writes
+  only, no migration, and (b) optional dates).** Appraisal evidence
+  carries `anticipation::RecordedCommitment`, an untagged enum: `Record`
+  (`workflow::Commitment`, read through a strict mirror so an unknown key
+  is refused as all owner evidence refuses one) tried first, `Legacy`
+  (`anticipation::Commitment`, `{beneficiary, expectation, consequence}`)
+  second. Each serialises in its own shape, so a prediction an older
+  binary recorded reads as known history, assesses exactly as before
+  (`assess` only asks whether a commitment is there) and is written back
+  byte-for-byte when its draft is rewritten for another reason — if the
+  legacy arm ever stopped parsing, the prediction would become
+  `History::Unknown` and block release until reassessed. **The new-write
+  door is `Evidence::into_record`**, called by the two places owner
+  evidence enters — `BoundEvidence::new` (a run's `--appraisal-evidence`,
+  and through `for_draft` every draft that run stages) and
+  `OutboxStore::anticipate` (`mecha outbox anticipate`). It turns a
+  legacy-shaped commitment into the record with the beneficiary as
+  `party`, the evidence's **goal pointer as `source`** (structural, never
+  text; a record given as input must already point there), and **no
+  date**: an evidence file names none, and nothing derives a "by when" —
+  not `time_available_secs`, not anything. It reshapes a commitment the
+  owner wrote; it creates none, so §7.4 does not move. Harness-authored
+  evidence (the staging default, `Decision::assess`) carries no
+  commitment at all.
+- **An absent commitment date means "no deadline stated", and a dash is
+  never a time.** `workflow::Commitment::due_at` and `follow_up_at` are
+  `Option` (ruling (b)), skipped when absent so a dated row written before
+  the change round-trips byte-identical. Every reader goes through
+  `Commitment::overdue` / `Commitment::follow_up_due`, which answer `false`
+  for an undated commitment: `Workflow::section` never files it as urgent,
+  `Workflow::tick` never raises a follow-up notice for it, and the web
+  Today page says "no deadline stated" (`web/src/lib/commitment.js`)
+  where it used to render `new Date(undefined)`. `mecha workflow commit`
+  still requires both dates — only evidence commitments are undated.
 - **The doctor reads against the owner's number, and names the line.**
   `doctor::Patience` is the harness constant (48h drafts, 24h questions, 72h
   requests) or the setpoint of the charter line whose sensor watches that
