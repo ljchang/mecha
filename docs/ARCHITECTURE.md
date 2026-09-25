@@ -4000,8 +4000,11 @@ when touching it:
   the stranger owes nothing — the retired scalar counted it. Recorded on
   `Homeostat::commitments` per store (`guilt::StoreGuilt`: line, patience
   as spelled, weight, `waiting` — `None` when unreadable — the undated
-  count, and up to `COMMITMENTS_RECORDED` items, undated first, then oldest);
-  `None` when the charter did not load, since patience and rank both come
+  count, and up to `COMMITMENTS_RECORDED` items, oldest first and undated
+  last, so the cap never drops a known overdue commitment for ones of
+  unknown standing — found on review, when undated-first let 32 torn stamps
+  hide every overdue draft from `any_owed`); `None` when the charter did
+  not load, since patience and rank both come
   from it. `Homeostat::anticipated_guilt` is now `guilt::readout`, the
   largest per-commitment value (`None` when any store's maximum is
   unknown), taken **at the start** off what the run inherited — `finish`
@@ -4022,7 +4025,9 @@ when touching it:
   absorbed `expectation` and `consequence` (optional on the wire, written
   by `mecha workflow commit --expectation/--consequence`), while
   `anticipation::Commitment` keeps its own shape on the predictions it is
-  already recorded on; the workflow store's commitments are not yet read
+  already recorded on — ruled 2026-09-25 as new writes only, no migration,
+  with the switch of new predictions owed as a follow-up PR (the design
+  doc's S7 entry); the workflow store's commitments are not yet read
   for guilt — no charter kind and no doctor constant gives them a patience.
 - **The doctor reads against the owner's number, and names the line.**
   `doctor::Patience` is the harness constant (48h drafts, 24h questions, 72h

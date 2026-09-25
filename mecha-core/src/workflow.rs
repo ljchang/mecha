@@ -48,8 +48,10 @@ pub struct Event {
 ///
 /// Both absorbed fields are optional on the wire, so a row written before
 /// them loads unchanged. `anticipation::Commitment` keeps its own shape on
-/// the predictions it is already recorded on; whether those records move
-/// onto this one is not decided here.
+/// the predictions it is already recorded on. Ruled 2026-09-25 (new writes
+/// only, no migration): new predictions will write this record, the old
+/// shape stays on disk and is read leniently, and nothing is rewritten —
+/// owed as a follow-up to 1f (the design doc's S7 entry).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Commitment {
     pub party: String,
