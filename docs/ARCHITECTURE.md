@@ -4183,7 +4183,9 @@ when touching it:
   and the G4 scan below fails if any field, pointer, count or word of it
   reaches either encoder. Five things to keep. **The board is
   read by the harness** (`setup::read_board_for_brief`, one `kg_task_list`
-  through the run's own surface whose answer never enters the conversation;
+  through the run's own surface whose answer never enters the conversation
+  as a tool result — with delivery on, what enters is `render`'s words, and
+  what that means for taint is the delivery bullet's open question;
   the same open-only read on every door — `tasks work` once reused its
   closed-inclusive read, whose `truncated` could be set by closed history
   alone — and, like every harness call to a tool, outside `pre_tool` hooks,
@@ -4255,8 +4257,10 @@ when touching it:
   task ids are pointers off the harness's own read and appear as they are;
   the commitments — the stores the charter's sensors read — are band words
   ("a few", "several"), age bands ("over a week") and past the owner's
-  patience or not, so that line carries **no digit at all** (no count, age,
-  patience or owed tally); a served line's rank is "the owner's
+  patience or not, so that line prints **no number of its own** (no count,
+  age, patience or owed tally — the only digits it can hold are in the
+  charter line id it points at, the owner's spelling); a served line's rank
+  is "the owner's
   highest-ranked" or not, never its position; the quiet hours are inside or
   outside, not their bounds; the time of day is a band; a voice call is in
   progress or not, not its seconds. **Unknown is said**: a field its reader
@@ -4294,16 +4298,27 @@ when touching it:
   when the run is recorded or delivery is on, with the interactive board
   deadline at a terminal. The artifact-repeat probe refuses a recording made
   with delivery on (`mismatch::validate_recording`), since its context
-  carries no brief. **Delivery arms no taint, by construction rather than
-  by exemption**: nothing in the words came from outside (no board row's
-  prose, no server's error text — `board_of` and every `Unread { why }`
-  are harness-authored, and the render drops even the `why`), so the
-  untrusted axis has nothing to key on; and what is private in them is
-  counts, bands and harness-minted ids, the same class of standing context
-  the charter block and the calendar reference already carry into every run
-  unarmed. Arming `private_data` on delivery would also confound the arm it
-  exists for: every lever-on run would start half-armed, and the
-  comparison would measure interlock friction rather than the brief. **Latency is unchanged by delivery**: each door
+  carries no brief. **Delivery arms no taint today, and whether it should
+  is the owner's open question** (review of #309). The untrusted axis has
+  nothing to key on: nothing in the words came from outside — no board
+  row's prose, no server's error text; `board_of` narrows every value and
+  the render drops even the `why`. The private axis is the question. With
+  the lever on, board ids, commitment bands, the owner's quiet hours, seat
+  holders and runs in flight enter the conversation without arming
+  `private`, where fetching the same through `kg_task_list` arms it — so a
+  run that later arms `untrusted` could encode them into an `Egress::Chosen`
+  destination the interlock would otherwise refuse. The precedents cut both
+  ways: the charter block and a delegated task's own prompt (its name
+  included) ride unarmed; a `kg_*` read arms. Arming on delivery would make
+  every lever-on run start half-armed, so an arm would measure interlock
+  friction beside the brief. The lever ships off, so nothing is exposed
+  until the owner rules, and the ruling belongs in `docs/TRIFECTA.md`.
+  **Every stale brief says it is superseded**: a web chat can hold several,
+  with no instants to rank them and no system-prompt guidance possible
+  without touching the prefix, so each block's header says a later brief in
+  the conversation replaces it (review of #309). `mecha run --json` at a
+  terminal counts as unattended and takes the 10s board deadline, so a hung
+  graph server can add up to that to a recorded scripted one-shot's start. **Latency is unchanged by delivery**: each door
   assembles once per run (the web door once per turn, inside the joined 2s
   window 1h set), and the render is a pure function over the record — now
   that the brief is read, the 2s bound is what a person pays for it, and

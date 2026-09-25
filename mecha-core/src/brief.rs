@@ -31,9 +31,13 @@
 //! counts and pointers** ([`board_of`]). A model fetching the same rows
 //! through `kg_*` inside the run would arm taint (the graph server is
 //! registered untrusted); a harness call whose answer never enters the
-//! conversation arms nothing. No prose from a board row enters the brief —
-//! not a task's name, not who it waits on — only ids the board minted,
-//! counts, statuses and dates.
+//! conversation as a tool result arms nothing. No prose from a board row
+//! enters the brief — not a task's name, not who it waits on — only ids the
+//! board minted, counts, statuses and dates. **With delivery on, those
+//! counts and ids do enter the conversation, as [`render`]'s words, and arm
+//! no taint** — nothing in them came from outside, but the private axis is
+//! an open question for the owner (`docs/ARCHITECTURE.md`, the brief's
+//! delivery bullet); the lever ships off until it is answered.
 //!
 //! Deferred, named: the owner's recent activity across surfaces (B1 names it,
 //! the 1h row does not), past appraisals of the same situation (I2, phase
@@ -1381,7 +1385,8 @@ pub const BRIEF_STEM: &str = "Situation brief from the harness";
 /// waiting on the owner (the stores the charter's sensors read) are counted
 /// in band words ("a few", "several"), aged in bands ("over a week"), and
 /// said to be past the owner's patience or not — never a count, an age, a
-/// patience or a guilt value, and so no digit at all in that line; a served
+/// patience or a guilt value: the only numerals that line can hold are in
+/// the charter line id it points at, which the owner wrote; a served
 /// charter line's rank is "the owner's highest-ranked" or not, never its
 /// position. The quiet hours are inside or outside, not their bounds; the
 /// time of day is a band; a voice call is in progress or not, not how many
@@ -1402,7 +1407,7 @@ pub const BRIEF_STEM: &str = "Situation brief from the harness";
 /// situation costs nothing.
 pub fn render(brief: &SituationBrief) -> String {
     let mut lines = vec![format!(
-        "{BRIEF_STEM}, as things stood when this run started. It describes; it asks nothing of you."
+        "{BRIEF_STEM}, as things stood when this run started; a later situation brief in this conversation replaces it. It describes; it asks nothing of you."
     )];
     let missing = |field: &str| format!("- {field}: not on this run's record.");
     lines.push(match &brief.goal {
@@ -1679,8 +1684,9 @@ fn commitments_line(c: &Commitments) -> String {
 }
 
 /// One store in words: how many, how old the oldest, how many past the
-/// owner's patience — each a band or a yes/no, so this line carries no
-/// digit (R21: these are the stores the charter's sensors read).
+/// owner's patience — each a band or a yes/no, so this line prints no
+/// number of its own (R21: these are the stores the charter's sensors
+/// read); the line id it points at is the owner's spelling, digits and all.
 fn store_words(s: &StoreBrief) -> String {
     let (one, many) = store_nouns(s.store);
     let n = match s.waiting {
@@ -2785,6 +2791,15 @@ mod tests {
     fn a_rendered_brief_is_words_pointers_and_budget_facts() {
         let r = render(&read_brief());
         assert!(r.starts_with(BRIEF_STEM), "{r}");
+        // A web chat can hold several; with no instants to rank them, each
+        // says a later one replaces it (review of #309).
+        assert!(
+            r.lines()
+                .next()
+                .unwrap()
+                .contains("a later situation brief in this conversation replaces it"),
+            "{r}"
+        );
         assert!(
             crate::agent::is_harness_voice(&r),
             "the brief is the harness speaking, never the owner"
@@ -2853,9 +2868,12 @@ mod tests {
     }
 
     /// R21, as a property over the renderer: whatever the commitments hold,
-    /// their line carries no digit — no count, age, patience or owed tally —
-    /// and neither do the time and voice lines (the quiet hours' bounds, the
-    /// seconds since a spoken turn). A served line's rank is words too.
+    /// their line prints no number of its own — no count, age, patience or
+    /// owed tally; the one digit it may carry is in the charter line id it
+    /// points at, which is the owner's spelling and is stripped before the
+    /// check — and neither do the time and voice lines (the quiet hours'
+    /// bounds, the seconds since a spoken turn). A served line's rank is
+    /// words too.
     #[test]
     fn no_sensor_number_setpoint_or_guilt_reaches_the_words() {
         for waiting in [1u64, 2, 3, 5, 8, 13, 42, 99, 100, 31_337] {
@@ -2877,7 +2895,7 @@ mod tests {
                         commitments: Some(Commitments::Read {
                             stores: vec![StoreBrief {
                                 store: Store::Outbox,
-                                line: Some("replies".into()),
+                                line: Some("inbox-zero-2026".into()),
                                 patience: "13h37m".into(),
                                 waiting: Some(waiting),
                                 owed: owed.min(items.len() as u64),
@@ -2891,8 +2909,11 @@ mod tests {
                     };
                     let r = render(&brief);
                     let words = line(&r, "- Waiting on the owner:");
+                    let pointer = " (charter line `inbox-zero-2026`)";
+                    assert!(words.contains(pointer), "{words}");
+                    let own = words.replace(pointer, "");
                     assert!(
-                        !words.chars().any(|c| c.is_ascii_digit()),
+                        !own.chars().any(|c| c.is_ascii_digit()),
                         "a number in the commitments: {words}"
                     );
                     for leak in ["13h37m", "patience of", "guilt"] {
