@@ -863,8 +863,11 @@ fn fresh_spill_dir() -> Option<PathBuf> {
 /// spill is re-read on later turns of the same conversation, so the lifetime
 /// it needs is the session's, not the run's.
 pub fn spill_within(workspace: &Path) -> PathBuf {
-    workspace.join(".spill")
+    workspace.join(SPILL_DIR)
 }
+
+/// The name of a session's spill directory inside its workspace.
+pub const SPILL_DIR: &str = ".spill";
 
 impl ToolCtx {
     /// End the run this call belongs to, saying why. The reason lands in
@@ -1932,6 +1935,22 @@ mod cap_tests {
         let elsewhere = std::env::temp_dir().join("mecha-cap-elsewhere.txt");
         std::fs::write(&elsewhere, "no").unwrap();
         assert!(ctx.resolve(&elsewhere.display().to_string()).is_err());
+
+        // Another session's spill is another jail: the exception is this
+        // context's own directory, not "a spill directory" — the isolation
+        // a served session's own `.spill` exists for (found on review of
+        // #313; with both sessions on one shared directory this resolved).
+        let (a, b) = (scratch("wsA"), scratch("wsB"));
+        std::fs::create_dir_all(spill_within(&b)).unwrap();
+        std::fs::write(spill_within(&b).join("shell-t2.txt"), "b's").unwrap();
+        let only_a = ToolCtx {
+            workspace: a.clone(),
+            spill_dir: Some(spill_within(&a)),
+            ..ToolCtx::default()
+        };
+        assert!(only_a
+            .resolve(&spill_within(&b).join("shell-t2.txt").display().to_string())
+            .is_err());
 
         // And with spilling disabled there is no exception at all.
         let no_spill = ToolCtx {
