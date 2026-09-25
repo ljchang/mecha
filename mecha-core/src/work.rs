@@ -277,6 +277,15 @@ fn entries_of(dir: &Path) -> Result<Vec<Entry>> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
+        // A session's spill directory is not an artifact: a board task's
+        // workspace is a producer directory itself, so its `.spill` would
+        // otherwise take a `keep` slot and, once enough artifacts landed
+        // after it, be removed under a conversation whose cut results still
+        // name files in it (found on review of #313). It lives as long as
+        // the workspace does.
+        if entry.file_name() == crate::tool::SPILL_DIR {
+            continue;
+        }
         let path = entry.path();
         let meta = entry.metadata()?;
         let is_dir = meta.is_dir();
@@ -467,13 +476,22 @@ pub fn clean(keep: usize, only: Option<&str>, dry_run: bool) -> Result<CleanRepo
 /// scratch directory rather than the machine's.
 pub fn clean_spills(tmp: &Path, dry_run: bool) -> Result<Vec<Entry>> {
     let stale = stale_spills(tmp, SPILL_MAX_AGE, std::time::SystemTime::now());
-    if !dry_run {
-        for entry in &stale {
-            std::fs::remove_dir_all(&entry.path)
-                .with_context(|| format!("removing {}", entry.path.display()))?;
+    if dry_run {
+        return Ok(stale);
+    }
+    // One undeletable directory (a look-alike another user owns in a shared
+    // `/tmp`) must not stop the rest, nor hide what `clean` already removed:
+    // report it and go on, and list only what was removed.
+    let mut removed = Vec::with_capacity(stale.len());
+    for entry in stale {
+        match std::fs::remove_dir_all(&entry.path) {
+            Ok(()) => removed.push(entry),
+            Err(e) => {
+                tracing::warn!(path = %entry.path.display(), "cannot remove a stale spill directory: {e}")
+            }
         }
     }
-    Ok(stale)
+    Ok(removed)
 }
 
 #[cfg(test)]
@@ -663,6 +681,38 @@ pub(crate) mod tests {
         assert!(morning.is_dir(), "the producer directory itself survives");
     }
 
+    #[test]
+    fn a_workspaces_spill_directory_is_never_a_retention_entry() {
+        // A board task's workspace is a producer directory itself, so its
+        // `.spill` sits where retention looks — and the oldest entry there
+        // must still not be it.
+        let _home = HomeGuard::new();
+        let task = ensure("task-7").unwrap();
+        let spill = crate::tool::spill_within(&task);
+        std::fs::create_dir_all(&spill).unwrap();
+        std::fs::write(spill.join("shell-1.txt"), "still named by a cut result").unwrap();
+        write_aged(&task, "report.md", 0);
+
+        let producer = list()
+            .unwrap()
+            .into_iter()
+            .find(|p| p.name == "task-7")
+            .unwrap();
+        let names: Vec<_> = producer
+            .entries
+            .iter()
+            .map(|e| e.path.file_name().unwrap().to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, ["report.md"], "the spill directory is not listed");
+
+        clean(0, None, false).unwrap();
+        assert!(
+            spill.join("shell-1.txt").exists(),
+            "keep = 0 still spares it"
+        );
+        assert!(!task.join("report.md").exists());
+    }
+
     /// The one hard rule: an input a published bundle names is not scratch,
     /// however old it is.
     #[test]
@@ -691,8 +741,6 @@ pub(crate) mod tests {
         assert!(work.join("old.md").exists());
     }
 
-    /// A mirror that does not exist protects nothing, and must not be an error
-    /// — that is every install until the publisher is wired.
     #[test]
     fn only_our_own_old_spill_directories_are_stale() {
         let tmp = std::env::temp_dir().join(format!("mecha-spilltest-{}", uuid::Uuid::new_v4()));
@@ -740,6 +788,8 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    /// A mirror that does not exist protects nothing, and must not be an error
+    /// — that is every install until the publisher is wired.
     #[test]
     fn no_bundle_mirror_means_no_protected_sources() {
         let _home = HomeGuard::new();

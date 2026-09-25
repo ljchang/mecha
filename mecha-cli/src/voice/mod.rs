@@ -1931,6 +1931,9 @@ async fn completion(
         review_hint: outbox_baseline
             .is_some()
             .then(|| SPOKEN_REVIEW_HINT.to_string()),
+        // In the workspace these slots share, like every served session,
+        // rather than the agent's `$TMPDIR` directory (`spill_within`).
+        spill_dir: Some(mecha_core::tool::spill_within(&cx.tools.workspace)),
         ..(*cx.tools).clone()
     });
     // The facade's own slot is the *second* door a spoken turn can take, and

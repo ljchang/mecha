@@ -1303,11 +1303,8 @@ impl SessionMeta {
     /// (`INCOGNITO-DESIGN.md` §3.2). Admission only — the situation a
     /// reflection records still never reads `kind`.
     pub fn admitted_by_default(&self) -> bool {
-        match self.kind {
-            Some(SessionKind::Test) => false,
-            Some(SessionKind::Experiment) => crate::experiment::in_experiment_home(),
-            _ => true,
-        }
+        // One home for the rule, the one the corpus readers already use.
+        crate::runlog::Scan::default().admits(self)
     }
 }
 
