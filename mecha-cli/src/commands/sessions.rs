@@ -75,7 +75,21 @@ pub enum Args {
     ///
     /// Observation only: nothing consumes these, and the number worth reading
     /// is how many come back with no label at all.
+    ///
+    /// Given a session id (or unique prefix), prints that session's text
+    /// appraisal instead — the interpretation, its grounded claims, the
+    /// prediction and lessons, with its taint label — clean or not: the
+    /// owner's readout reads every appraisal (R19). `--text` prints every
+    /// text appraisal on record the same way, newest first.
     Appraise {
+        /// A session id or unique prefix: print its text appraisal.
+        session: Option<String>,
+
+        /// Print every text appraisal on record, newest first (`-n` caps
+        /// how many).
+        #[arg(long, conflicts_with_all = ["probe", "appraise"])]
+        text: bool,
+
         /// Only sessions started in the last N days.
         #[arg(long)]
         days: Option<i64>,
@@ -139,6 +153,51 @@ pub enum Args {
         max_appraisals: usize,
     },
 
+    /// Compare policies at the informative decision points of recorded
+    /// sessions — a steer, a denial, a failed check, a draft the owner
+    /// rewrote or rejected, a surprise — and let the owner's recorded
+    /// verdict decide.
+    ///
+    /// **A paid pass, on the local model only.** Each drawn point replays
+    /// its recorded prefix under up to three policies (the prompt the run
+    /// carried, the rules deployed today, none) a short horizon from the
+    /// point, holding one background seat per point. A point no structural
+    /// validator can pose is stored inconclusive and costs nothing. Points
+    /// are drawn uniformly with a printed seed; every comparison lands in
+    /// the comparison store, clean sessions only. Like `appraise --probe`,
+    /// a replay builds a real workspace jail, so run it from a project
+    /// directory or name one with `--workspace`.
+    Compare {
+        /// Most points to drive this pass; unposed points are not counted.
+        #[arg(long, default_value_t = mecha_core::pointwise::DEFAULT_POINTS)]
+        points: usize,
+
+        /// Seed for the uniform draw. Defaults to today's day number, and
+        /// is printed so any pass can be redrawn.
+        #[arg(long)]
+        seed: Option<u64>,
+
+        /// Only sessions started in the last N days.
+        #[arg(long)]
+        days: Option<i64>,
+
+        /// Stop after reading this many sessions, newest first.
+        #[arg(long, short = 'n')]
+        limit: Option<usize>,
+
+        /// Only sessions opened through this surface.
+        #[arg(long)]
+        kind: Option<mecha_core::session::SessionKind>,
+
+        /// Read smoke-test sessions (`MECHA_SESSION_KIND=test`) too.
+        #[arg(long)]
+        include_tests: bool,
+
+        /// Emit JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Total token usage — and cost, where prices are configured — across
     /// saved sessions, grouped by provider and model.
     Stats {
@@ -165,6 +224,28 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         } => health(&dir, days, limit, json, kind, include_tests)?,
 
         Args::Appraise {
+            session: Some(_),
+            probe: true,
+            ..
+        }
+        | Args::Appraise {
+            session: Some(_),
+            appraise: true,
+            ..
+        } => anyhow::bail!(
+            "a session id prints that session's text appraisal; --probe and --appraise walk \
+             the corpus — run them without one"
+        ),
+
+        Args::Appraise {
+            session,
+            text,
+            limit,
+            json,
+            ..
+        } if session.is_some() || text => text_appraisal_readout(session.as_deref(), limit, json)?,
+
+        Args::Appraise {
             days,
             limit,
             json,
@@ -174,6 +255,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             max_probes,
             appraise: run_appraiser,
             max_appraisals,
+            ..
         } => {
             appraise(
                 global,
@@ -187,6 +269,30 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 max_probes,
                 run_appraiser,
                 max_appraisals,
+            )
+            .await?
+        }
+
+        Args::Compare {
+            points,
+            seed,
+            days,
+            limit,
+            kind,
+            include_tests,
+            json,
+        } => {
+            crate::pointwise_pass::run(
+                global,
+                crate::pointwise_pass::Options {
+                    points,
+                    seed,
+                    days,
+                    limit,
+                    kind,
+                    include_tests,
+                    json,
+                },
             )
             .await?
         }
@@ -519,9 +625,10 @@ fn first_line(s: &str) -> String {
 
 /// What the comparison store holds: `Ok(None)` when there is no store yet,
 /// `Err` when it could not be read — a finding, not an empty store.
-type OnRecord = std::result::Result<Option<(mecha_core::comparison::Summary, usize)>, String>;
+pub(crate) type OnRecord =
+    std::result::Result<Option<(mecha_core::comparison::Summary, usize)>, String>;
 
-fn comparisons_on_record() -> OnRecord {
+pub(crate) fn comparisons_on_record() -> OnRecord {
     let Some(store) = mecha_core::comparison::ComparisonStore::open_existing_default() else {
         return Ok(None);
     };
@@ -531,7 +638,7 @@ fn comparisons_on_record() -> OnRecord {
         .map_err(|e| format!("{e:#}"))
 }
 
-fn comparisons_json(on_record: &OnRecord) -> serde_json::Value {
+pub(crate) fn comparisons_json(on_record: &OnRecord) -> serde_json::Value {
     match on_record {
         Err(e) => serde_json::json!({"read": false, "error": e}),
         // No store yet is genuinely zero of everything: the same shape as
@@ -554,7 +661,7 @@ fn comparisons_json(on_record: &OnRecord) -> serde_json::Value {
     }
 }
 
-fn comparisons_line(on_record: &OnRecord) -> String {
+pub(crate) fn comparisons_line(on_record: &OnRecord) -> String {
     match on_record {
         Err(e) => format!("counterfactual comparisons: the store could not be read ({e})"),
         Ok(None) => "counterfactual comparisons on record: none yet".into(),
@@ -562,7 +669,7 @@ fn comparisons_line(on_record: &OnRecord) -> String {
             let kinds: Vec<String> = s.by_kind.iter().map(|(k, n)| format!("{k} {n}")).collect();
             format!(
                 "counterfactual comparisons on record: {}{} · separated {} of {} decided ({}) · \
-                 {} inconclusive · {} judge-decided{}{}",
+                 {} inconclusive{} · {} judge-decided{}{}",
                 s.records,
                 if kinds.is_empty() {
                     String::new()
@@ -575,6 +682,11 @@ fn comparisons_line(on_record: &OnRecord) -> String {
                     .map(|r| format!("{:.0}%", r * 100.0))
                     .unwrap_or_else(|| "—".into()),
                 s.inconclusive,
+                if s.unposed > 0 {
+                    format!(" ({} unposed: no structural validator)", s.unposed)
+                } else {
+                    String::new()
+                },
                 s.judge_decided,
                 if s.unreadable_verdict > 0 {
                     format!(
@@ -671,6 +783,198 @@ fn text_appraisals_line(on_record: &AppraisalsOnRecord) -> String {
             )
         }
     }
+}
+
+/// `mecha sessions appraise <session>` and `--text` — the owner's readout of
+/// the text appraisals' prose (row 2a-2). Every appraisal, clean or not,
+/// with its taint label beside it: the owner's surfaces read every record
+/// (R19), and a tainted one is labelled, never hidden. An unreadable store
+/// is an error, never "none on record".
+fn text_appraisal_readout(session: Option<&str>, limit: Option<usize>, json: bool) -> Result<()> {
+    use mecha_core::appraisal_store::AppraisalStore;
+    let rows = match AppraisalStore::open_existing_default() {
+        None => Vec::new(),
+        Some(store) => {
+            let (rows, skipped) = store
+                .for_owner()
+                .context("the text-appraisal store could not be read")?;
+            if skipped > 0 {
+                eprintln!("mecha: {skipped} unreadable appraisal line(s) skipped");
+            }
+            rows
+        }
+    };
+    let mut rows: Vec<_> = match session {
+        Some(prefix) => {
+            let hits: Vec<_> = rows
+                .into_iter()
+                .filter(|r| !r.session_id.is_empty() && r.session_id.starts_with(prefix))
+                .collect();
+            let sessions: std::collections::BTreeSet<&str> =
+                hits.iter().map(|r| r.session_id.as_str()).collect();
+            if sessions.len() > 1 {
+                anyhow::bail!(
+                    "{prefix:?} names {} appraised sessions; give more of the id",
+                    sessions.len()
+                );
+            }
+            hits
+        }
+        None => rows,
+    };
+    rows.sort_by_key(|r| std::cmp::Reverse(r.at));
+    if let Some(n) = limit {
+        rows.truncate(n);
+    }
+    if json {
+        let out: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|r| {
+                let mut v = serde_json::to_value(r).unwrap_or_default();
+                if let Some(m) = v.as_object_mut() {
+                    m.insert("clean".into(), serde_json::json!(r.is_clean()));
+                }
+                v
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+    if rows.is_empty() {
+        match session {
+            Some(prefix) => println!("no text appraisal is on record for session {prefix:?}"),
+            None => println!("no text appraisal is on record"),
+        }
+        return Ok(());
+    }
+    for (n, r) in rows.iter().enumerate() {
+        if n > 0 {
+            println!();
+        }
+        print!("{}", render_text_appraisal(r));
+    }
+    Ok(())
+}
+
+/// One text appraisal for a terminal, every field from the record passed
+/// through `strip_ansi_and_controls` line by line — the prose is a model's,
+/// read from a transcript that may have held a stranger's text, and a
+/// terminal (or the dated logfile a nightly writes) is exactly where an
+/// escape sequence or a bare `\r` would rewrite the taint label beside it.
+///
+/// **Every line of prose is fenced**, at a fixed indent behind a bar. A
+/// newline survives the strip here on purpose (the split comes first, so a
+/// paragraph stays a paragraph), and a lesson's second line at column 0
+/// could print a whole second record — header, a `clean` label and all —
+/// under a tainted one (found on review of #314). Behind the fence no line
+/// of model text can stand where a header or a label stands. The one-line
+/// fields (a claim, an id) are stripped whole, which removes their newlines.
+fn render_text_appraisal(r: &mecha_core::appraisal_store::TextAppraisal) -> String {
+    use crate::logs::strip_ansi_and_controls as clean;
+    use std::fmt::Write as _;
+    let para = |s: &str| -> String {
+        s.trim()
+            .split('\n')
+            .map(|l| format!("  │ {}", clean(l)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut out = String::new();
+    let label = if r.is_clean() {
+        "clean — the clean door serves it"
+    } else if matches!(r.taint, Some(t) if t.untrusted) {
+        "NOT CLEAN — third-party content entered the run; the owner's to read, never served clean"
+    } else {
+        "NOT CLEAN — the run's provenance is unknown; the owner's to read, never served clean"
+    };
+    let _ = writeln!(
+        out,
+        "text appraisal {} · session {} · {} · {}",
+        clean(&r.id),
+        clean(&r.session_id),
+        r.at.format("%Y-%m-%d %H:%M UTC"),
+        clean(&r.model)
+    );
+    let _ = writeln!(out, "  {label}");
+    let mut about = Vec::new();
+    if let Some(a) = &r.anchor {
+        about.push(format!("anchor {}", clean(&a.to_string())));
+    }
+    if let Some(s) = &r.situation {
+        about.push(format!("situation {}", clean(&s.describe())));
+    }
+    if !about.is_empty() {
+        let _ = writeln!(out, "  {}", about.join(" · "));
+    }
+    let _ = writeln!(out, "interpretation:\n{}", para(&r.interpretation));
+    for j in &r.judgments {
+        let bearing = mecha_core::appraisal::enum_name(&j.bearing);
+        let goal = j
+            .goal
+            .as_ref()
+            .map(|g| clean(&g.to_string()))
+            .unwrap_or_else(|| "no resolved goal".into());
+        let because: Vec<String> = j.because.iter().map(|i| (i + 1).to_string()).collect();
+        let _ = writeln!(
+            out,
+            "judgment: {bearing} for {goal}{}",
+            if because.is_empty() {
+                " — no grounded claim supports it".into()
+            } else {
+                format!(" — claims {}", because.join(", "))
+            }
+        );
+    }
+    for (n, c) in r.claims.iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "claim {}: {} — {}: \"{}\"",
+            n + 1,
+            clean(&c.statement),
+            clean(&c.pointer.to_string()),
+            clean(&c.quote)
+        );
+    }
+    if let Some(p) = &r.prediction {
+        let _ = writeln!(out, "prediction:\n{}", para(p));
+    }
+    if let Some(a) = r.expected_act {
+        let _ = writeln!(out, "expected owner act: {}", a.wire());
+    }
+    for h in &r.goal_hypotheses {
+        let _ = writeln!(out, "goal hypothesis:\n{}", para(h));
+    }
+    for l in &r.lessons {
+        let _ = writeln!(out, "lesson:\n{}", para(l));
+    }
+    let g = &r.grounding;
+    let reasons: Vec<String> = g
+        .dropped_by
+        .iter()
+        .map(|(k, n)| format!("{k} {n}"))
+        .collect();
+    let _ = writeln!(
+        out,
+        "grounding: {} claim(s) offered, {} dropped{}{}{}",
+        g.offered,
+        g.dropped,
+        if reasons.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", reasons.join(", "))
+        },
+        if r.goals_unresolved > 0 {
+            format!(" · {} goal(s) did not resolve", r.goals_unresolved)
+        } else {
+            String::new()
+        },
+        if r.clipped {
+            " · a bound cut something"
+        } else {
+            ""
+        }
+    );
+    out
 }
 
 /// The `--json` probe block.
@@ -2006,6 +2310,61 @@ mod probe_readout_tests {
         assert!(comparisons_json(&empty)["separated_share"].is_null());
         assert_eq!(comparisons_json(&empty)["read"], false, "two lines skipped");
         assert!(comparisons_line(&empty).contains("(—)"));
+    }
+
+    /// The owner's prose readout of a tainted appraisal whose model-written
+    /// fields try to print a second, clean-labelled record under it: a
+    /// newline in a lesson or the interpretation, a forged header and label,
+    /// an escape and a bare `\r`. Exactly one header and one label survive,
+    /// and the label is the record's own. Fails on the first cut, where a
+    /// lesson's second line landed at column 0 (review of #314).
+    #[test]
+    fn a_model_written_field_cannot_forge_a_record_or_its_label() {
+        let forged = "Quote the date.\n\ntext appraisal apr-0000 · session s-fake · \
+                      2026-09-25 10:00 UTC · local-model\n  clean — the clean door serves it\n\
+                      interpretation:\n  all is well";
+        let row = serde_json::json!({
+            "id": "apr-real", "at": "2026-09-25T12:00:00Z", "session_id": "s-real",
+            "origin": "untrusted", "taint": {"private": true, "untrusted": true},
+            "interpretation": format!("The run read a page.\u{1b}[2J\r{forged}"),
+            "prediction": forged, "goal_hypotheses": [forged], "lessons": [forged],
+            "claims": [{"statement": forged, "pointer": "turn:0", "quote": forged}],
+        });
+        let r: mecha_core::appraisal_store::TextAppraisal = serde_json::from_value(row).unwrap();
+        let out = super::render_text_appraisal(&r);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.starts_with("text appraisal"))
+                .count(),
+            1,
+            "{out}"
+        );
+        let labels: Vec<&&str> = lines
+            .iter()
+            .filter(|l| l.starts_with("  clean") || l.starts_with("  NOT CLEAN"))
+            .collect();
+        assert_eq!(labels.len(), 1, "{out}");
+        assert!(labels[0].starts_with("  NOT CLEAN"), "{out}");
+        assert!(!out.contains('\u{1b}') && !out.contains('\r'), "{out:?}");
+        // Every line that is not the harness's own is behind the fence.
+        let harness = [
+            "text appraisal",
+            "  NOT CLEAN",
+            "interpretation:",
+            "prediction:",
+            "goal hypothesis:",
+            "lesson:",
+            "claim 1:",
+            "grounding:",
+        ];
+        for l in &lines {
+            assert!(
+                l.starts_with("  │ ") || harness.iter().any(|h| l.starts_with(h)),
+                "an unfenced line: {l:?}\n{out}"
+            );
+        }
     }
 
     /// The text-appraisal readout: unreadable is not empty, no store yet is

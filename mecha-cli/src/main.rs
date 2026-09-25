@@ -10,6 +10,7 @@ mod exe;
 mod harness_probe;
 mod interrupt;
 mod logs;
+mod pointwise_pass;
 mod probe;
 mod render;
 mod review_policy;
@@ -234,6 +235,13 @@ pub struct GlobalOpts {
     /// `mecha eval` with the rest of the set.
     #[arg(long, global = true)]
     pub no_carried_state: bool,
+
+    /// Don't deliver the situation brief into the run's first user turn,
+    /// even if `[agent] situation_brief` is set. The brief is still
+    /// assembled and recorded. An experiment's lever (it ships off);
+    /// forced off by `mecha eval` with the rest of the set.
+    #[arg(long, global = true)]
+    pub no_situation_brief: bool,
 
     /// Don't route any tools through the outbox — configured [outbox] tools
     /// execute directly under the usual gates instead of being staged.

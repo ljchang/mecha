@@ -2916,7 +2916,8 @@ async fn work(
     if cx.budget.max_turns.is_none() {
         cx.budget.max_turns = Some(TASK_MAX_TURNS);
     }
-    // The situation brief (B1, 1h): recorded on the run, delivered nowhere.
+    // The situation brief (B1, 1h): recorded on the run, and delivered into
+    // its first user turn only behind `[agent] situation_brief` (3a).
     // The board is read again, as the other two doors read it — open tasks
     // only — rather than reusing the closed-inclusive read above: a server
     // caps a long list after sorting closed rows last, so that answer can
@@ -2930,6 +2931,7 @@ async fn work(
         &prepared.provider_name,
         &mut cx,
         &convo,
+        setup::BRIEF_BOARD_TIMEOUT,
     )
     .await;
     let outcome = crate::interrupt::run_interruptible_watching(

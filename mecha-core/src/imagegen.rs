@@ -96,6 +96,24 @@ impl Default for ImageConfig {
     }
 }
 
+/// Whether a URL's host is this machine: a loopback IP, or `localhost`.
+/// The one statement of that rule — [`loopback_url`] and the point-wise
+/// pass's R29 check (`pointwise::on_this_machine`) both ask it.
+pub fn is_loopback(url: &reqwest::Url) -> bool {
+    // `host_str` brackets an IPv6 literal; an IP parses, anything else is a
+    // name, and the only name that is this machine by definition is localhost.
+    match url
+        .host_str()
+        .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
+    {
+        Some(host) => match host.parse::<std::net::IpAddr>() {
+            Ok(ip) => ip.is_loopback(),
+            Err(_) => host.eq_ignore_ascii_case("localhost"),
+        },
+        None => false,
+    }
+}
+
 /// The image server's URL, if it is on this machine.
 ///
 /// The tool declares no egress, and this is what makes that true: a host that
@@ -107,19 +125,7 @@ pub fn loopback_url(raw: &str) -> Result<reqwest::Url> {
     if !matches!(url.scheme(), "http" | "https") {
         bail!("[image] url `{raw}` must be http or https");
     }
-    // `host_str` brackets an IPv6 literal; an IP parses, anything else is a
-    // name, and the only name that is this machine by definition is localhost.
-    let local = match url
-        .host_str()
-        .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
-    {
-        Some(host) => match host.parse::<std::net::IpAddr>() {
-            Ok(ip) => ip.is_loopback(),
-            Err(_) => host.eq_ignore_ascii_case("localhost"),
-        },
-        None => false,
-    };
-    if !local {
+    if !is_loopback(&url) {
         bail!(
             "[image] url `{raw}` is not on this machine — the image tool sends model-written \
              prompts to it, so it must be loopback (127.0.0.1, ::1 or localhost)"

@@ -44,12 +44,16 @@
 //!   fresh request, so a retry loop that calls it twice sends two isolated
 //!   questions rather than growing a conversation — which is what the
 //!   extractor's and the classifier's parse-retry both need, and what they
-//!   each open-coded.
+//!   each open-coded. The one exception is [`follow_up`]: a second turn
+//!   whose only history is this pass's own question and answer, for a
+//!   caller that wants the first request's prefix reused (the distiller's
+//!   appraisal). It is never how a retry is built.
 //! - **`thinking` is always false.** It asks the provider for a readable
 //!   summary of the model's reasoning, which exists for a human watching a
 //!   run. Nothing watches these. Every one of the eight sites set it false.
 //!
 //! [`ask`]: QuarantinedPass::ask
+//! [`follow_up`]: QuarantinedPass::follow_up
 
 use crate::message::{CompletionRequest, Effort, Message};
 
@@ -133,6 +137,32 @@ impl QuarantinedPass {
             cache_prompt: self.cache_prompt,
         }
     }
+
+    /// A second question on the same pass: [`ask`](Self::ask)`(asked)`'s
+    /// request, its answer appended verbatim, and one more user turn.
+    ///
+    /// **The one history a quarantined pass may carry is its own.** Nothing
+    /// enters but the question this pass asked and the answer this pass
+    /// received, so there is still no tool to reach and no one else's
+    /// conversation to poison — the property the module is for. What it
+    /// buys is the prefix: the first turn is built by `ask` itself, so the
+    /// system frame and the first user turn are the first request's bytes,
+    /// and a server that caches by prefix (llama-server's slot KV, chosen
+    /// by longest-common-prefix similarity) prefills only the answer and
+    /// the new turn. The distiller's appraisal rides on this (R25, ruled
+    /// 2026-09-25): the episode's prompt stays byte-identical and the
+    /// appraisal costs a generation, not a second read of the transcript.
+    pub fn follow_up(
+        &self,
+        asked: impl Into<String>,
+        answered: Message,
+        then: impl Into<String>,
+    ) -> CompletionRequest {
+        let mut request = self.ask(asked);
+        request.messages.push(answered);
+        request.messages.push(Message::user(then.into()));
+        request
+    }
 }
 
 #[cfg(test)]
@@ -177,5 +207,25 @@ mod tests {
         assert_eq!(second.messages.len(), 1);
         assert_eq!(second.messages[0].text(), "attempt two");
         assert!(second.tools.is_empty());
+    }
+
+    /// A follow-up is the first request with the answer and one more turn
+    /// appended — the first turn built by `ask` itself, so the frame and
+    /// the question are the first request's, and still no tool.
+    #[test]
+    fn a_follow_up_is_the_first_request_extended_and_carries_no_tool() {
+        let pass = QuarantinedPass::new("m", 128)
+            .system("frame")
+            .cache_prompt(true);
+        let first = pass.ask("the question");
+        let answer = Message::assistant(vec![crate::message::Block::text("the answer")]);
+        let second = pass.follow_up("the question", answer.clone(), "and then?");
+        assert!(second.tools.is_empty());
+        assert_eq!(second.system, first.system);
+        assert_eq!(second.messages.len(), 3);
+        assert_eq!(second.messages[0], first.messages[0]);
+        assert_eq!(second.messages[1], answer);
+        assert_eq!(second.messages[2].text(), "and then?");
+        assert!(!second.thinking && second.cache_prompt);
     }
 }

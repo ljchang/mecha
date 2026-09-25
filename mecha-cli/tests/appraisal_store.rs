@@ -150,7 +150,9 @@ async fn a_clean_appraisal_is_served_clean_and_a_tainted_one_only_to_the_owner()
     let tainted = SessionEvidence::read(&session(&home, true)).unwrap();
     let store = AppraisalStore::open(home.join("appraisals")).unwrap();
     for (evidence, expect_clean) in [(&clean, true), (&tainted, false)] {
-        match store.record(evidence, draft(), "fixture").unwrap() {
+        let known =
+            mecha_core::distill::KnownPointers::from_board(&json!({"items": [{"id": "t-budget"}]}));
+        match store.record(evidence, draft(), "fixture", &known).unwrap() {
             Recorded::Written {
                 clean, grounding, ..
             } => {

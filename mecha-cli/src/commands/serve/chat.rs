@@ -1781,8 +1781,10 @@ fn begin_turn(
         // Re-sampled per run, as a one-shot run's is at its own start; off
         // the async threads, since it walks the stores.
         //
-        // The situation brief: recorded on the run, delivered nowhere; the
-        // board is read here by the harness, never by the model. A person
+        // The situation brief: recorded on the run, and delivered into this
+        // turn's message behind `[agent] situation_brief` (3a) — a fresh one
+        // per turn, folded only when its words changed. The board is read
+        // here by the harness, never by the model. A person
         // is waiting on this turn — a spoken one too, since `begin_turn` is
         // the hosted voice door — so the three reads run together and the
         // board gets the interactive deadline: the worst case is the
