@@ -48,6 +48,7 @@
 pub mod agent;
 pub mod anticipation;
 pub mod appraisal;
+pub mod appraisal_store;
 pub mod backlog;
 pub mod batch;
 pub mod boredom;
@@ -81,6 +82,7 @@ pub mod harness;
 pub mod homeostat;
 pub mod hooks;
 pub mod image;
+pub mod imagegen;
 pub mod learning;
 pub mod mail_triage;
 pub mod mailbox;

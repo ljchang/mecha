@@ -54,8 +54,8 @@ hooks to execute and tools to enable. That is a reasonable bargain for someone
 who just decided to work in that repository, and no bargain at all for a
 scheduled run firing at 03:00 with nobody watching.
 
-Five tables are stripped out of a project layer for the same reason, wherever the
-run happens: `[messages]`, `[slack]`, `[web]`, `[harness]` and `[approval]`.
+Six tables are stripped out of a project layer for the same reason, wherever the
+run happens: `[messages]`, `[slack]`, `[web]`, `[harness]`, `[image]` and `[approval]`.
 `[approval]` controls whether inline code needs an explicit decision; `[messages]` is
 receiver-side admission policy, so a cloned repository must not be able to set
 `inbound = "accept"` on your sessions; `[slack]` is the remote control, and a
@@ -64,7 +64,8 @@ the tailnet surface's port and the one identity allowed through it; and
 `[harness]` names the checkout an unattended nightly reads and treats as the
 authority on which of this harness's protections are load-bearing — a repository
 able to set that could hand the diagnostician its own prose about what is safe to
-change. The strip is loud rather than silent — a project file naming any of them
+change; and `[image]` names where model-written image prompts are sent, which is
+only safe while you chose it. The strip is loud rather than silent — a project file naming any of them
 logs a warning saying the section is ignored, because an ignored section that
 looks applied is the silently-degrading-sandbox shape. A global one is kept, of
 course; there is a test on each side of that boundary.
@@ -631,6 +632,28 @@ conversation holding private data *and* third-party content is served only by
 the blind backends, at quick depth — so **configure at least one blind backend
 or web search stops working there**, and the refusal will say so. Setting
 `trifecta = "allow"` waives that narrowing along with the interlock.
+
+## `[image]`
+
+Registers the `image_generate` tool; see
+[Image generation](/docs/features/tools/image-generation). Absent means no tool.
+Global file only — a project layer's `[image]` is ignored with a warning.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `backend` | string | `comfyui` | The image server's kind. `comfyui` is the only one today. |
+| `url` | string | `http://127.0.0.1:8188` | The server. Must be on this machine (`127.0.0.1`, `::1` or `localhost`); anything else is refused at startup. |
+| `diffusion_model` | string | `Qwen-Image-2.1-Q4.gguf` | File names as the server lists them. |
+| `text_encoder` | string | `qwen3vl_8b_w4a8.safetensors` | |
+| `vae` | string | `qwen_image_2.1_vae_bf16.safetensors` | |
+| `steps` | integer | `40` | Denoising steps; 40 is the model's reference setting. |
+| `timeout_secs` | integer | `600` | A generation running longer is abandoned on the server. |
+| `min_available_mb` | integer | `16384` | Refuse to start below this much available memory. `0` skips the check. |
+| `unload_after_secs` | integer | `600` | Ask the server to unload its models after this long idle. `0` keeps them loaded. |
+
+`image_generate` declares no capabilities at all: what comes back is a file name
+and a seed, and the prompt goes only to a server on this machine. That is why
+the address must be loopback — the declaration is only true while it is.
 
 ## Triggers are not configurable here
 

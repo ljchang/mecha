@@ -334,6 +334,78 @@ fallback answering a question about a picture it cannot see would be the
 quiet one. Pair a sighted primary with sighted fallbacks, or accept that
 fallback turns on image conversations fail.
 
+## Image generation
+
+`imagegen.rs` registers `image_generate` when `[image]` is configured: the
+model supplies a prompt, an optional negative prompt, a size from a closed set
+and an optional seed; a local server (ComfyUI running Qwen-Image 2.1 today)
+renders it; the PNG lands at `images/<stamp>-<seed>.png` in **the run's own
+workspace**. Six decisions, each a bug if undone:
+
+- **A builtin, not an MCP server, because of where the file lands.** An MCP
+  server is spawned once in one directory (`McpTool::fixed_workspace`), while
+  `mecha serve` jails each chat session separately and serves
+  `/api/chat/{key}/file` from that jail only — a server's output would sit
+  where the page cannot fetch it. A builtin writes through `ToolCtx::resolve`
+  into the jail the call carries. (MCP's 120 s `REQUEST_TIMEOUT` would also
+  have cut off any generation that loads the model cold.)
+- **The model never authors the workflow.** ComfyUI's `/prompt` runs any node
+  graph it is given, custom nodes included, so `comfy_graph` is fixed in code
+  and the prompt reaches it as a JSON string value. The tool is typed values
+  in, bytes out.
+- **No egress, earned in code.** The schema has no destination and
+  `loopback_url` refuses any server that is not this machine, and the client
+  follows no redirect and uses no proxy — a 307 on `/prompt` would re-send the
+  prompt wherever it pointed — so the `Capabilities::default()` declaration
+  cannot be configured into a lie, and
+  image generation keeps working in a conversation holding mail. `[image]` is
+  stripped from project layers, loudly, like `[web]`: a cloned repository must
+  not choose where model-written prompts go.
+- **Refuse to start without memory headroom** (`min_available_mb`, 16 GB). On
+  the GB10 the GPU allocates from the one pool everything else uses; the first
+  generation on this box, beside `llama-server` and a parallel link, was a
+  global OOM that killed `llama-server` and took the machine down. An
+  unreadable `/proc/meminfo` refuses rather than passes. After
+  `unload_after_secs` of idleness the tool asks the server to `/free` its
+  models, so ~15 GB is not held between requests. The timer lives in the
+  mecha process, so it serves `mecha serve` and the TUI; a one-shot
+  `mecha run` exits first and leaves the models loaded until the next
+  long-lived generation or a server restart.
+- **Read-only, by the owner's ruling (2026-09-25).** Web chats start
+  read-only, and a picture should be one request in any of them. The tool
+  changes nothing of the owner's: it creates new files under `images/` in the
+  run's own workspace and never opens an existing one (`create_new`), which is
+  `todo`'s footing. The cost, stated: an unattended trigger run with `[image]`
+  configured can generate too — GPU time, bounded by the memory check.
+- **Cancel reaches the server.** The call polls a job rather than holding one
+  request open; on the run's cancel token it deletes the job from the queue
+  and interrupts it, so Ctrl-C stops the GPU, not just the wait. It
+  interrupts only when the queue says *this* job is running: an older
+  ComfyUI ignores `/interrupt`'s `prompt_id` and stops whatever executes.
+
+**Deploy order: binaries first, then `[image]`.** `ConfigLayer` denies
+unknown fields, so a binary older than this section refuses a config that has
+it — every mecha process, the cron triggers included.
+
+The model cannot see what it made — images enter a conversation on user turns
+only (§Images) — so the result says so and hands the seed back: revising is
+an edited prompt with the same seed. The web chat shows the picture under the
+call, reading the path off the result's first line (`image: images/…png`),
+matched strictly so no other text in a preview is taken for a path to fetch
+(`web/test/generated-image.mjs`). The TUI shows the path.
+
+**The request is shaped like stable-diffusion.cpp's API, not ComfyUI's.**
+`Request` is prompt, size, steps, seed — model-agnostic — because that is the
+contract a second backend must meet, and ComfyUI's graphs change per model.
+The engine was chosen by measurement on 2026-09-25 (1024², cfg 1, **25 steps on
+both engines** — the shipped default is 40, which runs about 65–70 s warm):
+ComfyUI 42 s warm and 15 GB peak, spelling a sign right 3 of 3 times;
+stable-diffusion.cpp 71–80 s and 20–23 GB, right about half the time, and five
+days into its Qwen-Image 2.1 support. Its API is the better long-term fit and
+it becomes the second adapter when a re-run closes the gap. mistral.rs (FLUX
+only, no quantized diffusion) and candle (no Qwen-Image) could not run the
+model at all.
+
 ## Security model
 
 **The full trifecta map lives in `docs/TRIFECTA.md`** — the four ways a
@@ -4763,6 +4835,64 @@ Rules join goals through clean source reflections; successful examples require
 recorded clean taint and matching tools/workspace/surface. A startup snapshot
 examines at most 32 recent transcripts of at most 2 MB each and keeps 64 examples.
 It does not add unsolicited lesson delivery. Missing context is never a success.
+
+**A text appraisal is grounded before it is kept, carries its run's taint,
+and only the owner reads a tainted one** (`APPRAISAL-WIRING-DESIGN.md` I1,
+R18, R19; row 2a-1 — the store, whose producer is 2a-2). An appraisal is
+prose (R17): `appraisal_store::TextAppraisal` holds one bounded
+interpretation, good/bad per goal (`Bearing`, nothing finer — a magnitude is
+the number R17 took out), the claims it rests on, a prediction, goal
+hypotheses and lessons, in `~/.mecha/appraisals/appraisals.jsonl` (flock,
+append, `sync_data`). Four decisions, each a bug if undone:
+
+- **The write door grounds, and a caller cannot skip it.**
+  `AppraisalStore::record` takes a `Draft` and a `SessionEvidence`, never a
+  record; a claim is a statement, a `Pointer` and a quote, dereferenced by
+  `grounding::admit` (floor 12 characters, ceiling 300 — containment is not
+  an injection check) and dropped **before storage** when it fails, counted
+  by reason on `TextAppraisal::grounding`. A judgment's `because` is
+  renumbered to the claims kept, so support that was dropped is gone rather
+  than dangling. The cap (`MAX_CLAIMS`) is on grounded claims kept, applied
+  after grounding, so failures at the head of a draft are counted as
+  failures, not as crowding.
+- **The referents are what the run received, never what the agent said.**
+  `result:<tool_use_id>` is a call's result through `grounding::calls` —
+  first seen wins, a stale marker grounds nothing — and `turn:<n>` is the
+  owner's text in message `n` of `messages_ever` — exactly
+  `agent::owner_text`, the one definition the learning locators share, so a
+  quote the renderer shows is the string containment is checked against
+  (a second spelling joined blocks differently; found on review of #308).
+  The assistant's own words are not in the packet: a claim grounded in "I
+  sent it" would be certified by itself.
+- **Provenance is read, never supplied, and from one read.**
+  `SessionEvidence`'s fields are private and come off the transcript, read
+  **once** (`Session::parse` and `messages_ever` over the same bytes — two
+  reads of a session still being appended to are two snapshots, and
+  provenance from the first over referents from the second would stamp clean
+  a packet holding an untrusted result; found on review of #308), and there
+  is no constructor taking a caller's message list: the taint covering the last message,
+  `learning::classify_origin` over it (no checkpoint is unknown, unknown is
+  untrusted), the last goal anchor, and the last run record's situation
+  (`None` when none was recorded — never the standing empty scope). A
+  tainted run's appraisal is **written**, not refused as 1g's comparisons
+  are: it is the owner's to read.
+- **The clean door is a type.** `AppraisalStore::clean` returns
+  `appraisal_store::Clean`, whose constructor is private to the module and
+  admits a row only when its stored origin is clean *and* its stored taint is
+  recorded and untrusted-free — so a hand-edited row where the two disagree
+  is not served. Learning, retrieval, credit and tenure take `Clean`;
+  `for_owner` returns plain `TextAppraisal`s, which no such signature
+  accepts. The load fails closed: an origin word this build cannot read is
+  untrusted, a goal of an unknown kind is no goal, a pointer kind it cannot
+  read is kept verbatim (`Pointer::Unread`) and grounds nothing, a torn line
+  costs itself and is counted, an unreadable file is an error.
+
+The graph episode stays as it is (R25), pinned twice in `distill.rs`: the
+body pushed is the reply's `episode` verbatim with no appraisal field in the
+body or the meta, and `DISTILLER_SYSTEM`'s hash is fixed, so a change to
+what the graph extracts from is a ruling, not a test update. `sessions
+appraise` prints the store's counts — records, clean and not, claims kept
+and dropped by reason (`text_appraisals` in `--json`) — and never its prose.
 
 **Attribution follows the event.** `appraisal::attribute_events` uses the plan at
 the intervention or staging point and typed question/reflection links. Ambiguous

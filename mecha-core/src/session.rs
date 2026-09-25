@@ -1589,7 +1589,16 @@ impl Session {
     pub fn read(path: &Path) -> Result<Transcript> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        Session::parse(path, &text)
+    }
 
+    /// [`Session::read`] over text the caller already read — `path` names
+    /// the file in errors only. For a reader that needs a second view of the
+    /// *same* bytes ([`Session::messages_ever`]): two reads of a live file
+    /// are two snapshots, and a record appraised from one while its
+    /// provenance came from the other can be stamped clean over content the
+    /// first never saw (found on review of #308).
+    pub fn parse(path: &Path, text: &str) -> Result<Transcript> {
         let mut configs = Vec::new();
         let mut config_positions: Vec<usize> = Vec::new();
         let mut outcomes = Vec::new();

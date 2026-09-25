@@ -1304,6 +1304,22 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
             }
         }
     }
+    // Image generation, on the same rule as search: only with a server
+    // configured. A configuration naming a server off this machine is refused
+    // rather than registered, because the tool's no-egress declaration would
+    // then be false — said loudly, since a tool missing from the list is
+    // otherwise indistinguishable from one never configured.
+    if let Some(image) = cfg.image.clone() {
+        let wants = opts.tools.is_empty() || opts.tools.iter().any(|t| t == "image_generate");
+        if wants {
+            match mecha_core::imagegen::ImageGenerate::new(image) {
+                Ok(tool) => {
+                    registry.insert(Arc::new(tool));
+                }
+                Err(e) => eprintln!("mecha: image_generate not registered — {e:#}"),
+            }
+        }
+    }
     let mut clients = Vec::new();
     // Named servers are dropped before connecting rather than after: a server
     // that is off should not have been spawned, since spawning it is what runs

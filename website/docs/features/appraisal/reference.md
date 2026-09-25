@@ -422,11 +422,42 @@ mecha sessions appraise --days 30 --kind web --json
 | `graph_fact_rejections` | Always `null` for now: not readable from mecha. |
 | `tests_hidden`, `experiments_hidden` | Development data excluded from the population. |
 | `probe`, `appraiser` | Results of the optional paid passes, omitted when that pass did not run. |
+| `text_appraisals` | Counts from the [text-appraisal store](#text-appraisals): records, sessions, how many are `clean` and `not_clean`, claims kept and dropped by grounding (`dropped_by`, by reason), and whether the store was fully read. |
 
-Appraisals are derived when read; no separate appraisal store is written. This
-scan is per **session**, while `sessions health` reports per-run counters. A
-session can contain several resumed runs, but its drafts and interventions must
-not be counted once for every resume.
+The signed errors, valence and label above are derived when read and never
+stored. This scan is per **session**, while `sessions health` reports per-run
+counters. A session can contain several resumed runs, but its drafts and
+interventions must not be counted once for every resume.
+
+### Text appraisals
+
+A **text appraisal** is mecha's own interpretation of a session, in prose:
+what happened relative to what the run was for, why, whether it went well or
+badly for each goal it bore on, what to expect next time, and what your
+reactions suggest you want. There is no score in it, and an emotion word, if
+one appears, is part of the prose. They are kept in
+`~/.mecha/appraisals/appraisals.jsonl`. Nothing writes them yet: the store is
+built and the pass that fills it — the distiller, extended — is the next step.
+
+Three rules hold for every record:
+
+- **Every factual claim cites what the run received.** A claim names the result
+  of a tool call or one of your own messages, and quotes it. A claim whose quote
+  is not in what it cites is dropped before the record is written, and the record
+  says how many were dropped and why. The agent's own words are never evidence
+  for a claim.
+- **A record carries its session's taint.** A session that read third-party
+  content produces a record marked as such, and so does one whose taint cannot
+  be read.
+- **Only appraisals of clean sessions go further.** Learning, memory and rule
+  tenure will read only appraisals of sessions with no third-party content.
+  The rest are stored for you to read and go nowhere else.
+
+`mecha sessions appraise` prints the counts:
+
+```text
+  text appraisals on record: 2 over 2 session(s) · 1 clean · 1 not clean (the owner's surfaces only) · claims 2 kept, 2 dropped by grounding (no_such_referent 2)
+```
 
 ### The finding: most runs had no label, and why the gate moved
 
