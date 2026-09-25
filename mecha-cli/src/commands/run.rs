@@ -60,7 +60,33 @@ pub struct Args {
     pub images: Vec<std::path::PathBuf>,
 }
 
-fn confirm_goal(
+/// Parse a structural pointer the harness spelled from a store id, saying so
+/// when it does not parse rather than leaving the run silently un-anchored —
+/// the empty-anchor symptom S1 exists to fix, with nothing saying why. A
+/// trigger's name (`Trigger::valid_name`) and a request's `seq` (an integer)
+/// always parse; a task id is the graph's uid, which nothing here constrains.
+pub(crate) fn structural_pointer(spelled: String) -> Option<mecha_core::goal::GoalRef> {
+    match spelled.parse() {
+        Ok(g) => Some(g),
+        Err(e) => {
+            eprintln!(
+                "mecha: `{spelled}` is not a goal pointer ({e}); this run is recorded \
+                 without a goal anchor"
+            );
+            None
+        }
+    }
+}
+
+/// Set the conversation's goal anchor and persist it **before** the run, so
+/// the pointer is on the record even if the run fails — `run --goal` (the
+/// owner's explicit confirmation) and the structural seeds
+/// (`APPRAISAL-WIRING-DESIGN.md` S1: a delegated task's `task:<id>`, a
+/// trigger's `trigger:<name>`, a front-door request's `request:<seq>`),
+/// each a pointer the harness holds from a store the owner authored or
+/// configured, never one a model named. `None` leaves the conversation as it
+/// was, which is how a resumed session keeps the anchor it saved.
+pub(crate) fn seed_goal_anchor(
     convo: &mut mecha_core::agent::Conversation,
     goal: Option<mecha_core::goal::GoalRef>,
     session: Option<&Session>,
@@ -149,7 +175,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         )?);
     }
 
-    confirm_goal(&mut convo, args.goal, session.as_ref())?;
+    seed_goal_anchor(&mut convo, args.goal, session.as_ref())?;
 
     // Written on create *and* on resume: a session picked up under different
     // flags is exactly the case this record exists to catch.
@@ -478,11 +504,61 @@ mod tests {
         };
         let mut convo = mecha_core::agent::Conversation::new();
         convo.goal_anchor = Some("task:old".parse().unwrap());
-        confirm_goal(&mut convo, None, None).unwrap();
+        seed_goal_anchor(&mut convo, None, None).unwrap();
         assert_eq!(convo.goal_anchor.as_ref().unwrap().to_string(), "task:old");
-        confirm_goal(&mut convo, args.goal, None).unwrap();
+        seed_goal_anchor(&mut convo, args.goal, None).unwrap();
         assert_eq!(convo.goal_anchor.as_ref().unwrap().to_string(), "task:next");
         assert!(crate::Cli::try_parse_from(["mecha", "run", "--goal", "invalid", "go"]).is_err());
+    }
+
+    /// `APPRAISAL-WIRING-DESIGN.md` S1: a structural seed is on the record
+    /// **before** the run, and a resume reads it back — a trigger's and a
+    /// front-door request's pointer as much as a task's. On the old tree
+    /// the `trigger:` and `request:` pointers did not parse, so every seed
+    /// below would have been `None` and nothing would have been written.
+    /// The helper's failure path is the one it exists for: a pointer that
+    /// does not parse yields no anchor (and says so on stderr) rather than
+    /// a guess; one that parses round-trips.
+    #[test]
+    fn a_structural_pointer_that_does_not_parse_yields_no_anchor() {
+        assert!(structural_pointer("task:has a space".into()).is_none());
+        assert!(structural_pointer("epic:7".into()).is_none());
+        assert_eq!(
+            structural_pointer("trigger:morning".into()).map(|g| g.to_string()),
+            Some("trigger:morning".to_string())
+        );
+    }
+
+    #[test]
+    fn a_structural_seed_is_recorded_before_the_run_and_read_back_on_resume() {
+        let dir = std::env::temp_dir().join(format!("mecha-seed-anchor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for pointer in ["task:task-1a2b", "trigger:morning", "request:12"] {
+            let session = Session::create(
+                &dir,
+                mecha_core::session::SessionMeta {
+                    id: Session::new_id(),
+                    created_at: chrono::Utc::now(),
+                    provider: "local".into(),
+                    model: "m".into(),
+                    workspace: dir.clone(),
+                    title: None,
+                    kind: None,
+                },
+            )
+            .unwrap();
+            let mut convo = mecha_core::agent::Conversation::new();
+            seed_goal_anchor(&mut convo, pointer.parse().ok(), Some(&session)).unwrap();
+            assert_eq!(convo.goal_anchor.as_ref().unwrap().to_string(), pointer);
+            let (_, resumed) = Session::load(&session.path).unwrap();
+            assert_eq!(
+                resumed.goal_anchor.map(|g| g.to_string()).as_deref(),
+                Some(pointer),
+                "{pointer} must be on the record before any run"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The superset claim, measured: a refused, cut-off run whose last call

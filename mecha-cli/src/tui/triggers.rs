@@ -290,13 +290,37 @@ impl TriggersModal {
     }
 }
 
+/// A trigger file that will not load, as a row the list shows rather than
+/// drops. The store words each problem `<path>: <reason>`.
+fn problem_row(p: &str) -> TriggerRow {
+    let (path, reason) = p.split_once(": ").unwrap_or((p, ""));
+    let name = std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path)
+        .to_string();
+    TriggerRow {
+        running: false,
+        schedule: "—".to_string(),
+        enabled: false,
+        description: Some("will not load, so it will not fire".to_string()),
+        when: "will not load".to_string(),
+        last: reason.to_string(),
+        prompt: String::new(),
+        settings: vec![format!("fix it with `mecha trigger edit {name}`")],
+        runs: Vec::new(),
+        last_answer: None,
+        name,
+    }
+}
+
 /// Build the rows from the store. Pure enough to be worth keeping out of the
 /// event loop: everything here is a file read.
 pub fn load(limit_runs: usize) -> anyhow::Result<Vec<TriggerRow>> {
     use mecha_core::trigger::TriggerStore;
 
     let store = TriggerStore::open_default()?;
-    let (triggers, _problems) = store.list()?;
+    let (triggers, problems) = store.list()?;
     let last_slots = store.last_slots()?;
     let all_runs = store.runs()?;
     let tz_default = mecha_core::config::Config::load_global()
@@ -389,6 +413,12 @@ pub fn load(limit_runs: usize) -> anyhow::Result<Vec<TriggerRow>> {
             last_answer,
         });
     }
+    // A trigger that will not load is a row, not an absence: since a
+    // trigger's `serves` is checked against the charter, a charter edited
+    // anywhere can stop one firing, and this list is the surface most likely
+    // to be open when the owner wonders why it did not (found on review of
+    // #292). The store words each problem `<path>: <reason>`.
+    rows.extend(problems.iter().map(|p| problem_row(p)));
     Ok(rows)
 }
 
@@ -428,6 +458,19 @@ fn gap(d: chrono::Duration) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A trigger refused at load (here, a `serves` naming a renamed charter
+    /// line) is a row naming the fix, not an absence (review of #292).
+    #[test]
+    fn a_trigger_that_will_not_load_is_a_row_naming_the_fix() {
+        let row = super::problem_row(
+            "/home/o/.mecha/triggers/morning.toml: trigger `morning` serves `charter:gone`, which is not a line of your charter",
+        );
+        assert_eq!(row.name, "morning");
+        assert_eq!(row.when, "will not load");
+        assert!(row.last.contains("charter:gone"));
+        assert!(row.settings[0].contains("mecha trigger edit morning"));
+    }
+
     use super::*;
 
     fn row(name: &str) -> TriggerRow {
