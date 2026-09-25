@@ -105,6 +105,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         .iter()
         .map(|(meta, path)| (meta.id.clone(), path.clone()))
         .collect();
+    // Test and stray experiment sessions are the harness measuring itself,
+    // not the owner's work: never mined (`session::split_admitted`),
+    // and counted aloud so a skip is not mistaken for an empty store.
+    let (sessions, skipped) = mecha_core::session::split_admitted(sessions);
+    if skipped > 0 {
+        println!("skipping {skipped} test or experiment session(s)");
+    }
     let mut todo: Vec<_> = sessions
         .into_iter()
         .filter(|(meta, _)| {
