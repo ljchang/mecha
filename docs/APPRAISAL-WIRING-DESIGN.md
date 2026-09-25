@@ -1,11 +1,9 @@
 # Appraisal wiring — design
 
 **Status: designed and ruled 2026-09-24. Phase 1 (1a–1i) is built, merged and
-installed; phase 2 has begun with 2a-1, the text-appraisal store, its
-producer 2a-2 in shadow, 2a-3, the counts-only appraiser retired into it,
-2c-1, the goal as a `Situation` key, and 2d-1, point-wise comparison;
-phase 3 with 3a, the brief delivered behind its lever** (here §3, "Phase
-2 as pull requests"). What each row built, by PR, is in
+installed; phases 2 and 3 are under way, row by row** (here §3, "Phase 2
+as pull requests"; each built row says so in its own cell). Which rows
+have merged, by PR, is in
 [`HISTORY.md`](HISTORY.md) under 2026-09-24/25, and what is open in
 `HANDOFF.md`'s goal-system section. The rulings each phase waits on are in here §6. The evidence behind every claim here — what exists, what
 reads it, what has been measured — is
