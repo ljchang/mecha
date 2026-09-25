@@ -358,9 +358,9 @@ impl Evidence {
              finished on a failed call: {} ({})\ncompactions: {}\nstop causes: {}\n\
              context pressure: avg peak {} · highest peak {}\n{}\
              avg anticipated guilt: {} \
-             (per run, the most overdue commitment it started under — a draft, \
-             question or request past its patience, weighed by its charter line's \
-             rank; it is not computed from pressure)\n",
+             (per run, the largest per-commitment guilt it started under — how \
+             far a draft, question or request is past its patience, weighed by its \
+             charter line's rank; it is not computed from pressure)\n",
             self.model,
             self.runs,
             self.sessions_read,
@@ -1466,9 +1466,15 @@ rationale: the threshold is too low";
         assert!(brief.contains("0.10"), "{brief}");
         // What the number is has to reach the model reading this brief, not
         // just a Rust doc comment nobody handed to it — and since 1f that is
-        // the most overdue commitment, not a fold with pressure in it, so
-        // the brief must stop telling it the two move together.
-        assert!(brief.contains("most overdue commitment"), "{brief}");
+        // the largest per-commitment guilt, not a fold with pressure in it,
+        // so the brief must stop telling it the two move together. Not "the
+        // most overdue commitment": rank weighs the excess, so the largest
+        // value need not be the longest overdue (review of #302).
+        assert!(
+            brief.contains("the largest per-commitment guilt"),
+            "{brief}"
+        );
+        assert!(!brief.contains("most overdue"), "{brief}");
         assert!(brief.contains("not computed from pressure"), "{brief}");
         assert!(!brief.contains("not two"), "{brief}");
     }

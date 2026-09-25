@@ -800,12 +800,16 @@ carries `expectation` and `consequence`, optional on the wire and written
 by `mecha workflow commit`. The invariants are `docs/ARCHITECTURE.md`'s
 "Guilt is per commitment". Left for later, named:
 
-- **The on-disk merge of the two commitment shapes.**
-  `anticipation::Commitment` (`{beneficiary, expectation, consequence}`,
-  strict owner input) keeps its own shape on the predictions it is already
-  recorded on; whether new predictions write the workflow record, and
-  whether old ones migrate, is the owner's call — a prediction whose
-  evidence stops parsing reads as unsupported history and blocks release.
+- **The on-disk merge of the two commitment shapes — ruled, and owed as a
+  follow-up PR.** `anticipation::Commitment` (`{beneficiary, expectation,
+  consequence}`, strict owner input) keeps its own shape on the predictions
+  it is already recorded on in 1f. **Ruled by the owner 2026-09-25: new
+  writes only, no migration** — new predictions write the
+  `workflow::Commitment` record; the old `anticipation::Commitment` shapes
+  stay on disk and are read leniently; nothing is rewritten. The leniency
+  is load-bearing: a prediction whose evidence stops parsing reads as
+  unsupported history and blocks release. That change is **owed as its own
+  PR after 1f**, not part of it.
 - **Workflow commitments in the guilt read.** No charter kind watches the
   workflow store and the doctor has no constant for it; the commitment's
   own `due_at` is the natural patience, which is a design choice, and the

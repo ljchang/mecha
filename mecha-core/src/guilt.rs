@@ -79,9 +79,11 @@
 //!
 //! A store that could not be read has `waiting: None`; an item whose stamp
 //! will not parse has an unknown age and so an unknown guilt, counted apart
-//! (`unknown`) and sorted first — it could be the oldest of all. A store
-//! with either reads [`StoreGuilt::max`] `None`, and the readout is `None`
-//! when any store's is. A store that holds nothing is a real zero.
+//! (`unknown`) — it could be the oldest of all. A store with either reads
+//! [`StoreGuilt::max`] `None`, and the readout is `None` when any store's
+//! is. A store that holds nothing is a real zero. Undated items sort
+//! *last* in the record, so the cap never drops a known overdue commitment
+//! for them; `unknown` counts them whether or not they are listed.
 //!
 //! ## It never reaches a prompt
 //!
@@ -184,8 +186,10 @@ pub struct StoreGuilt {
     /// Of those, how many have an unknown age.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub unknown: u64,
-    /// Each commitment, undated first (it could be the oldest), then by
-    /// guilt and age descending, then id; at most
+    /// Each commitment, by guilt and age descending, then id, with the
+    /// undated ones last — so the cap keeps every known overdue commitment
+    /// before any whose standing is unknown (those are counted in
+    /// `unknown` whether or not they are listed); at most
     /// [`COMMITMENTS_RECORDED`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<ItemGuilt>,
@@ -198,8 +202,9 @@ fn is_zero(n: &u64) -> bool {
 impl StoreGuilt {
     /// The largest guilt among this store's commitments: `Some(0.0)` for a
     /// store that holds nothing, `None` for one that could not be read or
-    /// holds an item of unknown age. Sorting puts the largest first and the
-    /// cap keeps it, so the recorded list alone answers this.
+    /// holds an item of unknown age. Sorting puts the largest known first
+    /// and the cap keeps it, and `unknown` counts the undated ones whether
+    /// or not the cap kept them, so the record alone answers this.
     pub fn max(&self) -> Option<f32> {
         if self.waiting.is_none() || self.unknown > 0 {
             return None;
@@ -214,7 +219,8 @@ impl StoreGuilt {
 
     /// Whether any commitment here is past its patience — a known guilt
     /// above zero. Answers `true` whatever else is unknown: one known
-    /// overdue commitment is a fact an unknown sibling cannot undo.
+    /// overdue commitment is a fact an unknown sibling cannot undo — and
+    /// the undated ones sort after it, so the cap cannot drop it for them.
     pub fn any_owed(&self) -> bool {
         self.items.iter().any(|i| i.guilt.is_some_and(|g| g > 0.0))
     }
@@ -278,10 +284,16 @@ pub fn read_commitments(
                     }
                 })
                 .collect();
+            // Undated **last**: the cap must never drop a known overdue
+            // commitment for ones whose standing is unknown — those are
+            // counted in `unknown` whatever the cap keeps, and that count is
+            // what makes the maximum unknown. With undated first, 32 torn
+            // stamps filled the record and hid every overdue draft behind
+            // them (found on review of #302).
             owed.sort_by(|a, b| match (a.age_secs, b.age_secs) {
                 (None, None) => a.id.cmp(&b.id),
-                (None, Some(_)) => std::cmp::Ordering::Less,
-                (Some(_), None) => std::cmp::Ordering::Greater,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (Some(_), None) => std::cmp::Ordering::Less,
                 // Within one store the weight and patience are shared, so
                 // guilt orders exactly as age does, and age still orders
                 // the ones inside their patience.
@@ -550,8 +562,9 @@ mod tests {
         let stores = read_commitments(&undated, &charter, now());
         let outbox = of(&stores, Store::Outbox);
         assert_eq!(outbox.unknown, 1);
-        assert_eq!(outbox.items[0].id, "torn", "the unknown sorts first");
-        assert_eq!(outbox.items[0].guilt, None);
+        assert_eq!(outbox.items[0].id, "late", "the known overdue sorts first");
+        assert_eq!(outbox.items[1].id, "torn", "the unknown sorts last");
+        assert_eq!(outbox.items[1].guilt, None);
         assert_eq!(outbox.max(), None);
         assert_eq!(readout(&stores), None);
         assert!(outbox.any_owed(), "the known overdue draft is still owed");
@@ -572,6 +585,30 @@ mod tests {
         assert_eq!(outbox.items[0].id, "d099");
         let full = item_guilt(Some(99 * 3_600), 48.0 * 3_600.0, 1.0).unwrap();
         assert_eq!(outbox.max(), Some(full));
+    }
+
+    /// The cap must not hide what is owed (review of #302). With more
+    /// undated items than the record keeps, one dated draft past its
+    /// patience is still recorded and still owed: the known overdue
+    /// commitment is the fact a consumer acts on, and undated ones are
+    /// already counted apart in `unknown`. When undated items sorted first,
+    /// 32 torn stamps filled the record and `any_owed` read `false`.
+    #[test]
+    fn a_dated_overdue_commitment_survives_the_cap_behind_many_undated_ones() {
+        let mut waiters: Vec<Waiter> = (0..COMMITMENTS_RECORDED + 8)
+            .map(|i| Waiter::new(format!("torn{i:03}"), "not-a-stamp"))
+            .collect();
+        waiters.push(Waiter::new("late", ago(200)));
+        let inv = inventory(Some(waiters), Some(Vec::new()), Some(Vec::new()));
+        let stores = read_commitments(&inv, &Charter::default(), now());
+        let outbox = of(&stores, Store::Outbox);
+        assert_eq!(outbox.waiting, Some(COMMITMENTS_RECORDED as u64 + 9));
+        assert_eq!(outbox.unknown, COMMITMENTS_RECORDED as u64 + 8);
+        assert_eq!(outbox.items.len(), COMMITMENTS_RECORDED);
+        assert!(outbox.items.iter().any(|i| i.id == "late"), "{outbox:?}");
+        assert!(outbox.any_owed(), "the dated overdue draft is still owed");
+        assert_eq!(outbox.max(), None, "and the maximum is still unknown");
+        assert_eq!(readout(&stores), None);
     }
 
     /// A withdrawn line takes its store's commitments out of the run with
