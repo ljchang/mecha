@@ -15,11 +15,13 @@ still worth knowing about, because the next person will otherwise re-derive it.
 ## What shipped, and when
 
 **2026-09-24/25 — appraisal wiring, phase 1: evidence and context go in,
-and nothing a run does changes.** `APPRAISAL-WIRING-DESIGN.md` (#291,
+and what a run does changes in three named places only.** `APPRAISAL-WIRING-DESIGN.md` (#291,
 `66ae0abd`) re-derived the appraisal programme from what the owner said it is
 for (the agent's own interpretation of meaning, serving self-learning, goal
 alignment and planning across many goals) and recorded rulings R1–R29 in its
-§6. Phase 1's rows then landed in one night, each behind its own tests. **1a**,
+§6. Phase 1's rows then landed in one night, each behind its own tests, and
+the three behaviour changes are named below (1b's refusal, 1d's reflection
+arm, and 1e/1f's inputs to planning guidance). **1a**,
 #292 (`a21bb086`): tasks, triggers and front-door requests anchor their runs
 from structure (`run::seed_goal_anchor`; `GoalRef` gains `trigger` and
 `request`, lenient on read), drift is judged only against anchors a plan can
@@ -69,7 +71,9 @@ parked question and front-door request waiting on the owner carries
 (`guilt::read_commitments`, recorded per store as `guilt::StoreGuilt`);
 `anticipated_guilt` became a readout, their maximum; and
 `planning::Decision::assess` keys `ReviewCommitment` on the store's
-per-commitment guilt rather than the level. **1f-2**, #304 (`2f89ebb5`): new
+per-commitment guilt rather than the level (guidance that reaches a run only
+under `goal_guidance`, off by default; 1e's withdrawal feeds the same
+decision). **1f-2**, #304 (`2f89ebb5`): new
 predictions write the one `workflow::Commitment` record
 (`Evidence::into_record`), old ones stay on disk in their own shape
 (`anticipation::RecordedCommitment::Legacy`), and `due_at` / `follow_up_at`

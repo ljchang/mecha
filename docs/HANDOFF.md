@@ -26,8 +26,12 @@ maps which document holds what.
 3a in flight.** `APPRAISAL-WIRING-DESIGN.md` (#291) is the authority, with
 its rulings in §6. Phase 1's rows 1a–1i landed as #292–#294, #297–#302, #304
 and #305 (plus mecha-graph#21 for the graph TUI's half of 1c; #303 is
-`image_generate`, another lane's, not recorded here), none changing what a run
-does; what each built is in HISTORY under 2026-09-24/25. `mecha` is installed
+`image_generate`, another lane's, not recorded here). The phase was meant to
+change nothing a run does, with three exceptions: 1b refuses a close from a
+run with nobody present; 1d stops curating a reflection from moving a run's
+valence; and 1e and 1f change what `planning::Decision::assess` reads for
+`ReviewCommitment`, which reaches a run only under `goal_guidance` (off by
+default). What each built is in HISTORY under 2026-09-24/25. `mecha` is installed
 at `b1820b5d` since 18:02Z, which carries phase 1 and 2a-1 (#308, the
 text-appraisal store); phase 1 was first installed at `6a26f7ab`, the 1h
 merge, at 16:41Z (*Machine state, dated* below). Four
