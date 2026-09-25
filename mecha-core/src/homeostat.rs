@@ -10,10 +10,14 @@
 //! separates *regret* from *disappointment* on exactly whether an alternative
 //! existed.
 //!
-//! **Read-only.** Nothing here changes what a run does. It is recorded so that
-//! later rungs — predictive compaction, the diagnostician's brief, the
-//! appraiser — have a series to reason from, and so that the corpus exists
-//! before anything is built on it.
+//! **Read-only.** It writes no store, and it is recorded so that later rungs
+//! — predictive compaction, the diagnostician's brief, the appraiser — have a
+//! series to reason from, and so that the corpus exists before anything is
+//! built on it. The one thing it decides is a narrowing: a charter line
+//! saturated over the recorded runs is withheld from what the run's in-run
+//! consumers read ([`Homeostat::in_run_readings`], S5), and the only such
+//! consumer, `Decision::assess`, reaches the model only as fixed advice
+//! behind `goal_guidance`.
 //!
 //! ## Three rules it inherits
 //!
@@ -40,7 +44,7 @@
 //!
 //! [`RunContext`]: crate::agent::RunContext
 
-use crate::backlog::{Backlog, BacklogDelta};
+use crate::backlog::{Backlog, BacklogDelta, Inventory};
 use crate::pressure::ContextTracker;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -128,12 +132,19 @@ pub struct Homeostat {
         deserialize_with = "crate::reading::lenient"
     )]
     pub charter: Option<Vec<crate::reading::LineReading>>,
+    /// The items the start's depths were counted from, held for `finish`
+    /// to difference id by id ([`crate::backlog::Flow`]). **Never
+    /// recorded** — the record carries what was computed from it — so a
+    /// snapshot loaded back from a session file has none, and nothing
+    /// reconstructing a run can difference against today's stores.
+    #[serde(skip)]
+    pub start_items: Option<Inventory>,
 }
 
 impl Homeostat {
     /// Sample the conditions at the start of a run.
     pub fn at_start() -> Homeostat {
-        let (backlog, requests_on_owner) = Backlog::read_with_owner_requests();
+        let survey = Backlog::survey();
         // The charter is loaded here rather than handed in: it is global
         // and read-only by construction (`charter.rs`), exactly as the
         // backlog's stores are, and the reading is a fact about the machine
@@ -145,23 +156,50 @@ impl Homeostat {
             .ok()
             .and_then(|p| crate::charter::Charter::load(&p).ok())
             .map(|c| {
-                crate::reading::read_lines(
+                let mut readings = crate::reading::read_lines(
                     &c,
                     &crate::reading::Sources {
-                        backlog: &backlog,
-                        requests_on_owner,
+                        backlog: &survey.backlog,
+                        requests_on_owner: survey.requests_on_owner.clone(),
                         corpus: crate::reading::CorpusRate::NotScanned,
+                        items: Some(&survey.items),
                     },
                     Utc::now(),
-                )
+                );
+                // S5: a line saturated over the recorded runs is withheld
+                // from this run's consumers. Streamed newest first and
+                // stopped as soon as each over-setpoint line is decided,
+                // and not read at all when no line is over — the corpus
+                // kind's full scan stays a surface's cost, not a run's.
+                // The store the runs record into (`Session::default_dir`,
+                // which honours `MECHA_SESSION_DIR`), since it is their
+                // history being read.
+                if let Ok(sessions) = crate::session::Session::default_dir() {
+                    crate::reading::withdraw_saturated(
+                        &mut readings,
+                        &c,
+                        crate::reading::recorded_readings(&sessions),
+                    );
+                }
+                readings
             });
         Homeostat {
             load_avg_1m: load_avg_1m(),
             mem_available_kb: mem_available_kb(),
-            backlog: Some(backlog),
+            backlog: Some(survey.backlog),
             charter,
+            start_items: Some(survey.items),
             ..Homeostat::default()
         }
+    }
+
+    /// The charter readings a run's in-run consumers read — every line but
+    /// the withdrawn ones (`reading::in_run`). The one door
+    /// `Decision::assess`'s input comes through, so a consumer added later
+    /// cannot reach a saturated line by reading `charter` directly without
+    /// someone deciding to.
+    pub fn in_run_readings(&self) -> Option<Vec<crate::reading::LineReading>> {
+        crate::reading::in_run(self.charter.as_deref())
     }
 
     /// Complete the snapshot at the end of a run: difference the backlog, and
@@ -186,7 +224,8 @@ impl Homeostat {
             // score a trigger that staged three replies overnight as
             // maximally guilty for doing exactly its job: those drafts are
             // seconds old and this run's own output, not neglected debt.
-            let after = Backlog::read();
+            let survey = Backlog::survey();
+            let after = survey.backlog;
             let now = Utc::now();
             // The level is what the run inherited, and it keeps its own
             // field so the corpus mean over it stays one quantity. The
@@ -201,7 +240,19 @@ impl Homeostat {
             let fold = crate::guilt::with_backlogs(before, &after, self.peak_context_pressure, now);
             self.anticipated_guilt = fold.level;
             self.guilt_after_relief = fold.after_relief;
-            self.backlog_delta = Some(fold.delta);
+            let mut delta = fold.delta;
+            // The per-item delta, from the same two reads: which ids the
+            // run's window added and cleared, per store and per line. Only
+            // where the start's items were held — a snapshot rebuilt from a
+            // record has none, and differencing it against today's stores
+            // would measure the afternoon.
+            if let Some(before) = &self.start_items {
+                delta.flow = Some(Inventory::flows(before, &survey.items));
+                if let Some(readings) = self.charter.as_mut() {
+                    crate::reading::with_deltas(readings, before, &survey.items);
+                }
+            }
+            self.backlog_delta = Some(delta);
         }
         self
     }
@@ -249,7 +300,11 @@ mod tests {
                 kind: crate::charter::SensorKind::OutboxAge,
                 setpoint: "24h".into(),
                 reading: crate::reading::Reading::Nothing,
+                items: None,
+                delta: None,
+                withdrawn: false,
             }]),
+            start_items: None,
         };
         let json = serde_json::to_string(&h).unwrap();
         assert_eq!(serde_json::from_str::<Homeostat>(&json).unwrap(), h);
@@ -294,6 +349,102 @@ mod tests {
         let never = Homeostat::default().finish(&ContextTracker::new(), Some(60_000));
         assert_eq!(never.peak_prompt_tokens, None, "absent, not zero");
         assert_eq!(never.peak_context_pressure, None);
+    }
+
+    /// S5 through the real sampler, over a fixture home: one stale draft and
+    /// two fresh ones, and ten recorded runs that read the line past its
+    /// setpoint. The start reads the level saturated, the per-item form
+    /// beside it, and withdraws the line from in-run consumers; a draft
+    /// staged and one sent inside the run are the run's delta, which the
+    /// net count reads as nothing.
+    #[test]
+    fn a_saturated_line_is_withdrawn_at_start_and_the_runs_delta_is_per_item() {
+        use crate::reading::{Reading, SATURATED_AFTER_RUNS};
+        use crate::session::{Record, RunStats, Session, SessionMeta};
+        let home = crate::work::tests::HomeGuard::new();
+        std::fs::write(
+            home.dir().join("charter.toml"),
+            "[[line]]\nid = \"replies\"\ntext = \"Answer people.\"\n\
+             [line.sensor]\nkind = \"outbox_age\"\nsetpoint = \"24h\"\n",
+        )
+        .unwrap();
+        let outbox = crate::outbox::OutboxStore::open(home.dir().join("outbox")).unwrap();
+        let stale = outbox
+            .stage_by_harness("mail_send", serde_json::json!({}))
+            .unwrap();
+        let path = home.dir().join("outbox").join(format!("{}.json", stale.id));
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        raw["created_at"] =
+            serde_json::json!((Utc::now() - chrono::Duration::days(5)).to_rfc3339());
+        std::fs::write(&path, raw.to_string()).unwrap();
+        let fresh = outbox
+            .stage_by_harness("mail_send", serde_json::json!({}))
+            .unwrap();
+        outbox
+            .stage_by_harness("mail_send", serde_json::json!({}))
+            .unwrap();
+        for i in 0..SATURATED_AFTER_RUNS {
+            let s = Session::create(
+                &home.dir().join("sessions"),
+                SessionMeta {
+                    id: format!("20260901T00{i:02}00-r"),
+                    created_at: Utc::now() - chrono::Duration::hours(20 - i as i64),
+                    provider: "local".into(),
+                    model: "m".into(),
+                    workspace: std::path::PathBuf::from("/tmp"),
+                    title: None,
+                    kind: None,
+                },
+            )
+            .unwrap();
+            s.append(&Record::Outcome(RunStats {
+                homeostat: Some(Homeostat {
+                    charter: Some(vec![crate::reading::LineReading {
+                        line: "replies".into(),
+                        kind: crate::charter::SensorKind::OutboxAge,
+                        setpoint: "24h".into(),
+                        reading: Reading::Observed {
+                            value: crate::reading::Observed::Seconds(200_000),
+                            over: true,
+                            excess: 0.5,
+                        },
+                        items: None,
+                        delta: None,
+                        withdrawn: false,
+                    }]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }))
+            .unwrap();
+        }
+
+        let h = Homeostat::at_start();
+        let line = &h.charter.as_ref().unwrap()[0];
+        assert_eq!(line.reading.over(), Some(true), "the level: saturated");
+        let items = line.items.clone().unwrap();
+        assert_eq!((items.waiting, items.over), (3, 1));
+        assert_eq!(items.stale, vec![stale.id.clone()]);
+        assert!(line.withdrawn, "saturated over ten runs and still over");
+        assert_eq!(h.in_run_readings(), Some(Vec::new()));
+
+        // Inside the run: one draft staged, one sent.
+        outbox
+            .stage_by_harness("mail_send", serde_json::json!({}))
+            .unwrap();
+        outbox.resolve(&fresh.id, "sent", None).unwrap();
+        let done = h.finish(&ContextTracker::new(), None);
+        let delta = done.backlog_delta.unwrap();
+        assert_eq!(delta.outbox, Some(0), "the net count reads nothing");
+        let moved = crate::backlog::Flow {
+            added: 1,
+            cleared: 1,
+        };
+        assert_eq!(delta.flow.unwrap().outbox, Some(moved));
+        let line = &done.charter.unwrap()[0];
+        assert_eq!(line.delta, Some(moved));
+        assert!(line.withdrawn, "the record keeps what the run was shown");
     }
 
     /// The sensors degrade rather than panic where /proc is absent or shaped

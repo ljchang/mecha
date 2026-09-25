@@ -2406,55 +2406,64 @@ fn check_sensor_saturation(
     // Newest first. The corpus is session-newest-first with runs in order
     // inside a session, which is not quite the same thing.
     rows.sort_by(|a, b| b.started_at.cmp(&a.started_at).then(b.run.cmp(&a.run)));
-    let mut out = Vec::new();
-    for line in charter.lines() {
-        let Some(sensor) = &line.sensor else {
-            continue;
-        };
-        let streak: Vec<bool> = rows
-            .iter()
-            .filter_map(|r| {
-                r.stats
-                    .homeostat
-                    .as_ref()?
-                    .charter
-                    .as_ref()?
-                    .iter()
-                    .find(|lr| {
-                        lr.line == line.id
-                            && lr.kind == sensor.kind
-                            && lr.setpoint == sensor.setpoint_text
-                    })?
-                    .reading
-                    .over()
-            })
-            .take(SATURATED_AFTER_RUNS)
-            .collect();
-        if streak.len() == SATURATED_AFTER_RUNS && streak.iter().all(|over| *over) {
-            out.push(Finding {
-                component: "charter".to_string(),
-                severity: Severity::Attention,
-                summary: format!(
-                    "charter line `{}` has read past its {} setpoint on each of the last {} runs",
-                    line.id, sensor.setpoint_text, SATURATED_AFTER_RUNS
-                ),
-                detail: format!(
-                    "sensor `{}`: either what it watches has genuinely waited past {} that whole \
-                     time — the store's own findings name the item, a stuck draft or one whose \
-                     release failed — or the setpoint is tighter than the line means (an hour \
-                     where you meant a day). A reading that is always past its setpoint is the \
-                     constant the sensor exists to replace",
-                    sensor.kind.wire(),
-                    sensor.setpoint_text
-                ),
-                remedy: Some(Remedy {
-                    description: "see each sensor's current reading beside its line".to_string(),
-                    argv: vec!["mecha".to_string(), "charter".to_string()],
-                    needs_terminal: false,
-                }),
-            });
+    let readings = rows.iter().filter_map(|r| {
+        r.stats
+            .homeostat
+            .as_ref()
+            .and_then(|h| h.charter.as_deref())
+    });
+    // One finding per saturated line — S5's "reported once" — from the
+    // same definition a run withdraws the line by (`reading::saturated`),
+    // so the finding and the withdrawal cannot disagree about which line.
+    crate::reading::saturated(charter, None, readings)
+        .into_iter()
+        .map(|s| Finding {
+            component: "charter".to_string(),
+            severity: Severity::Attention,
+            summary: format!(
+                "charter line `{}` has read past its {} setpoint on each of the last {} runs",
+                s.line, s.setpoint, SATURATED_AFTER_RUNS
+            ),
+            detail: format!(
+                "sensor `{}`: either what it watches has genuinely waited past {} that whole \
+                 time — the store's own findings name the item, a stuck draft or one whose \
+                 release failed — or the setpoint is tighter than the line means (an hour \
+                 where you meant a day). A reading that is always past its setpoint is the \
+                 constant the sensor exists to replace, so runs no longer see this line until \
+                 it reads within its setpoint again.{}",
+                s.kind.wire(),
+                s.setpoint,
+                saturated_items(s.items.as_ref()),
+            ),
+            remedy: Some(Remedy {
+                description: "see each sensor's current reading beside its line".to_string(),
+                argv: vec!["mecha".to_string(), "charter".to_string()],
+                needs_terminal: false,
+            }),
+        })
+        .collect()
+}
+
+/// The items behind a saturated line, as the newest saturated run recorded
+/// them — the ids S5's finding names. Empty where that run recorded no
+/// per-item reading (a row from before the field).
+fn saturated_items(items: Option<&crate::reading::Items>) -> String {
+    let Some(items) = items else {
+        return String::new();
+    };
+    let mut out = format!(
+        " As the newest of those runs read it, {} of {} item(s) sat past the setpoint",
+        items.over, items.waiting
+    );
+    if !items.stale.is_empty() {
+        let named: Vec<String> = items.stale.iter().map(|id| format!("`{id}`")).collect();
+        out.push_str(&format!(": {}", named.join(", ")));
+        let more = items.over.saturating_sub(items.stale.len() as u64);
+        if more > 0 {
+            out.push_str(&format!(" and {more} more"));
         }
     }
+    out.push('.');
     out
 }
 
@@ -4578,8 +4587,23 @@ mod tests {
 
     /// One session per run, newest last, each recording the given readings.
     fn runs_reading(dir: &Path, readings: Vec<Option<crate::reading::Reading>>) {
+        runs_recording(
+            dir,
+            readings
+                .into_iter()
+                .map(|r| r.map(|r| (r, None, false)))
+                .collect(),
+        );
+    }
+
+    /// [`runs_reading`], with each row's per-item reading and withdrawal.
+    #[allow(clippy::type_complexity)]
+    fn runs_recording(
+        dir: &Path,
+        readings: Vec<Option<(crate::reading::Reading, Option<crate::reading::Items>, bool)>>,
+    ) {
         use crate::session::{Record, RunStats, Session, SessionMeta};
-        for (i, reading) in readings.into_iter().enumerate() {
+        for (i, recorded) in readings.into_iter().enumerate() {
             let stamp = format!("2026-08-01T00:{:02}:00Z", i);
             let s = Session::create(
                 dir,
@@ -4594,12 +4618,15 @@ mod tests {
                 },
             )
             .unwrap();
-            let charter = reading.map(|reading| {
+            let charter = recorded.map(|(reading, items, withdrawn)| {
                 vec![crate::reading::LineReading {
                     line: "waits".into(),
                     kind: crate::charter::SensorKind::OutboxAge,
                     setpoint: "24h".into(),
                     reading,
+                    items,
+                    delta: None,
+                    withdrawn,
                 }]
             });
             s.append(&Record::Outcome(RunStats {
@@ -4684,6 +4711,47 @@ mod tests {
             vec![Some(over()); SATURATED_AFTER_RUNS],
         );
         assert!(of(&examine(&dir, utc(NOW)), "charter").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S5's "reported once, naming the items": a saturated line whose runs
+    /// kept recording it — withdrawn, as a run records a saturated line —
+    /// is one finding, naming the stale items the newest run counted and
+    /// saying the line is withheld from runs. Twenty saturated runs are
+    /// still one finding, not two.
+    #[test]
+    fn a_saturated_line_is_one_finding_naming_its_stale_items() {
+        use crate::reading::{Items, SATURATED_AFTER_RUNS};
+        let dir = home("saturated-named");
+        charter_with(
+            &dir,
+            "[line.sensor]\nkind = \"outbox_age\"\nsetpoint = \"24h\"\n",
+        );
+        let named = Items {
+            waiting: 9,
+            over: 7,
+            oldest_secs: Some(200_000),
+            stale: ["d1", "d2", "d3", "d4", "d5"].map(String::from).to_vec(),
+            ..Default::default()
+        };
+        let mut rows = vec![Some((over(), None, false)); SATURATED_AFTER_RUNS];
+        rows.extend(vec![
+            Some((over(), Some(named.clone()), true));
+            SATURATED_AFTER_RUNS
+        ]);
+        runs_recording(&dir.join("sessions"), rows);
+        let findings = examine(&dir, utc(NOW));
+        let charter = of(&findings, "charter");
+        assert_eq!(charter.len(), 1, "{findings:#?}");
+        assert!(
+            charter[0].detail.ends_with(
+                "runs no longer see this line until it reads within its setpoint again. As \
+                 the newest of those runs read it, 7 of 9 item(s) sat past the setpoint: \
+                 `d1`, `d2`, `d3`, `d4`, `d5` and 2 more."
+            ),
+            "{}",
+            charter[0].detail
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
