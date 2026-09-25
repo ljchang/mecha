@@ -1664,11 +1664,23 @@ impl Session {
     /// situation brief folded into the owner's turn the door already wrote —
     /// a [`Record::Extend`] carries those blocks, followed by the new tail.
     /// Anything else that touched recorded messages is still a rewrite.
+    ///
+    /// **An extension is written only when the file provably ends on
+    /// `before`** (review of #316). A rewrite carries the whole list, so it
+    /// repaired a caller whose `before` was not what the file held; an
+    /// extension carries an index, and against a file that does not end
+    /// where `before` does it would be skipped on load and the head lost —
+    /// which is what the Slack door, whose per-run session held none of the
+    /// thread, would have recorded. So the file is read back first (once per
+    /// fold, which is rare) and anything short of `before` exactly falls
+    /// back to the rewrite.
     fn record_transition(&self, before: &[Message], after: &[Message]) -> Result<()> {
         let appended_only = after.len() >= before.len() && after[..before.len()] == *before;
         if appended_only {
             self.append_messages(&after[before.len()..])
-        } else if let Some((index, blocks)) = extension_of(before, after) {
+        } else if let Some((index, blocks)) = extension_of(before, after)
+            .filter(|_| Session::read(&self.path).is_ok_and(|t| t.convo.messages == before))
+        {
             self.append(&Record::Extend { index, blocks })?;
             self.append_messages(&after[before.len()..])
         } else {
@@ -4522,6 +4534,41 @@ mod extension_tests {
             assert_eq!(timeline.covering(2), Some(convo.taint));
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A caller whose `before` is not what the file holds — the Slack door's
+    /// per-run session held none of the thread — still gets its whole turn
+    /// recorded: an extension there would name a message the file does not
+    /// have and be skipped on load, so the transition falls back to the
+    /// rewrite that carries the list (review of #316). And a caller that
+    /// kept the contract gets the extension.
+    #[test]
+    fn a_fold_against_a_file_that_does_not_hold_before_is_still_a_rewrite() {
+        let (dir, s) = session();
+        let before = vec![Message::user("from a phone")];
+        let mut convo = Conversation::resumed(before.clone(), Taint::default());
+        crate::agent::append_user_text(&mut convo.messages, "\n\nharness text".into());
+        convo
+            .messages
+            .push(Message::assistant(vec![Block::text("done")]));
+        // Nothing of `before` was written.
+        s.record_run(&before, &convo).unwrap();
+        assert!(kinds(&s.path).contains(&"rewrite".to_string()));
+        let (_, loaded) = Session::load(&s.path).unwrap();
+        assert_eq!(loaded.messages, convo.messages, "the whole turn is on file");
+
+        // The same run against a file that holds `before`: an extension.
+        let (dir2, s2) = session();
+        s2.append_messages(&before).unwrap();
+        s2.record_run(&before, &convo).unwrap();
+        let k = kinds(&s2.path);
+        assert!(
+            k.contains(&"extend".to_string()) && !k.contains(&"rewrite".to_string()),
+            "{k:?}"
+        );
+        assert_eq!(Session::load(&s2.path).unwrap().1.messages, convo.messages);
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&dir2).ok();
     }
 
     /// What is not a fold is still a rewrite: a changed block in the
