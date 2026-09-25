@@ -2,12 +2,11 @@ import type {ReactNode} from 'react';
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
-import useBaseUrl from '@docusaurus/useBaseUrl';
 import Layout from '@theme/Layout';
 import CodeBlock from '@theme/CodeBlock';
-import ThemedImage from '@theme/ThemedImage';
 import HomepageFeatures from '@site/src/components/HomepageFeatures';
 import WebFrame from '@site/src/components/WebFrame';
+import Poster from '@site/src/components/Poster';
 import Heading from '@theme/Heading';
 
 import styles from './index.module.css';
@@ -17,19 +16,6 @@ function HomepageHeader() {
   return (
     <header className={clsx('hero', styles.heroBanner)}>
       <div className="container">
-        {/* Decorative: the <h1> below already says "mecha", and a screen reader
-            announcing it twice is noise rather than information. ThemedImage
-            rather than a CSS filter because accent-400 and accent-700 are two
-            different marks in the brand, not one mark dimmed. */}
-        <div className={styles.heroMark} aria-hidden="true">
-          <ThemedImage
-            alt=""
-            sources={{
-              light: useBaseUrl('/img/logo-light.svg'),
-              dark: useBaseUrl('/img/logo.svg'),
-            }}
-          />
-        </div>
         <Heading as="h1" className="hero__title">
           {siteConfig.title}
         </Heading>
@@ -46,7 +32,7 @@ function HomepageHeader() {
           <Link
             className="button button--secondary button--lg"
             to="/docs/intro">
-            What it is
+            Overview
           </Link>
           <Link
             className="button button--secondary button--lg"
@@ -54,6 +40,17 @@ function HomepageHeader() {
             GitHub
           </Link>
         </div>
+      </div>
+      {/* The assembled suit, under the pitch rather than beside it: the sheet
+          is dense with callouts and needs the full width to be read at all.
+          `Poster` says why light and dark get different files. */}
+      <div className={clsx('container', styles.heroPoster)}>
+        <Poster
+          name="assembled"
+          cutout
+          eager
+          alt="Concept schematic of the mecha exosuit: an M-shaped frame on two legs, with the pilot interface slung beneath the upper chassis and its seven modules — perception, memory, language, appraisal, reasoning, learning, motor/toolcall — shown exploded."
+        />
       </div>
     </header>
   );
