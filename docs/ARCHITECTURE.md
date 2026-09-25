@@ -387,6 +387,27 @@ workspace**. Six decisions, each a bug if undone:
 unknown fields, so a binary older than this section refuses a config that has
 it — every mecha process, the cron triggers included.
 
+**Editing is the same tool with `reference_images`**: up to four workspace
+paths — a photo the owner attached (`inbox/`) or an earlier result
+(`images/`) — each resolved through the jail, capped at 25 MB, and sniffed by
+magic number (PNG, JPEG, WebP) before anything reaches the server. They are
+uploaded to ComfyUI's *temp* directory, which it empties on start, so a
+private photo is not left in its `input/`; the encoder takes the VAE and splices
+them in as latents, and the canvas follows the first reference's shape unless
+a size is asked for. The pixels go to the loopback server and never into the
+conversation, so the capabilities do not change. Two rules:
+
+- **An edit never samples at its reference's own seed.** Measured on
+  2026-09-25: four edits sampled at the seed that drew the reference came back
+  as near-copies, the instruction barely landing, across every model file
+  tried; the same edit at a fresh seed was clean. The seed of a file this tool
+  saved is in its name (`seed_of_generated`), and a call that reuses it is
+  re-seeded and told so. Structural, because "reuse the seed to keep the
+  composition" is exactly what a text-to-image result teaches the model.
+- **The web chat's Edit button starts a sentence, it does not send one** —
+  `Edit images/…png: ` in the input, cursor after it. The path is what lets
+  the model name the right reference; the change is the owner's to describe.
+
 The model cannot see what it made — images enter a conversation on user turns
 only (§Images) — so the result says so and hands the seed back: revising is
 an edited prompt with the same seed. The web chat shows the picture under the
