@@ -1269,13 +1269,12 @@ impl Summary {
 
 /// The window before "no act" becomes the act that happened, for an output
 /// with no store patience to take — a chat answer, a run that staged
-/// nothing, **and a task or workflow the session worked**: the board and
-/// the workflow store carry no `doctor::Patience` (no charter sensor kind
-/// watches either), so a `closed` or `reopened` output resolves here too,
-/// and a closure after it is not the act (review of #324; R37 as ruled,
-/// flagged for the owner to confirm). R37: "the doctor's constant"; the
-/// doctor's constant for an output waiting on the owner is the outbox's
-/// (`doctor::Patience`, `48h`), and it is the one used here.
+/// nothing, a **workflow** the session worked (the workflow store carries
+/// no `doctor::Patience`; kept at the constant for now, the owner's ruling
+/// of 2026-09-25), and a **task with no due date**. R37: "the doctor's
+/// constant", confirmed by the owner as the outbox's 48h. A task *with* a
+/// due date takes its window from the date instead (R37 refined; see
+/// [`observe`]).
 pub const NO_STORE_PATIENCE_HOURS: i64 = 48;
 
 /// What the owner did with a session's output, as the stores that record
@@ -1289,6 +1288,10 @@ pub enum ObservedAct {
     NoAct { window_closed_at: DateTime<Utc> },
     /// The window is still open and no act has arrived.
     Pending { closes_at: DateTime<Utc> },
+    /// The output is a task and this caller did not read the board, so its
+    /// due date — the window — is not known here. Not unknown: `mecha
+    /// distill` reads the board and scores it. Nothing is written.
+    NeedsBoard,
     /// Something the answer depends on could not be read — an act store,
     /// the charter the patience comes from, a timestamp. **Never "no
     /// act"**: an act the harness could not see is not an act that did not
@@ -1311,6 +1314,76 @@ pub struct OwnerActs<'a> {
     /// The charter, for the patience of the outbox's line.
     pub charter: Option<&'a crate::charter::Charter>,
     pub charter_unreadable: bool,
+    /// The board (`kg_task_list` with closed rows), read by the harness —
+    /// where a task output's due date comes from (R37 refined).
+    pub board: BoardRead<'a>,
+    /// The owner's zone (`[agent] timezone`), for a due *date*: "by the
+    /// due date" is through the end of that day where the owner is. `None`
+    /// reads the day in UTC, the machine's zone.
+    pub zone: Option<chrono_tz::Tz>,
+}
+
+/// The board as a caller has it.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum BoardRead<'a> {
+    /// This caller did not read it (the read-only readout has no graph
+    /// connection).
+    #[default]
+    NotRead,
+    /// The read failed or the answer was not a board: unknown.
+    Unreadable,
+    /// The answer, `{"items": [...], "truncated": ...}`.
+    Read(&'a serde_json::Value),
+}
+
+/// When a task's no-act window closes: its `due_at` from the board, as the
+/// instant the due day ends where the owner is (or the stated instant, if
+/// the row carries a time). `Ok(None)` is a task with no due date — the
+/// constant applies. `Err` is unknown: an unreadable board, a row the board
+/// does not have, or a date that will not parse.
+fn task_due(
+    task: &str,
+    board: &BoardRead<'_>,
+    zone: Option<chrono_tz::Tz>,
+) -> std::result::Result<Option<DateTime<Utc>>, String> {
+    let board = match board {
+        BoardRead::NotRead => return Err("not read".into()),
+        BoardRead::Unreadable => return Err("the board could not be read".into()),
+        BoardRead::Read(v) => v,
+    };
+    let Some(rows) = board["items"].as_array() else {
+        return Err("the board's answer carried no task list".into());
+    };
+    let Some(row) = rows.iter().find(|r| r["id"].as_str() == Some(task)) else {
+        return Err(format!("the board has no row for task {task}"));
+    };
+    let raw = match &row["due_at"] {
+        serde_json::Value::Null => return Ok(None),
+        serde_json::Value::String(s) if s.trim().is_empty() => return Ok(None),
+        serde_json::Value::String(s) => s.trim().to_string(),
+        _ => return Err(format!("task {task}'s due date is not a date")),
+    };
+    if let Ok(at) = DateTime::parse_from_rfc3339(&raw) {
+        return Ok(Some(at.with_timezone(&Utc)));
+    }
+    let day = raw
+        .get(..10)
+        .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+        .ok_or_else(|| format!("task {task}'s due date {raw:?} will not parse"))?;
+    let next = day
+        .succ_opt()
+        .ok_or_else(|| format!("task {task}'s due date is out of range"))?
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight exists");
+    let end = match zone {
+        Some(tz) => next
+            .and_local_timezone(tz)
+            .earliest()
+            .map(|t| t.with_timezone(&Utc)),
+        None => Some(next.and_utc()),
+    };
+    end.map(Some)
+        .ok_or_else(|| format!("task {task}'s due day has no end in the owner's zone"))
 }
 
 /// R37's window for one session's output: the patience of the store the
@@ -1345,6 +1418,7 @@ fn patience_for(
 /// act that arrives before the window closes).
 pub fn observe(
     session_id: &str,
+    anchor: Option<&GoalRef>,
     ended_at: DateTime<Utc>,
     acts: &OwnerActs<'_>,
     now: DateTime<Utc>,
@@ -1429,11 +1503,40 @@ pub fn observe(
             }
         }
     }
-    let patience = match patience_for(!drafts.is_empty(), acts) {
-        Ok(p) => p,
-        Err(why) => return ObservedAct::Unknown { why },
+    // The output's window (R37, refined by the owner 2026-09-25). A session
+    // that staged drafts waits in the outbox: its patience. Otherwise, a
+    // task the session worked — its anchor, else the task a closure naming
+    // the session moved — runs to the task's due date where the board row
+    // has one, else the constant. A workflow, or nothing, is the constant.
+    let task = match anchor {
+        Some(GoalRef::Task(id)) => Some(id.clone()),
+        _ => acts
+            .closures
+            .iter()
+            .find(|c| c.sessions.iter().any(|s| s == session_id))
+            .map(|c| c.task.clone()),
     };
-    let closes_at = ended_at + patience;
+    let constant = ended_at + chrono::Duration::hours(NO_STORE_PATIENCE_HOURS);
+    let closes_at = if !drafts.is_empty() {
+        match patience_for(true, acts) {
+            Ok(p) => ended_at + p,
+            Err(why) => return ObservedAct::Unknown { why },
+        }
+    } else if let Some(task) = task {
+        match task_due(&task, &acts.board, acts.zone) {
+            // A due date still ahead at the session's end is the window.
+            Ok(Some(due)) if due > ended_at => due,
+            // Already past when the session ended (or none): the output is
+            // still waiting on the owner's reaction, and closing the window
+            // at once would score every overdue task's review as "no act"
+            // whatever the owner then did — the constant instead.
+            Ok(_) => constant,
+            Err(_) if matches!(acts.board, BoardRead::NotRead) => return ObservedAct::NeedsBoard,
+            Err(why) => return ObservedAct::Unknown { why },
+        }
+    } else {
+        constant
+    };
     seen.sort_by_key(|(at, _)| *at);
     if let Some((at, act)) = seen.into_iter().find(|(at, _)| *at <= closes_at) {
         return ObservedAct::Act { act, at };
@@ -1518,6 +1621,8 @@ pub enum Scored {
     Pending { closes_at: DateTime<Utc> },
     /// The answer could not be read; nothing written.
     Unknown { why: String },
+    /// A task output, and the board was not read by this caller.
+    NeedsBoard,
 }
 
 /// Coverage of the appraisals' predictions: how many are scored, how many
@@ -1540,6 +1645,9 @@ pub struct ScoreSummary {
     pub resolved_unwritten: usize,
     /// Expectations whose answer could not be read.
     pub unknown: usize,
+    /// Task outputs this reader could not window, because it read no board
+    /// — the read-only readout; `mecha distill` reads it and scores them.
+    pub board_not_read: usize,
     /// `hits / scored`; `None` over no scores.
     pub hit_rate: Option<f64>,
     /// Score lines that could not be read.
@@ -1590,15 +1698,21 @@ impl AppraisalStore {
             return Ok(Scored::NoExpectation);
         };
         let ended_at = appraisal.session_ended_at.unwrap_or(appraisal.at);
-        let (actual, acted_at, window_closed_at) =
-            match observe(&appraisal.session_id, ended_at, acts, now) {
-                ObservedAct::Act { act, at } => (act, Some(at), None),
-                ObservedAct::NoAct { window_closed_at } => {
-                    (ExpectedAct::NoAct, None, Some(window_closed_at))
-                }
-                ObservedAct::Pending { closes_at } => return Ok(Scored::Pending { closes_at }),
-                ObservedAct::Unknown { why } => return Ok(Scored::Unknown { why }),
-            };
+        let (actual, acted_at, window_closed_at) = match observe(
+            &appraisal.session_id,
+            appraisal.anchor.as_ref(),
+            ended_at,
+            acts,
+            now,
+        ) {
+            ObservedAct::Act { act, at } => (act, Some(at), None),
+            ObservedAct::NoAct { window_closed_at } => {
+                (ExpectedAct::NoAct, None, Some(window_closed_at))
+            }
+            ObservedAct::Pending { closes_at } => return Ok(Scored::Pending { closes_at }),
+            ObservedAct::Unknown { why } => return Ok(Scored::Unknown { why }),
+            ObservedAct::NeedsBoard => return Ok(Scored::NeedsBoard),
+        };
         let hit = expected == actual;
         let score = Score {
             id: format!("scr-{}", uuid::Uuid::new_v4()),
@@ -1676,8 +1790,9 @@ impl AppraisalStore {
                 continue;
             }
             let ended_at = row.session_ended_at.unwrap_or(row.at);
-            match observe(&row.session_id, ended_at, acts, now) {
+            match observe(&row.session_id, row.anchor.as_ref(), ended_at, acts, now) {
                 ObservedAct::Unknown { .. } => s.unknown += 1,
+                ObservedAct::NeedsBoard => s.board_not_read += 1,
                 ObservedAct::Pending { .. } => s.pending += 1,
                 ObservedAct::Act { .. } | ObservedAct::NoAct { .. } => s.resolved_unwritten += 1,
             }
@@ -2578,7 +2693,7 @@ mod tests {
         let hours = |h: i64| chrono::Duration::hours(h);
 
         // The doctor's constant for the outbox, 48h.
-        let at = |now| observe("s-1", end, &acts(&pending), now);
+        let at = |now| observe("s-1", None, end, &acts(&pending), now);
         assert_eq!(
             at(end + hours(48) - second),
             ObservedAct::Pending {
@@ -2605,18 +2720,18 @@ mod tests {
             ..acts(&pending)
         };
         assert!(matches!(
-            observe("s-1", end, &owned, end + hours(24) - second),
+            observe("s-1", None, end, &owned, end + hours(24) - second),
             ObservedAct::Pending { .. }
         ));
         assert!(matches!(
-            observe("s-1", end, &owned, end + hours(24) + second),
+            observe("s-1", None, end, &owned, end + hours(24) + second),
             ObservedAct::NoAct { .. }
         ));
 
         // An act inside the window is the act, whenever it is read.
         let rejected = [draft_of(&root, "s-1", "rejected", Some(end + hours(47)))];
         assert_eq!(
-            observe("s-1", end, &acts(&rejected), end + hours(100)),
+            observe("s-1", None, end, &acts(&rejected), end + hours(100)),
             ObservedAct::Act {
                 act: ExpectedAct::Rejected,
                 at: end + hours(47)
@@ -2625,32 +2740,126 @@ mod tests {
         // One after it is not: the window closed on no act.
         let late = [draft_of(&root, "s-1", "sent", Some(end + hours(49)))];
         assert_eq!(
-            observe("s-1", end, &acts(&late), end + hours(100)),
+            observe("s-1", None, end, &acts(&late), end + hours(100)),
             ObservedAct::NoAct {
                 window_closed_at: end + hours(48)
             }
         );
-        // A task the session worked, closed by the owner: the board has no
-        // store patience, so the constant bounds it — a closure at 47h is
-        // the act, one at 49h is not (R37 as ruled; flagged to confirm).
-        let close = |at: DateTime<Utc>| crate::closure::Transition {
+        // Another session's draft is not this session's act; with no draft
+        // of its own the output has no store, and the constant applies.
+        assert!(matches!(
+            observe("s-2", None, end, &acts(&rejected), end + hours(47)),
+            ObservedAct::Pending { .. }
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An owner closure of `task` naming session `session`, at `at`.
+    fn closure(task: &str, session: &str, at: DateTime<Utc>) -> crate::closure::Transition {
+        crate::closure::Transition {
             at,
             ..serde_json::from_value(json!({
-                "id": "cl-1", "task": "task-1", "from": "next", "to": "done",
-                "move": "close", "actor": "owner", "surface": "cli",
-                "sessions": ["s-3"], "at": "2026-09-20T12:00:00Z"
+                "id": format!("cl-{task}-{session}"), "task": task, "from": "next",
+                "to": "done", "move": "close", "actor": "owner", "surface": "cli",
+                "sessions": [session], "at": "2026-09-20T12:00:00Z"
             }))
             .unwrap()
-        };
-        let on_time = [close(end + hours(47))];
-        assert_eq!(
+        }
+    }
+
+    /// R37 refined by the owner (2026-09-25): a task output's no-act window
+    /// runs from the session's end to the task's `due_at` on the board. A
+    /// closure by the due date is the act; one after it is not. An undated
+    /// task keeps the constant; a date already past at the session's end
+    /// falls back to the constant; an unreadable board or an unparseable
+    /// date is unknown, never the constant; a caller that read no board
+    /// defers to one that does.
+    #[test]
+    fn a_task_outputs_window_runs_to_its_due_date() {
+        let end: DateTime<Utc> = "2026-09-20T12:00:00Z".parse().unwrap();
+        let second = chrono::Duration::seconds(1);
+        let hours = |h: i64| chrono::Duration::hours(h);
+        let task = GoalRef::Task("task-1".into());
+        let board = |due: serde_json::Value| json!({"items": [{"id": "task-1", "status": "done", "due_at": due}]});
+        let look = |closures: &[crate::closure::Transition],
+                    board: BoardRead<'_>,
+                    zone: Option<chrono_tz::Tz>,
+                    now: DateTime<Utc>| {
             observe(
                 "s-3",
+                Some(&task),
                 end,
                 &OwnerActs {
-                    closures: &on_time,
+                    closures,
+                    board,
+                    zone,
                     ..OwnerActs::default()
                 },
+                now,
+            )
+        };
+
+        // Due at an instant four days out: the window closes there, not at
+        // the 48h constant.
+        let due = end + hours(96);
+        let dated = board(json!(due.to_rfc3339()));
+        assert_eq!(
+            look(&[], BoardRead::Read(&dated), None, end + hours(49)),
+            ObservedAct::Pending { closes_at: due },
+            "past the constant, still inside the due date"
+        );
+        assert_eq!(
+            look(
+                &[closure("task-1", "s-3", due - second)],
+                BoardRead::Read(&dated),
+                None,
+                due + hours(1)
+            ),
+            ObservedAct::Act {
+                act: ExpectedAct::Closed,
+                at: due - second
+            },
+            "a closure just before the due date is the act"
+        );
+        assert_eq!(
+            look(
+                &[closure("task-1", "s-3", due + second)],
+                BoardRead::Read(&dated),
+                None,
+                due + hours(1)
+            ),
+            ObservedAct::NoAct {
+                window_closed_at: due
+            },
+            "a closure just after it is not"
+        );
+
+        // A due *date* is the end of that day where the owner is.
+        let day = board(json!("2026-09-22"));
+        let ny: chrono_tz::Tz = "America/New_York".parse().unwrap();
+        let end_of_day_ny: DateTime<Utc> = "2026-09-23T04:00:00Z".parse().unwrap();
+        assert_eq!(
+            look(&[], BoardRead::Read(&day), Some(ny), end + hours(1)),
+            ObservedAct::Pending {
+                closes_at: end_of_day_ny
+            }
+        );
+        let end_of_day_utc: DateTime<Utc> = "2026-09-23T00:00:00Z".parse().unwrap();
+        assert_eq!(
+            look(&[], BoardRead::Read(&day), None, end + hours(1)),
+            ObservedAct::Pending {
+                closes_at: end_of_day_utc
+            }
+        );
+
+        // An undated task keeps the constant: a closure at 47h is the act,
+        // one at 49h is not.
+        let undated = board(serde_json::Value::Null);
+        assert_eq!(
+            look(
+                &[closure("task-1", "s-3", end + hours(47))],
+                BoardRead::Read(&undated),
+                None,
                 end + hours(100)
             ),
             ObservedAct::Act {
@@ -2658,26 +2867,69 @@ mod tests {
                 at: end + hours(47)
             }
         );
-        let too_late = [close(end + hours(49))];
         assert!(matches!(
-            observe(
-                "s-3",
-                end,
-                &OwnerActs {
-                    closures: &too_late,
-                    ..OwnerActs::default()
-                },
+            look(
+                &[closure("task-1", "s-3", end + hours(49))],
+                BoardRead::Read(&undated),
+                None,
                 end + hours(100)
             ),
             ObservedAct::NoAct { .. }
         ));
-        // Another session's draft is not this session's act; with no draft
-        // of its own the output has no store, and the constant applies.
+
+        // A due date already past when the session ended: the constant.
+        let overdue = board(json!((end - hours(24)).to_rfc3339()));
+        assert_eq!(
+            look(&[], BoardRead::Read(&overdue), None, end + hours(1)),
+            ObservedAct::Pending {
+                closes_at: end + hours(NO_STORE_PATIENCE_HOURS)
+            }
+        );
+
+        // Unknown, never the constant: an unreadable board, a date that will
+        // not parse, a board with no row for the task.
+        let long_after = end + hours(24 * 30);
+        let torn = board(json!("next Tuesday"));
+        let elsewhere = json!({"items": [{"id": "task-9"}]});
+        for (what, b) in [
+            ("an unreadable board", BoardRead::Unreadable),
+            ("an unparseable due date", BoardRead::Read(&torn)),
+            (
+                "a board with no row for the task",
+                BoardRead::Read(&elsewhere),
+            ),
+        ] {
+            assert!(
+                matches!(look(&[], b, None, long_after), ObservedAct::Unknown { .. }),
+                "{what}"
+            );
+        }
+        // A reader that read no board defers — neither unknown nor windowed.
+        assert_eq!(
+            look(&[], BoardRead::NotRead, None, long_after),
+            ObservedAct::NeedsBoard
+        );
+
+        // The task is found through a closure naming the session when the
+        // session carries no task anchor.
+        let via_closure = observe(
+            "s-4",
+            None,
+            end,
+            &OwnerActs {
+                closures: &[closure("task-1", "s-4", due - second)],
+                board: BoardRead::Read(&dated),
+                ..OwnerActs::default()
+            },
+            due + hours(1),
+        );
         assert!(matches!(
-            observe("s-2", end, &acts(&rejected), end + hours(47)),
-            ObservedAct::Pending { .. }
+            via_closure,
+            ObservedAct::Act {
+                act: ExpectedAct::Closed,
+                ..
+            }
         ));
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// An act store that could not be read, or a patience that could not
@@ -2720,7 +2972,7 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    observe("s-1", end, &a, long_after),
+                    observe("s-1", None, end, &a, long_after),
                     ObservedAct::Unknown { .. }
                 ),
                 "{what}"
@@ -2737,6 +2989,7 @@ mod tests {
         assert!(matches!(
             observe(
                 "s-1",
+                None,
                 end,
                 &OwnerActs {
                     closures: std::slice::from_ref(&future),
@@ -2748,14 +3001,14 @@ mod tests {
         ));
         // A row naming no session has no output to read.
         assert!(matches!(
-            observe("", end, &OwnerActs::default(), long_after),
+            observe("", None, end, &OwnerActs::default(), long_after),
             ObservedAct::Unknown { .. }
         ));
         // A resolved draft with no readable time cannot be placed in the
         // window either.
         let untimed = [draft_of(&root, "s-1", "sent", None)];
         assert!(matches!(
-            observe("s-1", end, &acts(&untimed), long_after),
+            observe("s-1", None, end, &acts(&untimed), long_after),
             ObservedAct::Unknown { .. }
         ));
         // With no draft there is no store, so an unreadable charter does
@@ -2763,6 +3016,7 @@ mod tests {
         assert!(matches!(
             observe(
                 "s-1",
+                None,
                 end,
                 &OwnerActs {
                     charter_unreadable: true,
@@ -2843,7 +3097,13 @@ mod tests {
             "rejected",
             Some(rejected_at),
         )];
-        let owner = acts(&drafts);
+        // Both sessions are anchored to `t-budget`; the board has it with no
+        // due date, so the quiet one's window is the constant (R37 refined).
+        let tasks = json!({"items": [{"id": "t-budget", "status": "next"}]});
+        let owner = OwnerActs {
+            board: BoardRead::Read(&tasks),
+            ..acts(&drafts)
+        };
 
         // Read-only before any pass: the rejection has already happened, so
         // that one is resolved-but-unwritten, not waiting.

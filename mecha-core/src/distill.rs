@@ -1578,6 +1578,13 @@ fn goal_pointer(g: &crate::goal::GoalRef, known: &KnownPointers) -> Option<Strin
 /// then `KnownPointers::none()` — kind words only, never a guess. The
 /// caller adds the charter's line ids (`with_charter_lines`).
 pub async fn known_pointers(client: &Arc<McpClient>) -> Result<KnownPointers> {
+    Ok(KnownPointers::from_board(&read_board(client).await?))
+}
+
+/// The board with its closed rows — `kg_task_list` through the graph server
+/// — as the harness reads it: for goal pointers here, and for a task
+/// output's due date when an appraisal's prediction is scored (R37).
+pub async fn read_board(client: &Arc<McpClient>) -> Result<Value> {
     let output = client
         .call_tool("kg_task_list", json!({ "include_closed": true }))
         .await
@@ -1585,9 +1592,8 @@ pub async fn known_pointers(client: &Arc<McpClient>) -> Result<KnownPointers> {
     if output.is_error {
         bail!("kg_task_list refused: {}", output.content);
     }
-    let board: Value = serde_json::from_str(&output.content)
-        .with_context(|| format!("kg_task_list returned non-JSON: {}", output.content))?;
-    Ok(KnownPointers::from_board(&board))
+    serde_json::from_str(&output.content)
+        .with_context(|| format!("kg_task_list returned non-JSON: {}", output.content))
 }
 
 /// What the graph said happened to the pushed episode.

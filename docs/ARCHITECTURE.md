@@ -5329,9 +5329,19 @@ the owner's** (row 2b-2, R33, R37).
   re-score it. A miss is `surprise: true` beside the appraisal's `clean`,
   situation and anchor, so a reader that acts (2e-6's priority) can take
   clean ones only.
-- **Task and workflow outputs have no store patience.** No charter sensor
-  kind watches the board or the workflow store, so a session whose output
-  is a task or workflow gets the constant too.
+- **A task output runs to its due date** (R37, refined by the owner). With
+  no drafts staged, a session whose output is a task gets a window from its
+  end to the task's `due_at`. The task is the anchor, else the task a
+  closure naming the session moved.
+  - `due_at` comes from `mecha distill`'s harness-side board read. A date
+    without a time ends at the end of that day in the owner's zone.
+  - An undated task keeps the constant, and so does a `due_at` already past
+    at the session's end.
+  - An unreadable board, an unparseable date, or a missing row is `Unknown`,
+    never the constant.
+  - The read-only readout reads no board, so it counts such outputs as
+    `board_not_read` (`ObservedAct::NeedsBoard`).
+  - Workflow outputs keep the constant for now.
 - **Who writes and who reads.** `mecha distill` scores what has resolved
   on every writing pass — even one with nothing to distill or with the
   graph down, since windows close on quiet nights — with no model call. `sessions appraise` reads coverage
