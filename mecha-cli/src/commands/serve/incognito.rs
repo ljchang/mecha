@@ -104,20 +104,29 @@ pub fn withheld<'a>(
 /// not. So a `pre_tool` hook refuses the door rather than being dropped,
 /// the way a cloud provider does (found on review of #321).
 pub fn hooks_allow(config: &mecha_core::config::Config) -> std::result::Result<(), String> {
-    let gates = config
+    let gates: Vec<&str> = config
         .hooks
         .iter()
-        .filter(|h| h.event == "pre_tool")
-        .count();
-    if gates == 0 {
+        .map(|h| h.event.as_str())
+        .filter(|e| DENY_GATES.contains(e))
+        .collect();
+    if gates.is_empty() {
         Ok(())
     } else {
         Err(format!(
-            "{gates} `pre_tool` hook(s) are configured, and an incognito chat runs no hooks — \
-             it would skip a gate rather than record what passes through it"
+            "{} deny-gate hook(s) are configured ({}), and an incognito chat runs no hooks — \
+             it would skip a gate rather than record what passes through it",
+            gates.len(),
+            gates.join(", ")
         ))
     }
 }
+
+/// The hook events that can refuse what they see (`hooks::HookSet`):
+/// `pre_tool` a call, `pre_task_close` a board close. The second is
+/// unreachable in an incognito chat today only because the task tools are
+/// withheld, and that is two lists agreeing by accident — so both refuse.
+const DENY_GATES: [&str; 2] = ["pre_tool", "pre_task_close"];
 
 /// Whether this process's chat provider may serve an incognito chat: a
 /// local server on this machine, with no fallbacks. A cloud provider keeps
@@ -164,18 +173,25 @@ pub fn provider_is_local(
 pub fn rooms_root() -> Result<PathBuf> {
     let home = mecha_core::work::mecha_home()?;
     let home = home.canonicalize().unwrap_or(home);
-    let scope: String = home
-        .to_string_lossy()
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    Ok(runtime_rooms()?.join(scope))
+    Ok(runtime_rooms()?.join(home_scope(&home)))
+}
+
+/// One directory name per mecha home, and never the same one for two: every
+/// byte but `[A-Za-z0-9.-]` is written `_` and two hex digits, `_` included,
+/// so the escape is reversible. A lossy slug (every other byte to `_`) made
+/// `/a/b_c` and `/a/b/c` one scope, and a `serve` against either swept the
+/// other's rooms (found on review of #321).
+fn home_scope(home: &Path) -> String {
+    use std::fmt::Write;
+    let mut scope = String::new();
+    for &b in home.as_os_str().as_encoded_bytes() {
+        if b.is_ascii_alphanumeric() || b == b'.' || b == b'-' {
+            scope.push(char::from(b));
+        } else {
+            let _ = write!(scope, "_{b:02x}");
+        }
+    }
+    scope
 }
 
 /// `$XDG_RUNTIME_DIR/mecha-incognito`, refused unless it is tmpfs.
@@ -240,7 +256,15 @@ impl Room {
         // this conversation's words with it (found on review of #321).
         let workspace = root.join(key);
         let spill = root.join("spill");
-        for dir in [rooms, root.as_path(), workspace.as_path(), spill.as_path()] {
+        for dir in [rooms, root.as_path()] {
+            mecha_core::create_private_dir(dir)
+                .with_context(|| format!("creating {}", dir.display()))?;
+        }
+        // Stamped before anything else goes in, so another `serve`'s sweep
+        // sees whose it is (`left_behind`).
+        std::fs::write(root.join(OWNER), std::process::id().to_string())
+            .with_context(|| format!("stamping {}", root.display()))?;
+        for dir in [workspace.as_path(), spill.as_path()] {
             mecha_core::create_private_dir(dir)
                 .with_context(|| format!("creating {}", dir.display()))?;
         }
@@ -296,6 +320,9 @@ pub fn sweep(rooms: &Path) -> Vec<PathBuf> {
         let path = entry.path();
         let is_dir = std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir());
         let gone = if is_dir {
+            if !left_behind(&path) {
+                continue;
+            }
             std::fs::remove_dir_all(&path)
         } else {
             std::fs::remove_file(&path)
@@ -308,6 +335,34 @@ pub fn sweep(rooms: &Path) -> Vec<PathBuf> {
         }
     }
     removed
+}
+
+/// The file in a room naming the process that opened it.
+const OWNER: &str = "owner";
+
+/// How long a room with no owner stamp is taken to be still being made by
+/// a live `serve`: [`Room::open`] stamps it straight after creating it.
+const UNSTAMPED_GRACE: Duration = Duration::from_secs(60);
+
+/// Whether nothing is serving `room` any more: its owner is dead, or is this
+/// process (which owns nothing yet when it sweeps, so the pid was reused),
+/// or it was never stamped and is older than the grace. A live owner keeps
+/// its rooms — a second `serve` against the same home, even a mistaken one
+/// that dies on a taken port, must not close the first one's chats (found
+/// on review of #321). A dead owner's pid reused by another process keeps a
+/// room until reboot, which on tmpfs is the bound.
+fn left_behind(room: &Path) -> bool {
+    let owner = std::fs::read_to_string(room.join(OWNER))
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok());
+    match owner {
+        Some(pid) => pid == std::process::id() || !mecha_core::process_alive(pid),
+        None => std::fs::symlink_metadata(room)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_none_or(|age| age > UNSTAMPED_GRACE),
+    }
 }
 
 #[cfg(test)]
@@ -376,6 +431,8 @@ mod tests {
         assert!(hooks_allow(&config).is_ok());
         config.hooks.push(hook("pre_tool"));
         assert!(hooks_allow(&config).unwrap_err().contains("pre_tool"));
+        config.hooks = vec![hook("pre_task_close")];
+        assert!(hooks_allow(&config).unwrap_err().contains("pre_task_close"));
     }
 
     #[test]
@@ -437,11 +494,50 @@ mod tests {
         assert!(!room.root.exists());
         room.remove().unwrap(); // closing twice is fine
 
+        // Left by this process's pid: a sweep runs before this process has
+        // opened anything, so a room stamped with its pid is a reused pid's.
         let left = Room::open(&rooms, &new_key()).unwrap();
         std::fs::write(left.spill.join("shell-1.txt"), "x").unwrap();
         assert_eq!(sweep(&rooms), vec![left.root.clone()]);
         assert!(!left.root.exists());
+
+        // Another live `serve`'s room stays (pid 1 is always alive).
+        let live = Room::open(&rooms, &new_key()).unwrap();
+        std::fs::write(live.root.join(OWNER), "1").unwrap();
+        // A dead owner's goes: a child reaped before the sweep.
+        let dead_pid = {
+            let mut c = std::process::Command::new("true").spawn().unwrap();
+            let pid = c.id();
+            c.wait().unwrap();
+            pid
+        };
+        let dead = Room::open(&rooms, &new_key()).unwrap();
+        std::fs::write(dead.root.join(OWNER), dead_pid.to_string()).unwrap();
+        // Unstamped: kept while it may still be being made, gone after.
+        let fresh = rooms.join(new_key());
+        std::fs::create_dir(&fresh).unwrap();
+        let stale = rooms.join(new_key());
+        std::fs::create_dir(&stale).unwrap();
+        std::fs::File::open(&stale)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - UNSTAMPED_GRACE * 2)
+            .unwrap();
+        let mut swept = sweep(&rooms);
+        swept.sort();
+        let mut expected = vec![dead.root.clone(), stale.clone()];
+        expected.sort();
+        assert_eq!(swept, expected);
+        assert!(live.root.exists() && fresh.exists());
         std::fs::remove_dir_all(&rooms).ok();
+    }
+
+    #[test]
+    fn a_home_scope_is_reversible_so_two_homes_never_share_one() {
+        let a = home_scope(Path::new("/a/b_c"));
+        let b = home_scope(Path::new("/a/b/c"));
+        assert_ne!(a, b);
+        assert_eq!(a, "_2fa_2fb_5fc");
+        assert!(!home_scope(Path::new("/h/.mecha")).contains('/'));
     }
 
     #[test]

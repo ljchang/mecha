@@ -2443,8 +2443,10 @@ fn begin_turn(
                     // The record first: a name the page shows and the
                     // transcript does not is one that vanishes on the next
                     // restart, which is worse than never having had it.
+                    // Only a recorded session is named (`Recording::title`);
+                    // an unrecorded one loses the name, not the run.
                     let Some(session) = session.kept() else {
-                        unreachable!("only a recorded session is named (`Recording::title`)")
+                        return;
                     };
                     match session.append(&Record::Title {
                         title: recorded.clone(),
