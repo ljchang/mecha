@@ -578,7 +578,74 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     if appraiser.is_some() {
         println!("{}", tally.line());
     }
+    score_predictions();
     Ok(())
+}
+
+/// Row 2b-2: score every text appraisal whose expected owner act has
+/// resolved — the act the owner took on the session's output, or no act
+/// once R37's window closed — and record each once, a miss as a surprise.
+/// No model call, and nothing here can stop distill: a store that cannot
+/// be read is said, and its appraisals stay unscored (unknown, never "no
+/// act").
+fn score_predictions() {
+    let Some(store) = AppraisalStore::open_existing_default() else {
+        return;
+    };
+    let stores = mecha_core::appraisal::Stores::load();
+    let acts = owner_acts(&stores);
+    match store.score_due(&acts, chrono::Utc::now()) {
+        Ok(s) => println!("{}", expectations_line(&s)),
+        Err(e) => eprintln!("mecha: the appraisals' predictions could not be scored: {e:#}"),
+    }
+}
+
+/// The owner-act stores, as `appraisal_store::observe` reads them.
+pub(crate) fn owner_acts(
+    stores: &mecha_core::appraisal::Stores,
+) -> mecha_core::appraisal_store::OwnerActs<'_> {
+    mecha_core::appraisal_store::OwnerActs {
+        drafts: &stores.drafts,
+        outbox_unreadable: stores.outbox_unreadable,
+        closures: &stores.closures,
+        closures_unreadable: stores.closures_unreadable,
+        workflows: &stores.workflows,
+        workflows_unreadable: stores.workflows_unreadable,
+        charter: stores.charter.as_ref(),
+        charter_unreadable: stores.charter_unreadable,
+    }
+}
+
+/// One line of coverage: scored, hits and surprises, what waits, what is
+/// unknown — and a hit rate only over scores that exist.
+pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -> String {
+    if s.with_expectation == 0 {
+        return format!(
+            "appraisals' predictions: none carries an expected act ({} appraisal(s) on record)",
+            s.appraisals
+        );
+    }
+    format!(
+        "appraisals' predictions: {} scored of {} ({} hit, {} surprise(s), {} of them on clean \
+         appraisals; {}) · {} waiting for the owner's act or the window · {} unknown (a store or \
+         the patience could not be read){}",
+        s.scored,
+        s.with_expectation,
+        s.hits,
+        s.surprises,
+        s.clean_surprises,
+        match s.hit_rate {
+            Some(r) => format!("hit rate {:.0}%", r * 100.0),
+            None => "no rate".into(),
+        },
+        s.pending,
+        s.unknown,
+        if s.skipped > 0 {
+            format!(" · {} unreadable score line(s)", s.skipped)
+        } else {
+            String::new()
+        }
+    )
 }
 
 /// Take a background seat, waiting for one if all are held — a nightly or

@@ -313,6 +313,10 @@ pub struct SessionEvidence {
     anchor: Option<GoalRef>,
     situation: Option<Situation>,
     packet: Vec<crate::grounding::Evidence>,
+    /// When the transcript was last written, taken as the read happened —
+    /// the session's end as appraised (R37's window opens here). `None`
+    /// where the file system could not say.
+    ended_at: Option<DateTime<Utc>>,
 }
 
 impl SessionEvidence {
@@ -343,9 +347,16 @@ impl SessionEvidence {
     ) -> Result<(crate::session::Transcript, SessionEvidence)> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        // After the read, so it is no earlier than the last append the read
+        // saw: an append-only transcript's last write is the session's end.
+        let ended_at = std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .map(DateTime::<Utc>::from);
         let transcript = crate::session::Session::parse(path, &text)?;
         let ever = crate::session::Session::messages_ever(&text);
-        let evidence = SessionEvidence::of(&transcript, &ever);
+        let mut evidence = SessionEvidence::of(&transcript, &ever);
+        evidence.ended_at = ended_at;
         Ok((transcript, evidence))
     }
 
@@ -374,6 +385,7 @@ impl SessionEvidence {
             anchor: transcript.convo.goal_anchor.clone(),
             situation,
             packet: packet(ever),
+            ended_at: None,
         }
     }
 
@@ -536,6 +548,12 @@ pub struct TextAppraisal {
     /// dropped and counted in `grounding`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub clipped: bool,
+    /// When the appraised session ended — the transcript's last write as
+    /// the appraiser read it. R37's no-act window opens here. Absent on a
+    /// row written before the field; a reader then falls back to `at`,
+    /// which is later, so the window can only close later, never early.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_ended_at: Option<DateTime<Utc>>,
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -698,6 +716,7 @@ impl TextAppraisal {
             lessons,
             goals_unresolved,
             clipped,
+            session_ended_at: evidence.ended_at,
         })
     }
 }
@@ -1243,6 +1262,407 @@ impl Summary {
         }
         s.sessions = sessions.len();
         s
+    }
+}
+
+// ─── The appraisal's own prediction, scored (X5, R33, R37; row 2b-2) ──────
+
+/// The window before "no act" becomes the act that happened, for an output
+/// with no store to take its patience from — a chat answer, a run that
+/// staged nothing. R37: "the doctor's constant"; the doctor's constant for
+/// an output waiting on the owner is the outbox's (`doctor::Patience`,
+/// `48h`), and it is the one used here.
+pub const NO_STORE_PATIENCE_HOURS: i64 = 48;
+
+/// What the owner did with a session's output, as the stores that record
+/// the owner's acts say — read by the harness, never by a model.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ObservedAct {
+    /// The owner's first act on the output within the window.
+    Act { act: ExpectedAct, at: DateTime<Utc> },
+    /// The window closed with no act: "no act" is the act that happened
+    /// (R37).
+    NoAct { window_closed_at: DateTime<Utc> },
+    /// The window is still open and no act has arrived.
+    Pending { closes_at: DateTime<Utc> },
+    /// Something the answer depends on could not be read — an act store,
+    /// the charter the patience comes from, a timestamp. **Never "no
+    /// act"**: an act the harness could not see is not an act that did not
+    /// happen.
+    Unknown { why: String },
+}
+
+/// The stores the owner's acts on a session's output live in, as a caller
+/// read them. A flag set means that store is unknown rather than empty.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OwnerActs<'a> {
+    /// Every outbox item; filtered to the session inside.
+    pub drafts: &'a [crate::outbox::OutboxItem],
+    pub outbox_unreadable: bool,
+    /// The closure store's standing transitions.
+    pub closures: &'a [crate::closure::Transition],
+    pub closures_unreadable: bool,
+    pub workflows: &'a [crate::workflow::Workflow],
+    pub workflows_unreadable: bool,
+    /// The charter, for the patience of the outbox's line.
+    pub charter: Option<&'a crate::charter::Charter>,
+    pub charter_unreadable: bool,
+}
+
+/// R37's window for one session's output: the patience of the store the
+/// output waits in — the outbox's line where the charter has one, else the
+/// doctor's constant — or [`NO_STORE_PATIENCE_HOURS`] for an output with
+/// no store. `Err` when the patience cannot be read.
+fn patience_for(
+    has_drafts: bool,
+    acts: &OwnerActs<'_>,
+) -> std::result::Result<(chrono::Duration, String, Option<String>), String> {
+    if !has_drafts {
+        return Ok((
+            chrono::Duration::hours(NO_STORE_PATIENCE_HOURS),
+            format!("{NO_STORE_PATIENCE_HOURS}h"),
+            None,
+        ));
+    }
+    if acts.charter_unreadable {
+        return Err("the charter could not be read, so the outbox's patience is unknown".into());
+    }
+    let p = crate::doctor::Patience::for_store(acts.charter, crate::charter::SensorKind::OutboxAge)
+        .ok_or("the outbox has no patience")?;
+    Ok((p.after, p.text, p.line))
+}
+
+/// The owner's act on `session_id`'s output, within R37's window opened at
+/// `ended_at`, as of `now`.
+///
+/// The acts, R16's set (R33): a model-authored draft released unchanged or
+/// after the owner's edit, or rejected; a task the session worked closed or
+/// reopened by the owner (the closure record's `sessions`); a workflow that
+/// tracked the session closed, reopened or cancelled — a cancel is the
+/// owner declining the work, read as `rejected`. **The first act by time
+/// is the act**: the owner's first reaction to the output, whatever came
+/// after it. An act after the window closed is not the act (R37: only an
+/// act that arrives before the window closes).
+pub fn observe(
+    session_id: &str,
+    ended_at: DateTime<Utc>,
+    acts: &OwnerActs<'_>,
+    now: DateTime<Utc>,
+) -> ObservedAct {
+    let unknown = |why: &str| ObservedAct::Unknown {
+        why: why.to_string(),
+    };
+    if acts.outbox_unreadable {
+        return unknown("the outbox could not be fully read");
+    }
+    if acts.closures_unreadable {
+        return unknown("the closure store could not be fully read");
+    }
+    if acts.workflows_unreadable {
+        return unknown("the workflow store could not be read");
+    }
+    let mut seen: Vec<(DateTime<Utc>, ExpectedAct)> = Vec::new();
+    let drafts: Vec<&crate::outbox::OutboxItem> = acts
+        .drafts
+        .iter()
+        .filter(|d| d.session_id.as_deref() == Some(session_id))
+        .filter(|d| d.author() == crate::outbox::Author::Model)
+        .collect();
+    for d in &drafts {
+        let act = match d.status.as_str() {
+            "sent" if d.edited() => ExpectedAct::Edited,
+            "sent" => ExpectedAct::ReleasedUnchanged,
+            "rejected" => ExpectedAct::Rejected,
+            _ => continue,
+        };
+        let Some(at) = d
+            .resolved_at
+            .as_deref()
+            .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+            .map(|t| t.with_timezone(&Utc))
+        else {
+            return unknown("a resolved draft carries no readable time");
+        };
+        seen.push((at, act));
+    }
+    for c in acts.closures {
+        if !c.sessions.iter().any(|s| s == session_id)
+            || !matches!(
+                c.actor,
+                crate::closure::Actor::Owner | crate::closure::Actor::OwnerApproved
+            )
+        {
+            continue;
+        }
+        match c.kind {
+            crate::closure::Move::Close => seen.push((c.at, ExpectedAct::Closed)),
+            crate::closure::Move::Reopen => seen.push((c.at, ExpectedAct::Reopened)),
+            crate::closure::Move::Unknown => {}
+        }
+    }
+    for w in acts.workflows {
+        for d in w.owner_dispositions() {
+            if d.session.as_deref() != Some(session_id) {
+                continue;
+            }
+            match d.kind {
+                crate::workflow::Disposition::Closed => seen.push((d.at, ExpectedAct::Closed)),
+                crate::workflow::Disposition::Cancelled => seen.push((d.at, ExpectedAct::Rejected)),
+            }
+            if let Some(at) = d.reopened_at {
+                seen.push((at, ExpectedAct::Reopened));
+            }
+        }
+    }
+    let (patience, _, _) = match patience_for(!drafts.is_empty(), acts) {
+        Ok(p) => p,
+        Err(why) => return ObservedAct::Unknown { why },
+    };
+    let closes_at = ended_at + patience;
+    seen.sort_by_key(|(at, _)| *at);
+    if let Some((at, act)) = seen.into_iter().find(|(at, _)| *at <= closes_at) {
+        return ObservedAct::Act { act, at };
+    }
+    if now >= closes_at {
+        ObservedAct::NoAct {
+            window_closed_at: closes_at,
+        }
+    } else {
+        ObservedAct::Pending { closes_at }
+    }
+}
+
+/// One appraisal's prediction, scored: its expected act against the act
+/// that happened. Written once per appraisal, when the act resolves, and
+/// never rewritten — a later charter edit that moves the patience does not
+/// re-score what was scored.
+///
+/// **A miss is a surprise** (X5): recorded here, as `surprise`, for 2e-6's
+/// replay priority and 2d-1's surprise decision points to read. Nothing
+/// ranks on it yet.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Score {
+    pub id: String,
+    pub scored_at: DateTime<Utc>,
+    #[serde(default)]
+    pub appraisal_id: String,
+    #[serde(default)]
+    pub session_id: String,
+    /// The appraisal's `expected_act` (R33).
+    #[serde(deserialize_with = "de_act")]
+    pub expected: ExpectedAct,
+    /// What happened: an act from R16's set, or `no_act` once the window
+    /// closed (R37).
+    #[serde(deserialize_with = "de_act")]
+    pub actual: ExpectedAct,
+    /// When the act happened; `None` for `no_act`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acted_at: Option<DateTime<Utc>>,
+    /// When the window closed, or would have.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_closed_at: Option<DateTime<Utc>>,
+    /// Derived: `expected == actual`. Stored so a reader never re-derives
+    /// it differently.
+    #[serde(default)]
+    pub hit: bool,
+    /// Derived: a miss. The surprise X5 names.
+    #[serde(default)]
+    pub surprise: bool,
+    /// Whether the appraisal scored is served by the clean door — a reader
+    /// that acts (replay priority, 2e-6) must take only clean ones.
+    #[serde(default)]
+    pub clean: bool,
+    /// The appraisal's situation and anchor, so a reader can find "the same
+    /// situation and goal" without joining back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub situation: Option<Situation>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::goal::de_lenient"
+    )]
+    pub anchor: Option<GoalRef>,
+}
+
+/// An act word from the file, failing soft to `unknown`.
+fn de_act<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ExpectedAct, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(v).unwrap_or(ExpectedAct::Unknown))
+}
+
+/// What scoring one appraisal found.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Scored {
+    /// Scored and written.
+    Written(Box<Score>),
+    /// Already scored; nothing written.
+    AlreadyScored,
+    /// The appraisal predicted no act structurally: nothing to score.
+    NoExpectation,
+    /// The window is open and nothing has happened yet.
+    Pending { closes_at: DateTime<Utc> },
+    /// The answer could not be read; nothing written.
+    Unknown { why: String },
+}
+
+/// Coverage of the appraisals' predictions: how many are scored, how many
+/// wait, and a hit rate only over scores that exist.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ScoreSummary {
+    pub appraisals: usize,
+    /// Appraisals carrying a readable expected act.
+    pub with_expectation: usize,
+    pub scored: usize,
+    pub hits: usize,
+    /// Misses — surprises.
+    pub surprises: usize,
+    /// Of the surprises, those on clean appraisals.
+    pub clean_surprises: usize,
+    /// Expectations whose window is still open.
+    pub pending: usize,
+    /// Expectations whose answer could not be read.
+    pub unknown: usize,
+    /// `hits / scored`; `None` over no scores.
+    pub hit_rate: Option<f64>,
+    /// Score lines that could not be read.
+    pub skipped: usize,
+}
+
+impl AppraisalStore {
+    fn scores_ledger(&self) -> PathBuf {
+        self.root.join("scores.jsonl")
+    }
+
+    /// Every score, oldest first, and how many lines were skipped. A
+    /// missing file is no scores; one that cannot be read is an `Err`.
+    pub fn scores(&self) -> Result<(Vec<Score>, usize)> {
+        let path = self.scores_ledger();
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), 0)),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        let mut out = Vec::new();
+        let mut skipped = 0usize;
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            match serde_json::from_str(line) {
+                Ok(s) => out.push(s),
+                Err(_) => skipped += 1,
+            }
+        }
+        Ok((out, skipped))
+    }
+
+    /// Score one appraisal against what the owner did, and write the score
+    /// if the act has resolved — once per appraisal, checked under the
+    /// store's lock. Pending and unknown write nothing.
+    pub fn score(
+        &self,
+        appraisal: &TextAppraisal,
+        acts: &OwnerActs<'_>,
+        now: DateTime<Utc>,
+    ) -> Result<Scored> {
+        let Some(expected) = appraisal
+            .expected_act
+            .filter(|a| *a != ExpectedAct::Unknown)
+        else {
+            return Ok(Scored::NoExpectation);
+        };
+        let ended_at = appraisal.session_ended_at.unwrap_or(appraisal.at);
+        let (actual, acted_at, window_closed_at) =
+            match observe(&appraisal.session_id, ended_at, acts, now) {
+                ObservedAct::Act { act, at } => (act, Some(at), None),
+                ObservedAct::NoAct { window_closed_at } => {
+                    (ExpectedAct::NoAct, None, Some(window_closed_at))
+                }
+                ObservedAct::Pending { closes_at } => return Ok(Scored::Pending { closes_at }),
+                ObservedAct::Unknown { why } => return Ok(Scored::Unknown { why }),
+            };
+        let hit = expected == actual;
+        let score = Score {
+            id: format!("scr-{}", uuid::Uuid::new_v4()),
+            scored_at: now,
+            appraisal_id: appraisal.id.clone(),
+            session_id: appraisal.session_id.clone(),
+            expected,
+            actual,
+            acted_at,
+            window_closed_at,
+            hit,
+            surprise: !hit,
+            clean: appraisal.is_clean(),
+            situation: appraisal.situation.clone(),
+            anchor: appraisal.anchor.clone(),
+        };
+        use std::io::Write;
+        let _lock = self.lock()?;
+        let (existing, _) = self.scores()?;
+        if existing.iter().any(|s| s.appraisal_id == appraisal.id) {
+            return Ok(Scored::AlreadyScored);
+        }
+        let path = self.scores_ledger();
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        let mut line = serde_json::to_string(&score)?;
+        line.push('\n');
+        file.write_all(line.as_bytes())
+            .with_context(|| format!("writing {}", path.display()))?;
+        file.sync_data()
+            .with_context(|| format!("syncing {}", path.display()))?;
+        Ok(Scored::Written(Box::new(score)))
+    }
+
+    /// Score every appraisal whose act has resolved and is not yet scored —
+    /// what `mecha distill` runs each pass, no model call. Returns the
+    /// coverage after the pass.
+    pub fn score_due(&self, acts: &OwnerActs<'_>, now: DateTime<Utc>) -> Result<ScoreSummary> {
+        let (rows, _) = self.for_owner()?;
+        for row in &rows {
+            self.score(row, acts, now)?;
+        }
+        self.score_summary(acts, now)
+    }
+
+    /// Coverage, read-only: the ledger's scores, and for every expectation
+    /// not yet scored, whether its window is open or its answer unknown.
+    pub fn score_summary(&self, acts: &OwnerActs<'_>, now: DateTime<Utc>) -> Result<ScoreSummary> {
+        let (rows, _) = self.for_owner()?;
+        let (scores, skipped) = self.scores()?;
+        let mut s = ScoreSummary {
+            appraisals: rows.len(),
+            skipped,
+            ..ScoreSummary::default()
+        };
+        for row in &rows {
+            if !row.expected_act.is_some_and(|a| a != ExpectedAct::Unknown) {
+                continue;
+            }
+            s.with_expectation += 1;
+            if let Some(score) = scores.iter().find(|x| x.appraisal_id == row.id) {
+                s.scored += 1;
+                if score.hit {
+                    s.hits += 1;
+                } else {
+                    s.surprises += 1;
+                    if score.clean {
+                        s.clean_surprises += 1;
+                    }
+                }
+                continue;
+            }
+            let ended_at = row.session_ended_at.unwrap_or(row.at);
+            match observe(&row.session_id, ended_at, acts, now) {
+                ObservedAct::Unknown { .. } => s.unknown += 1,
+                // Resolved but not yet written — the next pass scores it;
+                // until then it waits, like an open window.
+                _ => s.pending += 1,
+            }
+        }
+        s.hit_rate = (s.scored > 0).then(|| s.hits as f64 / s.scored as f64);
+        Ok(s)
     }
 }
 
@@ -2081,6 +2501,372 @@ mod tests {
         let theirs = read.same_situation_and_goal(&first, 10);
         assert_eq!(theirs.len(), 3);
         assert!(theirs.iter().all(|c| c.session_id != same[0]));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // --- the appraisal's own prediction, scored (row 2b-2) ---
+
+    /// A model-authored draft staged in `session`, then set to `status` at
+    /// `resolved_at` — the shape the outbox store keeps.
+    fn draft_of(
+        root: &Path,
+        session: &str,
+        status: &str,
+        resolved_at: Option<DateTime<Utc>>,
+    ) -> crate::outbox::OutboxItem {
+        let store =
+            crate::outbox::OutboxStore::open(root.join(format!("outbox-{}", uuid::Uuid::new_v4())))
+                .unwrap();
+        let mut item = store
+            .stage(
+                "mail_send",
+                crate::outbox::OutboxKind::Message,
+                json!({"to": "idris.vale@example.org", "body": "The review is Thursday."}),
+                Taint::default(),
+                crate::outbox::Provenance {
+                    anticipation: None,
+                    filled_defaults: Vec::new(),
+                    session_id: Some(session.to_string()),
+                    workspace: None,
+                    call_id: None,
+                },
+            )
+            .unwrap();
+        item.status = status.to_string();
+        item.resolved_at = resolved_at.map(|t| t.to_rfc3339());
+        item
+    }
+
+    fn acts<'a>(drafts: &'a [crate::outbox::OutboxItem]) -> OwnerActs<'a> {
+        OwnerActs {
+            drafts,
+            ..OwnerActs::default()
+        }
+    }
+
+    /// R37's boundary: "no act" becomes the act that happened only once the
+    /// output's store patience has elapsed from the session's end — the
+    /// doctor's constant, or the charter line watching the outbox. An act
+    /// before the window closes is the act; one after it is not.
+    #[test]
+    fn no_act_resolves_only_after_the_outputs_patience_from_the_sessions_end() {
+        let root = temp_root("window");
+        let end: DateTime<Utc> = "2026-09-20T12:00:00Z".parse().unwrap();
+        let second = chrono::Duration::seconds(1);
+        let pending = [draft_of(&root, "s-1", "pending", None)];
+        let hours = |h: i64| chrono::Duration::hours(h);
+
+        // The doctor's constant for the outbox, 48h.
+        let at = |now| observe("s-1", end, &acts(&pending), now);
+        assert_eq!(
+            at(end + hours(48) - second),
+            ObservedAct::Pending {
+                closes_at: end + hours(48)
+            },
+            "just before the window closes: still waiting"
+        );
+        assert_eq!(
+            at(end + hours(48) + second),
+            ObservedAct::NoAct {
+                window_closed_at: end + hours(48)
+            },
+            "just after: no act is the act"
+        );
+
+        // The owner's own line on the outbox moves the window.
+        let charter = crate::charter::Charter::parse(
+            "[[line]]\nid = \"replies\"\ntext = \"Answer the people waiting on me.\"\n\
+             [line.sensor]\nkind = \"outbox_age\"\nsetpoint = \"24h\"\n",
+        )
+        .unwrap();
+        let owned = OwnerActs {
+            charter: Some(&charter),
+            ..acts(&pending)
+        };
+        assert!(matches!(
+            observe("s-1", end, &owned, end + hours(24) - second),
+            ObservedAct::Pending { .. }
+        ));
+        assert!(matches!(
+            observe("s-1", end, &owned, end + hours(24) + second),
+            ObservedAct::NoAct { .. }
+        ));
+
+        // An act inside the window is the act, whenever it is read.
+        let rejected = [draft_of(&root, "s-1", "rejected", Some(end + hours(47)))];
+        assert_eq!(
+            observe("s-1", end, &acts(&rejected), end + hours(100)),
+            ObservedAct::Act {
+                act: ExpectedAct::Rejected,
+                at: end + hours(47)
+            }
+        );
+        // One after it is not: the window closed on no act.
+        let late = [draft_of(&root, "s-1", "sent", Some(end + hours(49)))];
+        assert_eq!(
+            observe("s-1", end, &acts(&late), end + hours(100)),
+            ObservedAct::NoAct {
+                window_closed_at: end + hours(48)
+            }
+        );
+        // Another session's draft is not this session's act; with no draft
+        // of its own the output has no store, and the constant applies.
+        assert!(matches!(
+            observe("s-2", end, &acts(&rejected), end + hours(47)),
+            ObservedAct::Pending { .. }
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An act store that could not be read, or a patience that could not
+    /// be, is unknown — never "no act", however long ago the session ended.
+    #[test]
+    fn an_unreadable_store_or_patience_is_unknown_never_no_act() {
+        let root = temp_root("unknown");
+        let end: DateTime<Utc> = "2026-09-01T12:00:00Z".parse().unwrap();
+        let long_after = end + chrono::Duration::days(30);
+        let pending = [draft_of(&root, "s-1", "pending", None)];
+        for (what, a) in [
+            (
+                "outbox",
+                OwnerActs {
+                    outbox_unreadable: true,
+                    ..acts(&pending)
+                },
+            ),
+            (
+                "closures",
+                OwnerActs {
+                    closures_unreadable: true,
+                    ..acts(&pending)
+                },
+            ),
+            (
+                "workflows",
+                OwnerActs {
+                    workflows_unreadable: true,
+                    ..acts(&pending)
+                },
+            ),
+            (
+                "charter, so the outbox's patience",
+                OwnerActs {
+                    charter_unreadable: true,
+                    ..acts(&pending)
+                },
+            ),
+        ] {
+            assert!(
+                matches!(
+                    observe("s-1", end, &a, long_after),
+                    ObservedAct::Unknown { .. }
+                ),
+                "{what}"
+            );
+        }
+        // A resolved draft with no readable time cannot be placed in the
+        // window either.
+        let untimed = [draft_of(&root, "s-1", "sent", None)];
+        assert!(matches!(
+            observe("s-1", end, &acts(&untimed), long_after),
+            ObservedAct::Unknown { .. }
+        ));
+        // With no draft there is no store, so an unreadable charter does
+        // not stand between the constant and the answer.
+        assert!(matches!(
+            observe(
+                "s-1",
+                end,
+                &OwnerActs {
+                    charter_unreadable: true,
+                    ..OwnerActs::default()
+                },
+                long_after
+            ),
+            ObservedAct::NoAct { .. }
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Row 2b-2's acceptance: a pair of sessions scores a hit and a miss on
+    /// `expected_act` against the recorded act, the miss is recorded as a
+    /// surprise, each score is written once, and coverage has no rate over
+    /// nothing. No model decides a score (R27).
+    #[test]
+    fn a_hit_and_a_surprise_are_scored_once_and_coverage_has_no_rate_over_nothing() {
+        let root = temp_root("scores");
+        let dir = root.join("sessions");
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+
+        // Nothing on record: coverage, no rate.
+        let empty = store
+            .score_summary(&OwnerActs::default(), Utc::now())
+            .unwrap();
+        assert_eq!((empty.appraisals, empty.scored), (0, 0));
+        assert_eq!(empty.hit_rate, None);
+
+        // Two sessions: one expected to draw no act, one expected to be
+        // released unchanged — and the owner rejects its draft.
+        let quiet = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        let busy = SessionEvidence::read(&session(&dir, tainted())).unwrap();
+        store
+            .record(
+                &quiet,
+                Draft {
+                    expected_act: Some(ExpectedAct::NoAct),
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        store
+            .record(
+                &busy,
+                Draft {
+                    expected_act: Some(ExpectedAct::ReleasedUnchanged),
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        // A third appraisal names no act: nothing to score.
+        let silent = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        store
+            .record(
+                &silent,
+                Draft {
+                    expected_act: None,
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let rows = store.for_owner().unwrap().0;
+        assert!(
+            rows.iter().all(|r| r.session_ended_at.is_some()),
+            "the session's end is recorded with the appraisal"
+        );
+        let rejected_at = Utc::now() + chrono::Duration::hours(1);
+        let drafts = [draft_of(
+            &root,
+            busy.session_id(),
+            "rejected",
+            Some(rejected_at),
+        )];
+        let owner = acts(&drafts);
+
+        // Before the quiet session's window closes: one scored, one waiting.
+        let early = store
+            .score_due(&owner, Utc::now() + chrono::Duration::hours(2))
+            .unwrap();
+        assert_eq!(
+            (early.with_expectation, early.scored, early.pending),
+            (2, 1, 1)
+        );
+        assert_eq!((early.hits, early.surprises), (0, 1));
+        assert_eq!(early.hit_rate, Some(0.0));
+
+        // After it: the no-act prediction is a hit.
+        let later = Utc::now() + chrono::Duration::hours(72);
+        let done = store.score_due(&owner, later).unwrap();
+        assert_eq!(
+            (done.scored, done.hits, done.surprises, done.pending),
+            (2, 1, 1, 0)
+        );
+        assert_eq!(done.hit_rate, Some(0.5));
+        assert_eq!(
+            done.clean_surprises, 0,
+            "the surprise is on the tainted appraisal"
+        );
+
+        let (scores, skipped) = store.scores().unwrap();
+        assert_eq!((scores.len(), skipped), (2, 0));
+        let miss = scores
+            .iter()
+            .find(|s| s.session_id == busy.session_id())
+            .unwrap();
+        assert_eq!(
+            (
+                miss.expected,
+                miss.actual,
+                miss.hit,
+                miss.surprise,
+                miss.clean
+            ),
+            (
+                ExpectedAct::ReleasedUnchanged,
+                ExpectedAct::Rejected,
+                false,
+                true,
+                false
+            )
+        );
+        assert!(miss.acted_at.is_some());
+        let hit = scores
+            .iter()
+            .find(|s| s.session_id == quiet.session_id())
+            .unwrap();
+        assert_eq!(
+            (hit.actual, hit.hit, hit.surprise, hit.clean),
+            (ExpectedAct::NoAct, true, false, true)
+        );
+        assert!(hit.window_closed_at.is_some());
+
+        // Scored once: a second pass writes nothing more.
+        store.score_due(&owner, later).unwrap();
+        assert_eq!(store.scores().unwrap().0.len(), 2);
+        let busy_row = rows
+            .iter()
+            .find(|r| r.session_id == busy.session_id())
+            .unwrap();
+        assert_eq!(
+            store.score(busy_row, &owner, later).unwrap(),
+            Scored::AlreadyScored
+        );
+
+        // An unreadable act store scores nothing and says unknown.
+        let fresh = AppraisalStore::open(root.join("appraisals-2")).unwrap();
+        fresh
+            .record(
+                &quiet,
+                Draft {
+                    expected_act: Some(ExpectedAct::NoAct),
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let blind = OwnerActs {
+            outbox_unreadable: true,
+            ..OwnerActs::default()
+        };
+        let s = fresh.score_due(&blind, later).unwrap();
+        assert_eq!((s.scored, s.unknown, s.hit_rate), (0, 1, None));
+        assert!(fresh.scores().unwrap().0.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The score ledger is a wire format: an act word this build cannot
+    /// read loads as `unknown`, and a torn line costs only itself.
+    #[test]
+    fn the_score_ledger_loads_leniently() {
+        let root = temp_root("score-wire");
+        let store = AppraisalStore::open(&root).unwrap();
+        std::fs::write(
+            store.scores_ledger(),
+            "{\"id\":\"scr-1\",\"scored_at\":\"2026-09-25T00:00:00Z\",\"appraisal_id\":\"apr-1\",\
+             \"expected\":\"sulked\",\"actual\":\"no_act\",\"hit\":false,\"surprise\":true}\n\
+             {\"id\":\"scr-torn\",\"scored_at\n",
+        )
+        .unwrap();
+        let (scores, skipped) = store.scores().unwrap();
+        assert_eq!((scores.len(), skipped), (1, 1));
+        assert_eq!(scores[0].expected, ExpectedAct::Unknown);
+        assert_eq!(scores[0].actual, ExpectedAct::NoAct);
         let _ = std::fs::remove_dir_all(&root);
     }
 
