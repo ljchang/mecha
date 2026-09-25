@@ -13,30 +13,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-/// A `message` record whose blocks a newer build wrote, read as far as this
-/// build can.
-///
-/// `Block` is a closed enum written to an append-only store — a wire format
-/// — and `serde` fails the whole record on a variant it does not know. Read
-/// strictly, a message carrying one new block kind was *dropped from the
-/// resumed conversation*, which can orphan a `tool_result` and 400 every
-/// later request on the session. So a line that failed the strict parse is
-/// retried block by block: the blocks this build knows are kept, the rest
-/// are counted and logged, and the message survives with what it has. A
-/// message left with no blocks at all, or a role this build does not know,
-/// is still dropped — there is nothing left to keep.
-///
-/// The residue, stated: if a future build adds a block kind that *produces*
-/// a result — a second `tool_use` shape — dropping it leaves the answering
-/// `tool_result` orphaned in the next message, and nothing prunes orphans
-/// at load. Strictly better than dropping the whole message either way,
-/// and the fix when that day comes is a load-time orphan sweep beside this.
-/// When `after` differs from `before` only by blocks appended to the end of
-/// `before`'s last message (and possibly messages after it), that message's
-/// index and the new blocks — the shape of the loop's folds into the turn a
-/// door already recorded. Every other field of the message must be equal,
-/// so a fold never smuggles a changed role, provenance or plan past the
-/// record.
+/// The index and new blocks when `after` differs from `before` only by
+/// blocks appended to the end of `before`'s last message (and possibly
+/// messages after it) — the shape of the loop's folds into the turn a door
+/// already recorded. Every other field of the message must be equal, so a
+/// fold never smuggles a changed role, provenance or plan past the record.
 fn extension_of(
     before: &[Message],
     after: &[Message],
@@ -55,6 +36,24 @@ fn extension_of(
         .then(|| (index, is.content[kept..].to_vec()))
 }
 
+/// A `message` record whose blocks a newer build wrote, read as far as this
+/// build can.
+///
+/// `Block` is a closed enum written to an append-only store — a wire format
+/// — and `serde` fails the whole record on a variant it does not know. Read
+/// strictly, a message carrying one new block kind was *dropped from the
+/// resumed conversation*, which can orphan a `tool_result` and 400 every
+/// later request on the session. So a line that failed the strict parse is
+/// retried block by block: the blocks this build knows are kept, the rest
+/// are counted and logged, and the message survives with what it has. A
+/// message left with no blocks at all, or a role this build does not know,
+/// is still dropped — there is nothing left to keep.
+///
+/// The residue, stated: if a future build adds a block kind that *produces*
+/// a result — a second `tool_use` shape — dropping it leaves the answering
+/// `tool_result` orphaned in the next message, and nothing prunes orphans
+/// at load. Strictly better than dropping the whole message either way,
+/// and the fix when that day comes is a load-time orphan sweep beside this.
 fn lenient_record(line: &str) -> Option<Record> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     match v.get("record").and_then(serde_json::Value::as_str)? {
@@ -2213,7 +2212,12 @@ impl TaintTimeline {
                 // extension of that turn, the run's checkpoint), no
                 // checkpoint covers `index` yet and nothing drops. An
                 // extension that names a message this count does not end on
-                // is ignored, as `Session::parse` ignores it.
+                // is ignored, as `Session::parse` ignores it. (This reader
+                // parses strictly where `parse` falls back to
+                // `lenient_record`, so an extension carrying a block kind
+                // this build cannot read is skipped here and applied there —
+                // the same pre-existing split a `rewrite` with an unknown
+                // block has, reachable only from a newer build's records.)
                 Record::Extend { index, .. } => {
                     if index + 1 == messages {
                         checkpoints.retain(|(n, _)| *n <= index);
