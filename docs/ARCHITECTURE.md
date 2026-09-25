@@ -2270,8 +2270,11 @@ brief (which reads the board through the graph server) do not run.
   jail's spill exception must point where the model cannot write). The
   runtime directory is `statfs`-checked for tmpfs, and the `<home>` level
   keeps a second `serve` against another home from sweeping this one's rooms
-  (a second `serve` against the *same* home would, at its start — one owner,
-  one server is the assumption). The jail is `<room>/<key>`: `WebAsker`
+  (the level's name escapes every other byte reversibly, so two homes never
+  share it). Against the *same* home, each room carries its opener's pid
+  (`owner`) and the start-up sweep removes only rooms whose owner is gone —
+  a mistaken second start, even one that then dies on a taken port, closes
+  nobody's chat. The jail is `<room>/<key>`: `WebAsker`
   routes an `ask_user` card by the jail's directory name, which must be the
   session key.
 - **`shell` only where the sandbox keeps its writes in the room.** `fs_*` are
@@ -2279,7 +2282,7 @@ brief (which reads the board through the graph server) do not run.
   `Sandbox::writes_stay_in_workspace` is true for `bwrap` and `docker` with no
   extra `writable` paths — not for `none`, and not for `landlock`, which
   shares the host's `/tmp`. Elsewhere `shell` is withheld with the rest.
-- **A `pre_tool` hook refuses the door.** No hook runs in an incognito chat
+- **A deny-gate hook refuses the door** (`pre_tool`, `pre_task_close`). No hook runs in an incognito chat
   (a hook's log is a trace); an observer is simply not run, but a deny gate
   skipped would widen the chat past what the owner allowed, so its presence
   refuses the chat the way a cloud provider does (`incognito::hooks_allow`).
