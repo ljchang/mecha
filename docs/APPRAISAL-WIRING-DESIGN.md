@@ -863,6 +863,39 @@ folds it into the seed or the first user turn — the slot `date_context`
 already uses for the date line — never the prefix. Numbers stay out (R21);
 the brief is words and bands.
 
+*Built as 1h:* `brief::SituationBrief`, assembled by
+`brief::assemble_for_run` on the three doors the row names — `tasks work`
+(the board it already read to find its task), a trigger run, and a web chat
+turn (`serve`, hosted voice turns included) — and carried on
+`RunContext::brief` to `RunStats::brief`, which the loop copies and never
+reads. Nine fields, each typed data for phase 3 to render, each with its
+own unknown: the goal chain (`GoalChain::NoAnchor`, or the anchor with its
+project tier off the board row and its charter lines off a trigger's
+`serves`, ranked); the board reduced by `brief::board_of` to counts and
+task ids, no row's name or `waiting_on`; the commitments through
+`Homeostat::in_run_commitments`, per item, withdrawn stores named; local
+time in `[agent] timezone` and the owner's quiet hours from
+`workflows/attention.toml` (an absent file is `Unset`, not the digest's
+22–08 UTC default); seats (`Permits::read_live`); other task and trigger
+runs in flight (`RunMarkers::live_names`, the run's own excluded); `/slots`
+occupancy for a `kind = "local"` provider (`brief::read_slots`); a voice
+call, from a last-turn stamp the facade writes (`brief::VoicePresence`);
+and the budget. Every field loads leniently on its own. The readout is
+`situation_brief` in `sessions health`: per field read / unread / missing
+over briefed runs, and runs with no brief counted by surface. The G4 scan
+covers every field (`docs/ARCHITECTURE.md`, "The situation brief is
+recorded, never sent"). Two things the build found: the web door's
+homeostat was sampled once, when `serve` started, so every web turn
+recorded that morning's backlog — `serve` now re-samples per turn; and the
+facade sees utterances, not calls, so "in a call" is a turn within
+`brief::VOICE_CALL_WINDOW_SECS` (five minutes, argued). *Deferred:* the
+owner's recent activity across surfaces (named here, not in the 1h row);
+past clean appraisals (I2, phase 2); a re-delegated task's previous
+attempts (M5, phase 3); a brief on the TUI, `chat`, `run`, Slack and
+unhosted voice turns; a board read on a trigger whose `tools` allowlist
+leaves `kg_task_list` off its surface, which records the board as unread;
+and a workflow-store commitment, which guilt does not read yet (1f).
+
 #### G4. Numbers never reach the model
 
 Half of this is tested: `planning_sensor_metadata_never_reaches_either_provider`
