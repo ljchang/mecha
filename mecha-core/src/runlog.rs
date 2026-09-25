@@ -855,6 +855,7 @@ fn exhaustive(record: &Record) {
         | Record::Config(_)
         | Record::Taint(_)
         | Record::Rewrite { .. }
+        | Record::Extend { .. }
         | Record::Title { .. }
         | Record::Outcome(_)
         | Record::GoalAnchor { .. } => {}

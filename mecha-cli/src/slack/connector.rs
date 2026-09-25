@@ -888,6 +888,14 @@ impl State {
             content,
         });
 
+        // What the run starts from goes on file before the run, as every
+        // other door does: `Session::record_run` takes `before` to be what
+        // the file already holds, and this door's session is fresh per run.
+        // Without it the owner's prompt reached the transcript only when a
+        // harness fold happened to force a whole-transcript rewrite (review
+        // of #316).
+        let _ = session.append_messages(&conversation.messages);
+
         // The spawned task takes ownership of these; the controls message is
         // posted after it starts, so it needs its own copies.
         let controls_channel = channel.clone();

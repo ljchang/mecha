@@ -493,6 +493,7 @@ widening.
 | R26 | 2 | Point-wise comparison at informative decision points, decided by the owner's recorded verdicts, is added **beside** the existing whole-session numeric comparison, which stays; behaviour-changing policies are also measured on fixtures. They combine as O1 sets out: a candidate is accepted when the point-wise comparison decides for it and the numeric comparison shows no regression (`WORK_FLOOR` intact) | **ruled 2026-09-24: both, combined as O1 proposes** |
 | R21 | 3 | State reaches the agent as described state, on the user-turn or tool-result slot, never the prefix. Budget *facts* may be numbers — turns left, context remaining; anything a model could treat as a *score to move* stays words: sensor readings against setpoints, per-commitment guilt, valence, priorities | **ruled 2026-09-24** |
 | R22 | 3 | An in-run situation appraisal is part of the run: it inherits its taint, shapes the plan, and never widens a permission or chooses an action | **ruled 2026-09-24** |
+| R35 | 3 | Delivering the situation brief arms `private` taint — fail-closed, the same as reading the board through `kg_task_list` (raised on review of #309) | **ruled 2026-09-25**; built as 3a-3 |
 | R27 | 3, 5 | Policies are compared only where a structural validator decides; a model judge at most breaks a tie between candidates that passed every structural check | **ruled 2026-09-24** |
 | R4 | 3 | The completion certificate: template only first; a `Verify` re-prompt only later, as its own measured arm | **ruled 2026-09-24** |
 | R11 | 3 | Acceptance criteria the agent declares, from a closed set the harness executes; frozen; one-sided until the owner confirms them; never a charter sensor | **ruled 2026-09-24** |
@@ -508,7 +509,7 @@ widening.
 | R9 | — | The charter line `be-the-best`: unboundedness is fine (lines are attractors); §15's narrower worry is a line whose object is the harness, held by the `Security` class | flagged once |
 | R34 | 2 | A rule scoped to a goal that closes keeps its scope (`task:<uid>`) and widens only on evidence, by §17.4's restatement; such rules are made **visible**, not left silent | **ruled 2026-09-25; built** — `mecha rules list` counts and marks them `LOADS NOWHERE`, `mecha learn` repeats the count each pass, an unreadable board is its own finding |
 
-**Every ruling is settled** (2026-09-24), except the parked items (R3, R8), the
+**Every ruling is settled** (2026-09-24; R35 on 2026-09-25), except the parked items (R3, R8), the
 flag (R9), the deferred R7, the declined R2 and R29, which is not proposed.
 Phase 5's R28 waits on the bubblewrap upgrade, an ops step.
 
@@ -1004,17 +1005,17 @@ occupancy are bands, so only the board, seat holders and runs in flight
 re-fold it. A compaction cut strips the brief from the
 head, keeps it from the summariser and re-folds it in the tail, as it does
 the calendar reference, and each block's header says a later brief in the
-conversation replaces it. **Open for the owner:** delivery arms no taint.
-Nothing in the words came from outside, but board ids, commitment bands,
-quiet hours, seat holders and runs in flight enter the conversation without
-arming `private`, where a `kg_task_list` read of the same would arm it
-(review of #309; `docs/ARCHITECTURE.md` sets out both precedents and the
-cost of arming to the arm). The lever ships off until that is ruled. **Owed before it ships on
-(3a-3):** each fold edits a message the door already recorded, so it
-writes a whole-transcript `Record::Rewrite` and clears the taint
-checkpoints — once a day for the calendar, but on every turn whose brief
-changed for a web chat (review of #309; `docs/ARCHITECTURE.md`). Two
-found building it: the experiment instrument
+conversation replaces it. Two things were owed before the lever could ship
+on, both *built as 3a-3*: **delivery arms `private`** (R35) — the words are
+what a `kg_task_list` read arms it for, so the loop arms at the fold and
+`Taint::arm_for_content` arms from any transcript holding a brief, and the
+interlock refuses a chosen send after the brief and an untrusted read as it
+does after a board read (`docs/TRIFECTA.md`'s row); and **a fold is a
+`Record::Extend`** of the message the door already recorded, not a
+whole-transcript `Record::Rewrite` that cleared the taint checkpoints on
+every turn whose brief changed (the calendar reference's fold rides the
+same path). Whether the lever ships on is now the arms' measurement, per
+§1 decision 7. Two found building it: the experiment instrument
 runs trials through `mecha run`, which had no brief, so its two arms would
 have been one condition — `mecha run` now assembles, records and delivers
 one; and the OpenAI-compatible encoder joins a message's text blocks with
