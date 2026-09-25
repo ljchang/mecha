@@ -10,7 +10,9 @@
 //!
 //! **Every key is a name from a set the harness owns.** Tool names come from
 //! the registry, the trigger from [`crate::learning::Trigger`], the surface
-//! from [`SessionKind`], the workspace from the session record. Never a tool
+//! from [`SessionKind`], the workspace from the session record, the goal
+//! from the store the front-end read it out of (a board task, a trigger
+//! file, the owner's `run --goal`) — never a goal a plan or a model named. Never a tool
 //! argument, never prose: a model authors arguments and prose, and a key a
 //! model can author is a key an injection can set. That is also why the
 //! reflector's `error_type` is *not* a key here even though it sits beside
@@ -21,23 +23,26 @@
 //!
 //! A reflection records every key it can. A *rule* is scoped by the subset a
 //! run can be matched against at start — [`Situation::scope`] — and that
-//! is the tool set, the workspace and the surface: `prepare` knows the
+//! is the tool set, the workspace, the surface and the goal: `prepare` knows the
 //! registry when it renders the rules block, the workspace it matched against
-//! (`setup::prepare_tools` canonicalises it), and the surface the front-end
+//! (`setup::prepare_tools` canonicalises it), the surface the front-end
 //! told it (`GlobalOpts::surface`, set by the front-end that owns the run
 //! and never by a flag; the test override marks the session record and
 //! never the match, or a smoke test and every `mecha exp` trial would
 //! render a block with no surface-scoped rule in it; and every front-end
 //! that declares a surface appends the run record that keeps it, so a
-//! lesson mined there can be scoped to it). A stored scope naming a
-//! surface this build cannot read matches nothing rather than everything
-//! (parked verbatim as `surface_unread`) — the only key whose lenient read
-//! widened, and one a downgrade must not destroy. **The recorded key is the matched key by
+//! lesson mined there can be scoped to it), and the goal the front-end
+//! handed it (`GlobalOpts::goal`; the module's last section). A stored
+//! scope naming a surface or a goal this build cannot read matches nothing
+//! rather than everything (parked verbatim as `surface_unread`, or as
+//! [`GoalKey::Unread`]) — a lenient read that dropped either would widen,
+//! and a downgrade must not destroy it. **The recorded key is the matched key by
 //! construction**, as the tool list already was: the run record keeps the
-//! workspace and surface the block was matched against
-//! (`RunConfig::rules_workspace` and `rules_surface`, from `RulesCarried`),
-//! and the miner, the backfill, the validator's region and the probe all
-//! read those — never the session's jail, never `SessionMeta::kind`; the
+//! workspace, surface and goal the block was matched against
+//! (`RunConfig::rules_workspace`, `rules_surface` and `rules_goal`, from
+//! `RulesCarried`), and the miner, the backfill, the validator's region and
+//! the probe all read those — never the session's jail, never
+//! `SessionMeta::kind`, never the conversation's goal anchor; the
 //! miner and the backfill read the record covering the intervention's
 //! message (`Transcript::config_covering`), since a resumed question or
 //! a `/model` switch gives one session runs matched on different keys. The
@@ -76,11 +81,111 @@
 //! and leaving a row whose session cannot be read as it is. Not a flag a
 //! human runs once: the nightly's `learn --auto` follows the pass, and a
 //! rule scoped to a jail could never be consolidated back out.
+//!
+//! ## The goal key
+//!
+//! The goal joined on 2026-09-25 (`APPRAISAL-WIRING-DESIGN.md` M1, built as
+//! 2c-1; `GOAL-SYSTEM-DESIGN.md` §17.3 calls it the richest key), once the
+//! structural anchor (S1, phase 1a) made it non-empty. The key is the whole
+//! reference, kind and id together — `trigger:morning`, `task:<uid>` —
+//! because what the design keys on is *the same goal* ("last time on this
+//! task", I2), and the kind alone would say nothing the surface does not:
+//! a trigger run is already on the `trigger` surface, a delegated task on
+//! `task`. It is the goal the **front-end handed `prepare`**, from a store
+//! the owner wrote: `tasks work` its task, a trigger run its trigger, `run
+//! --goal` the owner's pointer, a question continuation the asking run's
+//! recorded one. A front-end that renders one block for many runs — `serve`,
+//! the front door — and one whose runs have no structural goal — chat, the
+//! TUI, voice, mail, Slack — declares none, because no one goal is the
+//! block's. Never the conversation's anchor: a hand-over resumed on an older
+//! anchor, or an anchor the owner confirmed mid-run, was not what the block
+//! was matched on.
+//!
+//! **An absent goal never widens a scope** (APPRAISAL-RESEARCH §8.4). A rule
+//! scoped to a goal loads only in a run that presents that goal — a run that
+//! presents none, or one this build cannot name, matches it not — and a
+//! stored goal this build cannot name matches nothing ([`GoalKey::Unread`])
+//! rather than being read as none, which would be every goal; the run
+//! record keeps an unnameable goal the same way, so the miner stamps the
+//! parked key rather than none. The other direction is the acceptance
+//! line: a reflection mined with no goal scopes with none, and its rule
+//! loads under every goal exactly as it did before the key. Region and
+//! widening need no edit: two members naming different goals — or one
+//! naming none — share no goal, so the region drops the key, and a verbatim
+//! restatement from another goal's batch widens by the same intersection.
+//! Nothing to reconcile: no row carried a goal before the field, and every
+//! door stamps it from the run record.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::goal::GoalRef;
 use crate::session::SessionKind;
+
+/// The goal key as stored: a reference this build can name, or the string
+/// it cannot, kept verbatim. One type for both sides of a match — the
+/// scope's key and the run's — and for the run record that keeps what was
+/// matched (`RunConfig::rules_goal`), so a newer build's goal kind survives
+/// an older build's read and write on every door and is never read as *no
+/// goal*, which on a scope is every goal.
+///
+/// Serialised as the `kind:id` string [`GoalRef`] already writes, so a
+/// stored key has one spelling whichever variant produced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GoalKey {
+    /// A goal this build names.
+    Named(GoalRef),
+    /// A stored goal this build cannot name — a kind a newer binary wrote,
+    /// or a hand edit. Matches no run and is matched by no scope.
+    Unread(String),
+}
+
+impl GoalKey {
+    /// The reference, when this build can name it.
+    pub fn named(&self) -> Option<&GoalRef> {
+        match self {
+            GoalKey::Named(g) => Some(g),
+            GoalKey::Unread(_) => None,
+        }
+    }
+}
+
+impl From<GoalRef> for GoalKey {
+    fn from(g: GoalRef) -> GoalKey {
+        GoalKey::Named(g)
+    }
+}
+
+impl std::fmt::Display for GoalKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GoalKey::Named(g) => write!(f, "{g}"),
+            GoalKey::Unread(raw) => f.write_str(raw),
+        }
+    }
+}
+
+impl Serialize for GoalKey {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+/// Lenient without widening: a string that parses is named; anything else
+/// — an unknown kind, a malformed id, a value that is not a string — is
+/// parked verbatim rather than read as no goal. Reached through `Option`,
+/// so `null` and an absent field are none.
+impl<'de> Deserialize<'de> for GoalKey {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<GoalKey, D::Error> {
+        Ok(match serde_json::Value::deserialize(d)? {
+            serde_json::Value::String(s) => match GoalRef::parse_lenient(&s) {
+                Some(g) => GoalKey::Named(g),
+                None => GoalKey::Unread(s),
+            },
+            other => GoalKey::Unread(other.to_string()),
+        })
+    }
+}
 
 /// The closed-set description of where a record was made. See the module
 /// doc for what may be a key.
@@ -125,6 +230,12 @@ pub struct Situation {
     /// row read back as a set key would scope tonight's rules to a
     /// workspace no run presents (found on review).
     pub workspace: Option<PathBuf>,
+    /// The goal the block was matched against (the module doc's *goal
+    /// key*): the reference the front-end handed `prepare`, recorded as
+    /// `RunConfig::rules_goal`. `None` names no goal, which on a scope is
+    /// every goal; a stored goal this build cannot name is
+    /// [`GoalKey::Unread`] and matches nothing.
+    pub goal: Option<GoalKey>,
 }
 
 /// The stored shape of a [`Situation`]: `surface` is whatever the file
@@ -139,6 +250,8 @@ struct SituationWire {
     surface: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workspace: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    goal: Option<GoalKey>,
 }
 
 impl From<SituationWire> for Situation {
@@ -157,6 +270,7 @@ impl From<SituationWire> for Situation {
             surface,
             surface_unread,
             workspace: known_workspace(w.workspace.as_deref()),
+            goal: w.goal,
         }
     }
 }
@@ -172,6 +286,7 @@ impl From<Situation> for SituationWire {
                 (None, None) => None,
             },
             workspace: s.workspace,
+            goal: s.goal,
         }
     }
 }
@@ -218,6 +333,7 @@ impl Situation {
             surface,
             surface_unread: None,
             workspace: known_workspace(workspace),
+            goal: None,
         }
     }
 
@@ -243,6 +359,7 @@ impl Situation {
             surface: None,
             surface_unread: None,
             workspace: known_workspace(workspace),
+            goal: None,
         }
     }
 
@@ -251,6 +368,15 @@ impl Situation {
     /// which matches no surface-scoped rule.
     pub fn on(mut self, surface: Option<SessionKind>) -> Situation {
         self.surface = surface;
+        self
+    }
+
+    /// The goal a situation is toward — on a run, what the front-end handed
+    /// `prepare` (`GlobalOpts::goal`) or what the run record keeps as
+    /// `rules_goal`; on a recorded situation, the covering run record's
+    /// `rules_goal`. `None` is no goal, which matches no goal-scoped rule.
+    pub fn toward(mut self, goal: Option<GoalKey>) -> Situation {
+        self.goal = goal;
         self
     }
 
@@ -275,7 +401,7 @@ impl Situation {
     }
 
     /// The keys a run can be matched against at start: the tool set, the
-    /// workspace and the surface. Tools sorted, because a scope is a set
+    /// workspace, the surface and the goal. Tools sorted, because a scope is a set
     /// and two batches whose regions are the same tools in another order
     /// must be the same region; without the front-end tools, which no run
     /// registers at match time; and without a surface that is a corpus
@@ -296,6 +422,7 @@ impl Situation {
             surface: self.surface.filter(|k| !Self::MARK_KINDS.contains(k)),
             surface_unread: self.surface_unread.clone(),
             workspace: self.workspace.clone(),
+            goal: self.goal.clone(),
         }
     }
 
@@ -306,11 +433,11 @@ impl Situation {
     }
 
     /// The canonical name of a region: its scope's tools, sorted and joined
-    /// by a comma, then ` @ ` and the workspace and ` on ` and the surface
-    /// when the scope names them (an unread surface verbatim); empty for
-    /// standing. What a per-region tally is keyed on, so two windows that
-    /// touched the same tools in another order fold into one row, and two
-    /// workspaces or two surfaces do not.
+    /// by a comma, then ` @ ` and the workspace, ` on ` and the surface, and
+    /// ` for ` and the goal when the scope names them (an unread surface or
+    /// goal verbatim); empty for standing. What a per-region tally is keyed
+    /// on, so two windows that touched the same tools in another order fold
+    /// into one row, and two workspaces, two surfaces or two goals do not.
     pub fn key(&self) -> String {
         let scope = self.scope();
         let mut parts: Vec<String> = Vec::new();
@@ -327,19 +454,26 @@ impl Situation {
         if let Some(raw) = &scope.surface_unread {
             parts.push(format!("on {raw}"));
         }
+        if let Some(g) = &scope.goal {
+            parts.push(format!("for {g}"));
+        }
         parts.join(" ")
     }
 
     /// Whether a rule scoped to `self` belongs in `run`'s prefix. Every
     /// scope key `self` sets must hold in `run`; a key `self` does not set
-    /// constrains nothing. Three keys: every tool the scope names is in the
+    /// constrains nothing. Four keys: every tool the scope names is in the
     /// run's registry; the workspace the scope names, if any, is the one
     /// the run is jailed to — exactly, since both sides carry the canonical
-    /// path, and a jail is not a prefix; and the surface the scope names,
+    /// path, and a jail is not a prefix; the surface the scope names,
     /// if any, is the one the run's front-end declared — a run that
     /// declared none matches no surface-scoped rule, and a scope naming a
     /// surface this build cannot read ([`Self::surface_unread`]) matches
-    /// no run at all.
+    /// no run at all; and the goal the scope names, if any, is the one the
+    /// run's front-end handed `prepare` — exactly, kind and id; a run that
+    /// presents none, or one this build cannot name, matches no goal-scoped
+    /// rule, and a scope whose goal this build cannot name
+    /// ([`GoalKey::Unread`]) matches no run at all.
     pub fn matches(&self, run: &Situation) -> bool {
         self.tools.iter().all(|t| run.tools.contains(t))
             && self
@@ -348,6 +482,11 @@ impl Situation {
                 .is_none_or(|w| run.workspace.as_ref() == Some(w))
             && self.surface.is_none_or(|k| run.surface == Some(k))
             && self.surface_unread.is_none()
+            && match &self.goal {
+                None => true,
+                Some(GoalKey::Named(g)) => run.goal.as_ref().and_then(GoalKey::named) == Some(g),
+                Some(GoalKey::Unread(_)) => false,
+            }
     }
 
     /// The keys every member shares — the region a batch of reflections was
@@ -374,11 +513,15 @@ impl Situation {
             if out.workspace != m.workspace {
                 out.workspace = None;
             }
+            if out.goal != m.goal {
+                out.goal = None;
+            }
         }
         out
     }
 
-    /// One line for a roster or a prompt: `shell · denial · tui`, or
+    /// One line for a roster or a prompt: `shell · denial · tui`, with `for
+    /// trigger:morning` after the workspace when a goal is recorded, or
     /// `everywhere` for a standing situation with nothing else recorded.
     pub fn describe(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
@@ -396,6 +539,13 @@ impl Situation {
         }
         if let Some(w) = &self.workspace {
             parts.push(w.display().to_string());
+        }
+        match &self.goal {
+            Some(GoalKey::Named(g)) => parts.push(format!("for {g}")),
+            Some(GoalKey::Unread(raw)) => {
+                parts.push(format!("for {raw} (a goal this build cannot name)"))
+            }
+            None => {}
         }
         if parts.is_empty() {
             "everywhere".to_string()
@@ -505,6 +655,7 @@ mod tests {
             surface: Some(SessionKind::Tui),
             surface_unread: None,
             workspace: Some(PathBuf::from("/w")),
+            goal: None,
         };
         assert!(scope.matches(&same));
         assert!(full.matches(&same));
@@ -544,6 +695,121 @@ mod tests {
         assert!(old.matches(&elsewhere));
         assert!(old.matches(&below));
         assert!(old.matches(&Situation::of_run(&["shell".into()], None)));
+
+        // The goal: kept by the scope, required by the match — the same
+        // goal matches, another does not, and neither does a run that
+        // presents none or one this build cannot name.
+        let morning = || Some(goal("trigger:morning"));
+        let toward = s(&["shell"]).toward(morning());
+        assert_eq!(toward.scope().goal, morning());
+        let run = |g: Option<GoalKey>| {
+            Situation::of_run(&["shell".into()], Some(Path::new("/w")))
+                .on(Some(SessionKind::Tui))
+                .toward(g)
+        };
+        assert!(toward.scope().matches(&run(morning())));
+        assert!(!toward.scope().matches(&run(Some(goal("trigger:evening")))));
+        assert!(
+            !toward.scope().matches(&run(Some(goal("task:morning")))),
+            "kind and id together: the same id under another kind is another goal"
+        );
+        assert!(
+            !toward.scope().matches(&run(None)),
+            "an absent goal never widens a goal-scoped rule's reach"
+        );
+        assert!(!toward
+            .scope()
+            .matches(&run(Some(GoalKey::Unread("dream:morning".into())))));
+        // A scope with no goal — a rule mined with none, or from before the
+        // key — matches under every goal and under none, as it did.
+        assert!(scope.matches(&run(morning())));
+        assert!(scope.matches(&run(None)));
+        assert!(old.matches(&run(morning())));
+        assert!(!scope.is_standing() && !toward.scope().is_standing());
+        assert!(
+            !Situation::default().toward(morning()).is_standing(),
+            "a goal alone is a scope"
+        );
+    }
+
+    fn goal(g: &str) -> GoalKey {
+        GoalKey::Named(g.parse().unwrap())
+    }
+
+    /// A stored goal this build cannot name fails closed on every door:
+    /// the scope keeps it, it matches no run, it prints verbatim, and it is
+    /// written back as it came. Fails on a lenient read that dropped it to
+    /// none, which is every goal.
+    #[test]
+    fn an_unreadable_goal_on_a_scope_matches_nothing_and_round_trips() {
+        for (raw, kept) in [
+            (r#"{"tools":["shell"],"goal":"dream:x"}"#, "dream:x"),
+            (r#"{"tools":["shell"],"goal":"task:"}"#, "task:"),
+            (r#"{"tools":["shell"],"goal":7}"#, "7"),
+        ] {
+            let stored: Situation = serde_json::from_str(raw).unwrap();
+            assert_eq!(stored.goal, Some(GoalKey::Unread(kept.into())), "{raw}");
+            assert_eq!(stored.scope().goal, stored.goal, "kept: a key");
+            for run in [
+                Situation::of_run(&["shell".into()], None),
+                Situation::of_run(&["shell".into()], None).toward(Some(goal("task:x"))),
+                Situation::of_run(&["shell".into()], None)
+                    .toward(Some(GoalKey::Unread(kept.into()))),
+            ] {
+                assert!(!stored.scope().matches(&run), "{raw} must match nothing");
+            }
+            assert_eq!(stored.key(), format!("shell for {kept}"));
+            assert!(stored.describe().contains("cannot name"));
+            let back = serde_json::to_string(&stored).unwrap();
+            assert!(back.contains(&format!("\"goal\":\"{kept}\"")), "{back}");
+        }
+        // A named goal round-trips in the one spelling a reference has.
+        let named: Situation =
+            serde_json::from_str(r#"{"tools":["shell"],"goal":"trigger:morning"}"#).unwrap();
+        assert_eq!(named.goal, Some(goal("trigger:morning")));
+        assert!(serde_json::to_string(&named)
+            .unwrap()
+            .contains("\"goal\":\"trigger:morning\""));
+        // Absent and null are no goal, and no goal is not written.
+        for raw in [
+            r#"{"tools":["shell"]}"#,
+            r#"{"tools":["shell"],"goal":null}"#,
+        ] {
+            let none: Situation = serde_json::from_str(raw).unwrap();
+            assert_eq!(none.goal, None, "{raw}");
+        }
+        assert!(!serde_json::to_string(&Situation::default())
+            .unwrap()
+            .contains("goal"));
+    }
+
+    /// Two members toward different goals — or one toward none — share no
+    /// goal, so the region, and a widening by intersection, drops the key;
+    /// two toward the same goal keep it. The key names the goal last.
+    #[test]
+    fn a_region_across_goals_drops_the_goal_key() {
+        let morning = s(&["shell"]).toward(Some(goal("trigger:morning")));
+        let evening = s(&["shell"]).toward(Some(goal("trigger:evening")));
+        assert_eq!(Situation::region([&morning, &evening]).scope().goal, None);
+        assert_eq!(
+            Situation::region([&morning, &s(&["shell"])]).scope().goal,
+            None
+        );
+        assert_eq!(
+            Situation::region([&morning, &morning.clone()]).scope().goal,
+            Some(goal("trigger:morning"))
+        );
+        assert_eq!(morning.key(), "shell @ /w on tui for trigger:morning");
+        assert_eq!(
+            morning.describe(),
+            "shell · denial · tui · /w · for trigger:morning"
+        );
+        assert_eq!(
+            Situation::recorded(&["shell".into()], "denial", None, None)
+                .toward(Some(goal("task:t-budget")))
+                .key(),
+            "shell for task:t-budget"
+        );
     }
 
     /// A stored scope naming a surface this build cannot read fails closed:

@@ -282,6 +282,16 @@ async fn answer_and_resume(
         .with_context(|| format!("the session that asked ({}) is gone", q.session_id))?;
     let asked = Session::read(&path)?;
     opts.surface = asked.configs.first().and_then(|rc| rc.rules_surface);
+    // The goal the same way: the one the asking run's block was matched
+    // toward, restored off its record — never the conversation's anchor,
+    // and none where the record names none or one this build cannot name
+    // (a parked goal is not a key a continuation may present as its own).
+    opts.goal = asked
+        .configs
+        .first()
+        .and_then(|rc| rc.rules_goal.as_ref())
+        .and_then(mecha_core::situation::GoalKey::named)
+        .cloned();
     // A resume continues the delegated run that asked, so it may not close
     // its own task either (S8) — whatever surface its block was matched on.
     opts.run_posture = Some(mecha_core::closure::RunPosture::Delegated);

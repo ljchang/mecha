@@ -623,7 +623,11 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
                     .collect::<Vec<_>>(),
                 Some(&tools.workspace),
             )
-            .on(surface);
+            .on(surface)
+            // The goal the front-end handed us, from a store the owner
+            // wrote — never the conversation's anchor, which does not exist
+            // yet and may later name a goal this block was not matched on.
+            .toward(opts.goal.clone().map(Into::into));
             ctx.goal_lessons = mecha_core::learning::goal_lessons(&store, &situation)?;
             if let Ok(dir) = mecha_core::session::Session::default_dir() {
                 ctx.goal_examples =
