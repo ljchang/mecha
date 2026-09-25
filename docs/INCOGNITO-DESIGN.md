@@ -71,6 +71,7 @@ or named in §10. Symbols, not line numbers.
 | Model-written files (`fs_write`, `shell`) | `work/web/<key>/` | Same tmpfs folder |
 | Oversized tool output | `$TMPDIR/mecha-spill-<uuid>/`, **one directory for the whole serve process**, never deleted, readable by any session through the jail — 88 of them on disk on 2026-09-25 | A spill directory inside the session's tmpfs folder (§4.3). Fix the shared one for everyone (§9, step 0) |
 | Title | `title::summarise` sends the owner's first turns to the model; stored as `Record::Title` | Titler off |
+| Situation brief (#305, merged the same day) | Assembled per run by reading the board through the graph server (`setup::read_board_for_brief` → `kg_task_list`) and other stores, recorded on `RunStats::brief` in the transcript's outcome | Not assembled: there is no outcome to put it on, and the board read is itself a graph call that says a run happened |
 | "Earlier" drawer | `chat::history` scans the transcript directory | Nothing to scan; the live list marks incognito and drops it on close |
 | Browser cache | `/api/*` sends **no `Cache-Control` at all** today | `no-store` on every incognito response and file (§4.4) |
 | Browser storage | None: `web/src` uses no localStorage, sessionStorage, IndexedDB or service worker | Nothing to do — kept that way by a test |
@@ -275,8 +276,8 @@ incognito route.
    `debug`; `Cache-Control: no-store` on `/api/*`; `reflect` and `distill`
    honour `SessionKind::Test`.
 1. **The session with no `Session`**: the incognito door, the `Option` through
-   `begin_turn` and the titler, the lifecycle and the 30-minute timeout, the
-   crash sweep.
+   `begin_turn`, the titler and the situation brief, the lifecycle and the
+   30-minute timeout, the crash sweep.
 2. **The tmpfs folder** with its spill directory, and the `statfs` check.
 3. **The withheld set**, the local-only refusal, and the search notice.
 4. **Images**: `server_temp_dir` and temp-file deletion; ComfyUI on a tmpfs
