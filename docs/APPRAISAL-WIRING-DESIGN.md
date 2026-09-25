@@ -934,7 +934,11 @@ differs from the **latest** brief in the transcript, so a web chat that is
 handed a fresh brief per turn says an unchanged situation once and a
 changed one again, append-only. A compaction cut strips the brief from the
 head, keeps it from the summariser and re-folds it in the tail, as it does
-the calendar reference. Two found building it: the experiment instrument
+the calendar reference. Delivery arms no taint: nothing in the words came
+from outside, and what is private in them is counts, bands and
+harness-minted ids, the charter block's class of standing context
+(`docs/ARCHITECTURE.md` says why arming would also confound the arm). Two
+found building it: the experiment instrument
 runs trials through `mecha run`, which had no brief, so its two arms would
 have been one condition — `mecha run` now assembles, records and delivers
 one; and the OpenAI-compatible encoder joins a message's text blocks with

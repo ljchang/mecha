@@ -159,7 +159,7 @@ delegated task, fictional):
 Situation brief from the harness, as things stood when this run started. It describes; it asks nothing of you.
 - Goal: task task-1, under project project-aurora (2 open tasks there). No store links it to a charter line.
 - Board: 4 open tasks (1 inbox, 1 next, 2 waiting); 1 overdue (task-2); 2 due in the coming week (task-3, task-1); 2 tasks waiting on you; none waiting on someone else. Your own task is `waiting`, due 2026-09-30.
-- Waiting on the owner: one draft in the outbox, the only one over a day old, past the owner's patience (charter line `replies`); no parked questions; no front-door requests.
+- Waiting on the owner: one draft in the outbox, waiting over a day, past the owner's patience (charter line `replies`); no parked questions; no front-door requests.
 - Time: Friday afternoon for the owner; outside their quiet hours.
 - Background seats: 1 of 3 free; held by task-1, task-elsewhere.
 - Other runs in flight: delegated tasks task-elsewhere; no triggers (interactive chats are not counted).

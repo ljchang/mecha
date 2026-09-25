@@ -4222,7 +4222,16 @@ when touching it:
   when the run is recorded or delivery is on, with the interactive board
   deadline at a terminal. The artifact-repeat probe refuses a recording made
   with delivery on (`mismatch::validate_recording`), since its context
-  carries no brief. **Latency is unchanged by delivery**: each door
+  carries no brief. **Delivery arms no taint, by construction rather than
+  by exemption**: nothing in the words came from outside (no board row's
+  prose, no server's error text — `board_of` and every `Unread { why }`
+  are harness-authored, and the render drops even the `why`), so the
+  untrusted axis has nothing to key on; and what is private in them is
+  counts, bands and harness-minted ids, the same class of standing context
+  the charter block and the calendar reference already carry into every run
+  unarmed. Arming `private_data` on delivery would also confound the arm it
+  exists for: every lever-on run would start half-armed, and the
+  comparison would measure interlock friction rather than the brief. **Latency is unchanged by delivery**: each door
   assembles once per run (the web door once per turn, inside the joined 2s
   window 1h set), and the render is a pure function over the record — now
   that the brief is read, the 2s bound is what a person pays for it, and
