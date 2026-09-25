@@ -1624,6 +1624,10 @@ mod tests {
             // second half of the lever set gave them one.
             ("predictive compaction", opts.no_predictive_compaction),
             ("carried state", opts.no_carried_state),
+            // Off by default, like step escalation: a machine's own
+            // config.toml could still turn delivery on, and the brief is
+            // harness text in the model's first user turn.
+            ("situation brief", opts.no_situation_brief),
         ] {
             assert!(
                 on,
@@ -1875,6 +1879,7 @@ mod tests {
         assert!(treatment.no_compact_validate);
         assert!(treatment.no_predictive_compaction);
         assert!(treatment.no_carried_state);
+        assert!(treatment.no_situation_brief);
     }
 
     /// What eval forces and what a session record would say of the same
@@ -1945,8 +1950,13 @@ mod tests {
         let untouched = GlobalOpts::default();
         assert_eq!(
             crate::setup::levers_off(&untouched, &folded(&untouched)),
-            vec![Lever::Messages, Lever::StepEscalation, Lever::GoalGuidance],
-            "messaging, step escalation, and goal guidance ship off"
+            vec![
+                Lever::Messages,
+                Lever::StepEscalation,
+                Lever::GoalGuidance,
+                Lever::SituationBrief
+            ],
+            "messaging, step escalation, goal guidance and the brief's delivery ship off"
         );
     }
 

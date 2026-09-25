@@ -134,12 +134,56 @@ Three rules it inherits, each of which is a bug if undone:
 
 ### The situation brief
 
-A delegated task, a trigger run and a web chat turn also record a **situation
-brief** beside the conditions (`brief` on the run's outcome record): what
-situation the run started in, assembled by mecha with no model call. It is
-recorded and **not yet sent to the model**. A later phase will put it into the
-run's first message as words, never the system prompt. Until then a test fails
-if any part of it reaches a request.
+A delegated task, a trigger run, a web chat turn and a `mecha run` one-shot
+also record a **situation brief** beside the conditions (`brief` on the run's
+outcome record): what situation the run started in, assembled by mecha with no
+model call. It is always recorded. It is **sent to the model only when you turn
+it on**:
+
+```toml
+[agent]
+situation_brief = true   # off by default
+```
+
+It ships off because it is still being measured: an experiment runs the same
+tasks with and without it before it is turned on for everyone.
+`--no-situation-brief` turns it off for one run, and `mecha eval` always runs
+without it.
+
+When it is on, mecha puts the brief into the run's first message as words,
+after your own. It never goes into the system prompt, so turning it on or off
+does not change what the model provider caches. It looks like this (a
+delegated task, fictional):
+
+```text
+Situation brief from the harness, as things stood when this run started. It describes; it asks nothing of you.
+- Goal: task task-1, under project project-aurora (2 open tasks there). No store links it to a charter line.
+- Board: 4 open tasks (1 inbox, 1 next, 2 waiting); 1 overdue (task-2); 2 due in the coming week (task-3, task-1); 2 tasks waiting on you; none waiting on someone else. Your own task is `waiting`, due 2026-09-30.
+- Waiting on the owner: one draft in the outbox, the only one over a day old, past the owner's patience (charter line `replies`); no parked questions; no front-door requests.
+- Time: Friday afternoon for the owner; outside their quiet hours.
+- Background seats: 1 of 3 free; held by task-1, task-elsewhere.
+- Other runs in flight: delegated tasks task-elsewhere; no triggers (interactive chats are not counted).
+- Model server: 1 of 4 slots busy.
+- Voice: the owner spoke to you within the last few minutes; a call may be in progress.
+- Budget: up to 200 turns; no output-token ceiling; no cost ceiling; no declared context window.
+```
+
+What the words may and may not say:
+
+- **Budget facts are numbers**: turns, token and cost ceilings, the context
+  window. So are the board's counts and task ids, which mecha read itself.
+- **Anything the model could treat as a score is words.** Commitments waiting on
+  you are counted in bands ("a few", "several"), aged in bands ("over a week"),
+  and said to be past your patience or not. That line never has a digit in it.
+  A charter line's rank is "your highest-ranked" or not, never its position.
+  Your quiet hours are inside or outside, not their times. A voice call is in
+  progress or not.
+- **Anything unknown is said to be unknown**: "could not be read", never
+  "none". A count that may be short says "at least".
+
+In a long web chat, a new brief is sent only when its words change, and bands
+mean an unchanged situation is the same words turn after turn. After a
+compaction the brief is put back rather than summarised.
 
 | Field | What it says |
 |---|---|
@@ -156,8 +200,8 @@ if any part of it reaches a request.
 Every field that could not be read says so, with the reason, and never reads
 as empty or zero. `mecha sessions health` reports how complete the recorded
 briefs are, field by field, and counts the runs that recorded none by surface
-(`situation_brief` in `--json`). The TUI, `mecha chat`, `mecha run`, Slack,
-and voice turns that are not spoken into a web chat do not record a brief yet.
+(`situation_brief` in `--json`). The TUI, `mecha chat`, Slack, and voice turns
+that are not spoken into a web chat do not record a brief yet.
 
 ### Anticipated guilt, and why it reads only mecha's own stores
 

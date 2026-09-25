@@ -172,6 +172,7 @@ change the server's `-c` or `-np`, change `context_window` to match. See
 | `step_checks` | bool | `true` | Run the checks a plan step declares, through ordinary guarded tool dispatch. |
 | `goal_guidance` | bool | `false` | Add fixed guidance drawn from the run's goal, the charter, and planning discrepancies. |
 | `sensors_in_brief` | bool | `true` | Include homeostat and commitment sensors in the diagnostician's brief; does not change tool permissions. |
+| `situation_brief` | bool | `false` | Put the recorded situation brief into the run's first message, as words. The brief is recorded either way. See [the situation brief](/docs/features/appraisal/reference#the-situation-brief). |
 
 `max_turns` bounds how many round trips a run makes, not how large they are.
 `max_output_tokens` and `max_cost_usd` are the two ceilings that bound size. All

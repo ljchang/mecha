@@ -600,6 +600,15 @@ pub struct AgentConfig {
     /// is the whole ablation. The counters stay: this removes the sensors,
     /// never the record.
     pub sensors_in_brief: bool,
+    /// Deliver the situation brief a front-end assembled
+    /// (`brief::SituationBrief`, recorded on every run that has one) into the
+    /// run's first user turn, as words and bands (`brief::render`), in the
+    /// slot `date_context` uses — never the prefix. **Off by default**: the
+    /// lever stage of `APPRAISAL-WIRING-DESIGN.md`'s "shadow, then measure,
+    /// then arm" (its §1, decision 7), measured with and without by
+    /// `mecha exp` (`Lever::SituationBrief`) before it ships on. Off leaves
+    /// the recording exactly as it was.
+    pub situation_brief: bool,
 }
 
 impl Default for AgentConfig {
@@ -631,6 +640,7 @@ impl Default for AgentConfig {
             predictive_compaction: true,
             carried_state: true,
             sensors_in_brief: true,
+            situation_brief: false,
         }
     }
 }
@@ -1638,6 +1648,7 @@ struct AgentLayer {
     predictive_compaction: Option<bool>,
     carried_state: Option<bool>,
     sensors_in_brief: Option<bool>,
+    situation_brief: Option<bool>,
     timezone: Option<String>,
 }
 
@@ -1750,6 +1761,9 @@ impl ConfigLayer {
             }
             if let Some(v) = a.sensors_in_brief {
                 t.sensors_in_brief = v;
+            }
+            if let Some(v) = a.situation_brief {
+                t.situation_brief = v;
             }
             if a.timezone.is_some() {
                 t.timezone = a.timezone;
