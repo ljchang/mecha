@@ -28,8 +28,9 @@ its rulings in §6. Phase 1's rows 1a–1i landed as #292–#294, #297–#302, #
 and #305 (plus mecha-graph#21 for the graph TUI's half of 1c; #303 is
 `image_generate`, another lane's, not recorded here), none changing what a run
 does; what each built is in HISTORY under 2026-09-24/25. `mecha` is installed
-at `6a26f7ab`, the 1h merge (*Machine state, dated* below). 2a-1 (#308, the
-text-appraisal store) merged after that install and is not installed. Four
+at `b1820b5d` since 18:02Z, which carries phase 1 and 2a-1 (#308, the
+text-appraisal store); phase 1 was first installed at `6a26f7ab`, the 1h
+merge, at 16:41Z (*Machine state, dated* below). Four
 owner rulings of 2026-09-25 are now rows R30–R33 of the design's §6; R32
 and R33 reached this lane relayed, and their cells ask the owner to confirm
 them. What is
@@ -2664,12 +2665,13 @@ sessions started before 03:10Z hold the old `graph` MCP child until
 restarted.
 
 **Installed from main, 2026-09-25 ~16:41Z: appraisal-wiring phase 1
-(re-verified 17:58Z by asking the artifacts).** `~/.cargo/bin/mecha` is
-`6a26f7ab`, the #305 merge: `strings ~/.cargo/bin/mecha | grep -c` prints 1
+(verified 17:58Z by asking the artifacts; `mecha` and the web dist were
+replaced at 18:02Z, next entry).** `~/.cargo/bin/mecha` was
+`6a26f7ab`, the #305 merge: `strings ~/.cargo/bin/mecha | grep -c` printed 1
 for #305's `no run in this corpus recorded one` and for #300's
 `slack_action_task_drop`, and 0 for #308's `text appraisals on record` and
 #303's `image_generate`, both merged later. `~/.mecha/web/dist` was rebuilt
-at 16:41Z and holds `index-BnMA0qiq.js`, which contains #304's `no deadline
+at 16:41Z with `index-BnMA0qiq.js`, which contained #304's `no deadline
 stated`. `mecha-graph` and `mecha-graph-mcp` (14:36Z) are mecha-graph
 `ecf067c8`, the #21 merge and that repo's `main` tip (`strings` finds
 `close_through` in both), and the nightly's
@@ -2679,14 +2681,28 @@ stated`. `mecha-graph` and `mecha-graph-mcp` (14:36Z) are mecha-graph
 TUI's `PATH` cannot decide it; mecha-graph expands the `~`), which is what
 turns on the graph TUI's closure through mecha. Removing that table returns
 the TUI to its direct write. `mecha-slack`, `-triggers`, `-drain` and
-`-serve` show `ActiveEnterTimestamp` 16:41:35Z; the voice worker was not
-restarted (11:31:38Z). mecha-mail and mecha-docs are unchanged since 03:03Z.
-**Merged and not installed:** #308 (2a-1, `appraisal_store.rs`, at
-`e35bb081`), and from other lanes #303 (`image_generate`, `5d613736`) and
-#306 (its edits, `b1820b5d`). `sessions health
---days 1` at 17:58Z read one real run since the install, briefed with all
-nine fields known and unanchored, which is too few to read phase 1's *done
-when* against.
+`-serve` were restarted at 16:41:35Z; the voice worker was not (11:31:38Z).
+mecha-mail and mecha-docs are unchanged since 03:03Z. `sessions health
+--days 1` at 17:58Z read one real run on this build, briefed with all nine
+fields known and unanchored, which is too few to read phase 1's *done when*
+against.
+
+**Reinstalled from main, 2026-09-25 18:02Z, by the image-generation lane
+(verified 18:07Z by asking the artifacts).** `~/.cargo/bin/mecha` (18:02:37Z)
+is `b1820b5d`, the #306 merge, so it carries phase 1 and **2a-1 (#308)**:
+`git merge-base --is-ancestor e35bb081 b1820b5d` exits 0, and `strings
+~/.cargo/bin/mecha | grep -c` prints 1 for `appraisals.jsonl` and 2 for
+`text appraisals on record`. `~/.mecha/web/dist` was rebuilt at 18:02:48Z
+with `index-Cq2ArbMx.js`. `mecha-slack`, `-triggers`, `-drain` and `-serve`
+show `ActiveEnterTimestamp` 18:03:09Z; the voice worker still 11:31:38Z.
+Nothing of the appraisal arc is merged and uninstalled. **A constraint every
+later install must respect:** at 18:03Z the same lane added an `[image]`
+table to `~/.mecha/config.toml` (the previous file is
+`config.toml.bak-pre-image-2026-09-25`), and `ConfigLayer` is
+`#[serde(deny_unknown_fields)]`, so any `mecha` built before #303
+(`image` joined `ConfigLayer` in `01c22936`) refuses that config at startup.
+Rolling `mecha` back past #303 means restoring that backup, or deleting the
+table, first. The image arc itself is that lane's to record.
 
 ## What the measurements say
 
@@ -3727,8 +3743,8 @@ repeated here. What is open:
   real runs anchored, verdicts per week by channel, readings that vary run
   to run, a closure from every surface in `sessions appraise`, and a recorded
   brief complete on a sample. Read `sessions health` and `sessions appraise`
-  after some days on `6a26f7ab`; at 17:58Z one real run had been recorded
-  on it.
+  after some days on a build carrying phase 1 (installed since 16:41Z); at
+  17:58Z one real run had been recorded on one.
 - **1d's graph channel is unreadable from mecha.** Rejected graph facts
   from `agent:mecha` episodes (L7's input) need a read-only mecha-graph verb
   that returns rejected candidates with their origin episode, or the review
