@@ -4,8 +4,10 @@
  * work — which is why it gets the grid and the mark rather than a gradient.
  */
 .heroBanner {
-  padding: 4rem 0 3.5rem;
+  padding: 4rem 0 3rem;
   text-align: center;
+  /* Infima's .hero is a flex row; the pitch and the poster stack. */
+  flex-direction: column;
   position: relative;
   overflow: hidden;
   border-bottom: 1px solid var(--ifm-color-emphasis-200);
@@ -51,13 +53,13 @@
   position: relative;
 }
 
-.heroMark {
-  margin-bottom: 1.25rem;
+.heroPoster {
+  max-width: 1180px;
+  margin-top: 2.75rem;
 }
 
-.heroMark img {
-  height: 3.25rem;
-  width: auto;
+.heroPoster figure {
+  margin-bottom: 0;
 }
 
 .heroBanner :global(.hero__title) {
@@ -92,8 +94,9 @@
     font-size: 1.1rem;
   }
 
-  .heroMark {
-    height: 2.5rem;
+  .heroPoster {
+    margin-top: 1.75rem;
+    padding: 0;
   }
 }
 

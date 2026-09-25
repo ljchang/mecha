@@ -1,0 +1,32 @@
+.poster {
+  margin: 0 0 2rem;
+}
+
+.poster img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* A plate is a sheet of paper, so it gets a sheet's edge. On the light theme
+   that edge is only drawn when there is no cutout to show instead. */
+.plateOnly img,
+[data-theme='dark'] .poster img {
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 4px;
+}
+
+[data-theme='dark'] .poster img {
+  border-color: rgba(233, 233, 237, 0.12);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+.poster figcaption {
+  margin-top: 0.6rem;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ifm-color-emphasis-600);
+  text-align: center;
+}

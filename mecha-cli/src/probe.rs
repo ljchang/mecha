@@ -1172,8 +1172,10 @@ pub(crate) mod mismatch_tests {
 
     /// `folded`: record the task turn the way the current loop leaves it —
     /// the owner's prompt plus the calendar reference the loop folds in,
-    /// arriving as the `Record::Rewrite` that `record_transition` writes when
-    /// a run edits a message the session already recorded.
+    /// arriving as the `Record::Rewrite` that `record_transition` wrote
+    /// before 3a-3 when a run edited a message the session already recorded
+    /// (it writes a `Record::Extend` now; sessions on disk keep the old
+    /// shape, and must still read).
     fn fixture_folded(
         clean: Option<bool>,
         artifact: bool,

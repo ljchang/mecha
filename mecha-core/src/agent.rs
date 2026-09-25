@@ -555,11 +555,24 @@ impl Taint {
     /// silently loosens the interlock as a side effect is the shape this
     /// project keeps finding, and the fix belongs here rather than in a note
     /// asking front-ends to remember.
+    ///
+    /// **And a situation brief the harness folded in** (R35, owner ruling
+    /// 2026-09-25): its words are the owner's board, commitments, quiet
+    /// hours and runs in flight, which `kg_task_list` would arm `private`
+    /// for. The loop arms at the fold itself; this is the same rule read off
+    /// the transcript, so a conversation resumed with a brief in it — a
+    /// session recorded before the ruling, or one whose taint record was
+    /// torn — arms too. User-role text only, the only slot the fold writes.
     pub fn arm_for_content(&mut self, messages: &[Message]) {
-        if messages
-            .iter()
-            .any(|m| m.content.iter().any(|b| matches!(b, Block::Image { .. })))
-        {
+        if messages.iter().any(|m| {
+            m.content.iter().any(|b| match b {
+                Block::Image { .. } => true,
+                Block::Text { text } => {
+                    m.role == Role::User && text.trim_start().starts_with(crate::brief::BRIEF_STEM)
+                }
+                _ => false,
+            })
+        }) {
             self.private = true;
         }
     }
@@ -1389,12 +1402,12 @@ impl Agent {
     ///
     /// One visible consequence: on a conversation's first run this edits a
     /// message the session has already written, so
-    /// `Session::record_transition` writes a `Record::Rewrite` rather than
-    /// appending a tail. That is the designed fallback — it compares before
-    /// to after instead of trusting a flag, exactly so a mutation added later
-    /// is caught without anyone remembering to declare it — and
-    /// `ARCHITECTURE.md §Timezones` says so out loud, because the record
-    /// shape changes for every session.
+    /// `Session::record_transition` sees the recorded list change. It
+    /// compares before to after instead of trusting a flag, and since 3a-3
+    /// it recognises blocks appended to the last recorded message and
+    /// writes them as a `Record::Extend` rather than a whole-transcript
+    /// rewrite — `ARCHITECTURE.md §Timezones` says what the rewrite used to
+    /// cost.
     fn fold_calendar_reference(&self, messages: &mut Vec<Message>) {
         // **Only for a role whose prompt explains what the block is.** The
         // reading used to live in `cfg.agent.system_prompt`, so every role
@@ -1474,17 +1487,22 @@ impl Agent {
     /// Append-only either way: a folded block never moves, so each request
     /// is still a byte prefix of the next, and nothing here touches the
     /// tools or the system prompt — the cached prefix is the same bytes
-    /// with the lever on and off. **Not append-only on disk**: the message
-    /// folded into was already recorded by the door, so each fold makes the
-    /// run's record a whole-transcript `Record::Rewrite`, as the calendar's
-    /// does once a day — here once per changed brief (3a-3 in the design
-    /// doc, owed before the lever ships on).
-    fn fold_situation_brief(&self, cx: &RunContext, messages: &mut Vec<Message>) {
+    /// with the lever on and off. **Append-only on disk too** (3a-3): the
+    /// message folded into was already recorded by the door, and
+    /// `Session::record_transition` writes the new blocks as a
+    /// `Record::Extend` of it rather than rewriting the transcript.
+    ///
+    /// **Returns whether this run is delivering a brief**, so the caller
+    /// arms `private` (R35): the words are the owner's board, commitments,
+    /// quiet hours and runs in flight, and reading the same through
+    /// `kg_task_list` arms it. `true` whether the block was folded now or
+    /// was already the latest — taint only grows, so re-arming is a no-op.
+    fn fold_situation_brief(&self, cx: &RunContext, messages: &mut Vec<Message>) -> bool {
         if !self.cfg.situation_brief {
-            return;
+            return false;
         }
         let Some(brief) = cx.brief.as_deref() else {
-            return;
+            return false;
         };
         let block = crate::brief::block(brief);
         // User-role only, for the calendar's reason: a model quoting the
@@ -1503,6 +1521,7 @@ impl Agent {
         if latest != Some(&block) {
             append_user_text(messages, block);
         }
+        true
     }
 
     /// The context a bare [`Agent::run`] will use.
@@ -2015,8 +2034,13 @@ impl Agent {
             // one away before the request goes out.
             self.fold_calendar_reference(messages);
             // And the situation brief, in the same slot, for the same
-            // reason: a steer stays the last thing in the turn.
-            self.fold_situation_brief(cx, messages);
+            // reason: a steer stays the last thing in the turn. Delivering
+            // it arms `private` (R35), written back at once like the
+            // mailbox's merge below, so no early exit can drop it.
+            if self.fold_situation_brief(cx, messages) {
+                taint.private = true;
+                convo.taint = taint;
+            }
 
             // Anything the user typed while the previous turn was running.
             // This lands *inside* the message carrying the tool results, so
@@ -2392,7 +2416,10 @@ impl Agent {
             // called wherever the answer matters this turn — the
             // `stopping_now` rule two hundred lines up.
             self.fold_calendar_reference(messages);
-            self.fold_situation_brief(cx, messages);
+            if self.fold_situation_brief(cx, messages) {
+                taint.private = true;
+                convo.taint = taint;
+            }
             // Ahead of `sent_bytes`, which the comment below calls "exactly
             // what is about to go on the wire" — folding after it measured a
             // transcript one block shorter than the one that gets priced, and
@@ -2499,7 +2526,10 @@ impl Agent {
                     // measurement, so the request and `sent_bytes` describe
                     // the same list.
                     self.fold_calendar_reference(messages);
-                    self.fold_situation_brief(cx, messages);
+                    if self.fold_situation_brief(cx, messages) {
+                        taint.private = true;
+                        convo.taint = taint;
+                    }
                     request.messages = messages.clone();
                     // The retry carries a different list; the anchor has to
                     // describe the one that was actually priced, or the next
@@ -5576,6 +5606,171 @@ mod tests {
         assert!(!is_harness_voice(
             "Situation: the brief I sent you yesterday"
         ));
+    }
+
+    // --- R35: delivering the brief arms `private` (3a-3) ---
+
+    /// A delivered brief arms `private` on the conversation and the outcome
+    /// both; the lever off, or no brief on the context, arms nothing. A
+    /// fresh conversation starts clean either way.
+    #[tokio::test]
+    async fn a_delivered_brief_arms_private_and_the_lever_off_arms_nothing() {
+        for (lever, carried) in [(true, true), (false, true), (true, false)] {
+            let (mut agent, _) = agent_with_tools(
+                vec![assistant(vec![Block::text("ok")], StopReason::EndTurn)],
+                vec![],
+                PermissionMode::Allow,
+            );
+            agent.cfg.situation_brief = lever;
+            let mut cx = (**agent.context()).clone();
+            if carried {
+                cx.brief = Some(Arc::new(a_brief(1)));
+            }
+            let mut convo = Conversation::user("what needs me?");
+            assert_eq!(
+                convo.taint,
+                Taint::default(),
+                "a fresh conversation is clean"
+            );
+            let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+            let armed = lever && carried;
+            assert_eq!(convo.taint.private, armed, "lever {lever}, brief {carried}");
+            assert_eq!(
+                outcome.taint.private, armed,
+                "lever {lever}, brief {carried}"
+            );
+            assert!(!convo.taint.untrusted);
+        }
+    }
+
+    /// The same rule read off a transcript: a conversation resumed with a
+    /// brief already in it — recorded before the ruling, or with its taint
+    /// record torn — arms `private` at run start, as an attached image does.
+    #[test]
+    fn a_transcript_holding_a_brief_arms_private() {
+        let mut taint = Taint::default();
+        taint.arm_for_content(&[Message::user("hello")]);
+        assert!(!taint.private);
+        taint.arm_for_content(&[Message {
+            harness: false,
+            planning: None,
+            tool_provenance: Default::default(),
+            role: Role::User,
+            content: vec![
+                Block::text("hello"),
+                Block::text(crate::brief::block(&a_brief(1))),
+            ],
+        }]);
+        assert!(taint.private);
+        // An assistant quoting the stem is not the harness folding it.
+        let mut quoted = Taint::default();
+        quoted.arm_for_content(&[Message::assistant(vec![Block::text(crate::brief::render(
+            &a_brief(1),
+        ))])]);
+        assert!(!quoted.private);
+    }
+
+    /// A send that pretends to succeed, so a run it is *not* refused in can
+    /// finish (the interlock's own `SendTool` panics if it ever runs).
+    struct QuietSend;
+    #[async_trait]
+    impl Tool for QuietSend {
+        fn name(&self) -> &str {
+            "send"
+        }
+        fn description(&self) -> &str {
+            "Sends data somewhere."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        fn capabilities(&self) -> crate::tool::Capabilities {
+            crate::tool::Capabilities::default().sends()
+        }
+        async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::ok("sent"))
+        }
+    }
+
+    /// **R35's point, measured at the interlock**: after the brief and an
+    /// untrusted read, a chosen-destination send is refused exactly as it is
+    /// after a private read (`kg_task_list`'s capability) and an untrusted
+    /// one — and with the lever off the same brief-and-page run is not
+    /// armed, so the send goes through. `SendTool` panics if the interlock
+    /// lets it run.
+    #[tokio::test]
+    async fn the_interlock_refuses_a_chosen_send_after_the_brief_as_after_a_private_read() {
+        let fetch_then_send = |first: Vec<Block>| {
+            vec![
+                assistant(first, StopReason::ToolUse),
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "c".into(),
+                        name: "send".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("stopped")], StopReason::EndTurn),
+            ]
+        };
+        let fetch = || Block::ToolUse {
+            id: "b".into(),
+            name: "fetch_page".into(),
+            input: json!({}),
+        };
+
+        // The control: a private read and a hostile page.
+        let (mut agent, _) = agent_with(
+            fetch_then_send(vec![
+                Block::ToolUse {
+                    id: "a".into(),
+                    name: "read_private".into(),
+                    input: json!({}),
+                },
+                fetch(),
+            ]),
+            PermissionMode::Allow,
+        );
+        agent.registry.insert(Arc::new(PrivateTool));
+        agent.registry.insert(Arc::new(UntrustedTool));
+        agent.registry.insert(Arc::new(SendTool));
+        agent.ctx_mut().security.trifecta = TrifectaPolicy::Block;
+        let mut convo = Conversation::user("summarise that page");
+        let read = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(read.blocked_sends, 1);
+
+        // The brief in place of the private read.
+        for lever in [true, false] {
+            let (mut agent, _) = agent_with(fetch_then_send(vec![fetch()]), PermissionMode::Allow);
+            agent.registry.insert(Arc::new(UntrustedTool));
+            if lever {
+                agent.registry.insert(Arc::new(SendTool));
+            } else {
+                agent.registry.insert(Arc::new(QuietSend));
+            }
+            agent.ctx_mut().security.trifecta = TrifectaPolicy::Block;
+            agent.cfg.situation_brief = lever;
+            let cx = with_brief(&agent, a_brief(1));
+            let mut convo = Conversation::user("summarise that page");
+            let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+            if lever {
+                assert_eq!(outcome.blocked_sends, read.blocked_sends);
+                assert!(outcome.taint.private && outcome.taint.untrusted);
+                let send = outcome
+                    .tool_calls
+                    .iter()
+                    .find(|c| c.name == "send")
+                    .unwrap();
+                assert!(send.denied, "the send is refused, as after a private read");
+            } else {
+                assert_eq!(outcome.blocked_sends, 0, "the lever off arms nothing");
+                assert!(!outcome.taint.private && outcome.taint.untrusted);
+            }
+        }
     }
 
     // --- the calendar reference ---
