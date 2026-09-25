@@ -513,8 +513,8 @@ approvals off — is refused when it tries to close or reopen a task through
 whether a person is in that run, and the closure check reads that
 registration rather than anything the command says about itself. A command
 run with no sandbox can still slip past it by detaching from its shell, so
-the guarantee holds where `shell` is confined — `mecha doctor` says when it
-is not. The
+the guarantee holds where `shell` is confined — `mecha tools` says when it
+is not, and `mecha doctor` reports a sandbox that mounts the mecha home. The
 [`pre_task_close`, `task_closed` and `task_reopened` hooks](/docs/features/security/hooks)
 let your own tooling refuse or react to a move.
 

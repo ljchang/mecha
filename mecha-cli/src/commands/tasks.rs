@@ -903,8 +903,8 @@ fn hook_dir() -> std::path::PathBuf {
 fn live_run_pids() -> std::collections::HashSet<u32> {
     let mut dirs = Vec::new();
     for home in mecha_core::work::guard_homes().unwrap_or_default() {
-        dirs.push(home.join("taskruns"));
-        dirs.push(home.join("triggers").join("locks"));
+        dirs.push(markers_dir_under(&home));
+        dirs.push(mecha_core::trigger::TriggerStore::locks_dir_under(&home));
     }
     if let Ok(root) = mecha_core::trigger::TriggerStore::default_root() {
         dirs.push(root.join("locks"));
@@ -2213,9 +2213,15 @@ pub(crate) fn permits() -> Result<mecha_core::permit::Permits> {
 }
 
 pub(crate) fn markers() -> Result<mecha_core::runmarker::RunMarkers> {
-    Ok(mecha_core::runmarker::RunMarkers::new(
-        mecha_core::work::mecha_home()?.join("taskruns"),
-    ))
+    Ok(mecha_core::runmarker::RunMarkers::new(markers_dir_under(
+        &mecha_core::work::mecha_home()?,
+    )))
+}
+
+/// Where task-run markers live under a mecha home — said once, for
+/// [`markers`] and for the closure guard's walk over every guard home.
+fn markers_dir_under(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("taskruns")
 }
 
 /// The agent, as the board names it. A node of kind `agent`, shipped with the

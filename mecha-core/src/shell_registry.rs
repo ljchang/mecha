@@ -470,8 +470,14 @@ pub fn nearest_registered_ancestor_among(registries: &[ShellRegistry]) -> (Looku
         }
         return (Lookup::Absent, None);
     }
-    let mut pid = me;
-    for _ in 0..64 {
+    walk_from(registries, me, 64)
+}
+
+/// The walk behind [`nearest_registered_ancestor_among`] on a platform that
+/// can walk: from `start`, at most `depth` processes.
+fn walk_from(registries: &[ShellRegistry], start: u32, depth: usize) -> (Lookup, Option<usize>) {
+    let mut pid = start;
+    for _ in 0..depth {
         for (i, registry) in registries.iter().enumerate() {
             match registry.lookup_checked(pid) {
                 Lookup::Absent => {}
@@ -483,7 +489,17 @@ pub fn nearest_registered_ancestor_among(registries: &[ShellRegistry]) -> (Looku
             None => return (Lookup::Absent, None),
         };
     }
-    (Lookup::Absent, None)
+    // The bound ran out before the root did: the rest of the chain is
+    // unknown, not absent, and absent would read as the owner's terminal
+    // (review of #294).
+    (
+        Lookup::Unreadable(
+            "this command's ancestry is deeper than the registry walk reaches, so a \
+             registered shell above it cannot be ruled out"
+                .into(),
+        ),
+        None,
+    )
 }
 
 /// The nearest registered shell among this process **and** its ancestors,
@@ -499,6 +515,18 @@ pub fn nearest_registered_ancestor(registry: &ShellRegistry) -> Lookup {
 
 #[cfg(test)]
 mod tests {
+
+    /// A walk that runs out of steps before the chain ends has not found
+    /// "no registered shell"; it has not looked (review of #294). Depth 0 is
+    /// the bound reached at once, on any live process.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_walk_that_runs_out_before_the_root_is_unknown_not_absent() {
+        let registry = ShellRegistry::open(ShellRegistry::default_root().unwrap()).unwrap();
+        let (found, _) = walk_from(std::slice::from_ref(&registry), std::process::id(), 0);
+        assert!(matches!(found, Lookup::Unreadable(_)), "{found:?}");
+    }
+
     use super::*;
 
     fn registry() -> ShellRegistry {
