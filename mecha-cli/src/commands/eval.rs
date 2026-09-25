@@ -1628,6 +1628,9 @@ mod tests {
             // config.toml could still turn delivery on, and the brief is
             // harness text in the model's first user turn.
             ("situation brief", opts.no_situation_brief),
+            // Off by default too: retrieved appraisals are model-written
+            // text a machine's config.toml could turn on.
+            ("past appraisals", opts.no_past_appraisals),
         ] {
             assert!(
                 on,
@@ -1954,9 +1957,11 @@ mod tests {
                 Lever::Messages,
                 Lever::StepEscalation,
                 Lever::GoalGuidance,
-                Lever::SituationBrief
+                Lever::SituationBrief,
+                Lever::PastAppraisals
             ],
-            "messaging, step escalation, goal guidance and the brief's delivery ship off"
+            "messaging, step escalation, goal guidance, the brief's delivery and past \
+             appraisals ship off"
         );
     }
 

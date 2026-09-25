@@ -146,6 +146,21 @@ it on**:
 situation_brief = true   # off by default
 ```
 
+### Past appraisals
+
+With `past_appraisals` on, the `goal_context` tool also returns up to three
+earlier appraisals of runs in the same situation toward the same goal, newest
+first, when the model asks for its goal's context. Only appraisals of runs that
+read no third-party content are ever returned. Each is shown as what it is:
+an interpretation a model wrote after an earlier run, not a fact about this
+one. Nothing is added to the prompt, and the setting ships off while it is
+measured:
+
+```toml
+[agent]
+past_appraisals = true   # off by default
+```
+
 It ships off because it is still being measured: an experiment runs the same
 tasks with and without it before it is turned on for everyone.
 
