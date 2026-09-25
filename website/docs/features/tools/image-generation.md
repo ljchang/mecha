@@ -53,6 +53,9 @@ are revising, a seed.
 - **The model cannot see the picture.** Images reach a conversation only when
   you attach them, so it knows what it asked for, not what came out. You are
   the judge; tell it what to change.
+- **It works in any chat, read-only ones included.** It only ever adds new
+  files under `images/` in the conversation's own folder, so it needs no
+  approval and no mode switch.
 - **It takes about a minute** for a 1024×1024 image at the default 40 steps.
   Cancelling the run stops the generation on the server too.
 

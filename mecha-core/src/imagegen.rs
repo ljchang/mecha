@@ -634,10 +634,21 @@ impl Tool for ImageGenerate {
         })
     }
 
+    /// Read-only in the sense the approval gate means — it changes nothing of
+    /// yours — which is the owner's ruling (2026-09-25): a picture should be
+    /// one request in any chat, and web chats start read-only. What it writes
+    /// is a *new* file under `images/` in the run's own workspace, never an
+    /// existing one (`save` opens with `create_new`), the same footing as
+    /// `todo` keeping its own list. Parallel calls are safe: the server
+    /// queues them, and each polls its own job.
+    fn read_only(&self) -> bool {
+        true
+    }
+
     /// Nothing private comes back (a path and a seed), nothing external, and
     /// nothing leaves: the destination is a loopback server the operator
-    /// configured and the schema cannot name another. It writes, so it is not
-    /// read-only — but only new files, so it is not destructive.
+    /// configured and the schema cannot name another. It creates only new
+    /// files, so it is not destructive.
     fn capabilities(&self) -> Capabilities {
         Capabilities::default()
     }
@@ -878,6 +889,8 @@ mod tests {
         let caps = t.capabilities();
         assert!(!caps.private_data && !caps.untrusted_input && !caps.destructive);
         assert_eq!(caps.egress, crate::tool::Egress::None);
+        // Runs in a read-only chat without an approval (the owner's ruling).
+        assert!(t.read_only());
         // And the schema has nowhere to put a destination.
         let schema = t.input_schema();
         let props = schema["properties"].as_object().unwrap();
