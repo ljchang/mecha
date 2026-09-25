@@ -33,12 +33,14 @@
 //!
 //! §11.1's promise is that "harmed another" becomes "a recorded commitment
 //! aged past *this* line's setpoint", one reading per sensored line instead
-//! of the single saturated number `guilt.rs` found on the live store. The
-//! magnitude here — [`Reading::Observed`]'s `excess` — is how far past the
-//! setpoint the observable sits, in `[0, 1)`: zero within the setpoint, half
-//! of maximal at twice it, approaching but never reaching one. Asymptotic
-//! for exactly the reason `AGE_HALF_AT_HOURS` in `guilt.rs` is: a term that
-//! reaches `1.0` stops varying, and a corpus of a constant carries nothing.
+//! of the single saturated number `guilt.rs` once folded (retired to a
+//! readout in 1f; per-commitment guilt there applies [`excess`] to each
+//! item's age against its patience). The magnitude here —
+//! [`Reading::Observed`]'s `excess` — is how far past the setpoint the
+//! observable sits, in `[0, 1)`: zero within the setpoint, half of maximal
+//! at twice it, approaching but never reaching one. Asymptotic because a
+//! term that reaches `1.0` stops varying, and a corpus of a constant carries
+//! nothing — the lesson the retired scalar's age term learned twice.
 //! Containment 5 is the other half of that argument — a setpoint of one hour
 //! where the owner meant one day would sit past its setpoint on every run —
 //! so a zero setpoint is refused at the parser (nothing could ever be within
@@ -49,11 +51,12 @@
 //! ## Where a reading is taken
 //!
 //! - **On the homeostat, at the start of every run** — from the backlog the
-//!   run *inherited*, the same level `anticipated_guilt` reads, so the record
-//!   says what waited on the owner as the run began. The corpus kind
-//!   (`intervention_rate`) is [`Reading::Deferred`] there: reading it is a
-//!   scan of the session store, and `guilt.rs`'s rule for the graph applies
-//!   — fine once a night, too expensive in the path of every run.
+//!   run *inherited*, the same survey per-commitment guilt is read from
+//!   (`Homeostat::commitments`), so the record says what waited on the
+//!   owner as the run began. The corpus kind (`intervention_rate`) is
+//!   [`Reading::Deferred`] there: reading it is a scan of the session store,
+//!   and `guilt.rs`'s rule for the graph applies — fine once a night, too
+//!   expensive in the path of every run.
 //! - **On the owner's surfaces** (`mecha charter`, the TUI's `/charter`, the
 //!   web settings page) through [`read_charter`], which does scan the corpus
 //!   when a line asks for it — containment 5's first guard is the editor
@@ -516,7 +519,7 @@ fn observed(value: Observed, setpoint: Setpoint) -> Reading {
 
 /// Seconds since `stamp`, or `None` when the stamp does not parse. A future
 /// stamp reads as zero — clock skew is not a negative age.
-fn age_secs(stamp: &str, now: DateTime<Utc>) -> Option<u64> {
+pub(crate) fn age_secs(stamp: &str, now: DateTime<Utc>) -> Option<u64> {
     let then = DateTime::parse_from_rfc3339(stamp)
         .ok()?
         .with_timezone(&Utc);
