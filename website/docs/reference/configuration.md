@@ -317,8 +317,8 @@ How `shell`, and MCP servers marked `sandbox = true`, are confined.
 | `readable` | array of paths | `[]` | Extra paths mounted read-only. |
 | `env` | array of strings | `[]` | Environment variables passed through by name. Nothing else survives. |
 | `image` | string | `"debian:stable-slim"` | Container image for the `docker` backend. |
-| `memory_mb` | integer | unset | Memory ceiling in megabytes (`docker` only). |
-| `cpus` | float | unset | CPU ceiling (`docker` only), e.g. `2.0`. |
+| `memory_mb` | integer | unset | Memory ceiling in megabytes, swap included, for everything a command starts. `docker` and `bwrap` apply it (bwrap through a systemd user scope, read back at startup); `landlock` refuses to start with it set. Must be above zero. |
+| `cpus` | float | unset | CPU ceiling in cores, e.g. `2.0`. Same backends and startup check as `memory_mb`. |
 
 A configured sandbox that does not work stops the run: a preflight runs a real
 command through the real backend at startup and fails with instructions rather than
@@ -752,8 +752,8 @@ writable = []
 readable = ["/usr/lib/rustlib"]    # a toolchain that lives outside the workspace
 env = ["CARGO_HOME"]               # an allowlist; nothing else survives
 image = "debian:stable-slim"       # docker only
-# memory_mb = 2048                 # docker only
-# cpus = 2.0                       # docker only
+# memory_mb = 2048                 # docker and bwrap; landlock refuses it
+# cpus = 2.0                       # docker and bwrap; landlock refuses it
 
 # ------------------------------------------------------------------- outbox --
 

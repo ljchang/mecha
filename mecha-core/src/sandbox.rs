@@ -108,9 +108,14 @@ pub struct SandboxConfig {
     pub env: Vec<String>,
     /// Container image for the `docker` backend.
     pub image: String,
-    /// Memory ceiling in megabytes (`docker` only).
+    /// Memory ceiling in megabytes, swap included, on both backends that
+    /// apply it: docker's `--memory` with `--memory-swap` set equal, and under
+    /// `bwrap` a transient systemd scope with `MemoryMax` and
+    /// `MemorySwapMax=0`, so the ceiling covers the whole command tree.
+    /// `landlock` cannot apply it and refuses at preflight.
     pub memory_mb: Option<u64>,
-    /// CPU ceiling (`docker` only), e.g. `2.0`.
+    /// CPU ceiling in cores, e.g. `2.0`: docker's `--cpus`, or the scope's
+    /// `CPUQuota` under `bwrap`. `landlock` refuses at preflight.
     pub cpus: Option<f64>,
 }
 
@@ -285,7 +290,9 @@ impl Sandbox {
                 for (k, v) in env {
                     a.extend(["--setenv".to_string(), k.to_string(), v.to_string()]);
                 }
-                let mut c = tokio::process::Command::new("bwrap");
+                let mut launcher = self.bwrap_launcher().into_iter();
+                let mut c = tokio::process::Command::new(launcher.next().expect("a launcher"));
+                c.args(launcher);
                 c.args(a);
                 c.arg("--").arg(program).args(args);
                 Ok(c)
@@ -483,6 +490,52 @@ impl Sandbox {
             .collect()
     }
 
+    /// What starts `bwrap`: itself, or — when `memory_mb` or `cpus` is set —
+    /// `systemd-run --user --scope` carrying the limits, which execs `bwrap`
+    /// in place inside a transient scope. A scope is a cgroup, so the ceiling
+    /// covers every process the command starts, where an rlimit would cover
+    /// only one. `systemd-run` refuses to start the command when it cannot
+    /// create the scope — but it applies the properties best-effort, and a
+    /// controller the user manager was not delegated is logged and dropped,
+    /// so preflight reads the limits back from the scope's own cgroup
+    /// ([`Sandbox::prove_limits`]) rather than trusting the start (review of
+    /// #295). `XDG_RUNTIME_DIR`
+    /// rides in the argv (through `env`) because an MCP server's command has
+    /// its environment cleared after this is built, and `systemd-run --user`
+    /// finds the user manager through it.
+    pub fn bwrap_launcher(&self) -> Vec<String> {
+        let mut properties = Vec::new();
+        if let Some(mb) = self.cfg.memory_mb {
+            properties.push(format!("MemoryMax={mb}M"));
+            properties.push("MemorySwapMax=0".to_string());
+        }
+        if let Some(cpus) = self.cfg.cpus {
+            properties.push(format!("CPUQuota={}%", (cpus * 100.0).round() as i64));
+        }
+        if properties.is_empty() {
+            return vec!["bwrap".to_string()];
+        }
+        let runtime = std::env::var("XDG_RUNTIME_DIR")
+            .ok()
+            .filter(|v| !v.is_empty())
+            // SAFETY: `getuid` cannot fail and has no preconditions.
+            .unwrap_or_else(|| format!("/run/user/{}", unsafe { libc::getuid() }));
+        let mut argv = vec![
+            "/usr/bin/env".to_string(),
+            format!("XDG_RUNTIME_DIR={runtime}"),
+            "systemd-run".to_string(),
+            "--user".to_string(),
+            "--scope".to_string(),
+            "--quiet".to_string(),
+            "--collect".to_string(),
+        ];
+        for p in properties {
+            argv.extend(["-p".to_string(), p]);
+        }
+        argv.extend(["--".to_string(), "bwrap".to_string()]);
+        argv
+    }
+
     /// Arguments up to (but not including) the command itself. Split out so the
     /// policy can be asserted on in tests without spawning anything.
     pub fn bwrap_args(&self, workspace: &Path, cwd: &Path) -> Result<Vec<String>> {
@@ -592,7 +645,17 @@ impl Sandbox {
         );
 
         if let Some(mb) = self.cfg.memory_mb {
-            args!(a, "--memory", format!("{mb}m"));
+            // `--memory-swap` equal to `--memory` is "no swap on top": docker's
+            // default is twice the memory, so without it one `memory_mb`
+            // meant twice the ceiling here that it means under bwrap (review
+            // of #295).
+            args!(
+                a,
+                "--memory",
+                format!("{mb}m"),
+                "--memory-swap",
+                format!("{mb}m")
+            );
         }
         if let Some(cpus) = self.cfg.cpus {
             args!(a, "--cpus", cpus);
@@ -631,6 +694,22 @@ impl Sandbox {
         if !self.is_enabled() {
             return Ok(());
         }
+        // A degenerate limit is refused, not rendered: `CPUQuota=0%` and
+        // `MemoryMax=0M` mean nothing sensible, and docker reads `--cpus 0`
+        // as unlimited (review of #295).
+        if self.cfg.memory_mb == Some(0) || self.cfg.cpus.is_some_and(|c| c.is_nan() || c <= 0.0) {
+            anyhow::bail!("[sandbox] memory_mb and cpus must be greater than zero when set");
+        }
+        // A limit the backend cannot apply is refused, never ignored: the
+        // operator set it believing it held.
+        if self.cfg.kind == Backend::Landlock
+            && (self.cfg.memory_mb.is_some() || self.cfg.cpus.is_some())
+        {
+            anyhow::bail!(
+                "[sandbox] memory_mb / cpus are enforced by the docker and bwrap backends; \
+                 landlock cannot apply them. Remove them or choose another backend."
+            );
+        }
 
         let marker = "mecha-sandbox-ok";
         let mut command = self
@@ -651,6 +730,9 @@ impl Sandbox {
                     // Landlock spawns bash directly; what fails here is the
                     // ruleset in pre_exec, not a missing wrapper binary.
                     Backend::Landlock => "bash",
+                    // With limits, bwrap is started through `env` and
+                    // `systemd-run`, either of which may be what is missing.
+                    _ if self.bwrap_launcher().len() > 1 => "systemd-run` or `bwrap",
                     _ => "bwrap",
                 }
             )
@@ -658,6 +740,7 @@ impl Sandbox {
 
         if output.status.success() && String::from_utf8_lossy(&output.stdout).contains(marker) {
             self.prove_landlock_containment(workspace).await?;
+            self.prove_limits().await?;
             return Ok(());
         }
 
@@ -672,6 +755,71 @@ impl Sandbox {
             },
             diagnose(self.cfg.kind, &stderr)
         )
+    }
+
+    /// The limits a bwrap scope was asked for, as its cgroup files spell
+    /// them: `memory.max` in bytes, `memory.swap.max`, and `cpu.max` as
+    /// `<quota> <period>` with systemd's 100 ms period.
+    pub fn expected_cgroup_limits(&self) -> Vec<(&'static str, String)> {
+        let mut out = Vec::new();
+        if let Some(mb) = self.cfg.memory_mb {
+            out.push(("memory.max", (mb * 1024 * 1024).to_string()));
+            out.push(("memory.swap.max", "0".to_string()));
+        }
+        if let Some(cpus) = self.cfg.cpus {
+            let percent = (cpus * 100.0).round() as i64;
+            out.push(("cpu.max", format!("{} 100000", percent * 1000)));
+        }
+        out
+    }
+
+    /// A bwrap scope's limits, read back from the cgroup the scope got — not
+    /// inferred from `systemd-run` having started it, because systemd applies
+    /// cgroup properties best-effort and drops one whose controller the user
+    /// manager was not delegated (review of #295: the start proved the scope,
+    /// not the limit). The probe runs in the same scope construction without
+    /// `bwrap` in it, since a confined command sees neither its cgroup path
+    /// nor `/sys`. Any file that is missing or reads differently refuses.
+    async fn prove_limits(&self) -> Result<()> {
+        if self.cfg.kind != Backend::Bwrap {
+            return Ok(());
+        }
+        let expected = self.expected_cgroup_limits();
+        if expected.is_empty() {
+            return Ok(());
+        }
+        let mut argv = self.bwrap_launcher();
+        argv.pop(); // `bwrap`: the probe reads its own scope, unconfined.
+        let files: Vec<&str> = expected.iter().map(|(f, _)| *f).collect();
+        let script = format!(
+            "p=$(sed -n 's/^0:://p' /proc/self/cgroup); for f in {}; do \
+             printf '%s=' \"$f\"; cat \"/sys/fs/cgroup$p/$f\" 2>/dev/null || echo MISSING; done",
+            files.join(" ")
+        );
+        argv.extend(["sh".to_string(), "-c".to_string(), script]);
+        let mut argv = argv.into_iter();
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            tokio::process::Command::new(argv.next().expect("a launcher"))
+                .args(argv)
+                .stdin(std::process::Stdio::null())
+                .output(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("reading the sandbox's resource limits back timed out"))?
+        .context("reading the sandbox's resource limits back")?;
+        let read = String::from_utf8_lossy(&output.stdout);
+        check_limits(&expected, &read).map_err(|why| {
+            anyhow::anyhow!(
+                "[sandbox] memory_mb / cpus did not take effect under bwrap: {why}. The \
+                 systemd user manager must have the memory and cpu controllers delegated \
+                 (cgroup v2); refusing rather than running commands without the limit.{}",
+                match String::from_utf8_lossy(&output.stderr).trim() {
+                    "" => String::new(),
+                    e => format!(" ({e})"),
+                }
+            )
+        })
     }
 
     /// The half of the landlock preflight `echo` cannot cover.
@@ -762,6 +910,19 @@ fn diagnose(kind: Backend, stderr: &str) -> String {
              or use `kind = \"docker\"` instead."
                 .into()
         }
+        // The resource limits' dependency, not bwrap's: `systemd-run --user`
+        // needs a running user manager (review of #295).
+        Backend::Bwrap
+            if stderr.contains("connect to bus")
+                || stderr.contains("systemd-run")
+                || stderr.contains("user manager") =>
+        {
+            "\n\n`[sandbox] memory_mb` / `cpus` run each command in a systemd user scope, \
+             which needs a running systemd user manager. Start one that outlives your \
+             logins with `loginctl enable-linger $USER` (a desktop login also starts \
+             one), or remove the limits."
+                .into()
+        }
         Backend::Bwrap if stderr.contains("loopback") => {
             "\n\nbwrap could not configure loopback in the new network namespace. \
              Set `network = true` to share the host's, or use `kind = \"docker\"`."
@@ -786,6 +947,23 @@ fn diagnose(kind: Backend, stderr: &str) -> String {
 fn absolute(path: &Path) -> Result<PathBuf> {
     path.canonicalize()
         .with_context(|| format!("cannot resolve {}", path.display()))
+}
+
+/// Whether a scope's cgroup read-back (`file=value` lines) holds exactly the
+/// limits asked for.
+fn check_limits(expected: &[(&str, String)], read: &str) -> std::result::Result<(), String> {
+    for (file, want) in expected {
+        let got = read
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("{file}=")))
+            .map(str::trim);
+        match got {
+            Some(got) if got == want => {}
+            Some("MISSING") | None => return Err(format!("{file} is not there to read")),
+            Some(got) => return Err(format!("{file} reads {got}, not {want}")),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -894,6 +1072,111 @@ mod tests {
         let program = argv.iter().position(|a| a == "server").unwrap();
         assert_eq!(argv[e - 1], "-e");
         assert!(e + 1 < program, "`-e` precedes the image: {argv:?}");
+    }
+
+    /// No limits: `bwrap` itself. Limits: a transient systemd scope carrying
+    /// them, with `bwrap` exec'd in place after `--`.
+    #[test]
+    fn bwrap_limits_ride_in_a_systemd_scope() {
+        assert_eq!(
+            Sandbox::new(cfg(Backend::Bwrap)).bwrap_launcher(),
+            vec!["bwrap"]
+        );
+        let limited = Sandbox::new(SandboxConfig {
+            memory_mb: Some(2048),
+            cpus: Some(1.5),
+            ..cfg(Backend::Bwrap)
+        })
+        .bwrap_launcher();
+        assert_eq!(limited[0], "/usr/bin/env");
+        assert!(limited[1].starts_with("XDG_RUNTIME_DIR="), "{limited:?}");
+        assert_eq!(&limited[2..5], ["systemd-run", "--user", "--scope"]);
+        for property in ["MemoryMax=2048M", "MemorySwapMax=0", "CPUQuota=150%"] {
+            assert!(
+                limited.windows(2).any(|w| w == ["-p", property]),
+                "{property} in {limited:?}"
+            );
+        }
+        assert_eq!(&limited[limited.len() - 2..], ["--", "bwrap"]);
+    }
+
+    /// A missing user manager is the limits' likeliest failure and says how
+    /// to fix it (review of #295).
+    #[test]
+    fn a_missing_user_manager_is_diagnosed_with_the_fix() {
+        let advice = diagnose(
+            Backend::Bwrap,
+            "Failed to connect to bus: No such file or directory",
+        );
+        assert!(advice.contains("loginctl enable-linger"), "{advice}");
+    }
+
+    /// The read-back check: what systemd dropped is refused by name.
+    #[test]
+    fn a_limit_is_believed_only_when_its_cgroup_reads_it_back() {
+        let s = Sandbox::new(SandboxConfig {
+            memory_mb: Some(64),
+            cpus: Some(1.5),
+            ..cfg(Backend::Bwrap)
+        });
+        let expected = s.expected_cgroup_limits();
+        assert_eq!(
+            expected,
+            vec![
+                ("memory.max", "67108864".to_string()),
+                ("memory.swap.max", "0".to_string()),
+                ("cpu.max", "150000 100000".to_string()),
+            ]
+        );
+        let held = "memory.max=67108864\nmemory.swap.max=0\ncpu.max=150000 100000\n";
+        assert!(check_limits(&expected, held).is_ok());
+        // A controller the user manager was not delegated: the scope ran,
+        // the limit did not.
+        let dropped = "memory.max=67108864\nmemory.swap.max=0\ncpu.max=max 100000\n";
+        assert!(check_limits(&expected, dropped)
+            .unwrap_err()
+            .contains("cpu.max reads max"));
+        let missing = "memory.max=MISSING\nmemory.swap.max=0\ncpu.max=150000 100000\n";
+        assert!(check_limits(&expected, missing)
+            .unwrap_err()
+            .contains("not there"));
+    }
+
+    #[tokio::test]
+    async fn a_degenerate_limit_is_refused_not_rendered() {
+        for bad in [
+            SandboxConfig {
+                memory_mb: Some(0),
+                ..cfg(Backend::Bwrap)
+            },
+            SandboxConfig {
+                cpus: Some(0.0),
+                ..cfg(Backend::Bwrap)
+            },
+            SandboxConfig {
+                cpus: Some(-1.0),
+                ..cfg(Backend::Docker)
+            },
+        ] {
+            let err = Sandbox::new(bad)
+                .preflight(&std::env::temp_dir())
+                .await
+                .unwrap_err();
+            assert!(format!("{err:#}").contains("greater than zero"), "{err:#}");
+        }
+    }
+
+    #[tokio::test]
+    async fn landlock_refuses_a_limit_it_cannot_apply() {
+        let sandbox = Sandbox::new(SandboxConfig {
+            memory_mb: Some(512),
+            ..cfg(Backend::Landlock)
+        });
+        let err = sandbox.preflight(&std::env::temp_dir()).await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("landlock cannot apply"),
+            "{err:#}"
+        );
     }
 
     #[test]
