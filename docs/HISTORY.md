@@ -14,6 +14,147 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-24/25 — appraisal wiring, phase 1: evidence and context go in,
+and what a run does changes in three named places only; phase 2 and 3a
+follow.** `APPRAISAL-WIRING-DESIGN.md` (#291,
+`66ae0abd`) re-derived the appraisal programme from what the owner said it is
+for (the agent's own interpretation of meaning, serving self-learning, goal
+alignment and planning across many goals) and recorded rulings R1–R29 in its
+§6. Phase 1's rows then landed in one night, each behind its own tests, and
+the three behaviour changes are named below (1b's refusal, 1d's reflection
+arm, and 1e/1f's inputs to planning guidance). **1a**,
+#292 (`a21bb086`): tasks, triggers and front-door requests anchor their runs
+from structure (`run::seed_goal_anchor`; `GoalRef` gains `trigger` and
+`request`, lenient on read), drift is judged only against anchors a plan can
+name (`GoalRef::a_plan_can_name`), and `sessions health` reports
+`runs_anchored_by_kind`. **1b**, #293 (`c76ccefd`): closing or reopening a
+task is one recorded event (`closure.rs`, `~/.mecha/closures/`), with
+`pre_task_close` (may deny, fails closed), `task_closed` and `task_reopened`
+hooks; the web board and the TUI show the appraisal's readout, read back from
+the record; a run with nobody present cannot close. **1b-2**, #294
+(`dfbb2217`): who is closing is decided from a harness-written registry of the
+shell children the `shell` tool spawns (`shell_registry.rs`,
+`~/.mecha/runs/shells/`), not from `MECHA_RUN_POSTURE` (see *Traps*), and
+`mecha doctor`'s `check_shell_confinement` reports a `[sandbox]` that mounts
+the mecha home. **1i**, #297 (`d97556c3`), test-only:
+`a_recorded_run_carries_no_sensor_number_setpoint_or_valence_to_either_encoder`
+scans every request of a recorded and resumed run through both encoders, and
+its control injects each needle; no leak was found. **1g**, #298
+(`53b5a77c`): every steer-probe, validation and learn-gate verdict is stored
+as a `comparison::Comparison` (`~/.mecha/comparisons/`), keyed by situation,
+goal kind and call class, and written only for a clean session whose tool
+surface is still readable. **1d**, #299 (`9935f974`): the verdicts the owner
+already gives are read where they are recorded — closures and reopens (a
+reopen of a `done` closure signs −1.0 at any age and withdraws its +0.5; a
+reopened drop signs nothing), workflow
+close, cancel, reopen and failed verify, and a draft rejected with a reason
+(mined by the reflector in the owner's words) — and new `curation.rs` ledgers
+record rule and harness-candidate curation, which never moves a run's score
+(R16f–h). The one behaviour change, weighed at merge: `appraisal::of_session`'s
+reflection arm reads `Reflexion::provenance_as_mined`, so dropping or editing
+a reflection no longer moves the run's valence (R16g). Graph fact rejections
+stay unreadable from mecha (`graph_fact_rejections: null`).
+
+**1e**, #301 (`b3a45764`): a charter reading carries `reading::Items` and a
+per-run `Flow` beside the level, because one stale draft had pinned the
+outbox-age level past its setpoint on 126 of 126 runs; a line past its
+setpoint on each of the last `SATURATED_AFTER_RUNS` informative runs is
+withdrawn from in-run consumers (`Homeostat::in_run_readings`) and reported
+once by the doctor. **1c**, #300 (`2cf19289`) and mecha-graph#21
+(`ecf067c8`): Slack gains Drop beside Done, its reply carries the readout from
+the record (`ClosureStore::move_since`), and every Slack task tap passes the
+hidden `tasks set --only-open`, which refuses a stale card (the web board's
+`POST /api/tasks/set` does not; HANDOFF banks it); the graph TUI closes and
+reopens through `mecha tasks set --surface graph-tui`, adding `--only-open`
+on a close, when `[board]
+close_through` is set, and refuses with nothing written when mecha is missing
+or the TUI is not on the default database (the owner's option A3; R30 in
+`APPRAISAL-WIRING-DESIGN.md` §6). **1f**, #302 (`fe295e8b`): guilt is per commitment — each staged draft,
+parked question and front-door request waiting on the owner carries
+`reading::excess(age, patience) × guilt::weight(rank)`
+(`guilt::read_commitments`, recorded per store as `guilt::StoreGuilt`);
+`anticipated_guilt` became a readout, their maximum; and
+`planning::Decision::assess` keys `ReviewCommitment` on the store's
+per-commitment guilt rather than the level (guidance that reaches a run only
+under `goal_guidance`, off by default; 1e's withdrawal feeds the same
+decision). **1f-2**, #304 (`2f89ebb5`): new
+predictions write the one `workflow::Commitment` record
+(`Evidence::into_record`), old ones stay on disk in their own shape
+(`anticipation::RecordedCommitment::Legacy`), and `due_at` / `follow_up_at`
+became optional — absent means no deadline stated, and the harness never
+supplies a date (R31 in the same table). **1h**, #305 (`6a26f7ab`): the situation brief
+(`brief::SituationBrief`, nine fields, each with its own unknown) is assembled
+with no model call on `tasks work`, `trigger run` and each web turn, recorded
+on `RunStats::brief`, and delivered nowhere; building it found `serve`
+recording every web turn against the backlog of the morning it started (see
+*Traps*). Phase 2 began with **2a-1**, #308 (`e35bb081`):
+`appraisal_store.rs`, the text-appraisal store, whose write door grounds each
+claim through `grounding::admit` and whose clean door is a type only the store
+can construct (`Clean`); it has no producer yet, and the graph episode's
+prompt is pinned (`the_distillers_episode_prompt_is_pinned`). **2c-1**, #311
+(`193b0114`), followed at 18:18Z on the 25th: the goal a front-end hands `prepare`
+(`GlobalOpts::goal`) joins `Situation` as a recorded and scope key
+(`situation::GoalKey`, the whole `GoalRef`), recorded as
+`RunConfig::rules_goal` and read by every door the workspace and surface keys
+read; an absent or unnameable goal never widens a scope, and none of the
+live store's 67 reflections carried a goal at merge (#311's own read-only
+count); the owner then ruled that such a rule stays scoped to its task and
+widens only by evidence (R34). Three more merged at 19:47Z. **2a-2**, #314
+(`5995aa26`): `mecha distill` appraises each session in a follow-up turn on
+the episode call's own cached prefix (`QuarantinedPass::follow_up`,
+`Distiller::appraise`), so `DISTILLER_SYSTEM` and the graph episode stay
+byte-identical (R32, amending decision 4 to one extra call per session);
+the record gains `ExpectedAct`, R16's closed set, for 2b-2 to score (R33);
+the write door resolves each judgment's goal against `KnownPointers`,
+deduplicates and caps `because`, and refuses a second appraisal of a
+session; it runs only on a `kind = "local"` provider (R29), and `mecha
+sessions appraise <session>` is the owner's readout. **2d-1**, #312
+(`87c0e9a1`): `mecha sessions compare` drives up to three policies
+(`pointwise::ARMS_MAX`) four turns (`HORIZON_TURNS`) from each informative
+decision point — a steer, a denial, an edited or rejected draft, a failed
+check, a surprise — lets a structural validator read the owner's recorded
+act, and stores one 1g `Comparison` per point; a point no structural
+validator can pose is stored `unposed` with no arms. **3a**, #309
+(`6e6f03ba`): `brief::render` turns 1h's record into words and bands per
+R21, and `Agent::fold_situation_brief` puts them in the run's first user
+turn, never the prefix, behind `Lever::SituationBrief`, which ships off;
+`mecha run` now records and delivers a brief too, so an experiment's lever-on
+and lever-off arms are two conditions, not one. The
+owner then ruled that delivery must arm `private` (R35). **3a-3**, #316
+(`04b89ea0`, 21:00Z), built it: `Agent::fold_situation_brief` reports
+delivery and the loop arms `private` at each fold site, and
+`Taint::arm_for_content` arms from any transcript holding a brief (the
+attached image's precedent); and a fold is now a `Record::Extend` of the
+message the door already recorded rather than a whole-transcript
+`Record::Rewrite` that cleared the taint checkpoints, the calendar
+reference's fold included. The lever still ships off. **2c-2**, #320
+(`6f8e69ca`, 21:36Z): `goal_context` serves up to three past clean
+appraisals of the run's situation and goal, on demand and never pushed,
+selected at setup through `Clean` only (`appraisal_store::PastAppraisals`)
+and behind `Lever::PastAppraisals` (`[agent] past_appraisals`), which ships
+off; the measured run against a control is still owed. **2b-1**, #319
+(`8c0f5a9d`, 21:46Z): anticipation's owner-evidenced predictions are scored
+as their outcomes resolve them (`anticipation::Calibration::of`) — coverage
+per kind and no rate over nothing, harness placeholders counted apart, and a
+delivery positive only on confirmed delivery. The live store held no
+owner-evidenced prediction at merge (the coordinating session's count).
+**2a-3**, #315 (`0692dc79`, 20:32Z): the counts-only appraiser
+(`appraise_with_model`) is retired into 2a-2's text appraisal; `sessions
+appraise --appraise` stays as a hidden, deprecated no-op, and old records
+carrying its errors still load and count. With it `Affect::Anger` lost its
+only live producer (the appraiser's `other`/`world` verdict); `label_of`
+still derives it, so older records read as before. #313 (`5fa722fe`,
+another lane's) made `reflect` and `distill` pass over test sessions, so
+neither the reflector nor 2a-2's appraiser reads a `MECHA_SESSION_KIND=test`
+run. #317 (`8b0acbe8`, 20:44Z) built R34's readout: a rule scoped to a goal
+that has closed keeps its scope, and `mecha rules list` marks it `LOADS
+NOWHERE` with why, `mecha learn` repeats the count each pass
+(`learning::ClosedGoals`), and an unreadable board is its own finding.
+Separately, at 03:29Z that morning, #295 (`c4c916d1`) made `[sandbox] memory_mb` and `cpus` real
+under bwrap through a `systemd-run --user --scope` (`Sandbox::bwrap_launcher`)
+and made landlock refuse them (see *Traps*). What the arc left open is in
+HANDOFF's goal-system section.
+
 **2026-09-24/25 — the docs, checked against the code, and the code that
 failed its own docs.** The owner asked for a clearer account of appraisal and
 then for the whole site to be organised and audited. #273 (`37af1a52`) added
@@ -7337,6 +7478,16 @@ and the test still passed: it matched on text, and the comment still held the
 text. Deleting the line made it fail. When sabotaging a check, remove what
 the check reads, not what the code executes.
 
+**A long-lived process's snapshot of its conditions describes the morning it
+started.** `mecha serve` sampled the homeostat once, when it built its agent,
+and every web turn's `RunContext` inherited that sample, so each web run
+recorded the backlog as it stood at daemon start and a delta against it. The
+numbers were plausible, so nothing looked wrong; it surfaced only because 1h's
+brief (#305) reads its commitments from that snapshot and a test staged a
+draft after `serve` started. A condition that belongs to a run is sampled per
+run. Ask of any recorded condition when it was read; for the surfaces that
+still hold one per process, see HANDOFF.
+
 ### Learning
 
 **2026-08-30 — the safeguard's release condition was satisfied by the
@@ -7966,6 +8117,46 @@ and is what finally exercised the path.)
   it. Where a message states a *capability*, assert the capability's current
   shape and assert the old wording is **gone**, or the test becomes the reason
   the lie survives.
+
+- **A guard that reads a fact the guarded party can write is advisory.** #293
+  decided who may close a task from `MECHA_RUN_POSTURE`, which the `shell`
+  tool stamps on every command, and a delegated run's command could set it on
+  its own line (`MECHA_RUN_POSTURE=interactive mecha tasks set …`) and be
+  recorded as an `owner-approved` closure: a forged verdict in the store the
+  appraisal reads as the owner's. #294 moved the fact into a registry the
+  harness writes about its own children (`shell_registry.rs`), and the
+  variable became advisory. Before trusting an input to a guard, ask who can
+  write it; if the answer includes the thing being guarded, move the fact to
+  a store only the guard's side writes.
+
+- **A control acts on the store as it is when it fires, never as it was when
+  the control was drawn.** A Slack task card is composed while the task is
+  open. Tapped after the owner had closed it elsewhere, Drop turned `done`
+  into `dropped` with no closure record, because that move crosses no
+  open/closed line, and Next reopened it, which 1d signs −1.0 against the
+  session that did the work. `tasks set --only-open` rereads the row and
+  refuses (#300), and the graph TUI reads the status from its database at the
+  keypress rather than from the rendered row (mecha-graph#21). A double tap is
+  the same bug.
+
+- **`#[serde(other)]` does not catch an unknown variant that carries data.**
+  1d's `Cite` is adjacently tagged, and the attribute matches an unknown tag
+  only when nothing sits beside it, so a newer build's pointer with an id
+  would have failed the error it rides on instead of loading as `Unknown`.
+  `de_cite_lenient` and `curation.rs`'s `de_target_lenient` deserialize by
+  hand, and `a_cite_from_a_newer_build_loads_as_unknown` pins an unknown
+  pointer with an id loading as `Unknown`. For a closed enum on an
+  append-only store, test an unknown variant *with* content, not just a bare
+  unknown tag.
+
+- **A setting a backend cannot apply must refuse, not parse.** `[sandbox]
+  memory_mb` and `cpus` parsed under every backend and took effect only under
+  docker, so an operator who set them under bwrap got no limit and no
+  message. #295 applies them under bwrap through a systemd scope, which fails
+  `Sandbox::preflight` when the scope cannot be made, and landlock, which
+  cannot apply either, now refuses the combination. The silently-degrading
+  guard, in config form: a key that is accepted and ignored reads to the
+  operator as a key that works.
 
 ### Unattended runs
 
