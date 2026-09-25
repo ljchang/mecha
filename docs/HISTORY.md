@@ -61,9 +61,11 @@ setpoint on each of the last `SATURATED_AFTER_RUNS` informative runs is
 withdrawn from in-run consumers (`Homeostat::in_run_readings`) and reported
 once by the doctor. **1c**, #300 (`2cf19289`) and mecha-graph#21
 (`ecf067c8`): Slack gains Drop beside Done, its reply carries the readout from
-the record (`ClosureStore::move_since`), and every board tap passes the hidden
-`tasks set --only-open`, which refuses a stale card; the graph TUI closes and
-reopens through `mecha tasks set --surface graph-tui` when `[board]
+the record (`ClosureStore::move_since`), and every Slack task tap passes the
+hidden `tasks set --only-open`, which refuses a stale card (the web board's
+`POST /api/tasks/set` does not; HANDOFF banks it); the graph TUI closes and
+reopens through `mecha tasks set --surface graph-tui`, adding `--only-open`
+on a close, when `[board]
 close_through` is set, and refuses with nothing written when mecha is missing
 or the TUI is not on the default database (the owner's option A3; R30 in
 `APPRAISAL-WIRING-DESIGN.md` §6). **1f**, #302 (`fe295e8b`): guilt is per commitment — each staged draft,
