@@ -635,8 +635,13 @@ pub(crate) fn owner_acts(
 pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -> String {
     if s.with_expectation == 0 {
         return format!(
-            "appraisals' predictions: none carries an expected act ({} appraisal(s) on record)",
-            s.appraisals
+            "appraisals' predictions: none carries an expected act ({} appraisal(s) on record{})",
+            s.appraisals,
+            if s.appraisals_unreadable > 0 {
+                format!(", {} unreadable", s.appraisals_unreadable)
+            } else {
+                String::new()
+            }
         );
     }
     format!(
@@ -657,6 +662,13 @@ pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -
         s.unknown,
         if s.skipped > 0 {
             format!(" · {} unreadable score line(s)", s.skipped)
+        } else {
+            String::new()
+        } + &if s.appraisals_unreadable > 0 {
+            format!(
+                " · {} unreadable appraisal line(s), so these are floors",
+                s.appraisals_unreadable
+            )
         } else {
             String::new()
         }

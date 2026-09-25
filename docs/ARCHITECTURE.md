@@ -5241,10 +5241,18 @@ the owner's** (row 2b-2, R33, R37).
   (`doctor::Patience::for_store` on `outbox_age` when the session staged
   drafts, else `NO_STORE_PATIENCE_HOURS`). An act after the window is not
   the act.
-- **Unknown is never "no act".** An unreadable outbox, closure or workflow
-  store, an unreadable charter where the outbox's patience is needed, or a
-  resolved draft with no readable time makes the answer `Unknown`, and
-  nothing is written.
+- **Unknown is never "no act".** Each of these makes the answer `Unknown`,
+  and nothing is written:
+  - an unreadable outbox, closure or workflow store;
+  - an unreadable charter where the outbox's patience is needed;
+  - a resolved draft with no readable time;
+  - a closure naming the session whose move this build cannot read (an act
+    seen and not read, found on review of #324);
+  - an appraisal naming no session.
+
+  A closure by an actor this build cannot read is not taken as the owner's.
+  An unreadable appraisal line is counted (`appraisals_unreadable`), so the
+  coverage says it is a floor.
 - **Each resolved score is written once**, under the store's lock, to
   `scores.jsonl`, fixed at resolution: a later charter edit does not
   re-score it. A miss is `surprise: true` beside the appraisal's `clean`,
