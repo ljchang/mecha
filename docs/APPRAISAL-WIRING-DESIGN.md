@@ -516,7 +516,7 @@ widening.
 | R32 | 2 | What R25 pins: 2a-2's appraisal comes from a follow-up turn on the same cached prefix, so `DISTILLER_SYSTEM` and the episode stay byte-identical; the extra model call is taken deliberately over changing the episode's text (here §3, the first of phase 2's two questions) | **ruled 2026-09-25** by the owner directly; built as 2a-2 (#314), which amends decision 4 to one extra model call per session |
 | R33 | 2 | How a text prediction is scored (2b-2): a closed-set expected owner act from R16's set sits beside the prose and is scored structurally against the act the owner records (here §3, the second question) | **ruled 2026-09-25** by the owner directly; the field is `TextAppraisal::expected_act`, added by 2a-2 (#314); scoring it is 2b-2 |
 | R34 | 2 | A rule scoped to a goal that closes keeps its scope (`task:<uid>`) and widens only on evidence, by §17.4's restatement; such rules are made **visible**, not left silent | **ruled 2026-09-25; built as #317** — `mecha rules list` counts and marks them `LOADS NOWHERE`, `mecha learn` repeats the count each pass, an unreadable board is its own finding |
-| R37 | 2 | An appraisal's expected owner act of "no act" becomes the act that happened once **the output's store patience** has elapsed, counted from **the appraised session's end**: the patience is `doctor::Patience::for_store`'s (the charter line watching that store, else the doctor's constant); an output with no store (a chat answer) resolves at the doctor's constant; an owner act that arrives before the window closes is the act; an unreadable act store or patience is unknown and never resolves to no act | **ruled 2026-09-25**; built as 2b-2 |
+| R37 | 2 | An appraisal's expected owner act of "no act" becomes the act that happened once **the output's store patience** has elapsed, counted from **the appraised session's end**: the patience is `doctor::Patience::for_store`'s (the charter line watching that store, else the doctor's constant); an output with no store (a chat answer) resolves at the doctor's constant; an owner act that arrives before the window closes is the act; an unreadable act store or patience is unknown and never resolves to no act. **Refined 2026-09-25:** a task's output uses the task's due date — the window runs from the session's end to the board row's `due_at` (the end of that day in the owner's zone), an owner closure by then is the act, an undated task keeps the constant, a `due_at` already past at the session's end falls back to the constant, and an unreadable board or unparseable `due_at` is unknown; workflow outputs keep the constant for now; "the doctor's constant" is confirmed as the outbox's 48h | **ruled 2026-09-25**; built as 2b-2 |
 
 **Every ruling is settled** (2026-09-24; R30–R37 on 2026-09-25), except the
 parked items (R3, R8), the flag (R9), the deferred R7, the declined R2 and
@@ -1277,7 +1277,8 @@ the stores that record it.
   from before the field falls back to `at`, which is later, so the window
   can only close late). It lasts the outbox's patience when the session
   staged drafts (the charter line on `outbox_age`, else the doctor's 48h),
-  and 48h (`NO_STORE_PATIENCE_HOURS`) when it staged none.
+  and otherwise 48h (`NO_STORE_PATIENCE_HOURS`), except that a task output
+  runs to the task's due date (R37, refined; below).
 - **No act inside the window, and the window closed:** `no_act` is the act.
 - **Any unreadable act store** (outbox, closures, workflows), an unreadable
   charter where the outbox's patience is needed, or a resolved draft with no
@@ -1290,12 +1291,27 @@ the stores that record it.
 - **`mecha distill` scores what has resolved each pass**, with no model call.
   `sessions appraise` shows coverage — scored, hits, surprises, waiting,
   unknown — and `hit_rate` is `None` over no scores.
-- **Interpretation to confirm:** "the doctor's constant" for an output with
-  no store is read as the outbox's 48h, the doctor's constant for an output
-  waiting on the owner. It covers a task or workflow the session worked
-  too: the board and the workflow store carry no `doctor::Patience`, so a
-  `closed` or `reopened` output resolves at 48h, and a closure after that
-  is not the act (found on review of #324).
+- **Confirmed by the owner:** "the doctor's constant" for an output with no
+  store is the outbox's 48h.
+- **Refined by the owner (R37, 2026-09-25): a task's output uses the task's
+  due date.** This applies when the session staged no drafts and its output
+  is a task: the anchor, else the task a closure naming the session moved.
+  - The window runs from the session's end to that task's `due_at` on the
+    board. The board is read harness-side by `mecha distill`
+    (`kg_task_list` with closed rows).
+  - A due date without a time ends at the end of that day in the owner's
+    `[agent] timezone`, or UTC when unset.
+  - An owner closure by the due date is the act.
+  - A task with no `due_at` keeps the 48h constant.
+  - **A `due_at` already past at the session's end falls back to the
+    constant.** Closing the window at once would score every overdue task's
+    review as "no act", whatever the owner then did.
+  - **Unknown, never the constant:** an unreadable board, a `due_at` that
+    will not parse, or a board with no row for the task.
+  - The read-only readout reads no board, so it counts such outputs apart
+    (`board_not_read`) rather than as unknown.
+  - **Workflow outputs keep the 48h constant for now**; the workflow store
+    carries no due date or `doctor::Patience`.
 - **The scorer runs on every writing pass of `mecha distill`**, even one
   with nothing to distill or with the graph server down, because windows
   close on quiet nights.

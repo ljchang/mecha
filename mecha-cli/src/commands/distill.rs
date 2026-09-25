@@ -42,15 +42,17 @@ pub struct Args {
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let dry_run = args.dry_run;
+    let server = args.server.clone();
     let distilled = distill_sessions(global, args).await;
     // Row 2b-2's scoring runs on every pass that writes, whatever the
-    // distillation did: it needs no model, graph or network, and a
-    // prediction resolves *later* than its appraisal — a quiet night with
-    // nothing to distill, or one with the graph server down, is exactly
-    // when R37's windows close (found on review of #324). After the
+    // distillation did: it needs no model, and a prediction resolves
+    // *later* than its appraisal — a quiet night with nothing to distill is
+    // exactly when R37's windows close (found on review of #324). It reads
+    // the board for a task output's due date; with the graph server down,
+    // those are unknown and everything else is still scored. After the
     // distillation, so an appraisal written this pass is on record for it.
     if !dry_run {
-        score_predictions();
+        score_predictions(&server).await;
     }
     distilled
 }
@@ -602,19 +604,74 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
 /// No model call, and nothing here can stop distill: a store that cannot
 /// be read is said, and its appraisals stay unscored (unknown, never "no
 /// act").
-fn score_predictions() {
+async fn score_predictions(server: &str) {
     let Some(store) = AppraisalStore::open_existing_default() else {
         return;
     };
     let stores = mecha_core::appraisal::Stores::load();
-    let acts = owner_acts(&stores);
+    let (board, zone) = board_for_scoring(server).await;
+    let board_read = match &board {
+        Ok(v) => mecha_core::appraisal_store::BoardRead::Read(v),
+        Err(e) => {
+            eprintln!(
+                "mecha: the board could not be read for task due dates ({e}); task outputs stay \
+                 unscored — unknown, never \"no act\""
+            );
+            mecha_core::appraisal_store::BoardRead::Unreadable
+        }
+    };
+    let acts = mecha_core::appraisal_store::OwnerActs {
+        board: board_read,
+        zone,
+        ..owner_acts(&stores)
+    };
     match store.score_due(&acts, chrono::Utc::now()) {
         Ok(s) => println!("{}", expectations_line(&s)),
         Err(e) => eprintln!("mecha: the appraisals' predictions could not be scored: {e:#}"),
     }
 }
 
-/// The owner-act stores, as `appraisal_store::observe` reads them.
+/// The board with closed rows, read through the graph server the episodes
+/// go to — the harness-side read a task output's due date comes from
+/// (R37, refined) — and the owner's zone for a due *date*. `Err` names why
+/// the board could not be read; the zone is `None` where unset or invalid.
+async fn board_for_scoring(
+    server: &str,
+) -> (
+    std::result::Result<serde_json::Value, String>,
+    Option<chrono_tz::Tz>,
+) {
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c,
+        Err(e) => return (Err(format!("{e}")), None),
+    };
+    let cfg = match Config::load(&cwd) {
+        Ok(c) => c,
+        Err(e) => return (Err(format!("{e:#}")), None),
+    };
+    let zone = cfg
+        .agent
+        .timezone
+        .as_deref()
+        .and_then(|z| z.trim().parse::<chrono_tz::Tz>().ok());
+    let Some(server_cfg) = cfg.mcp.iter().find(|c| c.name == server) else {
+        return (Err(format!("no [[mcp]] server named '{server}'")), zone);
+    };
+    let sandbox = mecha_core::sandbox::Sandbox::new(cfg.sandbox.clone());
+    let client = match mecha_core::mcp::McpClient::connect(server_cfg, &sandbox, &cwd).await {
+        Ok(c) => c,
+        Err(e) => return (Err(format!("{e:#}")), zone),
+    };
+    (
+        distill::read_board(&client)
+            .await
+            .map_err(|e| format!("{e:#}")),
+        zone,
+    )
+}
+
+/// The owner-act stores, as `appraisal_store::observe` reads them, with no
+/// board: the caller that reads one sets it.
 pub(crate) fn owner_acts(
     stores: &mecha_core::appraisal::Stores,
 ) -> mecha_core::appraisal_store::OwnerActs<'_> {
@@ -627,6 +684,8 @@ pub(crate) fn owner_acts(
         workflows_unreadable: stores.workflows_unreadable,
         charter: stores.charter.as_ref(),
         charter_unreadable: stores.charter_unreadable,
+        board: mecha_core::appraisal_store::BoardRead::NotRead,
+        zone: None,
     }
 }
 
@@ -647,7 +706,8 @@ pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -
     format!(
         "appraisals' predictions: {} scored of {} ({} hit, {} surprise(s), {} of them on clean \
          appraisals; {}) · {} waiting for the owner's act or the window · {} resolved, to be \
-         scored on the next distill · {} unknown (a store or the patience could not be read){}",
+         scored on the next distill · {} unknown (a store or the patience could not be read) · \
+         {} task output(s) awaiting distill's board read{}",
         s.scored,
         s.with_expectation,
         s.hits,
@@ -660,6 +720,7 @@ pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -
         s.pending,
         s.resolved_unwritten,
         s.unknown,
+        s.board_not_read,
         if s.skipped > 0 {
             format!(" · {} unreadable score line(s)", s.skipped)
         } else {

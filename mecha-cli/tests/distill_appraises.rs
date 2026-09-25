@@ -460,7 +460,11 @@ async fn distill_appraises_each_session_once_behind_the_right_door() {
     let e = &v["expectations"];
     assert_eq!(e["read"], true, "{e:#}");
     assert_eq!(e["with_expectation"], 3, "{e:#}");
-    assert_eq!(e["pending"], 3, "{e:#}");
+    // The sessions are anchored to a task and staged nothing, so each
+    // output's window is the task's due date — read from the board by
+    // `mecha distill`, not by this read-only readout (R37, refined).
+    assert_eq!(e["board_not_read"], 3, "{e:#}");
+    assert_eq!(e["unknown"], 0, "{e:#}");
     assert_eq!(e["scored"], 0);
     assert!(e["hit_rate"].is_null(), "no rate over nothing: {e:#}");
 }

@@ -1218,6 +1218,11 @@ async fn appraise(
                     workflows_unreadable,
                     charter: charter.as_ref(),
                     charter_unreadable,
+                    // The readout reads no board: a task output's window is
+                    // its due date, so it waits for distill's read and is
+                    // counted as such, not as unknown.
+                    board: mecha_core::appraisal_store::BoardRead::NotRead,
+                    zone: None,
                 },
                 chrono::Utc::now(),
             )
