@@ -2911,15 +2911,19 @@ async fn work(
         cx.budget.max_turns = Some(TASK_MAX_TURNS);
     }
     // The situation brief (B1, 1h): recorded on the run, delivered nowhere.
-    // The board this function already read to find its task is the brief's
-    // board — one read, harness-side, reduced to counts and pointers.
+    // The board is read again, as the other two doors read it — open tasks
+    // only — rather than reusing the closed-inclusive read above: a server
+    // caps a long list after sorting closed rows last, so that answer can
+    // say `truncated` over closed history alone, and the brief would record
+    // this door's board as a floor where every open row was present (found
+    // on review). It is also the board after the move, which is the board
+    // the run is handed.
     setup::brief_run(
         &prepared.agent,
         &prepared.config,
         &prepared.provider_name,
         &mut cx,
         &convo,
-        Some(board.clone()),
     )
     .await;
     let outcome = crate::interrupt::run_interruptible_watching(

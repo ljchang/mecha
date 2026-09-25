@@ -134,7 +134,11 @@ fn seed(root: &Path, base_url: &str) -> PathBuf {
     std::fs::write(&path, raw.to_string()).unwrap();
 
     // The board: the delegated task under a project, one overdue, one due
-    // soon, one the agent already holds, one done.
+    // soon, one the agent already holds, one done. The server caps a list
+    // at four rows (`MECHA_FIXTURE_BOARD_CAP`, below), so a read that
+    // includes closed rows comes back `truncated` over the done one alone
+    // while the open-only read the brief makes is whole — the delegated
+    // door once reused the first and recorded its board as a floor.
     std::fs::write(
         board.join("board.json"),
         json!({"v": 1, "next": 6, "tasks": [
@@ -206,7 +210,7 @@ fn seed(root: &Path, base_url: &str) -> PathBuf {
              [outbox]\ntools = [\"mail_send\"]\n\
              [[mcp]]\nname = \"graph\"\ncommand = \"python3\"\nargs = [{:?}]\n\
              prefix_tools = false\nsandbox = false\n\
-             [mcp.env]\nMECHA_FIXTURE_DIR = {:?}\n",
+             [mcp.env]\nMECHA_FIXTURE_DIR = {:?}\nMECHA_FIXTURE_BOARD_CAP = \"4\"\n",
             board_server().display().to_string(),
             board.display().to_string(),
         ),
@@ -390,10 +394,10 @@ async fn a_delegated_run_records_every_field_and_sends_none() {
     let Some(Board::Read(board)) = &b.board else {
         unreachable!()
     };
-    // The one board read `tasks work` makes to find its task, before it
-    // moves the task to the agent: the board as the owner handed it over.
+    // The brief's own board read, after `tasks work` moved the task to the
+    // agent: the board the run is handed.
     assert!(
-        matches!(&board.own, OwnTask::Found { status: Some(s), overdue: false, .. } if s == "next"),
+        matches!(&board.own, OwnTask::Found { status: Some(s), overdue: false, .. } if s == "waiting"),
         "{:?}",
         board.own
     );

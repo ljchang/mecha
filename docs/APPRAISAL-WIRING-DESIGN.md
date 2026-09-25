@@ -881,8 +881,8 @@ already uses for the date line — never the prefix. Numbers stay out (R21);
 the brief is words and bands.
 
 *Built as 1h:* `brief::SituationBrief`, assembled by
-`brief::assemble_for_run` on the three doors the row names — `tasks work`
-(the board it already read to find its task), a trigger run, and a web chat
+`brief::assemble_for_run` on the three doors the row names — `tasks work`,
+a trigger run, and a web chat
 turn (`serve`, hosted voice turns included) — and carried on
 `RunContext::brief` to `RunStats::brief`, which the loop copies and never
 reads. Nine fields, each typed data for phase 3 to render, each with its

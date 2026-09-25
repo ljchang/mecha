@@ -4110,7 +4110,12 @@ when touching it:
   or count of it reaches either encoder; phase 3 delivers it into the first
   user turn as words, never the prefix. Five things to keep. **The board is
   read by the harness** (`setup::read_board_for_brief`, one `kg_task_list`
-  through the run's own surface whose answer never enters the conversation)
+  through the run's own surface whose answer never enters the conversation;
+  the same open-only read on every door — `tasks work` once reused its
+  closed-inclusive read, whose `truncated` could be set by closed history
+  alone — and, like every harness call to a tool, outside `pre_tool` hooks,
+  the policy rules and the approver, so a hook written to see graph reads
+  does not see this one: deliberate, and now on the interactive door too)
   **and reduced by `brief::board_of` to counts and task ids** — no row's
   name, no `waiting_on` (a person's name), no id that is not one token, and
   no row string whole: a status narrows to the closed set or `other` and a

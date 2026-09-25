@@ -1035,7 +1035,6 @@ async fn run_agent(
         &prepared.provider_name,
         &mut cx,
         &convo,
-        None,
     )
     .await;
     // The three ways a trigger run ends early say which they are: the
