@@ -43,15 +43,20 @@ ComfyUI became `comfyui.service` so it survives a reboot (HANDOFF,
 
 *Incognito chat.* The owner asked for a web chat that is gone when it
 closes. The design (#307, `613db4ce`, `INCOGNITO-DESIGN.md`) records six
-rulings: R1 strictly invisible, no trace after close; R2 images deleted too,
-ComfyUI's copies and the browser cache included; R3 a local model that may
-read the owner's data but not write it; R4 web search allowed, with a
-notice; R5 a 30-minute idle close; R6 no browser caching. Its step 0 (#313,
+rulings: R1 strictly invisible — no transcript, no content-free counts, no
+replay, no learning; R2 no "save this conversation" escape hatch; R3 local
+and may read the owner's data, never write it; R4 web search allowed, with
+a notice before the first search; R5 a 30-minute idle close; R6 images
+deleted when the chat closes, the image server's copies and the browser's
+cache included. Its step 0 (#313,
 `5fa722fe`) fixed what every chat leaked, incognito or not: tool-output
 spills moved out of the workspace to `~/.mecha/spill/<sha256 of the
 workspace>` (review found an in-workspace `.spill` could be a symlink out of
-the jail, and a pre-planted link another way), reasoning no longer logs at
-`warn`, and `reflect`/`distill` skip test sessions. Steps 1–3 — the chat
+the jail, and a pre-planted link another way), the dropped-reasoning line
+keeps only its content-free counters at `warn` — the 400-character tail
+moved to `debug` with the whole trace, and the counters stay on purpose,
+because an empty turn is in no transcript and they are its only
+default-level record — and `reflect`/`distill` skip test sessions. Steps 1–3 — the chat
 itself, server side — are #321: a `Recording::Kept | Incognito` split so an
 unrecorded chat has no session file *by type*, rooms on tmpfs under
 `$XDG_RUNTIME_DIR`, the allowlist's complement withheld, a door that refuses

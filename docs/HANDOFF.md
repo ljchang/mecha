@@ -27,16 +27,19 @@ The arc is in HISTORY under 2026-09-25. `image_generate` (#303, #306) is
 merged and installed, and needs `comfyui.service` (*Standing machinery*).
 Incognito: the design (#307) and step 0 (#313) are merged and installed;
 **steps 1–3 are #321**, open at this writing, and its review thread is the
-record of where it stands. What remains after it, in the design's order:
-step 5, the page (a New-incognito button, the banner, End, the locked
-permission chip, the search notice, no voice); step 4, ComfyUI's temp-file
-cleanup, until which `image_generate` stays withheld from an incognito
-chat (R2); a canary test for the page; and step 7, unrecorded reads in
+record of where it stands. What remains after it, in the design's order
+(§9): step 4, ComfyUI's temp-file cleanup, until which `image_generate`
+stays withheld from an incognito chat (R6); step 5, the page (a
+New-incognito button, the banner, End, the locked permission chip, the
+search notice, no voice); step 6, the canary test carried through the
+page; and step 7, unrecorded reads in
 mecha-graph (another repository), until which the graph stays withheld —
 every graph read logs its query text. Parked for the owner: a reload
 banner for a phone holding a stale bundle after a deploy (a refresh fixed
-the one case seen); `mecha-core`'s `sha2` taken from the workspace rather
-than pinned in the crate (a review minor); and a race between spawning a
+the one case seen); `mecha-core` pins `sha2 = "0.11"` in its own
+`Cargo.toml`, where a review minor would have it a workspace dependency;
+`comfyui.service` living only in `~/.config/systemd/user/`, where a review
+note suggests a copy in `scripts/` beside `start-moe-mtp.sh`; and a race between spawning a
 shell and registering it, seen as a flaky test and not fixed in product
 code.
 
