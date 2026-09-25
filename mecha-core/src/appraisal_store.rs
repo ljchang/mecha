@@ -1352,6 +1352,11 @@ pub fn observe(
     let unknown = |why: &str| ObservedAct::Unknown {
         why: why.to_string(),
     };
+    // A row naming no session has no output to read an act off: "nothing
+    // matched" would read as the owner doing nothing.
+    if session_id.trim().is_empty() {
+        return unknown("the appraisal names no session");
+    }
     if acts.outbox_unreadable {
         return unknown("the outbox could not be fully read");
     }
@@ -1386,6 +1391,9 @@ pub fn observe(
         seen.push((at, act));
     }
     for c in acts.closures {
+        // An actor this build cannot read is not taken as the owner's hand:
+        // the act is not established to be the owner's, so it is not one,
+        // the direction `observe` fails closed toward everywhere.
         if !c.sessions.iter().any(|s| s == session_id)
             || !matches!(
                 c.actor,
@@ -1397,7 +1405,14 @@ pub fn observe(
         match c.kind {
             crate::closure::Move::Close => seen.push((c.at, ExpectedAct::Closed)),
             crate::closure::Move::Reopen => seen.push((c.at, ExpectedAct::Reopened)),
-            crate::closure::Move::Unknown => {}
+            // The owner acted on this session's task and this build cannot
+            // read which way: an act was seen and not read, which is
+            // unknown — never "no act" (R37; found on review of #324).
+            crate::closure::Move::Unknown => {
+                return unknown(
+                    "a closure naming this session records a move this build cannot read",
+                )
+            }
         }
     }
     for w in acts.workflows {
@@ -1529,6 +1544,9 @@ pub struct ScoreSummary {
     pub hit_rate: Option<f64>,
     /// Score lines that could not be read.
     pub skipped: usize,
+    /// Appraisal lines that could not be read — each may have carried an
+    /// expectation, so every count above is a floor when this is not zero.
+    pub appraisals_unreadable: usize,
 }
 
 impl AppraisalStore {
@@ -1632,11 +1650,12 @@ impl AppraisalStore {
     /// Coverage, read-only: the ledger's scores, and for every expectation
     /// not yet scored, whether its window is open or its answer unknown.
     pub fn score_summary(&self, acts: &OwnerActs<'_>, now: DateTime<Utc>) -> Result<ScoreSummary> {
-        let (rows, _) = self.for_owner()?;
+        let (rows, appraisals_unreadable) = self.for_owner()?;
         let (scores, skipped) = self.scores()?;
         let mut s = ScoreSummary {
             appraisals: rows.len(),
             skipped,
+            appraisals_unreadable,
             ..ScoreSummary::default()
         };
         for row in &rows {
@@ -2707,6 +2726,31 @@ mod tests {
                 "{what}"
             );
         }
+        // A closure naming this session, by the owner, whose move a newer
+        // build wrote: an act seen and not read — unknown, never no act.
+        let future: crate::closure::Transition = serde_json::from_value(json!({
+            "id": "cl-9", "task": "task-1", "to": "archived", "move": "archive",
+            "actor": "owner", "surface": "cli", "sessions": ["s-1"],
+            "at": "2026-09-02T12:00:00Z"
+        }))
+        .unwrap();
+        assert!(matches!(
+            observe(
+                "s-1",
+                end,
+                &OwnerActs {
+                    closures: std::slice::from_ref(&future),
+                    ..OwnerActs::default()
+                },
+                long_after
+            ),
+            ObservedAct::Unknown { .. }
+        ));
+        // A row naming no session has no output to read.
+        assert!(matches!(
+            observe("", end, &OwnerActs::default(), long_after),
+            ObservedAct::Unknown { .. }
+        ));
         // A resolved draft with no readable time cannot be placed in the
         // window either.
         let untimed = [draft_of(&root, "s-1", "sent", None)];
@@ -2900,6 +2944,14 @@ mod tests {
         let s = fresh.score_due(&blind, later).unwrap();
         assert_eq!((s.scored, s.unknown, s.hit_rate), (0, 1, None));
         assert!(fresh.scores().unwrap().0.is_empty());
+
+        // An appraisal line that cannot be read is counted, never silently
+        // out of the denominator.
+        let mut ledger = std::fs::read_to_string(fresh.ledger()).unwrap();
+        ledger.push_str("{\"id\":\"apr-torn\",\"expected_act\n");
+        std::fs::write(fresh.ledger(), ledger).unwrap();
+        let s = fresh.score_summary(&blind, later).unwrap();
+        assert_eq!(s.appraisals_unreadable, 1);
         let _ = std::fs::remove_dir_all(&root);
     }
 
