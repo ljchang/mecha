@@ -4034,7 +4034,11 @@ auto-accepts) now asks two questions of a config candidate, and
 
 - **The point-wise half** (`pointwise_pass::compare_candidate`): up to
   `candidate::POINTS_PER_CANDIDATE` (8) posed points, drawn with the
-  measurement's own seed, each driven twice — the recorded config
+  measurement's own seed from a pool **scoped as the whole-session draw
+  is** (`CandidateScope`: the measured model, `--from-workspace`, the same
+  newest-sessions bound) — or the two halves of one measurement read
+  different corpora and out-of-scope evidence could promote a candidate
+  (found on review) — each driven twice — the recorded config
   (`WithoutIntervention`) and the same with the change applied
   (`Candidate`, through `probe::drive_arm_under`) — under the recorded
   prompt, a `HORIZON_TURNS` horizon from the point, one background seat per

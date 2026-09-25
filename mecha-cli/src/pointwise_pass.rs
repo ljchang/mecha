@@ -150,10 +150,17 @@ fn provenance_at(
 
 /// Walk the sessions `scan` admits and gather every point in a clean
 /// session with a readable surface; the rest are counted, not drawn.
+///
+/// `model`, when given, keeps only sessions recorded under it — a harness
+/// candidate's point pool is scoped as its whole-session draw is
+/// (`harness_probe::draw_episodes`: model-matched, workspace-scoped,
+/// recency-bounded), or the two halves of one measurement read different
+/// corpora (found on review).
 pub fn collect(
     dir: &Path,
     scan: &mecha_core::runlog::Scan,
     limit: Option<usize>,
+    model: Option<&str>,
     drafts: &[OutboxItem],
     surfaces: Option<&SurfaceStore>,
     tally: &mut Tally,
@@ -164,6 +171,9 @@ pub fn collect(
     for (meta, path) in listed {
         if limit.is_some_and(|n| tally.sessions_read >= n) {
             break;
+        }
+        if model.is_some_and(|m| meta.model != m) {
+            continue;
         }
         if !scan.admits(&meta) {
             if scan.hides_test(&meta) {
@@ -503,6 +513,7 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
         &Session::default_dir()?,
         &scan,
         opts.limit,
+        None,
         &drafts,
         surfaces.as_ref(),
         &mut tally,
@@ -704,6 +715,17 @@ pub struct CandidateEvidence {
     pub not_run: Option<String>,
     /// The comparison-store rows counted, driven now or reused.
     pub comparisons: Vec<String>,
+    /// The outbox could not be fully read, so draft points were missing
+    /// from the pool — a finding, not an empty queue.
+    pub outbox_unreadable: bool,
+}
+
+/// What a candidate's point pool is scoped to: the same workspace and
+/// recency bound as its whole-session draw, and the model measured.
+pub struct CandidateScope<'a> {
+    pub workspace: Option<&'a Path>,
+    /// Newest sessions read, at most — the whole-session draw's pool size.
+    pub sessions: usize,
 }
 
 /// The two arms a candidate is compared under at a point: the run's
@@ -717,6 +739,22 @@ fn candidate_arms(prep: &ProbePrep) -> [(Role, Option<String>); 2] {
         (Role::WithoutIntervention, policy.clone()),
         (Role::Candidate, policy),
     ]
+}
+
+/// The change an arm runs under, by its role: the candidate arm alone
+/// carries it. Asked by role, never by position, so reordering the arms
+/// cannot invert every verdict with every test still green.
+fn change_for(
+    role: Role,
+    change: &mecha_core::harness::ConfigChange,
+) -> Option<&mecha_core::harness::ConfigChange> {
+    (role == Role::Candidate).then_some(change)
+}
+
+/// The (baseline, candidate) outcomes of a candidate's comparison, by role.
+fn outcomes_of(c: &Comparison) -> Option<(Outcome, Outcome)> {
+    let of = |role| c.arms.iter().find(|a| a.role == role).map(|a| a.outcome);
+    Some((of(Role::WithoutIntervention)?, of(Role::Candidate)?))
 }
 
 /// A candidate's comparison at one point, keyed and pointed like any other,
@@ -748,8 +786,8 @@ fn reuse(
     let Some(row) = pointwise::on_record(on_record, skeleton) else {
         return false;
     };
-    if let [baseline, candidate] = row.arms.as_slice() {
-        out.tally.count(baseline.outcome, candidate.outcome);
+    if let Some((baseline, candidate)) = outcomes_of(row) {
+        out.tally.count(baseline, candidate);
         out.comparisons.push(row.id.clone());
     }
     *budget = budget.saturating_sub(1);
@@ -793,6 +831,7 @@ pub async fn compare_candidate(
     change: &mecha_core::harness::ConfigChange,
     candidate: &str,
     seed: u64,
+    scope: CandidateScope<'_>,
 ) -> Result<CandidateEvidence> {
     let mut out = CandidateEvidence::default();
     if !pointwise::on_this_machine(provider_cfg.base_url.as_deref()) {
@@ -807,11 +846,21 @@ pub async fn compare_candidate(
     let mut on_record = store.comparisons()?;
     let drafts = match mecha_core::outbox::OutboxStore::open_existing_default() {
         None => Vec::new(),
-        Some(o) => o.items_counting().map(|(i, _)| i).unwrap_or_default(),
+        Some(o) => match o.items_counting() {
+            Ok((items, skipped)) => {
+                out.outbox_unreadable = skipped > 0;
+                items
+            }
+            Err(_) => {
+                out.outbox_unreadable = true;
+                Vec::new()
+            }
+        },
     };
     let by_id: BTreeMap<String, &OutboxItem> = drafts.iter().map(|i| (i.id.clone(), i)).collect();
     let surfaces = SurfaceStore::open_default();
     let scan = mecha_core::runlog::Scan {
+        workspace: scope.workspace.map(Path::to_path_buf),
         include_experiments: mecha_core::experiment::in_experiment_home(),
         ..Default::default()
     };
@@ -819,7 +868,13 @@ pub async fn compare_candidate(
     let pool = collect(
         &Session::default_dir()?,
         &scan,
-        None,
+        Some(
+            scope
+                .sessions
+                .saturating_mul(crate::harness_probe::POOL_MULTIPLE)
+                .max(scope.sessions),
+        ),
+        Some(model),
         &drafts,
         surfaces.as_ref(),
         &mut tally,
@@ -869,7 +924,7 @@ pub async fn compare_candidate(
         };
         budget -= 1;
         let mut outcomes = Vec::new();
-        for (i, (role, policy)) in arms.iter().enumerate() {
+        for (role, policy) in arms.iter() {
             let driven = probe::drive_arm_under(
                 prepared,
                 provider_cfg,
@@ -877,7 +932,7 @@ pub async fn compare_candidate(
                 &prep,
                 prep.system_as_recorded(),
                 Some(pointwise::HORIZON_TURNS),
-                (i == 1).then_some(change),
+                change_for(*role, change),
             )
             .await?;
             match driven {
@@ -902,9 +957,10 @@ pub async fn compare_candidate(
             &mut tally,
         )?;
         if tally.stored.written > written {
-            out.tally
-                .count(comparison.arms[0].outcome, comparison.arms[1].outcome);
-            out.comparisons.push(comparison.id);
+            if let Some((baseline, candidate)) = outcomes_of(&comparison) {
+                out.tally.count(baseline, candidate);
+                out.comparisons.push(comparison.id);
+            }
         }
     }
     out.not_run = empty_reason(&out, seats_held, lost_to_arms);
@@ -1221,6 +1277,7 @@ mod tests {
         let pool = collect(
             &home.join("sessions"),
             &scan(),
+            None,
             None,
             drafts,
             surfaces.as_ref(),
@@ -1651,6 +1708,69 @@ mod tests {
         assert_eq!(
             out.tally.decided,
             mecha_core::candidate::POINTS_PER_CANDIDATE
+        );
+    }
+
+    /// A candidate's point pool is scoped as its whole-session draw is: a
+    /// session recorded under another model, or outside the workspace the
+    /// night was scoped to, contributes no point (found on review).
+    #[test]
+    fn a_candidates_pool_is_scoped_to_the_model_and_workspace_measured() {
+        let guard = crate::testenv::HomeGuard::new("pointwise-scope");
+        let home = guard.dir.clone();
+        session(&home, false);
+        let pool = |model: Option<&str>, workspace: Option<std::path::PathBuf>| {
+            let scan = mecha_core::runlog::Scan {
+                include_tests: true,
+                workspace,
+                ..Default::default()
+            };
+            collect(
+                &home.join("sessions"),
+                &scan,
+                None,
+                model,
+                &[],
+                None,
+                &mut Tally::default(),
+            )
+            .unwrap()
+            .len()
+        };
+        assert_eq!(pool(Some("scripted"), None), 4, "its own model's points");
+        assert_eq!(pool(Some("another-model"), None), 0);
+        assert_eq!(pool(None, Some(home.clone())), 4, "inside the workspace");
+        assert_eq!(pool(None, Some(home.join("elsewhere"))), 0);
+    }
+
+    /// The change goes to the candidate arm, and outcomes are read by role:
+    /// a comparison stored with its arms in the other order still counts
+    /// the baseline as the baseline.
+    #[test]
+    fn the_change_and_the_outcomes_follow_the_role_not_the_position() {
+        let change = mecha_core::harness::parse_change("effort=low").unwrap();
+        assert_eq!(change_for(Role::Candidate, &change), Some(&change));
+        assert_eq!(change_for(Role::WithoutIntervention, &change), None);
+        let swapped = Comparison::new(
+            mecha_core::comparison::Kind::PointSteer,
+            None,
+            None,
+            None,
+            vec![
+                Arm::new(Role::Candidate, None, Outcome::Pass),
+                Arm::new(Role::WithoutIntervention, None, Outcome::Fail),
+            ],
+            Validator::StructuralSteer,
+            Default::default(),
+            "scripted",
+        );
+        assert_eq!(outcomes_of(&swapped), Some((Outcome::Fail, Outcome::Pass)));
+        let mut t = mecha_core::candidate::PointwiseTally::default();
+        let (b, c) = outcomes_of(&swapped).unwrap();
+        t.count(b, c);
+        assert_eq!(
+            t.candidate_only, 1,
+            "the candidate passed where the baseline failed"
         );
     }
 
