@@ -59,9 +59,14 @@ TUI's `/charter` and the web settings page (`3d 16h, past the 24h setpoint`,
 as zero), every run records it as it began, and `mecha doctor` judges stuck
 drafts, unanswered questions and stale requests against *your* setpoint
 rather than its own constant, naming the line. A line that has read past its
-setpoint on each of the last ten runs is a doctor finding too: either the
+setpoint on each of the last ten runs is a doctor finding too — one finding,
+naming the items that were past it: either the
 debt is real, or the setpoint is in the wrong unit — an hour where you meant a
-day — and doctor says both, because it cannot tell. A setpoint of zero is
+day — and doctor says both, because it cannot tell. Such a line is also
+**withdrawn from runs** until it reads within its setpoint again: a line that
+would fire the same way on every run tells a run nothing, so nothing inside a
+run reads it, while every run still records it. `mecha charter` marks it
+`withdrawn from runs`. A setpoint of zero is
 refused at load for the same reason: nothing could ever be within it. The
 sensor's kind, setpoint and reading never enter a prompt; the line's text
 does, exactly as an unsensored line's does. The web editor shows a sensor
@@ -77,6 +82,16 @@ reader does not scan the source), **nothing waiting**, **too little evidence**,
 and an **observed value** with its setpoint comparison. For example, the
 `intervention_rate` sensor needs a corpus scan and is deferred in the per-run
 snapshot. A missing or sparse reading does not count as meeting the setpoint.
+
+A reading is also taken **per item**, beside the level. The level is one
+number — for an age sensor, the oldest item's age — so a single stale draft
+holds it past the setpoint however much else comes and goes. So each reading
+also says how many items wait and how many of them are past the setpoint
+(`3d 4h, past the 24h setpoint; 1 of 4 items past it`), and each run
+records what it did to the line's queue, item by item: how many it added and
+how many it cleared. `mecha sessions health` sets the two side by side for
+each line — how often the level read past its setpoint, and how much the
+per-item reading and the queue moved underneath it.
 
 ## Order is rank
 

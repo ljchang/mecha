@@ -1581,6 +1581,7 @@ mod planning_metadata_tests {
                 charter: vec![crate::planning::Gap {
                     goal: Some(crate::goal::GoalRef::Charter("secret-sensor".into())),
                     remaining: Some(0.876543),
+                    items_over: Some(86_421),
                 }],
                 action: crate::planning::Action::Continue,
                 applied: false,
@@ -1602,6 +1603,7 @@ mod planning_metadata_tests {
             record.contains("secret-sensor"),
             "local recording retains the evidence"
         );
+        assert!(record.contains("86421"), "and the per-item count beside it");
         let loaded: Message = serde_json::from_str(&record).unwrap();
         assert_eq!(loaded, observed);
         let mut future = serde_json::to_value(observed).unwrap();
@@ -1773,15 +1775,46 @@ text = "Leave work better than you found it."
             }),
             ..before.clone()
         };
-        let readings = crate::reading::read_lines(
+        // The items behind those depths, so the per-item readings and the
+        // per-run flows (S5) carry numbers of their own to scan for: the
+        // outbox's oldest draft beside 31,336 fresh ones — 4,155 of them
+        // past the count setpoint — and a run window that cleared 3,794 and
+        // staged 2,468, which is the 30,011 `after` holds.
+        let waiters = |prefix: &str, n: usize, oldest: i64, fresh: i64| {
+            (0..n)
+                .map(|i| {
+                    let age = if i == 0 { oldest } else { fresh };
+                    crate::backlog::Waiter::new(
+                        format!("{prefix}{i}"),
+                        (now - Duration::seconds(age)).to_rfc3339(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let start_items = crate::backlog::Inventory {
+            outbox: Some(waiters("o", 31_337, 299_580, 1_200)),
+            questions: Some(waiters("q", 3, 18_181, 60)),
+            frontdoor: Some(waiters("r", 2, 11_111, 60)),
+            requests_on_owner: Some(waiters("r", 2, 11_111, 60)),
+            ..Default::default()
+        };
+        let mut end_outbox = waiters("o", 31_337 - 3_794, 299_580, 1_200);
+        end_outbox.extend(waiters("n", 2_468, 30, 30));
+        let end_items = crate::backlog::Inventory {
+            outbox: Some(end_outbox),
+            ..start_items.clone()
+        };
+        let mut readings = crate::reading::read_lines(
             &charter,
             &Sources {
                 backlog: &before,
                 requests_on_owner,
                 corpus: CorpusRate::Share(0.4271),
+                items: Some(&start_items),
             },
             now,
         );
+        crate::reading::with_deltas(&mut readings, &start_items, &end_items);
         // Past the setpoint on every line: an `Unread` or `Nothing` reading
         // carries no value, so a line reading one would scan for nothing.
         for r in &readings {
@@ -1793,13 +1826,15 @@ text = "Leave work better than you found it."
             );
         }
         let fold = crate::guilt::with_backlogs(&before, &after, Some(0.2718), now);
+        let mut delta = fold.delta;
+        delta.flow = Some(crate::backlog::Inventory::flows(&start_items, &end_items));
         World {
             charter,
             homeostat: Homeostat {
                 load_avg_1m: Some(13.57),
                 mem_available_kb: Some(24_681_357),
                 backlog: Some(before),
-                backlog_delta: Some(fold.delta),
+                backlog_delta: Some(delta),
                 anticipated_guilt: fold.level,
                 guilt_after_relief: fold.after_relief,
                 charter: Some(readings),
@@ -1871,6 +1906,27 @@ text = "Leave work better than you found it."
                 }
                 floats("reading excess", excess, &mut out);
             }
+            // The per-item form and the run's delta (S5): numbers of their
+            // own, recorded beside the level and never sent.
+            if let Some(items) = &r.items {
+                for n in [items.waiting, items.over, items.unknown]
+                    .into_iter()
+                    .chain(items.oldest_secs)
+                {
+                    out.push(Needle {
+                        what: "per-item reading",
+                        text: n.to_string(),
+                    });
+                }
+            }
+            if let Some(d) = &r.delta {
+                for n in [d.added, d.cleared] {
+                    out.push(Needle {
+                        what: "per-run delta",
+                        text: n.to_string(),
+                    });
+                }
+            }
         }
         for v in [h.anticipated_guilt, h.guilt_after_relief]
             .into_iter()
@@ -1914,6 +1970,8 @@ text = "Leave work better than you found it."
             "reading summary",
             "reading value",
             "reading excess",
+            "per-item reading",
+            "per-run delta",
             "anticipated guilt",
             "backlog delta",
             "valence",
@@ -2266,6 +2324,7 @@ text = "Leave work better than you found it."
                 charter: vec![crate::planning::Gap {
                     goal: Some(crate::goal::GoalRef::Charter("replies".into())),
                     remaining: Some(excess),
+                    items_over: None,
                 }],
                 action: crate::planning::Action::ReviewCommitment,
                 applied: true,

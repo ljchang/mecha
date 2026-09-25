@@ -51,7 +51,9 @@ pub struct CharterModal {
     /// and the prompt never carries it. **Read on its own thread**, like the
     /// doctor modal's restart probe: `read_charter` is three store reads
     /// and, where a line carries `intervention_rate`, a scan of up to
-    /// `doctor::RUNS_WINDOW` transcripts, and `load` runs on the thread that
+    /// `doctor::RUNS_WINDOW` transcripts — and, where any line reads past
+    /// its setpoint, a read back of up to `reading::SATURATION_ROWS_MAX`
+    /// recorded runs for the saturation check — and `load` runs on the thread that
     /// owns the event loop and the draw — inline, `/charter` froze input
     /// for the length of the read, longest on the machine with the most
     /// history (found on review). `poll` moves the answer in.
@@ -414,6 +416,9 @@ mod tests {
             kind: mecha_core::charter::SensorKind::OutboxAge,
             setpoint: "24h".into(),
             reading: mecha_core::reading::Reading::Nothing,
+            items: None,
+            delta: None,
+            withdrawn: false,
         }])
         .unwrap();
         m.poll();

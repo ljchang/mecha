@@ -805,6 +805,8 @@ impl RunStats {
     /// row's silently discarded every later run's, which for a session that
     /// parks a question is the resume that clears it (found on review: the
     /// commitment channel was reading run 1's delta as the session's).
+    /// Each charter reading's per-item `delta` is summed on the same rule,
+    /// joined by sensor, while the reading beside it stays the first run's.
     /// Two consequences to know before reading the two fields together:
     /// `anticipated_guilt` and `guilt_after_relief` stay the first sampling
     /// run's — the level it inherited, and that level folded with *that
@@ -820,6 +822,19 @@ impl RunStats {
                     (Some(a), Some(b)) => Some(a.plus(&b)),
                     (a, b) => a.or(b),
                 };
+                // Each charter line's per-run delta is an act too, summed
+                // on the same rule; the reading beside it stays the first
+                // run's condition. Joined by sensor, so a line whose
+                // setpoint was edited between the runs keeps its own.
+                if let (Some(mine), Some(theirs)) = (&mut mine.charter, &theirs.charter) {
+                    for r in mine.iter_mut() {
+                        if let Some(t) = theirs.iter().find(|t| {
+                            t.line == r.line && t.kind == r.kind && t.setpoint == r.setpoint
+                        }) {
+                            r.delta = crate::backlog::Flow::plus(r.delta, t.delta);
+                        }
+                    }
+                }
             }
             (None, Some(theirs)) => self.homeostat = Some(theirs.clone()),
             _ => {}
@@ -3939,6 +3954,65 @@ mod tests {
         assert_eq!(
             none_first.homeostat.unwrap().backlog_delta.unwrap().net(),
             Some(-1)
+        );
+    }
+
+    /// S5's per-item delta folds like the net one: the flows and each
+    /// charter line's delta are acts, summed across an episode's runs,
+    /// while the reading beside them stays the first run's condition.
+    #[test]
+    fn per_item_flows_and_line_deltas_sum_across_an_episodes_runs() {
+        use crate::backlog::{BacklogDelta, Flow, Flows};
+        use crate::homeostat::Homeostat;
+        use crate::reading::{LineReading, Reading};
+        let run = |added: u64, cleared: u64, reading: Reading| RunStats {
+            homeostat: Some(Homeostat {
+                backlog_delta: Some(BacklogDelta {
+                    outbox: Some(added as i64 - cleared as i64),
+                    flow: Some(Flows {
+                        outbox: Some(Flow { added, cleared }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                charter: Some(vec![LineReading {
+                    line: "replies".into(),
+                    kind: crate::charter::SensorKind::OutboxAge,
+                    setpoint: "24h".into(),
+                    reading,
+                    items: None,
+                    delta: Some(Flow { added, cleared }),
+                    withdrawn: false,
+                }]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Added one and sent one: the net reads zero, the flow does not.
+        let mut folded = run(1, 1, Reading::Nothing);
+        folded.merge(&run(2, 0, Reading::Unread));
+        let h = folded.homeostat.unwrap();
+        let d = h.backlog_delta.unwrap();
+        assert_eq!(d.outbox, Some(2));
+        assert_eq!(
+            d.flow.unwrap().outbox,
+            Some(Flow {
+                added: 3,
+                cleared: 1
+            })
+        );
+        let line = &h.charter.unwrap()[0];
+        assert_eq!(
+            line.delta,
+            Some(Flow {
+                added: 3,
+                cleared: 1
+            })
+        );
+        assert_eq!(
+            line.reading,
+            Reading::Nothing,
+            "a condition: the first run's"
         );
     }
 }

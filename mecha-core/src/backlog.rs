@@ -12,6 +12,9 @@
 //! and how long the oldest has waited, and every reader on top decides what
 //! that means. Same division `runlog` keeps — **the module counts and never
 //! judges**, because what counts as too much depends on who is asking.
+//! [`Backlog::survey`] hands back the items each depth was counted from
+//! ([`Inventory`], in memory only), which is what a per-item reading and a
+//! per-item delta ([`Flow`]) are computed from (S5).
 //!
 //! ## Two absences that are not the same, and never collapse
 //!
@@ -65,6 +68,23 @@ fn is_zero(n: &usize) -> bool {
     *n == 0
 }
 
+/// One store's depth and the items it was counted from.
+type Counted = (Depth, Vec<Waiter>);
+
+fn split(counted: Option<Counted>) -> (Option<Depth>, Option<Vec<Waiter>>) {
+    match counted {
+        Some((depth, items)) => (Some(depth), Some(items)),
+        None => (None, None),
+    }
+}
+
+fn split_pair(pair: Option<(Counted, Counted)>) -> (Option<Counted>, Option<Counted>) {
+    match pair {
+        Some((a, b)) => (Some(a), Some(b)),
+        None => (None, None),
+    }
+}
+
 impl Depth {
     fn of<'a>(waiting: usize, stamps: impl IntoIterator<Item = &'a str>) -> Depth {
         Depth {
@@ -101,6 +121,148 @@ pub struct Waiting {
     pub unreadable: usize,
 }
 
+/// One waiting item: the id its store knows it by, and the stamp it has
+/// waited since (RFC3339, as the store wrote it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Waiter {
+    pub id: String,
+    pub since: String,
+}
+
+impl Waiter {
+    pub fn new(id: impl Into<String>, since: impl Into<String>) -> Waiter {
+        Waiter {
+            id: id.into(),
+            since: since.into(),
+        }
+    }
+}
+
+/// Every waiting item, per store, from the same read the [`Backlog`]'s
+/// depths were counted from (`docs/APPRAISAL-WIRING-DESIGN.md` S5).
+///
+/// **In memory only, never recorded.** A run's record carries the counts
+/// ([`Depth`]), the per-item readings (`reading::Items`) and what the run
+/// moved ([`Flow`]); the list itself is what those are computed *from*, and
+/// writing every id into every run row would grow the record with the
+/// queue. Each field is `None` exactly where the matching depth is — the
+/// store could not be read — never an empty list standing in for an
+/// unknown one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Inventory {
+    pub outbox: Option<Vec<Waiter>>,
+    pub questions: Option<Vec<Waiter>>,
+    /// Every open request, aged from `created_at` — [`Backlog::frontdoor`]'s
+    /// set.
+    pub frontdoor: Option<Vec<Waiter>>,
+    /// The requests waiting on the owner, aged from `Record::arrived_at` —
+    /// the owner-facing depth's set, which the `request_closure` sensor
+    /// reads.
+    pub requests_on_owner: Option<Vec<Waiter>>,
+    pub proposals: Option<Vec<Waiter>>,
+    pub candidates: Option<Vec<Waiter>>,
+}
+
+/// One read of every store: the depths, the owner-facing request depth, and
+/// the items both were counted from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Survey {
+    pub backlog: Backlog,
+    pub requests_on_owner: Option<Depth>,
+    pub items: Inventory,
+}
+
+/// What one run did to one queue, item by item: how many ids were waiting
+/// at the end that were not at the start, and how many were waiting at the
+/// start and are not at the end.
+///
+/// **The per-item delta, beside the net one.** [`BacklogDelta`]'s per-store
+/// numbers are differences of two levels, so a run that staged one draft
+/// while the owner sent another reads `0` — the same as a run that did
+/// nothing. Two counts keep those apart. `cleared` counts every departure,
+/// a give-up included: whether a departure kept a commitment is
+/// the `given_up` count's question on [`Depth`] and stays there, because the net delta
+/// once read a give-up as clearance (found on review).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Flow {
+    pub added: u64,
+    pub cleared: u64,
+}
+
+impl Flow {
+    /// The flow between two reads of one store: `None` when either could
+    /// not be read — a delta against an unknown is not zero.
+    pub fn between(before: Option<&[Waiter]>, after: Option<&[Waiter]>) -> Option<Flow> {
+        let (before, after) = (before?, after?);
+        let was: HashSet<&str> = before.iter().map(|w| w.id.as_str()).collect();
+        let is: HashSet<&str> = after.iter().map(|w| w.id.as_str()).collect();
+        Some(Flow {
+            added: is.difference(&was).count() as u64,
+            cleared: was.difference(&is).count() as u64,
+        })
+    }
+
+    /// Did anything move — an item added, or one cleared?
+    pub fn moved(&self) -> bool {
+        self.added > 0 || self.cleared > 0
+    }
+
+    /// Two runs' flows, summed — `Some` wherever either run could read the
+    /// store, on [`BacklogDelta::plus`]'s fold.
+    pub fn plus(a: Option<Flow>, b: Option<Flow>) -> Option<Flow> {
+        match (a, b) {
+            (Some(a), Some(b)) => Some(Flow {
+                added: a.added + b.added,
+                cleared: a.cleared + b.cleared,
+            }),
+            (a, b) => a.or(b),
+        }
+    }
+}
+
+/// [`Flow`] per store: the backlog's per-item delta.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Flows {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbox: Option<Flow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub questions: Option<Flow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frontdoor: Option<Flow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposals: Option<Flow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidates: Option<Flow>,
+}
+
+impl Flows {
+    fn plus(&self, other: &Flows) -> Flows {
+        Flows {
+            outbox: Flow::plus(self.outbox, other.outbox),
+            questions: Flow::plus(self.questions, other.questions),
+            frontdoor: Flow::plus(self.frontdoor, other.frontdoor),
+            proposals: Flow::plus(self.proposals, other.proposals),
+            candidates: Flow::plus(self.candidates, other.candidates),
+        }
+    }
+}
+
+impl Inventory {
+    /// What a run did to each queue, id by id, between two reads.
+    pub fn flows(before: &Inventory, after: &Inventory) -> Flows {
+        let f = |a: &Option<Vec<Waiter>>, b: &Option<Vec<Waiter>>| {
+            Flow::between(a.as_deref(), b.as_deref())
+        };
+        Flows {
+            outbox: f(&before.outbox, &after.outbox),
+            questions: f(&before.questions, &after.questions),
+            frontdoor: f(&before.frontdoor, &after.frontdoor),
+            proposals: f(&before.proposals, &after.proposals),
+            candidates: f(&before.candidates, &after.candidates),
+        }
+    }
+}
+
 impl Backlog {
     /// Read every mecha-owned store. Best-effort per store, like doctor: one
     /// unreadable store never suppresses the other four.
@@ -121,6 +283,14 @@ impl Backlog {
     /// against. `None` when the store could not be read, on the same rule
     /// as every depth here.
     pub fn read_with_owner_requests() -> (Backlog, Option<Depth>) {
+        let survey = Self::survey();
+        (survey.backlog, survey.requests_on_owner)
+    }
+
+    /// [`Backlog::read_with_owner_requests`], and the items every depth was
+    /// counted from — one read of each store, so a per-item reading and the
+    /// level beside it can never describe two different states of a queue.
+    pub fn survey() -> Survey {
         // The outbox is read once and its sent ids handed to the front
         // door's reader: whether a closed request was a give-up is a join
         // (below), and the join must not see a different outbox than the
@@ -133,20 +303,31 @@ impl Backlog {
                 .map(|i| i.id.as_str())
                 .collect()
         });
-        let (frontdoor, on_owner) = match Self::read_frontdoor(sent.as_ref()) {
-            Some((open, on_owner)) => (Some(open), Some(on_owner)),
-            None => (None, None),
-        };
-        (
-            Backlog {
-                outbox: outbox_items.as_deref().map(Self::outbox_depth),
-                questions: Self::read_questions(),
+        let (open, on_owner) = split_pair(Self::read_frontdoor(sent.as_ref()));
+        let (frontdoor, frontdoor_items) = split(open);
+        let (requests_on_owner, on_owner_items) = split(on_owner);
+        let (outbox, outbox_items) = split(outbox_items.as_deref().map(Self::outbox_depth));
+        let (questions, questions_items) = split(Self::read_questions());
+        let (proposals, proposals_items) = split(Self::read_proposals());
+        let (candidates, candidates_items) = split(Self::read_candidates());
+        Survey {
+            backlog: Backlog {
+                outbox,
+                questions,
                 frontdoor,
-                proposals: Self::read_proposals(),
-                candidates: Self::read_candidates(),
+                proposals,
+                candidates,
             },
-            on_owner,
-        )
+            requests_on_owner,
+            items: Inventory {
+                outbox: outbox_items,
+                questions: questions_items,
+                frontdoor: frontdoor_items,
+                requests_on_owner: on_owner_items,
+                proposals: proposals_items,
+                candidates: candidates_items,
+            },
+        }
     }
 
     fn read_outbox_items() -> Option<Vec<crate::outbox::OutboxItem>> {
@@ -159,16 +340,23 @@ impl Backlog {
         store.items().ok()
     }
 
-    fn outbox_depth(items: &[crate::outbox::OutboxItem]) -> Depth {
+    fn outbox_depth(items: &[crate::outbox::OutboxItem]) -> Counted {
         let pending: Vec<_> = items.iter().filter(|i| i.status == "pending").collect();
         let rejected = items.iter().filter(|i| i.status == "rejected").count();
-        Depth::of(pending.len(), pending.iter().map(|i| i.created_at.as_str())).given_up(rejected)
+        (
+            Depth::of(pending.len(), pending.iter().map(|i| i.created_at.as_str()))
+                .given_up(rejected),
+            pending
+                .iter()
+                .map(|i| Waiter::new(&i.id, &i.created_at))
+                .collect(),
+        )
     }
 
-    fn read_questions() -> Option<Depth> {
+    fn read_questions() -> Option<Counted> {
         // A store that has never existed is empty, not unreadable.
         let Some(store) = QuestionStore::open_existing_default() else {
-            return Some(Depth::default());
+            return Some(Counted::default());
         };
         let items = store.items().ok()?;
         let open: Vec<_> = items.iter().filter(|q| q.is_open()).collect();
@@ -176,20 +364,43 @@ impl Backlog {
             .iter()
             .filter(|q| q.status == crate::questions::ABANDONED)
             .count();
-        Some(Depth::of(open.len(), open.iter().map(|q| q.asked_at.as_str())).given_up(abandoned))
+        Some((
+            Depth::of(open.len(), open.iter().map(|q| q.asked_at.as_str())).given_up(abandoned),
+            open.iter()
+                .map(|q| Waiter::new(&q.id, &q.asked_at))
+                .collect(),
+        ))
     }
 
     /// Every open request, and the owner-facing subset, from one read.
-    fn read_frontdoor(sent: Option<&HashSet<&str>>) -> Option<(Depth, Depth)> {
+    fn read_frontdoor(sent: Option<&HashSet<&str>>) -> Option<(Counted, Counted)> {
         // Like `read_questions`: a front door that has never existed is
         // empty, not unreadable — and `open_default` would *create* it,
         // twice per run at both ends of `Homeostat::finish`, and read a
         // failed creation as an unknown depth (found on review).
         let Some(store) = Frontdoor::open_existing_default() else {
-            return Some((Depth::default(), Depth::default()));
+            return Some(Default::default());
         };
         let records = store.records().ok()?;
-        Some(Self::frontdoor_depths(&records, sent))
+        let (open, on_owner) = Self::frontdoor_depths(&records, sent);
+        let (open_items, on_owner_items) = Self::frontdoor_waiters(&records);
+        Some(((open, open_items), (on_owner, on_owner_items)))
+    }
+
+    /// The items behind [`Self::frontdoor_depths`]'s two depths, each aged
+    /// from the stamp its depth uses, keyed by the request's `seq`.
+    fn frontdoor_waiters(records: &[frontdoor::Record]) -> (Vec<Waiter>, Vec<Waiter>) {
+        let open = records
+            .iter()
+            .filter(|r| frontdoor::counts_as_open(&r.state))
+            .map(|r| Waiter::new(r.seq.to_string(), r.created_at.as_str()))
+            .collect();
+        let on_owner = records
+            .iter()
+            .filter(|r| frontdoor::waiting_on_owner(&r.state))
+            .map(|r| Waiter::new(r.seq.to_string(), r.arrived_at()))
+            .collect();
+        (open, on_owner)
     }
 
     /// The two front-door depths over a set of records: every request that
@@ -261,31 +472,37 @@ impl Backlog {
             .count()
     }
 
-    fn read_proposals() -> Option<Depth> {
+    fn read_proposals() -> Option<Counted> {
         // The same rule as the three owner-facing readers: a store that
         // has never existed is empty, and a read creates nothing —
         // `LearningStore::open` runs `git init` (found on review, after
         // the test below asserted the rule for three of five readers).
         let Some(store) = LearningStore::open_existing_default() else {
-            return Some(Depth::default());
+            return Some(Counted::default());
         };
         let proposals = store.proposals().ok()?;
         let pending: Vec<_> = proposals.iter().filter(|p| p.status == "pending").collect();
-        Some(Depth::of(
-            pending.len(),
-            pending.iter().map(|p| p.created_at.as_str()),
+        Some((
+            Depth::of(pending.len(), pending.iter().map(|p| p.created_at.as_str())),
+            pending
+                .iter()
+                .map(|p| Waiter::new(&p.id, &p.created_at))
+                .collect(),
         ))
     }
 
-    fn read_candidates() -> Option<Depth> {
+    fn read_candidates() -> Option<Counted> {
         let Some(store) = HarnessStore::open_existing_default() else {
-            return Some(Depth::default());
+            return Some(Counted::default());
         };
         let candidates = store.all().ok()?;
         let staged: Vec<_> = candidates.iter().filter(|c| c.pending()).collect();
-        Some(Depth::of(
-            staged.len(),
-            staged.iter().map(|c| c.created_at.as_str()),
+        Some((
+            Depth::of(staged.len(), staged.iter().map(|c| c.created_at.as_str())),
+            staged
+                .iter()
+                .map(|c| Waiter::new(&c.id, &c.created_at))
+                .collect(),
         ))
     }
 
@@ -355,6 +572,9 @@ impl Backlog {
             proposals: d(&before.proposals, &after.proposals),
             candidates: d(&before.candidates, &after.candidates),
             given_up: (!given_up.is_empty()).then(|| given_up.iter().sum()),
+            // Two depths cannot say which ids moved; a caller holding both
+            // reads' items sets this from `Inventory::flows`.
+            flow: None,
         }
     }
 }
@@ -384,6 +604,13 @@ pub struct BacklogDelta {
     /// three could be read at both ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub given_up: Option<i64>,
+    /// The same run's change item by item — ids added and ids cleared per
+    /// store ([`Flow`]) — beside the net numbers above, which cannot tell a
+    /// run that did nothing from one that added as much as it cleared.
+    /// `None` on a row written before the field, or by a caller that held
+    /// only the two depths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow: Option<Flows>,
 }
 
 impl BacklogDelta {
@@ -405,6 +632,10 @@ impl BacklogDelta {
             proposals: f(self.proposals, other.proposals),
             candidates: f(self.candidates, other.candidates),
             given_up: f(self.given_up, other.given_up),
+            flow: match (&self.flow, &other.flow) {
+                (Some(a), Some(b)) => Some(a.plus(b)),
+                (a, b) => a.or(*b),
+            },
         }
     }
 
@@ -567,6 +798,7 @@ mod tests {
             proposals: Some(-3),
             candidates: Some(-5),
             given_up: None,
+            flow: None,
         };
         assert_eq!(d.net(), Some(-9));
         assert_eq!(d.owner_facing_net(), Some(-1));
@@ -766,6 +998,90 @@ mod tests {
         let torn = vec![record(4, frontdoor::EXTRACTED, "2026-08-10T00:00:00Z", "")];
         let (_, on_owner) = Backlog::frontdoor_depths(&torn, None);
         assert_eq!(on_owner.oldest.as_deref(), Some("2026-08-10T00:00:00Z"));
+    }
+
+    /// The per-item delta (S5): a run that staged one draft while another
+    /// was sent moved the queue both ways, which the net count reads as
+    /// nothing; and a store unreadable at either end has no flow at all.
+    #[test]
+    fn a_flow_counts_ids_added_and_cleared_where_the_net_reads_nothing() {
+        let w = |ids: &[&str]| -> Vec<Waiter> {
+            ids.iter()
+                .map(|id| Waiter::new(*id, "2026-09-01T00:00:00Z"))
+                .collect()
+        };
+        let before = Inventory {
+            outbox: Some(w(&["a", "b"])),
+            questions: Some(w(&["q"])),
+            frontdoor: None,
+            ..Default::default()
+        };
+        let after = Inventory {
+            outbox: Some(w(&["b", "c"])),
+            questions: Some(w(&["q"])),
+            frontdoor: Some(w(&[])),
+            ..Default::default()
+        };
+        let flows = Inventory::flows(&before, &after);
+        assert_eq!(
+            flows.outbox,
+            Some(Flow {
+                added: 1,
+                cleared: 1
+            })
+        );
+        assert!(flows.outbox.unwrap().moved());
+        assert_eq!(flows.questions, Some(Flow::default()));
+        assert!(!flows.questions.unwrap().moved());
+        assert_eq!(flows.frontdoor, None, "unreadable at the start");
+        assert_eq!(flows.proposals, None);
+        // Summed across runs on the net delta's fold.
+        let d = BacklogDelta {
+            flow: Some(flows),
+            ..Default::default()
+        };
+        let both = d.plus(&d);
+        assert_eq!(
+            both.flow.unwrap().outbox,
+            Some(Flow {
+                added: 2,
+                cleared: 2
+            })
+        );
+        assert_eq!(
+            BacklogDelta::default().plus(&d).flow,
+            Some(flows),
+            "a row from before the field takes the other's"
+        );
+        // The wire form omits an absent flow, so an old reader sees the row
+        // it always did.
+        let json = serde_json::to_string(&BacklogDelta::default()).unwrap();
+        assert_eq!(json, "{}");
+    }
+
+    /// The survey's items are the depths' items: counted in the same read,
+    /// the same ids a per-item reading names.
+    #[test]
+    fn the_survey_holds_the_items_each_depth_was_counted_from() {
+        let home = crate::work::tests::HomeGuard::new();
+        let outbox = OutboxStore::open(home.dir().join("outbox")).unwrap();
+        let a = outbox
+            .stage_by_harness("mail_send", serde_json::json!({}))
+            .unwrap();
+        let b = outbox
+            .stage_by_harness("mail_send", serde_json::json!({}))
+            .unwrap();
+        outbox.resolve(&b.id, "sent", None).unwrap();
+        let survey = Backlog::survey();
+        assert_eq!(survey.backlog.outbox.as_ref().unwrap().waiting, 1);
+        let items = survey.items.outbox.unwrap();
+        assert_eq!(items, vec![Waiter::new(&a.id, &a.created_at)]);
+        assert_eq!(
+            survey.items.questions,
+            Some(Vec::new()),
+            "empty, not unread"
+        );
+        assert_eq!(survey.items.requests_on_owner, Some(Vec::new()));
     }
 
     /// A read creates nothing (found on review, which noted nothing
