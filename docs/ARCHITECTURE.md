@@ -4061,6 +4061,46 @@ when touching it:
   with the switch of new predictions owed as a follow-up PR (the design
   doc's S7 entry); the workflow store's commitments are not yet read
   for guilt — no charter kind and no doctor constant gives them a patience.
+- **The situation brief is recorded, never sent (B1, built as 1h).**
+  `brief::SituationBrief` is what situation a run started in — the goal
+  chain, the board as counts and pointers, each pending commitment, local
+  time and quiet hours, seats, other runs in flight, `/slots` occupancy, a
+  voice call, the budget — assembled with no model call by
+  `brief::assemble_for_run` on the delegated, trigger and web doors (after
+  the anchor is seeded and the budget set) and carried on `RunContext::brief`
+  to `RunStats::brief`. **The loop copies it and never reads it**, so no
+  request is built from it, and the G4 scan below fails if any field, pointer
+  or count of it reaches either encoder; phase 3 delivers it into the first
+  user turn as words, never the prefix. Five things to keep. **The board is
+  read by the harness** (`setup::read_board_for_brief`, one `kg_task_list`
+  through the run's own surface whose answer never enters the conversation)
+  **and reduced by `brief::board_of` to counts and task ids** — no row's
+  name, no `waiting_on` (a person's name), no id that is not one token; a
+  model fetching the same rows through `kg_*` would arm taint. **Every
+  reader that cannot run says so** (`Unread { why }`, in the harness's own
+  words, never a server's error text), a run with no anchor records
+  `GoalChain::NoAnchor`, and no absent file reads as a setting: no
+  `attention.toml` is `Quiet::Unset`, not the digest's 22–08 UTC default,
+  and a seat pool or marker directory that exists but cannot be read is
+  unread, which is why the brief reads through `Permits::read_live` and
+  `RunMarkers::live_names` rather than `live()`, whose empty list serves a
+  caller deciding whether to start. **The commitments come through the 1f
+  accessors** (`Homeostat::in_run_commitments`, withdrawn stores named),
+  never the commitment types another lane is reshaping. **Each field is
+  lenient on its own** (`brief::lenient`), so a variant a later build adds
+  costs that field, and `SituationBrief::fields` tells the readout read,
+  unread and missing apart — `situation_brief` in `sessions health`, with
+  runs that carry no brief counted by surface. **The web door re-samples
+  the homeostat per turn**: it had inherited the snapshot `serve` took when
+  it built its agent, so every web turn recorded the backlog of the morning
+  the daemon started and a delta against it (found building 1h; the TUI,
+  `chat`, Slack and the unhosted voice slots still hold one snapshot per
+  process). Two readers are new: `/slots` for a `kind = "local"` provider,
+  unread (never idle) on a renamed field, an empty list or `--no-slots`, on
+  `scripts/model-idle.sh`'s rule; and a voice call, from the stamp the
+  facade writes on every spoken turn (`brief::VoicePresence`, under
+  `runs/`), read as a call within `VOICE_CALL_WINDOW_SECS` — the facade sees
+  utterances, not calls, so five minutes is argued, not measured.
 - **The doctor reads against the owner's number, and names the line.**
   `doctor::Patience` is the harness constant (48h drafts, 24h questions, 72h
   requests) or the setpoint of the charter line whose sensor watches that
@@ -4564,8 +4604,14 @@ to catch it out of both, so the run test's silence is a finding. Budget facts �
 turns left, context remaining — are R21's permitted numbers and are not scanned
 for; the diagnostician's and the appraiser's quarantined briefs carry numbers by
 design and are not run requests. The scan only sees values the fixture holds:
-a new sensor, or a new path that could print one (a status line, the situation
-brief), extends the fixture's `world()` in the same change.
+a new sensor, or a new path that could print one (a status line), extends the
+fixture's `world()` in the same change. The situation brief did (1h): `world()`
+carries one built by the real producers over a 2,917-row board, the run
+carries it on `RunContext::brief`, the test asserts it lands on the record
+whole, and the scan adds its JSON, every field's JSON, its pointers, its
+counts, its local time and its voice reading — leaving out the zone name and
+weekday, which `date_context` already sends. When phase 3 delivers the brief,
+this scan is where its words are checked for numbers R21 does not allow.
 
 **Context retrieval preserves scope and provenance.** `goal_context` is private,
 on demand, and bounded to four active applicable rules and two historical examples.

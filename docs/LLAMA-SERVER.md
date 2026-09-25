@@ -150,7 +150,10 @@ whatever placement decision is made at load is never revisited.
 
 ## Flags that cost something to learn
 
-- **`/slots` is read by a scheduled job.** `scripts/model-idle.sh` (the
+- **`/slots` is read by a scheduled job, and by the situation brief.**
+  `brief::read_slots` records occupancy on delegated, trigger and web runs
+  against a `kind = "local"` provider, unread (never idle) on the same
+  shapes the script refuses. `scripts/model-idle.sh` (the
   daytime mail sweep's `ExecCondition=`) asks `GET /slots` whether any slot
   is processing before it lets background work onto the model. llama-server
   serves it by default (`llama-server --help`, the build installed here on
