@@ -31,7 +31,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// How bad a finding is. Declared broken-first so the derived order is the
 /// display order: what is broken outranks what merely wants attention.
@@ -184,6 +184,27 @@ fn owner_setpoint(
 /// its registered parent and edit `~/.mecha` directly, and a sandbox that
 /// mounts the mecha home hands a confined command the shell registry and the
 /// closure store (`APPRAISAL-WIRING-DESIGN.md` 1b-2).
+/// `path` with its longest existing prefix canonicalized and the rest kept —
+/// so a configured path that does not exist yet compares on the same side of
+/// a symlink as the home does (macOS's `/var` → `/private/var` made a missing
+/// `closures/` under an existing home never match it; found in CI on #294).
+fn resolve_existing_prefix(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut at = path;
+    loop {
+        if let Ok(real) = at.canonicalize() {
+            return rest.iter().rev().fold(real, |p: PathBuf, c| p.join(c));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                at = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
 /// The directories under the mecha home the closure guard reads or writes:
 /// the shell registry (`runs/shells`), the closure store, and the task-run
 /// and trigger-run markers.
@@ -197,14 +218,14 @@ pub fn check_shell_confinement(
     if sandbox.kind == crate::sandbox::Backend::None {
         return out;
     }
-    let home = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+    let home = resolve_existing_prefix(home);
     for (how, path) in sandbox
         .writable
         .iter()
         .map(|p| ("writable", p))
         .chain(sandbox.readable.iter().map(|p| ("readable", p)))
     {
-        let path = path.canonicalize().unwrap_or_else(|_| path.clone());
+        let path = resolve_existing_prefix(path);
         // Only what the closure guard reads counts: a mount that contains,
         // or sits inside, one of those directories. `work/` (the run
         // workspace root, which every backend mounts anyway) and `bundles/`
@@ -3995,6 +4016,35 @@ mod tests {
             .expect("names the one verb that still opens it");
         assert_eq!(remedy.argv, ["mecha", "trigger", "edit", "morning"]);
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A configured path that does not exist yet, reached through a symlink
+    /// the home resolves past, still counts — macOS's `/var` → `/private/var`
+    /// hid it in CI; a symlinked home shows the same thing on Linux.
+    #[cfg(unix)]
+    #[test]
+    fn a_mount_through_a_symlink_to_a_missing_guard_dir_is_still_reported() {
+        use crate::sandbox::{Backend, SandboxConfig};
+        let base = std::env::temp_dir().join(format!(
+            "mecha-doctor-symlink-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let real = base.join("real");
+        std::fs::create_dir_all(real.join("home")).unwrap();
+        std::os::unix::fs::symlink(&real, base.join("link")).unwrap();
+        let home = base.join("link").join("home");
+        let confined = SandboxConfig {
+            kind: Backend::Bwrap,
+            readable: vec![home.join("closures")],
+            ..SandboxConfig::default()
+        };
+        let f = check_shell_confinement(&confined, &home);
+        assert_eq!(f.len(), 1, "{f:#?}");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

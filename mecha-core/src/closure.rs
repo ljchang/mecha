@@ -315,10 +315,16 @@ const OWNERS_ACT: &str = "closing or reopening a task is the owner's act — clo
 ///    without one is either a registration the harness could not write
 ///    (which the `shell` tool refuses to run without) or a forgery.
 ///
-/// An MCP server and everything it spawns meet rule 5: the harness stamps
-/// every server `unknown` (`mcp::McpClient::build_command`) and never
-/// registers one, because a server outlives any one run's posture (review
-/// of #293).
+/// An MCP server and what it spawns *with its environment* meet rule 5: the
+/// harness stamps every server `unknown` (`mcp::McpClient::build_command`)
+/// and never registers one, because a server outlives any one run's posture
+/// (review of #293). That is the one place the variable is still
+/// load-bearing: a server is spawned by the agent process, not by a
+/// registered shell, so a child it starts with a cleared environment reads
+/// `(NotRegistered, NotInRun)` — rule 4, the owner — with no detaching
+/// needed (review of #294). A server is third-party code the owner chose to
+/// run; confining it (`sandbox = true`, with the mecha home unmounted) is
+/// what takes the store out of its reach.
 ///
 /// **What this does not close, named.** A command that detaches from its
 /// shell, so it is reparented away from the registered pid, *and* clears

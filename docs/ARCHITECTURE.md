@@ -2244,8 +2244,13 @@ now makes the move one recorded event:
   the config's `env`, and through `Sandbox::wrap_argv_with_env` when
   confined) and never registered: it outlives the run that started it and
   serves whichever run holds the agent, so no run's posture is true of it,
-  and anything it spawns meets rule 5 — a variable with no registration —
-  and is refused (review of #293).
+  and anything it spawns with its environment meets rule 5 — a variable
+  with no registration — and is refused (review of #293). **This is the
+  one place the variable still carries the guard:** a server is spawned by
+  the agent, never by a registered shell, so a child it starts with a
+  cleared environment reads as the owner's terminal (rule 4) without
+  detaching (review of #294). Confining the server, with the mecha home
+  unmounted, is what closes it.
 - **The harness's own board moves never cross the line either way**
   (`tasks::harness_step`): `move_task` refuses a closing status and leaves
   a closed row closed, so a task the owner closes while its run is in
