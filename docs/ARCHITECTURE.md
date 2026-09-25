@@ -4330,9 +4330,16 @@ when touching it:
   brief in the transcript** (user-role only), where the calendar checks for
   its block anywhere — a situation can return where a date cannot. So one
   run folds once; a long-lived conversation (a web chat, handed a fresh
-  brief per turn) folds only when the words changed, and bands make an
-  unchanged situation the same bytes; and every fold is append-only, so
-  each request stays a prefix of the next. **Across a compaction cut** the
+  brief per turn) folds only when the words changed — time, voice, context
+  used and model-server occupancy are bands, so their drift re-folds
+  nothing, while the board, seat holders and runs in flight are exact, so a
+  task starting or ending re-folds (a change a run acts on; review of #309
+  banded `/slots`, which had re-folded on every occupancy wobble); and
+  every fold is append-only, so each request stays a prefix of the next.
+  Seat holders and run names are cut to one token each in the words, on
+  `GoalRef::from_str`'s rule — the graph server mints task ids, which reach
+  a permit and a marker unparsed, and a newline would have forged a line
+  in the harness's block (review of #309); the record keeps them verbatim. **Across a compaction cut** the
   brief is the calendar reference's twin: `compact::rebuild` strips it from
   the head, the summariser's input drops it outright (a summary asked for
   "the specific values" would copy its counts into the head as prose no
