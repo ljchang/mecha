@@ -1285,6 +1285,15 @@ impl TodoTool {
         Plan { goal, items }
     }
 
+    /// Drop the plan kept for `workspace`. An incognito chat's plan lives
+    /// only here, in memory; closing the chat must not leave it behind.
+    pub fn forget_in(&self, workspace: &Path) {
+        self.lists
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(workspace);
+    }
+
     /// One run's list, for a UI that wants to render progress live.
     ///
     /// An absent key is an empty list rather than an error: a conversation

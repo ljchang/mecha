@@ -1,5 +1,16 @@
 # Incognito chat — design
 
+> **Status (2026-09-25):** step 0 merged as #313; steps 1–3 (the server side:
+> the session with no transcript, the room in RAM, the allowlist, local only)
+> built in the PR after it; the page (step 5), the image server's cleanup
+> (step 4) and mecha-graph's unrecorded reads (step 7) are next. Three
+> deliberate differences from the text below: §6.1's "own provider" is a
+> refusal at the door when the provider is not a loopback server without
+> fallbacks (this machine has none, and a refusal cannot silently degrade);
+> rooms sit one level deeper, per mecha home, so a second `serve` cannot
+> sweep this one's; and `image_generate` is withheld until step 4 lands.
+> `ARCHITECTURE.md` §Incognito chat describes what is built.
+
 **2026-09-25.** One question: *how does a web chat leave no trace once it is
 closed — not the transcript, not a title, not a count, not a file, not a log
 line — while still being able to read the owner's data and search the web?*
@@ -104,7 +115,7 @@ mark, not in this design.
 | Mail and calendar reads | `mecha-mail` keeps nothing on reads; the provider's API sees the request | Allowed (R3; §1 limit) |
 | `web_search`, `web_open` | The query reaches SearXNG (which forwards upstream), Exa or Tavily | Allowed with notice (R4) |
 | `http_fetch` | The request reaches whatever host the model named | Allowed, and refused by the interlock once the chat holds private and untrusted content (§5.1) |
-| Hooks | `pre_tool`/`post_tool` receive tool input and output; `session_end` runs `distill` | Not run |
+| Hooks | `pre_tool`/`post_tool` receive tool input and output; `session_end` runs `distill` | Not run — and a configured `pre_tool` hook refuses the chat, since skipping a deny gate would widen it |
 
 ### 3.4 Other processes
 
@@ -200,7 +211,9 @@ Allowed:
 - `web_search` / `web_open` / `http_fetch` (R4);
 - `image_generate` (§6.3);
 - the builtins, with `fs_*` and `shell` jailed to the tmpfs folder and still
-  subject to the chat's read-only / ask / allow toggle.
+  subject to the chat's read-only / ask / allow toggle — `shell` only where
+  the sandbox keeps its writes there (`bwrap` or `docker`, no extra
+  `writable` paths); elsewhere it is withheld.
 
 Everything else is withheld — which today means outbox-routed tools, every
 MCP tool without `readOnlyHint`, the graph's tools (reads included, until §5.2
