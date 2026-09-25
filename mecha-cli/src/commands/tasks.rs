@@ -1037,10 +1037,12 @@ async fn find_task_in(
         // arrive is unknown, not absent — `rows_under`'s reading of the same
         // envelope. Refusing is right (an unclassifiable change cannot be
         // recorded); calling it "no such task" was not (found on review).
+        // Worded for every caller — `set`'s pre-read and `move_task`'s, where
+        // no status change was asked for — and each adds its own context
+        // (review of #293).
         None if board["truncated"].as_bool() == Some(true) => anyhow::bail!(
             "task {task_id} is not in the board's answer, which the server truncated — \
-             it may exist past the cut, so this status change cannot be classified \
-             and was refused"
+             it may exist past the cut, so it could not be read and nothing was changed"
         ),
         None => anyhow::bail!("no such task: {task_id} — `mecha tasks list` shows the board"),
     }
