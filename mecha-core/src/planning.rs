@@ -95,14 +95,23 @@ pub struct Gap {
     pub goal: Option<GoalRef>,
     /// Remaining sensor discrepancy — the level's `excess`, recorded as
     /// evidence; unknown is not zero. No causal credit. Not what the action
-    /// is decided on where the line has a per-item reading (`items_over`).
+    /// is decided on where the line has a per-item reading (`items_over`)
+    /// or per-commitment guilt (`guilt`).
     pub remaining: Option<f32>,
     /// How many of the line's items were past the setpoint as the run
     /// began (`reading::Items::over`) — the per-item form the action is
-    /// decided on (S5). `None` for a kind with no items and on a record
-    /// from before the field.
+    /// decided on (S5) for a count kind. `None` for a kind with no items
+    /// and on a record from before the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items_over: Option<u64>,
+    /// The largest guilt among the pending commitments whose patience this
+    /// line sets (`guilt::StoreGuilt::max`, S7) — recorded beside the
+    /// decision, which is made per commitment: an age kind's line is a
+    /// commitment to review when any commitment it weighs is past its
+    /// patience. `None` for a line that sets no store's patience, where
+    /// the maximum is unknown, and on a record from before the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guilt: Option<f32>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -199,6 +208,7 @@ impl Decision {
         turns_left: Option<u64>,
         verified: &std::collections::HashSet<String>,
         applied: bool,
+        commitments: Option<&[crate::guilt::StoreGuilt]>,
     ) -> Self {
         use crate::tool::todo::Status;
         let open_steps = plan
@@ -216,6 +226,15 @@ impl Decision {
                     && !verified.contains(&verification_key(plan.goal.as_ref(), &i.content))
             })
             .count();
+        // The commitments whose patience a line sets — exactly one store per
+        // age kind's line (`doctor::Patience::for_store`), none for a count
+        // or a rate.
+        let weighed = |line: &str| {
+            commitments
+                .unwrap_or_default()
+                .iter()
+                .find(|s| s.line.as_deref() == Some(line))
+        };
         let charter: Vec<Gap> = readings
             .unwrap_or_default()
             .iter()
@@ -223,22 +242,38 @@ impl Decision {
                 goal: Some(GoalRef::Charter(r.line.clone())),
                 remaining: r.reading.excess(),
                 items_over: r.items.as_ref().map(|i| i.over),
+                guilt: weighed(&r.line).and_then(|s| s.max()),
             })
             .collect();
-        // Per item, never the level (S5): a line is a commitment to review
-        // when an item is past its setpoint. Unknown is still unknown — a
-        // reading that says nothing asks for context first. Only a kind
-        // with no items at all (the corpus rate) is judged on its level,
-        // because for it the level is the only form there is.
-        let charter_action = charter
-            .iter()
-            .find_map(|g| match (g.remaining, g.items_over) {
-                (None, _) => Some(Action::GatherContext),
-                (Some(_), Some(n)) if n > 0 => Some(Action::ReviewCommitment),
-                (Some(_), Some(_)) => None,
-                (Some(e), None) if e > 0.0 => Some(Action::ReviewCommitment),
-                _ => None,
-            });
+        // Per commitment, never the level (S5, S7): a line is a commitment
+        // to review when a pending commitment it weighs is past its
+        // patience — the same per-item guilt every guilt consumer reads,
+        // and never the `anticipated_guilt` readout. Unknown is still
+        // unknown — a reading that says nothing asks for context first. A
+        // count kind, whose line sets no commitment's patience, is judged
+        // on its items over the count; the corpus rate, which has no items
+        // at all, on its level, because for it the level is the only form
+        // there is. A caller with no per-commitment record (a snapshot
+        // from before it) reads the per-item count, which the guilt agrees
+        // with for every age kind: both are "an item older than the
+        // setpoint".
+        let charter_action =
+            readings
+                .unwrap_or_default()
+                .iter()
+                .zip(&charter)
+                .find_map(
+                    |(r, g)| match (g.remaining, weighed(&r.line), g.items_over) {
+                        (None, _, _) => Some(Action::GatherContext),
+                        (Some(_), Some(store), _) => {
+                            store.any_owed().then_some(Action::ReviewCommitment)
+                        }
+                        (Some(_), None, Some(n)) if n > 0 => Some(Action::ReviewCommitment),
+                        (Some(_), None, Some(_)) => None,
+                        (Some(e), None, None) if e > 0.0 => Some(Action::ReviewCommitment),
+                        _ => None,
+                    },
+                );
         // Only against an anchor a plan could have named (`GoalRef::
         // a_plan_can_name`): under a trigger or request anchor every plan
         // goal differs by construction, and asking to reconcile it would
@@ -361,6 +396,7 @@ mod tests {
             None,
             &Default::default(),
             false,
+            None,
         );
         assert_eq!(d.action, Action::GatherContext);
         assert_eq!(d.charter[0].remaining, None);
@@ -373,7 +409,8 @@ mod tests {
                 Some(&readings),
                 None,
                 &Default::default(),
-                false
+                false,
+                None,
             )
             .action,
             Action::ReviewCommitment
@@ -385,7 +422,8 @@ mod tests {
                 Some(&readings),
                 None,
                 &Default::default(),
-                true
+                true,
+                None,
             )
             .action,
             Action::ClarifyGoal
@@ -400,12 +438,100 @@ mod tests {
                 Some(&readings),
                 None,
                 &Default::default(),
-                true
+                true,
+                None,
             )
             .action,
             Action::ReviewCommitment
         );
         assert!(!Action::ReviewCommitment.guidance().contains("7200"));
+    }
+
+    /// `ReviewCommitment` reads per-commitment guilt (S7): the line whose
+    /// patience weighs a store is a commitment to review when a pending
+    /// commitment there is past its patience — and not when the level says
+    /// "over" but the per-commitment record says nothing is owed, nor on
+    /// the `anticipated_guilt` readout, which it is never handed. A count
+    /// line, which weighs no commitment, keeps its per-item count.
+    #[test]
+    fn review_commitment_reads_each_commitments_guilt_not_the_level() {
+        use crate::{
+            charter::SensorKind,
+            guilt::{ItemGuilt, Store, StoreGuilt},
+            reading::{Items, Observed, Reading},
+        };
+        let over = |line: &str, kind| LineReading {
+            line: line.into(),
+            kind,
+            setpoint: "24h".into(),
+            reading: Reading::Observed {
+                value: Observed::Seconds(200_000),
+                over: true,
+                excess: 0.6,
+            },
+            items: Some(Items {
+                waiting: 2,
+                over: 1,
+                ..Default::default()
+            }),
+            delta: None,
+            withdrawn: false,
+        };
+        let store = |guilts: &[Option<f32>]| StoreGuilt {
+            store: Store::Outbox,
+            line: Some("replies".into()),
+            patience: "24h".into(),
+            weight: 1.0,
+            waiting: Some(guilts.len() as u64),
+            unknown: guilts.iter().filter(|g| g.is_none()).count() as u64,
+            items: guilts
+                .iter()
+                .enumerate()
+                .map(|(i, g)| ItemGuilt {
+                    id: format!("d{i}"),
+                    age_secs: g.map(|_| 1),
+                    guilt: *g,
+                })
+                .collect(),
+        };
+        let plan = crate::tool::todo::Plan::default();
+        let assess = |readings: &[LineReading], stores: &[StoreGuilt]| {
+            Decision::assess(
+                &plan,
+                None,
+                Some(readings),
+                None,
+                &Default::default(),
+                false,
+                Some(stores),
+            )
+        };
+        let replies = [over("replies", SensorKind::OutboxAge)];
+
+        // One draft past its patience: review, and the line records the
+        // largest guilt it weighs.
+        let d = assess(&replies, &[store(&[Some(0.4), Some(0.0)])]);
+        assert_eq!(d.action, Action::ReviewCommitment);
+        assert_eq!(d.charter[0].guilt, Some(0.4));
+
+        // Nothing owed per commitment: no review, whatever the level and
+        // the per-item count say. Under the per-item reading this was a
+        // review — the count said one item was over.
+        let d = assess(&replies, &[store(&[Some(0.0), Some(0.0)])]);
+        assert_eq!(d.action, Action::Complete);
+        assert_eq!(d.charter[0].guilt, Some(0.0));
+
+        // A known overdue draft beside an undated one: still owed, and the
+        // line's maximum is unknown rather than the known one.
+        let d = assess(&replies, &[store(&[None, Some(0.3)])]);
+        assert_eq!(d.action, Action::ReviewCommitment);
+        assert_eq!(d.charter[0].guilt, None);
+
+        // A count line weighs no commitment: its items over the count.
+        let queue = [over("queue", SensorKind::OutboxWaiting)];
+        let d = assess(&queue, &[store(&[Some(0.0)])]);
+        assert_eq!(d.action, Action::ReviewCommitment);
+        assert_eq!(d.charter[0].guilt, None);
     }
 }
 
