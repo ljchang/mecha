@@ -340,7 +340,7 @@ fallback turns on image conversations fail.
 model supplies a prompt, an optional negative prompt, a size from a closed set
 and an optional seed; a local server (ComfyUI running Qwen-Image 2.1 today)
 renders it; the PNG lands at `images/<stamp>-<seed>.png` in **the run's own
-workspace**. Five decisions, each a bug if undone:
+workspace**. Six decisions, each a bug if undone:
 
 - **A builtin, not an MCP server, because of where the file lands.** An MCP
   server is spawned once in one directory (`McpTool::fixed_workspace`), while
@@ -369,6 +369,12 @@ workspace**. Five decisions, each a bug if undone:
   mecha process, so it serves `mecha serve` and the TUI; a one-shot
   `mecha run` exits first and leaves the models loaded until the next
   long-lived generation or a server restart.
+- **Read-only, by the owner's ruling (2026-09-25).** Web chats start
+  read-only, and a picture should be one request in any of them. The tool
+  changes nothing of the owner's: it creates new files under `images/` in the
+  run's own workspace and never opens an existing one (`create_new`), which is
+  `todo`'s footing. The cost, stated: an unattended trigger run with `[image]`
+  configured can generate too — GPU time, bounded by the memory check.
 - **Cancel reaches the server.** The call polls a job rather than holding one
   request open; on the run's cancel token it deletes the job from the queue
   and interrupts it, so Ctrl-C stops the GPU, not just the wait.
