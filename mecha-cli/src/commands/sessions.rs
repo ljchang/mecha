@@ -980,6 +980,103 @@ fn render_text_appraisal(r: &mecha_core::appraisal_store::TextAppraisal) -> Stri
     out
 }
 
+/// The `--json` predictions block (row 2b-1): the calibration as it is,
+/// plus whether the outbox was fully read — a short read makes every count
+/// a floor, which is a different fact from a store with fewer drafts.
+fn predictions_json(
+    calibration: &mecha_core::anticipation::Calibration,
+    outbox_unreadable: bool,
+) -> serde_json::Value {
+    let mut o = serde_json::to_value(calibration).unwrap_or_default();
+    if let Some(m) = o.as_object_mut() {
+        m.insert("read".into(), serde_json::json!(!outbox_unreadable));
+    }
+    o
+}
+
+/// One line for the table: coverage first, and a rate only where there are
+/// points — "no outcome recorded yet" is coverage, never a calibration of
+/// zero.
+fn predictions_line(
+    calibration: &mecha_core::anticipation::Calibration,
+    outbox_unreadable: bool,
+) -> String {
+    let t = &calibration.total;
+    if t.predictions == 0 && calibration.unreadable == 0 {
+        return format!(
+            "anticipation's predictions: none on record{}{}",
+            if calibration.harness_placeholders > 0 {
+                format!(
+                    " ({} staging placeholder(s) with no owner evidence, which forecast nothing)",
+                    calibration.harness_placeholders
+                )
+            } else {
+                String::new()
+            },
+            if outbox_unreadable {
+                " (the outbox could not be fully read, so this is a floor)"
+            } else {
+                ""
+            }
+        );
+    }
+    let per: Vec<String> = calibration
+        .by_response
+        .iter()
+        .filter(|(_, c)| c.predictions > 0)
+        .map(|(name, c)| match c.materialized_rate {
+            Some(rate) => format!(
+                "{name} {}/{} scored, concern materialised {:.0}%",
+                c.scored,
+                c.predictions,
+                rate * 100.0
+            ),
+            None => format!("{name} {}/{} scored, no rate", c.scored, c.predictions),
+        })
+        .collect();
+    let u = &t.unscored;
+    format!(
+        "anticipation's predictions: {} scored of {} ({}) · not yet a point: {} awaiting the \
+         owner's outcome, {} not sent, {} delivery unknown, {} clean but delivery unconfirmed, \
+         {} changed, {} reassessed, {} abandoned, {} unsupported{}{}",
+        t.scored,
+        t.predictions,
+        if per.is_empty() {
+            "none".into()
+        } else {
+            per.join(" · ")
+        },
+        u.awaiting_feedback,
+        u.pending,
+        u.delivery_unknown,
+        u.delivery_unconfirmed,
+        u.changed,
+        u.reassessed,
+        u.abandoned,
+        u.unsupported,
+        if calibration.unreadable > 0 {
+            format!(
+                " · {} unreadable prediction record(s)",
+                calibration.unreadable
+            )
+        } else {
+            String::new()
+        } + &if calibration.harness_placeholders > 0 {
+            format!(
+                " · {} staging placeholder(s) with no owner evidence, in no count",
+                calibration.harness_placeholders
+            )
+        } else {
+            String::new()
+        },
+        if outbox_unreadable {
+            " · the outbox could not be fully read, so these are floors"
+        } else {
+            ""
+        }
+    )
+}
+
 /// The `--json` probe block.
 ///
 /// Rendered from `Tally` itself rather than a hand-listed set of keys: a
@@ -1055,6 +1152,9 @@ async fn appraise(
                 Err(_) => (Vec::new(), true),
             },
         };
+
+    // Anticipation's calibration (row 2b-1), over every draft read.
+    let calibration = mecha_core::anticipation::Calibration::of(&drafts);
 
     // The three commitment stores (`docs/APPRAISAL-RESEARCH.md` §3.4, §3.6),
     // read once for the whole walk and filtered per session inside
@@ -1452,6 +1552,11 @@ async fn appraise(
                 "probe": probe.then(|| probe_json(tally, budget)),
                 "comparisons": comparisons_json(&stored),
                 "text_appraisals": text_appraisals_json(&text_appraisals),
+                // Anticipation's predictions scored (row 2b-1): store-wide,
+                // whatever `--days` narrowed the sessions to — a draft's
+                // outcome can arrive long after its session. Coverage
+                // always; a rate is `null` over no points.
+                "predictions": predictions_json(&calibration, outbox_unreadable),
                 // Same "absent, not zero" rule as `probe`: whether the flag
                 // ran at all is a different fact from what it found.
                 // Retired in row 2a-3: always null now — the pass cannot
@@ -1524,6 +1629,7 @@ async fn appraise(
     // before the early return — an empty walk still has a store to report.
     println!("  {}\n", comparisons_line(&stored));
     println!("  {}\n", text_appraisals_line(&text_appraisals));
+    println!("  {}\n", predictions_line(&calibration, outbox_unreadable));
     if appraisals.is_empty() {
         return Ok(());
     }
@@ -2304,6 +2410,35 @@ mod probe_readout_tests {
                 "an unfenced line: {l:?}\n{out}"
             );
         }
+    }
+
+    /// The predictions line (row 2b-1) prints a rate only where there are
+    /// points, says "none on record" for an empty store, and marks a short
+    /// read of the outbox as floors.
+    #[test]
+    fn the_predictions_line_never_prints_a_rate_over_nothing() {
+        use super::predictions_line;
+        use mecha_core::anticipation::Calibration;
+        let empty = Calibration::of(&[]);
+        assert_eq!(
+            predictions_line(&empty, false),
+            "anticipation's predictions: none on record"
+        );
+        assert!(predictions_line(&empty, true).contains("floor"));
+        let mut some = Calibration::of(&[]);
+        some.total.predictions = 3;
+        if let Some(c) = some.by_response.get_mut("verify") {
+            c.predictions = 3;
+        }
+        let line = predictions_line(&some, false);
+        assert!(line.contains("verify 0/3 scored, no rate"), "{line}");
+        assert!(!line.contains('%'), "{line}");
+        if let Some(c) = some.by_response.get_mut("verify") {
+            c.scored = 2;
+            c.materialized = 1;
+            c.materialized_rate = Some(0.5);
+        }
+        assert!(predictions_line(&some, false).contains("concern materialised 50%"));
     }
 
     /// The text-appraisal readout: unreadable is not empty, no store yet is
