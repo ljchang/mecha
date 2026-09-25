@@ -2396,7 +2396,9 @@ now makes the move one recorded event:
   authors can press it (the tap is a gated, signed owner, SLACK-ACTIONS §3).
   **`--only-open` is the store-state guard SLACK-ACTIONS §5 asks of every
   tap:** a card composed while the task was open, tapped after it was closed
-  elsewhere, is refused with nothing changed — Drop on a `done` task would
+  elsewhere, is refused with the row unchanged and no closure recorded for
+  it (an earlier uncertain move of the same task may still be settled
+  first: `settle_uncertain` runs before `only_if_open`) — Drop on a `done` task would
   otherwise flip the verdict with no record (it crosses no line), and Next
   would reopen it, which signs −1.0 against the session that did the work.
   **The reply carries the readout from the record**, not from the child:

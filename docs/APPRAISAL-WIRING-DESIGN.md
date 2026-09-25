@@ -369,8 +369,9 @@ by door, claims dropped by grounding, lessons validated by source — goes in
 `sessions appraise` from the PR that first produces each number, as
 phase 1's did.
 
-**Two questions this plan did not settle, both since ruled by the owner
-(2026-09-25; here §6, R32 and R33):**
+**Two questions this plan did not settle, both since ruled (2026-09-25;
+here §6, R32 and R33 — relayed to the handoff lane rather than recorded
+first-hand, so each awaits the owner's confirmation there):**
 
 1. **What R25 pins, and whether decision 4's "no extra model call" still
    holds.** The graph extracts facts from the episode, which is the model's
@@ -509,10 +510,11 @@ widening.
 | R9 | — | The charter line `be-the-best`: unboundedness is fine (lines are attractors); §15's narrower worry is a line whose object is the harness, held by the `Security` class | flagged once |
 | R30 | 1 | The graph TUI closes and reopens through mecha's closure event only when the owner's install opts in (`[board] close_through` in `~/.mecha-graph/config.toml`); opted in, it fails closed, refusing with nothing written when mecha is missing or the TUI is not on the default database; not opted in, standalone mecha-graph keeps its direct write. Option A3 of #300's five, not the catalogue's A3 | **ruled 2026-09-25**; built as mecha-graph#21 |
 | R31 | 1 | Commitments: new writes only, no migration — new predictions write `workflow::Commitment`, old shapes stay on disk and read leniently. Its `due_at` and `follow_up_at` are optional, an absent one meaning "no deadline stated"; the harness never derives a date, and dates the owner wrote on evidence pass through (S7) | **ruled 2026-09-25**, the dates refined on review of #304; built as 1f-2 (#304) |
-| R32 | 2 | What R25 pins: 2a-2's appraisal comes from a follow-up turn on the same cached prefix, so `DISTILLER_SYSTEM` and the episode stay byte-identical; the extra model call is taken deliberately over changing the episode's text (here §3, the first of phase 2's two questions) | **ruled 2026-09-25** |
-| R33 | 2 | How a text prediction is scored (2b-2): a closed-set expected owner act from R16's set sits beside the prose and is scored structurally against the act the owner records (here §3, the second question) | **ruled 2026-09-25** |
+| R32 | 2 | What R25 pins: 2a-2's appraisal comes from a follow-up turn on the same cached prefix, so `DISTILLER_SYSTEM` and the episode stay byte-identical; the extra model call is taken deliberately over changing the episode's text (here §3, the first of phase 2's two questions) | **ruled 2026-09-25**; relayed by the coordinating session and recorded by no earlier PR or doc — for the owner to confirm |
+| R33 | 2 | How a text prediction is scored (2b-2): a closed-set expected owner act from R16's set sits beside the prose and is scored structurally against the act the owner records (here §3, the second question) | **ruled 2026-09-25**; relayed by the coordinating session and recorded by no earlier PR or doc — for the owner to confirm |
 
-**Every ruling is settled** (2026-09-24; R30–R33 on 2026-09-25), except the
+**Every ruling is settled** (2026-09-24; R30–R33 on 2026-09-25, with R32 and
+R33 awaiting the owner's confirmation of the relayed wording), except the
 parked items (R3, R8), the flag (R9), the deferred R7, the declined R2 and
 R29, which is not proposed.
 Phase 5's R28 waited on the bubblewrap upgrade, an ops step; the workstation
