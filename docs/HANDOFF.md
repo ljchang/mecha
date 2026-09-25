@@ -30,7 +30,9 @@ and #305 (plus mecha-graph#21 for the graph TUI's half of 1c; #303 is
 does; what each built is in HISTORY under 2026-09-24/25. `mecha` is installed
 at `6a26f7ab`, the 1h merge (*Machine state, dated* below). 2a-1 (#308, the
 text-appraisal store) merged after that install and is not installed. Four
-owner rulings of 2026-09-25 are now rows R30–R33 of the design's §6. What is
+owner rulings of 2026-09-25 are now rows R30–R33 of the design's §6; R32
+and R33 reached this lane relayed, and their cells ask the owner to confirm
+them. What is
 open, the in-flight PRs, the minors banked for the owner and the `CLAUDE.md`
 drift are at the top of *The goal system* below. Workspace at `f2efa162`:
 `cargo test --workspace -q`, summed over its 29 `test result` lines, gives
@@ -3719,7 +3721,8 @@ repeated here. What is open:
   `feat/pointwise-comparison-2d-1` and `feat/distiller-appraises-2a-2`,
   whose local refs at 18:03Z still pointed at `main` merges (`e35bb081`,
   `e35bb081`, `f2efa162`), with nothing pushed and no PR. 2a-2 was waiting
-  on R32 and 2b-2 on R33; both are now ruled.
+  on R32 and 2b-2 on R33; both are now recorded as ruled, pending the
+  owner's confirmation of the relayed wording (the design's §6).
 - **Phase 1's *done when* is unmeasured.** It asks for at least 60% of long
   real runs anchored, verdicts per week by channel, readings that vary run
   to run, a closure from every surface in `sessions appraise`, and a recorded
@@ -3741,8 +3744,8 @@ repeated here. What is open:
     - In `tasks set`, `settle_uncertain` runs before `only_if_open`, so a
       call the guard refuses can still append a `Confirmed` or `Aborted`
       line settling an earlier uncertain move. ARCHITECTURE's Slack closure
-      bullet ("refused with nothing changed") and SLACK-ACTIONS-DESIGN §5
-      ("nothing changed or recorded") overstate it.
+      bullet and SLACK-ACTIONS-DESIGN §5 now say so; whether the order
+      should change is the open part.
     - No doctor check reads the shell registry (`runs/shells`) itself;
       `check_shell_confinement` only reports a sandbox that mounts the guard
       directories.
