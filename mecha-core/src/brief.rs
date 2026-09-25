@@ -1690,12 +1690,8 @@ fn store_words(s: &StoreBrief) -> String {
     };
     let mut out = format!("{} {}", band(n), if n == 1 { one } else { many });
     if let Some(age) = s.items.first().and_then(|i| i.age_secs) {
-        out.push_str(&format!(
-            ", the {} {}",
-            if n == 1 { "only one" } else { "oldest" },
-            age_band(age)
-        ));
-        out.push_str(" old");
+        let who = if n == 1 { "" } else { "the oldest " };
+        out.push_str(&format!(", {who}waiting {}", age_band(age)));
     }
     let owed = s.owed;
     let past = if owed == 0 {
@@ -2825,7 +2821,7 @@ mod tests {
         }
         assert_eq!(
             line(&r, "- Waiting on the owner:"),
-            "- Waiting on the owner: several drafts in the outbox, the oldest over a week old, \
+            "- Waiting on the owner: several drafts in the outbox, the oldest waiting over a week, \
              a few past the owner's patience (charter line `replies`); no parked questions; \
              front-door requests are left out: that reading has been the same for many runs \
              and is set aside."
