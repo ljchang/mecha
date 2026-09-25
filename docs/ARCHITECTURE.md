@@ -377,7 +377,9 @@ workspace**. Six decisions, each a bug if undone:
   configured can generate too — GPU time, bounded by the memory check.
 - **Cancel reaches the server.** The call polls a job rather than holding one
   request open; on the run's cancel token it deletes the job from the queue
-  and interrupts it, so Ctrl-C stops the GPU, not just the wait.
+  and interrupts it, so Ctrl-C stops the GPU, not just the wait. It
+  interrupts only when the queue says *this* job is running: an older
+  ComfyUI ignores `/interrupt`'s `prompt_id` and stops whatever executes.
 
 The model cannot see what it made — images enter a conversation on user turns
 only (§Images) — so the result says so and hands the seed back: revising is
