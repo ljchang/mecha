@@ -22,8 +22,8 @@ maps which document holds what.
 
 ## Where the work is
 
-**2026-09-25 — appraisal wiring: phase 1 merged and installed, phase 2 and
-3a in flight.** `APPRAISAL-WIRING-DESIGN.md` (#291) is the authority, with
+**2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2c-1, 2d-1 and 3a
+merged and installed.** `APPRAISAL-WIRING-DESIGN.md` (#291) is the authority, with
 its rulings in §6. Phase 1's rows 1a–1i landed as #292–#294, #297–#302, #304
 and #305 (plus mecha-graph#21 for the graph TUI's half of 1c; #303 is
 `image_generate`, another lane's, not recorded here). The phase was meant to
@@ -31,18 +31,16 @@ change nothing a run does, with three exceptions: 1b refuses a close from a
 run with nobody present; 1d stops curating a reflection from moving a run's
 valence; and 1e and 1f change what `planning::Decision::assess` reads for
 `ReviewCommitment`, which reaches a run only under `goal_guidance` (off by
-default). What each built is in HISTORY under 2026-09-24/25. `mecha` is installed
-at `b1820b5d` since 18:02Z, which carries phase 1 and 2a-1 (#308, the
-text-appraisal store); phase 1 was first installed at `6a26f7ab`, the 1h
-merge, at 16:41Z (*Machine state, dated* below). 2c-1 (#311, the goal as a
-`Situation` key) merged at 18:18Z and is not installed. Four
-owner rulings of 2026-09-25 are now rows R30–R33 of the design's §6; R32
-and R33 reached this lane relayed, and their cells ask the owner to confirm
-them. What is
-open, the in-flight PRs, the minors banked for the owner and the `CLAUDE.md`
-drift are at the top of *The goal system* below. Workspace at `f2efa162`:
-`cargo test --workspace -q`, summed over its 29 `test result` lines, gives
-3,087 passed, 0 failed, 4 ignored.
+default). Phase 2's 2a-1 (#308), 2a-2 (#314), 2c-1 (#311) and 2d-1 (#312)
+and phase 3's 3a (#309, behind a lever that ships off) followed the same
+day. What each built is in HISTORY under 2026-09-24/25. `mecha` is installed
+at `6e6f03ba` (19:49Z), which carries all of it (*Machine state, dated*
+below). Six owner rulings of 2026-09-25 are rows R30–R35 of the design's
+§6. What is open, the follow-ups owed, the minors banked for the owner and
+the `CLAUDE.md` drift are at the top of *The goal system* below.
+The workspace on this branch merged with `6e6f03ba` (no code differs from
+`main`): `cargo test --workspace -q`, summed over its 31 `test result`
+lines, gives 3,145 passed, 0 failed, 4 ignored.
 
 **2026-09-24 — the outbox unclogged: a reply goes from its thread's account,
 and the web review reads as mail and sends in one press.** #272
@@ -2699,16 +2697,29 @@ is `b1820b5d`, the #306 merge, so it carries phase 1 and **2a-1 (#308)**:
 ~/.cargo/bin/mecha | grep -c` prints 1 for `appraisals.jsonl` and 2 for
 `text appraisals on record`. `~/.mecha/web/dist` was rebuilt at 18:02:48Z
 with `index-Cq2ArbMx.js`. `mecha-slack`, `-triggers`, `-drain` and `-serve`
-show `ActiveEnterTimestamp` 18:03:09Z; the voice worker still 11:31:38Z.
-Of the appraisal arc, 2c-1 (#311, `193b0114`, merged 18:18Z) is merged and
-not installed. **A constraint every
-later install must respect:** at 18:03Z the same lane added an `[image]`
+were restarted at 18:03:09Z. **A constraint every later install must
+respect:** at 18:03Z the same lane added an `[image]`
 table to `~/.mecha/config.toml` (the previous file is
 `config.toml.bak-pre-image-2026-09-25`), and `ConfigLayer` is
 `#[serde(deny_unknown_fields)]`, so any `mecha` built before #303
 (`image` joined `ConfigLayer` in `01c22936`) refuses that config at startup.
 Rolling `mecha` back past #303 means restoring that backup, or deleting the
 table, first. The image arc itself is that lane's to record.
+
+**Reinstalled from main, 2026-09-25 19:49Z: 2a-2, 2c-1, 2d-1 and 3a
+(verified 19:51Z by asking the artifacts).** `~/.cargo/bin/mecha`
+(19:49:05Z) is `6e6f03ba`, the #309 merge and `main`'s tip: `strings
+~/.cargo/bin/mecha | grep -c` prints 1 for #312's `point-steer`, 1 for
+#309's `no-situation-brief` and 1 for `appraisals.jsonl`. The web dist was
+not rebuilt and still holds `index-Cq2ArbMx.js` (18:02:48Z). `mecha-slack`,
+`-triggers`, `-drain` and `-serve` show `ActiveEnterTimestamp` 19:49:06Z;
+the voice worker still 11:31:38Z. Nothing of the appraisal arc is merged and
+uninstalled. What starts happening on this build: the `session_end` hook
+(`nohup mecha distill -p local … &`, already detached as 2a-2 requires) and
+the nightly `"$MECHA" distill -p "$PROVIDER"` in `scripts/ruminate.sh` now also write a text appraisal per
+session when the provider is `kind = "local"` (R29), about a minute of a
+seat each. `[agent] situation_brief` is unset
+in `~/.mecha/config.toml`, so the brief is recorded but not delivered.
 
 ## What the measurements say
 
@@ -3725,43 +3736,59 @@ the mechanism and every decision. What it left standing:
 
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
-**2026-09-25 — appraisal wiring: phase 1 shipped and is installed; phase 2
-and 3a are in flight.** The authority is `APPRAISAL-WIRING-DESIGN.md`: §3
-holds the plan as pull requests with their order, and §6 the rulings,
-including R30–R33 of 2026-09-25. What phase 1 built is in HISTORY under
+**2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2c-1, 2d-1 and 3a
+shipped and are installed.** The authority is `APPRAISAL-WIRING-DESIGN.md`:
+§3 holds the plan as pull requests with their order, and §6 the rulings,
+including R30–R35 of 2026-09-25. What each row built is in HISTORY under
 2026-09-24/25. Four of the catalogue entries phase 1 built (S5, S7, B1 and
 G4) end with a *Built as* paragraph naming what that PR deferred, and those
 deferrals are not repeated here; S1, S8, S3 and O4 carry none, so what 1a,
 1b, 1d and 1g deferred is in their PR bodies (#292, #293 and #294, #299,
 #298), save 1d's graph channel below. What is open:
 
-- **In flight, unmerged.** **3a** is PR #309 (`feat/brief-delivered-3a`):
-  the brief delivered as words in the run's first user turn behind
-  `[agent] situation_brief`, which ships off. Its PR body carries an owner
-  question (delivery arms no taint), and it defers M5, a re-delegated task's
-  previous attempts, to 3a-2. **2d-1** (point-wise comparison) and **2a-2**
-  (the distiller writes the appraisal) have branches
-  `feat/pointwise-comparison-2d-1` and `feat/distiller-appraises-2a-2`,
-  whose local refs at 18:03Z still pointed at `main` merges (`e35bb081`,
-  `f2efa162`), with nothing pushed and no PR. **2c-1** merged as #311
-  (`193b0114`, HISTORY) and is not installed. 2a-2 was waiting
-  on R32 and 2b-2 on R33; both are now recorded as ruled, pending the
-  owner's confirmation of the relayed wording (the design's §6).
+- **Nothing of the arc is in flight.** The next rows are the design's
+  §3 order: after 2a-2, 2a-3, 2b-2, 2c-2, 2d-3, 2e-1 and 2f; 2d-2 after
+  2d-1; and 2b-1, 2e-3, 2e-4 and 2e-6 on phase 1 alone.
+- **Owed before `Lever::SituationBrief` ships on** (3a, #309; the lever is
+  off in the live config):
+  - **R35's arming.** The owner ruled that delivering the brief arms
+    `private`, failing closed, as a `kg_task_list` read of the same board
+    does. Delivery arms nothing today. The ruling's home is
+    `docs/TRIFECTA.md`.
+  - **3a-3, a fold as an append.** Each fold edits a message the door
+    already recorded, so it writes a whole-transcript `Record::Rewrite` and
+    clears the taint checkpoints, on every turn whose brief changed in a web
+    chat (the design's B1 entry and ARCHITECTURE's brief bullet).
+  - **3a-2 (M5), a re-delegated task's previous attempts.** No record lists
+    them, and a reopen's reason needs an authorship rule first (the
+    design's M5 entry).
+- **2d-1's pass is not in the nightly job.** `mecha sessions compare` runs
+  only by hand; adding `"$MECHA" sessions compare -p "$PROVIDER"` to
+  `scripts/ruminate.sh` after `validate` is the owner's deploy decision
+  (`grep -c compare scripts/ruminate.sh` prints 0). Owner-bound check points
+  run a whole artifact repeat per arm, and `ProbePrep::unrunnable_under`
+  refuses one unless hooks, the outbox and messages are off
+  (`--no-hooks`, `--no-outbox`, messages off), so under the default config
+  they never run — the same gap as `mecha validate`'s mismatch probes.
+- **2a-2's seat time: watch the tail.** Measured on 8 copied real sessions
+  (#314): follow-ups of 19.8 to 137.2 s, median about 64 s, against 272 s
+  for all 8 episode calls, so distilling a session holds a seat about three
+  times as long. Generation is bounded only by `LOCAL_MAX_TOKENS`. Read the
+  per-session seat times `mecha distill` prints after a few nightly runs.
 - **Phase 1's *done when* is unmeasured.** It asks for at least 60% of long
   real runs anchored, verdicts per week by channel, readings that vary run
   to run, a closure from every surface in `sessions appraise`, and a recorded
   brief complete on a sample. Read `sessions health` and `sessions appraise`
   after some days on a build carrying phase 1 (installed since 16:41Z); at
   17:58Z one real run had been recorded on one.
-- **A rule keyed on a task goal can stop loading with nothing saying so
-  (2c-1, #311), and the owner is being asked about it before the next
-  install.** The goal key is the whole `GoalRef`, so a rule learned inside
-  one task is scoped to `task:<uid>` and loads only on runs toward that
-  task; once the task closes, no run declares it again. The roster's `LOADS
-  NOWHERE` check (`rules.rs`'s `loads_nowhere`) asks whether any run record
-  ever presented the key, and a closed task's past runs did, so it reports
-  the rule as loadable. Nothing on the live store is affected yet: at merge
-  no reflection carried a goal.
+- **Owed by R34: a readout of rules whose goal is closed.** 2c-1 (#311)
+  scopes a rule learned inside a task to `task:<uid>`, and the owner ruled
+  that it stays there and widens only by evidence (§17.4's consolidation
+  widening). Once the task closes, no run declares that goal again, and the
+  roster's `LOADS NOWHERE` check (`rules.rs`'s `loads_nowhere`) still calls
+  the rule loadable, because the task's past runs presented the key. The
+  follow-up is a count of active rules whose goal is closed. Nothing on the
+  live store is affected yet: at #311's merge no reflection carried a goal.
 - **1d's graph channel is unreadable from mecha.** Rejected graph facts
   from `agent:mecha` episodes (L7's input) need a read-only mecha-graph verb
   that returns rejected candidates with their origin episode, or the review
@@ -3832,9 +3859,9 @@ deferrals are not repeated here; S1, S8, S3 and O4 carry none, so what 1a,
     the decision is guidance and `goal_guidance` gates it. The module map's
     `guilt.rs` line ("folded from *recorded* commitments") predates guilt
     per commitment.
-  - The module map lacks the arc's six new modules: `appraisal_store.rs`,
-    `brief.rs`, `closure.rs`, `comparison.rs`, `curation.rs` and
-    `shell_registry.rs`. Checked with `for f in $(ls mecha-core/src/*.rs |
+  - The module map lacks the arc's seven new modules: `appraisal_store.rs`,
+    `brief.rs`, `closure.rs`, `comparison.rs`, `curation.rs`,
+    `pointwise.rs` and `shell_registry.rs`. Checked with `for f in $(ls mecha-core/src/*.rs |
     xargs -n1 basename); do grep -qE "^$f\b" CLAUDE.md || printf '%s ' $f;
     done`, which also lists `anticipation.rs`, `date_context.rs`,
     `fixture_check.rs`, `lib.rs`, `surface.rs`, `text.rs`, `title.rs` and

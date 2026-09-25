@@ -1643,6 +1643,16 @@ mod planning_metadata_tests {
 /// catch it out of both encoders, so the run test's silence is a finding
 /// rather than a scanner that cannot see.
 ///
+/// **The situation brief, since 3a.** With `[agent] situation_brief` on, the
+/// brief's *words* (`brief::render`) reach the run's first user turn by
+/// design, and with them its board counts and ids — pointers R21 allows.
+/// The run test runs twice: off, where every rendering of the brief (its
+/// record, its fields, its pointers and counts, its words, its stem) is a
+/// leak; and on, where its words and pointers may pass and every sensor
+/// number, setpoint, guilt, valence, commitment count or age, and the brief's
+/// own instants and seconds still may not. The control catches each of those
+/// renderings, the words included, in either slot.
+///
 /// Scope: the acting run's requests. The quarantined harness briefs —
 /// `diagnose::Evidence::brief` (guilt and pressure means, behind
 /// `[agent] sensors_in_brief`) and `appraisal::AppraiserEvidence::brief` —
@@ -2171,6 +2181,39 @@ text = "Leave work better than you found it."
                 text: last_turn_secs.to_string(),
             });
         }
+        // Since 3a: the brief's words, whole, and the stem they open with —
+        // a leak with the delivery lever off, the delivery with it on. And
+        // the commitments as the brief records them, which are sensor-side
+        // under R21 whether or not the brief is delivered: each store's
+        // counts, each item's age in seconds and as `render_secs` prints it.
+        out.push(Needle {
+            what: "situation brief words",
+            text: crate::brief::render(b),
+        });
+        out.push(Needle {
+            what: "situation brief stem",
+            text: crate::brief::BRIEF_STEM.to_string(),
+        });
+        if let Some(crate::brief::Commitments::Read { stores, .. }) = &b.commitments {
+            for s in stores {
+                for n in [s.waiting.unwrap_or(0), s.owed, s.undated] {
+                    out.push(Needle {
+                        what: "situation brief commitment",
+                        text: n.to_string(),
+                    });
+                }
+                for age in s.items.iter().filter_map(|i| i.age_secs) {
+                    out.push(Needle {
+                        what: "situation brief commitment",
+                        text: age.to_string(),
+                    });
+                    out.push(Needle {
+                        what: "situation brief commitment",
+                        text: crate::reading::render_secs(age),
+                    });
+                }
+            }
+        }
         out.push(Needle {
             what: "valence",
             text: valence.compact(),
@@ -2197,6 +2240,9 @@ text = "Leave work better than you found it."
             "situation brief count",
             "situation brief local time",
             "situation brief voice",
+            "situation brief words",
+            "situation brief stem",
+            "situation brief commitment",
             "valence",
         ] {
             assert!(
@@ -2205,6 +2251,24 @@ text = "Leave work better than you found it."
             );
         }
         out
+    }
+
+    /// What a run's requests must not carry: every needle, with the brief's
+    /// delivery off; with it on, every needle but the brief's words, its
+    /// stem, its pointers and its board counts — the parts R21 lets through
+    /// (3a). Everything sensor-side stays, the brief's own commitment
+    /// numbers, instant and voice seconds among it: the words are bands.
+    fn forbidden(needles: Vec<Needle>, delivered: bool) -> Vec<Needle> {
+        const DELIVERED: [&str; 4] = [
+            "situation brief words",
+            "situation brief stem",
+            "situation brief pointer",
+            "situation brief count",
+        ];
+        needles
+            .into_iter()
+            .filter(|n| !delivered || !DELIVERED.contains(&n.what))
+            .collect()
     }
 
     /// The body as bytes, plus every string leaf decoded — a needle carrying
@@ -2313,9 +2377,24 @@ text = "Leave work better than you found it."
     /// steered, and is recorded to a session file with its outcome; run two
     /// loads that file and continues. Every request either run sent goes
     /// through both encoders and is scanned for every rendering of every
-    /// sensor number, setpoint and valence the fixture holds.
+    /// sensor number, setpoint and valence the fixture holds — and, with the
+    /// brief's delivery off (the default), every rendering of the brief.
     #[tokio::test]
     async fn a_recorded_run_carries_no_sensor_number_setpoint_or_valence_to_either_encoder() {
+        recorded_run_scan(false).await;
+    }
+
+    /// The same run with the brief delivered (3a): its words reach the
+    /// first user turn, once, and never the system prompt; its pointers and
+    /// board counts may pass; nothing else of the fixture's numbers does —
+    /// not a sensor reading, a setpoint, guilt, valence, a commitment's
+    /// count or age, the brief's local instant or its voice seconds.
+    #[tokio::test]
+    async fn a_delivered_brief_carries_words_and_no_sensor_number_to_either_encoder() {
+        recorded_run_scan(true).await;
+    }
+
+    async fn recorded_run_scan(delivered: bool) {
         let root = crate::mismatch::Workspace::new().unwrap();
         let world = world();
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -2373,6 +2452,7 @@ text = "Leave work better than you found it."
                 thinking: false,
                 force_final_answer: false,
                 goal_guidance: true,
+                situation_brief: delivered,
                 ..Default::default()
             },
             None,
@@ -2428,7 +2508,7 @@ text = "Leave work better than you found it."
         resumed.push(Message::user("And the parked questions?"));
         agent.run_in(&cx, &mut resumed, None).await.unwrap();
 
-        let needles = needles(&world, &valence);
+        let needles = forbidden(needles(&world, &valence), delivered);
         let requests = seen.lock().unwrap().clone();
         assert_eq!(requests.len(), 3, "two turns in run one, one in run two");
 
@@ -2506,6 +2586,48 @@ text = "Leave work better than you found it."
             .as_deref()
             .is_some_and(|s| s.contains("`replies`")));
 
+        // Delivered: the words are in the run's first user turn, exactly
+        // once in every request (run two resumes a transcript that already
+        // states the same situation, so nothing is re-folded), and never in
+        // the system prompt. Not delivered: the scan below carries the words
+        // and the stem as needles.
+        let words = crate::brief::render(&world.brief);
+        for (i, req) in requests.iter().enumerate() {
+            let briefs: Vec<&str> = req
+                .messages
+                .iter()
+                .filter(|m| m.role == Role::User)
+                .flat_map(|m| &m.content)
+                .filter_map(|b| match b {
+                    Block::Text { text }
+                        if text.trim_start().starts_with(crate::brief::BRIEF_STEM) =>
+                    {
+                        Some(text.trim_start())
+                    }
+                    _ => None,
+                })
+                .collect();
+            if delivered {
+                assert_eq!(briefs, vec![words.as_str()], "request {i}");
+                assert!(
+                    req.messages[0]
+                        .content
+                        .iter()
+                        .any(|b| matches!(b, Block::Text { text } if text.trim_start() == words)),
+                    "request {i}: the brief rides the run's first user turn"
+                );
+            } else {
+                assert!(briefs.is_empty(), "request {i} carried the brief");
+            }
+            assert!(
+                !req.system
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains(crate::brief::BRIEF_STEM),
+                "request {i}: the brief is never the prefix"
+            );
+        }
+
         for (i, req) in requests.iter().enumerate() {
             for (encoder, body) in bodies(req) {
                 let found = leaks(&body, &needles);
@@ -2515,6 +2637,121 @@ text = "Leave work better than you found it."
                     describe(&found)
                 );
             }
+        }
+    }
+
+    /// 3a's placement, through both encoders: the same run with the brief's
+    /// delivery off and on sends **the same prefix bytes** — tools, system
+    /// prompt, and every request field but the messages — and differs only
+    /// by one block, the brief's words, appended to the run's own first user
+    /// message (no second user message, which is invalid). Append-only too:
+    /// every request's messages are a prefix of the next, so the moving
+    /// cache breakpoint still reads the whole history from cache.
+    #[tokio::test]
+    async fn the_brief_rides_the_user_turn_and_the_cached_prefix_is_the_same_bytes_on_and_off() {
+        let world = world();
+        let root = crate::mismatch::Workspace::new().unwrap();
+        let charter_block = crate::charter::prompt_block(&world.charter).unwrap();
+        let mut arms: Vec<Vec<CompletionRequest>> = Vec::new();
+        for delivered in [false, true] {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let recorder = Recorder {
+                turns: Mutex::new(VecDeque::from([
+                    turn(
+                        vec![Block::ToolUse {
+                            id: "toolu_fixture_plan".into(),
+                            name: "todo".into(),
+                            input: json!({"items": [
+                                {"content": "Draft the oldest reply", "status": "in_progress"}
+                            ]}),
+                        }],
+                        StopReason::ToolUse,
+                    ),
+                    turn(vec![Block::text("Drafted.")], StopReason::EndTurn),
+                ])),
+                seen: Arc::clone(&seen),
+                steer: Arc::default(),
+            };
+            let mut registry = Registry::new();
+            registry.insert(Arc::new(crate::tool::todo::TodoTool::new()));
+            let tools = ToolCtx {
+                workspace: root.path().to_path_buf(),
+                ..Default::default()
+            };
+            let approver = Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            });
+            let agent = Agent::new(
+                Box::new(recorder),
+                registry,
+                approver.clone(),
+                tools.clone(),
+                AgentConfig {
+                    system_prompt: Some(format!(
+                        "You are a personal assistant.\n\n{charter_block}"
+                    )),
+                    thinking: false,
+                    force_final_answer: false,
+                    situation_brief: delivered,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .with_clock(Arc::new(crate::clock::FixedClock(now())));
+            let mut cx = RunContext::new(tools, approver);
+            cx.brief = Some(Arc::new(world.brief.clone()));
+            let mut convo = Conversation::user("Work through the replies that are waiting on me.");
+            agent.run_in(&cx, &mut convo, None).await.unwrap();
+            arms.push(seen.lock().unwrap().clone());
+        }
+        let (off, on) = (&arms[0], &arms[1]);
+        assert_eq!(off.len(), 2);
+        assert_eq!(on.len(), off.len());
+
+        for (i, (a, b)) in off.iter().zip(on).enumerate() {
+            for ((encoder, mut a), (_, mut b)) in bodies(a).into_iter().zip(bodies(b)) {
+                let ma = a["messages"].take();
+                let mb = b["messages"].take();
+                // Everything outside the messages — the Anthropic tools and
+                // system blocks, the OpenAI tools — is one set of bytes.
+                assert_eq!(
+                    a.to_string(),
+                    b.to_string(),
+                    "request {i}: the {encoder} prefix moved with the lever"
+                );
+                // The OpenAI encoder carries the system prompt as the first
+                // message; that is prefix too.
+                assert!(a.get("tools").is_some(), "{encoder}: no tools to compare");
+                if encoder == "anthropic" {
+                    assert!(a.get("system").is_some(), "no system blocks to compare");
+                }
+                if encoder == "openai" {
+                    assert_eq!(ma[0]["role"], "system");
+                    assert_eq!(ma[0], mb[0], "request {i}: the system message moved");
+                }
+                assert!(
+                    !a.to_string().contains(crate::brief::BRIEF_STEM),
+                    "the brief is never in the prefix"
+                );
+            }
+            // The one difference: the brief, last in the run's first user
+            // message, in the same number of messages.
+            assert_eq!(a.messages.len(), b.messages.len(), "request {i}");
+            let mut expected = a.messages[0].clone();
+            expected
+                .content
+                .push(Block::text(crate::brief::block(&world.brief)));
+            assert_eq!(b.messages[0], expected, "request {i}");
+            assert_eq!(b.messages[0].role, Role::User);
+            assert_eq!(&a.messages[1..], &b.messages[1..], "request {i}");
+        }
+        for w in on.windows(2) {
+            assert_eq!(
+                &w[1].messages[..w[0].messages.len()],
+                &w[0].messages[..],
+                "each request is a prefix of the next"
+            );
         }
     }
 

@@ -182,6 +182,14 @@ pub fn render_for_summary(messages: &[Message], max_result_chars: usize) -> Stri
                     if text
                         .trim_start()
                         .starts_with(crate::date_context::REFERENCE_STEM) => {}
+                // The situation brief, for the same reason (3a): a snapshot of
+                // the run's start rather than an event in the stretch, and a
+                // summariser asked for "the specific values" would copy its
+                // counts into `messages[0]` as prose no stem can strip.
+                // `Agent::fold_situation_brief` puts the run's own back after
+                // the cut.
+                Block::Text { text } if text.trim_start().starts_with(crate::brief::BRIEF_STEM) => {
+                }
                 Block::Text { text } if !text.trim().is_empty() => {
                     // **The harness's own voice is labelled as the harness,
                     // not as the owner.** A peer's delivered message, a
@@ -354,6 +362,10 @@ pub fn rebuild(
             !t.starts_with(CARRIED_HEADER)
                 && !t.starts_with(SUMMARY_HEADER)
                 && !t.starts_with(crate::date_context::REFERENCE_STEM)
+                // And any situation brief the head carried (3a): the brief
+                // is re-folded after the cut, and a stale head copy would
+                // otherwise outlive every turn it described.
+                && !t.starts_with(crate::brief::BRIEF_STEM)
         }
         _ => true,
     });

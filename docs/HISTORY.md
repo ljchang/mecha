@@ -15,7 +15,8 @@ still worth knowing about, because the next person will otherwise re-derive it.
 ## What shipped, and when
 
 **2026-09-24/25 — appraisal wiring, phase 1: evidence and context go in,
-and what a run does changes in three named places only.** `APPRAISAL-WIRING-DESIGN.md` (#291,
+and what a run does changes in three named places only; phase 2 and 3a
+follow.** `APPRAISAL-WIRING-DESIGN.md` (#291,
 `66ae0abd`) re-derived the appraisal programme from what the owner said it is
 for (the agent's own interpretation of meaning, serving self-learning, goal
 alignment and planning across many goals) and recorded rulings R1–R29 in its
@@ -94,8 +95,30 @@ prompt is pinned (`the_distillers_episode_prompt_is_pinned`). **2c-1**, #311
 `RunConfig::rules_goal` and read by every door the workspace and surface keys
 read; an absent or unnameable goal never widens a scope, and none of the
 live store's 67 reflections carried a goal at merge (#311's own read-only
-count). The same night,
-separately, #295 (`c4c916d1`) made `[sandbox] memory_mb` and `cpus` real
+count); the owner then ruled that such a rule stays scoped to its task and
+widens only by evidence (R34). Three more merged at 19:47Z. **2a-2**, #314
+(`5995aa26`): `mecha distill` appraises each session in a follow-up turn on
+the episode call's own cached prefix (`QuarantinedPass::follow_up`,
+`Distiller::appraise`), so `DISTILLER_SYSTEM` and the graph episode stay
+byte-identical (R32, amending decision 4 to one extra call per session);
+the record gains `ExpectedAct`, R16's closed set, for 2b-2 to score (R33);
+the write door resolves each judgment's goal against `KnownPointers`,
+deduplicates and caps `because`, and refuses a second appraisal of a
+session; it runs only on a `kind = "local"` provider (R29), and `mecha
+sessions appraise <session>` is the owner's readout. **2d-1**, #312
+(`87c0e9a1`): `mecha sessions compare` drives up to three policies
+(`pointwise::ARMS_MAX`) four turns (`HORIZON_TURNS`) from each informative
+decision point — a steer, a denial, an edited or rejected draft, a failed
+check, a surprise — lets a structural validator read the owner's recorded
+act, and stores one 1g `Comparison` per point; a point no structural
+validator can pose is stored `unposed` with no arms. **3a**, #309
+(`6e6f03ba`): `brief::render` turns 1h's record into words and bands per
+R21, and `Agent::fold_situation_brief` puts them in the run's first user
+turn, never the prefix, behind `Lever::SituationBrief`, which ships off;
+`mecha run` now records and delivers a brief too, so an experiment's lever-on
+and lever-off arms are two conditions, not one. The
+owner then ruled that delivery must arm `private` (R35), which is unbuilt.
+Separately, at 03:29Z that morning, #295 (`c4c916d1`) made `[sandbox] memory_mb` and `cpus` real
 under bwrap through a `systemd-run --user --scope` (`Sandbox::bwrap_launcher`)
 and made landlock refuse them (see *Traps*). What the arc left open is in
 HANDOFF's goal-system section.

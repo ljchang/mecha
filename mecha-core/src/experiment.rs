@@ -2012,6 +2012,7 @@ fn config_switch(lever: Lever) -> Option<fn(&mut crate::config::Config) -> &mut 
         Lever::CompactValidate => Some(|c| &mut c.agent.compact_validate),
         Lever::PredictiveCompaction => Some(|c| &mut c.agent.predictive_compaction),
         Lever::CarriedState => Some(|c| &mut c.agent.carried_state),
+        Lever::SituationBrief => Some(|c| &mut c.agent.situation_brief),
         Lever::Messages => Some(|c| &mut c.messages.enabled),
         Lever::Mcp
         | Lever::LearnedRules
@@ -3081,6 +3082,7 @@ pub fn child_invocation(
             Lever::CompactValidate => config.agent.compact_validate = false,
             Lever::PredictiveCompaction => config.agent.predictive_compaction = false,
             Lever::CarriedState => config.agent.carried_state = false,
+            Lever::SituationBrief => config.agent.situation_brief = false,
             Lever::Messages => {
                 config.messages.enabled = false;
                 flags.push("--no-messages".into());
@@ -3736,6 +3738,7 @@ rationale = "no notice, fewer turns"
         }
         assert!(!bare.config.agent.predictive_compaction);
         assert!(!bare.config.agent.carried_state);
+        assert!(!bare.config.agent.situation_brief);
         assert!(!bare.config.messages.enabled);
         assert_eq!(
             bare.config.providers["local"].seed, None,
@@ -3935,6 +3938,7 @@ rationale = "no notice, fewer turns"
         real.agent.compact_validate = false;
         real.agent.predictive_compaction = false;
         real.agent.carried_state = false;
+        real.agent.situation_brief = false;
         real.messages.enabled = false;
         let names = [
             "step_escalation",
@@ -3944,6 +3948,7 @@ rationale = "no notice, fewer turns"
             "compact_validate",
             "predictive_compaction",
             "carried_state",
+            "situation_brief",
             "messages",
         ];
         let arm = Arm {
@@ -3959,6 +3964,7 @@ rationale = "no notice, fewer turns"
         assert!(c.agent.compact_validate);
         assert!(c.agent.predictive_compaction);
         assert!(c.agent.carried_state);
+        assert!(c.agent.situation_brief);
         assert!(c.messages.enabled);
 
         // Unnamed switches still inherit the operator's value.
