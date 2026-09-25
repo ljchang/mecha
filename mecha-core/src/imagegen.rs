@@ -341,9 +341,27 @@ impl ComfyUi {
 
     /// Stop a job wherever it is: out of the queue if it has not started,
     /// interrupted if it has. Best effort — the caller is already failing.
+    ///
+    /// `/interrupt` is sent only when *this* job is the one running. Current
+    /// ComfyUI honours the `prompt_id` in the body, but older servers ignore
+    /// it and stop whatever is executing — which would let cancelling a
+    /// queued image kill another call's running one. Asking the queue first
+    /// makes it right on either (found on review of #303).
     async fn abandon(&self, id: &str) {
         let _ = self.post_json("queue", &json!({"delete": [id]})).await;
-        let _ = self.post_json("interrupt", &json!({"prompt_id": id})).await;
+        let running = self
+            .get_json("queue")
+            .await
+            .ok()
+            .and_then(|q| q.get("queue_running")?.as_array().cloned())
+            .unwrap_or_default();
+        // Each entry is `[number, prompt_id, prompt, extra, outputs]`.
+        if running
+            .iter()
+            .any(|job| job.get(1).and_then(Value::as_str) == Some(id))
+        {
+            let _ = self.post_json("interrupt", &json!({"prompt_id": id})).await;
+        }
     }
 
     async fn generate(
@@ -627,6 +645,7 @@ impl Tool for ImageGenerate {
                 },
                 "seed": {
                     "type": "integer",
+                    "minimum": 0,
                     "description": "A seed from an earlier result keeps its composition while the prompt changes. Omit for a new image."
                 }
             },
@@ -663,11 +682,16 @@ impl Tool for ImageGenerate {
         }
         let started = Instant::now();
         let timeout = Duration::from_secs(self.cfg.timeout_secs);
-        let bytes = match self
+        let outcome = self
             .backend
             .generate(&self.cfg, &req, ctx.cancel.as_ref(), timeout)
-            .await
-        {
+            .await;
+        // Armed whatever the outcome: a job that failed or was cancelled
+        // mid-graph has already loaded the models, and the memory it holds is
+        // the reason the timer exists (found on review of #303). The counter
+        // makes a timer armed by an earlier call a no-op.
+        self.arm_unload();
+        let bytes = match outcome {
             Ok(bytes) => bytes,
             Err(Failure::Cancelled) => {
                 return Ok(ToolOutput::err(
@@ -689,7 +713,6 @@ impl Tool for ImageGenerate {
                 )));
             }
         };
-        self.arm_unload();
         let path = match save(ctx, req.seed, &bytes).await {
             Ok(path) => path,
             Err(e) => {
@@ -755,6 +778,16 @@ mod tests {
     async fn fake(
         history: Vec<Value>,
         prompt_status: &'static str,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        fake_running(history, prompt_status, true).await
+    }
+
+    /// As [`fake`], with `GET /queue` reporting `job-1` as running or not —
+    /// queued behind someone else's job when `running` is false.
+    async fn fake_running(
+        history: Vec<Value>,
+        prompt_status: &'static str,
+        running: bool,
     ) -> (String, Arc<Mutex<Vec<String>>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -824,6 +857,11 @@ mod tests {
                         json_reply(next)
                     } else if path.starts_with("/view?") {
                         reply("200 OK", "image/png", PNG)
+                    } else if line.starts_with("GET /queue") {
+                        let now = if running { "job-1" } else { "someone-else" };
+                        json_reply(
+                            json!({"queue_running": [[0, now, {}, {}, []]], "queue_pending": []}),
+                        )
                     } else {
                         json_reply(json!({}))
                     };
@@ -1053,6 +1091,73 @@ mod tests {
             .iter()
             .any(|l| l.starts_with("POST /interrupt") && l.contains("job-1")));
         assert!(!dir.join("images").exists(), "nothing saved");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_queued_job_never_interrupts_the_running_one() {
+        // `job-1` is queued behind another call's job. Cancelling it must take
+        // it off the queue and leave the running job alone — an older server
+        // ignores `/interrupt`'s body and would stop whatever is executing.
+        let (url, seen) = fake_running(vec![], "200 OK", false).await;
+        let dir = tempdir();
+        let token = CancellationToken::new();
+        let mut c = ctx(&dir);
+        c.cancel = Some(token.clone());
+        let t = tool(&url);
+        let call = tokio::spawn(async move { t.call(json!({"prompt": "a fox"}), &c).await });
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        token.cancel();
+        let out = call.await.unwrap().unwrap();
+        assert!(
+            out.is_error && out.content.starts_with("Cancelled"),
+            "{}",
+            out.content
+        );
+        let seen = seen.lock().unwrap().clone();
+        assert!(seen
+            .iter()
+            .any(|l| l.starts_with("POST /queue") && l.contains("job-1")));
+        assert!(
+            !seen.iter().any(|l| l.starts_with("POST /interrupt")),
+            "a queued job's cancel interrupted a running one: {seen:?}"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_job_that_fails_still_releases_the_models() {
+        // The server loaded the models before the graph failed; the memory
+        // they hold is what the unload exists for.
+        let failed = json!({"job-1": {"status": {"status_str": "error", "completed": false,
+            "messages": [["execution_error", {"exception_message": "boom"}]]}, "outputs": {}}});
+        let (url, seen) = fake(vec![failed], "200 OK").await;
+        let dir = tempdir();
+        let t = ImageGenerate::new(ImageConfig {
+            url,
+            min_available_mb: 0,
+            unload_after_secs: 1,
+            ..Default::default()
+        })
+        .unwrap()
+        .polling_every(Duration::from_millis(10));
+        let out = t
+            .call(json!({"prompt": "a fox"}), &ctx(&dir))
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("boom"),
+            "{}",
+            out.content
+        );
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.starts_with("POST /free")),
+            "a failed job left the models loaded"
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 
