@@ -596,8 +596,13 @@ pub fn examples(
             let Some(surface) = config.rules_surface else {
                 continue;
             };
+            // The goal the example's run was matched toward joins its
+            // scope like the other keys: a past run toward one goal is an
+            // example only for a run toward the same goal, and one toward
+            // none — or from before the field — for every run, as before.
             let scope = crate::situation::Situation::of_run(&config.tools, Some(workspace))
-                .on(Some(surface));
+                .on(Some(surface))
+                .toward(config.rules_goal.clone());
             if !scope.matches(situation) {
                 continue;
             }

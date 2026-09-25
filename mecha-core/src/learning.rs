@@ -266,7 +266,7 @@ pub struct Reflexion {
     pub dropped_reason: Option<String>,
     /// Where the intervention happened, from the closed sets the miner
     /// already held and dropped on write: the tool names around it, the
-    /// trigger, the surface and the workspace. What lets a lesson be scoped
+    /// trigger, the surface, the workspace and the goal. What lets a lesson be scoped
     /// to the tool it was learned on rather than loaded into every prompt
     /// (`docs/GOAL-SYSTEM-DESIGN.md` §17.3). `None` on a record from before
     /// the field: absent, never "everywhere" — a reflection whose situation
@@ -283,7 +283,8 @@ pub struct Reflexion {
     /// mark the design asks for — a recomputed situation is a fact about
     /// the transcript as it stands now, not about what the miner held —
     /// and `None` means the situation, where there is one, was recorded at
-    /// mining. The goal is never backfilled; nothing here touches it.
+    /// mining. `goals` above is never backfilled; the situation's goal key is,
+    /// off the covering run record's `rules_goal` like the other keys.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub situation_recomputed_at: Option<String>,
 }
@@ -357,6 +358,15 @@ impl KeyUpdate {
     }
 }
 
+/// The keys one run record says its rules block was matched against —
+/// the workspace, the surface and the goal (`RunConfig::rules_workspace`,
+/// `rules_surface`, `rules_goal`) — what the miner and the backfill stamp.
+pub type MatchedKeys = (
+    Option<std::path::PathBuf>,
+    Option<crate::session::SessionKind>,
+    Option<crate::situation::GoalKey>,
+);
+
 /// Match a reflection mined before the field to the intervention it came
 /// from, and recompute its situation the way the miner would have recorded
 /// it. The key is what a reflection persists — `session_id`, `trigger` and
@@ -365,32 +375,29 @@ impl KeyUpdate {
 /// workspace the session's rules block was matched against
 /// (`RunConfig::rules_workspace`), never the session's jail, and the
 /// surface the one it was matched on (`RunConfig::rules_surface`), never
-/// `SessionMeta::kind` — both from the run record covering the
-/// intervention's message (`keys_at`), since a session may hold runs
-/// matched on different keys; a record from before those fields gives
-/// `None`, and the reflection scopes by tools alone.
+/// `SessionMeta::kind`, and the goal the one it was matched toward
+/// (`RunConfig::rules_goal`), never the conversation's anchor — all from
+/// the run record covering the intervention's message (`keys_at`), since a
+/// session may hold runs matched on different keys; a record from before
+/// those fields gives `None`, and the reflection scopes by tools alone.
 pub fn backfill_situation(
     r: &Reflexion,
     interventions: &[Intervention],
-    keys_at: &dyn Fn(
-        usize,
-    ) -> (
-        Option<std::path::PathBuf>,
-        Option<crate::session::SessionKind>,
-    ),
+    keys_at: &dyn Fn(usize) -> MatchedKeys,
 ) -> Backfilled {
     let mut fits: Vec<crate::situation::Situation> = Vec::new();
     for i in interventions {
         if i.trigger.as_str() != r.trigger || i.text != r.intervention {
             continue;
         }
-        let (matched, surface) = keys_at(i.at);
+        let (matched, surface, goal) = keys_at(i.at);
         let s = crate::situation::Situation::recorded(
             &i.tools_before,
             i.trigger.as_str(),
             surface,
             matched.as_deref(),
-        );
+        )
+        .toward(goal);
         if !fits.contains(&s) {
             fits.push(s);
         }
@@ -1076,6 +1083,13 @@ pub struct RulesCarried {
     /// stamped with the record's kind would scope to a surface no match
     /// presents. `None` when the front-end declared none.
     pub surface: Option<crate::session::SessionKind>,
+    /// The goal the block was matched against (`GlobalOpts::goal`, the
+    /// reference the front-end handed `prepare`), recorded as
+    /// `RunConfig::rules_goal` so the miner stamps the key a match
+    /// presented — never the conversation's anchor, which a resumed
+    /// hand-over or a mid-run confirmation can set to a goal the block was
+    /// not matched on. `None` when the front-end declared none.
+    pub goal: Option<crate::situation::GoalKey>,
 }
 
 impl Default for RulesCarried {
@@ -1097,6 +1111,7 @@ impl RulesCarried {
             rule_ids: Vec::new(),
             workspace: None,
             surface: None,
+            goal: None,
         }
     }
 }
@@ -1451,12 +1466,14 @@ impl LearningStore {
             rule_ids,
             workspace: run.workspace.clone(),
             surface: run.surface,
+            goal: run.goal.clone(),
         })
     }
 
     /// Active rules in `domains` whose scope names a tool no run registers
-    /// when the block is rendered ([`Situation::FRONTEND_TOOLS`]) or a
-    /// surface no run presents ([`Situation::MARK_KINDS`]) — rules that can
+    /// when the block is rendered ([`Situation::FRONTEND_TOOLS`]), a
+    /// surface no run presents ([`Situation::MARK_KINDS`]), or a surface or
+    /// goal this build cannot name — rules that can
     /// never load, `(domain, what, text)` with `what` a phrase for the line. `Situation::scope`
     /// drops those names, so this reaches only a hand-edited or older
     /// file; startup warns on it like an unrouted domain, because a rule
@@ -1501,6 +1518,14 @@ impl LearningStore {
                     out.push((
                         domain.to_string(),
                         format!("a surface this build cannot name (`{raw}`)"),
+                        rule.text.clone(),
+                    ));
+                }
+                // The goal's mirror: parked so it matches nothing, and said.
+                if let Some(crate::situation::GoalKey::Unread(raw)) = &scope.goal {
+                    out.push((
+                        domain.to_string(),
+                        format!("a goal this build cannot name (`{raw}`)"),
                         rule.text.clone(),
                     ));
                 }
@@ -6318,6 +6343,46 @@ mod situation_tests {
             1
         );
 
+        // The goal widens the same way: a rule learned in one trigger's
+        // runs, restated verbatim by a batch toward another, drops the goal
+        // and keeps the tools. Until then it loads toward its own goal and
+        // toward no other — and not in a run toward none.
+        let toward = |g: &str| {
+            Situation::recorded(&["shell".into()], "denial", None, None)
+                .toward(Some(crate::situation::GoalKey::Named(g.parse().unwrap())))
+        };
+        let at_morning = vec![rule(
+            "Say what you ran.",
+            "r-g",
+            Some(toward("trigger:morning").scope()),
+        )];
+        for (run, loads) in [
+            (toward("trigger:morning"), 1),
+            (toward("trigger:evening"), 0),
+            (run_with(&["shell"]), 0),
+        ] {
+            let run = Situation::of_run(&run.tools, None).toward(run.goal);
+            assert_eq!(carried_in(&at_morning, &run).count(), loads, "{run:?}");
+        }
+        let out = finalize_region_rules(
+            vec![Rule {
+                text: "Say what you ran.".into(),
+                ..Default::default()
+            }],
+            &at_morning,
+            &toward("trigger:evening").scope(),
+            &["z".into()],
+            &[toward("trigger:evening")],
+            "now",
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].scope,
+            Some(shell()),
+            "shell for morning ∩ shell for evening is shell toward every goal"
+        );
+        assert_eq!(carried_in(&out, &run_with(&["shell"])).count(), 1);
+
         // A batch focused elsewhere whose every window still carried
         // `shell` is evidence inside the shell region: support grows, the
         // scope does not. And the standing batch never widens — not with
@@ -6617,6 +6682,49 @@ mod situation_tests {
         );
         // The store view still shows it: `mecha rules` lists every rule.
         assert!(domain_rules_section("behavior", &[], &rules).is_some());
+
+        // The goal is a region key like the others: a batch whose members
+        // were all matched toward one trigger scopes its rule there, and
+        // one mined with no goal — every reflection before the key — loads
+        // under every goal exactly as before.
+        let morning = || {
+            Some(crate::situation::GoalKey::Named(
+                "trigger:morning".parse().unwrap(),
+            ))
+        };
+        let mut a = refl("a", &["shell"], "denial");
+        let mut c = refl("c", &["shell"], "denial");
+        for r in [&mut a, &mut c] {
+            r.situation = r.situation.take().map(|s| s.toward(morning()));
+        }
+        let batches = batches_by_region(vec![a, c]);
+        let (region, _) = &batches[0];
+        assert_eq!(region.goal, morning());
+        let learned = parse_learner_reply(
+            r#"{"rules":[{"rule":"Read the calendar first.","confidence":0.9,"based_on_count":2}]}"#,
+        )
+        .unwrap();
+        let scoped = finalize_region_rules(learned, &[], region, &["a".into()], &[], "now");
+        let on = |g: Option<crate::situation::GoalKey>| run_with(&["shell"]).on(tui).toward(g);
+        assert_eq!(carried_in(&scoped, &on(morning())).count(), 1);
+        assert_eq!(
+            carried_in(&scoped, &on(None)).count(),
+            0,
+            "an absent goal never widens a goal-scoped rule's reach"
+        );
+        assert_eq!(
+            carried_in(
+                &scoped,
+                &on(Some(crate::situation::GoalKey::Named(
+                    "trigger:evening".parse().unwrap()
+                )))
+            )
+            .count(),
+            0
+        );
+        // The rule above, mined with no goal, still rides toward any goal.
+        assert_eq!(carried_in(&rules, &on(morning())).count(), 1);
+        assert_eq!(carried_in(&rules, &on(None)).count(), 1);
     }
 
     /// A region's rewrite replaces only that region: standing rules, other
@@ -6841,6 +6949,18 @@ mod situation_tests {
             )
             .unwrap();
         assert_eq!(on_tui.surface, Some(crate::session::SessionKind::Tui));
+        // And the goal: what the run was matched toward rides with the
+        // block for `RunConfig::rules_goal`, none when it presented none.
+        assert_eq!(on_tui.goal, None);
+        let morning = crate::situation::GoalKey::Named("trigger:morning".parse().unwrap());
+        let toward = store
+            .rules_carried_for(
+                &["behavior"],
+                &Situation::of_run(&["shell".into()], None).toward(Some(morning.clone())),
+            )
+            .unwrap();
+        assert_eq!(toward.goal, Some(morning));
+        assert_eq!(RulesCarried::none().goal, None);
         assert_eq!(with.hash, rules_hash(with.block.as_deref().unwrap()));
         // The treatment arm of a gate: one domain's set replaced, rendered
         // for the same situation.
@@ -6910,7 +7030,8 @@ mod situation_tests {
         assert_eq!(
             backfill_situation(&r, &interventions, &|_| (
                 Some(std::path::PathBuf::from("/w")),
-                Some(SessionKind::Web)
+                Some(SessionKind::Web),
+                None
             )),
             Backfilled::Matched(Situation::recorded(
                 &["fs_read".into(), "shell".into()],
@@ -6923,9 +7044,28 @@ mod situation_tests {
         assert_eq!(
             backfill_situation(&r, &[], &|_| (
                 Some(std::path::PathBuf::from("/w")),
-                Some(SessionKind::Web)
+                Some(SessionKind::Web),
+                None
             )),
             Backfilled::NoMatch
+        );
+        // The goal comes off the covering record like the other keys.
+        let morning = crate::situation::GoalKey::Named("trigger:morning".parse().unwrap());
+        assert_eq!(
+            backfill_situation(&r, &interventions, &|_| (
+                None,
+                Some(SessionKind::Trigger),
+                Some(morning.clone())
+            )),
+            Backfilled::Matched(
+                Situation::recorded(
+                    &["fs_read".into(), "shell".into()],
+                    "denial",
+                    Some(SessionKind::Trigger),
+                    None,
+                )
+                .toward(Some(morning.clone()))
+            )
         );
 
         // Two fits with different windows: not knowable, so absent.
@@ -6936,7 +7076,8 @@ mod situation_tests {
         assert_eq!(
             backfill_situation(&r, &differing, &|_| (
                 Some(std::path::PathBuf::from("/w")),
-                Some(SessionKind::Web)
+                Some(SessionKind::Web),
+                None
             )),
             Backfilled::Ambiguous(2)
         );
@@ -6948,7 +7089,8 @@ mod situation_tests {
         assert!(matches!(
             backfill_situation(&r, &agreeing, &|_| (
                 Some(std::path::PathBuf::from("/w")),
-                Some(SessionKind::Web)
+                Some(SessionKind::Web),
+                None
             )),
             Backfilled::Matched(_)
         ));
@@ -6973,6 +7115,7 @@ mod situation_tests {
                 surface: Some(SessionKind::Test),
                 surface_unread: None,
                 workspace: None,
+                goal: None,
             }),
             ..rule("Marked.", "r-m", None)
         };
@@ -6984,10 +7127,34 @@ mod situation_tests {
             }),
             ..rule("Unreadable.", "r-u", None)
         };
+        let goal_unread = Rule {
+            scope: Some(shell().toward(Some(crate::situation::GoalKey::Unread("dream:x".into())))),
+            ..rule("Goal unread.", "r-g", None)
+        };
+        let toward = rule(
+            "Toward.",
+            "r-t",
+            Some(shell().toward(Some(crate::situation::GoalKey::Named(
+                "trigger:morning".parse().unwrap(),
+            )))),
+        );
         store
-            .write_learned_rules("behavior", &[marked, fine, unreadable])
+            .write_learned_rules("behavior", &[marked, fine, unreadable, goal_unread, toward])
             .unwrap();
         let out = store.unloadable_rules(&["behavior"]).unwrap();
+        assert!(
+            out.iter()
+                .any(|(_, what, text)| text == "Goal unread." && what.contains("dream:x")),
+            "{out:?}"
+        );
+        assert!(
+            !out.iter().any(|(_, _, text)| text == "Toward."),
+            "a named goal can load"
+        );
+        let out: Vec<_> = out
+            .into_iter()
+            .filter(|(_, _, text)| text != "Goal unread.")
+            .collect();
         assert_eq!(out.len(), 2, "{out:?}");
         assert!(out[0].1.contains("surface `test`"), "{}", out[0].1);
         assert_eq!(out[0].2, "Marked.");
