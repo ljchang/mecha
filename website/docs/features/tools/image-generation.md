@@ -59,6 +59,24 @@ are revising, a seed.
 - **It takes about a minute** for a 1024×1024 image at the default 40 steps.
   Cancelling the run stops the generation on the server too.
 
+## Editing a picture
+
+The same tool edits. Hand it a picture and say what to change:
+
+- **One you generated:** tap **Edit** under it in web chat. The input fills
+  with `Edit images/….png: ` — finish the sentence ("put the fox in a yellow
+  raincoat") and send.
+- **One of your own:** attach it with the paperclip, then say what to change.
+
+Say what to keep as well as what to change — "keep everything else the same"
+works. The edit is saved as a new file; the original is never touched. Up to
+four pictures can go in one request, which is how "put the jacket from the
+second picture on the person in the first" works. The result keeps the first
+picture's shape unless you ask for a size.
+
+Your photo is handed to the image server on this machine only, into a
+temporary folder it clears when it restarts.
+
 ## What it will refuse, and why
 
 - **A server that is not on this machine.** `url` must be `127.0.0.1`, `::1`

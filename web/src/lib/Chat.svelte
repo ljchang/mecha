@@ -879,6 +879,15 @@
 
   const workspaceFile = (path) => `/api/chat/${key}/file?path=${encodeURIComponent(path)}`;
 
+  // Seed the input with the file to edit and leave the cursor after it.
+  function editImage(path) {
+    draft = `Edit ${path}: `;
+    queueMicrotask(() => {
+      inputEl?.focus();
+      inputEl?.setSelectionRange(draft.length, draft.length);
+    });
+  }
+
   async function uploadPicked(e) {
     const files = [...(e.target.files ?? [])];
     e.target.value = '';
@@ -1232,6 +1241,10 @@
           <a class="genimg" href={workspaceFile(picture)} target="_blank" rel="noopener">
             <img src={workspaceFile(picture)} alt="generated image" loading="lazy" />
           </a>
+          <!-- Starts a sentence rather than sending one: the change is the
+               person's to describe. The path is what lets the model pass the
+               right file as the reference. -->
+          <button class="genedit" onclick={() => editImage(picture)}>Edit</button>
         {/if}
       {:else if entry.kind === 'notice'}
         <div class="notice">{entry.text}</div>
@@ -1968,6 +1981,18 @@
     display: block;
     margin: 4px 0 8px 18px;
     max-width: min(100%, 512px);
+  }
+  .genedit {
+    align-self: flex-start;
+    margin: -4px 0 10px 18px;
+    padding: 4px 12px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--accent-400);
+    background: none;
+    border: 1px solid var(--accent-400);
+    border-radius: 999px;
+    cursor: pointer;
   }
   .genimg img {
     display: block;

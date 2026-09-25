@@ -159,10 +159,63 @@ impl Size {
 pub struct Request {
     pub prompt: String,
     pub negative: String,
-    pub width: u32,
-    pub height: u32,
+    /// Width and height, or `None` to follow the first reference's shape —
+    /// which is only ever `None` when there is a reference to follow.
+    pub size: Option<(u32, u32)>,
     pub steps: u32,
     pub seed: u64,
+    /// Images to edit or draw from, in order: `<image1>` is the first.
+    pub references: Vec<Reference>,
+}
+
+/// A reference image, read out of the run's workspace.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reference {
+    /// The workspace-relative path it was named by, for the result text.
+    pub path: String,
+    pub bytes: Vec<u8>,
+    /// File extension for the upload, from the sniffed type.
+    pub ext: &'static str,
+}
+
+/// At most this many references per call. The model takes ten; every one is
+/// a VAE encode and a slice of the sequence on the shared memory pool, and
+/// four covers "edit this, in the style of that".
+const MAX_REFERENCES: usize = 4;
+
+/// A reference larger than this is refused rather than read. A phone photo
+/// is well under it; the node resizes to about 1024² anyway.
+const MAX_REFERENCE_BYTES: u64 = 25 * 1024 * 1024;
+
+/// The image type of `bytes`, by magic number, as an upload extension.
+fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("jpg")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("webp")
+    } else {
+        None
+    }
+}
+
+/// The seed a file this tool saved was made with, read off its name
+/// (`images/<yyyymmdd>-<hhmmss>-<seed>[-n].png`). `None` for anything else.
+///
+/// Why it matters: an edit sampled from the same seed as its reference starts
+/// from the noise that drew the reference, and the model redraws it — the
+/// instruction barely lands. Measured on 2026-09-25: four edits at the
+/// reference's seed came back as near-copies, one at a fresh seed was clean.
+fn seed_of_generated(path: &str) -> Option<u64> {
+    let name = path.strip_prefix("images/")?.strip_suffix(".png")?;
+    let mut parts = name.split('-');
+    let (date, time, seed) = (parts.next()?, parts.next()?, parts.next()?);
+    let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(date, 8) || !digits(time, 6) {
+        return None;
+    }
+    seed.parse().ok()
 }
 
 const PROMPT_CAP: usize = 4_000;
@@ -170,30 +223,55 @@ const PROMPT_CAP: usize = 4_000;
 /// Consecutive failed status polls before a job is abandoned.
 const POLL_FAILURES: u32 = 3;
 
-/// ComfyUI's graph for one text-to-image generation with Qwen-Image 2.1.
+/// ComfyUI's graph for one generation with Qwen-Image 2.1 — text to image,
+/// or an edit when `uploaded` names reference images already on the server.
 ///
 /// `PreviewImage` rather than `SaveImage`: the server writes to its temp
 /// directory instead of keeping a second, permanent copy in `output/` — the
-/// copy that matters is the one in the run's workspace.
-pub fn comfy_graph(cfg: &ImageConfig, req: &Request) -> Value {
-    json!({
+/// copy that matters is the one in the run's workspace. References are read
+/// from the temp directory too (`[temp]`), which the server empties when it
+/// starts, so a private photo is not left in its `input/` folder.
+///
+/// With references the encoder takes the VAE (it splices each reference into
+/// the sequence as latents) and, unless a size was asked for, its own latent
+/// output is the canvas: sized to the first reference, because sampling at
+/// any other size shifts the edit (the node's own guidance).
+pub fn comfy_graph(cfg: &ImageConfig, req: &Request, uploaded: &[String]) -> Value {
+    let mut encode = json!({
+        "clip": ["clip", 0], "prompt": req.prompt, "negative_prompt": req.negative,
+        "resolution": 1024});
+    let mut graph = json!({
         "unet": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": cfg.diffusion_model}},
         "clip": {"class_type": "CLIPLoader", "inputs": {
             "clip_name": cfg.text_encoder, "type": "qwen_image", "device": "default"}},
         "vae": {"class_type": "VAELoader", "inputs": {"vae_name": cfg.vae}},
-        "encode": {"class_type": "TextEncodeQwenImage21", "inputs": {
-            "clip": ["clip", 0], "prompt": req.prompt, "negative_prompt": req.negative,
-            "resolution": 1024}},
-        "latent": {"class_type": "EmptyLatentImage", "inputs": {
-            "width": req.width, "height": req.height, "batch_size": 1}},
-        "sample": {"class_type": "KSampler", "inputs": {
-            "model": ["unet", 0], "positive": ["encode", 0], "negative": ["encode", 1],
-            "latent_image": ["latent", 0], "seed": req.seed, "steps": req.steps,
-            // Guidance off: the reference setting. Above 1 doubles every step.
-            "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0}},
         "decode": {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": ["vae", 0]}},
         "out": {"class_type": "PreviewImage", "inputs": {"images": ["decode", 0]}},
-    })
+    });
+    for (i, name) in uploaded.iter().enumerate() {
+        let node = format!("ref{}", i + 1);
+        graph[&node] =
+            json!({"class_type": "LoadImage", "inputs": {"image": format!("{name} [temp]")}});
+        encode[format!("images.image_{}", i + 1)] = json!([node, 0]);
+    }
+    if !uploaded.is_empty() {
+        encode["vae"] = json!(["vae", 0]);
+    }
+    let canvas = match req.size {
+        Some((width, height)) => {
+            graph["latent"] = json!({"class_type": "EmptyLatentImage", "inputs": {
+                "width": width, "height": height, "batch_size": 1}});
+            json!(["latent", 0])
+        }
+        None => json!(["encode", 2]),
+    };
+    graph["encode"] = json!({"class_type": "TextEncodeQwenImage21", "inputs": encode});
+    graph["sample"] = json!({"class_type": "KSampler", "inputs": {
+        "model": ["unet", 0], "positive": ["encode", 0], "negative": ["encode", 1],
+        "latent_image": canvas, "seed": req.seed, "steps": req.steps,
+        // Guidance off: the reference setting. Above 1 doubles every step.
+        "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0}});
+    graph
 }
 
 /// Whether there is room to start, as a sentence for the model if not.
@@ -416,6 +494,76 @@ impl ComfyUi {
         }
     }
 
+    /// Put one reference in the server's temp directory under a name nobody
+    /// chose, and return the name the server filed it under. Multipart by
+    /// hand: one file and one field do not justify a crate feature.
+    async fn upload(&self, reference: &Reference) -> Result<String> {
+        let boundary = format!("mecha-{:08x}{:08x}", fresh_seed(), fresh_seed());
+        let filename = format!(
+            "mecha-{:08x}{:08x}.{}",
+            fresh_seed(),
+            fresh_seed(),
+            reference.ext
+        );
+        let mut body = Vec::with_capacity(reference.bytes.len() + 512);
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; \
+                 filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(&reference.bytes);
+        body.extend_from_slice(
+            format!(
+                "\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"type\"\r\n\r\n\
+                 temp\r\n--{boundary}--\r\n"
+            )
+            .as_bytes(),
+        );
+        let res = self
+            .http
+            .post(self.endpoint("upload/image")?)
+            .timeout(Duration::from_secs(60))
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(body)
+            .send()
+            .await?;
+        let status = res.status();
+        let text = res.text().await?;
+        if !status.is_success() {
+            bail!(
+                "uploading {} failed ({status}): {}",
+                reference.path,
+                clip(&text)
+            );
+        }
+        let answer: Value = serde_json::from_str(&text)?;
+        if answer
+            .get("subfolder")
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.is_empty())
+        {
+            bail!(
+                "the image server filed {} under a subfolder",
+                reference.path
+            );
+        }
+        answer
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                anyhow!(
+                    "the image server did not name the upload of {}",
+                    reference.path
+                )
+            })
+    }
+
     async fn generate(
         &self,
         cfg: &ImageConfig,
@@ -424,10 +572,14 @@ impl ComfyUi {
         timeout: Duration,
     ) -> std::result::Result<Vec<u8>, Failure> {
         self.preflight(cfg).await?;
+        let mut uploaded = Vec::with_capacity(req.references.len());
+        for reference in &req.references {
+            uploaded.push(self.upload(reference).await?);
+        }
         let (status, body) = self
             .post_json(
                 "prompt",
-                &json!({"prompt": comfy_graph(cfg, req), "client_id": "mecha"}),
+                &json!({"prompt": comfy_graph(cfg, req, &uploaded), "client_id": "mecha"}),
             )
             .await?;
         if !status.is_success() {
@@ -590,6 +742,58 @@ async fn save(ctx: &ToolCtx, seed: u64, bytes: &[u8]) -> Result<String> {
     bail!("no free file name under images/ for this second")
 }
 
+/// Read each reference out of the run's workspace, through the path jail.
+///
+/// The pixels go to the loopback server and nowhere else — never into the
+/// conversation, so nothing here arms taint; the result names paths only.
+async fn read_references(
+    ctx: &ToolCtx,
+    paths: &[String],
+) -> std::result::Result<Vec<Reference>, String> {
+    use tokio::io::AsyncReadExt;
+    let mut out = Vec::with_capacity(paths.len());
+    for raw in paths {
+        let path = ctx
+            .resolve(raw)
+            .map_err(|e| format!("`{raw}` is not a file in the workspace: {e:#}"))?;
+        let mut options = tokio::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NOFOLLOW);
+        let file = options
+            .open(&path)
+            .await
+            .map_err(|e| format!("cannot open `{raw}`: {e}"))?;
+        let meta = file
+            .metadata()
+            .await
+            .map_err(|e| format!("cannot read `{raw}`: {e}"))?;
+        if !meta.is_file() {
+            return Err(format!("`{raw}` is not a file."));
+        }
+        if meta.len() > MAX_REFERENCE_BYTES {
+            return Err(format!(
+                "`{raw}` is {} MB; references are capped at {} MB.",
+                meta.len() / (1024 * 1024),
+                MAX_REFERENCE_BYTES / (1024 * 1024)
+            ));
+        }
+        let mut bytes = Vec::with_capacity(meta.len() as usize);
+        file.take(MAX_REFERENCE_BYTES)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|e| format!("cannot read `{raw}`: {e}"))?;
+        let ext = sniff_image(&bytes)
+            .ok_or_else(|| format!("`{raw}` is not a PNG, JPEG or WebP image."))?;
+        out.push(Reference {
+            path: raw.clone(),
+            bytes,
+            ext,
+        });
+    }
+    Ok(out)
+}
+
 pub struct ImageGenerate {
     cfg: ImageConfig,
     backend: Arc<ComfyUi>,
@@ -636,7 +840,9 @@ impl ImageGenerate {
         self
     }
 
-    fn request(&self, input: &Value) -> std::result::Result<Request, String> {
+    /// The call's input, validated, and the reference paths still to read —
+    /// reading needs the run's workspace, which [`Self::call`] has.
+    fn request(&self, input: &Value) -> std::result::Result<(Request, Vec<String>), String> {
         let prompt = input
             .get("prompt")
             .and_then(Value::as_str)
@@ -660,11 +866,28 @@ impl ImageGenerate {
                 "`negative_prompt` is over {PROMPT_CAP} characters."
             ));
         }
+        let references: Vec<String> = match input.get("reference_images") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .collect::<Option<_>>()
+                .ok_or("`reference_images` must be a list of paths.")?,
+            Some(_) => return Err("`reference_images` must be a list of paths.".into()),
+        };
+        if references.len() > MAX_REFERENCES {
+            return Err(format!(
+                "At most {MAX_REFERENCES} reference images per call, not {}.",
+                references.len()
+            ));
+        }
         let size = match input.get("size").and_then(Value::as_str) {
-            None => Size::Square,
-            Some(s) => Size::parse(s).ok_or_else(|| {
+            // An edit follows its first reference's shape unless asked not to.
+            None if !references.is_empty() => None,
+            None => Some(Size::Square),
+            Some(s) => Some(Size::parse(s).ok_or_else(|| {
                 format!("`size` must be square, landscape or portrait, not `{s}`.")
-            })?,
+            })?),
         };
         let seed = match input.get("seed") {
             None | Some(Value::Null) => fresh_seed(),
@@ -672,15 +895,17 @@ impl ImageGenerate {
                 .as_u64()
                 .ok_or_else(|| "`seed` must be a whole number, zero or more.".to_string())?,
         };
-        let (width, height) = size.dims();
-        Ok(Request {
-            prompt: prompt.to_string(),
-            negative: negative.to_string(),
-            width,
-            height,
-            steps: self.cfg.steps,
-            seed,
-        })
+        Ok((
+            Request {
+                prompt: prompt.to_string(),
+                negative: negative.to_string(),
+                size: size.map(Size::dims),
+                steps: self.cfg.steps,
+                seed,
+                references: Vec::new(),
+            },
+            references,
+        ))
     }
 
     fn arm_unload(&self) {
@@ -707,10 +932,12 @@ impl Tool for ImageGenerate {
     }
 
     fn description(&self) -> &str {
-        "Generate an image from a text description with the local image model and save it \
-         as a PNG in the workspace. Takes about a minute. It renders text inside images \
-         well — put the exact words in quotes. You will not see the result; the user will. \
-         To revise one, call again with an edited prompt and the same seed."
+        "Generate an image with the local image model, or edit one, and save the result as a \
+         PNG in the workspace. Takes about a minute. It renders text inside images well — put \
+         the exact words in quotes. To edit, pass the picture's path in reference_images (one \
+         the user attached, or an earlier result) and say in the prompt what to change and \
+         what to keep, e.g. \"Keep <image1> unchanged except: the jacket is now yellow\". You \
+         will not see the result; the user will."
     }
 
     fn input_schema(&self) -> Value {
@@ -728,12 +955,18 @@ impl Tool for ImageGenerate {
                 "size": {
                     "type": "string",
                     "enum": ["square", "landscape", "portrait"],
-                    "description": "Default \"square\" (1024×1024). landscape is 1344×768, portrait 768×1344."
+                    "description": "Default \"square\" (1024×1024); an edit defaults to its first reference's shape. landscape is 1344×768, portrait 768×1344."
+                },
+                "reference_images": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": MAX_REFERENCES,
+                    "description": "Workspace paths of images to edit or draw from — an attached picture (inbox/...) or an earlier result (images/...). The first is the one being edited; refer to them as <image1>, <image2> in the prompt."
                 },
                 "seed": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "A seed from an earlier result keeps its composition while the prompt changes. Omit for a new image."
+                    "description": "Without reference_images, an earlier result's seed keeps its composition while the prompt changes. Omit it for an edit, and for a new image."
                 }
             },
             "required": ["prompt"]
@@ -760,10 +993,26 @@ impl Tool for ImageGenerate {
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
-        let req = match self.request(&input) {
-            Ok(req) => req,
+        let (mut req, paths) = match self.request(&input) {
+            Ok(parsed) => parsed,
             Err(why) => return Ok(ToolOutput::err(why)),
         };
+        req.references = match read_references(ctx, &paths).await {
+            Ok(references) => references,
+            Err(why) => return Ok(ToolOutput::err(why)),
+        };
+        // An edit at its reference's own seed redraws the reference — see
+        // `seed_of_generated`. Structural rather than a line in the prompt,
+        // because "reuse the seed to keep the composition" is exactly what a
+        // model learns from a text-to-image result.
+        let mut reseeded = None;
+        if paths.iter().any(|p| seed_of_generated(p) == Some(req.seed)) {
+            let old = req.seed;
+            while req.seed == old {
+                req.seed = fresh_seed();
+            }
+            reseeded = Some(old);
+        }
         if let Err(why) = memory_verdict(mem_available_mb(), self.cfg.min_available_mb) {
             return Ok(ToolOutput::err(why));
         }
@@ -811,19 +1060,39 @@ impl Tool for ImageGenerate {
                 )))
             }
         };
-        Ok(ToolOutput::ok(format!(
-            "image: {path}\n\
-             Generated a {}×{} image in {} s (seed {}, {} steps) and saved it to {path} in the \
-             workspace. You cannot see it; the user can, so do not describe what it shows. To \
-             revise it, call image_generate again with an edited prompt and seed {} to keep \
-             the composition.",
-            req.width,
-            req.height,
-            started.elapsed().as_secs(),
-            req.seed,
-            req.steps,
-            req.seed
-        )))
+        let secs = started.elapsed().as_secs();
+        let size = match req.size {
+            Some((w, h)) => format!("{w}×{h}"),
+            None => "reference-shaped".to_string(),
+        };
+        let mut text = format!("image: {path}\n");
+        if req.references.is_empty() {
+            text.push_str(&format!(
+                "Generated a {size} image in {secs} s (seed {}, {} steps) and saved it to {path} \
+                 in the workspace. You cannot see it; the user can, so do not describe what it \
+                 shows. To revise it, call image_generate again with an edited prompt and seed {} \
+                 to keep the composition, or edit it by passing {path} in reference_images.",
+                req.seed, req.steps, req.seed
+            ));
+        } else {
+            let sources: Vec<&str> = req.references.iter().map(|r| r.path.as_str()).collect();
+            text.push_str(&format!(
+                "Edited {} into a {size} image in {secs} s (seed {}, {} steps) and saved it to \
+                 {path} in the workspace; the original is unchanged. You cannot see it; the user \
+                 can, so do not describe what it shows. To change it further, edit {path} next.",
+                sources.join(", "),
+                req.seed,
+                req.steps
+            ));
+        }
+        if let Some(old) = reseeded {
+            text.push_str(&format!(
+                " (Seed {old} is the reference's own, which redraws the original instead of \
+                 editing it, so seed {} was used.)",
+                req.seed
+            ));
+        }
+        Ok(ToolOutput::ok(text))
     }
 }
 
@@ -951,6 +1220,8 @@ mod tests {
                         }
                     } else if path.starts_with("/view?") {
                         reply("200 OK", "image/png", PNG)
+                    } else if path == "/upload/image" {
+                        json_reply(json!({"name": "up.png", "subfolder": "", "type": "temp"}))
                     } else if line.starts_with("GET /queue") {
                         let now = if running { "job-1" } else { "someone-else" };
                         json_reply(
@@ -1023,12 +1294,23 @@ mod tests {
         assert_eq!(caps.egress, crate::tool::Egress::None);
         // Runs in a read-only chat without an approval (the owner's ruling).
         assert!(t.read_only());
-        // And the schema has nowhere to put a destination.
+        // And the schema has nowhere to put a destination. `reference_images`
+        // names *sources*, and each goes through the path jail: reading a
+        // workspace file into a loopback server sends nothing anywhere.
         let schema = t.input_schema();
         let props = schema["properties"].as_object().unwrap();
         let mut keys: Vec<_> = props.keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["negative_prompt", "prompt", "seed", "size"]);
+        assert_eq!(
+            keys,
+            [
+                "negative_prompt",
+                "prompt",
+                "reference_images",
+                "seed",
+                "size"
+            ]
+        );
     }
 
     #[test]
@@ -1047,12 +1329,12 @@ mod tests {
         let req = Request {
             prompt: hostile.into(),
             negative: String::new(),
-            width: 1024,
-            height: 1024,
+            size: Some((1024, 1024)),
             steps: 40,
             seed: 7,
+            references: Vec::new(),
         };
-        let g = comfy_graph(&cfg, &req);
+        let g = comfy_graph(&cfg, &req, &[]);
         let mut classes: Vec<_> = g
             .as_object()
             .unwrap()
@@ -1114,14 +1396,93 @@ mod tests {
         assert!(t
             .request(&json!({"prompt": "x".repeat(PROMPT_CAP + 1)}))
             .is_err());
-        let r = t
+        assert!(t
+            .request(&json!({"prompt": "x", "reference_images": "images/a.png"}))
+            .is_err());
+        assert!(t
+            .request(&json!({"prompt": "x", "reference_images": [1]}))
+            .is_err());
+        let five = vec!["images/a.png"; MAX_REFERENCES + 1];
+        assert!(t
+            .request(&json!({"prompt": "x", "reference_images": five}))
+            .is_err());
+        let (r, paths) = t
             .request(&json!({"prompt": " a fox ", "size": "portrait", "seed": 3}))
             .unwrap();
         assert_eq!(
-            (r.prompt.as_str(), r.width, r.height, r.seed),
-            ("a fox", 768, 1344, 3)
+            (r.prompt.as_str(), r.size, r.seed, paths.len()),
+            ("a fox", Some((768, 1344)), 3, 0)
         );
         assert_eq!(r.steps, 40);
+        // No size: square for a new image, the reference's shape for an edit.
+        let (r, _) = t.request(&json!({"prompt": "x"})).unwrap();
+        assert_eq!(r.size, Some((1024, 1024)));
+        let (r, paths) = t
+            .request(&json!({"prompt": "x", "reference_images": ["inbox/me.jpg"]}))
+            .unwrap();
+        assert_eq!((r.size, paths), (None, vec!["inbox/me.jpg".to_string()]));
+    }
+
+    #[test]
+    fn an_edit_graph_loads_its_references_from_temp_and_samples_on_their_shape() {
+        let cfg = ImageConfig::default();
+        let req = Request {
+            prompt: "Keep <image1> unchanged except the jacket".into(),
+            negative: String::new(),
+            size: None,
+            steps: 40,
+            seed: 9,
+            references: Vec::new(),
+        };
+        let g = comfy_graph(&cfg, &req, &["a.png".into(), "b.jpg".into()]);
+        assert_eq!(g["ref1"]["class_type"], "LoadImage");
+        assert_eq!(g["ref1"]["inputs"]["image"], "a.png [temp]");
+        assert_eq!(g["ref2"]["inputs"]["image"], "b.jpg [temp]");
+        let enc = &g["encode"]["inputs"];
+        assert_eq!(enc["images.image_1"], json!(["ref1", 0]));
+        assert_eq!(enc["images.image_2"], json!(["ref2", 0]));
+        assert_eq!(enc["vae"], json!(["vae", 0]));
+        assert_eq!(g["sample"]["inputs"]["latent_image"], json!(["encode", 2]));
+        assert!(
+            g.get("latent").is_none(),
+            "no empty canvas when following the reference"
+        );
+        // A size asked for gets its own canvas even with references.
+        let sized = Request {
+            size: Some((1344, 768)),
+            ..req
+        };
+        let g = comfy_graph(&cfg, &sized, &["a.png".into()]);
+        assert_eq!(g["sample"]["inputs"]["latent_image"], json!(["latent", 0]));
+        assert_eq!(g["latent"]["inputs"]["width"], 1344);
+        // And text-to-image has no references, no VAE on the encoder.
+        let plain = Request {
+            size: Some((1024, 1024)),
+            ..sized
+        };
+        let g = comfy_graph(&cfg, &plain, &[]);
+        assert!(g.get("ref1").is_none() && g["encode"]["inputs"].get("vae").is_none());
+    }
+
+    #[test]
+    fn a_generated_files_seed_is_read_back_off_its_name() {
+        assert_eq!(
+            seed_of_generated("images/20260925-142604-4282255838.png"),
+            Some(4282255838)
+        );
+        assert_eq!(seed_of_generated("images/20260925-142604-7-2.png"), Some(7));
+        assert_eq!(seed_of_generated("inbox/20260925-142604-7.png"), None);
+        assert_eq!(seed_of_generated("images/holiday-photo-7.png"), None);
+        assert_eq!(seed_of_generated("images/20260925-142604-7.jpg"), None);
+    }
+
+    #[test]
+    fn only_real_images_are_sniffed_as_images() {
+        assert_eq!(sniff_image(PNG), Some("png"));
+        assert_eq!(sniff_image(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0]), Some("jpg"));
+        assert_eq!(sniff_image(b"RIFF\0\0\0\0WEBPVP8 "), Some("webp"));
+        assert_eq!(sniff_image(b"<svg xmlns=..."), None);
+        assert_eq!(sniff_image(b"#!/bin/sh"), None);
     }
 
     #[tokio::test]
@@ -1347,6 +1708,116 @@ mod tests {
         assert!(
             !reached.load(Ordering::SeqCst),
             "the client followed a redirect off the loopback address it was vetted for"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn an_attached_photo_is_edited_through_a_temp_upload() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("inbox/me.jpg"), [0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]).unwrap();
+        let out = tool(&url)
+            .call(
+                json!({"prompt": "Keep <image1> unchanged except: a sunset sky",
+                       "reference_images": ["inbox/me.jpg"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("Edited inbox/me.jpg"),
+            "{}",
+            out.content
+        );
+        let seen = seen.lock().unwrap().clone();
+        let upload = seen
+            .iter()
+            .find(|l| l.starts_with("POST /upload/image"))
+            .unwrap();
+        assert!(
+            upload.contains("name=\"type\"") && upload.contains("temp"),
+            "{upload}"
+        );
+        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        assert!(submitted.contains("up.png [temp]"), "{submitted}");
+        assert!(
+            std::fs::read(dir.join("inbox/me.jpg"))
+                .unwrap()
+                .starts_with(&[0xFF, 0xD8]),
+            "the original is untouched"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_reference_outside_the_workspace_or_not_an_image_is_refused_before_any_upload() {
+        let (url, seen) = fake(vec![], "200 OK").await;
+        let dir = tempdir();
+        std::fs::write(dir.join("notes.txt"), "just text").unwrap();
+        let t = tool(&url);
+        for bad in [
+            "../outside.png",
+            "/etc/hostname",
+            "notes.txt",
+            "missing.png",
+        ] {
+            let out = t
+                .call(
+                    json!({"prompt": "x", "reference_images": [bad]}),
+                    &ctx(&dir),
+                )
+                .await
+                .unwrap();
+            assert!(
+                out.is_error && out.content.contains(bad),
+                "{bad}: {}",
+                out.content
+            );
+        }
+        assert!(
+            !seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.contains("/upload/image") || l.contains("/prompt")),
+            "nothing reached the server"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn editing_at_the_references_own_seed_is_reseeded() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::write(dir.join("images/20260925-142604-7.png"), PNG).unwrap();
+        let out = tool(&url)
+            .call(
+                json!({"prompt": "same fox, yellow raincoat", "seed": 7,
+                       "reference_images": ["images/20260925-142604-7.png"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("Seed 7 is the reference's own"),
+            "{}",
+            out.content
+        );
+        let submitted = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|l| l.starts_with("POST /prompt"))
+            .cloned()
+            .unwrap();
+        assert!(
+            !submitted.contains("\"seed\":7,"),
+            "sampled at the reference's seed: {submitted}"
         );
         std::fs::remove_dir_all(dir).ok();
     }
