@@ -182,6 +182,7 @@ value.
 | `predictive_compaction` | Compaction triggers on the reported size only, never on the forecast. |
 | `carried_state` | Tool state (the plan) does not carry across a compaction. |
 | `situation_brief` | The situation brief is recorded but not put into the run's first message. Ships off, so an arm measuring it names it in `levers_on`. |
+| `past_appraisals` | `goal_context` returns no past appraisal. Ships off, so an arm measuring it names it in `levers_on`; put the appraisals it should find in the environment directory's `appraisals/`. |
 | `approval_rules` | *Refused in a manifest.* Your `forbid` list stands. |
 
 Every lever except `approval_rules` corresponds to a `--no-…` flag on

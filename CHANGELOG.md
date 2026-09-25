@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`goal_context` can serve past clean appraisals** (`APPRAISAL-WIRING-DESIGN.md`
+  I2, 2c-2), behind `[agent] past_appraisals` / `Lever::PastAppraisals`,
+  which **ships off** until an experiment measures it (`levers_on =
+  ["past_appraisals"]`; `mecha eval` forces it off). On, the tool answers a
+  request toward the run's goal with up to three appraisals of runs in the
+  same situation toward the same goal — only appraisals of runs that read
+  no third-party content — framed as a model's interpretation of an
+  earlier run. Nothing reaches the prefix; the answer with the lever off is
+  unchanged. An experiment environment's `appraisals/` is seeded into each
+  trial home.
+
 - `calendar_list_events` and `calendar_freebusy` take `now`, `today`,
   `tomorrow`, `yesterday` and `±Nd` and resolve them on the server, in
   `mecha-mail`, `mecha-google` and `mecha-outlook` alike (`time::window`), and

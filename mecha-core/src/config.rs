@@ -613,6 +613,14 @@ pub struct AgentConfig {
     /// `mecha exp` (`Lever::SituationBrief`) before it ships on. Off leaves
     /// the recording exactly as it was.
     pub situation_brief: bool,
+    /// Serve up to three past **clean** appraisals of the run's situation
+    /// and goal through `goal_context`, on demand — never pushed, never the
+    /// prefix (`APPRAISAL-WIRING-DESIGN.md` I2, built as 2c-2). **Off by
+    /// default**: retrieved memory can cost more than it returns, so it is
+    /// the lever stage of the design's "shadow, then measure, then arm"
+    /// (§1, decision 7), measured with and without by `mecha exp`
+    /// (`Lever::PastAppraisals`) before it ships on.
+    pub past_appraisals: bool,
 }
 
 impl Default for AgentConfig {
@@ -645,6 +653,7 @@ impl Default for AgentConfig {
             carried_state: true,
             sensors_in_brief: true,
             situation_brief: false,
+            past_appraisals: false,
         }
     }
 }
@@ -1667,6 +1676,7 @@ struct AgentLayer {
     carried_state: Option<bool>,
     sensors_in_brief: Option<bool>,
     situation_brief: Option<bool>,
+    past_appraisals: Option<bool>,
     timezone: Option<String>,
 }
 
@@ -1782,6 +1792,9 @@ impl ConfigLayer {
             }
             if let Some(v) = a.situation_brief {
                 t.situation_brief = v;
+            }
+            if let Some(v) = a.past_appraisals {
+                t.past_appraisals = v;
             }
             if a.timezone.is_some() {
                 t.timezone = a.timezone;

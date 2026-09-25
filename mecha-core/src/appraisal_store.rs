@@ -815,25 +815,196 @@ impl CleanRead {
     /// this build cannot name (`GoalKey::Unread`, `surface_unread`) — kept
     /// verbatim in the key, and still never equal to anything.
     pub fn same_situation_and_goal(&self, evidence: &SessionEvidence, n: usize) -> Vec<&Clean> {
-        fn keyed(s: Option<&Situation>) -> Option<String> {
-            let s = s?;
-            let unnamed = s.surface_unread.is_some()
-                || matches!(s.goal, Some(crate::situation::GoalKey::Unread(_)));
-            (!unnamed).then(|| s.key())
-        }
-        let Some(here) = keyed(evidence.situation.as_ref()) else {
-            return Vec::new();
+        self.keyed_as(
+            evidence.situation.as_ref(),
+            Some(evidence.session_id.as_str()),
+            n,
+        )
+    }
+
+    /// The same selection for a run about to start: `run` is the situation
+    /// its rules block was matched against (`setup::build`'s, the goal
+    /// included), the key `RunConfig` records and a later appraisal of this
+    /// run will carry. What `goal_context` serves (I2, 2c-2). No session is
+    /// excluded — a fresh run has no appraisal of its own; a resumed
+    /// session appraised earlier may be served its own, which is of the
+    /// same situation and goal by construction.
+    pub fn for_run(&self, run: &Situation, n: usize) -> Vec<&Clean> {
+        self.keyed_as(Some(run), None, n)
+    }
+
+    fn keyed_as(&self, here: Option<&Situation>, not: Option<&str>, n: usize) -> Vec<&Clean> {
+        newest_keyed(self.appraisals.iter(), here, not, n)
+    }
+}
+
+/// The region key a record is compared on, or `None` where it cannot be
+/// keyed: an unknown situation, or a surface or goal this build cannot name.
+fn region_key(s: Option<&Situation>) -> Option<String> {
+    let s = s?;
+    let unnamed =
+        s.surface_unread.is_some() || matches!(s.goal, Some(crate::situation::GoalKey::Unread(_)));
+    (!unnamed).then(|| s.key())
+}
+
+/// The newest `n` of `rows` whose region key is `here`'s, never session
+/// `not`'s. One selection for the appraiser's door and the run's.
+fn newest_keyed<'a>(
+    rows: impl Iterator<Item = &'a Clean>,
+    here: Option<&Situation>,
+    not: Option<&str>,
+    n: usize,
+) -> Vec<&'a Clean> {
+    let Some(here) = region_key(here) else {
+        return Vec::new();
+    };
+    let mut out: Vec<&Clean> = rows
+        .filter(|c| not.is_none_or(|id| c.session_id != id))
+        .filter(|c| region_key(c.situation.as_ref()).as_ref() == Some(&here))
+        .collect();
+    out.sort_by_key(|c| std::cmp::Reverse(c.at));
+    out.truncate(n);
+    out
+}
+
+/// What `goal_context` may serve a run (I2, built as 2c-2): up to
+/// [`PAST_SHOWN`] clean appraisals of the situation the run's rules block
+/// was matched against, the goal included. Only a [`Clean`] is held, so a
+/// tainted appraisal cannot be served whatever the caller loaded.
+///
+/// **Selected in two steps**, because the tool set a run records is not the
+/// one its block was matched against: a front-end takes tools off the
+/// registry after `setup::build` (`tasks work` and a question continuation
+/// withhold `kg_task_update`), and the run record — which a later appraisal
+/// of this run is keyed on — reads the registry as it is when the run
+/// starts. So `select` keeps the clean records that agree on every key but
+/// the tools, and [`Self::for_registry`], called by the loop at run start
+/// with the registry it actually carries, picks the newest that agree on
+/// the tools too. Without the second step a delegated task's retrieval
+/// never matched a past run of the same task (found building it).
+#[derive(Debug, Clone, Default)]
+pub struct PastAppraisals {
+    goal: Option<GoalRef>,
+    run: Situation,
+    pool: Vec<Clean>,
+    served: Vec<Clean>,
+    unread: Option<String>,
+}
+
+impl PastAppraisals {
+    /// The clean records toward `run` on every key but the tools, and the
+    /// first selection against `run`'s own tools.
+    pub fn select(read: CleanRead, run: &Situation) -> PastAppraisals {
+        let untooled = |s: &Situation| Situation {
+            tools: Vec::new(),
+            ..s.clone()
         };
-        let mut out: Vec<&Clean> = self
+        let here = region_key(Some(&untooled(run)));
+        let pool: Vec<Clean> = read
             .appraisals
-            .iter()
-            .filter(|c| c.session_id != evidence.session_id)
-            .filter(|c| keyed(c.situation.as_ref()).as_ref() == Some(&here))
+            .into_iter()
+            .filter(|c| {
+                here.is_some() && region_key(c.situation.as_ref().map(untooled).as_ref()) == here
+            })
             .collect();
-        out.sort_by_key(|c| std::cmp::Reverse(c.at));
-        out.truncate(n);
+        let mut out = PastAppraisals {
+            goal: run
+                .goal
+                .as_ref()
+                .and_then(crate::situation::GoalKey::named)
+                .cloned(),
+            run: run.clone(),
+            pool,
+            served: Vec::new(),
+            unread: None,
+        };
+        let tools = run.tools.clone();
+        out.for_registry(&tools);
         out
     }
+
+    /// The store could not be read: nothing is served, and the answer says
+    /// why rather than reading as "no past appraisal".
+    pub fn unread(why: String, run: &Situation) -> PastAppraisals {
+        PastAppraisals {
+            goal: run
+                .goal
+                .as_ref()
+                .and_then(crate::situation::GoalKey::named)
+                .cloned(),
+            run: run.clone(),
+            unread: Some(why),
+            ..PastAppraisals::default()
+        }
+    }
+
+    /// Re-select against the tools the run carries — the registry the run
+    /// record will name.
+    pub fn for_registry(&mut self, tools: &[String]) {
+        let run = Situation {
+            tools: tools.to_vec(),
+            ..self.run.clone()
+        };
+        self.served = newest_keyed(self.pool.iter(), Some(&run), None, PAST_SHOWN)
+            .into_iter()
+            .cloned()
+            .collect();
+    }
+
+    /// The goal the selection is toward — the run's matched goal. Served
+    /// only to a request toward it.
+    pub fn goal(&self) -> Option<&GoalRef> {
+        self.goal.as_ref()
+    }
+
+    pub fn served(&self) -> &[Clean] {
+        &self.served
+    }
+
+    pub fn unread_reason(&self) -> Option<&str> {
+        self.unread.as_deref()
+    }
+}
+
+/// A [`CleanRead`] of `rows` through the same admission the store's door
+/// uses ([`Clean::admit`]) — for a test in another module that needs a
+/// `Clean`, which it cannot otherwise build. A tainted row is withheld here
+/// exactly as `AppraisalStore::clean` withholds it.
+#[cfg(test)]
+pub(crate) fn clean_read_of(rows: Vec<TextAppraisal>) -> CleanRead {
+    let mut read = CleanRead::default();
+    for row in rows {
+        match Clean::admit(row) {
+            Some(c) => read.appraisals.push(c),
+            None => read.withheld += 1,
+        }
+    }
+    read
+}
+
+/// A stored appraisal of session `session` in `situation`, clean or
+/// tainted — the shape `AppraisalStore::record` writes, for other modules'
+/// tests.
+#[cfg(test)]
+pub(crate) fn test_row(
+    session: &str,
+    situation: &Situation,
+    clean: bool,
+    at: &str,
+) -> TextAppraisal {
+    serde_json::from_value(serde_json::json!({
+        "id": format!("apr-{session}"),
+        "at": at,
+        "session_id": session,
+        "origin": if clean { "clean" } else { "untrusted" },
+        "taint": {"private": true, "untrusted": !clean},
+        "situation": situation,
+        "model": "local-model",
+        "interpretation": format!("In {session} the owner wanted the date quoted from the mail."),
+        "prediction": "Next time the owner will want the date confirmed.",
+        "lessons": ["Quote the date from the mail when passing it on."],
+    }))
+    .unwrap()
 }
 
 // ─── The store ──────────────────────────────────────────────────────────────
@@ -1805,6 +1976,64 @@ mod tests {
         let e = SessionEvidence::read(&path).unwrap();
         assert_eq!(e.origin(), Origin::Clean);
         e
+    }
+
+    /// I2 (2c-2): what a run is served is keyed like the appraiser's door,
+    /// clean only, and on the tool set the run record will name — the
+    /// registry after a front-end withheld a tool, not the one the block was
+    /// matched against. A tainted appraisal of the very same situation is
+    /// never served; another goal's never is; and a delegated task whose
+    /// block saw `kg_task_update` still finds its past runs, which recorded
+    /// the registry without it. Fails on a selection keyed on the build's
+    /// registry, which served the task nothing.
+    #[test]
+    fn a_run_is_served_clean_appraisals_of_its_recorded_situation_and_goal() {
+        use crate::situation::GoalKey;
+        let toward = |g: &str, tools: &[&str]| {
+            Situation::of_run(
+                &tools.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
+                Some(Path::new("/project")),
+            )
+            .on(Some(SessionKind::Task))
+            .toward(Some(GoalKey::Named(g.parse().unwrap())))
+        };
+        let recorded = toward("task:t-budget", &["mail_search"]);
+        let read = clean_read_of(vec![
+            test_row("s-old", &recorded, true, "2026-09-20T00:00:00Z"),
+            test_row("s-new", &recorded, true, "2026-09-22T00:00:00Z"),
+            test_row("s-tainted", &recorded, false, "2026-09-23T00:00:00Z"),
+            test_row(
+                "s-other-goal",
+                &toward("task:t-other", &["mail_search"]),
+                true,
+                "2026-09-24T00:00:00Z",
+            ),
+        ]);
+        assert_eq!(read.withheld, 1, "the tainted row never becomes a Clean");
+        // The block was matched with `kg_task_update` registered; the run
+        // record, and so every past appraisal, names the registry without it.
+        let built = toward("task:t-budget", &["kg_task_update", "mail_search"]);
+        let mut past = PastAppraisals::select(read, &built);
+        assert!(
+            past.served().is_empty(),
+            "keyed on the build's registry: nothing"
+        );
+        past.for_registry(&["mail_search".to_string()]);
+        let got: Vec<&str> = past
+            .served()
+            .iter()
+            .map(|c| c.session_id.as_str())
+            .collect();
+        assert_eq!(
+            got,
+            vec!["s-new", "s-old"],
+            "newest first, clean, same goal"
+        );
+        assert_eq!(past.goal(), Some(&GoalRef::Task("t-budget".into())));
+        assert!(past.unread_reason().is_none());
+        let unread = PastAppraisals::unread("permission denied".into(), &built);
+        assert!(unread.served().is_empty());
+        assert_eq!(unread.unread_reason(), Some("permission denied"));
     }
 
     /// The past an appraiser is shown: clean appraisals of the same
