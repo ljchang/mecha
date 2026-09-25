@@ -1674,10 +1674,6 @@ fn begin_turn(
     // steering, and an outbox route stamped with this session's id.
     let mut cx = (**chat.agent.context()).clone();
     cx.tools = Arc::new(ToolCtx {
-        workspace: ws.workspace.clone(),
-        // This session's own, inside its workspace: the agent's is shared by
-        // every session this process serves (`spill_within`).
-        spill_dir: Some(mecha_core::tool::spill_within(&ws.workspace)),
         // A spoken turn's staged drafts are reviewed by ear, and the model
         // must be told so rather than told about a command line — the
         // 2026-09-13 call, where it repeated the default sentence to a
@@ -1710,7 +1706,9 @@ fn begin_turn(
             *ws.mode.lock().unwrap_or_else(|e| e.into_inner()),
             started_by_a_run(),
         )),
-        ..(*chat.agent.ctx()).clone()
+        // The session's workspace and its own spill directory: the agent's
+        // is shared by every session this process serves (`for_session`).
+        ..chat.agent.ctx().for_session(ws.workspace.clone())
     });
     cx.approver = if opts.approve_all {
         Arc::new(mecha_core::tool::ModeApprover {
@@ -2809,6 +2807,44 @@ pub async fn sessions(State(state): Chat) -> axum::response::Response {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_served_session_builds_its_turn_context_through_for_session() {
+        // Reads the source because there is no reflective way to ask. The
+        // leak lived in one line per front-end: a turn's context cloned from
+        // the agent's with only the workspace replaced keeps the agent's
+        // spill directory, which every session it serves then shares and any
+        // of them can read (review of #313). `ToolCtx::for_session` is the
+        // fix; this fails if a front-end goes back to the bare clone.
+        let sources = [
+            ("serve/chat.rs", include_str!("chat.rs")),
+            (
+                "slack/connector.rs",
+                include_str!("../../slack/connector.rs"),
+            ),
+            ("voice/mod.rs", include_str!("../../voice/mod.rs")),
+        ];
+        for (name, src) in sources {
+            let code: String = src
+                .split("#[cfg(test)]\nmod tests {")
+                .next()
+                .unwrap_or(src)
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                code.contains("for_session("),
+                "{name} builds no session context"
+            );
+            for bare in ["agent.ctx()).clone()", "..(*cx.tools).clone()"] {
+                assert!(
+                    !code.contains(bare),
+                    "{name} builds a turn context by cloning the agent's (`{bare}`)"
+                );
+            }
+        }
+    }
+
     /// A chat about a board task is its lane whatever the page's mode; a
     /// turn whose approver asks nobody — voice's approve-all, or the session
     /// mode set to `allow` or `read-only` — is unattended; only `ask` outside
