@@ -120,6 +120,15 @@ turn, never the prefix, behind `Lever::SituationBrief`, which ships off;
 `mecha run` now records and delivers a brief too, so an experiment's lever-on
 and lever-off arms are two conditions, not one. The
 owner then ruled that delivery must arm `private` (R35), which is unbuilt.
+**2a-3**, #315 (`0692dc79`, 20:32Z): the counts-only appraiser
+(`appraise_with_model`) is retired into 2a-2's text appraisal; `sessions
+appraise --appraise` stays as a hidden, deprecated no-op, and old records
+carrying its errors still load and count. With it `Affect::Anger` lost its
+only live producer (the appraiser's `other`/`world` verdict); `label_of`
+still derives it, so older records read as before. #313 (`5fa722fe`,
+another lane's) made `reflect` and `distill` pass over test sessions, so
+neither the reflector nor 2a-2's appraiser reads a `MECHA_SESSION_KIND=test`
+run.
 Separately, at 03:29Z that morning, #295 (`c4c916d1`) made `[sandbox] memory_mb` and `cpus` real
 under bwrap through a `systemd-run --user --scope` (`Sandbox::bwrap_launcher`)
 and made landlock refuse them (see *Traps*). What the arc left open is in

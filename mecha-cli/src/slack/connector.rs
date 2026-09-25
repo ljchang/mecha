@@ -22,7 +22,6 @@ use mecha_core::agent::{Agent, AgentEvent, Budget, Conversation, RunOutcome};
 use mecha_core::message::{Block, Message};
 use mecha_core::outbox::OutboxRoute;
 use mecha_core::session::{Record, Session, SessionMeta};
-use mecha_core::tool::ToolCtx;
 use mecha_slack::binding::{self, Binding, Credentials, Gate, SlackStore};
 use mecha_slack::envelope::{FileRef, Inbound, Interaction, SlackEvent};
 use mecha_slack::{blocks, chat, Slack, SocketMode, SocketOptions};
@@ -798,10 +797,9 @@ impl State {
         };
 
         let mut cx = (**self.agent.context()).clone();
-        cx.tools = Arc::new(ToolCtx {
-            workspace,
-            ..(*self.agent.ctx()).clone()
-        });
+        // The thread's workspace and its own spill directory: the agent's is
+        // shared by every thread this connector serves (`for_session`).
+        cx.tools = Arc::new(self.agent.ctx().for_session(workspace));
         let approver = SlackApprover::new(
             key.clone(),
             Arc::clone(&mode),

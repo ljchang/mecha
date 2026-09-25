@@ -23,7 +23,7 @@ maps which document holds what.
 ## Where the work is
 
 **2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2c-1, 2d-1 and 3a
-merged and installed.** `APPRAISAL-WIRING-DESIGN.md` (#291) is the authority, with
+merged and installed; 2a-3 merged.** `APPRAISAL-WIRING-DESIGN.md` (#291) is the authority, with
 its rulings in §6. Phase 1's rows 1a–1i landed as #292–#294, #297–#302, #304
 and #305 (plus mecha-graph#21 for the graph TUI's half of 1c; #303 is
 `image_generate`, another lane's, not recorded here). The phase was meant to
@@ -33,14 +33,15 @@ valence; and 1e and 1f change what `planning::Decision::assess` reads for
 `ReviewCommitment`, which reaches a run only under `goal_guidance` (off by
 default). Phase 2's 2a-1 (#308), 2a-2 (#314), 2c-1 (#311) and 2d-1 (#312)
 and phase 3's 3a (#309, behind a lever that ships off) followed the same
-day. What each built is in HISTORY under 2026-09-24/25. `mecha` is installed
-at `6e6f03ba` (19:49Z), which carries all of it (*Machine state, dated*
-below). Six owner rulings of 2026-09-25 are rows R30–R35 of the design's
+day, then 2a-3 (#315). What each built is in HISTORY under 2026-09-24/25.
+`mecha` is installed at `6e6f03ba` (19:49Z), which carries all of it but
+2a-3 (*Machine state, dated* below). Six owner rulings of 2026-09-25 are rows R30–R35 of the design's
 §6. What is open, the follow-ups owed, the minors banked for the owner and
 the `CLAUDE.md` drift are at the top of *The goal system* below.
-The workspace on this branch merged with `6e6f03ba` (no code differs from
-`main`): `cargo test --workspace -q`, summed over its 31 `test result`
-lines, gives 3,145 passed, 0 failed, 4 ignored.
+The workspace on this branch merged with `0692dc79` (no code differs from
+`main`): `cargo test --workspace -q`, summed over its 32 `test result`
+lines, gives 3,136 passed, 0 failed, 4 ignored (3,145 at `6e6f03ba`, before
+2a-3 removed the retired appraiser's tests).
 
 **2026-09-24 — the outbox unclogged: a reply goes from its thread's account,
 and the web review reads as mail and sends in one press.** #272
@@ -2714,8 +2715,8 @@ table, first. The image arc itself is that lane's to record.
 `rules_goal`, each a literal no earlier build carries. The web dist was
 not rebuilt and still holds `index-Cq2ArbMx.js` (18:02:48Z). `mecha-slack`,
 `-triggers`, `-drain` and `-serve` show `ActiveEnterTimestamp` 19:49:06Z;
-the voice worker still 11:31:38Z. Nothing of the appraisal arc is merged and
-uninstalled. What starts happening on this build: the `session_end` hook
+the voice worker still 11:31:38Z. Of the appraisal arc, 2a-3 (#315,
+`0692dc79`, merged 20:32Z) is merged and not installed. What starts happening on this build: the `session_end` hook
 (`nohup mecha distill -p local … &`, already detached as 2a-2 requires) and
 the nightly `"$MECHA" distill -p "$PROVIDER"` in `scripts/ruminate.sh` now also write a text appraisal per
 session when the provider is `kind = "local"` (R29), about a minute of a
@@ -3738,7 +3739,7 @@ the mechanism and every decision. What it left standing:
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
 **2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2c-1, 2d-1 and 3a
-shipped and are installed.** The authority is `APPRAISAL-WIRING-DESIGN.md`:
+shipped and are installed; 2a-3 is merged, not installed.** The authority is `APPRAISAL-WIRING-DESIGN.md`:
 §3 holds the plan as pull requests with their order, and §6 the rulings,
 including R30–R35 of 2026-09-25. What each row built is in HISTORY under
 2026-09-24/25. Four of the catalogue entries phase 1 built (S5, S7, B1 and
@@ -3748,8 +3749,14 @@ deferrals are not repeated here; S1, S8, S3 and O4 carry none, so what 1a,
 #298), save 1d's graph channel below. What is open:
 
 - **Nothing of the arc is in flight.** The next rows are the design's
-  §3 order: after 2a-2, 2a-3, 2b-2, 2c-2, 2d-3, 2e-1 and 2f; 2d-2 after
-  2d-1; and 2b-1, 2e-3, 2e-4 and 2e-6 on phase 1 alone.
+  §3 order: after 2a-2, 2b-2, 2c-2, 2d-3, 2e-1 and 2f; 2d-2 after 2d-1;
+  and 2b-1, 2e-3, 2e-4 and 2e-6 on phase 1 alone.
+- **`Anger` has no live producer since 2a-3 (#315), for the owner.** Its
+  one source was the retired counts-only appraiser's `other`/`world`
+  verdict. `label_of` still derives it, so records written before the
+  retirement read as `Anger`, but no new run can earn it; a new producer
+  would need a new signal row (`Affect::reachable_today` and its doc
+  comment say the same).
 - **Owed before `Lever::SituationBrief` ships on** (3a, #309; the lever is
   off in the live config):
   - **R35's arming.** The owner ruled that delivering the brief arms
