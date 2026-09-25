@@ -2635,9 +2635,13 @@ fast-forwarded to match and its `target/release/mecha-graph`, which the 01:30
 nightly execs, rebuilt. mecha-mail was unchanged since its 94cccc2b install.
 `mecha-slack`, `-triggers`, `-drain` and `-serve` restarted at 03:10:33Z with
 their startup lines seen; the voice worker was not (`scripts/voice` unchanged).
-Still behind: the web dist predates two `web/` changes on main
-(`SettingsCharter.svelte`, `Tasks.svelte`), and Claude Code sessions started
-before 03:10Z hold the old `graph` MCP child until restarted.
+The same commit's `mecha` and `mecha-mail` had been installed minutes earlier
+by another lane, which also rebuilt `~/.mecha/web/dist` for #292/#293's
+`web/` changes (bundle `index-DeqhtR4a.js`, built 03:03Z; it contains
+`Tasks.svelte`'s added "a follow-up was staged" and is the bundle `mecha
+serve` serves) and restarted the voice worker. Still behind: Claude Code
+sessions started before 03:10Z hold the old `graph` MCP child until
+restarted.
 
 ## What the measurements say
 
