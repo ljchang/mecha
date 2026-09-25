@@ -290,7 +290,10 @@ The private leg is different and deliberately so: it is set from the declared
 capability, because a tool that reads your files has read your files whether
 or not the call succeeded. An [image you attach](/docs/features/interfaces/images)
 arms it too — a screenshot is captured, not composed, so it can hold anything
-that was on the screen.
+that was on the screen. So does a delivered
+[situation brief](/docs/features/appraisal/reference#the-situation-brief)
+(`[agent] situation_brief`): it describes your board, what is waiting on you
+and what else is running, which is what reading the board would have armed.
 
 When `mark_untrusted_output` is on, external content is additionally wrapped
 in a marker telling the model to treat it as data rather than instructions.

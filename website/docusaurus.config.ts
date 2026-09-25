@@ -76,6 +76,7 @@ const config: Config = {
       {
         redirects: [
           {from: '/docs/category/factory', to: '/docs/features/public-surface'},
+          {from: '/docs/category/features', to: '/docs/features'},
           {from: '/docs/category/graph', to: '/docs/features/memory/graph'},
           {from: '/docs/factory/artifacts', to: '/docs/features/public-surface/artifacts'},
           {from: '/docs/factory/gallery', to: '/docs/features/public-surface/gallery'},

@@ -119,7 +119,14 @@ R21, and `Agent::fold_situation_brief` puts them in the run's first user
 turn, never the prefix, behind `Lever::SituationBrief`, which ships off;
 `mecha run` now records and delivers a brief too, so an experiment's lever-on
 and lever-off arms are two conditions, not one. The
-owner then ruled that delivery must arm `private` (R35), which is unbuilt.
+owner then ruled that delivery must arm `private` (R35). **3a-3**, #316
+(`04b89ea0`, 21:00Z), built it: `Agent::fold_situation_brief` reports
+delivery and the loop arms `private` at each fold site, and
+`Taint::arm_for_content` arms from any transcript holding a brief (the
+attached image's precedent); and a fold is now a `Record::Extend` of the
+message the door already recorded rather than a whole-transcript
+`Record::Rewrite` that cleared the taint checkpoints, the calendar
+reference's fold included. The lever still ships off.
 **2a-3**, #315 (`0692dc79`, 20:32Z): the counts-only appraiser
 (`appraise_with_model`) is retired into 2a-2's text appraisal; `sessions
 appraise --appraise` stays as a hidden, deprecated no-op, and old records

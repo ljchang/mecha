@@ -22,8 +22,8 @@ maps which document holds what.
 
 ## Where the work is
 
-**2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2a-3, 2c-1, 2d-1 and
-3a merged and installed; R34's readout merged.** `APPRAISAL-WIRING-DESIGN.md` (#291) is the authority, with
+**2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2a-3, 2c-1, 2d-1,
+3a and 3a-3 merged and installed, with R34's readout.** `APPRAISAL-WIRING-DESIGN.md` (#291) is the authority, with
 its rulings in §6. Phase 1's rows 1a–1i landed as #292–#294, #297–#302, #304
 and #305 (plus mecha-graph#21 for the graph TUI's half of 1c; #303 is
 `image_generate`, another lane's, not recorded here). The phase was meant to
@@ -33,15 +33,17 @@ valence; and 1e and 1f change what `planning::Decision::assess` reads for
 `ReviewCommitment`, which reaches a run only under `goal_guidance` (off by
 default). Phase 2's 2a-1 (#308), 2a-2 (#314), 2c-1 (#311) and 2d-1 (#312)
 and phase 3's 3a (#309, behind a lever that ships off) followed the same
-day, then 2a-3 (#315) and R34's closed-goal readout (#317). What each built
-is in HISTORY under 2026-09-24/25. `mecha` is installed at `0692dc79`
-(20:37Z), which carries all of it but #317 (*Machine state, dated* below). Six owner rulings of 2026-09-25 are rows R30–R35 of the design's
+day, then 2a-3 (#315), R34's closed-goal readout (#317) and 3a-3 (#316,
+R35's arming and the fold as an append). What each built is in HISTORY
+under 2026-09-24/25. `mecha` was reinstalled at 21:01Z from `main` at or
+after `04b89ea0` and carries all of it (*Machine state, dated* below). Six owner rulings of 2026-09-25 are rows R30–R35 of the design's
 §6. What is open, the follow-ups owed, the minors banked for the owner and
 the `CLAUDE.md` drift are at the top of *The goal system* below.
-The workspace on this branch merged with `8b0acbe8` (no code differs from
+The workspace on this branch merged with `3f494340` (no code differs from
 `main`): `cargo test --workspace -q`, summed over its 32 `test result`
-lines, gives 3,142 passed, 0 failed, 4 ignored (3,145 at `6e6f03ba` and
-3,136 at `0692dc79`; #313, #315 and #317 changed the set).
+lines, gives 3,149 passed, 0 failed, 4 ignored (3,145 at `6e6f03ba`, 3,136
+at `0692dc79`, 3,142 at `8b0acbe8`; #313, #315, #316 and #317 changed the
+set).
 
 **2026-09-24 — the outbox unclogged: a reply goes from its thread's account,
 and the web review reads as mail and sends in one press.** #272
@@ -2732,6 +2734,18 @@ the web dist still holds `index-Cq2ArbMx.js`. **Merged and not installed:**
 #317 (R34's closed-goal readout, `8b0acbe8`, merged 20:44Z); its
 `widens only when the lesson is` literal prints 0.
 
+**Reinstalled again, 2026-09-25 21:01Z, by a lane this handoff did not
+see: #316 and #317 (verified 21:33Z by asking the artifacts).**
+`~/.cargo/bin/mecha` (21:01:09Z) carries both: `strings ~/.cargo/bin/mecha
+| grep -c` prints 3 for #317's `widens only when the lesson is` and 1 for
+#316's `skipping an extension of a message this transcript`. It is a build
+of `main` at `04b89ea0` (the #316 merge) or later; #318, merged after, is
+docs only, so no literal can tell the two apart. `mecha-slack`,
+`-triggers`, `-drain` and `-serve` show `ActiveEnterTimestamp` 21:01:10Z;
+the voice worker still 11:31:38Z, and the web dist still holds
+`index-Cq2ArbMx.js`. Nothing of the appraisal arc is merged and
+uninstalled.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -3747,9 +3761,8 @@ the mechanism and every decision. What it left standing:
 
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
-**2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2a-3, 2c-1, 2d-1
-and 3a shipped and are installed; R34's readout (#317) is merged, not
-installed.** The authority is `APPRAISAL-WIRING-DESIGN.md`:
+**2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2a-3, 2c-1, 2d-1,
+3a and 3a-3 shipped and are installed, with R34's readout (#317).** The authority is `APPRAISAL-WIRING-DESIGN.md`:
 §3 holds the plan as pull requests with their order, and §6 the rulings,
 including R30–R35 of 2026-09-25. What each row built is in HISTORY under
 2026-09-24/25. Four of the catalogue entries phase 1 built (S5, S7, B1 and
@@ -3767,19 +3780,13 @@ deferrals are not repeated here; S1, S8, S3 and O4 carry none, so what 1a,
   retirement read as `Anger`, but no new run can earn it; a new producer
   would need a new signal row (`Affect::reachable_today` and its doc
   comment say the same).
-- **Owed before `Lever::SituationBrief` ships on** (3a, #309; the lever is
-  off in the live config):
-  - **R35's arming.** The owner ruled that delivering the brief arms
-    `private`, failing closed, as a `kg_task_list` read of the same board
-    does. Delivery arms nothing today. The ruling's home is
-    `docs/TRIFECTA.md`.
-  - **3a-3, a fold as an append.** Each fold edits a message the door
-    already recorded, so it writes a whole-transcript `Record::Rewrite` and
-    clears the taint checkpoints, on every turn whose brief changed in a web
-    chat (the design's B1 entry and ARCHITECTURE's brief bullet).
-  - **3a-2 (M5), a re-delegated task's previous attempts.** No record lists
-    them, and a reopen's reason needs an authorship rule first (the
-    design's M5 entry).
+- **The brief's lever** (3a, #309; off in the live config):
+  - R35's arming and 3a-3's fold-as-append are built (#316, HISTORY), so
+    turning the lever on is now the experiment arms' measurement (§1
+    decision 7), not an unbuilt safeguard.
+  - **3a-2 (M5), a re-delegated task's previous attempts, is still owed.**
+    No record lists them, and a reopen's reason needs an authorship rule
+    first (the design's M5 entry).
 - **2d-1's pass is not in the nightly job.** `mecha sessions compare` runs
   only by hand; adding `"$MECHA" sessions compare -p "$PROVIDER"` to
   `scripts/ruminate.sh` after `validate` is the owner's deploy decision

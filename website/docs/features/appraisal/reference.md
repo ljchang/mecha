@@ -148,6 +148,13 @@ situation_brief = true   # off by default
 
 It ships off because it is still being measured: an experiment runs the same
 tasks with and without it before it is turned on for everyone.
+
+**Delivering the brief counts as private data entering the conversation.** The
+brief describes your board, what is waiting on you and what else is running,
+which is the same information mecha would mark private if the model read your
+board itself. So once a brief is delivered, a run that later reads outside
+content (a web page, an email) cannot send to a destination the model chooses,
+the same as after reading the board. See [the security model](/docs/features/security).
 `--no-situation-brief` turns it off for one run, and `mecha eval` always runs
 without it.
 
