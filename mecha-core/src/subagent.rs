@@ -338,6 +338,9 @@ impl Tool for Subagent {
             // child staged twice — once for it, once for the run that
             // contains it.
             homeostat: None,
+            // Nor briefed: the parent's brief describes the run the child
+            // is one call inside.
+            brief: None,
             tools: Arc::new(ctx.clone()),
             approver: Arc::clone(&self.agent.context().approver),
             // The child's own `max_turns` comes from its profile, via its

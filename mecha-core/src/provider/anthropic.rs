@@ -1730,6 +1730,37 @@ text = "Leave work better than you found it."
     struct World {
         charter: Charter,
         homeostat: Homeostat,
+        /// The situation brief the run carries (B1, 1h) — recorded on the
+        /// run, delivered nowhere — so the scan covers every field of it.
+        brief: crate::brief::SituationBrief,
+    }
+
+    /// A board big enough that its counts have digits no request carries:
+    /// 2,917 open tasks, 2,603 of them overdue, 1,873 held by the agent,
+    /// each row carrying a name that must never reach the brief either.
+    fn g4_board() -> Value {
+        let mut items = Vec::new();
+        for i in 0..2_917 {
+            let (id, due, overdue) = if i == 0 {
+                ("task-g4-own".to_string(), "2030-06-03", false)
+            } else if i <= 2_603 {
+                (format!("task-g4-late-{i:04}"), "2030-05-01", true)
+            } else if i <= 2_620 {
+                (format!("task-g4-soon-{i:04}"), "2030-06-04", false)
+            } else {
+                (format!("task-g4-later-{i:04}"), "2030-09-01", false)
+            };
+            items.push(json!({
+                "id": id,
+                "name": format!("Fixture task number {i}"),
+                "status": "next",
+                "due_at": due,
+                "overdue": overdue,
+                "project_id": if i == 0 { json!("project-g4-aurora") } else { Value::Null },
+                "waiting_on": if i < 1_873 { json!("mecha") } else { Value::Null },
+            }));
+        }
+        json!({"v": 1, "today": "2030-06-02", "truncated": false, "items": items})
     }
 
     /// The conditions a run starts under, produced by the real producers —
@@ -1844,18 +1875,84 @@ text = "Leave work better than you found it."
                 s.store
             );
         }
+        let homeostat = Homeostat {
+            load_avg_1m: Some(13.57),
+            mem_available_kb: Some(24_681_357),
+            backlog: Some(before),
+            backlog_delta: Some(delta),
+            anticipated_guilt: crate::guilt::readout(&commitments),
+            commitments: Some(commitments),
+            charter: Some(readings),
+            ..Homeostat::default()
+        };
+        // The brief, from the real producers where a field has one: the
+        // board reduced by `board_of`, the chain by `goal_chain`, the
+        // commitments through the 1f accessors, local time and quiet hours
+        // by `local_time`, the slots by `slots_of`.
+        use crate::brief::*;
+        let board = g4_board();
+        let anchor = crate::goal::GoalRef::Task("task-g4-own".into());
+        let brief = SituationBrief {
+            assembled_at: now,
+            goal: Some(goal_chain(
+                Some(&anchor),
+                Ok(&board),
+                Ok(&charter),
+                Err("no trigger store in this fixture"),
+            )),
+            board: Some(board_of(Ok(&board), Some("task-g4-own"))),
+            commitments: Some(commitments_of(Some(&homeostat))),
+            time: Some(local_time(
+                now,
+                Some("America/Los_Angeles"),
+                Ok(Some(crate::workflow::AttentionPolicy {
+                    timezone: chrono_tz::America::Los_Angeles,
+                    quiet_start: 23,
+                    quiet_end: 7,
+                    digest_hour: 8,
+                })),
+            )),
+            seats: Some(Seats::Read {
+                capacity: 3,
+                held: 2,
+                holders: vec!["task-g4-seat-holder".into(), "answer g4-parked".into()],
+                unreadable: 0,
+            }),
+            runs: Some(Runs {
+                tasks: Flight::Read {
+                    others: vec!["task-g4-inflight".into()],
+                    unreadable: 0,
+                },
+                triggers: Flight::Read {
+                    others: vec!["g4-nightly-digest".into()],
+                    unreadable: 0,
+                },
+            }),
+            slots: Some(slots_of(
+                200,
+                r#"[{"is_processing":true},{"is_processing":true},{"is_processing":false},{"is_processing":false},{"is_processing":false},{"is_processing":false},{"is_processing":false}]"#,
+            )),
+            voice: Some(Voice::Idle {
+                last_turn_secs: 4_242,
+            }),
+            budget: Some(Budget {
+                max_turns: 200,
+                max_output_tokens: Some(48_000),
+                max_cost_usd: Some(1.25),
+                context_window: Some(65_536),
+                compact_at_tokens: Some(52_428),
+                context_used_tokens: None,
+            }),
+        };
+        assert!(
+            brief.complete(),
+            "every brief field should read, so each has values to scan for: {:?}",
+            brief.fields()
+        );
         World {
             charter,
-            homeostat: Homeostat {
-                load_avg_1m: Some(13.57),
-                mem_available_kb: Some(24_681_357),
-                backlog: Some(before),
-                backlog_delta: Some(delta),
-                anticipated_guilt: crate::guilt::readout(&commitments),
-                commitments: Some(commitments),
-                charter: Some(readings),
-                ..Homeostat::default()
-            },
+            homeostat,
+            brief,
         }
     }
 
@@ -1986,6 +2083,94 @@ text = "Leave work better than you found it."
                 });
             }
         }
+        // The situation brief (B1, 1h): every field's stored JSON and the
+        // brief's whole, each pointer it keeps, its counts with digits of
+        // their own, the local time it read and the voice reading. Recorded,
+        // never sent — a hit is the brief reaching the model before phase 3
+        // delivers it. The zone name and weekday are left out on purpose:
+        // `date_context` already sends those, and a hit on them would be a
+        // coincidence, not a leak.
+        let b = &world.brief;
+        out.push(Needle {
+            what: "situation brief record",
+            text: serde_json::to_string(b).unwrap(),
+        });
+        for field in [
+            serde_json::to_string(&b.goal),
+            serde_json::to_string(&b.board),
+            serde_json::to_string(&b.commitments),
+            serde_json::to_string(&b.time),
+            serde_json::to_string(&b.seats),
+            serde_json::to_string(&b.runs),
+            serde_json::to_string(&b.slots),
+            serde_json::to_string(&b.voice),
+            serde_json::to_string(&b.budget),
+        ] {
+            out.push(Needle {
+                what: "situation brief field",
+                text: field.unwrap(),
+            });
+        }
+        if let Some(crate::brief::Board::Read(c)) = &b.board {
+            for id in c.overdue_ids.iter().chain(&c.due_soon_ids) {
+                out.push(Needle {
+                    what: "situation brief pointer",
+                    text: id.clone(),
+                });
+            }
+            for n in [c.open, c.overdue, c.waiting_on_agent] {
+                out.push(Needle {
+                    what: "situation brief count",
+                    text: n.to_string(),
+                });
+            }
+        }
+        if let Some(crate::brief::GoalChain::Anchored {
+            project: crate::brief::Tier::Known { id, .. },
+            ..
+        }) = &b.goal
+        {
+            out.push(Needle {
+                what: "situation brief pointer",
+                text: id.clone(),
+            });
+        }
+        if let Some(crate::brief::Seats::Read { holders, .. }) = &b.seats {
+            for h in holders {
+                out.push(Needle {
+                    what: "situation brief pointer",
+                    text: h.clone(),
+                });
+            }
+        }
+        if let Some(runs) = &b.runs {
+            for f in [&runs.tasks, &runs.triggers] {
+                if let crate::brief::Flight::Read { others, .. } = f {
+                    for o in others {
+                        out.push(Needle {
+                            what: "situation brief pointer",
+                            text: o.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        if let Some(crate::brief::LocalTime {
+            zone: crate::brief::Zone::Set { local, .. },
+            ..
+        }) = &b.time
+        {
+            out.push(Needle {
+                what: "situation brief local time",
+                text: local.clone(),
+            });
+        }
+        if let Some(crate::brief::Voice::Idle { last_turn_secs }) = &b.voice {
+            out.push(Needle {
+                what: "situation brief voice",
+                text: last_turn_secs.to_string(),
+            });
+        }
         out.push(Needle {
             what: "valence",
             text: valence.compact(),
@@ -2006,6 +2191,12 @@ text = "Leave work better than you found it."
             "anticipated guilt",
             "per-commitment guilt",
             "backlog delta",
+            "situation brief record",
+            "situation brief field",
+            "situation brief pointer",
+            "situation brief count",
+            "situation brief local time",
+            "situation brief voice",
             "valence",
         ] {
             assert!(
@@ -2197,6 +2388,9 @@ text = "Leave work better than you found it."
             backlog: None,
             ..world.homeostat.clone()
         });
+        // And the situation brief a front-end assembles before the run: the
+        // loop carries it to the record and must build no request from it.
+        cx.brief = Some(Arc::new(world.brief.clone()));
 
         // Run one, recorded exactly as a front-end records it.
         let session = Session::create(
@@ -2267,6 +2461,18 @@ text = "Leave work better than you found it."
         ] {
             assert!(record.contains(&kept), "the record should keep `{kept}`");
         }
+        // The brief is on the record too, whole: carried by the loop from
+        // the context to the outcome, and from there to the run's row.
+        let recorded = Session::outcomes_attributed(&session.path)
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("run one's outcome")
+            .2
+            .brief
+            .expect("the run's brief is recorded");
+        assert_eq!(*recorded, world.brief);
+        assert!(record.contains("task-g4-late-0001"));
         // They are *in the request objects*: the resumed run's request
         // carries the planning metadata whose gap is that excess, and the
         // per-commitment guilt the decision was made on beside it.
