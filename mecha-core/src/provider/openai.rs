@@ -217,6 +217,16 @@ pub(crate) fn encode_message_for_test(m: &Message, out: &mut Vec<Value>, vision:
     encode_message(m, out, vision)
 }
 
+/// The whole request body, for `anthropic.rs`'s scan of a recorded run
+/// through both encoders (G4, numbers never reach the model): the system
+/// prompt and the tool specs ride in the body too, not only the messages.
+#[cfg(test)]
+impl OpenAiCompatible {
+    pub(crate) fn body_for_test(&self, req: &CompletionRequest) -> Value {
+        self.body(req, true)
+    }
+}
+
 fn encode_message(m: &Message, out: &mut Vec<Value>, vision: bool) {
     match m.role {
         Role::Assistant => {
