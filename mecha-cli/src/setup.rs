@@ -129,11 +129,12 @@ pub fn posture_for(
     use mecha_core::session::SessionKind as K;
     match surface {
         Some(K::Task) => RunPosture::Delegated,
-        Some(K::Chat | K::Tui | K::Run | K::Test) | None
-            if interactive && mode == PermissionMode::Ask =>
-        {
+        Some(K::Chat | K::Tui | K::Run | K::Test) if interactive && mode == PermissionMode::Ask => {
             RunPosture::Interactive
         }
+        // A surface nobody named is unknown, and unknown is never clean: a
+        // new front end that forgets to name itself refuses rather than
+        // closing (review of #293).
         _ => RunPosture::Unattended,
     }
 }
@@ -2053,7 +2054,7 @@ mod tests {
         ] {
             assert_eq!(posture_for(Some(k), true, ask), P::Unattended, "{k:?}");
         }
-        assert_eq!(posture_for(None, true, ask), P::Interactive);
+        assert_eq!(posture_for(None, true, ask), P::Unattended);
         assert_eq!(posture_for(None, false, ask), P::Unattended);
         assert_eq!(
             posture_for(None, true, PermissionMode::Allow),
