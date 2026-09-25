@@ -392,6 +392,90 @@ fn a_surface_the_build_cannot_name_is_refused_before_anything_moves() {
     assert_eq!(f.status(), "next");
 }
 
+/// The argv Slack's board taps derive (`slack::actions::Action::argv`, pinned
+/// there by `a_drop_tap_round_trips_to_a_recorded_slack_closure`) — this
+/// binary has no library target, so the test drives it with the same literal
+/// words rather than through the executor.
+fn slack_tap(status: &str) -> Vec<&str> {
+    vec![
+        "tasks",
+        "set",
+        "task-1",
+        "--status",
+        status,
+        "--surface",
+        "slack",
+        "--only-open",
+    ]
+}
+
+/// 1c's acceptance, Slack half: a Done tap and a Drop tap each close the
+/// task through the one closure event, recorded as the owner on surface
+/// `slack`, with the readout line written for the reply to read back.
+#[test]
+fn a_slack_tap_closure_is_recorded_on_the_slack_surface() {
+    for status in ["done", "dropped"] {
+        let Some(f) = Fixture::new("") else { return };
+        ok(&f.command(&slack_tap(status), None));
+        assert_eq!(f.status(), status);
+        let (t, readout) = f.store().latest_with_readout("task-1").unwrap().unwrap();
+        assert_eq!((t.kind, t.to.as_str()), (Move::Close, status));
+        assert_eq!((t.actor, t.surface), (Actor::Owner, Surface::Slack));
+        assert!(
+            matches!(readout, Some(Entry::Readout { .. })),
+            "the reply reads the readout from the record: {readout:?}"
+        );
+    }
+}
+
+/// A stale card: the listing was composed while the task was open, and the
+/// owner closed it somewhere else since. Drop on a `done` task would have
+/// turned the verdict into `dropped` with no record (it crosses no line), and
+/// Next would have reopened it — against the session that did the work. The
+/// row read at tap time refuses both, with nothing changed or recorded.
+#[test]
+fn a_stale_slack_tap_on_a_closed_task_changes_nothing() {
+    let Some(f) = Fixture::new("") else { return };
+    ok(&f.command(&["tasks", "set", "task-1", "--status", "done"], None));
+    let before = records(&f.root).len();
+    for status in ["dropped", "next", "done"] {
+        refused(&f.command(&slack_tap(status), None), "already done");
+        assert_eq!(f.status(), "done", "{status}");
+        assert_eq!(records(&f.root).len(), before, "{status}");
+    }
+    // The guard is the tap's, not the verb's: the terminal can still move a
+    // closed task, and that move is recorded as the reopen it is.
+    ok(&f.command(&["tasks", "set", "task-1", "--status", "next"], None));
+    assert_eq!(f.status(), "next");
+}
+
+/// 1c's acceptance, the mecha end of the graph-TUI half: `--surface
+/// graph-tui` is a surface a caller may name, and the closure it makes is
+/// recorded under it. (How `mecha-graph tui` reaches this is the owner's
+/// call — see the PR.)
+#[test]
+fn a_graph_tui_closure_is_recorded_on_the_graph_tui_surface() {
+    let Some(f) = Fixture::new("") else { return };
+    ok(&f.command(
+        &[
+            "tasks",
+            "set",
+            "task-1",
+            "--status",
+            "done",
+            "--surface",
+            "graph-tui",
+        ],
+        None,
+    ));
+    let t = f
+        .store()
+        .latest_closure("task-1")
+        .unwrap()
+        .expect("recorded");
+    assert_eq!((t.actor, t.surface), (Actor::Owner, Surface::GraphTui));
+}
+
 /// A delegated run that strips the posture variable from its command is
 /// still that run's child: the ancestry check refuses it. The test process
 /// stands in for the run — its own pid in a live task-run marker makes it an
