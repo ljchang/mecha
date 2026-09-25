@@ -3692,6 +3692,50 @@ and live-divergence sends can be blocked by the stronger taint. The replay CLI
 reports this in prose and JSON; these differences must not be read as model-only
 regressions. Both comparison arms must use the same replay policy.
 
+### Every comparison is stored
+
+`APPRAISAL-WIRING-DESIGN.md` X1/O4, row 1g. Every counterfactual comparison
+the probes above make is written to `~/.mecha/comparisons/comparisons.jsonl`
+(`comparison::ComparisonStore`, under `work::mecha_home`, append-only, flock +
+`sync_data` like the closure store): the steer probe behind `sessions
+appraise --probe` (`appraisal_probe::steer_comparison`), each graded pair in
+`mecha validate`, and each pair the `learn --propose/--auto` gate drives
+(`probe::probe_reflection` builds it; the gate stamps the proposal id). The
+steer probe's verdict was computed and discarded before this; the other two
+kept theirs only in rule-keyed ledgers.
+
+The record (`comparison::Comparison`) is closed sets and pointers only: the
+recorded `Situation` of the decision point (the miner's construction —
+`ProbePrep::situation_at` — so readers key on `Situation::scope`), the
+session's goal **kind** (`GoalRef::goal_kind`, never the id), a `CallClass`
+(the tool and the argument names its recorded schema declares — never a
+value, never an undeclared key), K `Arm`s (role, the rules hash it carried
+on `RunConfig::rules_hash`'s convention — no block is the empty string's
+hash, `None` is unknown — and its outcome), the deciding `Validator`, the
+`Verdict`, and `Pointers` (session, message and call index, reflection,
+proposal, surface hash, input hash). **The verdict is derived** from the arms by `Verdict::of` — `Separated`
+with the passing arms `preferred`, `Tied`, or `Inconclusive` — so it cannot
+disagree with them, and the schema already carries the K-arm comparisons
+phases 2, 3 and 5 add. A steer probe's `Recorded` arm passes by construction
+(the owner's intervention is the target), so `Separated` is *load-bearing*
+and `Tied` is *redundant*. A pair cut short by a provider or judge error is a
+failed attempt (the validation receipt keeps it), not a comparison.
+
+**Provenance is the store's only write door.** `ComparisonStore::record`
+takes a `comparison::Provenance` read from the transcript
+(`Provenance::of_transcript`): the taint covering the session's **last**
+message through `learning::classify_origin` — no checkpoint after it is
+unknown, and unknown is untrusted — and `surface::Fidelity::of` the recorded
+`tools_hash` against the blob the surface store still holds. Anything but
+`Clean` + `Matches` returns `Recorded::Refused`, writes nothing, and is
+counted (`probe::StoredTally`) and printed; an I/O failure is an `Err`, and
+every write path opens the store before driving an arm, so a pass never pays
+for verdicts it cannot keep. The reader (`comparisons_counting`) degrades
+every enum to `Unknown`, skips and counts a torn line, and reports an
+unreadable file as an error; `sessions appraise` prints the store's
+`comparison::Summary` on every call, with the separated share `null` over
+nothing decided.
+
 ## The goal system
 
 `docs/GOAL-SYSTEM-DESIGN.md` is the design and is deliberately not rewritten as

@@ -33,6 +33,7 @@
 
 use crate::{probe, setup, GlobalOpts};
 use anyhow::{Context, Result};
+use mecha_core::comparison::{Arm, Outcome, Role};
 use mecha_core::config::{Config, ProviderConfig};
 use mecha_core::counterfactual::ProbeVerdict;
 use mecha_core::eval::Judge;
@@ -396,6 +397,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // Built once, only when something will use it; the parent agent it builds
     // is discarded and only its registry is borrowed, as in `mecha replay`.
     let prepared = setup::prepare(&global.clone(), false).await?;
+    // Every graded pair is also a counterfactual comparison (row 1g), kept
+    // beside the ledger. Opened before any arm is driven, so a store that
+    // cannot be created fails the pass before it pays for verdicts.
+    let comparisons = mecha_core::comparison::ComparisonStore::open_default()?;
+    let mut stored = probe::StoredTally::default();
     let prior_attempts = store.validation_attempts()?;
     let mut reused = 0u32;
     let mut both_pass = 0u32;
@@ -745,6 +751,32 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         })?;
         store.append_validation_attempt(&receipt)?;
         recorded_rows += 1;
+        // Both arms drove and each produced a verdict: that is a comparison,
+        // inconclusive or not. A pair cut short by a provider or judge error
+        // is a failed attempt — the receipt above keeps it — not a
+        // comparison of two policies.
+        if let [baseline, with] = &verdicts[..] {
+            let mut comparison = prep.comparison(
+                mecha_core::comparison::Kind::Validation,
+                r.situation
+                    .clone()
+                    .unwrap_or_else(|| prep.situation_at(&[], &r.trigger)),
+                vec![
+                    Arm::new(Role::RulesFree, Arm::no_block(), Outcome::from(baseline)),
+                    Arm::new(
+                        Role::Rules,
+                        Some(receipt.rules_hash.clone()),
+                        Outcome::from(with),
+                    ),
+                ],
+                &model,
+            )?;
+            comparison.pointers.reflection_id = Some(r.id.clone());
+            probe::store_comparison(&comparisons, prep.provenance(), &comparison, &mut stored)?;
+        }
+    }
+    if let Some(line) = stored.line() {
+        println!("{line}");
     }
     println!("coverage: {recorded_rows} probes attempted, {reused} unchanged inputs deferred; unchanged verdicts: {both_pass} both pass, {both_fail} both fail");
     if surface_lost > 0 {
