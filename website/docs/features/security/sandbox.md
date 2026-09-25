@@ -26,9 +26,25 @@ writable = []               # extra paths mounted read-write
 readable = ["/opt/toolchain"]   # extra paths mounted read-only
 env = ["CARGO_HOME"]        # environment variables passed through, by name
 image = "debian:stable-slim"    # docker only
-memory_mb = 2048            # docker only
-cpus = 2.0                  # docker only
+memory_mb = 2048            # docker and bwrap; landlock refuses it
+cpus = 2.0                  # docker and bwrap; landlock refuses it
 ```
+
+### Resource limits
+
+`memory_mb` and `cpus` cap what one confined command — and everything it
+starts — can take from the machine. Docker applies them as `--memory` and
+`--cpus`. Under `bwrap`, mecha starts the command inside a transient systemd
+scope (`systemd-run --user --scope -p MemoryMax=… -p MemorySwapMax=0 -p
+CPUQuota=…`), which is a cgroup: a command that allocates past the ceiling is
+killed by the kernel, and a CPU-bound one is throttled, without touching
+whatever else the box is running (a local model server, say). That needs a
+running systemd user manager, which a desktop login or `loginctl
+enable-linger` provides. If the scope cannot be created, or the limits do not
+read back out of its cgroup (systemd drops a limit it has no controller for,
+without failing), the startup check fails and runs refuse rather than running
+unlimited. `landlock` has no way to
+apply a limit and refuses one at startup rather than ignoring it.
 
 | `kind` | What it does |
 |---|---|

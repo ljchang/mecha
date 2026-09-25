@@ -57,6 +57,33 @@ pub fn bwrap_present() -> bool {
         .unwrap_or(false)
 }
 
+/// Whether `systemd-run --user --scope` can start a command here *with the
+/// properties the bwrap backend's limits use*. Starting is not holding —
+/// systemd drops a property whose controller is not delegated — but a host
+/// that cannot even start the scope with them is unavailable rather than a
+/// failure; the backend's own preflight reads the limits back.
+pub fn user_scope_available() -> bool {
+    Command::new("systemd-run")
+        .args([
+            "--user",
+            "--scope",
+            "--quiet",
+            "--collect",
+            "-p",
+            "MemoryMax=64M",
+            "-p",
+            "MemorySwapMax=0",
+            "-p",
+            "CPUQuota=100%",
+            "true",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 pub fn python3_available() -> bool {
     Command::new("python3")
         .arg("--version")

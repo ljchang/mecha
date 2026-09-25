@@ -792,7 +792,19 @@ the file story where bwrap is blocked: home denied, hard-required at ABI 3
 with preflight also planting a file in the real home and requiring the
 confined read to *fail*, because `echo` passing only proves the ruleset
 attached. Weaker than bwrap in three known ways: shared `/tmp`, visible
-`/proc`, no PID/IPC isolation.
+`/proc`, no PID/IPC isolation. **Resource limits** (`memory_mb`, `cpus`) are
+docker's `--memory`/`--cpus`, and under bwrap a transient systemd scope
+(`Sandbox::bwrap_launcher`: `systemd-run --user --scope` with `MemoryMax`,
+`MemorySwapMax=0`, `CPUQuota`, exec'ing `bwrap` in place) — a cgroup, so the
+ceiling covers the whole command tree where an rlimit would cover one
+process. `systemd-run` applies cgroup properties best-effort — a controller
+the user manager was not delegated is dropped, not refused — so preflight
+reads `memory.max` / `memory.swap.max` / `cpu.max` back out of the scope's own
+cgroup (`Sandbox::prove_limits`) and refuses on any mismatch, and a missing
+user manager fails with instructions (`loginctl enable-linger`). Landlock
+refuses a limit outright rather than ignoring it (it had been silently
+docker-only); under `kind = "none"` the limits are ignored with everything
+else about confinement, since there is no sandbox for them to apply to.
 
 Three rules here, each of which cost something to learn:
 
