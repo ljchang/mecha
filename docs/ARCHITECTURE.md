@@ -3970,9 +3970,10 @@ when touching it:
   record keeps it whole, so the streak and the doctor's one finding
   continue until the line is met. `reading::saturated` is the single
   definition both use, lazy over rows newest first, and the run's rows
-  come from `reading::recorded_readings`, which streams the session store
-  under the doctor's own admission and window and is not read at all when
-  no line is over — the corpus kind's full scan stays a surface's cost.
+  come from `reading::recorded_readings`, which streams the store runs
+  record into (`Session::default_dir`) under the doctor's own admission
+  and window, lazily down to the listing, so nothing is read when no line
+  is over — the corpus kind's full scan stays a surface's cost.
   A line within its setpoint now is never withdrawn, whatever its
   history. `sessions health` shows each line's level over-count beside
   the per-item variances and the delta counts (`charter_readings` in

@@ -171,11 +171,14 @@ impl Homeostat {
                 // stopped as soon as each over-setpoint line is decided,
                 // and not read at all when no line is over — the corpus
                 // kind's full scan stays a surface's cost, not a run's.
-                if let Ok(home) = crate::work::mecha_home() {
+                // The store the runs record into (`Session::default_dir`,
+                // which honours `MECHA_SESSION_DIR`), since it is their
+                // history being read.
+                if let Ok(sessions) = crate::session::Session::default_dir() {
                     crate::reading::withdraw_saturated(
                         &mut readings,
                         &c,
-                        crate::reading::recorded_readings(&home.join("sessions")),
+                        crate::reading::recorded_readings(&sessions),
                     );
                 }
                 readings
