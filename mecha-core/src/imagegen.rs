@@ -5,8 +5,9 @@
 //! node graph it is handed — nodes that write files, fetch URLs, or run a
 //! custom node's code. So the graph is fixed here, in code, and the model
 //! supplies typed values only: a prompt, a negative prompt, a size from a
-//! closed set, a seed. The prompt reaches the graph as a JSON string value, so
-//! nothing in it can become a node.
+//! closed set, a seed, and workspace paths of reference images to edit. The
+//! prompt reaches the graph as a JSON string value, so nothing in it can
+//! become a node; a reference reaches it as a name the server chose.
 //!
 //! **No egress, and the declaration is earned rather than asserted.** The
 //! schema has no destination field and [`loopback_url`] refuses any server not
@@ -22,7 +23,9 @@
 //!
 //! **The model cannot see what it made** — images enter a conversation on user
 //! turns only (`ARCHITECTURE.md` §Images) — so the result says so, and gives
-//! the seed back: revising means editing the prompt and reusing the seed.
+//! the seed back. Revising a new image means editing the prompt and reusing
+//! its seed; editing one means passing it in `reference_images`, and an edit
+//! always samples at a fresh seed (see `call`).
 //!
 //! The request is shaped like stable-diffusion.cpp's native API (prompt, size,
 //! steps, seed in; PNG bytes out; a job that can be cancelled) rather than
@@ -758,8 +761,12 @@ async fn read_references(
             .map_err(|e| format!("`{raw}` is not a file in the workspace: {e:#}"))?;
         let mut options = tokio::fs::OpenOptions::new();
         options.read(true);
+        // A workspace can hold a FIFO (`shell: mkfifo`), and opening one
+        // waits for a writer forever — before the `is_file` refusal below can
+        // run. Open without waiting, then refuse anything that is not a
+        // regular file, as `read_file_window` does (found on review of #306).
         #[cfg(unix)]
-        options.custom_flags(libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
         let file = options
             .open(&path)
             .await
@@ -1846,6 +1853,42 @@ mod tests {
                 .iter()
                 .any(|l| l.starts_with("POST /history") && l.contains("job-1")),
             "the prompt was left in the server's history"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_fifo_named_as_a_reference_is_refused_rather_than_waited_on() {
+        use std::os::unix::fs::OpenOptionsExt;
+        let (url, _) = fake(vec![], "200 OK").await;
+        let dir = tempdir();
+        let fifo = dir.join("pipe.png");
+        let cpath = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
+        // SAFETY: a valid NUL-terminated path; mkfifo only creates the node.
+        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
+        let t = tool(&url);
+        let c = ctx(&dir);
+        let call = t.call(
+            json!({"prompt": "edit", "reference_images": ["pipe.png"]}),
+            &c,
+        );
+        let out = match tokio::time::timeout(Duration::from_secs(5), call).await {
+            Ok(out) => out.unwrap(),
+            Err(_) => {
+                // Release the reader stuck in `open` so the runtime can shut
+                // down, then fail rather than hang the suite.
+                let _ = std::fs::OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&fifo);
+                panic!("opening a FIFO blocked the call");
+            }
+        };
+        assert!(
+            out.is_error && out.content.contains("pipe.png"),
+            "{}",
+            out.content
         );
         std::fs::remove_dir_all(dir).ok();
     }
