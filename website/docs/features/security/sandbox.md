@@ -40,8 +40,10 @@ CPUQuota=…`), which is a cgroup: a command that allocates past the ceiling is
 killed by the kernel, and a CPU-bound one is throttled, without touching
 whatever else the box is running (a local model server, say). That needs a
 running systemd user manager, which a desktop login or `loginctl
-enable-linger` provides. If the scope cannot be created, the startup check
-fails and runs refuse rather than running unlimited. `landlock` has no way to
+enable-linger` provides. If the scope cannot be created, or the limits do not
+read back out of its cgroup (systemd drops a limit it has no controller for,
+without failing), the startup check fails and runs refuse rather than running
+unlimited. `landlock` has no way to
 apply a limit and refuses one at startup rather than ignoring it.
 
 | `kind` | What it does |

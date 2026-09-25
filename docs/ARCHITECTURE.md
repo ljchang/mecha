@@ -797,9 +797,14 @@ docker's `--memory`/`--cpus`, and under bwrap a transient systemd scope
 (`Sandbox::bwrap_launcher`: `systemd-run --user --scope` with `MemoryMax`,
 `MemorySwapMax=0`, `CPUQuota`, exec'ing `bwrap` in place) — a cgroup, so the
 ceiling covers the whole command tree where an rlimit would cover one
-process. `systemd-run` refuses to start the command when it cannot create
-the scope, so an unappliable limit fails preflight; landlock refuses a limit
-outright rather than ignoring it (it had been silently docker-only).
+process. `systemd-run` applies cgroup properties best-effort — a controller
+the user manager was not delegated is dropped, not refused — so preflight
+reads `memory.max` / `memory.swap.max` / `cpu.max` back out of the scope's own
+cgroup (`Sandbox::prove_limits`) and refuses on any mismatch, and a missing
+user manager fails with instructions (`loginctl enable-linger`). Landlock
+refuses a limit outright rather than ignoring it (it had been silently
+docker-only); under `kind = "none"` the limits are ignored with everything
+else about confinement, since there is no sandbox for them to apply to.
 
 Three rules here, each of which cost something to learn:
 
