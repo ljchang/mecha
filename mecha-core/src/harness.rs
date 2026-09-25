@@ -115,9 +115,10 @@ impl OverrideKey {
 /// **A variant here is a switch that exists**, not a wish. A lever with no
 /// off position would make the record say "absent" of something that ran,
 /// which is the one lie a confound record must not tell. Of the
-/// dispositions *The switch set* lists, the appraiser's pass is still
-/// absent here: it runs only under `mecha sessions appraise --appraise`,
-/// never inside a run, so there is nothing for a per-run lever to remove;
+/// dispositions *The switch set* lists, the appraiser's pass was never here
+/// — it ran only under `mecha sessions appraise --appraise`, never inside a
+/// run — and it no longer runs at all (retired in row 2a-3), so there is
+/// nothing for a per-run lever to remove;
 /// and `sensors_in_brief` is a *stage* lever (a `ruminate` input), recorded
 /// on a trial's manifest rather than on a run, and waits for that store.
 ///

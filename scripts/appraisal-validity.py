@@ -50,7 +50,8 @@ gating on, and the others their per-class median, so every number the
 research doc argues from is in this one table. Trials with no verdict (the verifier never ran) and trials with
 no session file are counted and excluded, never folded in as either class.
 
-`--appraise` adds the one paid pass: the quarantined appraiser
+`--appraise` adds the one paid pass: the quarantined appraiser — retired in
+row 2a-3, so it needs `--mecha` pointed at a binary from before then
 (`mecha sessions appraise --appraise`, §3.10 of the appraisal review) driven
 once per session over the same synthesised store, against the local model
 the scratch home's config names. Its evidence is numbers only — the signed
@@ -297,6 +298,17 @@ def run_appraise(mecha, home, session_dir, appraise=False, session_id=None, mode
     if start < 0:
         sys.exit(f"no JSON from {mecha} sessions appraise over {session_dir}:\n{p.stdout}\n{p.stderr}")
     out = json.loads(p.stdout[start:])
+    if appraise and out.get("appraiser") is None:
+        # Row 2a-3 retired the counts-only appraiser: from that build on,
+        # `--appraise` is a no-op that reports `"appraiser": null`, and a
+        # per-session reasoning line never comes. Measure it with a binary
+        # from before the retirement (`--mecha`), or read the text appraisal
+        # `mecha distill` now writes (`mecha sessions appraise <session>`).
+        sys.exit(
+            f"{mecha} has retired the counts-only appraiser (row 2a-3): its --appraise "
+            "is a no-op now. Pass --mecha a binary from before the retirement to "
+            "measure it, or read the text appraisal with `mecha sessions appraise <session>`."
+        )
     if appraise:
         # The `· <session>: ` prefix is shared with the harness's own failure
         # line ("appraiser call failed: …"), so a failed pass keeps `None`

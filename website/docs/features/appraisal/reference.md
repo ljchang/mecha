@@ -68,10 +68,11 @@ being lost with it.
 | **An interactive run finishes** | TUI, web, and Slack run completion | the free per-run readout, a pure function over the run's own records — it feeds [the badge, the tint and the voice nudge](#where-a-label-actually-shows-up) | never |
 | **The owner closes a board task** | `mecha tasks set --status done` (or `dropped`) | [one closure appraisal, ever](#closing-a-task-appraises-it); a disappointed `done` may stage one follow-up | never |
 | **The owner closes the last open task in a project** | `mecha tasks set --status done` or `dropped` | [a project reading](#closing-a-project-appraises-its-tasks), folded from the sessions linked to its tasks | never |
-| **On demand, offline** | `mecha sessions appraise` | the free scan over transcripts, outbox and outcome records; [`--probe` and `--appraise`](#the-two-paid-passes) are the paid opt-ins | only behind those two flags |
+| **On demand, offline** | `mecha sessions appraise` | the free scan over transcripts, outbox and outcome records; [`--probe`](#the-paid-pass) is the paid opt-in | only behind that flag |
+| **A session is distilled** | `mecha distill`, nightly and from a `session_end` hook | the session's [text appraisal](#text-appraisals), a follow-up question on the episode's own conversation | yes, on the local model only |
 
-**The two paid appraisal passes are opt-in commands.** The supplied nightly
-script does not schedule `sessions appraise --probe` or `--appraise`. Its
+**The paid readout pass is an opt-in command.** The supplied nightly
+script does not schedule `sessions appraise --probe`. Its
 separate harness replay selection does use free charter attribution. Frequent
 readouts are deterministic; model-based analysis is separately enabled and
 budgeted.
@@ -279,7 +280,7 @@ Six channels keep the source of each signal explicit. Five have a producer today
 | `counter` | A counter on [the run's own record](/docs/features/learning/run-quality). |
 | `setpoint` | Reserved for a homeostatic variable outside the range it is kept in. Nothing produces it yet: charter sensor readings are recorded on the run's conditions and attribute other errors to a line, but they are not signed errors themselves. |
 | `commitment` | Answered or abandoned questions, closed unanswered requests, linked post-delivery owner outcomes, and the owner closing, reopening, cancelling or verifying a task or workflow a session worked. |
-| `appraisal` | An additional signed error proposed by the quarantined appraiser, distinguishable from deterministic evidence. |
+| `appraisal` | An additional signed error proposed by the counts-only quarantined appraiser. That pass is retired, and nothing writes this channel now; a record written before still loads and counts. |
 
 `cite` being a pointer is the same rule the [front door](/docs/features/public-surface/frontdoor)
 keeps: a paraphrase of an injection is the injection rearranged, and an
@@ -367,7 +368,7 @@ send a change at code that is working.
 |---|---|---|
 | `neutral` | No label is supported; valence can still be positive. | Free readout. |
 | `distress` | A relevant negative outcome, without knowing whether a better alternative existed. | Free readout: for example, a rejected draft or a ceiling stop. |
-| `anger` | A negative attributed to another party or the world. | Quarantined appraiser's agency verdict. |
+| `anger` | A negative attributed to another party or the world. | None today. Its one producer, the counts-only appraiser, is retired; an older record that carries its verdict still reads as `anger`. |
 | `regret` | Self-caused negative with an alternative established. | Counterfactual probe. |
 | `disappointment` | Negative with no alternative established by the probe. | Counterfactual probe. |
 | `frustration` | Repeated self-caused negative errors of the same kind on one goal. | Probe-resolved interventions. |
@@ -378,7 +379,7 @@ send a change at code that is working.
 | `excitement` | A positive predicted outcome. | No anticipatory appraisal yet. |
 
 The free session readout can produce `neutral`, `distress`, and `pride`.
-An appraiser's positive opinion cannot produce
+A model's positive opinion cannot produce
 `pride`; it requires a linked delivery against a real charter line. Mixed
 positive and negative evidence keeps both valence sums, while the label follows
 the negative evidence.
@@ -431,7 +432,8 @@ mecha sessions appraise --days 30 --kind web --json
 | `curation` | Your verdicts on rules (`retired`, `restored`), reflections (`dropped`, `edited`) and harness candidates (`accepted`, `rejected`, `reverted`); a group is `null` when its store could not be read. None of these is a run's score. |
 | `graph_fact_rejections` | Always `null` for now: not readable from mecha. |
 | `tests_hidden`, `experiments_hidden` | Development data excluded from the population. |
-| `probe`, `appraiser` | Results of the optional paid passes, omitted when that pass did not run. |
+| `probe` | Results of the optional paid pass; `null` when it did not run. |
+| `appraiser` | Always `null`: the counts-only appraiser is retired. Kept so a reader of the old shape still finds the key. |
 | `text_appraisals` | Counts from the [text-appraisal store](#text-appraisals): records, sessions, how many are `clean` and `not_clean`, claims kept and dropped by grounding (`dropped_by`, by reason), records carrying an expected act (`with_expected_act`), judgment goals that did not resolve (`goals_unresolved`), and whether the store was fully read. |
 
 The signed errors, valence and label above are derived when read and never
@@ -538,10 +540,9 @@ task closure stages a follow-up only for a label that names *residue*, and
 `distress` does not — it is a verdict the owner already delivered, with nothing
 in it to put on a board.
 
-## The two paid passes
+## The paid pass
 
-Both are off by default, both are independent of each other, and both have their
-own ceiling.
+`--probe` is off by default and has its own ceiling.
 
 ### `--probe` — the counterfactual
 
@@ -575,25 +576,21 @@ after a session was resumed under a different configuration replays under the
 prompt that actually covered it. Replaying it under the session's *first*
 config would misread an ordinary resumed steer as inflated `regret`.
 
-### `--appraise` — the quarantined appraiser
+### `--appraise` — retired
 
-```bash
-mecha sessions appraise --appraise --max-appraisals 25
-```
+The counts-only quarantined appraiser was retired in favour of the
+[text appraisal](#text-appraisals). It made one call per session over a
+brief of numbers only. It returned "nothing further" on 169 of 169 sessions,
+and the counts it read now reach the text appraisal as signed outcomes.
 
-One quarantined call per session: **no tools, no conversation, and the input is
-numbers only** — never the transcript. It looks for one additional signed error
-beyond what the free readout computed, or reports that the numbers support
-nothing further, which is the ordinary and correct answer. A malformed reply
-gets one retry, and a retried appraisal still counts once against the budget.
+`--appraise` and `--max-appraisals` are still accepted, so a script that
+passes them keeps running. They do nothing, and they say so on stderr, where
+`--json` output stays parseable. To read what replaced the pass, run
+`mecha sessions appraise <session>`.
 
-The quarantine is the point. This is the one place a model is asked how a run
-went, so it is given the same treatment as
-[the front door](/docs/features/public-surface/frontdoor): a one-shot with no history and no
-ability to affect anything but its own JSON, reading a numeric brief rather than
-prose. Its verdict lands on the record as `channel: appraisal` with
-`cite: appraiser`, so a reader can always tell a measured fact from a model's
-opinion without knowing which store it came from.
+A verdict the pass wrote before its retirement is still readable. It sits on
+the record as `channel: appraisal` with `cite: appraiser`, loads as it did,
+and is counted.
 
 ## Where a label actually shows up
 
@@ -768,7 +765,9 @@ python3 scripts/appraisal-validity.py --jobs /path/to/retained-jobs \
 ```
 
 Run this only with the retained job artifacts available. Its `--appraise` flag
-adds paid model calls; the default comparison does not. This page reports the
+measured the retired counts-only appraiser. It now needs `--mecha` pointed at a
+binary from before the retirement, and it stops with that message otherwise.
+The default comparison makes no model call. This page reports the
 implemented measurement tool, not a new validity result. For controlled changes
 to the harness or repeated assistant tasks, see
 [Experiments](/docs/features/experiments).
