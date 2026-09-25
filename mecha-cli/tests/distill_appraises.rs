@@ -270,6 +270,11 @@ async fn distill_appraises_each_session_once_behind_the_right_door() {
     if !python3() {
         return;
     }
+    // The fixture sessions stand for the owner's delegated work. CI runs
+    // the suite again with MECHA_SESSION_KIND=test exported, which marks
+    // every session this process creates as `Test` — and distill passes
+    // over test sessions (#313), so the fixture must keep its own kind.
+    mecha_core::session::ignore_kind_env_for_tests();
     let root =
         Root(std::env::temp_dir().join(format!("mecha-distill-appraises-{}", Session::new_id())));
     let (base_url, seen, server) = fixture_model().await;
