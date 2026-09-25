@@ -936,6 +936,9 @@ async fn run_agent(
         None => mecha_core::work::ensure(&t.name)?,
     };
 
+    // The trigger itself is the run's goal (`APPRAISAL-WIRING-DESIGN.md`
+    // S1), parsed once for the match and the anchor.
+    let trigger_goal = super::run::structural_pointer(format!("trigger:{}", t.name));
     let opts = GlobalOpts {
         provider: t.provider.clone().or_else(|| global.provider.clone()),
         model: t.model.clone().or_else(|| global.model.clone()),
@@ -960,6 +963,11 @@ async fn run_agent(
         no_mcp: t.no_mcp,
         global_config_only: true,
         surface: Some(mecha_core::session::SessionKind::Trigger),
+        // The trigger is the goal the block is matched toward — the same
+        // pointer seeded as the anchor below, parsed once — so a lesson
+        // learned in this trigger's runs can load in its next run and in no
+        // other trigger's.
+        goal: trigger_goal.clone(),
         ..GlobalOpts::default()
     };
 
@@ -1005,11 +1013,7 @@ async fn run_agent(
     // the owner wrote the file, so the pointer is structural, never a
     // model's. What the trigger serves further up — its optional charter
     // `serves` — stays on the trigger file and is read from there.
-    super::run::seed_goal_anchor(
-        &mut convo,
-        super::run::structural_pointer(format!("trigger:{}", t.name)),
-        Some(&session),
-    )?;
+    super::run::seed_goal_anchor(&mut convo, trigger_goal, Some(&session))?;
     let user = Message::user(&t.prompt);
     convo.push(user.clone());
     session.append(&Record::Message(user))?;

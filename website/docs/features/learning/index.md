@@ -159,15 +159,24 @@ budget to spend.
 
 ### Where a rule loads
 
-Rules can be scoped to a tool set, an exact workspace, and a surface such as
-web, TUI, or Slack. The harness derives these keys from the recorded run;
+Rules can be scoped to a tool set, an exact workspace, a surface such as
+web, TUI, or Slack, and a goal such as `trigger:morning` or `task:<id>`. The
+harness derives these keys from the recorded run;
 the learner does not choose them. A matching run must satisfy every named key.
 Rules without scope keys remain standing rules.
+
+The goal key is the goal the run was handed from a store you own: the task
+for `mecha tasks work`, the trigger for a scheduled run, and the reference you
+gave `mecha run --goal`. A lesson learned in one trigger's runs therefore loads
+in that trigger's next run and not in another's. Web chat, the front door and
+the conversational front ends match with no goal, so a goal-scoped rule does
+not load there. A rule learned with no goal loads under every goal.
 
 A lesson supported in another region can widen its scope. Measured harm in one
 region can narrow it instead of retiring it everywhere. `mecha rules` shows
 scope and tallies; `LOADS NOWHERE` identifies a scope no recorded run presented,
-and `--json` exposes `loads_nowhere`. An unrecognized surface matches nothing.
+and `--json` exposes `loads_nowhere`. An unrecognized surface or goal matches
+nothing.
 
 ### Choose how changes go live
 

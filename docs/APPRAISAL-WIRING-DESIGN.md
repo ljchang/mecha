@@ -346,7 +346,7 @@ with a `mecha exp` arm against EXPERIMENT-DESIGN §15's appraisal-off preset
 | **2a-4** | **The reflector folded in** — only after 2e-1 measures its lessons no worse (R25). A reflection is an appraisal of a correction: the same pass writes both, still as a `Reflexion` with its `Origin`, so `learn`'s input and gate keep their shape. | I1, R25 | 2a-2, 2e-1 | 2e-1's measurement is on record; model passes per session fall from two to one; the learning store's provenance gate is unchanged (its tests pass untouched) |
 | **2b-1** | **Anticipation's predictions scored.** Every `Prediction` an `Outcome` resolves is a calibration point per kind; coverage is reported, never a calibration figure while outcomes are absent; a delivery positive only after `outbox reconcile`. | X5 | 1d | a fixture store with resolved and unresolved predictions reports coverage per kind and no rate over nothing |
 | **2b-2** | **The appraisal's own prediction scored** when the same situation and goal next come round; a miss is a surprise, recorded for 2e-6's priority. Needs a structural scorer first (open question below). | X5 | 2a-2, 2b-1 | a fixture pair of sessions scores a hit and a miss by the structural scorer; a model never decides a score (R27) |
-| **2c-1** | **The goal joins `Situation`** as a recorded and scope key — recording, matching, replay and validation in one change; an absent goal never widens a scope. | M1 | 1a | the scope-key tests cover the goal on every door; a rule mined with no goal still matches as before |
+| **2c-1** | **The goal joins `Situation`** as a recorded and scope key — recording, matching, replay and validation in one change; an absent goal never widens a scope. *Built as 2c-1 (2026-09-25): the key is the whole `GoalRef` the front-end handed `prepare`, recorded as `RunConfig::rules_goal`.* | M1 | 1a | the scope-key tests cover the goal on every door; a rule mined with no goal still matches as before |
 | **2c-2** | **Past clean appraisals retrieved.** `goal_context` serves up to three clean appraisals of the same situation and goal, on demand, never pushed — through `Clean` only. Measured against a control at matched budget, since retrieved memory can cost more than it returns. | I2 | 2a-2, 2c-1 | a clean appraisal of a matching session is served and a tainted one never is; the lever's arm runs against the control |
 | **2d-1** | **Point-wise comparison at informative decision points.** At a steer, a denial, a failed check, an edited or rejected draft, a surprise: `probe::drive_arm` runs K policies a short horizon from the point, and the owner's recorded verdict decides (new: a branch's draft against the released text). Each writes a 1g `Comparison` of a new kind. Points drawn uniformly until 2e-6 ranks them. **Built as 2d-1** — `mecha sessions compare`; see O1 for what was built and what it left. | O1, R26, R27 | 1g | fixture points of each kind leave comparisons a second read returns; a point whose verdict no structural validator can pose is inconclusive, never judged |
 | **2d-2** | **The acceptance combination** (R26): a harness candidate is accepted when the point-wise comparison decides for it and the whole-session numeric comparison shows no regression, `WORK_FLOOR` intact. | O1, R26 | 2d-1 | a candidate that wins point-wise and regresses the floor is rejected; one that wins point-wise and holds is accepted |
@@ -1082,6 +1082,21 @@ cost more than it returns (arXiv 2606.15017).
 §17.3's goal key, now that S1 makes it non-empty. It joins recording,
 matching, replay and validation together, and an absent goal never widens a
 rule's scope (APPRAISAL-RESEARCH §8.4).
+
+> **Built as 2c-1 (2026-09-25).** The key is the whole reference, kind and
+> id (`situation::GoalKey`, the `kind:id` string on the wire): I2 keys on
+> *the same goal*, and the kind alone would repeat the surface key. It is
+> the goal the front-end handed `prepare` (`GlobalOpts::goal`: `tasks work`
+> its task, a trigger run its trigger, `run --goal`, a question
+> continuation the asking run's recorded goal; `serve`, the front door and
+> the conversational front-ends declare none), recorded as
+> `RunConfig::rules_goal` and read by every door the workspace and surface
+> keys read — the miner, the backfill, the validator's region, the probe,
+> the planning examples, the roster, and the appraisal store's situation,
+> which is what 2c-2's `goal_context` retrieval keys on. Never the
+> conversation's anchor. A stored goal this build cannot name is kept
+> verbatim and matches nothing; a run toward none matches no goal-scoped
+> rule; a rule mined with none loads under every goal as before.
 
 #### O1. Point-wise counterfactual comparison, beside whole-session rumination
 
