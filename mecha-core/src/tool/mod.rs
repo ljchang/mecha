@@ -969,6 +969,20 @@ impl ToolCtx {
             ..self.clone()
         }
     }
+
+    /// [`ToolCtx::for_session`] with the spill directory named by the caller,
+    /// for a session whose spills must live somewhere in particular — an
+    /// incognito chat's, beside its workspace in RAM, where nothing outlives
+    /// the room. The caller owns keeping `spill` outside `workspace`: the
+    /// jail's spill exception is only as safe as the model's inability to
+    /// write there ([`session_spill_dir`]'s doc).
+    pub fn for_session_in(&self, workspace: PathBuf, spill: PathBuf) -> ToolCtx {
+        ToolCtx {
+            spill_dir: Some(spill),
+            workspace,
+            ..self.clone()
+        }
+    }
 }
 
 impl ToolCtx {
