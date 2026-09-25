@@ -57,14 +57,16 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let sessions = Session::list(&sessions_dir)?;
     // A test or stray experiment session must not become a graph episode —
     // the graph is the owner's memory (`session::split_admitted`).
-    let (sessions, skipped) = mecha_core::session::split_admitted(sessions);
-    if skipped > 0 {
-        println!("skipping {skipped} test or experiment session(s)");
-    }
-    let mut todo: Vec<_> = sessions
+    // Counted over this run's candidates, after the already-distilled
+    // filter, so the number means "passed over now".
+    let candidates: Vec<_> = sessions
         .into_iter()
         .filter(|(meta, _)| !done.contains(&meta.id))
         .collect();
+    let (mut todo, skipped) = mecha_core::session::split_admitted(candidates);
+    if skipped > 0 {
+        println!("skipping {skipped} test or experiment session(s)");
+    }
     if let Some(limit) = args.limit {
         todo.truncate(limit);
     }

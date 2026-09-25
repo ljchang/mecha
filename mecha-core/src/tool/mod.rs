@@ -851,36 +851,56 @@ fn fresh_spill_dir() -> Option<PathBuf> {
     Some(std::env::temp_dir().join(format!("{SPILL_PREFIX}{}", uuid::Uuid::new_v4())))
 }
 
-/// Where a session that owns a workspace keeps its spilled output: inside
-/// that workspace, so a spill lives exactly as long as the session's other
-/// files and no other session's jail admits it.
+/// Where one session's spilled output goes: a directory of its own under the
+/// mecha home, `spill/<id>/`, with the id derived from the session's
+/// workspace. `None` when the home cannot be found.
 ///
-/// Why not the context's own: a front-end serving many sessions from one
-/// agent (`mecha serve`, the Slack connector) builds each turn's context by
-/// cloning the agent's, so every session shared one `$TMPDIR` directory —
-/// one session could `fs_read` another's spilled tool output, and the
-/// directory was never removed (88 of them on one machine, 2026-09-25). A
-/// spill is re-read on later turns of the same conversation, so the lifetime
-/// it needs is the session's, not the run's.
-pub fn spill_within(workspace: &Path) -> PathBuf {
-    workspace.join(SPILL_DIR)
+/// **Never inside the workspace.** `ToolCtx::resolve` admits the spill
+/// directory as an exception to the jail and finds its root by following
+/// symlinks, so the directory must be somewhere the model cannot write: a
+/// `.spill` at a fixed name inside the workspace let `shell: ln -sfn /
+/// .spill` turn the exception into the whole filesystem, and would have had
+/// the harness write its own spill files through the link (found on review
+/// of #313). Neither the fs tools nor a confined `shell` can reach the mecha
+/// home, so nothing can plant a link here.
+///
+/// **One per session.** A front-end serving many sessions from one agent
+/// (`mecha serve`, the Slack connector, the voice facade) builds each turn's
+/// context by cloning the agent's, so every session shared one `$TMPDIR`
+/// directory — one could `fs_read` another's spilled output, and it was never
+/// removed (88 of them on one machine, 2026-09-25). A spill is re-read on
+/// later turns of the same conversation, so it is keyed by the session's
+/// workspace, which is stable across its turns, and aged out by
+/// `mecha work clean`.
+pub fn session_spill_dir(workspace: &Path) -> Option<PathBuf> {
+    use sha2::Digest;
+    let home = crate::work::mecha_home().ok()?;
+    let canonical = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
+    let digest = sha2::Sha256::digest(canonical.as_os_str().as_encoded_bytes());
+    let id: String = digest.iter().take(16).map(|b| format!("{b:02x}")).collect();
+    Some(home.join(SESSION_SPILL_ROOT).join(id))
 }
 
-/// The name of a session's spill directory inside its workspace.
-pub const SPILL_DIR: &str = ".spill";
+/// The directory under the mecha home that holds per-session spill
+/// directories ([`session_spill_dir`]).
+pub const SESSION_SPILL_ROOT: &str = "spill";
 
 impl ToolCtx {
     /// This context for one session: its workspace, and that session's own
-    /// spill directory inside it ([`spill_within`]).
+    /// spill directory ([`session_spill_dir`]).
     ///
     /// The one way a front-end serving many sessions from one agent should
     /// build a turn's context — `serve`'s chats, the Slack connector, the
     /// voice facade. Cloning the agent's context and replacing only the
     /// workspace keeps the agent's spill directory, which every session then
-    /// shares and any of them can read (found on review of #313).
+    /// shares and any of them can read (found on review of #313). Without a
+    /// mecha home the session gets a fresh `$TMPDIR` directory of its own,
+    /// which is still its own.
     pub fn for_session(&self, workspace: PathBuf) -> ToolCtx {
         ToolCtx {
-            spill_dir: Some(spill_within(&workspace)),
+            spill_dir: session_spill_dir(&workspace).or_else(fresh_spill_dir),
             workspace,
             ..self.clone()
         }
@@ -1933,6 +1953,8 @@ mod cap_tests {
 
     #[test]
     fn two_sessions_served_by_one_agent_cannot_read_each_others_spills() {
+        // Spill directories live under the mecha home; move it.
+        let home = crate::work::tests::HomeGuard::new();
         // The shape serve, Slack and the voice facade build: every turn's
         // context from one agent context, narrowed to a session.
         let agent = ToolCtx::default();
@@ -1958,11 +1980,13 @@ mod cap_tests {
             .is_ok());
         std::fs::remove_dir_all(&shared).ok();
 
-        // Through for_session: each its own, and neither reads the other's.
+        // Through for_session: each its own, under the mecha home, and
+        // neither reads the other's.
         let a = agent.for_session(ws_a.clone());
         let b = agent.for_session(ws_b.clone());
         assert_ne!(a.spill_dir, b.spill_dir);
         let b_spill = b.spill_dir.clone().unwrap();
+        assert!(b_spill.starts_with(home.dir()), "{}", b_spill.display());
         std::fs::create_dir_all(&b_spill).unwrap();
         std::fs::write(b_spill.join("shell-b.txt"), "b output").unwrap();
         assert!(b
@@ -1971,6 +1995,35 @@ mod cap_tests {
         assert!(a
             .resolve(&b_spill.join("shell-b.txt").display().to_string())
             .is_err());
+        // Stable across turns: the same workspace names the same directory.
+        assert_eq!(agent.for_session(ws_a.clone()).spill_dir, a.spill_dir);
+    }
+
+    #[test]
+    fn a_link_the_model_plants_in_its_workspace_never_widens_the_jail() {
+        // A spill directory the model can write is one it can replace with a
+        // symlink, and the jail's spill exception follows symlinks: a
+        // `.spill -> /` in the workspace admitted every path on the machine
+        // (review of #313). A session's spill directory is outside the
+        // workspace, so whatever the model plants there is just a link in
+        // its own jail.
+        let _home = crate::work::tests::HomeGuard::new();
+        let ws = scratch("wsLink");
+        let ctx = ToolCtx::default().for_session(ws.clone());
+        let spill = ctx.spill_dir.clone().unwrap();
+        assert!(
+            !spill.starts_with(&ws),
+            "the spill directory is model-writable"
+        );
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/", ws.join(".spill")).unwrap();
+            std::os::unix::fs::symlink("/", ws.join("spill")).unwrap();
+        }
+        let outside = std::env::temp_dir().join(format!("mecha-outside-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&outside, "not yours").unwrap();
+        assert!(ctx.resolve(&outside.display().to_string()).is_err());
+        std::fs::remove_file(&outside).ok();
     }
 
     #[test]
