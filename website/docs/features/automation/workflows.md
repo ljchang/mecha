@@ -66,6 +66,14 @@ In the web interface, expand **Finished workflows** at the bottom of Today and
 choose **Reopen workflow** to continue a finished or cancelled task conversation.
 This preserves the launch gates while making completion reversible from a phone.
 
+Each of these is also your verdict on the session that did the work, and
+[appraisal](/docs/features/appraisal/reference#which-recorded-outcomes-contribute)
+reads it: closing counts for that session, cancelling and reopening a closed
+workflow count against it, and a `verify` whose artifact check fails counts
+against it once. mecha keeps every `verify` you run, with the session it
+checked, so a failure is not lost when the task is resumed. Nothing here asks
+you for anything extra.
+
 If a crash or reboot leaves a task blocked by a stale running process ID, first
 confirm the previous run has stopped, then record that evidence:
 

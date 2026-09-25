@@ -2288,7 +2288,11 @@ now makes the move one recorded event:
 - **`--surface` cannot claim `chat`**, and inside a run the flag is ignored:
   the surface of a run's closure is always `chat`.
 - **Reopen is the same event reversed** (`move: reopen`, `undoes` naming the
-  closure it undoes) and fires `task_reopened`; it signs nothing yet (1d).
+  closure it undoes) and fires `task_reopened`. The appraisal reads both back
+  (1d, `appraisal::of_session`'s closure arm): a standing `done` closure is
+  `+0.5` on the sessions it names, and a reopen of one is `-1.0` on those
+  sessions at any age, withdrawing the `+0.5` — see the goal system's
+  "The owner's verdicts, read where they are recorded".
 
 ## Tool dispatch and panics
 
@@ -4026,10 +4030,13 @@ store's reflections, filtered by session id inside — and signs: a question
 answered whose run then finished (`+0.5`, `Own`), a question abandoned
 (`-0.5`, `Owner`), a triaged request the owner closed with nothing sent
 (`-0.5`, `Owner`), and a follow-up the reflector judged a correction (`-1.0`, `Owner`,
-`Channel::Intervention`, only where `Reflexion::provenance()` is clean —
-the learning loop's own gate, by the owner's ruling, because a reflection
-written from a tainted session is already clean by construction and a
-wider clause had no row to apply to). Every cite is an id the harness minted
+`Channel::Intervention`, only where `Reflexion::provenance_as_mined()` is
+clean — the learning loop's own gate, by the owner's ruling, because a
+reflection written from a tainted session is already clean by construction
+and a wider clause had no row to apply to; *as mined*, because the owner's
+later drop or edit of the lesson is a verdict on the reflector and never
+the run's score, R16g — before 1d a drop withdrew the run's `-1.0` and an
+edit's provenance promotion added it). Every cite is an id the harness minted
 (`Cite::Question`, `Cite::Request`, `Cite::Reflexion`). A store that cannot
 be read costs its channel and is reported as unreadable, never folded into
 empty — the readouts carry `questions_read` / `frontdoor_read` /
@@ -4040,6 +4047,71 @@ another session or the owner may have cleared the queue, so a global delta
 is context, never credit ("Attribution follows the event", below). This
 paragraph listed it as `+0.5`, `Own` after the code had stopped producing it
 (found by the 2026-09-24 inventory sweep).
+
+**The owner's verdicts, read where they are recorded** (1d;
+`APPRAISAL-WIRING-DESIGN.md` S3a, rulings R16). Every one is an act the
+owner already performs — nothing asks for a rating — and each is read from
+the store that owns it, never copied into a new one:
+
+- **Task closures and reopens**, from 1b's record (`SessionRecords::closures`,
+  the store's standing transitions). A `done` closure is `+0.5`, `Owner`,
+  cite `Cite::TaskClosure` — the same error and cite `note_task_closure` adds
+  at the closure moment, so the two readings agree and never double; `dropped`
+  is its zero-signed twin. A reopen of a `done` closure (`undoes`) is `-1.0`,
+  `Owner`, cite `Cite::TaskReopen`, on the closure's own `sessions`, **at any
+  age, and withdraws that closure's `+0.5`** (ruled). A reopen with nothing
+  recorded to undo — a closure older than the record — signs on the reopen's
+  own sessions when it moved the task from `done`. A reopen of a drop signs
+  nothing. `tasks set`'s closure-moment appraisal passes no closures: its
+  verdict is the one being made.
+- **Workflow close / cancel / reopen / verify** (R16b–e), from the workflow's
+  own record (`SessionRecords::workflows`). `Workflow::owner_dispositions`
+  reads the event kinds `close`, `cancel` and `reopen` already write, and
+  names the session each was about from the latest `started` before it —
+  unknown, never guessed, where pruning lost it. Close `+0.5`, `Owner`;
+  cancel `-0.5`, `Owner`; a reopen of a close `-1.0` on the closing session
+  with the close withdrawn, of a cancel nothing. A failed verify is `-1.0`,
+  **`Own`** (the ruling names mecha's agency), once per workflow and session,
+  for an `artifact_contains` check only: a failed `delivered` check is a draft
+  the draft channel already signs. This needed one addition to the store,
+  `Workflow::verify_history`: `verification` holds only the latest check and
+  every material event clears it, so a failure vanished the moment the task
+  resumed. `WorkflowStore::verify` — the owner's `verify` and `close` — writes
+  it; `today`'s display-time re-check on an unsaved copy does not.
+- **A draft rejected with a reason** (R16a) signs nothing new — the reject
+  is already `-1.0` on the edit channel — and its reason reaches the
+  reflector as an owner correction: `reflect`'s outbox pass mines
+  `OutboxItem::rejection_reason` (a model's message draft, rejected, reason
+  non-empty) as `learning::Trigger::Reject`, framed for the behaviour
+  reflector, through `evidence_for` on the item's staging taint — the draft
+  in full when clean, the owner's words and the tool name alone otherwise.
+  The reflection arm above reads `followup` only, so it cannot sign twice.
+- **Curation of what a learner produced is never a run's score** (R16f–h):
+  `curation.rs`. A rule retired or restored, a reflection dropped or edited,
+  a harness candidate accepted, rejected or reverted is recorded against the
+  rule, the reflection or the candidate, and `of_session` takes none of it
+  as input. The reflection verdicts are already on the reflection
+  (`dropped_at`, `edited_at`); the rule and candidate verbs append one line
+  to a `curation.jsonl` in the store that owns the target, because the
+  record alone could not say who acted — the retirement scan writes the
+  same `retired_at`, the rumination gate the same `status` — and a restore
+  cleared the retirement. A machine's decision writes no line, which is how
+  the two are told apart. `sessions appraise` counts them beside the runs.
+- **Graph review rejections of facts from `agent:mecha` episodes** (for L7)
+  are **not read**: the graph's decided verdicts are on no read-only tool,
+  and no `mecha-graph` answer carries a candidate's origin episode, so the
+  episode → session join cannot be made from here without opening the
+  graph's database, which `mecha review`'s module doc refuses. The readout
+  says so (`graph_fact_rejections: null`) rather than printing a zero; the
+  gap closes with a read-only graph verb that returns rejected candidates
+  with their origin episode's `source` and `source_id`.
+
+The new cites are `Cite::TaskReopen` and `Cite::Workflow { act }`, and
+`Cite::owner_act` names each for the readout's by-act counts, since all of
+them ride `Channel::Commitment`. `Cite` is a wire format (it rides on
+distilled episodes): an unknown kind loads as `Cite::Unknown` through
+`de_cite_lenient`, because `#[serde(other)]` alone cannot match an
+adjacently tagged variant that carries an id.
 
 **`Channel::Setpoint` has no production producer, and nothing in the
 harness mints a `GoalRef::Setpoint`.** Both exist because the enums are a

@@ -1955,6 +1955,15 @@ fn appraise_session_with(
         charter: stores.charter.as_ref(),
         charter_unreadable: stores.charter_unreadable,
         stops: &stops,
+        // Not read here, on purpose: this is the closure moment's reading,
+        // and the verdict being made is `note_task_closure`'s to add (the
+        // same `+0.5` and cite the closure arm reads back later). The owner's
+        // earlier closures, reopens and workflow acts are the corpus
+        // readout's — `sessions appraise` reads both stores.
+        closures: &[],
+        closures_unreadable: false,
+        workflows: &[],
+        workflows_unreadable: false,
     };
     let mut appraisal = mecha_core::appraisal::of_session(
         session_id,

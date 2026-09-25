@@ -480,6 +480,27 @@ impl OutboxItem {
         self.writing_outcome() == Some(WritingOutcome::SentEdited)
     }
 
+    /// The owner's own words on a model's message draft they rejected — what
+    /// `reflect` hands the reflector as an owner correction
+    /// (`APPRAISAL-WIRING-DESIGN.md` R16a). `None` for anything else: a
+    /// rejection with no reason (the verdict is already signed, and there
+    /// are no words to learn from), a publish (the appraisal's reject arm is
+    /// message-only on the same bookkeeping argument as
+    /// [`Self::mineable_as_writing`]), and an item the harness staged from
+    /// its own records ([`Author::Harness`]), which no model drafted.
+    pub fn rejection_reason(&self) -> Option<&str> {
+        if self.kind != OutboxKind::Message
+            || self.status != "rejected"
+            || self.author() != Author::Model
+        {
+            return None;
+        }
+        self.reason
+            .as_deref()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+    }
+
     /// What this item says about the drafting, if it says anything.
     ///
     /// **The signed half of the outbox's evidence, and the cheapest signal in
@@ -1907,6 +1928,65 @@ mod tests {
             );
         }
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// R16a: a model's message draft the owner rejected with a reason hands
+    /// the reason to the reflector; nothing else does. Fails on the tree
+    /// before 1d, where no rejection reached the reflector at all.
+    #[test]
+    fn only_a_reasoned_rejection_of_a_models_message_is_an_owner_correction() {
+        let root = scratch("rejection-reason");
+        let store = OutboxStore::open(&root).unwrap();
+        let item = |kind, status: &str, reason: Option<&str>, author: &str| {
+            let mut i = store
+                .stage(
+                    "x__send",
+                    kind,
+                    json!({"body": "Dear Dirk,"}),
+                    Taint::default(),
+                    Provenance::default(),
+                )
+                .unwrap();
+            i.status = status.into();
+            i.reason = reason.map(str::to_string);
+            i.author = author.into();
+            i
+        };
+        let cases = [
+            (
+                OutboxKind::Message,
+                "rejected",
+                Some("  wrong person  "),
+                "model",
+                Some("wrong person"),
+            ),
+            (OutboxKind::Message, "rejected", None, "model", None),
+            (OutboxKind::Message, "rejected", Some("   "), "model", None),
+            (
+                OutboxKind::Publish,
+                "rejected",
+                Some("not public"),
+                "model",
+                None,
+            ),
+            (
+                OutboxKind::Message,
+                "rejected",
+                Some("other slot"),
+                "harness",
+                None,
+            ),
+            (OutboxKind::Message, "sent", Some("n/a"), "model", None),
+        ];
+        for (kind, status, reason, author, expected) in cases {
+            let i = item(kind, status, reason, author);
+            assert_eq!(
+                i.rejection_reason(),
+                expected,
+                "{kind:?} / {status} / {reason:?} / {author}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
