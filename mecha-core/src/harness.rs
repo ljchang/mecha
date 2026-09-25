@@ -1032,6 +1032,8 @@ mod tests {
                 candidate_only: 3,
                 baseline_only: 1,
                 undecided: 2,
+                lost_baseline: 0,
+                lost_candidate: 1,
             },
             basis: Basis::Pointwise,
             not_run: None,

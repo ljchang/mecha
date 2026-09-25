@@ -379,7 +379,11 @@ pub fn is_holdout(episode: &str, holdout_in: u64) -> bool {
 /// Reject an accepted candidate that paid for its win on a metric it never
 /// predicted.
 ///
-/// Applied only to an `Accept`, and only here rather than inside
+/// Two jobs, and only the second is `Accept`-only. It sets the typed
+/// [`Guard`] on **every** judgement — a breach is a regression even on
+/// numbers that did not carry the candidate, because a point-wise win may be
+/// about to (R26, R36) — and it rewrites the disposition of an `Accept`
+/// alone, exactly as before the guard was typed. Here rather than inside
 /// [`judge_slices`], because it is the one thing that needs [`RunStats`]: the
 /// generic gate sees one cost function and cannot ask about the metrics it was
 /// not given, and `mecha eval --ab-config` grades cases rather than runs so it
@@ -745,6 +749,17 @@ pub struct PointwiseTally {
     /// Points compared where an arm was inconclusive — no evidence either way.
     #[serde(default)]
     pub undecided: usize,
+    /// Points drawn and paid for that produced no comparison because an arm
+    /// could not be driven, by the arm lost. Kept, never folded into
+    /// `undecided`: the change rides on the candidate arm alone, so a
+    /// change that breaks its own arm censors *asymmetrically* — the
+    /// survivors are exactly the points where the change did nothing
+    /// unusual, the whole-session half's 2026-09-01 lesson one directory
+    /// over (found on review). A candidate-arm loss stops an auto-accept.
+    #[serde(default)]
+    pub lost_baseline: usize,
+    #[serde(default)]
+    pub lost_candidate: usize,
 }
 
 /// Which way a point-wise comparison went (R36).
@@ -852,8 +867,17 @@ pub fn combine(
              harness did what the owner decided more often than the candidate did"
         )),
         (PointwiseVerdict::For, Guard::Regressed(r)) => Disposition::Reject(format!(
-            "won point-wise ({points}) but the numeric comparison regressed ({r:?}): a \
-             verdict won by doing less is not a win (R26)"
+            "won point-wise ({points}) but the numeric comparison regressed ({r:?}; work {} \
+             → {} tool calls, selection {}+ {}- {}=, holdout {}+ {}- {}=): a verdict won by \
+             doing less is not a win (R26)",
+            numeric.work_baseline,
+            numeric.work_candidate,
+            numeric.selection.wins,
+            numeric.selection.losses,
+            numeric.selection.ties,
+            numeric.holdout.wins,
+            numeric.holdout.losses,
+            numeric.holdout.ties,
         )),
         (PointwiseVerdict::For, Guard::NewCost(m)) => Disposition::Propose(format!(
             "won point-wise ({points}), but {m:?} rose from nothing across the replayed \
@@ -867,6 +891,14 @@ pub fn combine(
             Disposition::Propose(format!(
                 "won point-wise ({points}) with no numeric regression, but a {class:?} change \
                  is a person's decision however it scored"
+            ))
+        }
+        (PointwiseVerdict::For, Guard::Held) if p.lost_candidate > 0 => {
+            Disposition::Propose(format!(
+                "won point-wise ({points}) with no numeric regression, but {} point(s) lost the \
+                 candidate arm — the survivors may be only the points where the change did \
+                 nothing unusual",
+                p.lost_candidate
             ))
         }
         (PointwiseVerdict::For, Guard::Held) => Disposition::Accept,
@@ -1897,6 +1929,37 @@ mod r36_tests {
             pointwise_can_change(&missing_win),
             "a numeric rejection for want of a win is what a point-wise win overturns"
         );
+    }
+
+    /// A point-wise win over points where the candidate arm could not be
+    /// driven reaches a person: the change rides on that arm alone, so its
+    /// losses censor asymmetrically. A baseline-arm loss does not.
+    #[test]
+    fn a_win_over_points_that_lost_the_candidate_arm_is_not_auto_accepted() {
+        let held = judge_drawn(
+            ChangeClass::Config,
+            &turns(),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (10, 6)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (10, 6)),
+        );
+        let censored = PointwiseTally {
+            lost_candidate: 4,
+            ..tally(3, 1, 0)
+        };
+        assert_eq!(censored.verdict(), PointwiseVerdict::For);
+        let (combined, basis) = combine(ChangeClass::Config, held.clone(), &censored);
+        assert_eq!(basis, Basis::Pointwise);
+        assert!(
+            matches!(combined.disposition, Disposition::Propose(ref why) if why.contains("lost the candidate arm")),
+            "{:?}",
+            combined.disposition
+        );
+        let baseline_lost = PointwiseTally {
+            lost_baseline: 4,
+            ..tally(3, 1, 0)
+        };
+        let (combined, _) = combine(ChangeClass::Config, held, &baseline_lost);
+        assert_eq!(combined.disposition, Disposition::Accept);
     }
 
     /// The thresholds: four decided points, strictly more one way.

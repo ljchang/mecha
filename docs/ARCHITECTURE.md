@@ -4050,7 +4050,13 @@ auto-accepts) now asks two questions of a config candidate, and
   (`pointwise::on_record`) includes it — and a re-measurement reuses a
   stored verdict rather than paying for it again — a reused point spends
   the same budget a driven one does, so the ceiling holds on the evidence
-  as well as the cost (found on review). When the numbers already rejected
+  as well as the cost (found on review). A point lost to an arm that could
+  not be driven is counted **by arm** (`PointwiseTally::lost_candidate` /
+  `lost_baseline`) and printed by `harness show`: the change rides on the
+  candidate arm alone, so its losses censor asymmetrically — the survivors
+  are the points where it did nothing unusual — and a point-wise win over
+  any candidate-arm loss proposes rather than auto-accepts (found on
+  review, the whole-session half's 2026-09-01 lesson). When the numbers already rejected
   on a regression (`candidate::pointwise_can_change`) every point-wise
   outcome keeps the rejection, so the pass is not run at all. The tally
   (`candidate::PointwiseTally`) decides **for** at `MIN_DECIDED_POINTS` (4)

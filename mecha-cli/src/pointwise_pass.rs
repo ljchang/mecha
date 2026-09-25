@@ -798,7 +798,7 @@ fn reuse(
 /// Why a candidate's point-wise pass compared nothing, when it did not —
 /// each cause in its own words.
 fn empty_reason(out: &CandidateEvidence, seats_held: bool, lost_to_arms: usize) -> Option<String> {
-    if out.tally != mecha_core::candidate::PointwiseTally::default() {
+    if out.tally.decided + out.tally.undecided > 0 {
         // Evidence, but perhaps less than the budget allowed: a pass cut
         // short by held seats must not read like a thin corpus.
         return seats_held.then(|| {
@@ -946,7 +946,19 @@ pub async fn compare_candidate(
             match driven {
                 Ok(v) => outcomes.push(Arm::new(*role, policy.clone(), Outcome::from(&v))),
                 Err(why) => {
-                    eprintln!("· {} {}: {why}", point.session_id, point.kind.as_str());
+                    eprintln!(
+                        "· {} {}: the {} arm could not be driven: {why}",
+                        point.session_id,
+                        point.kind.as_str(),
+                        mecha_core::appraisal::enum_name(role)
+                    );
+                    // Which arm, counted apart: a change that breaks its own
+                    // arm censors the candidate side only.
+                    if *role == Role::Candidate {
+                        out.tally.lost_candidate += 1;
+                    } else {
+                        out.tally.lost_baseline += 1;
+                    }
                     break;
                 }
             }

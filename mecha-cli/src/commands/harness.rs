@@ -363,6 +363,18 @@ enum Verdict {
 /// One line for `harness show`: what the point-wise half of R26 found, and
 /// whether it or the numbers alone decided. A measurement from before the
 /// field says so — unknown, not "numeric only".
+/// The points a candidate's pass paid for and lost to an arm, by arm — the
+/// censoring a clean tally beside it would otherwise hide.
+fn lost_line(t: &mecha_core::candidate::PointwiseTally) -> String {
+    if t.lost_baseline + t.lost_candidate == 0 {
+        return String::new();
+    }
+    format!(
+        "; lost to an arm that could not be driven: {} candidate, {} baseline",
+        t.lost_candidate, t.lost_baseline
+    )
+}
+
 fn pointwise_line(p: Option<&mecha_core::harness::PointwiseEvidence>) -> String {
     let Some(p) = p else {
         // Two causes, and the record cannot say which: a measurement from
@@ -388,11 +400,12 @@ fn pointwise_line(p: Option<&mecha_core::harness::PointwiseEvidence>) -> String 
             .as_deref()
             .map(|why| format!(" ({why})"))
             .unwrap_or_default()
-    ) + if p.outbox_unreadable {
-        "; the outbox could not be fully read, so draft points may be missing"
-    } else {
-        ""
-    }
+    ) + &lost_line(t)
+        + if p.outbox_unreadable {
+            "; the outbox could not be fully read, so draft points may be missing"
+        } else {
+            ""
+        }
 }
 
 /// Decide, as a function of the two facts and nothing else.
@@ -1197,6 +1210,31 @@ fn overrides() -> Result<()> {
 mod tests {
     use super::*;
     use mecha_core::candidate::MIN_MEASURABLE_RUNS as FLOOR;
+
+    /// `harness show` names a censored pass beside its tally, by arm, and
+    /// says nothing of a record it cannot know about.
+    #[test]
+    fn the_point_wise_line_names_lost_arms_and_never_guesses_a_missing_record() {
+        use mecha_core::candidate::{Basis, PointwiseTally};
+        let evidence = mecha_core::harness::PointwiseEvidence {
+            tally: PointwiseTally {
+                decided: 4,
+                candidate_only: 3,
+                baseline_only: 1,
+                undecided: 0,
+                lost_baseline: 0,
+                lost_candidate: 4,
+            },
+            basis: Basis::Pointwise,
+            not_run: None,
+            comparisons: Vec::new(),
+            outbox_unreadable: true,
+        };
+        let line = pointwise_line(Some(&evidence));
+        assert!(line.contains("4 candidate, 0 baseline"), "{line}");
+        assert!(line.contains("outbox could not be fully read"), "{line}");
+        assert_eq!(pointwise_line(None), "not recorded");
+    }
 
     #[test]
     fn a_mislabel_survives_into_the_record_a_reviewer_actually_opens() {
