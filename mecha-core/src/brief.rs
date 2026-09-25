@@ -1379,7 +1379,9 @@ pub const BRIEF_STEM: &str = "Situation brief from the harness";
 /// `fold_situation_brief`), never the prefix.
 ///
 /// **R21 is the rule, field by field.** Budget facts are numbers — turns,
-/// token and cost ceilings, the context window. Counts and ids off the
+/// token and cost ceilings, the context window — and so are the background
+/// seats, a capacity the harness sets and how much of it is held (a
+/// resource fact with no setpoint). Counts and ids off the
 /// harness's own board read are pointers and appear as they are. Anything a
 /// model could treat as a score to move is words and bands: the commitments
 /// waiting on the owner (the stores the charter's sensors read) are counted

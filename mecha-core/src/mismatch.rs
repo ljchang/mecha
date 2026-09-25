@@ -296,6 +296,31 @@ pub fn de_lenient<'de, D: serde::Deserializer<'de>>(
     )
 }
 
+/// Whether the recorded run was handed a situation brief. The repeat's
+/// context carries none (`drive` clears it), so a recording that was is not
+/// what the repeat reproduces.
+///
+/// Asked of the transcript, not of `levers_off`: the lever did not exist
+/// before 3a, so a recording made earlier has no `situation_brief` in its
+/// list — and requiring it there refused every stored artifact case, none
+/// of which could have had a brief (found on review of #309). The block in
+/// the transcript is the artifact; the record of the switch is not.
+pub fn validate_transcript(messages: &[crate::message::Message]) -> Result<()> {
+    let briefed = messages
+        .iter()
+        .filter(|m| m.role == crate::message::Role::User)
+        .flat_map(|m| &m.content)
+        .any(|b| {
+            matches!(b, crate::message::Block::Text { text }
+                if text.trim_start().starts_with(crate::brief::BRIEF_STEM))
+        });
+    ensure!(
+        !briefed,
+        "artifact task repeat does not reproduce a situation brief the recording was handed"
+    );
+    Ok(())
+}
+
 pub fn validate_recording(recorded: &crate::session::RunConfig) -> Result<()> {
     ensure!(
         recorded.appraisal_evidence.is_none(),
@@ -315,9 +340,6 @@ pub fn validate_recording(recorded: &crate::session::RunConfig) -> Result<()> {
         Lever::StepEscalation,
         Lever::GoalGuidance,
         Lever::Outbox,
-        // The repeat's context carries no brief, so a run that was handed
-        // one is not what the repeat reproduces.
-        Lever::SituationBrief,
     ] {
         ensure!(
             off.contains(&lever),
@@ -383,6 +405,11 @@ pub async fn drive(
     let ws = case.stage()?;
     let mut cx = context.sandboxed(&ws.0, Arc::clone(&context.approver));
     cx.homeostat = None;
+    // No brief either, structurally rather than because the caller's
+    // context happens to hold none: the repeat reproduces a recording made
+    // without one (`validate_transcript`), and its role has no prompt that
+    // would say what the block is.
+    cx.brief = None;
     cx.outbox = None;
     cx.mailbox = None;
     cx.queued_input = None;
@@ -429,6 +456,45 @@ pub async fn drive(
         ));
     }
     Ok((case.grade(&ws.0), stats))
+}
+
+#[cfg(test)]
+mod brief_gate_tests {
+    use crate::message::{Block, Message};
+
+    /// A recording is refused for the brief only when its transcript holds
+    /// one: a recording from before the lever existed — whose `levers_off`
+    /// cannot name it — still grades (review of #309).
+    #[test]
+    fn a_recording_is_refused_for_a_brief_it_was_handed_and_not_for_its_age() {
+        let plain = vec![Message::user("fix the report")];
+        assert!(super::validate_transcript(&plain).is_ok());
+        let old = crate::session::RunConfig {
+            levers_off: Some(vec![
+                crate::harness::Lever::Mcp,
+                crate::harness::Lever::Hooks,
+                crate::harness::Lever::Skills,
+                crate::harness::Lever::Messages,
+                crate::harness::Lever::Fallback,
+                crate::harness::Lever::StepEscalation,
+                crate::harness::Lever::GoalGuidance,
+                crate::harness::Lever::Outbox,
+            ]),
+            ..Default::default()
+        };
+        let err = super::validate_recording(&old).unwrap_err().to_string();
+        // Past every lever check, to the tool surface this bare record lacks.
+        assert!(err.contains("tool surface"), "{err}");
+        let mut briefed = Message::user("fix the report");
+        briefed.content.push(Block::text(format!(
+            "\n\n{}, as things stood when this run started.",
+            crate::brief::BRIEF_STEM
+        )));
+        assert!(super::validate_transcript(&[briefed])
+            .unwrap_err()
+            .to_string()
+            .contains("situation brief"));
+    }
 }
 
 #[cfg(test)]
