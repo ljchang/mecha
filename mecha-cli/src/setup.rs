@@ -145,6 +145,21 @@ pub fn posture_for(
 /// and stamp `interactive` on its own shell's children — a nested front end
 /// forging the owner's approval (review of #294). A registration found
 /// anywhere on the chain, or one that cannot be read, is not a person.
+/// The shell registry's reading of this process, taken once and latched for
+/// its life — the one reading every front end's posture uses (`prepare_tools`,
+/// the TUI's re-stamp on `/mode` and `/model`, and `serve`). Read at the first
+/// front end's start, so a front end a run's shell started, then detached and
+/// reparented, is still not a person when it re-stamps later (review of #294:
+/// the TUI re-read it live and could stamp `interactive` after the run's
+/// shell was gone). Off Linux the registry answers `Unreadable` while any
+/// run's shell is live, so a front end started then stays unattended until
+/// restarted.
+pub fn startup_shell_reading() -> &'static mecha_core::closure::ShellReading {
+    static READING: std::sync::OnceLock<mecha_core::closure::ShellReading> =
+        std::sync::OnceLock::new();
+    READING.get_or_init(mecha_core::closure::ShellReading::from_registry)
+}
+
 pub fn front_end_interactive(
     stdin_is_terminal: bool,
     shell: &mecha_core::closure::ShellReading,
@@ -1410,10 +1425,7 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     // `cfg` is final here: `-y` and `--read-only` were folded into
     // `cfg.tools.permission_mode` above.
     let posture = opts.run_posture.unwrap_or_else(|| {
-        let person = front_end_interactive(
-            interactive,
-            &mecha_core::closure::ShellReading::from_registry(),
-        );
+        let person = front_end_interactive(interactive, startup_shell_reading());
         posture_for(opts.surface, person, cfg.tools.permission_mode)
     });
     Ok(PreparedTools {

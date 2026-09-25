@@ -2228,10 +2228,13 @@ now makes the move one recorded event:
   `interactive` only with a terminal on stdin *and* no registered shell
   above them (`setup::front_end_interactive`), so a run that pipes into
   `mecha chat`, or feeds `mecha tui` a pty, gets `unattended` children;
-  `mecha serve` reads the registry once at startup and latches it
-  (`serve::chat::started_by_a_run`), so a `serve` a run's shell started —
+  every front end reads the registry once at startup and latches it
+  (`setup::startup_shell_reading`), so a `serve` a run's shell started —
   and authenticated to with the login it chose on the same command line —
-  never stamps a web chat `interactive` (review of #294).
+  never stamps a web chat `interactive`, and the TUI's re-stamp on `/mode`
+  and `/model` reuses the startup reading rather than a fresh one, so a TUI
+  detached and reparented away from its run stays unattended (review of
+  #294).
   **The residue, named on `decide`:**
   a command that detaches from its shell and clears the variable reads as
   the owner's terminal; an unconfined shell can also edit `~/.mecha`
