@@ -3765,8 +3765,9 @@ repeated here. What is open:
     - No doctor check reads the shell registry (`runs/shells`) itself;
       `check_shell_confinement` only reports a sandbox that mounts the guard
       directories.
-    - `Shell::call`'s two fail-closed refusals (no registry to register in;
-      an entry that cannot be written) have no test.
+    - `Shell::call`'s three fail-closed refusals (no registry to register
+      in; a registry that cannot be opened; an entry that cannot be
+      written) have no test.
     - `live_run_pids` reads the trigger store named by the closing
       process's own `MECHA_TRIGGERS_DIR`, so a trigger store outside every
       guard home (as `mecha exp` trials use) drops out of rule 1's marker
