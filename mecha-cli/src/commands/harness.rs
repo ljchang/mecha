@@ -360,21 +360,6 @@ enum Verdict {
     Measure,
 }
 
-/// Decide, as a function of the two facts and nothing else.
-///
-/// Split out from the arm that writes the candidate because **the ordering is
-/// the policy**, and the ordering was the only part of this with no test —
-/// review named these the two guarantees on this branch least measured, and it
-/// was right: the writing needs a provider and a store, the decision needs
-/// neither.
-///
-/// **Corpus size is asked first, and that is the substantive choice.** Both
-/// conditions can hold at once, and they disagree about who decides:
-/// `NoHeadroom` rejects, `CorpusTooSmall` stages for a person. On a corpus too
-/// small to measure, "no run has any of this metric" is a statement about a
-/// handful of runs and not about the harness — so rejecting on it would be
-/// refusing a proposal for want of evidence, which this design calls an
-/// absence of a verdict rather than a verdict. Thin evidence stages.
 /// One line for `harness show`: what the point-wise half of R26 found, and
 /// whether it or the numbers alone decided. A measurement from before the
 /// field says so — unknown, not "numeric only".
@@ -403,6 +388,21 @@ fn pointwise_line(p: Option<&mecha_core::harness::PointwiseEvidence>) -> String 
     )
 }
 
+/// Decide, as a function of the two facts and nothing else.
+///
+/// Split out from the arm that writes the candidate because **the ordering is
+/// the policy**, and the ordering was the only part of this with no test —
+/// review named these the two guarantees on this branch least measured, and it
+/// was right: the writing needs a provider and a store, the decision needs
+/// neither.
+///
+/// **Corpus size is asked first, and that is the substantive choice.** Both
+/// conditions can hold at once, and they disagree about who decides:
+/// `NoHeadroom` rejects, `CorpusTooSmall` stages for a person. On a corpus too
+/// small to measure, "no run has any of this metric" is a statement about a
+/// handful of runs and not about the harness — so rejecting on it would be
+/// refusing a proposal for want of evidence, which this design calls an
+/// absence of a verdict rather than a verdict. Thin evidence stages.
 fn measurement_verdict(runs: usize, no_headroom: bool) -> Verdict {
     if !measurable(runs) {
         return Verdict::CorpusTooSmall;
@@ -715,16 +715,29 @@ async fn measure(
     // driven under the recorded config and under the change, decide; the
     // numbers above guard. Undecided hands the verdict back to `numeric`
     // unchanged, recorded as numeric only. Seeded like the draw, so a
-    // re-measurement draws the same points and reuses their comparisons.
-    let evidence = crate::pointwise_pass::compare_candidate(
-        &prepared,
-        provider_cfg,
-        model,
-        &change,
-        &cand.id,
-        draw.seed,
-    )
-    .await?;
+    // re-measurement draws the same points and reuses their comparisons —
+    // and not paid for at all when no point-wise outcome could change the
+    // verdict (a numeric rejection on a regression).
+    let evidence = if mecha_core::candidate::pointwise_can_change(&numeric) {
+        crate::pointwise_pass::compare_candidate(
+            &prepared,
+            provider_cfg,
+            model,
+            &change,
+            &cand.id,
+            draw.seed,
+        )
+        .await?
+    } else {
+        crate::pointwise_pass::CandidateEvidence {
+            not_run: Some(
+                "the numbers already rejected it on a regression, which every point-wise \
+                 outcome would keep"
+                    .into(),
+            ),
+            ..Default::default()
+        }
+    };
     let (judgement, basis) = mecha_core::candidate::combine(cand.class, numeric, &evidence.tally);
     eprintln!(
         "point-wise: {} candidate-only, {} baseline-only over {} decided point(s) \

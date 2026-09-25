@@ -570,7 +570,10 @@ pub struct Measurement {
 pub struct PointwiseEvidence {
     #[serde(default)]
     pub tally: crate::candidate::PointwiseTally,
-    /// What decided the verdict the measurement records.
+    /// What decided the verdict the measurement records. Defaulted: a
+    /// record missing it reads `Unknown` rather than failing the whole
+    /// measurement.
+    #[serde(default)]
     pub basis: crate::candidate::Basis,
     /// Why no point was compared, when none was — the provider is not on
     /// this machine (R29), or the corpus holds no point this pass could
@@ -1037,8 +1040,16 @@ mod tests {
         assert!(m.pointwise.is_none());
         let mut newer = old;
         newer["pointwise"] = serde_json::json!({"basis": "by_oracle", "tally": {}});
-        let m: super::Measurement = serde_json::from_value(newer).unwrap();
+        let m: super::Measurement = serde_json::from_value(newer.clone()).unwrap();
         assert_eq!(m.pointwise.unwrap().basis, Basis::Unknown);
+        let mut sparse = newer;
+        sparse["pointwise"] = serde_json::json!({});
+        let m: super::Measurement = serde_json::from_value(sparse).unwrap();
+        assert_eq!(
+            m.pointwise.unwrap().basis,
+            Basis::Unknown,
+            "a missing basis degrades, never fails the record"
+        );
     }
 
     /// `ranked` is on the wire beside `seed` and `holdout_episodes`, and a

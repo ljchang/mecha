@@ -138,8 +138,9 @@ pub enum Role {
     RulesFree,
     /// The deployed rules, rendered for the recorded run's situation.
     Rules,
-    /// A candidate rule set that exists only in memory until the gate
-    /// disposes of it.
+    /// A candidate that exists only in memory until its gate disposes of
+    /// it: a rule set (the learn gate), or a harness config change applied
+    /// over the recorded config (R26's point-wise half, row 2d-2).
     Candidate,
     #[default]
     #[serde(other)]

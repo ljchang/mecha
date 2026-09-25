@@ -4044,7 +4044,11 @@ auto-accepts) now asks two questions of a config candidate, and
   comparison is stored with the candidate in `Pointers::proposal_id` — two
   candidates share every rules hash at a point, so the dedup key
   (`pointwise::on_record`) includes it — and a re-measurement reuses a
-  stored verdict rather than paying for it again. The tally
+  stored verdict rather than paying for it again — a reused point spends
+  the same budget a driven one does, so the ceiling holds on the evidence
+  as well as the cost (found on review). When the numbers already rejected
+  on a regression (`candidate::pointwise_can_change`) every point-wise
+  outcome keeps the rejection, so the pass is not run at all. The tally
   (`candidate::PointwiseTally`) decides **for** at `MIN_DECIDED_POINTS` (4)
   decided points and strictly more candidate-only passes than
   baseline-only, **against** symmetrically, and is otherwise **undecided**.

@@ -788,7 +788,7 @@ impl PointwiseTally {
 
 /// What decided a combined verdict — recorded on the measurement, so a
 /// reader can tell a point-wise decision from today's numeric-only one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Basis {
     /// The point-wise comparison decided, for or against; the numbers
@@ -797,9 +797,20 @@ pub enum Basis {
     /// The point-wise comparison did not decide, so the numeric gate's own
     /// verdict stands unchanged (R36, keeping the 2026-08-22 auto-accept).
     NumericOnly,
-    /// A basis a newer build wrote.
+    /// A basis a newer build wrote, or none recorded.
+    #[default]
     #[serde(other)]
     Unknown,
+}
+
+/// Whether any point-wise outcome could change this numeric verdict. Not
+/// when the numbers rejected on a regression: for → the guard rejects,
+/// against → rejects, undecided → the numeric rejection stands. So the
+/// point-wise pass — up to `POINTS_PER_CANDIDATE` seats and twice as many
+/// driven arms — is not paid for there.
+pub fn pointwise_can_change(numeric: &Judgement) -> bool {
+    !(matches!(numeric.guard, Guard::Regressed(_))
+        && matches!(numeric.disposition, Disposition::Reject(_)))
 }
 
 /// R26's acceptance rule as R36 refines it — pure, like the rest of the gate:
@@ -1811,6 +1822,36 @@ mod r36_tests {
                 "{guard:?}"
             );
         }
+    }
+
+    /// A numeric rejection on a regression is final under every point-wise
+    /// outcome, so the pass is skipped there — and only there.
+    #[test]
+    fn a_regression_rejection_needs_no_point_wise_pass() {
+        let regressed = judge_drawn(
+            ChangeClass::Config,
+            &turns(),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (2, 1)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (2, 1)),
+        );
+        assert!(!pointwise_can_change(&regressed));
+        for t in [tally(4, 0, 0), tally(0, 4, 0), PointwiseTally::default()] {
+            let (combined, _) = combine(ChangeClass::Config, regressed.clone(), &t);
+            assert!(
+                matches!(combined.disposition, Disposition::Reject(_)),
+                "{t:?}"
+            );
+        }
+        let missing_win = judge_drawn(
+            ChangeClass::Config,
+            &turns(),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (10, 6)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (10, 6)),
+        );
+        assert!(
+            pointwise_can_change(&missing_win),
+            "a numeric rejection for want of a win is what a point-wise win overturns"
+        );
     }
 
     /// The thresholds: four decided points, strictly more one way.
