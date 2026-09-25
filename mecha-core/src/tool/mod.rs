@@ -842,9 +842,28 @@ impl Default for ToolCtx {
     }
 }
 
+/// The prefix of a spill directory a context mints under `$TMPDIR`, which
+/// `work::stale_spills` keys on to sweep the ones a process left behind.
+pub const SPILL_PREFIX: &str = "mecha-spill-";
+
 /// A spill directory no other context shares. Not created until first used.
 fn fresh_spill_dir() -> Option<PathBuf> {
-    Some(std::env::temp_dir().join(format!("mecha-spill-{}", uuid::Uuid::new_v4())))
+    Some(std::env::temp_dir().join(format!("{SPILL_PREFIX}{}", uuid::Uuid::new_v4())))
+}
+
+/// Where a session that owns a workspace keeps its spilled output: inside
+/// that workspace, so a spill lives exactly as long as the session's other
+/// files and no other session's jail admits it.
+///
+/// Why not the context's own: a front-end serving many sessions from one
+/// agent (`mecha serve`, the Slack connector) builds each turn's context by
+/// cloning the agent's, so every session shared one `$TMPDIR` directory —
+/// one session could `fs_read` another's spilled tool output, and the
+/// directory was never removed (88 of them on one machine, 2026-09-25). A
+/// spill is re-read on later turns of the same conversation, so the lifetime
+/// it needs is the session's, not the run's.
+pub fn spill_within(workspace: &Path) -> PathBuf {
+    workspace.join(".spill")
 }
 
 impl ToolCtx {

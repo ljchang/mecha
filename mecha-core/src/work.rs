@@ -351,6 +351,60 @@ pub fn protected_sources() -> Result<BTreeSet<PathBuf>> {
     Ok(out)
 }
 
+/// How long an orphaned spill directory under `$TMPDIR` is left alone.
+///
+/// A process that serves many runs from one context (a TUI left open for
+/// days) keeps writing into its directory, which refreshes its mtime; one it
+/// stopped writing to a week ago belongs to a conversation nobody is
+/// re-reading output from.
+pub const SPILL_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
+/// Spill directories in `tmp` older than `max_age` as of `now`: the ones a
+/// context minted (`tool::SPILL_PREFIX` followed by a UUID — nothing else
+/// under a shared `$TMPDIR` is ours to delete) and a process never removed.
+/// A symlink is never an entry, whatever its name.
+pub fn stale_spills(
+    tmp: &Path,
+    max_age: std::time::Duration,
+    now: std::time::SystemTime,
+) -> Vec<Entry> {
+    let Ok(read) = std::fs::read_dir(tmp) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in read.flatten() {
+        let name = entry.file_name();
+        let Some(id) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix(crate::tool::SPILL_PREFIX))
+        else {
+            continue;
+        };
+        if uuid::Uuid::parse_str(id).is_err() {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.is_dir() {
+            continue;
+        }
+        let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        if now.duration_since(modified).unwrap_or_default() < max_age {
+            continue;
+        }
+        out.push(Entry {
+            bytes: dir_bytes(&path),
+            path,
+            modified,
+            is_dir: true,
+        });
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
+}
+
 /// What a [`clean`] did, or would do.
 #[derive(Debug, Default)]
 pub struct CleanReport {
@@ -405,6 +459,21 @@ pub fn clean(keep: usize, only: Option<&str>, dry_run: bool) -> Result<CleanRepo
         }
     }
     Ok(report)
+}
+
+/// Remove the spill directories [`stale_spills`] finds in `tmp`, or list them
+/// on a dry run. Separate from [`clean`] because it reaches outside the mecha
+/// home: `mecha work clean` calls it with `$TMPDIR`, and a test hands it a
+/// scratch directory rather than the machine's.
+pub fn clean_spills(tmp: &Path, dry_run: bool) -> Result<Vec<Entry>> {
+    let stale = stale_spills(tmp, SPILL_MAX_AGE, std::time::SystemTime::now());
+    if !dry_run {
+        for entry in &stale {
+            std::fs::remove_dir_all(&entry.path)
+                .with_context(|| format!("removing {}", entry.path.display()))?;
+        }
+    }
+    Ok(stale)
 }
 
 #[cfg(test)]
@@ -624,6 +693,53 @@ pub(crate) mod tests {
 
     /// A mirror that does not exist protects nothing, and must not be an error
     /// — that is every install until the publisher is wired.
+    #[test]
+    fn only_our_own_old_spill_directories_are_stale() {
+        let tmp = std::env::temp_dir().join(format!("mecha-spilltest-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let ours = tmp.join(format!(
+            "{}{}",
+            crate::tool::SPILL_PREFIX,
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&ours).unwrap();
+        std::fs::write(ours.join("shell-1-out.txt"), "x".repeat(10)).unwrap();
+        // Same prefix, not a UUID: not a directory this program minted.
+        std::fs::create_dir_all(tmp.join(format!("{}notes", crate::tool::SPILL_PREFIX))).unwrap();
+        // Someone else's directory, and a file wearing our name.
+        std::fs::create_dir_all(tmp.join("other-program")).unwrap();
+        let file = tmp.join(format!(
+            "{}{}",
+            crate::tool::SPILL_PREFIX,
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&file, "not a dir").unwrap();
+        // A symlink with our name, pointing at something that must survive.
+        let target = tmp.join("keep-me");
+        std::fs::create_dir_all(&target).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            &target,
+            tmp.join(format!(
+                "{}{}",
+                crate::tool::SPILL_PREFIX,
+                uuid::Uuid::new_v4()
+            )),
+        )
+        .unwrap();
+
+        let now = std::time::SystemTime::now();
+        // Fresh: nothing is stale yet.
+        assert!(stale_spills(&tmp, SPILL_MAX_AGE, now).is_empty());
+        // Eight days on: only ours.
+        let later = now + std::time::Duration::from_secs(8 * 24 * 60 * 60);
+        let stale = stale_spills(&tmp, SPILL_MAX_AGE, later);
+        assert_eq!(stale.len(), 1, "{stale:?}");
+        assert_eq!(stale[0].path, ours);
+        assert_eq!(stale[0].bytes, 10);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     #[test]
     fn no_bundle_mirror_means_no_protected_sources() {
         let _home = HomeGuard::new();

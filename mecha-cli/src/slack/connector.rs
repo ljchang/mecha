@@ -799,6 +799,9 @@ impl State {
 
         let mut cx = (**self.agent.context()).clone();
         cx.tools = Arc::new(ToolCtx {
+            // The thread's own, inside its workspace: the agent's is shared by
+            // every thread this connector serves (`spill_within`).
+            spill_dir: Some(mecha_core::tool::spill_within(&workspace)),
             workspace,
             ..(*self.agent.ctx()).clone()
         });
