@@ -1021,7 +1021,7 @@ impl TriggerStore {
     /// second copy can start is never what anybody wanted.
     pub fn try_claim(&self, name: &str) -> Result<Option<RunLock>> {
         use std::os::unix::io::AsRawFd;
-        let dir = self.root.join("locks");
+        let dir = self.locks_dir();
         crate::create_private_dir(&dir)?;
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -1369,10 +1369,19 @@ mod tests {
         );
 
         drop(held);
-        assert!(
-            store.try_claim("briefing").unwrap().is_some(),
-            "released when the run ends"
-        );
+        // A flock belongs to the open file description, and a child another
+        // test forks in this process shares it until its `exec` closes the
+        // descriptor (`O_CLOEXEC`) — so for a moment after the drop the lock
+        // can still be held elsewhere. Wait that window out rather than
+        // flaking on it; a lock that is never released still fails.
+        let released = (0..200).any(|_| {
+            let got = store.try_claim("briefing").unwrap().is_some();
+            if !got {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            got
+        });
+        assert!(released, "released when the run ends");
 
         let _ = std::fs::remove_dir_all(&root);
     }
