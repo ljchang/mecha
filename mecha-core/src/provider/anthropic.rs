@@ -1659,8 +1659,9 @@ mod numbers_never_reach_the_model_tests {
     use std::sync::{Arc, Mutex};
 
     /// Setpoints with digits no ordinary request carries, so a hit is a leak
-    /// and never a coincidence. Every sensor kind the run path reads is
-    /// here, and one line has no sensor, which is the ordinary kind.
+    /// and never a coincidence. Every `SensorKind` is here — `world()`
+    /// refuses a charter missing one — and one line has no sensor, which is
+    /// the ordinary kind.
     const CHARTER: &str = r#"
 [[line]]
 id = "replies"
@@ -1691,11 +1692,29 @@ kind = "intervention_rate"
 setpoint = "0.3141"
 
 [[line]]
+id = "strangers"
+text = "Close what strangers ask for, one way or the other."
+[line.sensor]
+kind = "request_closure"
+setpoint = "2h41m"
+
+[[line]]
 id = "craft"
 text = "Leave work better than you found it."
 "#;
 
     const STEER: &str = "Start with the oldest reply.";
+
+    /// The valence one steer signs: a single negative, from the owner. The
+    /// run test asserts its live readout equals this, so the control proves
+    /// catchable exactly the valence the run test scans for.
+    fn steered() -> Valence {
+        Valence {
+            negative: 1.0,
+            negatives: 1,
+            ..Valence::default()
+        }
+    }
 
     fn now() -> DateTime<Utc> {
         "2030-06-02T08:00:00Z".parse().unwrap()
@@ -1712,6 +1731,18 @@ text = "Leave work better than you found it."
     /// scanned for are the ones the loop actually carries.
     fn world() -> World {
         let charter = Charter::parse(CHARTER).unwrap();
+        // A kind added later must join the fixture, or its reading is a
+        // number nothing here scans for.
+        for kind in crate::charter::SensorKind::ALL {
+            assert!(
+                charter
+                    .lines()
+                    .iter()
+                    .any(|l| l.sensor.as_ref().is_some_and(|s| s.kind == kind)),
+                "the fixture charter has no `{}` line",
+                kind.wire()
+            );
+        }
         let now = now();
         let ago = |secs: i64| Some((now - Duration::seconds(secs)).to_rfc3339());
         let before = Backlog {
@@ -1725,9 +1756,15 @@ text = "Leave work better than you found it."
                 oldest: ago(18_181),
                 ..Depth::default()
             }),
-            frontdoor: Some(Depth::default()),
+            frontdoor: Some(Depth {
+                waiting: 2,
+                oldest: ago(11_111),
+                ..Depth::default()
+            }),
             ..Backlog::default()
         };
+        // The subset a person owes an answer to — all of it, here.
+        let requests_on_owner = before.frontdoor.clone();
         let after = Backlog {
             outbox: Some(Depth {
                 waiting: 30_011,
@@ -1740,11 +1777,21 @@ text = "Leave work better than you found it."
             &charter,
             &Sources {
                 backlog: &before,
-                requests_on_owner: None,
+                requests_on_owner,
                 corpus: CorpusRate::Share(0.4271),
             },
             now,
         );
+        // Past the setpoint on every line: an `Unread` or `Nothing` reading
+        // carries no value, so a line reading one would scan for nothing.
+        for r in &readings {
+            assert!(
+                matches!(r.reading, Reading::Observed { over: true, .. }),
+                "`{}` should read past its setpoint: {:?}",
+                r.line,
+                r.reading
+            );
+        }
         let fold = crate::guilt::with_backlogs(&before, &after, Some(0.2718), now);
         World {
             charter,
@@ -1840,6 +1887,18 @@ text = "Leave work better than you found it."
                 text: kb.to_string(),
             });
         }
+        if let Some(d) = &h.backlog_delta {
+            for n in [d.outbox, d.questions, d.frontdoor].into_iter().flatten() {
+                out.push(Needle {
+                    what: "backlog delta",
+                    text: n.to_string(),
+                });
+                out.push(Needle {
+                    what: "backlog delta",
+                    text: n.unsigned_abs().to_string(),
+                });
+            }
+        }
         out.push(Needle {
             what: "valence",
             text: valence.compact(),
@@ -1856,6 +1915,7 @@ text = "Leave work better than you found it."
             "reading value",
             "reading excess",
             "anticipated guilt",
+            "backlog delta",
             "valence",
         ] {
             assert!(
@@ -2069,9 +2129,14 @@ text = "Leave work better than you found it."
         session.record_run(&before, &convo).unwrap();
         session.record_outcome(&first).unwrap();
         let valence = crate::appraisal::live_readout("fixture-g4", &first, &convo, 0).valence;
-        assert!(
-            !valence.is_silent(),
-            "the steer should sign the run; a silent valence leaves nothing to scan for"
+        // Not silent, and the one the control proves catchable: a readout
+        // that drifted (a `partial` flag, a second error) would change the
+        // renderings, and this is where that surfaces rather than in a
+        // scan nothing showed could see it.
+        assert_eq!(
+            valence,
+            steered(),
+            "the steer should sign the run exactly as the control assumes"
         );
 
         // Run two, from the file.
@@ -2146,13 +2211,7 @@ text = "Leave work better than you found it."
     #[test]
     fn a_status_line_carrying_a_sensor_reading_is_caught_in_a_tool_result_or_a_user_turn() {
         let world = world();
-        // The valence a steered run signs: one negative, from the owner.
-        let valence = Valence {
-            negative: 1.0,
-            negatives: 1,
-            ..Valence::default()
-        };
-        let needles = needles(&world, &valence);
+        let needles = needles(&world, &steered());
         let base = |result: String, user: String| -> CompletionRequest {
             CompletionRequest {
                 response_schema: None,
