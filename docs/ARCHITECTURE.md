@@ -2269,7 +2269,11 @@ brief (which reads the board through the graph server) do not run.
   holds the jail and, beside it, the spill directory (never inside: the
   jail's spill exception must point where the model cannot write). The
   runtime directory is `statfs`-checked for tmpfs, and the `<home>` level
-  keeps a second `serve` against another home from sweeping this one's rooms.
+  keeps a second `serve` against another home from sweeping this one's rooms
+  (a second `serve` against the *same* home would, at its start — one owner,
+  one server is the assumption). The jail is `<room>/<key>`: `WebAsker`
+  routes an `ask_user` card by the jail's directory name, which must be the
+  session key.
 - **It reaches an allowlist.** `withheld` is filled with the complement of a
   few builtins, search, and the mail server's read-only, un-routed tools —
   against the live registry, so a tool added tomorrow is withheld without

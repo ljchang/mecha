@@ -231,12 +231,6 @@ impl ChatState {
             surface: Some(mecha_core::session::SessionKind::Web),
             ..GlobalOpts::default()
         };
-        // Not interactive: no terminal approver — and then `ask_user` IS
-        // registered, against the Slack connector's precedent, because this
-        // front-end can do what that one could not: route the question to
-        // the human who owns the run that asked (the jail's directory name
-        // is the session key; see `present::WebAsker`). An unanswered card
-        // resolves as the tool's measured decline, never a guess.
         // Before the door opens: a `serve` that died with incognito chats
         // open left their rooms, and nothing else will remove them (R1).
         match super::incognito::rooms_root() {
@@ -251,6 +245,12 @@ impl ChatState {
             }
             Err(e) => tracing::info!("incognito chats are unavailable: {e:#}"),
         }
+        // Not interactive: no terminal approver — and then `ask_user` IS
+        // registered, against the Slack connector's precedent, because this
+        // front-end can do what that one could not: route the question to
+        // the human who owns the run that asked (the jail's directory name
+        // is the session key; see `present::WebAsker`). An unanswered card
+        // resolves as the tool's measured decline, never a guess.
         let mut prepared = setup::prepare(&opts, false).await?;
         let routes: QuestionRoutes = Arc::default();
         let lookup: super::present::SessionLookup = {
@@ -294,7 +294,7 @@ impl ChatState {
 impl ChatState {
     /// Close admission under the same lock used to start and steer turns.
     pub async fn stop(&self) {
-        let sessions = self.sessions.lock().await;
+        let mut sessions = self.sessions.lock().await;
         self.stopping.cancel();
         for ws in sessions.values() {
             ws.questions.shutdown();
@@ -309,6 +309,21 @@ impl ChatState {
                 if let Err(e) = room.remove() {
                     tracing::warn!("an incognito room was not removed at shutdown: {e:#}");
                 }
+            }
+        }
+        // And out of the map: a run still finishing (`drain` waits for it)
+        // looks for its entry on the way out, and only a missing one tells it
+        // the room was closed and anything it spilled since must go too
+        // (found on review of #321 — left in the map, the late write stayed).
+        let incognito: Vec<String> = sessions
+            .iter()
+            .filter(|(_, ws)| ws.session.room().is_some())
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in &incognito {
+            sessions.remove(key);
+            if let Ok(mut routes) = self.routes.lock() {
+                routes.remove(key);
             }
         }
         self.runs.close();

@@ -1285,11 +1285,6 @@ impl TodoTool {
         Plan { goal, items }
     }
 
-    /// One run's list, for a UI that wants to render progress live.
-    ///
-    /// An absent key is an empty list rather than an error: a conversation
-    /// that has not written a plan and one that never will look the same from
-    /// here, and both render as no pane.
     /// Drop the plan kept for `workspace`. An incognito chat's plan lives
     /// only here, in memory; closing the chat must not leave it behind.
     pub fn forget_in(&self, workspace: &Path) {
@@ -1299,6 +1294,11 @@ impl TodoTool {
             .remove(workspace);
     }
 
+    /// One run's list, for a UI that wants to render progress live.
+    ///
+    /// An absent key is an empty list rather than an error: a conversation
+    /// that has not written a plan and one that never will look the same from
+    /// here, and both render as no pane.
     pub fn items_in(&self, workspace: &Path) -> Vec<TodoItem> {
         self.lists
             .lock()
