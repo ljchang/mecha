@@ -31,6 +31,30 @@ use std::path::{Path, PathBuf};
 /// `tool_result` orphaned in the next message, and nothing prunes orphans
 /// at load. Strictly better than dropping the whole message either way,
 /// and the fix when that day comes is a load-time orphan sweep beside this.
+/// When `after` differs from `before` only by blocks appended to the end of
+/// `before`'s last message (and possibly messages after it), that message's
+/// index and the new blocks — the shape of the loop's folds into the turn a
+/// door already recorded. Every other field of the message must be equal,
+/// so a fold never smuggles a changed role, provenance or plan past the
+/// record.
+fn extension_of(
+    before: &[Message],
+    after: &[Message],
+) -> Option<(usize, Vec<crate::message::Block>)> {
+    let index = before.len().checked_sub(1)?;
+    if after.len() < before.len() || after[..index] != before[..index] {
+        return None;
+    }
+    let (was, is) = (&before[index], &after[index]);
+    let bare = |m: &Message| Message {
+        content: Vec::new(),
+        ..m.clone()
+    };
+    let kept = was.content.len();
+    (bare(was) == bare(is) && is.content.len() > kept && is.content[..kept] == was.content[..])
+        .then(|| (index, is.content[kept..].to_vec()))
+}
+
 fn lenient_record(line: &str) -> Option<Record> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     match v.get("record").and_then(serde_json::Value::as_str)? {
@@ -46,6 +70,18 @@ fn lenient_record(line: &str) -> Option<Record> {
                 .filter_map(lenient_message)
                 .collect();
             (!kept.is_empty()).then_some(Record::Rewrite { messages: kept })
+        }
+        // An extension is harness text folded into a recorded message; a
+        // block this build cannot read costs that block, as in a message.
+        "extend" => {
+            let index = usize::try_from(v.get("index")?.as_u64()?).ok()?;
+            let blocks: Vec<crate::message::Block> = v
+                .get("blocks")?
+                .as_array()?
+                .iter()
+                .filter_map(|b| serde_json::from_value(b.clone()).ok())
+                .collect();
+            (!blocks.is_empty()).then_some(Record::Extend { index, blocks })
         }
         _ => None,
     }
@@ -184,6 +220,28 @@ pub enum Record {
     /// list, and [`Session::load`] replaces what it has accumulated so far.
     Rewrite {
         messages: Vec<Message>,
+    },
+    /// Blocks appended to message `index`, which is already on file and is
+    /// the last message there (3a-3).
+    ///
+    /// The loop folds harness text — the calendar reference, the situation
+    /// brief — into the outgoing user message, and every door records that
+    /// message *before* the run. Before this record the fold made the run's
+    /// transition a whole-transcript [`Record::Rewrite`], which copies the
+    /// list and clears the taint checkpoints, so a clean early turn
+    /// classified untrusted for `mecha learn`: once a day for the calendar,
+    /// and on every turn whose words changed for the brief. An extension
+    /// keeps every index and every checkpoint that does not cover `index`.
+    ///
+    /// **Lenient both ways.** A build from before this record skips the line
+    /// as one it cannot parse, so it loads the message without the folded
+    /// harness text — which its own loop folds again. A reader here applies
+    /// an extension only when `index` names the last message it holds, and
+    /// skips it with a warning otherwise, rather than grafting blocks onto
+    /// the wrong message.
+    Extend {
+        index: usize,
+        blocks: Vec<crate::message::Block>,
     },
     /// A better name for this conversation than the one it was created with.
     ///
@@ -1567,9 +1625,19 @@ impl Session {
     /// Comparison, not a flag from the loop: any mutation the loop grows
     /// later is caught by construction, and the clone this costs is one more
     /// beside the one the loop already pays per request.
+    ///
+    /// **A fold into the last recorded message is an extension, not a
+    /// rewrite** (3a-3): when everything but that message is unchanged and it
+    /// only gained blocks at its end — the calendar reference or the
+    /// situation brief folded into the owner's turn the door already wrote —
+    /// a [`Record::Extend`] carries those blocks, followed by the new tail.
+    /// Anything else that touched recorded messages is still a rewrite.
     fn record_transition(&self, before: &[Message], after: &[Message]) -> Result<()> {
         let appended_only = after.len() >= before.len() && after[..before.len()] == *before;
         if appended_only {
+            self.append_messages(&after[before.len()..])
+        } else if let Some((index, blocks)) = extension_of(before, after) {
+            self.append(&Record::Extend { index, blocks })?;
             self.append_messages(&after[before.len()..])
         } else {
             self.append(&Record::Rewrite {
@@ -1724,6 +1792,21 @@ impl Session {
                     messages = m;
                     taint_checkpoints.clear();
                 }
+                // Folded harness text, onto the last message. Checkpoints
+                // that cover the extended message drop, on
+                // `TaintTimeline::from_records`' rule (see there).
+                Ok(Record::Extend { index, blocks }) => {
+                    if index + 1 == messages.len() {
+                        messages[index].content.extend(blocks);
+                        taint_checkpoints.retain(|(n, _)| *n <= index);
+                    } else {
+                        tracing::warn!(
+                            index,
+                            held = messages.len(),
+                            "skipping an extension of a message this transcript does not end on"
+                        );
+                    }
+                }
                 // Merged rather than replaced: taint only ever grows, and a
                 // transcript written by an older build has none at all.
                 Ok(Record::Taint(t)) => {
@@ -1814,6 +1897,10 @@ impl Session {
     pub fn messages_ever(transcript: &str) -> Vec<Message> {
         let mut seen = HashSet::new();
         let mut all = Vec::new();
+        // The role of the last message on file, for an extension: its blocks
+        // are admitted as a message of their own, so they are searchable
+        // without admitting the owner's words a second time.
+        let mut last_role = None;
         let mut admit = |m: Message, all: &mut Vec<Message>| {
             // Equality via the serialized form: `Message` is `PartialEq` but not
             // `Hash`, and the serialization is already the file's own currency.
@@ -1825,10 +1912,28 @@ impl Session {
         };
         for line in transcript.lines().filter(|l| !l.trim().is_empty()) {
             match serde_json::from_str::<Record>(line).or_else(|e| lenient_record(line).ok_or(e)) {
-                Ok(Record::Message(m)) => admit(m, &mut all),
+                Ok(Record::Message(m)) => {
+                    last_role = Some(m.role);
+                    admit(m, &mut all)
+                }
                 Ok(Record::Rewrite { messages }) => {
+                    last_role = messages.last().map(|m| m.role);
                     for m in messages {
                         admit(m, &mut all);
+                    }
+                }
+                Ok(Record::Extend { blocks, .. }) => {
+                    if let Some(role) = last_role {
+                        admit(
+                            Message {
+                                harness: false,
+                                planning: None,
+                                tool_provenance: Default::default(),
+                                role,
+                                content: blocks,
+                            },
+                            &mut all,
+                        );
                     }
                 }
                 Ok(_) => {}
@@ -2066,6 +2171,20 @@ impl TaintTimeline {
                 Record::Rewrite { messages: m } => {
                     messages = m.len();
                     checkpoints.clear();
+                }
+                // Blocks folded into message `index` after a checkpoint may
+                // have covered it: that checkpoint's claim about the message
+                // predates the new blocks, so it drops — the ones before
+                // `index` still describe messages that did not change. In
+                // the order the doors write (the owner's turn, the run, the
+                // extension of that turn, the run's checkpoint), no
+                // checkpoint covers `index` yet and nothing drops. An
+                // extension that names a message this count does not end on
+                // is ignored, as `Session::parse` ignores it.
+                Record::Extend { index, .. } => {
+                    if index + 1 == messages {
+                        checkpoints.retain(|(n, _)| *n <= index);
+                    }
                 }
                 Record::Taint(t) => {
                     merged.merge(t);
@@ -4239,5 +4358,180 @@ mod rules_arm_tests {
         );
         let old = serde_json::json!({"role": "user", "content": [{"type": "text", "text": "old"}]});
         assert!(lenient_message(&old).unwrap().tool_provenance.is_empty());
+    }
+}
+
+/// 3a-3: a fold into the turn a door already recorded is a `Record::Extend`,
+/// not a whole-transcript rewrite.
+#[cfg(test)]
+mod extension_tests {
+    use super::*;
+    use crate::message::{Block, Role};
+
+    fn session() -> (PathBuf, Session) {
+        let dir = std::env::temp_dir().join(format!("mecha-extend-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let s = Session::create(
+            &dir,
+            SessionMeta {
+                id: "20260925T000000-extend".into(),
+                created_at: Utc::now(),
+                provider: "scripted".into(),
+                model: "test-model".into(),
+                workspace: PathBuf::from("/tmp"),
+                title: None,
+                kind: None,
+            },
+        )
+        .unwrap();
+        (dir, s)
+    }
+
+    fn kinds(path: &Path) -> Vec<String> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                serde_json::from_str::<serde_json::Value>(l).unwrap()["record"]
+                    .as_str()
+                    .unwrap_or("?")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// Two runs of a long-lived conversation, as a door records them: the
+    /// owner's turn appended before the run, the run, then the transition
+    /// and the run's taint checkpoint. The second run's fold (a harness
+    /// block appended to the owner's turn) lands as an extension — so the
+    /// file keeps the first run's checkpoint, and a clean first turn stays
+    /// clean in the timeline after the second run reads a hostile page.
+    /// Before, the fold was a rewrite: the checkpoint dropped and message 0
+    /// was covered by the second run's cumulative (untrusted) taint.
+    #[test]
+    fn a_fold_into_the_recorded_turn_is_an_extension_and_keeps_earlier_checkpoints() {
+        let (dir, s) = session();
+        // Run one: clean.
+        let first = Message::user("what is on the board?");
+        s.append(&Record::Message(first.clone())).unwrap();
+        let before = vec![first.clone()];
+        let mut convo = Conversation::resumed(before.clone(), Taint::default());
+        convo
+            .messages
+            .push(Message::assistant(vec![Block::text("two tasks")]));
+        s.record_run(&before, &convo).unwrap();
+        s.append(&Record::Taint(convo.taint)).unwrap();
+
+        // Run two: the door records the owner's turn, then the loop folds
+        // harness text into it, and the run reads something from outside.
+        let second = Message::user("and the drafts?");
+        s.append(&Record::Message(second.clone())).unwrap();
+        convo.messages.push(second);
+        let before = convo.messages.clone();
+        crate::agent::append_user_text(
+            &mut convo.messages,
+            format!("\n\n{}, as things stood.", crate::brief::BRIEF_STEM),
+        );
+        convo
+            .messages
+            .push(Message::assistant(vec![Block::text("one draft")]));
+        convo.taint = Taint {
+            private: true,
+            untrusted: true,
+        };
+        s.record_run(&before, &convo).unwrap();
+        s.append(&Record::Taint(convo.taint)).unwrap();
+
+        let kinds = kinds(&s.path);
+        assert!(!kinds.iter().any(|k| k == "rewrite"), "{kinds:?}");
+        assert_eq!(kinds.iter().filter(|k| *k == "extend").count(), 1);
+
+        // The file reads back as the conversation, exactly.
+        let t = Session::read(&s.path).unwrap();
+        assert_eq!(t.convo.messages, convo.messages);
+        assert_eq!(t.convo.taint, convo.taint);
+        // The first run's checkpoint survives: message 0 and 1 were clean.
+        for timeline in [
+            &t.taint_timeline,
+            &Session::taint_timeline(&s.path).unwrap(),
+        ] {
+            assert_eq!(timeline.covering(0), Some(Taint::default()));
+            assert_eq!(timeline.covering(1), Some(Taint::default()));
+            assert_eq!(timeline.covering(2), Some(convo.taint));
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// What is not a fold is still a rewrite: a changed block in the
+    /// recorded turn, a changed earlier message, or a changed role.
+    #[test]
+    fn only_blocks_appended_to_the_last_recorded_message_are_an_extension() {
+        let a = Message::user("one");
+        let b = Message::assistant(vec![Block::text("two")]);
+        let c = Message::user("three");
+        let before = vec![a.clone(), b.clone(), c.clone()];
+        let mut folded = before.clone();
+        folded[2].content.push(Block::text("harness"));
+        folded.push(Message::assistant(vec![Block::text("four")]));
+        assert_eq!(
+            extension_of(&before, &folded),
+            Some((2, vec![Block::text("harness")]))
+        );
+
+        let mut edited = before.clone();
+        edited[2].content[0] = Block::text("THREE");
+        edited[2].content.push(Block::text("harness"));
+        assert_eq!(extension_of(&before, &edited), None);
+
+        let mut earlier = folded.clone();
+        earlier[0].content.push(Block::text("x"));
+        assert_eq!(extension_of(&before, &earlier), None);
+
+        let mut harness = folded.clone();
+        harness[2].harness = true;
+        assert_eq!(extension_of(&before, &harness), None);
+
+        assert_eq!(extension_of(&before, &before[..2]), None, "a truncation");
+        assert_eq!(extension_of(&[], &folded), None);
+    }
+
+    /// Lenient on load. An extension carrying a block kind this build does
+    /// not know keeps the rest; one that does not name the last message is
+    /// skipped rather than grafted onto the wrong one; and a file with no
+    /// extension at all (every session before 3a-3) reads as it always did.
+    #[test]
+    fn an_extension_loads_leniently() {
+        let (dir, s) = session();
+        s.append(&Record::Message(Message::user("hello"))).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&s.path)
+            .unwrap();
+        use std::io::Write;
+        writeln!(
+            f,
+            r#"{{"record":"extend","index":0,"blocks":[{{"type":"hologram","x":1}},{{"type":"text","text":"kept"}}]}}"#
+        )
+        .unwrap();
+        writeln!(
+            f,
+            r#"{{"record":"extend","index":7,"blocks":[{{"type":"text","text":"stray"}}]}}"#
+        )
+        .unwrap();
+        drop(f);
+        let (_, convo) = Session::load(&s.path).unwrap();
+        assert_eq!(convo.messages.len(), 1);
+        assert_eq!(
+            convo.messages[0].content,
+            vec![Block::text("hello"), Block::text("kept")]
+        );
+        assert!(!convo.messages[0].text().contains("stray"));
+        // `recall`'s corpus is everything ever recorded: the owner's words
+        // once, and each extension's blocks as their own entry.
+        let ever = Session::messages_ever(&std::fs::read_to_string(&s.path).unwrap());
+        assert_eq!(ever.len(), 3, "{ever:?}");
+        assert!(ever.iter().all(|m| m.role == Role::User));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
