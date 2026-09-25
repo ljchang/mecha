@@ -108,8 +108,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // Test and stray experiment sessions are the harness measuring itself,
     // not the owner's work: never mined (`session::split_admitted`),
     // and counted aloud so a skip is not mistaken for an empty store.
-    // Counted over this run's candidates, after the already-mined filter,
-    // so the number means "passed over now", not every dev run ever kept.
+    // Skipped sessions are never marked mined, so this is every test or
+    // experiment session in the store, reprinted each pass — worded so, and
+    // deliberately not marked: a session mislabelled `Test` must stay
+    // re-admittable once the label is fixed.
     let candidates: Vec<_> = sessions
         .into_iter()
         .filter(|(meta, _)| {
@@ -122,7 +124,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         .collect();
     let (mut todo, skipped) = mecha_core::session::split_admitted(candidates);
     if skipped > 0 {
-        println!("skipping {skipped} test or experiment session(s)");
+        println!("passing over {skipped} test or experiment session(s) in the store");
     }
     if let Some(limit) = args.limit {
         todo.truncate(limit);
