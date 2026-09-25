@@ -2029,7 +2029,9 @@ impl State {
                         ),
                         // A board button reports beside the board, threaded
                         // where the listing is.
-                        Action::TaskDone { .. } | Action::TaskNext { .. } => (
+                        Action::TaskDone { .. }
+                        | Action::TaskNext { .. }
+                        | Action::TaskDrop { .. } => (
                             "tasks",
                             ActionCard::Reply {
                                 thread_ts: interaction
