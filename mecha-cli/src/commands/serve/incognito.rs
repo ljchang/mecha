@@ -101,6 +101,30 @@ pub fn withheld<'a>(
         .collect()
 }
 
+/// An incognito key that is not open: ended, reaped, or never opened. A
+/// type, so the web handlers can answer `410 Gone` — the page's cue to say
+/// the chat has ended — rather than a 500 it would retry.
+#[derive(Debug)]
+pub struct Closed;
+
+impl std::fmt::Display for Closed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("that incognito chat has closed")
+    }
+}
+
+impl std::error::Error for Closed {}
+
+/// The status for a failure to open or reach a chat: `410` for a closed
+/// incognito chat, `500` for anything else.
+pub fn status_of(e: &anyhow::Error) -> axum::http::StatusCode {
+    if e.downcast_ref::<Closed>().is_some() {
+        axum::http::StatusCode::GONE
+    } else {
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    }
+}
+
 /// Whether the configured hooks allow an incognito chat. None of them runs
 /// in one — they receive tool input and output, and a hook's log is a trace
 /// (design §3.1) — which is harmless for an observer (`post_tool`,
@@ -245,6 +269,11 @@ pub struct Room {
     pub root: PathBuf,
     /// The jail: `<root>/<key>`, so its directory name is the session key.
     pub workspace: PathBuf,
+    /// Where `shell` registers the commands this chat runs
+    /// (`ToolCtx::shell_registry`): in the room, beside the jail and never
+    /// inside it, so a command cannot edit its own entry and nothing about
+    /// it reaches the mecha home (owner's ruling, 2026-09-25).
+    pub shells: PathBuf,
     /// Beside the jail, never in it.
     pub spill: PathBuf,
     last_active: std::sync::Mutex<Instant>,
@@ -275,6 +304,7 @@ impl Room {
         }
         Ok(Room {
             key: key.to_string(),
+            shells: root.join("shells"),
             root,
             workspace,
             spill,
@@ -492,6 +522,10 @@ mod tests {
         assert!(
             !room.spill.starts_with(&room.workspace),
             "the spill is beside the jail"
+        );
+        assert!(
+            room.shells.starts_with(&room.root) && !room.shells.starts_with(&room.workspace),
+            "the shell registry is in the room and outside the jail"
         );
         #[cfg(unix)]
         {

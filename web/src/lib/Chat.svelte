@@ -27,6 +27,14 @@
   // flight. A task chat is the same chat with a subject.
   let task = $state(null);
   let handing = $state(false);
+  // **Incognito** (`docs/INCOGNITO-DESIGN.md`): a chat nothing keeps. The
+  // server says which kind a chat is (`incognito` on the transcript read);
+  // the page adds the banner, End, the search notice, and leaves out the
+  // voice call. `gone` is why an incognito chat is over — ended here, or
+  // closed by the server while the page was away — and it replaces the
+  // conversation, which the page forgets as well.
+  let incognito = $state(false);
+  let gone = $state(null);
   let handNote = $state(null);
   let todoOpen = $state(true);
   const MARK = { completed: '[x]', in_progress: '[~]', pending: '[ ]' };
@@ -265,6 +273,7 @@
       // What this conversation is about, when it is about a board task.
       // Absent for an ordinary chat, which renders exactly as before.
       task = data.task ?? null;
+      incognito = data.incognito ?? false;
       todo = data.todo ?? [];
       taint = data.taint;
       model = data.model;
@@ -543,6 +552,61 @@
     affect = null;
     valence = null;
     sawAffectThisRun = false;
+    incognito = false;
+    gone = null;
+  }
+
+  // What the page itself holds of a conversation. An incognito chat that has
+  // ended must not live on in this tab's memory either.
+  function forget() {
+    entries = [];
+    streaming = '';
+    draft = '';
+    attachments = [];
+    todo = [];
+    usage = null;
+    taint = null;
+    affect = null;
+    valence = null;
+  }
+
+  function closeIncognito(why) {
+    if (gone) return;
+    gone = why;
+    running = false;
+    forget();
+    loadRail();
+  }
+
+  /// **A chat nothing keeps**, through its own door: never a flag on the
+  /// ordinary open. A refusal (no local model, no RAM-backed room, a hook
+  /// that could not be honoured) says why, in the chat you were in.
+  async function newIncognito() {
+    drawer = false;
+    try {
+      const res = await fetch('/api/incognito', { method: 'POST' });
+      if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
+      const data = await res.json();
+      switchTo(data.key);
+      incognito = true;
+      queueMicrotask(() => inputEl?.focus());
+    } catch (e) {
+      pushEntry({ kind: 'notice', text: `incognito is unavailable: ${e?.message ?? e}` });
+    }
+  }
+
+  async function endIncognito() {
+    if (!incognito || gone) return;
+    try {
+      const res = await fetch(`/api/incognito/${key}/end`, { method: 'POST' });
+      // 404 is "already closed" — the promise is kept either way.
+      if (!res.ok && res.status !== 404) {
+        throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
+      }
+      closeIncognito('ended');
+    } catch (e) {
+      pushEntry({ kind: 'notice', text: `end failed: ${e?.message ?? e}` });
+    }
   }
 
   // The drawer: every conversation this process holds, and the recorded
@@ -658,7 +722,7 @@
     // Already sitting in an empty one: opening a second would leave a
     // trail of blank sessions behind a button people press to clear their
     // head. Nothing to do but put the cursor where they expect it.
-    if (!entries.length && !running) {
+    if (!entries.length && !running && !incognito) {
       drawer = false;
       queueMicrotask(() => inputEl?.focus());
       return;
@@ -693,6 +757,12 @@
         const res = await fetch(`/api/chat/${sessionKey}`, {
           method: 'POST', signal: controller.signal,
         });
+        if (res.status === 410) {
+          // An incognito chat the server closed while this page was away
+          // (idle, or a restart): nothing to reconnect to, by design.
+          if (!controller.signal.aborted) closeIncognito('closed');
+          return;
+        }
         if (!res.ok) {
           const message = `HTTP ${res.status}: ${(await res.text()).trim()}`;
           if (controller.signal.aborted) return;
@@ -723,6 +793,32 @@
       source?.close();
     };
   });
+  // **An open page is use** (owner's ruling, 2026-09-25): while this page
+  // shows an incognito chat it says so once a minute, so reading or
+  // uploading is not reaped mid-use. A closed tab or a sleeping phone stops
+  // the pings, and the chat closes 30 minutes later. The answer is also how
+  // the page learns the chat has gone.
+  $effect(() => {
+    if (!incognito || gone) return;
+    const sessionKey = key;
+    const ping = async () => {
+      try {
+        const res = await fetch(`/api/incognito/${sessionKey}/alive`, { method: 'POST' });
+        if (res.status === 410 && sessionKey === key) closeIncognito('closed');
+      } catch {
+        // Offline for a moment; the next ping or the reconnect settles it.
+      }
+    };
+    ping();
+    const timer = setInterval(ping, 60_000);
+    const onVisible = () => document.visibilityState === 'visible' && ping();
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  });
+
   const railTimer = setInterval(loadRail, 20_000);
   $effect(() => () => clearInterval(railTimer));
 
@@ -846,6 +942,10 @@
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ text, request_id }),
       });
+      if (res.status === 410) {
+        if (sessionKey === key) closeIncognito('closed');
+        return;
+      }
       if (!res.ok) throw new Error((await res.text()).trim());
       const data = await res.json();
       if (sessionKey !== key) return;
@@ -898,6 +998,10 @@
       try {
         const q = new URLSearchParams({ name: f.name });
         const res = await fetch(`/api/chat/${key}/upload?${q}`, { method: 'POST', body: f });
+        if (res.status === 410) {
+          closeIncognito('closed');
+          return;
+        }
         if (!res.ok) throw new Error((await res.text()).trim());
         const data = await res.json();
         attachments.push(data.path);
@@ -1001,7 +1105,12 @@
     <button class="newbtn header" onclick={newSession} title="new conversation" aria-label="new conversation">
       <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
     </button>
-    <span class="title" title={key}>{heading}</span>
+    <!-- Beside +, with its own icon (design §7): the same one tap away, and
+         never mistaken for it. -->
+    <button class="newbtn header incog" onclick={newIncognito} title="new incognito chat — nothing from it is kept" aria-label="new incognito chat">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10h18M6 10l1.6-4.2A1.5 1.5 0 019 5h6a1.5 1.5 0 011.4.8L18 10" /><circle cx="7.5" cy="15.5" r="2.5" /><circle cx="16.5" cy="15.5" r="2.5" /><path d="M10 15.5h4" /></svg>
+    </button>
+    <span class="title" title={incognito ? 'incognito' : key}>{incognito ? 'Incognito' : heading}</span>
     <div class="meta">
       <!-- §6.2's readout on the typed surface. The voice logo's tint only
            renders inside the voice overlay, so a typed run that earned a
@@ -1046,9 +1155,22 @@
         onclick={nextMode}
         title="read-only: reads run, sends stage · ask: every other call becomes an approval card · allow: nothing asks (the interlock still refuses sends once this conversation holds private and untrusted content)"
       >{MODE_LABEL[mode] ?? mode}</button>
-      <span class="chip">{model || '…'}</span>
+      <span class="chip" title={incognito ? 'an incognito chat runs only on the model on this machine' : undefined}>{model || '…'}</span>
+      {#if incognito && !gone}
+        <button class="chip endchip" onclick={endIncognito} title="end this chat now — everything in it is deleted">End</button>
+      {/if}
     </div>
   </header>
+
+  {#if incognito && !gone}
+    <!-- Does not scroll away (design §7), and carries §5.3's notice: shown
+         before any search can happen, once per chat, in the page — never in
+         the model's context. -->
+    <div class="incog-banner" role="note">
+      <span><strong>Incognito</strong> — nothing from this chat is kept. It ends when you tap End, or after 30 minutes idle.</span>
+      <span class="incog-search">A web search still reaches the search engine, which sees the query.</span>
+    </div>
+  {/if}
 
   {#if drawer || docked}
     <!-- Docked, the panel is the same markup with the modal parts left
@@ -1060,6 +1182,7 @@
     <aside class="drawer" class:docked>
       <div class="drawer-head">
         <span class="drawer-title">Sessions</span>
+        <button class="newbtn incog" onclick={newIncognito} title="nothing from it is kept">incognito</button>
         <button class="newbtn" onclick={newSession}>
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
           new
@@ -1070,7 +1193,8 @@
         {#each rail.length ? rail : [{ key: 'main', running: false }] as s}
           <button class="drow" class:dactive={s.key === key} onclick={() => { drawer = false; switchTo(s.key); }}>
             <span class="raildot" class:on={s.running}></span>
-            <span class="dname">{sessionLabel(s)}</span>
+            <span class="dname">{s.incognito ? 'incognito chat' : sessionLabel(s)}</span>
+            {#if s.incognito}<span class="dkind incog">incognito</span>{/if}
             {#if s.title?.startsWith('voice')}<span class="dkind">voice</span>{/if}
             {#if s.title?.startsWith('task: ')}<span class="dkind">task</span>{/if}
             {#if s.taint?.untrusted}<span class="railtaint">▲</span>{/if}
@@ -1152,6 +1276,24 @@
     </div>
   {/if}
 
+  {#if gone}
+    <!-- After End there is nothing to reopen (design §7): no "earlier"
+         entry, no transcript. The page says so and offers a new one. -->
+    <div class="gone" role="status">
+      <p class="gone-head">
+        {gone === 'ended' ? 'This incognito chat has ended.' : 'This incognito chat has closed.'}
+      </p>
+      <p class="gone-body">
+        {gone === 'ended'
+          ? 'Nothing from it was kept.'
+          : 'It was idle for 30 minutes, or the server restarted. Nothing from it was kept.'}
+      </p>
+      <div class="gone-actions">
+        <button class="newbtn incog" onclick={newIncognito}>new incognito chat</button>
+        <button class="newbtn" onclick={() => switchTo(DEFAULT_KEY)}>back to chat</button>
+      </div>
+    </div>
+  {:else}
   <div class="transcript" bind:this={transcriptEl}>
     {#if error}
       <div class="notice">{error}</div>
@@ -1240,8 +1382,11 @@
              of the call. Served from this session's own jail, images only
              (serve/files.rs), so a tap opens it full size. -->
         {#if picture}
-          <a class="genimg" href={workspaceFile(picture)} target="_blank" rel="noopener">
-            <img src={workspaceFile(picture)} alt="generated image" loading="lazy" />
+          <!-- No link in an incognito chat: opening the picture in a tab
+               writes its address into the browser's history, which outlives
+               the chat (R6). -->
+          <a class="genimg" href={incognito ? undefined : workspaceFile(picture)} target="_blank" rel="noopener">
+            <img src={workspaceFile(picture)} alt="what the model generated" loading="lazy" />
           </a>
           <!-- Starts a sentence rather than sending one: the change is the
                person's to describe. The path is what lets the model pass the
@@ -1471,13 +1616,18 @@
           }
         }}
       ></textarea>
-      <button
-        class="round voice"
-        onclick={startVoice}
-        title="start a voice call in this conversation"
-      >
-        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="var(--accent-400)" stroke-width="1.8" stroke-linecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" /></svg>
-      </button>
+      {#if !incognito}
+        <!-- No voice call in an incognito chat: the voice worker keeps
+             transcripts (design §3.4), and the server refuses spoken turns
+             into one anyway. -->
+        <button
+          class="round voice"
+          onclick={startVoice}
+          title="start a voice call in this conversation"
+        >
+          <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="var(--accent-400)" stroke-width="1.8" stroke-linecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" /></svg>
+        </button>
+      {/if}
       {#if running}
         <button class="round stop" onclick={cancel} title="stop at the next safe point">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="7" y="7" width="10" height="10" rx="1.5" /></svg>
@@ -1488,6 +1638,7 @@
       </button>
     </div>
   </footer>
+  {/if}
 
   {#if voiceOpen}
     <div class="voice-overlay">
@@ -1714,6 +1865,69 @@
     color: var(--accent-300);
     border-color: var(--accent-500);
   }
+  /* Incognito's own colour is the muted text rather than the accent: the
+     accent is mecha's voice, and this is the chat it does not remember. An
+     outline, no fill, so it reads as a different door rather than a warning. */
+  .newbtn.header.incog {
+    margin: 0 4px 0 6px;
+  }
+  .newbtn.incog {
+    color: var(--text-muted);
+    background: var(--bg);
+    border-color: var(--text-muted);
+  }
+  .newbtn.incog:hover {
+    color: var(--text);
+    border-color: var(--text);
+  }
+  .endchip {
+    cursor: pointer;
+    color: var(--text);
+    background: var(--bg);
+    border-color: var(--text-muted);
+    min-height: 28px;
+  }
+  .incog-banner {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 0 var(--gutter-gear) 6px var(--gutter);
+    padding: 8px 12px;
+    font-size: 13px;
+    color: var(--text);
+    border: 1px dashed var(--text-muted);
+    border-radius: var(--radius);
+    flex-shrink: 0;
+  }
+  .incog-search {
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+  .gone {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 24px var(--gutter);
+    text-align: center;
+  }
+  .gone-head {
+    margin: 0;
+    font-size: 17px;
+    font-weight: 500;
+  }
+  .gone-body {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 14px;
+  }
+  .gone-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+  }
   .newbtn {
     display: flex;
     align-items: center;
@@ -1790,6 +2004,11 @@
     font-family: var(--mono);
     font-size: 10px;
     color: var(--text-muted);
+  }
+  .dkind.incog {
+    color: var(--text-muted);
+    background: var(--bg);
+    border: 1px solid var(--text-muted);
   }
   .dkind {
     font-family: var(--mono);
