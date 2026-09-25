@@ -1,8 +1,8 @@
 # Appraisal wiring — design
 
 **Status: designed and ruled 2026-09-24. Phase 1 (1a–1i) is built, merged and
-installed; phase 2 has begun with 2a-1, the text-appraisal store, and 2a-2,
-its producer in shadow** (here §3, "Phase 2 as pull requests"). The rulings each phase waits on are in here §6. The evidence behind every claim here — what exists, what
+installed; phase 2 has begun with 2a-1, the text-appraisal store, 2a-2,
+its producer in shadow, and 2a-3, the counts-only appraiser retired into it** (here §3, "Phase 2 as pull requests"). The rulings each phase waits on are in here §6. The evidence behind every claim here — what exists, what
 reads it, what has been measured — is
 [`APPRAISAL-INVENTORY-RESEARCH.md`](APPRAISAL-INVENTORY-RESEARCH.md)
 (cited as *inventory §N*). `GOAL-SYSTEM-DESIGN.md` designs the signals and
@@ -347,7 +347,7 @@ with a `mecha exp` arm against EXPERIMENT-DESIGN §15's appraisal-off preset
 |---|---|---|---|---|
 | **2a-1** | **The text-appraisal record and store.** `appraisals.jsonl` beside the graph episode: one bounded interpretation, good/bad per goal, the claims it rests on (each a pointer and a quote), a prediction, goal hypotheses, lessons — labels only as words in the prose, no scalar. The write door grounds each claim through `grounding::admit` against what the run received (call results, the owner's turns — never the agent's own words) and drops, before storage, any that does not dereference, counting it by reason on the record; it stamps the taint and `Origin` read off the transcript, failing closed; a tainted run's appraisal is stored. Two read doors: `clean()` returns `Clean`, a type only the store can make, for learning, retrieval, credit and tenure; `for_owner()` returns every record. The graph episode's text pinned. `sessions appraise` counts the store. No producer. | I1, R17, R18, R19 | — | an appraisal of a clean fixture session reads back through a fresh handle via the clean door; one of a tainted session is stored and never returned by it; a claim whose pointer does not dereference is dropped before storage and counted; old and unknown variants load leniently, an unreadable origin as untrusted |
 | **2a-2** | **The distiller, extended, writes the appraisal** — in shadow: the store gains its producer and nothing reads it but the owner. New inputs to the pass: the goal chain and the charter's text (the anchor, 1h's recorded goal chain); the recorded brief at start and the homeostat at finish (1h); the owner's acts on the output — release, edit diff, reject reason (R16a), closure and reopen (1b, 1d); the signed errors (`appraisal::of_session`); step findings and the session's stored comparisons (1g); up to three past clean appraisals of the same situation and goal, through `Clean` only. The transcript it reads carries the referent ids the store dereferences (`result:<id>`, `turn:<n>`); a quote is a span of the whole result, not of the 300-character clip the renderer shows today. Judgments' goal references are resolved against `distill::KnownPointers` before recording. Runs where `distill` already runs, on the local model (R29), under a permit. The owner's readout of the prose (every appraisal, control characters stripped). | I1, I4, R18, R25, R29 | 2a-1 | on clean and tainted fixture sessions with a fixture model, each appraisal lands behind the right door; a past clean appraisal of the same situation reaches the next session's input and a tainted one never does; both R25 pins pass (ruled 2026-09-25: the appraisal is a follow-up turn on the cached prefix); seconds of a seat per session measured on real sessions — *built; see I1* |
-| **2a-3** | **The counts-only appraiser retired into it.** `sessions appraise --appraise` and `appraise_with_model` go; the counts it read (`AppraiserEvidence`) are already 2a-2's input as signed errors. Records carrying `channel: appraisal` / `cite: appraiser` still load and count. | I1, R25 | 2a-2 | no second model pass reads a session for the label; an old record with an appraiser error loads and is counted |
+| **2a-3** | **The counts-only appraiser retired into it.** `sessions appraise --appraise` and `appraise_with_model` go; the counts it read (`AppraiserEvidence`) are already 2a-2's input as signed errors. Records carrying `channel: appraisal` / `cite: appraiser` still load and count. | I1, R25 | 2a-2 | no second model pass reads a session for the label; an old record with an appraiser error loads and is counted — *built; see I1* |
 | **2a-4** | **The reflector folded in** — only after 2e-1 measures its lessons no worse (R25). A reflection is an appraisal of a correction: the same pass writes both, still as a `Reflexion` with its `Origin`, so `learn`'s input and gate keep their shape. | I1, R25 | 2a-2, 2e-1 | 2e-1's measurement is on record; model passes per session fall from two to one; the learning store's provenance gate is unchanged (its tests pass untouched) |
 | **2b-1** | **Anticipation's predictions scored.** Every `Prediction` an `Outcome` resolves is a calibration point per kind; coverage is reported, never a calibration figure while outcomes are absent; a delivery positive only after `outbox reconcile`. | X5 | 1d | a fixture store with resolved and unresolved predictions reports coverage per kind and no rate over nothing |
 | **2b-2** | **The appraisal's own prediction scored** when the same situation and goal next come round; a miss is a surprise, recorded for 2e-6's priority. The structural scorer is the owner's ruling of 2026-09-25: the record's `expected_act` (R16's closed set, added by 2a-2) against the owner's recorded act on the next session's output; the prose prediction is never scored. | X5 | 2a-2, 2b-1 | a fixture pair of sessions scores a hit and a miss on `expected_act` against the recorded act; a model never decides a score (R27) |
@@ -1168,13 +1168,34 @@ written.
   `--text` for every record). It prints the prose with its taint label and
   strips control characters line by line.
 - **Deferred:**
-  - 2a-3 retires the counts-only appraiser;
+  - 2a-3 retires the counts-only appraiser (since built, below);
   - nothing reads an appraisal but the owner and the next appraiser (2c-2,
     2e, 2f);
   - the web session view shows no appraisal;
   - sessions distilled before this build are never appraised (no backfill);
   - an appraisal whose follow-up failed is not retried once the session is
     in the distill ledger.
+
+*2a-3 built — the counts-only appraiser retired into it* (R25).
+`appraise_with_model`, `AppraiserEvidence` and its brief, the verdict parser,
+`apply_appraiser` and the CLI's `appraiser_pass` are gone.
+
+- **No second model pass reads a session for its label.** The counts that
+  pass read reach the text appraisal as signed errors.
+- **`sessions appraise --appraise` and `--max-appraisals` are hidden
+  deprecated no-ops.** They say on stderr where the appraisal went.
+  `appraiser` in `--json` is always `null`. `scripts/appraisal-validity.py
+  --appraise` stops with the same message unless pointed at an older binary.
+- **Records carrying `channel: appraisal` / `cite: appraiser` still load,
+  label and count.** `Channel::Appraisal` and `Cite::Appraiser` stay as
+  wire variants.
+- **`Anger`, whose only producer was that pass's `other`/`world` verdict,
+  has none today.** `label_of` still derives it from an old record, and
+  `Affect::reachable_today` counts eight words.
+- **Every reader of its output** is listed in the PR body with where it
+  went. Its only live reader was the `sessions appraise` readout's
+  label/channel tally for the invocation that ran it, which kept nothing.
+- **The reflector is untouched** (2a-4, after 2e-1).
 
 #### X5. Score the predictions, and feed the misses back
 

@@ -703,7 +703,7 @@ Per-run levers:
 | `carried_state` | **none** — `Tool::carried_state` is unconditional | the plan block surviving compaction |
 | `plan_reinjection` | unbuilt (`AUDIT-RESEARCH.md` §3.11 arm 1) | the periodic re-read |
 | `declared_checks` | unbuilt (arm 2's executor) | the harness running a step's `check` |
-| `appraiser` | `--appraise` on the readout only | the quarantined appraiser pass, wherever it is invoked |
+| `appraiser` | retired with the pass (`APPRAISAL-WIRING-DESIGN.md` 2a-3) — `--appraise` is a no-op now | the quarantined appraiser pass, wherever it was invoked |
 
 **As built** (`harness::Lever`, 2026-09-04): the closed set is fifteen, not
 the table's eleven — it also carries the seven `force_reproducible` throws
