@@ -2707,10 +2707,11 @@ Rolling `mecha` back past #303 means restoring that backup, or deleting the
 table, first. The image arc itself is that lane's to record.
 
 **Reinstalled from main, 2026-09-25 19:49Z: 2a-2, 2c-1, 2d-1 and 3a
-(verified 19:51Z by asking the artifacts).** `~/.cargo/bin/mecha`
+(verified 19:59Z by asking the artifacts).** `~/.cargo/bin/mecha`
 (19:49:05Z) is `6e6f03ba`, the #309 merge and `main`'s tip: `strings
 ~/.cargo/bin/mecha | grep -c` prints 1 for #312's `point-steer`, 1 for
-#309's `no-situation-brief` and 1 for `appraisals.jsonl`. The web dist was
+#309's `no-situation-brief`, 7 for #314's `expected_act` and 3 for #311's
+`rules_goal`, each a literal no earlier build carries. The web dist was
 not rebuilt and still holds `index-Cq2ArbMx.js` (18:02:48Z). `mecha-slack`,
 `-triggers`, `-drain` and `-serve` show `ActiveEnterTimestamp` 19:49:06Z;
 the voice worker still 11:31:38Z. Nothing of the appraisal arc is merged and
