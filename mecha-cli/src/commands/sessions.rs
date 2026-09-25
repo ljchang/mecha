@@ -134,23 +134,17 @@ pub enum Args {
         #[arg(long, default_value_t = 25, requires = "probe")]
         max_probes: usize,
 
-        /// Run the quarantined appraiser (§5.1) over each session's evidence.
-        ///
-        /// **A second paid pass, independent of `--probe`.** One quarantined
-        /// appraisal per session (up to two model calls, since a malformed
-        /// reply gets one retry) — no tools, no conversation, and the input
-        /// is numbers only (see `AppraiserEvidence`), never the transcript.
-        /// It looks for one additional signed error beyond what `of_session`
-        /// already computed, or reports that the numbers support nothing
-        /// further, which is the ordinary and correct answer.
-        #[arg(long)]
+        /// Retired (row 2a-3): the counts-only appraiser is gone, and this
+        /// flag does nothing but say so. Each session's text appraisal is
+        /// written by `mecha distill`; read one with `mecha sessions
+        /// appraise <session>`. Kept, hidden, so a script that passes it
+        /// still runs.
+        #[arg(long, hide = true)]
         appraise: bool,
 
-        /// Ceiling on appraisals driven, across the whole walk — not model
-        /// calls; a retried appraisal still counts once. Newest sessions
-        /// first, independent of `--max-probes`.
-        #[arg(long, default_value_t = 25, requires = "appraise")]
-        max_appraisals: usize,
+        /// Retired with `--appraise`; accepted and ignored.
+        #[arg(long, hide = true, requires = "appraise")]
+        max_appraisals: Option<usize>,
     },
 
     /// Compare policies at the informative decision points of recorded
@@ -211,6 +205,13 @@ pub enum Args {
     },
 }
 
+/// What `sessions appraise --appraise` says since row 2a-3 retired the
+/// counts-only appraiser: nothing ran, and where its replacement is.
+const APPRAISE_RETIRED: &str =
+    "mecha: --appraise is retired (row 2a-3) and did nothing: the counts-only appraiser \
+     returned nothing further on 169 of 169 sessions, and each session's text appraisal \
+     is now written by `mecha distill` — read one with `mecha sessions appraise <session>`";
+
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let dir = Session::default_dir()?;
 
@@ -227,14 +228,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             session: Some(_),
             probe: true,
             ..
-        }
-        | Args::Appraise {
-            session: Some(_),
-            appraise: true,
-            ..
         } => anyhow::bail!(
-            "a session id prints that session's text appraisal; --probe and --appraise walk \
-             the corpus — run them without one"
+            "a session id prints that session's text appraisal; --probe walks the corpus — \
+             run it without one"
         ),
 
         Args::Appraise {
@@ -242,8 +238,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             text,
             limit,
             json,
+            appraise: retired,
             ..
-        } if session.is_some() || text => text_appraisal_readout(session.as_deref(), limit, json)?,
+        } if session.is_some() || text => {
+            if retired {
+                eprintln!("{APPRAISE_RETIRED}");
+            }
+            text_appraisal_readout(session.as_deref(), limit, json)?
+        }
 
         Args::Appraise {
             days,
@@ -253,10 +255,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             include_tests,
             probe,
             max_probes,
-            appraise: run_appraiser,
-            max_appraisals,
+            appraise: retired,
             ..
         } => {
+            // A deprecated no-op, on stderr so `--json` stays parseable.
+            if retired {
+                eprintln!("{APPRAISE_RETIRED}");
+            }
             appraise(
                 global,
                 &dir,
@@ -267,8 +272,6 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 include_tests,
                 probe,
                 max_probes,
-                run_appraiser,
-                max_appraisals,
             )
             .await?
         }
@@ -1013,8 +1016,6 @@ async fn appraise(
     include_tests: bool,
     probe: bool,
     max_probes: usize,
-    run_appraiser: bool,
-    max_appraisals: usize,
 ) -> Result<()> {
     use mecha_core::appraisal;
 
@@ -1201,17 +1202,16 @@ async fn appraise(
     //
     // Off by default, and the free readout above is byte-for-byte what it was:
     // `appraise` with no flag still costs zero tokens and no model, which is
-    // the property that lets it be run over the whole store. `--probe` and
-    // `--appraise` are independent — either, neither, or both. The handle
-    // built here serves the appraiser's calls; the probe path builds its own
-    // provider per arm inside `drive_arm` (each arm builds a whole replay
-    // agent, and `Agent::new` owns its provider) — a real, small cost per
-    // replay, not the "built once" this comment used to claim.
+    // the property that lets it be run over the whole store. `--probe` is
+    // the one paid pass left: `--appraise`, the counts-only appraiser, was
+    // retired in row 2a-3 (the session's text appraisal, written by `mecha
+    // distill`, replaced it). The handle built here names the default model;
+    // the probe path builds its own provider per arm inside `drive_arm` (each
+    // arm builds a whole replay agent, and `Agent::new` owns its provider) —
+    // a real, small cost per replay.
     let mut tally = crate::appraisal_probe::Tally::default();
-    let mut appraiser_tally = crate::appraiser_pass::Tally::default();
     let mut budget = if probe { max_probes } else { 0 };
-    let mut appraiser_budget = if run_appraiser { max_appraisals } else { 0 };
-    if (probe || run_appraiser) && !appraisals.is_empty() {
+    if probe && !appraisals.is_empty() {
         let cwd = std::env::current_dir().context("cannot determine the working directory")?;
         let cfg = mecha_core::config::Config::load(&cwd)?;
         let (provider_name, provider_cfg) = cfg.provider(global.provider.as_deref())?;
@@ -1278,37 +1278,6 @@ async fn appraise(
                      unprobed, so the labels below describe the newest sessions, not the \
                      whole store",
                     tally.over_budget
-                );
-            }
-        }
-
-        if run_appraiser {
-            // Run after the probe, against its own provider handle — no
-            // registry needed, since the quarantined pass carries no tools.
-            // Runs against the *post-probe* state: a probed intervention's
-            // resolved `controllable`/`agency` is more informative evidence
-            // than the pre-probe guess, so ordering the appraiser second
-            // hands it the better of the two.
-            eprintln!(
-                "appraising up to {} of {} session(s) with {model} ({provider_name})",
-                max_appraisals.min(appraisals.len()),
-                appraisals.len()
-            );
-            for a in appraisals.iter_mut() {
-                let t = crate::appraiser_pass::appraise_one(
-                    built.as_ref(),
-                    &model,
-                    a,
-                    &mut appraiser_budget,
-                )
-                .await?;
-                appraiser_tally.add(t);
-            }
-            if appraiser_tally.over_budget > 0 {
-                eprintln!(
-                    "budget stopped at {max_appraisals}; {} session(s) went unappraised, so \
-                     the labels below describe the newest sessions, not the whole store",
-                    appraiser_tally.over_budget
                 );
             }
         }
@@ -1485,15 +1454,11 @@ async fn appraise(
                 "text_appraisals": text_appraisals_json(&text_appraisals),
                 // Same "absent, not zero" rule as `probe`: whether the flag
                 // ran at all is a different fact from what it found.
-                "appraiser": run_appraiser.then(|| serde_json::json!({
-                    "driven": appraiser_tally.driven,
-                    "found_negative": appraiser_tally.found_negative,
-                    "found_positive": appraiser_tally.found_positive,
-                    "found_nothing": appraiser_tally.found_nothing,
-                    "failed": appraiser_tally.failed,
-                    "over_budget": appraiser_tally.over_budget,
-                    "budget_left": appraiser_budget,
-                })),
+                // Retired in row 2a-3: always null now — the pass cannot
+                // run, which is a different fact from its having found
+                // nothing. Kept so a reader of the old shape still finds
+                // the key.
+                "appraiser": serde_json::Value::Null,
             }))?
         );
         return Ok(());
@@ -1726,32 +1691,6 @@ async fn appraise(
         }
     }
 
-    if run_appraiser {
-        println!(
-            "\n  quarantined appraiser ({} appraisal(s) driven)",
-            appraiser_tally.driven
-        );
-        println!(
-            "    {:<16} {:>5}  — one additional negative error added",
-            "found negative", appraiser_tally.found_negative
-        );
-        println!(
-            "    {:<16} {:>5}  — one additional positive error added",
-            "found positive", appraiser_tally.found_positive
-        );
-        println!(
-            "    {:<16} {:>5}  — the ordinary answer: nothing further",
-            "found nothing", appraiser_tally.found_nothing
-        );
-        println!(
-            "    {:<16} {:>5}  — refused, or unparseable after one retry",
-            "failed", appraiser_tally.failed
-        );
-        println!(
-            "    {:<16} {:>5}  — budget ran out first",
-            "not reached", appraiser_tally.over_budget
-        );
-    }
     Ok(())
 }
 

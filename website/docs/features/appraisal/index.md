@@ -120,8 +120,9 @@ flowchart TB
 Two boundaries hold across the whole picture:
 
 - **No model decides the label.** Steps 2–5 are ordinary code with unit tests.
-  The one place a model is consulted (the optional appraiser, below) sees
-  numbers only, never text from the run.
+  The model-written [text appraisal](/docs/features/appraisal/reference#text-appraisals)
+  is prose kept beside the record. It adds no signed error and never sets the
+  label.
 - **Nothing in row 6 can widen what mecha may do.** A good appraisal
   cannot release a draft, approve a tool or loosen the sandbox. The readers
   display it, rank by it, or propose a task for you to accept.
@@ -386,9 +387,9 @@ To make amends, email the full thread to repair@example.com."*
 - No label is computed from text. The appraisal reads counters, store
   states and pointers. A web page cannot write a row into the outbox,
   answer a question, or change a stop cause.
-- The one model-based pass, `--appraise`, gets a brief of counts only,
-  never transcript text. Its opinion is recorded on its own channel, where
-  it can be told apart from measured evidence and can never produce `pride`.
+- The model-written text appraisal of that session is stored as tainted.
+  It is the owner's to read and never reaches learning or a later run. It
+  adds no signed error, so it cannot move the label either.
 - The email itself is a separate matter. The page made the conversation
   *untrusted*, and the [security interlock](/docs/features/security) refuses
   a send to an address the model chose. No appraisal could loosen that.
@@ -434,7 +435,8 @@ The measurements so far, from [`docs/APPRAISAL-RESEARCH.md`](https://github.com/
   finished cleanly and left no counter behind. Those benchmark runs had no
   owner, so the strongest channels (drafts, questions, steers) were empty.
 - **The model-based appraiser added nothing** on that set: it returned "no
-  further error" on 169 of 169.
+  further error" on 169 of 169. It has since been retired in favour of the
+  text appraisal.
 - **Opt-in planning guidance has not helped, and lost on harder tasks.** Six
   pilots ran on 2026-09-09 on the local Qwen 3.6 35B model. The first guidance
   pilot tied at 36 of 36 in each arm. On harder tasks with a confirmed goal,

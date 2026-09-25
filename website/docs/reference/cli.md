@@ -484,8 +484,9 @@ mecha sessions <list|show|path|stats|health|appraise|compare> [OPTIONS]
 | `list`, `appraise`, `health` | `--include-tests` | Include smoke-test sessions (`MECHA_SESSION_KIND=test`); `--kind test` implies this. |
 | `appraise` | `--probe` | Resolve each intervention's agency by counterfactual replay. **Paid** — a model run per intervention. |
 | `appraise` | `--max-probes <N>` | Ceiling on replays across the whole walk. Default `25`. Requires `--probe`. |
-| `appraise` | `--appraise` | Run the quarantined appraiser over each session's numeric evidence. **Paid**, and independent of `--probe`. |
-| `appraise` | `--max-appraisals <N>` | Ceiling on appraisals driven. Default `25`. Requires `--appraise`. |
+| `appraise` | `<session>` | Print that session's text appraisal with its taint label; `--text` prints every one on record, and `--json` gives the records. |
+| `appraise` | `--appraise` | **Retired.** A no-op that says so on stderr; the text appraisal `mecha distill` writes replaced the counts-only appraiser. Kept so scripts still run. |
+| `appraise` | `--max-appraisals <N>` | **Retired** with `--appraise`; accepted and ignored. |
 | `compare` | `--points <N>` | Most decision points to drive this pass. Default `8`. A point no structural validator can pose drives nothing and is not counted. **Paid** — up to three replays per point, on the local model only. |
 | `compare` | `--seed <N>` | Seed for the uniform draw of points. Defaults to today's day number, and is printed. |
 | `compare` | `--days <N>`, `-n`/`--limit <N>`, `--kind <KIND>`, `--include-tests`, `--json` | As for `appraise`. |
@@ -518,7 +519,7 @@ absent means *did not run* rather than *found nothing*.
 `--probe` builds a real agent with a real workspace jail, so run it from a
 project directory or name one with `--workspace`; from a home directory it
 refuses, because the jail would cover `~/.mecha`. See
-[the paid passes](/docs/features/appraisal/reference#the-two-paid-passes).
+[the paid pass](/docs/features/appraisal/reference#the-paid-pass).
 
 `compare` asks a narrower question at the moments you already answered: at a
 steer, a denial, a failed check, a draft you rewrote or rejected, or a
