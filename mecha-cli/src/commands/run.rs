@@ -598,6 +598,7 @@ mod tests {
                 untrusted: false,
             },
             homeostat: None,
+            brief: None,
             context_overflows: 0,
             boredom_notices: 0,
             step_escalations_attempted: 0,

@@ -663,6 +663,10 @@ impl Facade {
         }
         self.shared.handlers.close();
         self.shared.handlers.wait().await;
+        // No facade, no call: the stamp is this process's to remove.
+        if let Ok(presence) = mecha_core::brief::VoicePresence::default_location() {
+            presence.clear();
+        }
     }
 }
 
@@ -1786,6 +1790,16 @@ async fn completion(
     let Some(text) = last_user_text(&body) else {
         return write_json(stream, 400, &json!({"error": "no user message"})).await;
     };
+    // A spoken turn arrived: the situation brief's voice-call reader
+    // (`brief::VoicePresence`) reads this stamp from any process — a
+    // delegated run or a trigger cannot ask this one. Best effort: a stamp
+    // that could not be written reads as no call, which is what it was
+    // before 1h, and must never cost the turn.
+    if let Ok(presence) = mecha_core::brief::VoicePresence::default_location() {
+        if let Err(e) = presence.stamp(chrono::Utc::now()) {
+            tracing::debug!("voice presence not stamped: {e:#}");
+        }
+    }
     let want_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let id = format!("chatcmpl-{}", Session::new_id());
 

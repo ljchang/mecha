@@ -1756,6 +1756,10 @@ fn begin_turn(
     }
 
     let outbox_root = chat.outbox_root.clone();
+    // The situation brief's inputs that live on the shared state (B1, 1h):
+    // taken here, used inside the run's task below.
+    let local_server = crate::setup::local_server_for_brief(&chat.config, &chat.provider_name);
+    let sampled = chat.agent.context().homeostat.is_some();
 
     let agent = Arc::clone(&chat.agent);
     let key_for_task = key.to_string();
@@ -1768,6 +1772,31 @@ fn begin_turn(
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
 
     chat.runs.spawn(async move {
+        let mut cx = cx;
+        // **This run's conditions, not the process's.** The shared context's
+        // homeostat was sampled when `serve` built its agent, so every web
+        // turn recorded the backlog of the morning the daemon started and a
+        // delta against it — and the brief's commitments are read from it.
+        // Re-sampled per run, as a one-shot run's is at its own start; off
+        // the async threads, since it walks the stores.
+        if sampled {
+            cx.homeostat = tokio::task::spawn_blocking(mecha_core::homeostat::Homeostat::at_start)
+                .await
+                .ok();
+        }
+        // The situation brief: recorded on the run, delivered nowhere. The
+        // board is read here by the harness, never by the model.
+        let board = crate::setup::read_board_for_brief(agent.registry(), &cx.tools).await;
+        cx.brief = Some(Arc::new(
+            mecha_core::brief::assemble_for_run(
+                &agent,
+                &cx,
+                &conversation,
+                board,
+                local_server.as_deref(),
+            )
+            .await,
+        ));
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let forwarder = {
             let bcast = bcast.clone();

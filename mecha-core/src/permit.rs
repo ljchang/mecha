@@ -171,6 +171,38 @@ impl Permits {
     pub fn capacity(&self) -> usize {
         self.capacity
     }
+
+    /// The live holders, **read-only and fallible** — the situation brief's
+    /// reader (`brief.rs`), which must tell "no seat is held" from "the pool
+    /// could not be read". [`live`](Self::live) answers both with an empty
+    /// list, which is right for a caller deciding whether to start and
+    /// wrong for a record: an unreadable pool recorded as idle is the
+    /// dash-read-as-zero this project keeps finding. A directory that does
+    /// not exist is no holders (a fresh install); a dead holder is skipped,
+    /// not swept — a reader is not the pool's owner.
+    pub fn read_live(&self) -> Result<Vec<Permit>> {
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(anyhow::Error::new(e)
+                    .context(format!("reading the seat pool in {}", self.dir.display())))
+            }
+        };
+        Ok(entries
+            .flatten()
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("permit"))
+            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+            .filter_map(|t| serde_json::from_str::<Permit>(&t).ok())
+            .filter(|p| crate::process_alive(p.pid))
+            .collect())
+    }
+}
+
+/// Where a mecha home keeps its seat pool — said once, for `mecha tasks`
+/// and for the situation brief's reader.
+pub fn dir_under(home: &Path) -> PathBuf {
+    home.join("permits")
 }
 
 #[cfg(test)]

@@ -985,6 +985,17 @@ impl WorkflowStore {
             w.record("source_changed", "Workflow dependency state changed", now);
         }
     }
+    /// The owner's attention policy **as written**, or `None` when no file
+    /// says anything — the situation brief's reader. [`policy`](Self::policy)
+    /// answers a missing file with the default (22–08, UTC), which is right
+    /// for a digest that must fire somewhere and wrong for a record of
+    /// whether it is inside *the owner's* quiet hours: nobody set those.
+    pub fn policy_if_set(&self) -> Result<Option<AttentionPolicy>> {
+        match fs::metadata(self.root.join("attention.toml")) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            _ => self.policy().map(Some),
+        }
+    }
     pub fn policy(&self) -> Result<AttentionPolicy> {
         let path = self.root.join("attention.toml");
         let policy = match fs::read_to_string(path) {
