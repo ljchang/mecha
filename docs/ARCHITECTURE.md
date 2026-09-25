@@ -2311,10 +2311,14 @@ now makes the move one recorded event:
   to the tapped status, written no earlier than the tap began, the same
   bound the web board uses — and says which of *readout*, *nothing to
   appraise*, *no readout written*, *no record found* or *unreadable* it is.
-- **The graph TUI still writes status out of band.** `mecha-graph tui`'s
-  status keys call `gtd::set_task_status` directly; `--surface graph-tui`
-  exists for it, and how it reaches `tasks set` (and what it does where
-  `mecha` is absent) is the owner's call — 1c's graph half.
+- **The graph TUI closes through `tasks set` when opted in** (1c's graph
+  half, ruled A3 on 2026-09-25; ljchang/mecha-graph#21). With `[board]
+  close_through = "mecha"` in `~/.mecha-graph/config.toml`, `mecha-graph
+  tui` hands every close and reopen to `mecha tasks set … --surface
+  graph-tui` (`--only-open` on a close) and refuses — nothing written — when
+  the program is missing or the TUI is not on the default graph database.
+  Not opted in, it writes status directly as before, and that write is
+  still out of band: `settle_uncertain`'s three-way read exists for it.
 - **Reopen is the same event reversed** (`move: reopen`, `undoes` naming the
   closure it undoes) and fires `task_reopened`. The appraisal reads both back
   (1d, `appraisal::of_session`'s closure arm): a standing `done` closure is
