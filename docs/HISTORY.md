@@ -56,14 +56,9 @@ the jail, and a pre-planted link another way), the dropped-reasoning line
 keeps only its content-free counters at `warn` — the 400-character tail
 moved to `debug` with the whole trace, and the counters stay on purpose,
 because an empty turn is in no transcript and they are its only
-default-level record — and `reflect`/`distill` skip test sessions. Steps 1–3 — the chat
-itself, server side — are #321, **open and unmerged at this writing** (its
-thread is the record; nothing below is on `main` until it merges): a `Recording::Kept | Incognito` split so an
-unrecorded chat has no session file *by type*, rooms on tmpfs under
-`$XDG_RUNTIME_DIR`, the allowlist's complement withheld, a door that refuses
-a non-local model, a `pre_tool` hook, or a missing RAM-backed directory, and
-a canary test that scans the mecha home for the chat's words (and checks
-the scan is not vacuous by finding them after an ordinary chat).
+default-level record — and `reflect`/`distill` skip test sessions. Steps 1–3, the chat itself, are #321, unmerged at
+this writing; HANDOFF holds where it stands, and its entry here is owed
+when it merges.
 
 **2026-09-24/25 — appraisal wiring, phase 1: evidence and context go in,
 and what a run does changes in three named places only; phase 2 and 3a
