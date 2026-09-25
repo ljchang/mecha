@@ -11,46 +11,55 @@ import Heading from '@theme/Heading';
 
 import styles from './index.module.css';
 
+// The hero is the drawing sheet. The assembled-suit plate carries the
+// wordmark, so there is no <h1> set in Inter competing with it (the heading
+// stays, visually hidden, for the outline and for screen readers). What the
+// hero used to say in a stack of centred lines is now the sheet's *title
+// block* — the ruled strip along the foot of an engineering drawing — so the
+// text reads as part of the same object as the picture rather than a caption
+// floating above it. Labels are JetBrains Mono, the tagline is Inter: the
+// brand keeps mono for labels and never for prose.
 function HomepageHeader() {
   const {siteConfig} = useDocusaurusContext();
   return (
-    <header className={clsx('hero', styles.heroBanner)}>
-      <div className="container">
-        <Heading as="h1" className="hero__title">
-          {siteConfig.title}
-        </Heading>
-        <p className={clsx('hero__subtitle', styles.kicker)}>
-          LOCAL-FIRST AGENT HARNESS · RUST · MIT
-        </p>
-        <p className="hero__subtitle">{siteConfig.tagline}</p>
-        <div className={styles.buttons}>
-          <Link
-            className="button button--primary button--lg"
-            to="/docs/getting-started/installation">
-            Get started
-          </Link>
-          <Link
-            className="button button--secondary button--lg"
-            to="/docs/intro">
-            Overview
-          </Link>
-          <Link
-            className="button button--secondary button--lg"
-            href="https://github.com/ljchang/mecha">
-            GitHub
-          </Link>
-        </div>
-      </div>
-      {/* The assembled suit, under the pitch rather than beside it: the sheet
-          is dense with callouts and needs the full width to be read at all.
-          `Poster` says why light and dark get different files. */}
-      <div className={clsx('container', styles.heroPoster)}>
+    <header className={styles.heroBanner}>
+      <Heading as="h1" className={styles.visuallyHidden}>
+        {siteConfig.title}
+      </Heading>
+      <div className={clsx('container', styles.sheet)}>
         <Poster
           name="assembled"
-          cutout
           eager
+          className={styles.plate}
           alt="Concept schematic of the mecha exosuit: an M-shaped frame on two legs, with the pilot interface slung beneath the upper chassis and its seven modules — perception, memory, language, appraisal, reasoning, learning, motor/toolcall — shown exploded."
         />
+        <div className={styles.titleBlock}>
+          <div className={clsx(styles.cell, styles.cellDrawing)}>
+            <span className={styles.label}>Drawing</span>
+            <span className={styles.value}>Local-first agent harness</span>
+          </div>
+          <div className={clsx(styles.cell, styles.cellTagline)}>
+            <span className={styles.label}>Description</span>
+            <p className={styles.tagline}>{siteConfig.tagline}</p>
+          </div>
+          <div className={clsx(styles.cell, styles.cellBuild)}>
+            <span className={styles.label}>Build</span>
+            <span className={styles.value}>Rust · MIT</span>
+          </div>
+          <nav className={styles.actions} aria-label="Start here">
+            <Link
+              className={clsx(styles.action, styles.actionPrimary)}
+              to="/docs/getting-started/installation">
+              Get started
+            </Link>
+            <Link className={styles.action} to="/docs/intro">
+              Overview
+            </Link>
+            <Link className={styles.action} href="https://github.com/ljchang/mecha">
+              GitHub
+            </Link>
+          </nav>
+        </div>
       </div>
     </header>
   );
@@ -66,6 +75,7 @@ function Surface() {
     <section className={styles.surface}>
       <div className="container">
         <div className={styles.surfaceHead}>
+          <span className={styles.sectionLabel}>Web surface (live)</span>
           <Heading as="h2">And carry it</Heading>
           <p>
             <code>mecha serve</code> puts the same agent behind a web app on your tailnet —
@@ -104,6 +114,7 @@ function Sample() {
       <div className="container">
         <div className="row">
           <div className="col col--6">
+            <span className={styles.sectionLabel}>Operation</span>
             <Heading as="h2">Run it</Heading>
             <p>
               One binary, five front ends — four in a terminal and{' '}
@@ -122,6 +133,7 @@ mecha trigger add briefing --schedule "0 7 * * 1-5" \\
             </CodeBlock>
           </div>
           <div className="col col--6">
+            <span className={styles.sectionLabel}>Connections</span>
             <Heading as="h2">Connect it</Heading>
             <p>
               An assistant is only as good as what it knows about you. Personal
