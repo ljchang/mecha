@@ -4705,14 +4705,18 @@ append, `sync_data`). Four decisions, each a bug if undone:
   an injection check) and dropped **before storage** when it fails, counted
   by reason on `TextAppraisal::grounding`. A judgment's `because` is
   renumbered to the claims kept, so support that was dropped is gone rather
-  than dangling.
+  than dangling. The cap (`MAX_CLAIMS`) is on grounded claims kept, applied
+  after grounding, so failures at the head of a draft are counted as
+  failures, not as crowding.
 - **The referents are what the run received, never what the agent said.**
   `result:<tool_use_id>` is a call's result through `grounding::calls` —
   first seen wins, a stale marker grounds nothing — and `turn:<n>` is the
-  owner's text in message `n` of `messages_ever`, with the harness's voice
-  (`is_harness_voice`, the calendar reference) left out as the distiller's
-  renderer leaves it out. The assistant's own words are not in the packet:
-  a claim grounded in "I sent it" would be certified by itself.
+  owner's text in message `n` of `messages_ever` — exactly
+  `agent::owner_text`, the one definition the learning locators share, so a
+  quote the renderer shows is the string containment is checked against
+  (a second spelling joined blocks differently; found on review of #308).
+  The assistant's own words are not in the packet: a claim grounded in "I
+  sent it" would be certified by itself.
 - **Provenance is read, never supplied, and from one read.**
   `SessionEvidence`'s fields are private and come off the transcript, read
   **once** (`Session::parse` and `messages_ever` over the same bytes — two

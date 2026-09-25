@@ -1036,7 +1036,7 @@ read, so provenance and referents are one snapshot). A claim is a
 statement, a `Pointer` and a quote; the referents are the results the run
 read (`result:<tool_use_id>`, through `grounding::calls`, so a stale result
 grounds nothing) and the owner's own turns (`turn:<n>` in `messages_ever`'s
-order, the harness's voice left out) — never the agent's words, which would
+order, exactly `agent::owner_text`) — never the agent's words, which would
 certify themselves. A claim that fails `grounding::admit` (floor 12
 characters, ceiling 300) is dropped before storage and counted by reason on
 `TextAppraisal::grounding`; a judgment's support is renumbered to the claims

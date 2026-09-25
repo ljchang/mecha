@@ -59,7 +59,7 @@
 use crate::agent::Taint;
 use crate::goal::GoalRef;
 use crate::learning::{classify_origin, Origin};
-use crate::message::{Block, Message, Role};
+use crate::message::{Message, Role};
 use crate::situation::Situation;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -82,7 +82,8 @@ pub const QUOTE_MIN_CHARS: usize = 12;
 /// verbatim is a literal span too — so the ceiling is applied before it
 /// (`grounding::Refusal::QuoteTooLong`'s doc).
 pub const QUOTE_MAX_CHARS: usize = 300;
-/// Claims considered per appraisal; the rest are dropped as `over_cap`.
+/// Grounded claims kept per appraisal; grounded claims past it are dropped
+/// as `over_cap`. Every offered claim is grounded first.
 pub const MAX_CLAIMS: usize = 12;
 /// Goals one appraisal may judge.
 pub const MAX_JUDGMENTS: usize = 8;
@@ -308,27 +309,24 @@ fn packet(ever: &[Message]) -> Vec<crate::grounding::Evidence> {
         })
         .collect();
     for (index, message) in ever.iter().enumerate() {
-        if message.role != Role::User || message.harness {
+        if message.role != Role::User {
             continue;
         }
-        let owner: Vec<&str> = message
-            .content
-            .iter()
-            .filter_map(|b| match b {
-                Block::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            // `is_harness_voice` is the one closed list of mecha's own
-            // voices in the user role, the calendar reference included.
-            .filter(|t| !t.trim().is_empty() && !crate::agent::is_harness_voice(t))
-            .collect();
-        if owner.is_empty() {
+        // `agent::owner_text` — the one definition of "the owner's own
+        // words in this message" (harness messages and every harness voice,
+        // the calendar reference included, left out), shared with the
+        // learning locators. A referent is what `admit` does literal
+        // containment against, so a second spelling here would refuse a
+        // quote the renderer showed as the model's fabrication (found on
+        // review of #308).
+        let owner = crate::agent::owner_text(message);
+        if owner.trim().is_empty() {
             continue;
         }
         out.push(crate::grounding::Evidence {
             id: Pointer::Turn(index).to_string(),
             source: "owner".into(),
-            text: owner.join("\n"),
+            text: owner,
         });
     }
     out
@@ -451,11 +449,12 @@ impl TextAppraisal {
         let mut kept_at: BTreeMap<usize, usize> = BTreeMap::new();
         let mut claims: Vec<Claim> = Vec::new();
         for (i, claim) in draft.claims.into_iter().enumerate() {
-            if i >= MAX_CLAIMS {
-                drop("over_cap".into());
-                continue;
-            }
             match ground(&claim, &evidence.packet) {
+                // The cap is on what is kept, not on the offered position:
+                // ungrounded claims at the head of a draft must not crowd out
+                // grounded ones behind them and be reported as `over_cap`
+                // instead of the grounding failures they are (review of #308).
+                Ok(()) if claims.len() >= MAX_CLAIMS => drop("over_cap".into()),
                 Ok(()) => {
                     kept_at.insert(i, claims.len());
                     claims.push(Claim {
@@ -563,7 +562,8 @@ fn bound_list(items: &[String], count: usize, max: usize, clipped: &mut bool) ->
         .iter()
         .filter_map(|s| bound(s, max, clipped))
         .collect();
-    if kept.len() > count {
+    // A blank entry dropped is a loss too, and every loss is flagged.
+    if kept.len() > count || kept.len() < items.len() {
         *clipped = true;
     }
     kept.into_iter().take(count).collect()
@@ -817,6 +817,7 @@ impl Summary {
 mod tests {
     use super::*;
     use crate::compact::SUPERSEDED_MARKER;
+    use crate::message::Block;
     use crate::session::{Record, RunConfig, Session, SessionKind, SessionMeta};
     use serde_json::json;
 
@@ -1066,7 +1067,7 @@ mod tests {
             claim("Too short", "result:t1", "Thursday"),
             claim("Too long", "result:t1", &"x".repeat(QUOTE_MAX_CHARS + 1)),
         ];
-        for _ in 0..(MAX_CLAIMS - d.claims.len() + 2) {
+        for _ in 0..MAX_CLAIMS {
             d.claims
                 .push(claim("Filler", "result:t1", "budget review moved"));
         }
@@ -1075,9 +1076,11 @@ mod tests {
         let Recorded::Written { grounding, .. } = store.record(&evidence, d, "m").unwrap() else {
             panic!("written");
         };
-        let fillers_kept = MAX_CLAIMS - 9;
+        // Seven fail grounding; of the fourteen that pass, twelve are kept
+        // and the two past the cap are `over_cap` — the failures at the head
+        // are counted as failures, not as crowding.
         assert_eq!(grounding.offered, offered);
-        assert_eq!(grounding.dropped, offered - 2 - fillers_kept);
+        assert_eq!(grounding.dropped, offered - MAX_CLAIMS);
         let by = |k: &str| grounding.dropped_by.get(k).copied().unwrap_or(0);
         assert_eq!(
             by("no_such_referent"),
@@ -1132,6 +1135,21 @@ mod tests {
         ];
         let ids: Vec<String> = packet(&ever).into_iter().map(|e| e.id).collect();
         assert_eq!(ids, vec!["turn:0".to_string()]);
+
+        // A turn of two owner blocks — a steer beside tool results — is the
+        // string the learning locators agree on, byte for byte: a quote is
+        // checked by containment against exactly this text.
+        let mut steer = Message::tool_results(vec![Block::ToolResult {
+            tool_use_id: "t1".into(),
+            content: "a.md".into(),
+            is_error: false,
+        }]);
+        steer.content.push(Block::text("only b.md, "));
+        steer.content.push(Block::text("and quickly"));
+        let got = packet(std::slice::from_ref(&steer));
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].text, crate::agent::owner_text(&steer));
+        assert_eq!(got[0].text, "only b.md, and quickly");
     }
 
     /// A newer build's words, fields this build lacks, and a torn line: each
