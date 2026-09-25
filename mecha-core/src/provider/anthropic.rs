@@ -1614,3 +1614,690 @@ mod planning_metadata_tests {
         );
     }
 }
+
+/// G4 (`docs/APPRAISAL-WIRING-DESIGN.md`), the block-text half: no sensor
+/// number, setpoint or numeric valence reaches either encoder's request body.
+///
+/// `planning_sensor_metadata_never_reaches_either_provider` above proves the
+/// *metadata* channel — `Message::planning` is dropped by both encoders. It
+/// cannot see a number that arrives as **text**: a status line folded into a
+/// user turn, a tool result that prints a reading, a brief that leaks. R21
+/// draws the line these tests hold: budget *facts* (turns left, context
+/// remaining) may be numbers; a reading against a setpoint, guilt and valence
+/// stay harness-side, because a model handed a bounded numeric target drifts
+/// into maximising it.
+///
+/// Two tests, and the split is the point. The run test scans every request a
+/// recorded two-run fixture actually sent — through both encoders' whole
+/// bodies, system prompt and tool specs included — for every rendering of
+/// the values that fixture holds, so it fails on a leak nobody thought to
+/// inject. The control test injects each of those renderings as a status
+/// line into a tool result and into a user turn and requires the scanner to
+/// catch it out of both encoders, so the run test's silence is a finding
+/// rather than a scanner that cannot see.
+///
+/// Scope: the acting run's requests. The quarantined harness briefs —
+/// `diagnose::Evidence::brief` (guilt and pressure means, behind
+/// `[agent] sensors_in_brief`) and `appraisal::AppraiserEvidence::brief` —
+/// hand numbers to a model by design and are not run requests.
+#[cfg(test)]
+mod numbers_never_reach_the_model_tests {
+    use super::tests::client_at;
+    use super::*;
+    use crate::agent::{Agent, Conversation, RunContext};
+    use crate::appraisal::Valence;
+    use crate::backlog::{Backlog, Depth};
+    use crate::charter::{Charter, Setpoint};
+    use crate::config::{AgentConfig, PermissionMode};
+    use crate::homeostat::Homeostat;
+    use crate::provider::openai::OpenAiCompatible;
+    use crate::reading::{CorpusRate, Observed, Reading, Sources};
+    use crate::session::{Session, SessionMeta};
+    use crate::tool::{ModeApprover, Registry, ToolCtx};
+    use chrono::{DateTime, Duration, Utc};
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+
+    /// Setpoints with digits no ordinary request carries, so a hit is a leak
+    /// and never a coincidence. Every `SensorKind` is here — `world()`
+    /// refuses a charter missing one — and one line has no sensor, which is
+    /// the ordinary kind.
+    const CHARTER: &str = r#"
+[[line]]
+id = "replies"
+text = "Answer the people who are waiting on the owner."
+[line.sensor]
+kind = "outbox_age"
+setpoint = "13h37m"
+
+[[line]]
+id = "queue"
+text = "Keep the review queue short enough to read."
+[line.sensor]
+kind = "outbox_waiting"
+setpoint = 27182
+
+[[line]]
+id = "questions"
+text = "Do not leave the owner's questions parked."
+[line.sensor]
+kind = "question_latency"
+setpoint = "4h19m"
+
+[[line]]
+id = "autonomy"
+text = "Need the owner less often."
+[line.sensor]
+kind = "intervention_rate"
+setpoint = "0.3141"
+
+[[line]]
+id = "strangers"
+text = "Close what strangers ask for, one way or the other."
+[line.sensor]
+kind = "request_closure"
+setpoint = "2h41m"
+
+[[line]]
+id = "craft"
+text = "Leave work better than you found it."
+"#;
+
+    const STEER: &str = "Start with the oldest reply.";
+
+    /// The valence one steer signs: a single negative, from the owner. The
+    /// run test asserts its live readout equals this, so the control proves
+    /// catchable exactly the valence the run test scans for.
+    fn steered() -> Valence {
+        Valence {
+            negative: 1.0,
+            negatives: 1,
+            ..Valence::default()
+        }
+    }
+
+    fn now() -> DateTime<Utc> {
+        "2030-06-02T08:00:00Z".parse().unwrap()
+    }
+
+    struct World {
+        charter: Charter,
+        homeostat: Homeostat,
+    }
+
+    /// The conditions a run starts under, produced by the real producers —
+    /// `reading::read_lines` over a backlog, `guilt::with_backlogs` over a
+    /// before/after pair — rather than written in as literals, so the values
+    /// scanned for are the ones the loop actually carries.
+    fn world() -> World {
+        let charter = Charter::parse(CHARTER).unwrap();
+        // A kind added later must join the fixture, or its reading is a
+        // number nothing here scans for.
+        for kind in crate::charter::SensorKind::ALL {
+            assert!(
+                charter
+                    .lines()
+                    .iter()
+                    .any(|l| l.sensor.as_ref().is_some_and(|s| s.kind == kind)),
+                "the fixture charter has no `{}` line",
+                kind.wire()
+            );
+        }
+        let now = now();
+        let ago = |secs: i64| Some((now - Duration::seconds(secs)).to_rfc3339());
+        let before = Backlog {
+            outbox: Some(Depth {
+                waiting: 31_337,
+                oldest: ago(299_580),
+                ..Depth::default()
+            }),
+            questions: Some(Depth {
+                waiting: 3,
+                oldest: ago(18_181),
+                ..Depth::default()
+            }),
+            frontdoor: Some(Depth {
+                waiting: 2,
+                oldest: ago(11_111),
+                ..Depth::default()
+            }),
+            ..Backlog::default()
+        };
+        // The subset a person owes an answer to — all of it, here.
+        let requests_on_owner = before.frontdoor.clone();
+        let after = Backlog {
+            outbox: Some(Depth {
+                waiting: 30_011,
+                oldest: ago(299_580),
+                ..Depth::default()
+            }),
+            ..before.clone()
+        };
+        let readings = crate::reading::read_lines(
+            &charter,
+            &Sources {
+                backlog: &before,
+                requests_on_owner,
+                corpus: CorpusRate::Share(0.4271),
+            },
+            now,
+        );
+        // Past the setpoint on every line: an `Unread` or `Nothing` reading
+        // carries no value, so a line reading one would scan for nothing.
+        for r in &readings {
+            assert!(
+                matches!(r.reading, Reading::Observed { over: true, .. }),
+                "`{}` should read past its setpoint: {:?}",
+                r.line,
+                r.reading
+            );
+        }
+        let fold = crate::guilt::with_backlogs(&before, &after, Some(0.2718), now);
+        World {
+            charter,
+            homeostat: Homeostat {
+                load_avg_1m: Some(13.57),
+                mem_available_kb: Some(24_681_357),
+                backlog: Some(before),
+                backlog_delta: Some(fold.delta),
+                anticipated_guilt: fold.level,
+                guilt_after_relief: fold.after_relief,
+                charter: Some(readings),
+                ..Homeostat::default()
+            },
+        }
+    }
+
+    /// One value, one rendering of it.
+    struct Needle {
+        what: &'static str,
+        text: String,
+    }
+
+    /// Every rendering of every number the world holds that a leak would
+    /// plausibly print: the raw value, the repo's own formatters
+    /// (`LineReading::summary`, `reading::render_secs`, `Valence::compact`),
+    /// the fixed-precision forms a status line would use, and the stored
+    /// record's JSON. Anything under four characters is dropped — `0.8`
+    /// collides with ordinary text, and every value keeps a longer rendering.
+    fn needles(world: &World, valence: &Valence) -> Vec<Needle> {
+        fn floats(what: &'static str, v: f32, out: &mut Vec<Needle>) {
+            for text in [format!("{v}"), format!("{v:.2}"), format!("{v:.3}")] {
+                out.push(Needle { what, text });
+            }
+        }
+        let mut out = Vec::new();
+        for line in world.charter.lines() {
+            let Some(sensor) = &line.sensor else { continue };
+            out.push(Needle {
+                what: "setpoint as the owner wrote it",
+                text: sensor.setpoint_text.clone(),
+            });
+            out.push(Needle {
+                what: "setpoint in its unit",
+                text: match sensor.setpoint {
+                    Setpoint::Duration(d) => d.as_secs().to_string(),
+                    Setpoint::Count(n) => n.to_string(),
+                    Setpoint::Rate(r) => r.to_string(),
+                },
+            });
+        }
+        let h = &world.homeostat;
+        for r in h.charter.as_deref().unwrap_or_default() {
+            out.push(Needle {
+                what: "reading summary",
+                text: r.summary(),
+            });
+            if let Reading::Observed { value, excess, .. } = r.reading {
+                match value {
+                    Observed::Seconds(s) => {
+                        out.push(Needle {
+                            what: "reading value",
+                            text: s.to_string(),
+                        });
+                        out.push(Needle {
+                            what: "reading value",
+                            text: crate::reading::render_secs(s),
+                        });
+                    }
+                    Observed::Count(n) => out.push(Needle {
+                        what: "reading value",
+                        text: n.to_string(),
+                    }),
+                    Observed::Rate(x) => out.push(Needle {
+                        what: "reading value",
+                        text: x.to_string(),
+                    }),
+                }
+                floats("reading excess", excess, &mut out);
+            }
+        }
+        for v in [h.anticipated_guilt, h.guilt_after_relief]
+            .into_iter()
+            .flatten()
+        {
+            floats("anticipated guilt", v, &mut out);
+        }
+        if let Some(load) = h.load_avg_1m {
+            floats("load average", load, &mut out);
+        }
+        if let Some(kb) = h.mem_available_kb {
+            out.push(Needle {
+                what: "memory available",
+                text: kb.to_string(),
+            });
+        }
+        if let Some(d) = &h.backlog_delta {
+            for n in [d.outbox, d.questions, d.frontdoor].into_iter().flatten() {
+                out.push(Needle {
+                    what: "backlog delta",
+                    text: n.to_string(),
+                });
+                out.push(Needle {
+                    what: "backlog delta",
+                    text: n.unsigned_abs().to_string(),
+                });
+            }
+        }
+        out.push(Needle {
+            what: "valence",
+            text: valence.compact(),
+        });
+        out.push(Needle {
+            what: "valence record",
+            text: serde_json::to_string(valence).unwrap(),
+        });
+        out.retain(|n| n.text.chars().count() >= 4);
+        for class in [
+            "setpoint as the owner wrote it",
+            "setpoint in its unit",
+            "reading summary",
+            "reading value",
+            "reading excess",
+            "anticipated guilt",
+            "backlog delta",
+            "valence",
+        ] {
+            assert!(
+                out.iter().any(|n| n.what == class),
+                "the fixture holds no `{class}` to scan for"
+            );
+        }
+        out
+    }
+
+    /// The body as bytes, plus every string leaf decoded — a needle carrying
+    /// a quote or a non-ASCII minus is escaped in the serialisation but not
+    /// in the leaf.
+    fn haystack(body: &Value) -> String {
+        fn walk(v: &Value, out: &mut String) {
+            match v {
+                Value::String(s) => {
+                    out.push_str(s);
+                    out.push('\n');
+                }
+                Value::Array(a) => a.iter().for_each(|v| walk(v, out)),
+                Value::Object(o) => o.values().for_each(|v| walk(v, out)),
+                _ => {}
+            }
+        }
+        let mut out = body.to_string();
+        out.push('\n');
+        walk(body, &mut out);
+        out
+    }
+
+    fn leaks<'a>(body: &Value, needles: &'a [Needle]) -> Vec<&'a Needle> {
+        let hay = haystack(body);
+        needles.iter().filter(|n| hay.contains(&n.text)).collect()
+    }
+
+    /// The request through both encoders, whole.
+    fn bodies(req: &CompletionRequest) -> [(&'static str, Value); 2] {
+        let openai = OpenAiCompatible::from_config(&ProviderConfig {
+            kind: "local".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        [
+            (
+                "anthropic",
+                client_at("http://127.0.0.1:9").body(req, true).unwrap(),
+            ),
+            ("openai", openai.body_for_test(req)),
+        ]
+    }
+
+    fn describe(found: &[&Needle]) -> String {
+        found
+            .iter()
+            .map(|n| format!("{} `{}`", n.what, n.text))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Replays a script and keeps every request the loop built. Queues the
+    /// owner's steer once the first request is out, so it folds into the
+    /// message carrying the tool results — a real intervention, which is
+    /// what gives the fixture run a valence to scan for.
+    struct Recorder {
+        turns: Mutex<VecDeque<CompletionResponse>>,
+        seen: Arc<Mutex<Vec<CompletionRequest>>>,
+        steer: Arc<Mutex<VecDeque<String>>>,
+    }
+
+    #[async_trait]
+    impl Provider for Recorder {
+        fn id(&self) -> &str {
+            "recorder"
+        }
+        fn default_model(&self) -> &str {
+            "fixture-model"
+        }
+        async fn complete(
+            &self,
+            req: &CompletionRequest,
+            _sink: Option<&StreamSink>,
+        ) -> Result<CompletionResponse> {
+            let mut seen = self.seen.lock().unwrap();
+            seen.push(req.clone());
+            if seen.len() == 1 {
+                self.steer.lock().unwrap().push_back(STEER.into());
+            }
+            self.turns
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| anyhow!("the recorder ran out of scripted turns"))
+        }
+    }
+
+    fn turn(blocks: Vec<Block>, stop: StopReason) -> CompletionResponse {
+        CompletionResponse {
+            message: Message::assistant(blocks),
+            stop_reason: stop,
+            usage: Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                ..Usage::default()
+            },
+            refusal: None,
+            model: "fixture-model".into(),
+            malformed_tool_args: 0,
+        }
+    }
+
+    /// A recorded run, resumed: run one writes a plan serving a sensored
+    /// charter line under the fixture's conditions with goal guidance on, is
+    /// steered, and is recorded to a session file with its outcome; run two
+    /// loads that file and continues. Every request either run sent goes
+    /// through both encoders and is scanned for every rendering of every
+    /// sensor number, setpoint and valence the fixture holds.
+    #[tokio::test]
+    async fn a_recorded_run_carries_no_sensor_number_setpoint_or_valence_to_either_encoder() {
+        let root = crate::mismatch::Workspace::new().unwrap();
+        let world = world();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let steer = Arc::new(Mutex::new(VecDeque::new()));
+        let plan = json!({
+            "items": [
+                {"content": "Draft a reply to the oldest waiting message", "status": "in_progress"},
+                {"content": "Stage it for review", "status": "pending"}
+            ],
+            "serves": "charter:replies"
+        });
+        let recorder = Recorder {
+            turns: Mutex::new(VecDeque::from([
+                turn(
+                    vec![Block::ToolUse {
+                        id: "toolu_fixture_plan".into(),
+                        name: "todo".into(),
+                        input: plan,
+                    }],
+                    StopReason::ToolUse,
+                ),
+                turn(
+                    vec![Block::Text {
+                        text: "Drafted the oldest reply and staged it.".into(),
+                    }],
+                    StopReason::EndTurn,
+                ),
+                turn(
+                    vec![Block::Text {
+                        text: "One question is parked; it needs your answer.".into(),
+                    }],
+                    StopReason::EndTurn,
+                ),
+            ])),
+            seen: Arc::clone(&seen),
+            steer: Arc::clone(&steer),
+        };
+        let mut registry = Registry::new();
+        registry.insert(Arc::new(crate::tool::todo::TodoTool::new()));
+        let charter_block = crate::charter::prompt_block(&world.charter).unwrap();
+        let tools = ToolCtx {
+            workspace: root.path().to_path_buf(),
+            ..Default::default()
+        };
+        let approver = Arc::new(ModeApprover {
+            mode: PermissionMode::Allow,
+        });
+        let agent = Agent::new(
+            Box::new(recorder),
+            registry,
+            approver.clone(),
+            tools.clone(),
+            AgentConfig {
+                system_prompt: Some(format!("You are a personal assistant.\n\n{charter_block}")),
+                thinking: false,
+                force_final_answer: false,
+                goal_guidance: true,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap()
+        .with_clock(Arc::new(crate::clock::FixedClock(now())));
+        let mut cx = RunContext::new(tools, approver).with_queued_input(Arc::clone(&steer));
+        // Everything but the backlog: `Homeostat::finish` re-reads the live
+        // backlog to fold guilt at run end, and a unit test must not read the
+        // owner's stores. The guilt that fold would write is already on the
+        // snapshot, from the fixture's own before/after pair.
+        cx.homeostat = Some(Homeostat {
+            backlog: None,
+            ..world.homeostat.clone()
+        });
+
+        // Run one, recorded exactly as a front-end records it.
+        let session = Session::create(
+            &root.path().join("sessions"),
+            SessionMeta {
+                id: "fixture-g4".into(),
+                created_at: now(),
+                provider: "recorder".into(),
+                model: "fixture-model".into(),
+                workspace: root.path().into(),
+                title: None,
+                kind: None,
+            },
+        )
+        .unwrap();
+        let mut convo = Conversation::user("Work through the replies that are waiting on me.");
+        let before = convo.messages.clone();
+        session.append_messages(&before).unwrap();
+        let first = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        session.record_run(&before, &convo).unwrap();
+        session.record_outcome(&first).unwrap();
+        let valence = crate::appraisal::live_readout("fixture-g4", &first, &convo, 0).valence;
+        // Not silent, and the one the control proves catchable: a readout
+        // that drifted (a `partial` flag, a second error) would change the
+        // renderings, and this is where that surfaces rather than in a
+        // scan nothing showed could see it.
+        assert_eq!(
+            valence,
+            steered(),
+            "the steer should sign the run exactly as the control assumes"
+        );
+
+        // Run two, from the file.
+        let (_, mut resumed) = Session::load(&session.path).unwrap();
+        resumed.push(Message::user("And the parked questions?"));
+        agent.run_in(&cx, &mut resumed, None).await.unwrap();
+
+        let needles = needles(&world, &valence);
+        let requests = seen.lock().unwrap().clone();
+        assert_eq!(requests.len(), 3, "two turns in run one, one in run two");
+
+        // Not vacuous, four ways. The numbers are *on disk*: the session
+        // file holds the homeostat, readings and guilt this run carried.
+        let record = std::fs::read_to_string(&session.path).unwrap();
+        let h = &world.homeostat;
+        let replies = &h.charter.as_ref().unwrap()[0];
+        let Reading::Observed { excess, .. } = replies.reading else {
+            panic!("the replies line should read past its setpoint: {replies:?}");
+        };
+        for kept in [
+            format!("{}", h.anticipated_guilt.unwrap()),
+            format!("{excess}"),
+            replies.setpoint.clone(),
+            "299580".to_string(),
+        ] {
+            assert!(record.contains(&kept), "the record should keep `{kept}`");
+        }
+        // They are *in the request objects*: the resumed run's request
+        // carries the planning metadata whose gap is that excess.
+        let carried = requests[2]
+            .messages
+            .iter()
+            .filter_map(|m| m.planning.as_ref())
+            .flat_map(|f| &f.decisions)
+            .flat_map(|d| &d.charter)
+            .any(|g| g.remaining == Some(excess));
+        assert!(
+            carried,
+            "the resumed request should hold the reading as metadata"
+        );
+        // The sensor *drove* the run: the decision it made reached the model
+        // as fixed words, which is what R21 allows through.
+        let guidance = crate::planning::Action::ReviewCommitment.guidance();
+        assert!(
+            requests[1].messages.iter().flat_map(|m| &m.content).any(
+                |b| matches!(b, Block::ToolResult { content, .. } if content.contains(guidance))
+            ),
+            "the over-setpoint reading should have produced the review guidance"
+        );
+        // And the charter reached the model as its lines, not its sensors.
+        assert!(requests[0]
+            .system
+            .as_deref()
+            .is_some_and(|s| s.contains("`replies`")));
+
+        for (i, req) in requests.iter().enumerate() {
+            for (encoder, body) in bodies(req) {
+                let found = leaks(&body, &needles);
+                assert!(
+                    found.is_empty(),
+                    "request {i} leaked through the {encoder} encoder: {}",
+                    describe(&found)
+                );
+            }
+        }
+    }
+
+    /// The control that keeps the run test honest: every rendering the run
+    /// test scans for, injected as a status line into a tool result and into
+    /// a user turn, is caught out of both encoders — and the same request
+    /// with the reading only as `Message::planning` metadata stays clean.
+    #[test]
+    fn a_status_line_carrying_a_sensor_reading_is_caught_in_a_tool_result_or_a_user_turn() {
+        let world = world();
+        let needles = needles(&world, &steered());
+        let base = |result: String, user: String| -> CompletionRequest {
+            CompletionRequest {
+                response_schema: None,
+                model: "fixture-model".into(),
+                system: Some("You are a personal assistant.".into()),
+                messages: vec![
+                    Message::user(user),
+                    Message::assistant(vec![Block::ToolUse {
+                        id: "toolu_status".into(),
+                        name: "todo".into(),
+                        input: json!({"items": []}),
+                    }]),
+                    Message::tool_results(vec![Block::ToolResult {
+                        tool_use_id: "toolu_status".into(),
+                        content: result,
+                        is_error: false,
+                    }]),
+                ],
+                tools: Vec::new(),
+                max_tokens: 1024,
+                effort: None,
+                thinking: false,
+                cache_prompt: false,
+            }
+        };
+        let plain_result = "1. [>] Draft a reply".to_string();
+        let plain_user = "Work through the replies.".to_string();
+
+        let clean = base(plain_result.clone(), plain_user.clone());
+        for (encoder, body) in bodies(&clean) {
+            let found = leaks(&body, &needles);
+            assert!(found.is_empty(), "{encoder}: {}", describe(&found));
+        }
+
+        // Metadata is not block text: the reading riding on the message is
+        // dropped by both encoders, as the metadata test above proves.
+        let mut metadata = clean.clone();
+        let excess = match world.homeostat.charter.as_ref().unwrap()[0].reading {
+            Reading::Observed { excess, .. } => excess,
+            ref other => panic!("{other:?}"),
+        };
+        metadata.messages[2].planning = Some(crate::planning::Feedback {
+            steps: Vec::new(),
+            decisions: vec![crate::planning::Decision {
+                anticipation_evidence: None,
+                anticipation: None,
+                goal: None,
+                anchor: None,
+                open_steps: 1,
+                unverified_steps: 0,
+                charter_observed: true,
+                charter: vec![crate::planning::Gap {
+                    goal: Some(crate::goal::GoalRef::Charter("replies".into())),
+                    remaining: Some(excess),
+                }],
+                action: crate::planning::Action::ReviewCommitment,
+                applied: true,
+            }],
+        });
+        for (encoder, body) in bodies(&metadata) {
+            let found = leaks(&body, &needles);
+            assert!(found.is_empty(), "{encoder}: {}", describe(&found));
+        }
+
+        // Block text is: each rendering, as a status line, in each slot.
+        for needle in &needles {
+            let status = format!("Status: {}", needle.text);
+            for (slot, req) in [
+                (
+                    "tool result",
+                    base(format!("{plain_result}\n\n{status}"), plain_user.clone()),
+                ),
+                (
+                    "user turn",
+                    base(plain_result.clone(), format!("{plain_user}\n\n{status}")),
+                ),
+            ] {
+                for (encoder, body) in bodies(&req) {
+                    assert!(
+                        leaks(&body, &needles).iter().any(|n| n.text == needle.text),
+                        "a {} `{}` in the {slot} got past the scan of the {encoder} body",
+                        needle.what,
+                        needle.text
+                    );
+                }
+            }
+        }
+    }
+}

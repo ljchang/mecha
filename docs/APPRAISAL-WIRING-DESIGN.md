@@ -824,7 +824,10 @@ sensor number, a setpoint or a numeric valence as block text. Appraisal *text* m
 but the numbers stay harness-side (containment 2; R21), because a model
 handed a bounded numeric target drifts into maximising it. Today this holds
 by construction (`Message::planning` is dropped by both encoders); the test
-keeps a future status line from breaking it.
+keeps a future status line from breaking it. *Built as 1i:*
+`a_recorded_run_carries_no_sensor_number_setpoint_or_valence_to_either_encoder`
+and its injection control, beside the metadata test (`docs/ARCHITECTURE.md`,
+"No sensor number, setpoint or valence reaches a run's request").
 ### For phase 2 — one interpretation, and learning from it
 
 #### I1. The interpretive appraiser
