@@ -1375,28 +1375,39 @@ fn task_due(
         .ok_or_else(|| format!("task {task}'s due date is out of range"))?
         .and_hms_opt(0, 0, 0)
         .expect("midnight exists");
-    let end = match zone {
-        Some(tz) => next
-            .and_local_timezone(tz)
-            .earliest()
-            .map(|t| t.with_timezone(&Utc)),
-        None => Some(next.and_utc()),
+    let Some(tz) = zone else {
+        return Ok(Some(next.and_utc()));
     };
-    end.map(Some)
+    // A midnight that never happened (a zone that springs forward at 24:00)
+    // walks forward to the first minute that exists — `cron::resolve`'s rule
+    // for a gap: the owner's day did end, a little later on the clock
+    // (found on review of #324). An ambiguous one takes the earlier, as
+    // there.
+    (0..=24 * 60)
+        .find_map(|m| {
+            (next + chrono::Duration::minutes(m))
+                .and_local_timezone(tz)
+                .earliest()
+        })
+        .map(|t| Some(t.with_timezone(&Utc)))
         .ok_or_else(|| format!("task {task}'s due day has no end in the owner's zone"))
 }
 
-/// R37's window for one session's output: the patience of the store the
-/// output waits in — the outbox's line where the charter has one, else the
-/// doctor's constant — or [`NO_STORE_PATIENCE_HOURS`] for an output with
-/// no store. `Err` when the patience cannot be read.
-fn patience_for(
-    has_drafts: bool,
-    acts: &OwnerActs<'_>,
-) -> std::result::Result<chrono::Duration, String> {
-    if !has_drafts {
-        return Ok(chrono::Duration::hours(NO_STORE_PATIENCE_HOURS));
-    }
+/// The doctor's constant for an output waiting on the owner — read from
+/// `doctor::Patience` with no charter, so "the doctor's constant" (R37) is
+/// true by construction rather than by a second literal.
+/// [`NO_STORE_PATIENCE_HOURS`] names the same number for readers, and a
+/// test holds the two together.
+fn doctors_constant() -> chrono::Duration {
+    crate::doctor::Patience::for_store(None, crate::charter::SensorKind::OutboxAge)
+        .map(|p| p.after)
+        .unwrap_or_else(|| chrono::Duration::hours(NO_STORE_PATIENCE_HOURS))
+}
+
+/// The outbox's patience for a session that staged drafts: the charter
+/// line watching the outbox, else the doctor's constant. `Err` when the
+/// charter cannot be read.
+fn outbox_patience(acts: &OwnerActs<'_>) -> std::result::Result<chrono::Duration, String> {
     if acts.charter_unreadable {
         return Err("the charter could not be read, so the outbox's patience is unknown".into());
     }
@@ -1440,85 +1451,33 @@ pub fn observe(
     if acts.workflows_unreadable {
         return unknown("the workflow store could not be read");
     }
-    let mut seen: Vec<(DateTime<Utc>, ExpectedAct)> = Vec::new();
     let drafts: Vec<&crate::outbox::OutboxItem> = acts
         .drafts
         .iter()
         .filter(|d| d.session_id.as_deref() == Some(session_id))
         .filter(|d| d.author() == crate::outbox::Author::Model)
         .collect();
-    for d in &drafts {
-        let act = match d.status.as_str() {
-            "sent" if d.edited() => ExpectedAct::Edited,
-            "sent" => ExpectedAct::ReleasedUnchanged,
-            "rejected" => ExpectedAct::Rejected,
-            _ => continue,
-        };
-        let Some(at) = d
-            .resolved_at
-            .as_deref()
-            .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
-            .map(|t| t.with_timezone(&Utc))
-        else {
-            return unknown("a resolved draft carries no readable time");
-        };
-        seen.push((at, act));
-    }
-    for c in acts.closures {
-        // An actor this build cannot read is not taken as the owner's hand:
-        // the act is not established to be the owner's, so it is not one,
-        // the direction `observe` fails closed toward everywhere.
-        if !c.sessions.iter().any(|s| s == session_id)
-            || !matches!(
+    let owners = |c: &&crate::closure::Transition| {
+        c.sessions.iter().any(|s| s == session_id)
+            && matches!(
                 c.actor,
                 crate::closure::Actor::Owner | crate::closure::Actor::OwnerApproved
             )
-        {
-            continue;
-        }
-        match c.kind {
-            crate::closure::Move::Close => seen.push((c.at, ExpectedAct::Closed)),
-            crate::closure::Move::Reopen => seen.push((c.at, ExpectedAct::Reopened)),
-            // The owner acted on this session's task and this build cannot
-            // read which way: an act was seen and not read, which is
-            // unknown — never "no act" (R37; found on review of #324).
-            crate::closure::Move::Unknown => {
-                return unknown(
-                    "a closure naming this session records a move this build cannot read",
-                )
-            }
-        }
-    }
-    for w in acts.workflows {
-        for d in w.owner_dispositions() {
-            if d.session.as_deref() != Some(session_id) {
-                continue;
-            }
-            match d.kind {
-                crate::workflow::Disposition::Closed => seen.push((d.at, ExpectedAct::Closed)),
-                crate::workflow::Disposition::Cancelled => seen.push((d.at, ExpectedAct::Rejected)),
-            }
-            if let Some(at) = d.reopened_at {
-                seen.push((at, ExpectedAct::Reopened));
-            }
-        }
-    }
-    // The output's window (R37, refined by the owner 2026-09-25). A session
-    // that staged drafts waits in the outbox: its patience. Otherwise, a
-    // task the session worked — its anchor, else the task a closure naming
-    // the session moved — runs to the task's due date where the board row
-    // has one, else the constant. A workflow, or nothing, is the constant.
+    };
+    // The output's window first (R37, refined by the owner 2026-09-25): a
+    // session that staged drafts waits in the outbox, its patience. Else a
+    // task the session worked — its anchor, else the task an owner's closure
+    // naming the session moved — runs to the task's due date where the
+    // board row has one, else the constant. A workflow, or nothing, is the
+    // constant. Before the acts, so a record the window has already passed
+    // cannot make the answer unknown (found on review of #324).
     let task = match anchor {
         Some(GoalRef::Task(id)) => Some(id.clone()),
-        _ => acts
-            .closures
-            .iter()
-            .find(|c| c.sessions.iter().any(|s| s == session_id))
-            .map(|c| c.task.clone()),
+        _ => acts.closures.iter().find(owners).map(|c| c.task.clone()),
     };
-    let constant = ended_at + chrono::Duration::hours(NO_STORE_PATIENCE_HOURS);
+    let constant = ended_at + doctors_constant();
     let closes_at = if !drafts.is_empty() {
-        match patience_for(true, acts) {
+        match outbox_patience(acts) {
             Ok(p) => ended_at + p,
             Err(why) => return ObservedAct::Unknown { why },
         }
@@ -1537,6 +1496,60 @@ pub fn observe(
     } else {
         constant
     };
+
+    let mut seen: Vec<(DateTime<Utc>, ExpectedAct)> = Vec::new();
+    for d in &drafts {
+        let act = match d.status.as_str() {
+            "sent" if d.edited() => ExpectedAct::Edited,
+            "sent" => ExpectedAct::ReleasedUnchanged,
+            "rejected" => ExpectedAct::Rejected,
+            _ => continue,
+        };
+        // No readable time: it cannot be placed inside or outside the
+        // window, so the answer cannot be read.
+        let Some(at) = d
+            .resolved_at
+            .as_deref()
+            .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+            .map(|t| t.with_timezone(&Utc))
+        else {
+            return unknown("a resolved draft carries no readable time");
+        };
+        seen.push((at, act));
+    }
+    // An actor this build cannot read is not taken as the owner's hand: the
+    // act is not established to be the owner's, the direction `observe`
+    // fails closed toward everywhere.
+    for c in acts.closures.iter().filter(owners) {
+        match c.kind {
+            crate::closure::Move::Close => seen.push((c.at, ExpectedAct::Closed)),
+            crate::closure::Move::Reopen => seen.push((c.at, ExpectedAct::Reopened)),
+            // The owner acted on this session's task, inside the window, and
+            // this build cannot read which way: an act seen and not read is
+            // unknown, never "no act" (R37). One after the window is not the
+            // act whichever way it went.
+            crate::closure::Move::Unknown if c.at <= closes_at => {
+                return unknown(
+                    "a closure naming this session records a move this build cannot read",
+                )
+            }
+            crate::closure::Move::Unknown => {}
+        }
+    }
+    for w in acts.workflows {
+        for d in w.owner_dispositions() {
+            if d.session.as_deref() != Some(session_id) {
+                continue;
+            }
+            match d.kind {
+                crate::workflow::Disposition::Closed => seen.push((d.at, ExpectedAct::Closed)),
+                crate::workflow::Disposition::Cancelled => seen.push((d.at, ExpectedAct::Rejected)),
+            }
+            if let Some(at) = d.reopened_at {
+                seen.push((at, ExpectedAct::Reopened));
+            }
+        }
+    }
     seen.sort_by_key(|(at, _)| *at);
     if let Some((at, act)) = seen.into_iter().find(|(at, _)| *at <= closes_at) {
         return ObservedAct::Act { act, at };
@@ -2904,6 +2917,32 @@ mod tests {
                 "{what}"
             );
         }
+        // A due date whose next midnight never happens (Santiago springs
+        // forward at 24:00 on 2026-09-06) walks forward to the first minute
+        // that exists, rather than losing the row to unknown.
+        let santiago: chrono_tz::Tz = "America/Santiago".parse().unwrap();
+        let gap_day = board(json!("2026-09-05"));
+        let early_end: DateTime<Utc> = "2026-09-01T12:00:00Z".parse().unwrap();
+        let gap = observe(
+            "s-3",
+            Some(&task),
+            early_end,
+            &OwnerActs {
+                board: BoardRead::Read(&gap_day),
+                zone: Some(santiago),
+                ..OwnerActs::default()
+            },
+            early_end + hours(1),
+        );
+        let first_minute: DateTime<Utc> = "2026-09-06T04:00:00Z".parse().unwrap();
+        assert_eq!(
+            gap,
+            ObservedAct::Pending {
+                closes_at: first_minute
+            },
+            "the day's end is 01:00 local, the first minute that exists"
+        );
+
         // A reader that read no board defers — neither unknown nor windowed.
         assert_eq!(
             look(&[], BoardRead::NotRead, None, long_after),
@@ -2986,6 +3025,9 @@ mod tests {
             "at": "2026-09-02T12:00:00Z"
         }))
         .unwrap();
+        // The closure names task-1, so the output is that task; the board has
+        // it undated, so the window is the constant and the closure is inside.
+        let undated = json!({"items": [{"id": "task-1", "status": "done"}]});
         assert!(matches!(
             observe(
                 "s-1",
@@ -2993,11 +3035,41 @@ mod tests {
                 end,
                 &OwnerActs {
                     closures: std::slice::from_ref(&future),
+                    board: BoardRead::Read(&undated),
                     ..OwnerActs::default()
                 },
                 long_after
             ),
             ObservedAct::Unknown { .. }
+        ));
+        // The same unreadable closure *after* the window is not the act
+        // whichever way it went, so it cannot hold back a readable answer:
+        // a draft rejected inside the window is still the act.
+        let late_future = crate::closure::Transition {
+            at: end + chrono::Duration::days(90),
+            ..future.clone()
+        };
+        let rejected = [draft_of(
+            &root,
+            "s-1",
+            "rejected",
+            Some(end + chrono::Duration::hours(1)),
+        )];
+        assert!(matches!(
+            observe(
+                "s-1",
+                None,
+                end,
+                &OwnerActs {
+                    closures: std::slice::from_ref(&late_future),
+                    ..acts(&rejected)
+                },
+                long_after
+            ),
+            ObservedAct::Act {
+                act: ExpectedAct::Rejected,
+                ..
+            }
         ));
         // A row naming no session has no output to read.
         assert!(matches!(
@@ -3213,6 +3285,17 @@ mod tests {
         let s = fresh.score_summary(&blind, later).unwrap();
         assert_eq!(s.appraisals_unreadable, 1);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// "The doctor's constant" (R37) is the doctor's: the named constant a
+    /// reader sees and the patience the doctor applies to an outbox with no
+    /// charter line cannot disagree.
+    #[test]
+    fn the_no_store_constant_is_the_doctors() {
+        assert_eq!(
+            doctors_constant(),
+            chrono::Duration::hours(NO_STORE_PATIENCE_HOURS)
+        );
     }
 
     /// The score ledger is a wire format: an act word this build cannot
