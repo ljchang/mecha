@@ -210,6 +210,7 @@ const NON_COMMAND_BUILTINS: &[&str] = &[
     "http_fetch",
     "web_search",
     "web_open",
+    "image_generate",
     "todo",
     "skill",
     "recall",

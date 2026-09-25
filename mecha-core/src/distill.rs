@@ -1662,6 +1662,79 @@ mod tests {
         assert!(rendered.chars().count() < 1500);
     }
 
+    /// R25: the graph episode's text stays exactly as it is — the graph
+    /// extracts facts from it — while the distiller grows into the
+    /// appraisal (`APPRAISAL-WIRING-DESIGN.md` I1, row 2a-2). The body
+    /// pushed is the reply's `episode`, verbatim, and nothing an appraisal
+    /// adds to the reply — the interpretation, a judgment, a prediction, a
+    /// hypothesis, a lesson — reaches the body or the meta. Fails if a
+    /// producer folds any of it into what the graph mines.
+    #[test]
+    fn the_episode_body_is_the_episode_verbatim_and_carries_no_appraisal() {
+        let episode = "Dana Rowe moved the budget review to Thursday; Idris was told.";
+        let reply = json!({
+            "skip": false,
+            "episode": episode,
+            "interpretation": "INTERPRETATION-TEXT the run served its task",
+            "judgments": [{"goal": "task:t-budget", "bearing": "good", "because": [0]}],
+            "claims": [{"statement": "CLAIM-TEXT", "pointer": "result:t1", "quote": "QUOTE-TEXT"}],
+            "prediction": "PREDICTION-TEXT",
+            "goal_hypotheses": ["HYPOTHESIS-TEXT"],
+            "lessons": ["LESSON-TEXT"],
+        })
+        .to_string();
+        let out = parse_distiller_reply(&reply).expect("an episode");
+        assert_eq!(out.episode, episode);
+        let taint = Some(Taint {
+            private: true,
+            untrusted: false,
+        });
+        let body = out.body(taint).expect("a body");
+        assert_eq!(body, episode);
+        let args = upsert_args(
+            "s",
+            "r",
+            "2026-09-25 12:00:00",
+            &body,
+            taint,
+            "m",
+            &out.corrections,
+            None,
+            &out.surprises,
+        );
+        assert_eq!(args["body"], episode, "byte for byte");
+        let wire = args.to_string();
+        for leaked in [
+            "INTERPRETATION-TEXT",
+            "CLAIM-TEXT",
+            "QUOTE-TEXT",
+            "PREDICTION-TEXT",
+            "HYPOTHESIS-TEXT",
+            "LESSON-TEXT",
+            "bearing",
+            "judgments",
+        ] {
+            assert!(!wire.contains(leaked), "{leaked} reached the graph: {wire}");
+        }
+    }
+
+    /// The other half of R25's pin: the episode's text is the model's answer
+    /// to this prompt, so a change to the prompt changes what the graph
+    /// extracts from every episode after it. A tripwire, not a freeze —
+    /// row 2a-2 extends this pass into the appraisal, and whether the
+    /// episode's prompt may change with it (one extended reply) or must stay
+    /// byte-identical (the appraisal asked for in a follow-up turn on the
+    /// same cached prefix) is the owner's to rule, not a test update's.
+    #[test]
+    fn the_distillers_episode_prompt_is_pinned() {
+        assert_eq!(
+            crate::learning::rules_hash(DISTILLER_SYSTEM),
+            "d6ef3ecb90ad726c",
+            "DISTILLER_SYSTEM changed: the graph episode's text is pinned by R25 \
+             (APPRAISAL-WIRING-DESIGN.md I1) — see this test's doc before updating it"
+        );
+    }
+
     #[test]
     fn render_for_distill_passes_short_sessions_through_whole() {
         let messages = vec![msg(Role::User, "hi"), msg(Role::Assistant, "hello")];

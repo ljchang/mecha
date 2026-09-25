@@ -594,6 +594,85 @@ fn comparisons_line(on_record: &OnRecord) -> String {
     }
 }
 
+/// What the text-appraisal store holds (row 2a-1): `Ok(None)` when there is
+/// no store yet, `Err` when it could not be read. Counts only — the owner's
+/// door reads the prose, and this readout prints none of it.
+type AppraisalsOnRecord =
+    std::result::Result<Option<(mecha_core::appraisal_store::Summary, usize)>, String>;
+
+fn text_appraisals_on_record() -> AppraisalsOnRecord {
+    let Some(store) = mecha_core::appraisal_store::AppraisalStore::open_existing_default() else {
+        return Ok(None);
+    };
+    store
+        .for_owner()
+        .map(|(rows, skipped)| Some((mecha_core::appraisal_store::Summary::of(&rows), skipped)))
+        .map_err(|e| format!("{e:#}"))
+}
+
+fn text_appraisals_json(on_record: &AppraisalsOnRecord) -> serde_json::Value {
+    match on_record {
+        Err(e) => serde_json::json!({"read": false, "error": e}),
+        // No store yet is genuinely zero of everything, in the same shape.
+        Ok(None) => text_appraisals_json(&Ok(Some((
+            mecha_core::appraisal_store::Summary::default(),
+            0,
+        )))),
+        Ok(Some((summary, skipped))) => {
+            let mut o = serde_json::to_value(summary).unwrap_or_default();
+            if let Some(m) = o.as_object_mut() {
+                m.insert("read".into(), serde_json::json!(*skipped == 0));
+                m.insert("skipped_lines".into(), serde_json::json!(skipped));
+            }
+            o
+        }
+    }
+}
+
+fn text_appraisals_line(on_record: &AppraisalsOnRecord) -> String {
+    match on_record {
+        Err(e) => format!("text appraisals: the store could not be read ({e})"),
+        Ok(None) => "text appraisals on record: none yet".into(),
+        Ok(Some((s, skipped))) => {
+            let reasons: Vec<String> = s
+                .dropped_by
+                .iter()
+                .map(|(k, n)| format!("{k} {n}"))
+                .collect();
+            format!(
+                "text appraisals on record: {} over {} session(s) · {} clean · {} not clean \
+                 (the owner's surfaces only) · claims {} kept, {} dropped by grounding{}{}{}{}",
+                s.records,
+                s.sessions,
+                s.clean,
+                s.not_clean,
+                s.claims_kept,
+                s.claims_dropped,
+                if reasons.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", reasons.join(" · "))
+                },
+                if s.no_session > 0 {
+                    format!(" · {} naming no session", s.no_session)
+                } else {
+                    String::new()
+                },
+                if s.clipped > 0 {
+                    format!(" · {} clipped by a bound", s.clipped)
+                } else {
+                    String::new()
+                },
+                if *skipped > 0 {
+                    format!(" · {skipped} unreadable line(s) skipped, so these are floors")
+                } else {
+                    String::new()
+                }
+            )
+        }
+    }
+}
+
 /// The `--json` probe block.
 ///
 /// Rendered from `Tally` itself rather than a hand-listed set of keys: a
@@ -1033,6 +1112,8 @@ async fn appraise(
     // The comparison store, read back after the paid passes so a `--probe`
     // pass's own rows are in it (row 1g). Free, so it is read every time.
     let stored = comparisons_on_record();
+    // The text-appraisal store (row 2a-1), counted the same way.
+    let text_appraisals = text_appraisals_on_record();
 
     if json {
         println!(
@@ -1097,6 +1178,7 @@ async fn appraise(
                 // rung exists to avoid.
                 "probe": probe.then(|| probe_json(tally, budget)),
                 "comparisons": comparisons_json(&stored),
+                "text_appraisals": text_appraisals_json(&text_appraisals),
                 // Same "absent, not zero" rule as `probe`: whether the flag
                 // ran at all is a different fact from what it found.
                 "appraiser": run_appraiser.then(|| serde_json::json!({
@@ -1172,6 +1254,7 @@ async fn appraise(
     // A fact about a store, not about these sessions, so it is printed
     // before the early return — an empty walk still has a store to report.
     println!("  {}\n", comparisons_line(&stored));
+    println!("  {}\n", text_appraisals_line(&text_appraisals));
     if appraisals.is_empty() {
         return Ok(());
     }
@@ -1923,5 +2006,28 @@ mod probe_readout_tests {
         assert!(comparisons_json(&empty)["separated_share"].is_null());
         assert_eq!(comparisons_json(&empty)["read"], false, "two lines skipped");
         assert!(comparisons_line(&empty).contains("(—)"));
+    }
+
+    /// The text-appraisal readout: unreadable is not empty, no store yet is
+    /// the empty store's shape, and a skipped line marks the counts floors.
+    #[test]
+    fn the_text_appraisal_readout_keeps_unreadable_apart_from_empty() {
+        use super::{text_appraisals_json, text_appraisals_line};
+        use mecha_core::appraisal_store::Summary;
+        let unreadable = Err("permission denied".to_string());
+        assert_eq!(text_appraisals_json(&unreadable)["read"], false);
+        assert!(text_appraisals_line(&unreadable).contains("could not be read"));
+        let keys =
+            |v: serde_json::Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        let none = Ok(None);
+        let fresh = Ok(Some((Summary::default(), 0)));
+        assert_eq!(
+            keys(text_appraisals_json(&none)),
+            keys(text_appraisals_json(&fresh))
+        );
+        assert_eq!(text_appraisals_json(&none)["clean"], 0);
+        let floors = Ok(Some((Summary::default(), 3)));
+        assert_eq!(text_appraisals_json(&floors)["read"], false);
+        assert!(text_appraisals_line(&floors).contains("floors"));
     }
 }
