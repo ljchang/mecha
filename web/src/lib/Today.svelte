@@ -1,5 +1,6 @@
 <script>
   import { apiFetch as fetch } from './api.js';
+  import { commitmentLine } from './commitment.js';
   import { onMount } from 'svelte';
   let { navigate = () => {} } = $props();
   let data = $state(null);
@@ -38,7 +39,7 @@
         {#each rows as item (item.id)}
           <article class:urgent={key === 'urgent'}>
             <h3>{item.title}</h3>
-            <p>{item.state.replaceAll('_', ' ')}{#if item.commitment} · due {new Date(item.commitment.due_at).toLocaleString()} · {item.commitment.party}{/if}</p>
+            <p>{item.state.replaceAll('_', ' ')}{commitmentLine(item.commitment)}</p>
             {#each item.waiting_for ?? [] as reason}<p>{reason}</p>{/each}
             {#if item.notice}<p>{item.notice.reason}</p>{/if}
             {#if item.snoozed_until}<p>Reminders deferred until {new Date(item.snoozed_until).toLocaleString()}</p>{/if}

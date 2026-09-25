@@ -109,16 +109,40 @@ const STALE_REQUEST_AFTER: chrono::Duration = chrono::Duration::hours(72);
 /// a line names a setpoint, the doctor reports against the owner's number").
 /// The finding then names the line, so the owner reads *which priority* the
 /// store is failing rather than a threshold nobody chose.
+///
+/// **One definition, two readers**: the doctor's store checks and
+/// per-commitment guilt (`guilt::read_commitments`, S7), whose patience is
+/// exactly this — the line watching the store where there is one, else the
+/// constant — so a draft the doctor calls stuck is a draft that carries
+/// guilt, and the two cannot disagree about how long is too long.
 #[derive(Debug, Clone, PartialEq)]
-struct Patience {
-    after: chrono::Duration,
+pub(crate) struct Patience {
+    pub(crate) after: chrono::Duration,
     /// As printed — `48h`, or the setpoint in the owner's own spelling.
-    text: String,
+    pub(crate) text: String,
     /// The charter line the number came from, when it is the owner's.
-    line: Option<String>,
+    pub(crate) line: Option<String>,
 }
 
 impl Patience {
+    /// The patience for the store an age kind watches: the owner's setpoint
+    /// where a line carries that kind, else the harness constant for the
+    /// store. `None` for a kind that is not an age — a count or a rate has
+    /// no "how long is too long" to fall back to.
+    pub(crate) fn for_store(
+        charter: Option<&crate::charter::Charter>,
+        kind: crate::charter::SensorKind,
+    ) -> Option<Patience> {
+        use crate::charter::SensorKind;
+        let (fallback, text) = match kind {
+            SensorKind::OutboxAge => (STUCK_DRAFT_AFTER, "48h"),
+            SensorKind::QuestionLatency => (UNANSWERED_QUESTION_AFTER, "24h"),
+            SensorKind::RequestClosure => (STALE_REQUEST_AFTER, "72h"),
+            SensorKind::OutboxWaiting | SensorKind::InterventionRate => return None,
+        };
+        Some(Patience::for_kind(charter, kind, fallback, text))
+    }
+
     /// The owner's setpoint for `kind`, or the harness's `fallback`.
     ///
     /// A setpoint the charter typed as anything but a duration cannot reach
@@ -775,12 +799,8 @@ fn check_outbox(
     if !root.is_dir() {
         return out;
     }
-    let patience = Patience::for_kind(
-        charter,
-        crate::charter::SensorKind::OutboxAge,
-        STUCK_DRAFT_AFTER,
-        "48h",
-    );
+    let patience = Patience::for_store(charter, crate::charter::SensorKind::OutboxAge)
+        .expect("an age kind has a patience");
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
         Err(e) => {
@@ -922,12 +942,8 @@ fn check_questions(
         // that has delegated no tasks looks exactly like this.
         return out;
     }
-    let patience = Patience::for_kind(
-        charter,
-        crate::charter::SensorKind::QuestionLatency,
-        UNANSWERED_QUESTION_AFTER,
-        "24h",
-    );
+    let patience = Patience::for_store(charter, crate::charter::SensorKind::QuestionLatency)
+        .expect("an age kind has a patience");
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
         Err(e) => {
@@ -1032,12 +1048,8 @@ fn check_frontdoor(
     if !root.is_dir() {
         return out;
     }
-    let patience = Patience::for_kind(
-        charter,
-        crate::charter::SensorKind::RequestClosure,
-        STALE_REQUEST_AFTER,
-        "72h",
-    );
+    let patience = Patience::for_store(charter, crate::charter::SensorKind::RequestClosure)
+        .expect("an age kind has a patience");
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
         Err(e) => {

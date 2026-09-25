@@ -29,9 +29,24 @@ mecha workflow today
 mecha workflow show FLOW_ID
 ```
 
+Two optional flags say what the commitment means to the other party, in your
+words: `--expectation "the tracked-changes version before the panel meets"` and
+`--consequence "the panel reviews the old draft"`. They are recorded on the
+commitment and shown by `workflow show`. Each must be 1–4096 bytes; an empty or
+longer value is refused and nothing is recorded.
+
+A commitment you state in [appraisal evidence](/docs/features/appraisal/anticipation)
+uses the same record. It carries only the dates you wrote in it: none in the
+original `beneficiary` shape, and whatever `due_at` / `follow_up_at` you
+include in the record shape. mecha never supplies a date. An undated commitment
+has **no deadline stated**: it is never marked overdue, never raises a
+follow-up reminder, and the Today page says "no deadline stated" rather than
+showing a date.
+
 Commitments are entered by you. Messages are not automatically treated as promises.
-Neither [appraisal](/docs/features/appraisal) nor its anticipated-guilt sensor reads
-workflow commitments or checks yet; they are tracked here, not scored there.
+Neither [appraisal](/docs/features/appraisal) nor its
+[per-commitment guilt](/docs/features/appraisal/reference#anticipated-guilt-and-why-it-reads-only-mechas-own-stores)
+reads workflow commitments or checks yet; they are tracked here, not scored there.
 Times must include a timezone or UTC offset.
 
 ## Check the result

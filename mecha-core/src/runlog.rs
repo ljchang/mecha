@@ -725,18 +725,23 @@ impl Corpus {
             .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
     }
 
-    /// Average of `Homeostat::anticipated_guilt` over the rows that sensed
-    /// it. See [`crate::guilt`] — the sensor has no consumer yet, and this is
-    /// the corpus existing before anything is built on it, same as every
-    /// other reading here.
+    /// Average of the `Homeostat::anticipated_guilt` readout — the largest
+    /// per-commitment guilt a run started under (`crate::guilt::readout`,
+    /// S7) — over the rows that recorded it. For the diagnostician's brief;
+    /// no consumer decides on it.
     ///
-    /// `None` over no sensed rows, not zero — a corpus predating the sensor
-    /// must not read as one where nothing was ever owed.
+    /// **Only rows that carry the per-commitment record count.** A row from
+    /// before 1f holds the retired three-store fold in the same field, and
+    /// it still loads, but averaging it beside the maximum would be a mean
+    /// that is neither formula's — the blend this field's doc refused once
+    /// already. `None` over no such row, not zero — a corpus predating the
+    /// readout must not read as one where nothing was ever owed.
     pub fn mean_anticipated_guilt(&self) -> Option<f64> {
         let sensed: Vec<f64> = self
             .rows
             .iter()
             .filter_map(|r| r.stats.homeostat.as_ref())
+            .filter(|h| h.commitments.is_some())
             .filter_map(|h| h.anticipated_guilt)
             .map(f64::from)
             .collect();
@@ -1595,6 +1600,17 @@ mod tests {
             st.homeostat = Some(crate::homeostat::Homeostat {
                 peak_context_pressure: Some(pressure),
                 anticipated_guilt: Some(guilt),
+                commitments: Some(Vec::new()),
+                ..Default::default()
+            });
+            st
+        };
+        // A row recorded before 1f: the retired fold's scalar in the same
+        // field, and no per-commitment record beside it.
+        let folded = {
+            let mut st = stats(4, 0, false, StopCause::Completed);
+            st.homeostat = Some(crate::homeostat::Homeostat {
+                anticipated_guilt: Some(0.96875),
                 ..Default::default()
             });
             st
@@ -1608,16 +1624,19 @@ mod tests {
                 stats(4, 0, false, StopCause::Completed),
                 sensed(0.25, 0.0),
                 sensed(0.75, 0.5),
+                folded,
             ],
         );
 
         let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
-        assert_eq!(corpus.len(), 3, "all three rows are in the corpus");
+        assert_eq!(corpus.len(), 4, "all four rows are in the corpus");
         // Averaged over the two sensed rows only — the unsensed row must not
         // dilute it toward zero, the same dilution `boredom_rate` guards
         // against. Chosen as exact binary fractions so the f32→f64 widening
         // this method does cannot introduce rounding noise into the assertion.
         assert_eq!(corpus.mean_peak_context_pressure(), Some(0.5));
+        // And the pre-1f row's fold is not averaged beside the maximum: two
+        // formulas in one mean is neither's (it would read 0.4895…).
         assert_eq!(corpus.mean_anticipated_guilt(), Some(0.25));
 
         let _ = std::fs::remove_dir_all(&dir);

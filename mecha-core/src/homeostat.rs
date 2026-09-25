@@ -15,9 +15,10 @@
 //! series to reason from, and so that the corpus exists before anything is
 //! built on it. The one thing it decides is a narrowing: a charter line
 //! saturated over the recorded runs is withheld from what the run's in-run
-//! consumers read ([`Homeostat::in_run_readings`], S5), and the only such
-//! consumer, `Decision::assess`, reaches the model only as fixed advice
-//! behind `goal_guidance`.
+//! consumers read ([`Homeostat::in_run_readings`], S5) — and with it the
+//! pending commitments its store holds ([`Homeostat::in_run_commitments`],
+//! S7) — and the only such consumer, `Decision::assess`, reaches the model
+//! only as fixed advice behind `goal_guidance`.
 //!
 //! ## Three rules it inherits
 //!
@@ -87,30 +88,48 @@ pub struct Homeostat {
     /// every later reading.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peak_context_pressure: Option<f32>,
-    /// A harness-computed proxy for anticipated guilt
-    /// (`docs/GOAL-SYSTEM-DESIGN.md` §7.4) — predicted error against another
-    /// party's expectation: the standing **level**, folded from how long the
-    /// oldest recorded commitment in [`backlog`](Self::backlog)'s stores
-    /// has waited and how much room this run had to act on it. What this
-    /// run did about it is the next field, deliberately not folded in here:
-    /// `Corpus::mean_anticipated_guilt` averages this across every row the
-    /// store holds, and `anticipated_guilt`'s own doc chose `None` over a
-    /// differently-computed number precisely so that mean stays one
-    /// quantity — writing the relief-scaled reading into the same field
-    /// blended two formulas with nothing marking which (found on review).
-    /// See [`crate::guilt`] for the formula and, importantly, for what this
-    /// is *not* used for yet: only the diagnostician's brief reads it. It is
-    /// recorded so the corpus exists before anything is built on it, on
-    /// `runlog`'s own rule.
+    /// Anticipated guilt as a **readout** (`docs/APPRAISAL-WIRING-DESIGN.md`
+    /// S7, built as 1f): the largest per-commitment guilt in
+    /// [`commitments`](Self::commitments) as the run began
+    /// ([`crate::guilt::readout`]). For the diagnostician's brief and the
+    /// record; no consumer decides on it — they read the per-commitment
+    /// values (here §1, decision 3). `None` where any store's maximum is
+    /// unknown.
+    ///
+    /// **Two formulas share this field, and `commitments` tells them
+    /// apart.** A row recorded before 1f holds the retired three-store fold
+    /// (count, oldest age and context pressure as an OR, 0.95–1.0 on every
+    /// live run), and it still loads; `Corpus::mean_anticipated_guilt`
+    /// averages only rows that carry `commitments`, so the mean is always
+    /// one quantity — the rule this field's earlier doc stated when a
+    /// relief-scaled reading was once written into it (found on review).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anticipated_guilt: Option<f32>,
-    /// The level above, scaled down by the owner-facing share of the
-    /// inherited backlog this run cleared (`guilt::with_backlogs`) — the
-    /// run's *act* on the situation, in its own field so the level stays
-    /// comparable across every row. `None` wherever the level is, or where
-    /// the delta could not be read. Nothing consumes this yet either.
+    /// **Retired with the fold, 1f.** The old level scaled down by the
+    /// owner-facing share of the inherited backlog the run cleared. Kept so
+    /// a row recorded before 1f still loads whole; never written since —
+    /// what a run cleared is now read per item, on `backlog_delta.flow` and
+    /// each line's `delta`, and nothing ever consumed this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guilt_after_relief: Option<f32>,
+    /// Every pending commitment — each staged draft, parked question and
+    /// front-door request waiting on the owner — with its own guilt, per
+    /// store, as the run began ([`crate::guilt::read_commitments`]; S7, 1f).
+    /// Read from the same survey as [`backlog`](Self::backlog) and the
+    /// charter readings, so the three never describe different states of one
+    /// queue.
+    ///
+    /// `None` when none was read — a row from before the field, or a charter
+    /// that did not load (patience and rank both come from it, and a guess
+    /// at either is a guess dressed as a reading). A row whose record this
+    /// binary cannot parse — a store a later one added — loads as `None`
+    /// through `guilt::lenient` rather than failing the run record.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::guilt::lenient"
+    )]
+    pub commitments: Option<Vec<crate::guilt::StoreGuilt>>,
     /// Each sensored charter line, read against its store as the run began
     /// (`docs/GOAL-SYSTEM-DESIGN.md` §11.1's readings; [`crate::reading`]):
     /// the line-specific form of the guilt above, one reading per line
@@ -152,45 +171,67 @@ impl Homeostat {
         // holds whether or not this run's prompt carried the charter. A
         // charter that does not load records `None`: unknown, not
         // sensorless.
-        let charter = crate::charter::Charter::default_path()
+        let now = Utc::now();
+        let loaded = crate::charter::Charter::default_path()
             .ok()
-            .and_then(|p| crate::charter::Charter::load(&p).ok())
-            .map(|c| {
-                let mut readings = crate::reading::read_lines(
+            .and_then(|p| crate::charter::Charter::load(&p).ok());
+        // Every pending commitment with its own guilt (S7), from the same
+        // survey the readings below are taken from. Computed from what the
+        // run *inherited*: read off the queue the run leaves, a trigger that
+        // staged three replies overnight would carry guilt for doing
+        // exactly its job — and those drafts are seconds old and inside
+        // their patience anyway. Patience and rank both come from the
+        // charter, so a charter that does not load reads none.
+        let commitments = loaded
+            .as_ref()
+            .map(|c| crate::guilt::read_commitments(&survey.items, c, now));
+        let charter = loaded.map(|c| {
+            let mut readings = crate::reading::read_lines(
+                &c,
+                &crate::reading::Sources {
+                    backlog: &survey.backlog,
+                    requests_on_owner: survey.requests_on_owner.clone(),
+                    corpus: crate::reading::CorpusRate::NotScanned,
+                    items: Some(&survey.items),
+                },
+                now,
+            );
+            // S5: a line saturated over the recorded runs is withheld
+            // from this run's consumers. Streamed newest first and
+            // stopped as soon as each over-setpoint line is decided,
+            // and not read at all when no line is over — the corpus
+            // kind's full scan stays a surface's cost, not a run's.
+            // The store the runs record into (`Session::default_dir`,
+            // which honours `MECHA_SESSION_DIR`), since it is their
+            // history being read.
+            if let Ok(sessions) = crate::session::Session::default_dir() {
+                crate::reading::withdraw_saturated(
+                    &mut readings,
                     &c,
-                    &crate::reading::Sources {
-                        backlog: &survey.backlog,
-                        requests_on_owner: survey.requests_on_owner.clone(),
-                        corpus: crate::reading::CorpusRate::NotScanned,
-                        items: Some(&survey.items),
-                    },
-                    Utc::now(),
+                    crate::reading::recorded_readings(&sessions),
                 );
-                // S5: a line saturated over the recorded runs is withheld
-                // from this run's consumers. Streamed newest first and
-                // stopped as soon as each over-setpoint line is decided,
-                // and not read at all when no line is over — the corpus
-                // kind's full scan stays a surface's cost, not a run's.
-                // The store the runs record into (`Session::default_dir`,
-                // which honours `MECHA_SESSION_DIR`), since it is their
-                // history being read.
-                if let Ok(sessions) = crate::session::Session::default_dir() {
-                    crate::reading::withdraw_saturated(
-                        &mut readings,
-                        &c,
-                        crate::reading::recorded_readings(&sessions),
-                    );
-                }
-                readings
-            });
+            }
+            readings
+        });
         Homeostat {
             load_avg_1m: load_avg_1m(),
             mem_available_kb: mem_available_kb(),
             backlog: Some(survey.backlog),
+            anticipated_guilt: commitments.as_deref().and_then(crate::guilt::readout),
+            commitments,
             charter,
             start_items: Some(survey.items),
             ..Homeostat::default()
         }
+    }
+
+    /// The pending commitments a run's in-run consumers read — every store
+    /// but one whose charter line was withdrawn as saturated
+    /// (`guilt::in_run`). The door `Decision::assess`'s per-commitment
+    /// input comes through, beside [`in_run_readings`](Self::in_run_readings)
+    /// and on its rule: a withdrawn line's commitments leave with it.
+    pub fn in_run_commitments(&self) -> Option<Vec<crate::guilt::StoreGuilt>> {
+        crate::guilt::in_run(self.commitments.as_deref(), self.charter.as_deref())
     }
 
     /// The charter readings a run's in-run consumers read — every line but
@@ -217,30 +258,12 @@ impl Homeostat {
         self.peak_prompt_tokens = (pressure.peak_tokens() > 0).then(|| pressure.peak_tokens());
         self.peak_context_pressure = pressure.peak_pressure(window);
         if let Some(before) = &self.backlog {
-            // Guilt is computed from what this run *inherited*, not what it
-            // leaves behind — the same distinction `backlog_delta` already
-            // makes ("the level alone cannot separate a run's own output
-            // from what it inherited"). Reading it off `after` instead would
-            // score a trigger that staged three replies overnight as
-            // maximally guilty for doing exactly its job: those drafts are
-            // seconds old and this run's own output, not neglected debt.
+            // Guilt is not recomputed here: it is per commitment, off what
+            // the run *inherited*, and `at_start` took it (S7, 1f). What the
+            // run did about the queue is the delta — the net per store, and
+            // below it the ids added and cleared.
             let survey = Backlog::survey();
-            let after = survey.backlog;
-            let now = Utc::now();
-            // The level is what the run inherited, and it keeps its own
-            // field so the corpus mean over it stays one quantity. The
-            // delta is what the run did about it, and only relief moves
-            // the second reading — the comment above is still the rule,
-            // and `guilt::with_backlogs` keeps it: a run that added to the
-            // queue reads the level it inherited, not a maximum for doing
-            // its job, and relief is the owner-facing share of what was
-            // waiting (one seam derives both numbers from this same pair of
-            // reads — found on review, when the numerator spanned five
-            // stores and the denominator three).
-            let fold = crate::guilt::with_backlogs(before, &after, self.peak_context_pressure, now);
-            self.anticipated_guilt = fold.level;
-            self.guilt_after_relief = fold.after_relief;
-            let mut delta = fold.delta;
+            let mut delta = Backlog::delta(before, &survey.backlog);
             // The per-item delta, from the same two reads: which ids the
             // run's window added and cleared, per store and per line. Only
             // where the start's items were held — a snapshot rebuilt from a
@@ -294,7 +317,20 @@ mod tests {
             peak_prompt_tokens: Some(18_008),
             peak_context_pressure: Some(0.0687),
             anticipated_guilt: Some(0.0),
-            guilt_after_relief: Some(0.0),
+            guilt_after_relief: None,
+            commitments: Some(vec![crate::guilt::StoreGuilt {
+                store: crate::guilt::Store::Outbox,
+                line: Some("waits".into()),
+                patience: "24h".into(),
+                weight: 1.0,
+                waiting: Some(1),
+                unknown: 0,
+                items: vec![crate::guilt::ItemGuilt {
+                    id: "d-1".into(),
+                    age_secs: Some(60),
+                    guilt: Some(0.0),
+                }],
+            }]),
             charter: Some(vec![crate::reading::LineReading {
                 line: "waits".into(),
                 kind: crate::charter::SensorKind::OutboxAge,
@@ -308,6 +344,26 @@ mod tests {
         };
         let json = serde_json::to_string(&h).unwrap();
         assert_eq!(serde_json::from_str::<Homeostat>(&json).unwrap(), h);
+
+        // A per-commitment record this binary cannot parse — a store a
+        // later one added — costs that record, never the row.
+        let later = json.replace("\"store\":\"outbox\"", "\"store\":\"board\"");
+        assert_ne!(later, json);
+        let loaded: Homeostat = serde_json::from_str(&later).unwrap();
+        assert_eq!(loaded.commitments, None);
+        assert_eq!(loaded.charter, h.charter);
+        assert_eq!(loaded.anticipated_guilt, Some(0.0));
+
+        // A row recorded before 1f: the retired fold's scalar and its
+        // relief-scaled reading, no per-commitment record. It loads whole,
+        // and the missing record reads as unknown.
+        let old: Homeostat = serde_json::from_str(
+            r#"{"anticipated_guilt":0.97,"guilt_after_relief":0.64,"peak_context_pressure":0.2}"#,
+        )
+        .unwrap();
+        assert_eq!(old.anticipated_guilt, Some(0.97));
+        assert_eq!(old.guilt_after_relief, Some(0.64));
+        assert_eq!(old.commitments, None);
 
         // A reading this binary cannot parse — a kind a later one added —
         // costs the readings, never the row: the rest of the snapshot loads
@@ -428,6 +484,22 @@ mod tests {
         assert_eq!(items.stale, vec![stale.id.clone()]);
         assert!(line.withdrawn, "saturated over ten runs and still over");
         assert_eq!(h.in_run_readings(), Some(Vec::new()));
+        // The withdrawn line takes the outbox's commitments out of the run
+        // with it; the record keeps them, the stale draft owing guilt.
+        let recorded = h.commitments.as_deref().unwrap();
+        let outbox_guilt = recorded
+            .iter()
+            .find(|s| s.store == crate::guilt::Store::Outbox)
+            .unwrap();
+        assert_eq!(outbox_guilt.items[0].id, stale.id);
+        assert!(outbox_guilt.any_owed());
+        let in_run = h.in_run_commitments().unwrap();
+        assert!(
+            in_run
+                .iter()
+                .all(|s| s.store != crate::guilt::Store::Outbox),
+            "{in_run:?}"
+        );
 
         // Inside the run: one draft staged, one sent.
         outbox
@@ -445,6 +517,110 @@ mod tests {
         let line = &done.charter.unwrap()[0];
         assert_eq!(line.delta, Some(moved));
         assert!(line.withdrawn, "the record keeps what the run was shown");
+    }
+
+    /// S7 through the real sampler: a draft, a question and a request, each
+    /// a commitment by construction, each with its own guilt against its
+    /// own patience and rank, and the recorded `anticipated_guilt` exactly
+    /// the largest of them — taken at the start, off what the run
+    /// inherited, and left alone by `finish`. Under the retired fold the
+    /// start recorded no guilt at all and `finish` wrote one number over
+    /// the three stores and the run's pressure.
+    #[test]
+    fn the_start_records_each_commitments_guilt_and_the_readout_is_their_maximum() {
+        let home = crate::work::tests::HomeGuard::new();
+        std::fs::write(
+            home.dir().join("charter.toml"),
+            "[[line]]\nid = \"replies\"\ntext = \"Answer people.\"\n\
+             [line.sensor]\nkind = \"outbox_age\"\nsetpoint = \"24h\"\n\
+             [[line]]\nid = \"questions\"\ntext = \"Unblock parked work.\"\n\
+             [line.sensor]\nkind = \"question_latency\"\nsetpoint = \"12h\"\n",
+        )
+        .unwrap();
+        let backdate = |path: std::path::PathBuf, key: &str, hours: i64| {
+            let mut raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            raw[key] =
+                serde_json::json!((Utc::now() - chrono::Duration::hours(hours)).to_rfc3339());
+            std::fs::write(&path, raw.to_string()).unwrap();
+        };
+        let outbox = crate::outbox::OutboxStore::open(home.dir().join("outbox")).unwrap();
+        let old = outbox
+            .stage_by_harness("mail_send", serde_json::json!({}))
+            .unwrap();
+        backdate(
+            home.dir().join("outbox").join(format!("{}.json", old.id)),
+            "created_at",
+            96,
+        );
+        let fresh = outbox
+            .stage_by_harness("mail_send", serde_json::json!({}))
+            .unwrap();
+        let questions =
+            crate::questions::QuestionStore::open(home.dir().join("questions")).unwrap();
+        let q = questions
+            .park(
+                "Which room?",
+                Vec::new(),
+                "20260920T000000-s",
+                None,
+                None,
+                crate::agent::Taint::default(),
+                None,
+            )
+            .unwrap();
+        backdate(
+            home.dir().join("questions").join(format!("{}.json", q.id)),
+            "asked_at",
+            36,
+        );
+        let requests = home.dir().join("requests");
+        std::fs::create_dir_all(&requests).unwrap();
+        let drained = (Utc::now() - chrono::Duration::hours(144)).to_rfc3339();
+        std::fs::write(
+            requests.join("0000000007-meeting.json"),
+            serde_json::json!({
+                "seq": 7, "type_id": "meeting", "state": "extracted",
+                "created_at": drained, "drained_at": drained,
+                "valid": true, "values": {}, "free_text": [],
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let h = Homeostat::at_start();
+        let stores = h.commitments.clone().expect("the charter loaded");
+        let item = |id: &str| {
+            stores
+                .iter()
+                .flat_map(|s| &s.items)
+                .find(|i| i.id == id)
+                .unwrap_or_else(|| panic!("no commitment `{id}`: {stores:?}"))
+                .guilt
+                .unwrap()
+        };
+        // 96h against the top line's 24h: 0.75. Fresh: nothing.
+        assert!((item(&old.id) - 0.75).abs() < 1e-3, "{}", item(&old.id));
+        assert_eq!(item(&fresh.id), 0.0);
+        // 36h against the second line's 12h, weighed a half: 2/3 × 1/2.
+        assert!((item(&q.id) - 1.0 / 3.0).abs() < 1e-3, "{}", item(&q.id));
+        // No line on the front door: the doctor's 72h, ranked below both
+        // lines (a third). 144h: a half of that.
+        assert!((item("7") - 1.0 / 6.0).abs() < 1e-3, "{}", item("7"));
+        let max = [item(&old.id), item(&fresh.id), item(&q.id), item("7")]
+            .into_iter()
+            .fold(0.0, f32::max);
+        assert_eq!(h.anticipated_guilt, Some(max), "the readout is the maximum");
+        assert_eq!(h.in_run_commitments().as_ref(), Some(&stores));
+
+        // The run clears the old draft: the delta moves, the guilt the run
+        // started under does not.
+        outbox.resolve(&old.id, "sent", None).unwrap();
+        let done = h.finish(&ContextTracker::new(), Some(60_000));
+        assert_eq!(done.anticipated_guilt, Some(max));
+        assert_eq!(done.guilt_after_relief, None, "retired, never written");
+        assert_eq!(done.commitments.as_ref(), Some(&stores));
+        assert_eq!(done.backlog_delta.unwrap().outbox, Some(-1));
     }
 
     /// The sensors degrade rather than panic where /proc is absent or shaped
