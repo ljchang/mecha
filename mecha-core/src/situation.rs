@@ -520,8 +520,8 @@ impl Situation {
         out
     }
 
-    /// One line for a roster or a prompt: `shell · denial · tui`, with `for
-    /// trigger:morning` after the workspace when a goal is recorded, or
+    /// One line for a roster or a prompt: `shell · denial · tui`, with the goal
+    /// (`trigger:morning`) after the workspace when one is recorded, or
     /// `everywhere` for a standing situation with nothing else recorded.
     pub fn describe(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
@@ -541,9 +541,9 @@ impl Situation {
             parts.push(w.display().to_string());
         }
         match &self.goal {
-            Some(GoalKey::Named(g)) => parts.push(format!("for {g}")),
+            Some(GoalKey::Named(g)) => parts.push(g.to_string()),
             Some(GoalKey::Unread(raw)) => {
-                parts.push(format!("for {raw} (a goal this build cannot name)"))
+                parts.push(format!("{raw} (a goal this build cannot name)"))
             }
             None => {}
         }
@@ -551,6 +551,127 @@ impl Situation {
             "everywhere".to_string()
         } else {
             parts.join(" · ")
+        }
+    }
+}
+
+// ---------------------------------------------------------- closed goals
+
+/// Whether the goal a key names is still one a run can be handed — the
+/// readout behind R34 (`APPRAISAL-WIRING-DESIGN.md` §6). A rule keeps its
+/// `task:<uid>` scope when the task closes and widens only on evidence
+/// (§17.4); what the ruling adds is that such a rule is **seen** to be
+/// dark rather than silently riding nowhere. `LOADS NOWHERE` alone cannot
+/// see it: the run that mined the rule always presented its goal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GoalLiveness {
+    /// The store says the goal is live: a task with an open board status,
+    /// an enabled trigger.
+    Open,
+    /// The store says no run will be handed this goal again; the words say
+    /// why (`task:t-9 is done`, `trigger:morning is disabled`).
+    Closed(String),
+    /// The store could not say — the board unread or truncated, a status
+    /// this build does not know, a trigger file that does not load. Its own
+    /// finding, never "not dark".
+    Unknown(String),
+    /// A kind this readout does not assess (a charter line, a project, a
+    /// setpoint, a request) — no run is handed one as a matched goal today.
+    NotAssessed,
+}
+
+/// The board's task statuses by id, off a `kg_task_list` answer read with
+/// `include_closed` — what [`GoalKey::liveness`] reads a `task:` goal
+/// against.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BoardStatuses {
+    by_id: std::collections::BTreeMap<String, String>,
+    truncated: bool,
+}
+
+impl BoardStatuses {
+    /// Read an answer: every row with an id and a status. An answer with no
+    /// `items` list is not a board, and says so.
+    pub fn of(answer: &serde_json::Value) -> Result<BoardStatuses, String> {
+        let items = answer["items"]
+            .as_array()
+            .ok_or_else(|| "the answer carries no `items` list".to_string())?;
+        let mut by_id = std::collections::BTreeMap::new();
+        for row in items {
+            if let (Some(id), Some(status)) = (row["id"].as_str(), row["status"].as_str()) {
+                by_id.insert(id.to_string(), status.to_string());
+            }
+        }
+        Ok(BoardStatuses {
+            by_id,
+            truncated: answer["truncated"].as_bool() == Some(true),
+        })
+    }
+}
+
+/// What the trigger store says about one trigger by name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TriggerState {
+    Enabled,
+    Disabled,
+    /// No file by that name: removed, so it never fires again.
+    Missing,
+    /// A file that does not load, or a store that cannot be read.
+    Unreadable(String),
+}
+
+impl GoalKey {
+    /// Whether [`Self::liveness`] needs the board: a named `task:` goal.
+    /// What gates the board read, which costs an MCP connection.
+    pub fn needs_board(&self) -> bool {
+        matches!(self.named(), Some(GoalRef::Task(_)))
+    }
+
+    /// Whether the goal this key names is still live, read against the
+    /// stores that own it. A task is closed when its board status is
+    /// closed (`closure::is_closed_status`) or it is not on an untruncated
+    /// board read with its closed rows; a trigger when its file is gone or
+    /// it is disabled. Anything a store could not answer is
+    /// [`GoalLiveness::Unknown`], never open.
+    pub fn liveness(
+        &self,
+        board: &Result<BoardStatuses, String>,
+        trigger: &dyn Fn(&str) -> TriggerState,
+    ) -> GoalLiveness {
+        let Some(goal) = self.named() else {
+            return GoalLiveness::NotAssessed;
+        };
+        match goal {
+            GoalRef::Task(id) => {
+                let board = match board {
+                    Ok(b) => b,
+                    Err(why) => {
+                        return GoalLiveness::Unknown(format!("the board could not be read: {why}"))
+                    }
+                };
+                match board.by_id.get(id) {
+                    Some(status) if crate::closure::is_closed_status(status) => {
+                        GoalLiveness::Closed(format!("{goal} is {status}"))
+                    }
+                    Some(status) if crate::closure::is_known_status(status) => GoalLiveness::Open,
+                    Some(status) => GoalLiveness::Unknown(format!(
+                        "the board gives {goal} the status `{status}`, which this build does not know"
+                    )),
+                    None if board.truncated => GoalLiveness::Unknown(format!(
+                        "{goal} is not in a truncated board answer"
+                    )),
+                    None => GoalLiveness::Closed(format!("{goal} is not on the board")),
+                }
+            }
+            GoalRef::Trigger(name) => match trigger(name) {
+                TriggerState::Enabled => GoalLiveness::Open,
+                TriggerState::Disabled => GoalLiveness::Closed(format!("{goal} is disabled")),
+                TriggerState::Missing => GoalLiveness::Closed(format!("{goal} no longer exists")),
+                TriggerState::Unreadable(why) => {
+                    GoalLiveness::Unknown(format!("{goal} could not be read: {why}"))
+                }
+            },
+            _ => GoalLiveness::NotAssessed,
         }
     }
 }
@@ -802,7 +923,7 @@ mod tests {
         assert_eq!(morning.key(), "shell @ /w on tui for trigger:morning");
         assert_eq!(
             morning.describe(),
-            "shell · denial · tui · /w · for trigger:morning"
+            "shell · denial · tui · /w · trigger:morning"
         );
         assert_eq!(
             Situation::recorded(&["shell".into()], "denial", None, None)
@@ -1019,6 +1140,85 @@ mod tests {
             Situation::recorded(&["ask_user".into()], "denial", None, None).key(),
             ""
         );
+    }
+
+    /// R34: a goal key is read against the store that owns it. A task is
+    /// closed by its board status or by being absent from a whole board; a
+    /// trigger by being removed or disabled; and anything a store cannot
+    /// answer is unknown — an unreadable or truncated board never reads as
+    /// "open", which is the "no rule is dark" answer the ruling forbids.
+    #[test]
+    fn a_goal_is_read_against_the_store_that_owns_it() {
+        let board = Ok(BoardStatuses::of(&serde_json::json!({"items": [
+            {"id": "t-open", "status": "next"},
+            {"id": "t-done", "status": "done"},
+            {"id": "t-dropped", "status": "dropped"},
+            {"id": "t-odd", "status": "someday"},
+            {"id": "t-nostatus"}
+        ]}))
+        .unwrap());
+        let triggers = |name: &str| match name {
+            "morning" => TriggerState::Enabled,
+            "evening" => TriggerState::Disabled,
+            "broken" => TriggerState::Unreadable("bad toml".into()),
+            _ => TriggerState::Missing,
+        };
+        let live = |g: &str, b: &Result<BoardStatuses, String>| goal(g).liveness(b, &triggers);
+        assert_eq!(live("task:t-open", &board), GoalLiveness::Open);
+        assert_eq!(
+            live("task:t-done", &board),
+            GoalLiveness::Closed("task:t-done is done".into())
+        );
+        assert!(matches!(
+            live("task:t-dropped", &board),
+            GoalLiveness::Closed(_)
+        ));
+        assert!(matches!(
+            live("task:t-odd", &board),
+            GoalLiveness::Unknown(_)
+        ));
+        assert!(
+            matches!(live("task:t-gone", &board), GoalLiveness::Closed(w) if w.contains("not on the board"))
+        );
+        // A row with no status is not a status: absent from what was read,
+        // and on a whole board that reads as gone.
+        assert!(matches!(
+            live("task:t-nostatus", &board),
+            GoalLiveness::Closed(_)
+        ));
+        // A truncated board cannot say a task is gone.
+        let truncated =
+            Ok(BoardStatuses::of(&serde_json::json!({"items": [], "truncated": true})).unwrap());
+        assert!(matches!(
+            live("task:t-gone", &truncated),
+            GoalLiveness::Unknown(_)
+        ));
+        // An unreadable board is its own finding, never open.
+        let unread: Result<BoardStatuses, String> = Err("no graph server".into());
+        assert!(
+            matches!(live("task:t-open", &unread), GoalLiveness::Unknown(w) if w.contains("no graph server"))
+        );
+        assert!(BoardStatuses::of(&serde_json::json!({"answer": "no"})).is_err());
+        // Triggers, read without the board.
+        assert_eq!(live("trigger:morning", &unread), GoalLiveness::Open);
+        assert!(
+            matches!(live("trigger:evening", &unread), GoalLiveness::Closed(w) if w.contains("disabled"))
+        );
+        assert!(
+            matches!(live("trigger:gone", &unread), GoalLiveness::Closed(w) if w.contains("no longer exists"))
+        );
+        assert!(matches!(
+            live("trigger:broken", &unread),
+            GoalLiveness::Unknown(_)
+        ));
+        // Kinds no run is handed as a matched goal, and a parked key.
+        assert_eq!(live("charter:rest", &board), GoalLiveness::NotAssessed);
+        assert_eq!(
+            GoalKey::Unread("dream:x".into()).liveness(&board, &triggers),
+            GoalLiveness::NotAssessed
+        );
+        assert!(goal("task:t-open").needs_board());
+        assert!(!goal("trigger:morning").needs_board());
     }
 
     #[test]

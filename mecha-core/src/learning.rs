@@ -1116,6 +1116,119 @@ impl RulesCarried {
     }
 }
 
+/// R34's readout (`APPRAISAL-WIRING-DESIGN.md` §6): what the learning
+/// store holds toward a goal that has closed. The ruling keeps a rule's
+/// `task:<uid>` scope when its task closes — it widens only on evidence,
+/// by §17.4's restatement — and asks that such a rule be **seen** to load
+/// nowhere rather than ride silently in no prompt. A goal the stores could
+/// not answer for is listed apart, never counted as open: an unreadable
+/// board is its own finding.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClosedGoals {
+    /// Active rules, user and learned, whose scope names a closed goal:
+    /// `(domain, id or text, why)`.
+    pub rules: Vec<(String, String, String)>,
+    /// Reflections still waiting to be learned from — unprocessed and not
+    /// dropped — whose situation names a closed goal. A rule minted from a
+    /// batch of them loads nowhere from birth.
+    pub reflections: usize,
+    /// Goals the stores could not answer for, once each, with why.
+    pub unknown: Vec<(String, String)>,
+    /// Active rules and waiting reflections naming one of those goals.
+    pub unknown_rules: usize,
+    pub unknown_reflections: usize,
+}
+
+impl ClosedGoals {
+    /// Nothing closed and nothing unknown — the one state that may print
+    /// nothing.
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty() && self.reflections == 0 && self.unknown.is_empty()
+    }
+}
+
+impl LearningStore {
+    /// The goal keys the readout reads: every active rule's scope goal,
+    /// with the rule's `(domain, id or text)`, and every waiting
+    /// reflection's situation goal, with `None`.
+    #[allow(clippy::type_complexity)]
+    fn goal_keys_in_play(
+        &self,
+    ) -> Result<Vec<(Option<(String, String)>, crate::situation::GoalKey)>> {
+        let mut out = Vec::new();
+        for domain in self.domains() {
+            for rule in self
+                .user_rules(&domain)?
+                .into_iter()
+                .chain(self.learned_rules(&domain)?)
+            {
+                if !rule.active() {
+                    continue;
+                }
+                if let Some(goal) = rule.scope.as_ref().and_then(|s| s.goal.clone()) {
+                    let name = rule.id.clone().unwrap_or_else(|| rule.text.clone());
+                    out.push((Some((domain.clone(), name)), goal));
+                }
+            }
+        }
+        for r in self.reflexions()? {
+            if r.is_processed || r.dropped_at.is_some() {
+                continue;
+            }
+            if let Some(goal) = r.situation.as_ref().and_then(|s| s.goal.clone()) {
+                out.push((None, goal));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Whether [`Self::closed_goals`] needs the board — some key in play
+    /// names a task. The board is read over MCP, so a caller asks this
+    /// first and pays for the connection only when a task goal exists.
+    pub fn goals_need_board(&self) -> Result<bool> {
+        Ok(self
+            .goal_keys_in_play()?
+            .iter()
+            .any(|(_, g)| g.needs_board()))
+    }
+
+    /// R34's readout over the store, reading each goal once against
+    /// `board` and `trigger` ([`crate::situation::GoalKey::liveness`]).
+    pub fn closed_goals(
+        &self,
+        board: &std::result::Result<crate::situation::BoardStatuses, String>,
+        trigger: &dyn Fn(&str) -> crate::situation::TriggerState,
+    ) -> Result<ClosedGoals> {
+        use crate::situation::GoalLiveness;
+        let mut seen: std::collections::BTreeMap<String, GoalLiveness> = Default::default();
+        let mut out = ClosedGoals::default();
+        for (rule, goal) in self.goal_keys_in_play()? {
+            let state = seen
+                .entry(goal.to_string())
+                .or_insert_with(|| goal.liveness(board, trigger))
+                .clone();
+            match state {
+                GoalLiveness::Closed(why) => match rule {
+                    Some((domain, name)) => out.rules.push((domain, name, why)),
+                    None => out.reflections += 1,
+                },
+                GoalLiveness::Unknown(why) => {
+                    if !out.unknown.iter().any(|(g, _)| *g == goal.to_string()) {
+                        out.unknown.push((goal.to_string(), why));
+                    }
+                    if rule.is_some() {
+                        out.unknown_rules += 1;
+                    } else {
+                        out.unknown_reflections += 1;
+                    }
+                }
+                GoalLiveness::Open | GoalLiveness::NotAssessed => {}
+            }
+        }
+        Ok(out)
+    }
+}
+
 fn mint_rule_id() -> String {
     format!(
         "r-{}-{}",
@@ -7094,6 +7207,113 @@ mod situation_tests {
             )),
             Backfilled::Matched(_)
         ));
+    }
+
+    /// R34: the store's rules and waiting reflections toward a closed goal
+    /// are counted, each goal read once; retired rules, consumed and dropped
+    /// reflections and open goals are not; and an unreadable board makes
+    /// every task goal unknown — counted apart, never "nothing is dark".
+    /// Fails on a readout that treats an unread board as open.
+    #[test]
+    fn rules_and_reflections_toward_a_closed_goal_are_counted_and_an_unread_board_is_unknown() {
+        use crate::situation::{BoardStatuses, GoalKey, TriggerState};
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-closed-goals-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = LearningStore::open(&dir).unwrap();
+        let toward = |g: &str| shell().toward(Some(GoalKey::Named(g.parse().unwrap())));
+        let mut retired = rule("Retired.", "r-retired", Some(toward("task:t-done")));
+        retired.retired_at = Some("2026-09-20T00:00:00Z".into());
+        store
+            .write_learned_rules(
+                "behavior",
+                &[
+                    rule("Done.", "r-done", Some(toward("task:t-done"))),
+                    rule("Open.", "r-open", Some(toward("task:t-open"))),
+                    rule("Evening.", "r-evening", Some(toward("trigger:evening"))),
+                    rule("Anywhere.", "r-any", Some(shell())),
+                    retired,
+                ],
+            )
+            .unwrap();
+        let waiting = |id: &str, g: &str| {
+            let mut r = refl(id, &["shell"], "denial");
+            r.situation = r
+                .situation
+                .map(|s| s.toward(Some(GoalKey::Named(g.parse().unwrap()))));
+            r
+        };
+        let mut consumed = waiting("x-consumed", "task:t-done");
+        consumed.is_processed = true;
+        let mut dropped = waiting("x-dropped", "task:t-done");
+        dropped.dropped_at = Some("2026-09-20T00:00:00Z".into());
+        for r in [
+            waiting("x-done", "task:t-done"),
+            waiting("x-open", "task:t-open"),
+            consumed,
+            dropped,
+        ] {
+            store.append_reflexion(&r).unwrap();
+        }
+        let triggers = |name: &str| match name {
+            "evening" => TriggerState::Disabled,
+            _ => TriggerState::Enabled,
+        };
+        assert!(store.goals_need_board().unwrap());
+
+        let board = Ok(BoardStatuses::of(&serde_json::json!({"items": [
+            {"id": "t-done", "status": "done"},
+            {"id": "t-open", "status": "next"}
+        ]}))
+        .unwrap());
+        let read = store.closed_goals(&board, &triggers).unwrap();
+        let mut dark: Vec<&str> = read.rules.iter().map(|(_, id, _)| id.as_str()).collect();
+        dark.sort();
+        assert_eq!(dark, vec!["r-done", "r-evening"]);
+        assert!(read.rules.iter().all(|(d, _, _)| d == "behavior"));
+        assert!(read
+            .rules
+            .iter()
+            .any(|(_, id, why)| id == "r-done" && why == "task:t-done is done"));
+        assert_eq!(read.reflections, 1, "only the waiting one toward t-done");
+        assert!(read.unknown.is_empty());
+        assert!(!read.is_empty());
+
+        // The board could not be read: both task goals are unknown and said
+        // so; the trigger half still answers.
+        let unread: std::result::Result<BoardStatuses, String> = Err("no graph server".into());
+        let read = store.closed_goals(&unread, &triggers).unwrap();
+        assert_eq!(read.rules.len(), 1, "the disabled trigger's rule");
+        assert_eq!(read.reflections, 0);
+        assert_eq!(read.unknown.len(), 2, "{:?}", read.unknown);
+        assert!(read
+            .unknown
+            .iter()
+            .all(|(_, why)| why.contains("no graph server")));
+        assert_eq!(read.unknown_rules, 2);
+        assert_eq!(read.unknown_reflections, 2);
+        assert!(!read.is_empty(), "unknown is a finding, not nothing");
+
+        // No task goal in play: the board is not needed.
+        let quiet = LearningStore::open(dir.join("quiet")).unwrap();
+        quiet
+            .write_learned_rules(
+                "behavior",
+                &[rule(
+                    "Evening.",
+                    "r-evening",
+                    Some(toward("trigger:evening")),
+                )],
+            )
+            .unwrap();
+        assert!(!quiet.goals_need_board().unwrap());
+        assert!(quiet
+            .closed_goals(&Err("unused".into()), &|_| TriggerState::Enabled)
+            .unwrap()
+            .is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A stored scope naming a corpus-mark surface is reported beside one
