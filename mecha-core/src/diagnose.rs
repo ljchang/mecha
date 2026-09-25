@@ -183,16 +183,18 @@ pub struct Evidence {
     /// reader out of a true finding, which is the 2026-08-31 bug in a mirror.
     /// `None` means no row sensed it: unknown, not zero.
     pub context_overflows: Option<u64>,
-    /// Average `Homeostat::anticipated_guilt` over the runs that sensed it
-    /// (`crate::guilt`). The sensor has no behavioural consumer yet; this is
-    /// the corpus existing before anything is built on it.
+    /// Average of the `Homeostat::anticipated_guilt` readout — the largest
+    /// per-commitment guilt each run started under (`crate::guilt::readout`,
+    /// S7) — over the runs that recorded the per-commitment form
+    /// (`Corpus::mean_anticipated_guilt`). A readout for this brief; no
+    /// consumer decides on it.
     ///
-    /// **Not independent of [`Self::mean_peak_context_pressure`] above it.**
-    /// `crate::guilt::anticipated_guilt`'s own formula takes context pressure
-    /// as one of its three terms, so the two fields will move together by
-    /// construction whenever pressure is what is driving guilt up — a reader
-    /// treating a rise in both as two corroborating signals is seeing one
-    /// cause twice.
+    /// **Independent of [`Self::mean_peak_context_pressure`] since 1f.** The
+    /// retired fold took context pressure as one of its three terms, and
+    /// this brief said so, because a rise in both was one cause seen twice;
+    /// per-commitment guilt is the owner's stores against the owner's
+    /// patience and rank, and pressure is no part of it. Rows from before
+    /// the change are not averaged in, so the mean is one formula's.
     pub mean_anticipated_guilt: Option<f64>,
     /// The sensors were withheld from this brief (`without_sensors`): the
     /// pressure and guilt lines are *omitted*, never rendered as the
@@ -356,8 +358,9 @@ impl Evidence {
              finished on a failed call: {} ({})\ncompactions: {}\nstop causes: {}\n\
              context pressure: avg peak {} · highest peak {}\n{}\
              avg anticipated guilt: {} \
-             (guilt is computed partly from pressure — a rise in both is not two \
-             independent findings)\n",
+             (per run, the most overdue commitment it started under — a draft, \
+             question or request past its patience, weighed by its charter line's \
+             rank; it is not computed from pressure)\n",
             self.model,
             self.runs,
             self.sessions_read,
@@ -1461,9 +1464,13 @@ rationale: the threshold is too low";
         let brief = evidence.brief();
         assert!(brief.contains("42.0%"), "{brief}");
         assert!(brief.contains("0.10"), "{brief}");
-        // The non-independence has to reach the model reading this brief,
-        // not just a Rust doc comment nobody handed to it.
-        assert!(brief.contains("not two"), "{brief}");
+        // What the number is has to reach the model reading this brief, not
+        // just a Rust doc comment nobody handed to it — and since 1f that is
+        // the most overdue commitment, not a fold with pressure in it, so
+        // the brief must stop telling it the two move together.
+        assert!(brief.contains("most overdue commitment"), "{brief}");
+        assert!(brief.contains("not computed from pressure"), "{brief}");
+        assert!(!brief.contains("not two"), "{brief}");
     }
 
     #[test]

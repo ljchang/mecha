@@ -1,15 +1,16 @@
-//! Anticipated guilt (`docs/GOAL-SYSTEM-DESIGN.md` §7.4): predicted error
-//! against *another party's* expectation, as distinct from anxiety's predicted
-//! error against the run's own setpoints (`pressure.rs`'s predictive
-//! compaction is that half, already shipped).
+//! Anticipated guilt, per commitment (`docs/GOAL-SYSTEM-DESIGN.md` §7.4;
+//! `docs/APPRAISAL-WIRING-DESIGN.md` S7, ruling R12, built as 1f): predicted
+//! error against *another party's* expectation, as distinct from anxiety's
+//! predicted error against the run's own setpoints (`pressure.rs`'s
+//! predictive compaction is that half).
 //!
 //! ## What it may be computed from
 //!
 //! > **An expectation is a recorded commitment, never a claimed one.**
 //!
 //! A commitment is something mecha's own stores hold — a staged draft that
-//! says a reply is coming, an open question, a front-door request accepted
-//! for triage — never a third party's assertion that mecha owes them
+//! says a reply is coming, a parked question, a front-door request waiting on
+//! the owner — never a third party's assertion that mecha owes them
 //! something. That distinction is the whole safety argument: an attacker who
 //! wants to manufacture guilt would need to fabricate a row in a store this
 //! reads, not just write a sentence saying *"your colleague is counting on
@@ -18,694 +19,612 @@
 //! talked into existing, and a claim in fetched text or an inbound message
 //! cannot write to `OutboxStore`, `QuestionStore` or `Frontdoor`.
 //!
-//! This module therefore reads exactly the stores [`crate::backlog::Backlog`]
-//! already reads for its outbox/questions/frontdoor fields — not its
-//! `proposals`/`candidates` fields, which are the harness's own review queue
-//! and owed to nobody outside it. The graph task board's `due_at` (also named
-//! in §7.4's list of recorded commitments) is out of scope for the same
-//! reason `backlog.rs` itself excludes the graph's queues: reaching it needs a
-//! `mecha-graph` subprocess, which is fine once a night and too expensive in
-//! the path of every run.
+//! So the three stores here are commitments **by construction** — a row in
+//! one *is* the recorded commitment, owed to the draft's recipient, the
+//! delegated task's asker, or the requester — and this module reads their
+//! items out of the survey [`crate::backlog::Backlog::survey`] already takes
+//! at every run's start (`Inventory`), never a store of its own and never a
+//! row anything else could write. 1f changed which code computes guilt, not
+//! what may create a row. The front door is read as the requests **waiting on
+//! the owner** (`frontdoor::WAITING_ON_OWNER`, aged from `arrived_at`), the
+//! set the doctor's stale-request finding and the `request_closure` sensor
+//! read — a `needs_info` parked on the stranger is owed by nobody here, and
+//! the scalar this replaced counted it anyway. The graph board's `due_at` and
+//! the workflow store's commitments are not read: the first needs a
+//! `mecha-graph` subprocess in the path of every run, and the second has no
+//! charter kind and no doctor constant to supply a patience (deferred; see
+//! the design doc's S7 entry).
 //!
-//! **Known imprecision, not fixed here**: `Backlog`'s frontdoor count
-//! includes a request parked in `needs_info` — waiting on the *requester* to
-//! answer, not on mecha — which this module has no way to exclude without
-//! reading `Frontdoor` records directly instead of through `Backlog`'s
-//! already-aggregated `Depth`, the one seam this module deliberately mirrors
-//! rather than bypasses. So a request nobody but the requester owes anything
-//! on today still counts toward `waiting`. Narrowing that needs a `Backlog`
-//! (or a sibling) that can tell the two frontdoor states apart, which is a
-//! `backlog.rs` change, not a `guilt.rs` one.
+//! ## Guilt per item, and why it replaced one scalar
 //!
-//! ## Observation only — there is no consumer yet
+//! Per commitment, `guilt = excess(age, patience) × weight(rank)`:
 //!
-//! §7.3 is unambiguous that affect may only *narrow* a disposition, never
-//! loosen one, and §15 rules out feeding it to the model as free text or state
-//! in the system prompt. But nothing today reads `Backlog`/"owner-attention
-//! debt" as far as the model at all — confirmed by reading the only consumer
-//! of `Homeostat::backlog`, which is recording it onto `RunStats` — so there
-//! is no existing seam this sensor could narrow yet. Rather than invent one
-//! under time pressure (exactly the kind of scope this design's own §7.2
-//! warns against), this ships the way rung 3 (the homeostat itself) and rung
-//! 6 (boredom) both did: the sensor is computed and recorded on every run,
-//! and earns a behavioural consumer later, once one is designed deliberately
-//! rather than backed into. [`crate::homeostat::Homeostat::anticipated_guilt`]
-//! is the recorded value; nothing reads it outside the corpus yet.
+//! - **Patience** is how long is too long, and it is the doctor's own
+//!   ([`crate::doctor::Patience::for_store`]): the setpoint of the charter
+//!   line whose age kind watches the store, else the harness constant (48h a
+//!   draft, 24h a question, 72h a request). One definition, so a draft the
+//!   doctor calls stuck is exactly a draft that carries guilt.
+//! - **Excess** is [`crate::reading::excess`]: zero within the patience,
+//!   half of maximal at twice it, asymptotic toward one — never one, because
+//!   a term that reaches `1.0` stops varying and a corpus of a constant
+//!   carries nothing. The retired scalar learned that twice: its age term
+//!   first clamped at one day, then at one week, and each time the live
+//!   outbox's normal state pinned it (its history is in `docs/HISTORY.md`
+//!   and `APPRAISAL-RESEARCH.md` §1.5).
+//! - **Rank** is how much it matters: the charter rank of that line (file
+//!   order, zero the top), weighted `1 / (1 + rank)`. A store no line
+//!   watches ranks **below every line the owner wrote** — at the number of
+//!   lines — because the owner ranked it nowhere: an unwatched store must not
+//!   outweigh one the owner put third. With no charter at all that is rank
+//!   zero, a weight of one, and guilt is the excess alone.
+//!
+//! The charter supplies *how much it matters and how long is too long*; the
+//! commitment supplies *to whom and since when*. Neither alone is guilt: a
+//! charter line is the owner's priority, not a promise to anyone.
+//!
+//! **The scalar this replaced** was one number folded from the three stores'
+//! count, their oldest age and the run's context pressure, as a logical OR.
+//! It read 0.95–1.0 on every live run (inventory §1): the oldest draft pins
+//! an age, and the age pinned the OR. It is kept as a **readout** —
+//! [`readout`], the maximum per-commitment value, written into
+//! `Homeostat::anticipated_guilt` for the diagnostician's brief — and no
+//! consumer decides on it (here §1, decision 3: a level is read per item,
+//! never as a level). A row recorded before 1f still loads with the old
+//! fold's number in that field; the corpus mean reads only rows that carry
+//! the per-commitment record, so the two formulas are never averaged
+//! together. Context pressure left the number with the fold: it is a fact
+//! about the run's own room, not about anyone waiting.
+//!
+//! ## Unknown is never zero
+//!
+//! A store that could not be read has `waiting: None`; an item whose stamp
+//! will not parse has an unknown age and so an unknown guilt, counted apart
+//! (`unknown`) and sorted first — it could be the oldest of all. A store
+//! with either reads [`StoreGuilt::max`] `None`, and the readout is `None`
+//! when any store's is. A store that holds nothing is a real zero.
+//!
+//! ## It never reaches a prompt
+//!
+//! No number here is rendered into any request (G4, R21 — per-commitment
+//! guilt is named there as a score a model would move); the fixture scan in
+//! `provider/anthropic.rs` holds every value this produces. The one in-run
+//! consumer, `planning::Decision::assess`, reaches the model only as fixed
+//! advice behind `goal_guidance`.
 //!
 //! ## The formula is argued, not measured
 //!
 //! There is no corpus yet linking any weighting here to a real missed
-//! expectation, so this is a deliberately simple first cut over three
-//! directly-sensed values — nothing here is extrapolated or a growth rate,
-//! the same discipline §4.4 states for predictive compaction.
+//! expectation — the discipline every sensor in this arc shipped under.
 
-use crate::backlog::{Backlog, Depth};
+use crate::backlog::{Inventory, Waiter};
+use crate::charter::{Charter, SensorKind};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
-/// How many recorded commitments read as half of maximal on the count term.
-/// A single item is not yet "piling up" — the term is zero at one — and it
-/// climbs asymptotically from there: `0.5` at three, approaching but never
-/// reaching `1.0`, so a fourth waiting item still reads worse than a third
-/// without any count ever pinning the combined reading outright (see the
-/// midpoint-not-ceiling note on [`AGE_HALF_AT_HOURS`]).
-const COUNT_HALF_AT: usize = 3;
+/// How many of a store's commitments one record names, highest guilt first.
+/// Every one of them has its own value while it is in memory; the record
+/// keeps this many per store, with `waiting` saying how many there were, so
+/// a queue of hundreds does not grow every run record with it. Argued, not
+/// measured: the live install holds about a dozen pending drafts.
+pub const COMMITMENTS_RECORDED: usize = 32;
 
-/// How long the oldest recorded commitment waits before the age term reads
-/// half of maximal.
+/// The store a commitment is recorded in — which is what makes it one.
 ///
-/// **A day was the wrong number, found by reading what the three stores this
-/// reads actually hold rather than by guessing.** `questions.rs` exists
-/// precisely because "the honest case is that nobody answers until
-/// morning" — an overnight-parked question is the mechanism working, not
-/// neglect. `read_frontdoor` (`backlog.rs`) counts every request that still
-/// counts as open (`state` neither `closed` nor `booked` — it was every
-/// non-`closed` request when this number was chosen, and a confirmed booking
-/// no longer counts, which lowers the depth this folds without weakening the
-/// argument below), `backlog.rs`'s own canonical fixture ages one 8–9
-/// days, and a `needs_info` request (parked waiting on the *requester*, not
-/// the owner) ages without bound while nothing is actually owed. At a
-/// one-day horizon, a single week-old parked question saturates `age` to
-/// `1.0` — and because the combination is an OR, that alone saturates the
-/// *whole* reading regardless of count or pressure (`1 - (1-1)(1-c)(1-p) ==
-/// 1`), which is a machine reading a constant `anticipated_guilt: 1.0`
-/// forever. A corpus of a constant carries nothing, the same degenerate-label
-/// shape rung 7's own measurement found the hard way.
-///
-/// **A midpoint, not a ceiling — and that arrived the same way, one week
-/// later.** Widening the horizon to a week only moved the cliff: on
-/// 2026-08-28 the first run recorded under this sensor read exactly `1.0`,
-/// because the live outbox held drafts eight days old — past any horizon a
-/// clamp-to-1.0 could reasonably use, since the owner sitting on a draft for
-/// a week is this store's *normal* state, not an anomaly (doctor already
-/// nags about it separately). A term that reaches exactly `1.0` multiplies
-/// every other term's variance away in the OR, so the standing-debt terms
-/// (age, count) now approach the maximum asymptotically — `h / (h +
-/// AGE_HALF_AT_HOURS)`, `0.5` at one week, `0.67` at two — instead of
-/// clamping. Ordering is preserved (older always reads worse), no term is
-/// ever argued down by the others (still an OR), and the corpus keeps its
-/// variance under exactly the backlog it actually has. Pressure keeps its
-/// hard top: it is a fact about *this run*, not standing debt, so it cannot
-/// pin the corpus across runs.
-///
-/// Rows recorded under the old clamped formula and rows recorded under this
-/// one share the `anticipated_guilt` field with nothing marking which
-/// produced them — the numeric cousin of "a closed enum written to an
-/// append-only store is a wire format". Accepted deliberately: the sensor
-/// was one day and one row old at the change, so the mixed span is a
-/// handful of rows, and a version marker would outlive the problem it
-/// dated. Worth remembering only if this formula moves again after the
-/// corpus has real depth.
-const AGE_HALF_AT_HOURS: f64 = 24.0 * 7.0;
+/// **A closed enum written to an append-only store is a wire format**: a
+/// store a later binary adds loads through [`lenient`] as unknown, costing
+/// the per-commitment record and never the run record it rides on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Store {
+    /// A staged draft, owed to its recipient.
+    Outbox,
+    /// A parked question, owed to the run and the task that asked it.
+    Questions,
+    /// A front-door request waiting on the owner, owed to the requester.
+    Requests,
+}
 
-/// A magnitude in `[0, 1]`, combining three signals as a logical OR —
-/// `1 - (1-a)(1-b)(1-c)` — rather than an average or a product:
-///
-/// - **age** — how long the oldest recorded commitment has sat unresolved,
-///   half of maximal at [`AGE_HALF_AT_HOURS`] and asymptotic above it.
-/// - **count** — how many are recorded as waiting at all, zero at a single
-///   item, half of maximal at [`COUNT_HALF_AT`], asymptotic above it.
-/// - **pressure** — the run's own
-///   [`crate::homeostat::Homeostat::peak_context_pressure`], a proxy for how
-///   much room the run actually had to act on any of it.
-///
-/// **This is deliberately not an estimate of a true probability.** It is
-/// three independent alarms, any one of which is treated as sufficient to
-/// raise concern on its own — a run that ran out of room at 100% pressure
-/// reads as maximally concerning even against a commitment recorded an hour
-/// ago, and that is intentional rather than a slip: no term may be argued
-/// back down by the others being low, which is the "may only narrow, never
-/// loosen" shape §7.3 gives affect generally, applied here to three inputs
-/// instead of one. The standing-debt alarms are asymptotic rather than
-/// clamped for the reason [`AGE_HALF_AT_HOURS`]'s doc carries: an alarm that
-/// reaches exactly `1.0` does not merely stay raised, it erases the other
-/// two from the reading entirely, which on the live store's normal backlog
-/// made the whole sensor a constant. A future consumer that wants "old *and*
-/// under pressure is worse than either alone" is a different, stricter
-/// function than this one, and should replace it deliberately rather than by
-/// way of this comment.
-///
-/// **Returns `None` unless all three stores were read.** A partial reading —
-/// two stores readable and one not — must not collapse into a number that
-/// looks exactly like "nothing is owed"; that is the same reasoning
-/// [`crate::backlog::Waiting`] states for why a backlog total is reported
-/// beside how much of it could not be read rather than silently as a lower
-/// bound. The same applies to a commitment counted but whose timestamp could
-/// not be parsed (`waiting > 0` with no age reachable is unknown, not zero),
-/// and to pressure itself: `peak_context_pressure` is `None` on any provider
-/// with no declared `context_window`, which [`crate::homeostat::Homeostat`]'s
-/// own doc says must never be read as a measured `0.0` — silently treating
-/// unknown pressure as none would put exactly that floor under this reading
-/// instead, and would let a two-term computation average into
-/// `Corpus::mean_anticipated_guilt` beside three-term ones with no mark
-/// telling them apart. So this returns `None` whenever `waiting > 0` and
-/// pressure is unsensed, even though age and count are both known — the same
-/// "unknown beats a confident-looking guess" rule this function makes for
-/// every other input, applied to the one it was tempted to treat as a
-/// default instead.
-pub fn anticipated_guilt(
-    backlog: &Backlog,
-    peak_context_pressure: Option<f32>,
+impl Store {
+    pub const ALL: [Store; 3] = [Store::Outbox, Store::Questions, Store::Requests];
+
+    /// The age kind whose line is this store's patience and rank.
+    pub fn kind(self) -> SensorKind {
+        match self {
+            Store::Outbox => SensorKind::OutboxAge,
+            Store::Questions => SensorKind::QuestionLatency,
+            Store::Requests => SensorKind::RequestClosure,
+        }
+    }
+
+    /// This store's items out of one survey — `None` where it could not be
+    /// read.
+    fn waiters(self, inv: &Inventory) -> Option<&[Waiter]> {
+        match self {
+            Store::Outbox => inv.outbox.as_deref(),
+            Store::Questions => inv.questions.as_deref(),
+            Store::Requests => inv.requests_on_owner.as_deref(),
+        }
+    }
+}
+
+/// One pending commitment and its own guilt.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ItemGuilt {
+    /// The id its store knows it by: the draft's, the question's, the
+    /// request's `seq`.
+    pub id: String,
+    /// How long it has waited, in seconds. `None` when its stamp would not
+    /// parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_secs: Option<u64>,
+    /// `excess(age, patience) × weight`, in `[0, 1)`. `None` exactly when
+    /// the age is unknown — never a guess dressed as zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guilt: Option<f32>,
+}
+
+/// One store's pending commitments, each with its own guilt, and what they
+/// were read against.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoreGuilt {
+    pub store: Store,
+    /// The charter line whose setpoint is the patience and whose rank is
+    /// the weight. `None`: no line's age kind watches this store, so the
+    /// patience is the doctor's constant and the store ranks below every
+    /// line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<String>,
+    /// The patience as spelled — the owner's setpoint, or the constant.
+    pub patience: String,
+    /// `1 / (1 + rank)`, the rank of `line` (or one past the last line).
+    pub weight: f32,
+    /// How many commitments the store holds. `None` when it could not be
+    /// read — unknown, never an empty queue.
+    pub waiting: Option<u64>,
+    /// Of those, how many have an unknown age.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unknown: u64,
+    /// Each commitment, undated first (it could be the oldest), then by
+    /// guilt and age descending, then id; at most
+    /// [`COMMITMENTS_RECORDED`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<ItemGuilt>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+impl StoreGuilt {
+    /// The largest guilt among this store's commitments: `Some(0.0)` for a
+    /// store that holds nothing, `None` for one that could not be read or
+    /// holds an item of unknown age. Sorting puts the largest first and the
+    /// cap keeps it, so the recorded list alone answers this.
+    pub fn max(&self) -> Option<f32> {
+        if self.waiting.is_none() || self.unknown > 0 {
+            return None;
+        }
+        Some(
+            self.items
+                .iter()
+                .filter_map(|i| i.guilt)
+                .fold(0.0, f32::max),
+        )
+    }
+
+    /// Whether any commitment here is past its patience — a known guilt
+    /// above zero. Answers `true` whatever else is unknown: one known
+    /// overdue commitment is a fact an unknown sibling cannot undo.
+    pub fn any_owed(&self) -> bool {
+        self.items.iter().any(|i| i.guilt.is_some_and(|g| g > 0.0))
+    }
+}
+
+/// The weight a charter rank gives: `1 / (1 + rank)`, one for the top line,
+/// a half for the second — rank orders, and no amount of lower-ranked guilt
+/// is made to equal a higher line's by a threshold.
+pub fn weight(rank: usize) -> f32 {
+    1.0 / (1.0 + rank as f32)
+}
+
+/// One commitment's guilt: how far past its patience it has waited
+/// ([`crate::reading::excess`]) times the weight of the line that set the
+/// patience. `None` when the age is unknown.
+pub fn item_guilt(age_secs: Option<u64>, patience_secs: f64, weight: f32) -> Option<f32> {
+    age_secs.map(|age| crate::reading::excess(age as f64, patience_secs) * weight)
+}
+
+/// Every pending commitment in one survey, with its own guilt, per store in
+/// [`Store::ALL`] order. A pure function of the items, the charter and
+/// `now`, so it replays over whatever a record holds.
+pub fn read_commitments(
+    items: &Inventory,
+    charter: &Charter,
     now: DateTime<Utc>,
-) -> Option<f32> {
-    let depths: [&Depth; 3] = [
-        backlog.outbox.as_ref()?,
-        backlog.questions.as_ref()?,
-        backlog.frontdoor.as_ref()?,
-    ];
+) -> Vec<StoreGuilt> {
+    Store::ALL
+        .into_iter()
+        .map(|store| {
+            let patience = crate::doctor::Patience::for_store(Some(charter), store.kind())
+                .expect("every store's kind is an age");
+            // The line's rank, or one past the last line: an unwatched store
+            // ranks below everything the owner ranked.
+            let rank = patience
+                .line
+                .as_deref()
+                .and_then(|l| charter.rank_of(l))
+                .unwrap_or(charter.lines().len());
+            let weight = weight(rank);
+            let patience_secs = patience.after.num_seconds().max(1) as f64;
+            let Some(waiters) = store.waiters(items) else {
+                return StoreGuilt {
+                    store,
+                    line: patience.line,
+                    patience: patience.text,
+                    weight,
+                    waiting: None,
+                    unknown: 0,
+                    items: Vec::new(),
+                };
+            };
+            let mut owed: Vec<ItemGuilt> = waiters
+                .iter()
+                .map(|w| {
+                    let age_secs = crate::reading::age_secs(&w.since, now);
+                    ItemGuilt {
+                        id: w.id.clone(),
+                        age_secs,
+                        guilt: item_guilt(age_secs, patience_secs, weight),
+                    }
+                })
+                .collect();
+            owed.sort_by(|a, b| match (a.age_secs, b.age_secs) {
+                (None, None) => a.id.cmp(&b.id),
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                // Within one store the weight and patience are shared, so
+                // guilt orders exactly as age does, and age still orders
+                // the ones inside their patience.
+                (Some(x), Some(y)) => y.cmp(&x).then_with(|| a.id.cmp(&b.id)),
+            });
+            let unknown = owed.iter().filter(|i| i.age_secs.is_none()).count() as u64;
+            let waiting = owed.len() as u64;
+            owed.truncate(COMMITMENTS_RECORDED);
+            StoreGuilt {
+                store,
+                line: patience.line,
+                patience: patience.text,
+                weight,
+                waiting: Some(waiting),
+                unknown,
+                items: owed,
+            }
+        })
+        .collect()
+}
 
-    let mut waiting = 0usize;
-    let mut oldest_hours: Option<f64> = None;
-    // Whether *any* non-empty depth's age could not be read — not whether
-    // *every* depth's could. A store with three waiting items and a corrupt
-    // stamp must not have its unknown age silently overridden by a second,
-    // readable store's fresher one: the true oldest could easily be the
-    // unreadable row, and reporting the readable row's age as the answer
-    // understates it exactly as much as reading it as zero would.
-    let mut age_unknown = false;
-    for depth in depths {
-        waiting += depth.waiting;
-        if depth.waiting == 0 {
-            continue;
-        }
-        match depth.oldest.as_deref().and_then(|s| hours_since(s, now)) {
-            Some(hours) => oldest_hours = Some(oldest_hours.map_or(hours, |h: f64| h.max(hours))),
-            None => age_unknown = true,
-        }
-    }
-    if waiting == 0 {
-        // Genuinely nothing recorded as owed — a real zero, not an absence.
-        return Some(0.0);
-    }
-    // Something is recorded as waiting, but at least one non-empty depth's
-    // age could not be read — an age-blind reading would silently score it
-    // as fresh, or worse, let a sibling depth's real age stand in for it,
-    // which is a guess dressed as a measurement either way.
-    if age_unknown {
+/// The readout: the largest per-commitment guilt across the stores — what
+/// `Homeostat::anticipated_guilt` records and the diagnostician's brief
+/// averages. `None` when any store's maximum is unknown, or when there are
+/// no stores to read: a dash is never zero.
+pub fn readout(stores: &[StoreGuilt]) -> Option<f32> {
+    if stores.is_empty() {
         return None;
     }
-    let oldest_hours = oldest_hours?;
-
-    // Asymptotic, never clamped — see AGE_HALF_AT_HOURS: a standing-debt
-    // term that reaches exactly 1.0 erases the other terms from the OR.
-    let age = (oldest_hours / (oldest_hours + AGE_HALF_AT_HOURS)) as f32;
-    // Zero at one item — a single fresh commitment is not "several piling
-    // up" — climbing toward (never to) 1.0, half of maximal at the midpoint.
-    let above_one = waiting.saturating_sub(1) as f32;
-    let count = above_one / (above_one + (COUNT_HALF_AT - 1) as f32);
-    // Unknown, not a measured zero — see the doc comment above.
-    let pressure = peak_context_pressure?.clamp(0.0, 1.0);
-    let combined = 1.0 - (1.0 - age) * (1.0 - count) * (1.0 - pressure);
-    Some(combined.clamp(0.0, 1.0))
+    stores
+        .iter()
+        .map(StoreGuilt::max)
+        .try_fold(0.0f32, |acc, m| m.map(|m| acc.max(m)))
 }
 
-/// The run's own contribution, folded over the standing level.
-///
-/// **The level was a constant, and the delta is where the variance is.**
-/// Over the first nineteen runs that recorded it, [`anticipated_guilt`] read
-/// between 0.95 and 1.0 on every one — the age and count terms measure the
-/// owner's standing backlog, which a run inherits and does not change, so
-/// the sensor described the store and not the run
-/// (`docs/APPRAISAL-RESEARCH.md` §1.5). `backlog_delta` was non-zero on 18
-/// of 68 runs beside it. So the delta comes first: the level is scaled down
-/// by the **share of what was waiting** that this run cleared — a run that
-/// cleared everything it inherited reads as no guilt, one that cleared three
-/// of forty reads nearly the level it inherited. The first cut divided by
-/// the constant [`COUNT_HALF_AT`] instead, so three cleared pinned the
-/// reading to zero from any backlog, which is the clamp-to-a-constant
-/// `AGE_HALF_AT_HOURS`'s doc reshaped the level to escape (found on review).
-///
-/// **This composes in the loosening direction, on purpose, and here is the
-/// argument.** [`anticipated_guilt`]'s three alarms may not argue each other
-/// down — that is the "may only narrow, never loosen" rule applied to three
-/// *readings of the same run's situation*. Relief is not a fourth reading
-/// of the situation; it is the run's *act* on it. A run that cleared what
-/// the owner was waiting on has discharged the expectation guilt is
-/// predicted against, and `peak_context_pressure` was only ever a proxy
-/// for the room to do that — a run that did it had the room. So relief
-/// scales the whole level, pressure included, and the level it scales is
-/// still an OR: nothing here lowers one alarm by another being low.
-///
-/// **A positive delta leaves the level alone.** The first cut drove the
-/// sensor to maximal on a run that added three items, and that is the
-/// reading `Homeostat::finish` refuses by name — a trigger that staged three
-/// replies overnight scored as maximally guilty for doing exactly its job —
-/// arriving from the other end (found on review). Staging is a run's job,
-/// not neglect; what this run *added* is the next run's inherited level, and
-/// it will be read there. The appraisal's commitment channel takes the same
-/// line: a negative delta signs positive, a positive one signs nothing.
-///
-/// `None` in, `None` out — and a level with no delta is the level, because
-/// a row without the delta sensor says nothing about what the run did.
-/// The result lands in its own field (`Homeostat::guilt_after_relief`),
-/// never over the level: a first cut overwrote `anticipated_guilt`, so
-/// `Corpus::mean_anticipated_guilt` averaged relief-scaled rows beside
-/// level-only ones with nothing marking which — a blended mean that was
-/// neither formula's, on a field whose own doc chose `None` over a
-/// differently-computed number for exactly that reason (found on review).
-///
-/// `net_delta` is the negated
-/// [`crate::backlog::BacklogDelta::owner_facing_cleared`] — the fall net of
-/// what the owner gave up on, since an abandoned question is no relief —
-/// and `waiting_before` is [`waiting`], both over the same three stores the
-/// level reads — never the five-store `net`, whose proposals and candidates
-/// are the harness's own queue. A negative delta against
-/// nothing waiting cannot happen from a consistent pair of reads; it is
-/// treated as full relief rather than as a division by zero.
-pub fn with_delta(
-    level: Option<f32>,
-    net_delta: Option<i64>,
-    waiting_before: usize,
-) -> Option<f32> {
-    let level = level?;
-    let Some(net) = net_delta else {
-        return Some(level);
+/// The commitments a run's in-run consumers may read: every store but one
+/// whose line was withdrawn as saturated (S5, `reading::in_run`) — a line
+/// withheld from the run takes its commitments with it, or the consumer
+/// fires on every run through the side door. `None` stays `None`.
+pub fn in_run(
+    stores: Option<&[StoreGuilt]>,
+    readings: Option<&[crate::reading::LineReading]>,
+) -> Option<Vec<StoreGuilt>> {
+    let withdrawn = |line: &str| {
+        readings
+            .unwrap_or_default()
+            .iter()
+            .any(|r| r.withdrawn && r.line == line)
     };
-    if net >= 0 {
-        return Some(level);
-    }
-    let cleared = net.unsigned_abs() as f32;
-    let relief = if waiting_before == 0 {
-        1.0
-    } else {
-        (cleared / waiting_before as f32).min(1.0)
-    };
-    Some((level * (1.0 - relief)).clamp(0.0, 1.0))
+    stores.map(|ss| {
+        ss.iter()
+            .filter(|s| !s.line.as_deref().is_some_and(withdrawn))
+            .cloned()
+            .collect()
+    })
 }
 
-/// Everything one `Backlog` pair yields, computed once: the level off
-/// `before`, the delta between the two, and the level scaled by the
-/// owner-facing share of `before` that the delta cleared.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Fold {
-    pub level: Option<f32>,
-    pub delta: crate::backlog::BacklogDelta,
-    pub after_relief: Option<f32>,
-}
-
-/// The whole fold from one `Backlog` pair — the one seam where the level,
-/// the delta, and relief's numerator and denominator are all derived from
-/// the same reads. The same *reads*, not quite the same store sets: the
-/// numerator counts stores readable at both ends (`Backlog::delta` is
-/// `None` for one unreadable at either), the denominator stores readable
-/// at the start, so a store that vanished mid-run inflates the denominator
-/// and the reading errs toward less relief — the level's own denominator,
-/// and the safe direction (found on review). `with_delta`'s tests hand it both numbers, and the
-/// mismatch the review found lived exactly here, in the call site; a later
-/// pass found the call site re-deriving half of it beside this, which is
-/// why this returns all three rather than one.
-pub fn with_backlogs(
-    before: &Backlog,
-    after: &Backlog,
-    peak_context_pressure: Option<f32>,
-    now: DateTime<Utc>,
-) -> Fold {
-    let level = anticipated_guilt(before, peak_context_pressure, now);
-    let delta = Backlog::delta(before, after);
-    // Cleared, not merely fallen: a queue the owner shortened by giving
-    // up is no relief for the run (found on review, beside the appraisal's
-    // commitment arm which read the same fall as a positive).
-    let after_relief = with_delta(
-        level,
-        delta.owner_facing_cleared().map(|c| -(c as i64)),
-        waiting(before),
-    );
-    Fold {
-        level,
-        delta,
-        after_relief,
-    }
-}
-
-/// How many recorded commitments a backlog holds across the three stores
-/// [`anticipated_guilt`] reads — the denominator relief is a share of.
-pub fn waiting(backlog: &Backlog) -> usize {
-    [&backlog.outbox, &backlog.questions, &backlog.frontdoor]
-        .into_iter()
-        .flatten()
-        .map(|d| d.waiting)
-        .sum()
-}
-
-/// Hours between an RFC3339 stamp and `now`. `None` on a stamp this can't
-/// parse — a record written by a newer or older binary must cost the reading,
-/// not the whole computation (the [`crate::goal::GoalRef`] record-parsing
-/// rule, in a second setting).
-fn hours_since(stamp: &str, now: DateTime<Utc>) -> Option<f64> {
-    let then = DateTime::parse_from_rfc3339(stamp)
-        .ok()?
-        .with_timezone(&Utc);
-    Some((now - then).num_seconds().max(0) as f64 / 3600.0)
+/// The homeostat's `commitments` field, loaded leniently: a record this
+/// binary cannot parse — a store a later one added — reads as `None`,
+/// unknown, rather than failing the run record it sits on.
+pub fn lenient<'de, D>(d: D) -> Result<Option<Vec<StoreGuilt>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Option<serde_json::Value> = Option::deserialize(d)?;
+    Ok(raw.and_then(|v| serde_json::from_value(v).ok()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::charter::{RawLine, RawSensor, RawSetpoint};
 
-    fn depth(waiting: usize, oldest: Option<&str>) -> Depth {
-        Depth {
-            waiting,
-            oldest: oldest.map(str::to_string),
-            given_up: 0,
+    fn now() -> DateTime<Utc> {
+        "2026-09-20T12:00:00Z".parse().unwrap()
+    }
+
+    fn ago(hours: i64) -> String {
+        (now() - chrono::Duration::hours(hours)).to_rfc3339()
+    }
+
+    fn line(id: &str, sensor: Option<(SensorKind, &str)>) -> RawLine {
+        RawLine {
+            id: id.into(),
+            text: format!("{id} text"),
+            sensor: sensor.map(|(kind, sp)| RawSensor {
+                kind,
+                setpoint: RawSetpoint::Text(sp.into()),
+            }),
         }
     }
 
-    /// A fully readable backlog with nothing else set: all three depths
-    /// present and empty. This is the "genuinely nothing waiting" fixture
-    /// every positive test below starts from and overrides one field of,
-    /// rather than the bare `Backlog::default()` — whose fields default to
-    /// `None`, i.e. *unreadable*, which is a different fact entirely.
-    fn readable_and_empty() -> Backlog {
-        Backlog {
-            outbox: Some(Depth::default()),
-            questions: Some(Depth::default()),
-            frontdoor: Some(Depth::default()),
-            ..Backlog::default()
+    fn inventory(
+        outbox: Option<Vec<Waiter>>,
+        questions: Option<Vec<Waiter>>,
+        requests: Option<Vec<Waiter>>,
+    ) -> Inventory {
+        Inventory {
+            outbox,
+            questions,
+            requests_on_owner: requests,
+            ..Default::default()
         }
     }
 
-    #[test]
-    fn every_store_unreadable_is_unknown_rather_than_zero() {
-        let backlog = Backlog::default();
-        assert_eq!(anticipated_guilt(&backlog, Some(0.5), Utc::now()), None);
+    fn of(stores: &[StoreGuilt], store: Store) -> &StoreGuilt {
+        stores.iter().find(|s| s.store == store).unwrap()
     }
 
-    #[test]
-    fn one_unreadable_store_beside_two_empty_ones_is_still_unknown() {
-        // The partial-read case: outbox and questions came back readable and
-        // empty, front-door did not come back at all. Reporting `Some(0.0)`
-        // here would say "nothing is owed" about a store this never actually
-        // saw.
-        let backlog = Backlog {
-            outbox: Some(Depth::default()),
-            questions: Some(Depth::default()),
-            frontdoor: None,
-            ..Backlog::default()
-        };
-        assert_eq!(anticipated_guilt(&backlog, Some(0.9), Utc::now()), None);
+    fn guilt_of(stores: &[StoreGuilt], id: &str) -> Option<f32> {
+        stores
+            .iter()
+            .flat_map(|s| &s.items)
+            .find(|i| i.id == id)
+            .unwrap_or_else(|| panic!("no commitment `{id}`"))
+            .guilt
     }
 
+    /// The per-item function: excess over the patience times the line's
+    /// weight — zero within the patience, a half of the weight at twice
+    /// it, and never the weight itself.
     #[test]
-    fn nothing_waiting_is_a_real_zero() {
-        let backlog = readable_and_empty();
+    fn guilt_per_item_is_excess_over_patience_times_the_rank_weight() {
+        let day = 86_400.0;
+        assert_eq!(item_guilt(Some(3_600), day, 1.0), Some(0.0));
+        assert_eq!(item_guilt(Some(86_400), day, 1.0), Some(0.0));
+        assert_eq!(item_guilt(Some(2 * 86_400), day, 1.0), Some(0.5));
+        assert_eq!(item_guilt(Some(2 * 86_400), day, weight(1)), Some(0.25));
+        assert_eq!(item_guilt(None, day, 1.0), None, "unknown, not zero");
+        let far = item_guilt(Some(86_400 * 10_000), day, 1.0).unwrap();
+        assert!(far < 1.0 && far > 0.99, "{far}");
+        assert_eq!(weight(0), 1.0);
+        assert_eq!(weight(3), 0.25);
+    }
+
+    /// The acceptance, at the function: every pending commitment of every
+    /// kind has its own value, patience comes from the line watching its
+    /// store or the doctor's constant, rank weighs it, and the readout is
+    /// the largest. The old scalar was one number over all of them — here
+    /// two drafts of different ages under one line read differently, and a
+    /// question and a request each read under their own patience.
+    #[test]
+    fn each_pending_commitment_has_its_own_value_and_the_readout_is_the_maximum() {
+        let charter = Charter::from_raw_lines(vec![
+            line("replies", Some((SensorKind::OutboxAge, "24h"))),
+            line("craft", None),
+            line("questions", Some((SensorKind::QuestionLatency, "12h"))),
+        ])
+        .unwrap();
+        let inv = inventory(
+            Some(vec![
+                Waiter::new("d-fresh", ago(2)),
+                Waiter::new("d-old", ago(72)),
+                Waiter::new("d-older", ago(96)),
+            ]),
+            Some(vec![Waiter::new("q-1", ago(36))]),
+            Some(vec![Waiter::new("7", ago(144))]),
+        );
+        let stores = read_commitments(&inv, &charter, now());
+
+        // The outbox: the top line, 24h. Three days is 48h past a day:
+        // 2/3; four days 3/4; two hours nothing.
+        let outbox = of(&stores, Store::Outbox);
+        assert_eq!(outbox.line.as_deref(), Some("replies"));
+        assert_eq!(outbox.patience, "24h");
+        assert_eq!(outbox.weight, 1.0);
+        assert_eq!(outbox.waiting, Some(3));
+        let ids: Vec<&str> = outbox.items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["d-older", "d-old", "d-fresh"], "oldest first");
+        assert!((guilt_of(&stores, "d-older").unwrap() - 0.75).abs() < 1e-6);
+        assert!((guilt_of(&stores, "d-old").unwrap() - 2.0 / 3.0).abs() < 1e-6);
+        assert_eq!(guilt_of(&stores, "d-fresh"), Some(0.0));
+
+        // The question: the third line (rank 2, weight 1/3), 12h. 36h is
+        // 24h past: excess 2/3, times a third.
+        let q = of(&stores, Store::Questions);
+        assert_eq!(q.line.as_deref(), Some("questions"));
+        assert!((q.weight - 1.0 / 3.0).abs() < 1e-6);
+        assert!((guilt_of(&stores, "q-1").unwrap() - 2.0 / 9.0).abs() < 1e-6);
+
+        // The request: no line watches the front door, so the doctor's 72h
+        // and a rank below all three lines (weight 1/4). Six days is 72h
+        // past 72h: a half, times a quarter.
+        let r = of(&stores, Store::Requests);
+        assert_eq!(r.line, None);
+        assert_eq!(r.patience, "72h");
+        assert_eq!(r.weight, 0.25);
+        assert!((guilt_of(&stores, "7").unwrap() - 0.125).abs() < 1e-6);
+
+        // Each has its own value, and the readout is the largest.
+        let values: Vec<f32> = stores
+            .iter()
+            .flat_map(|s| &s.items)
+            .filter_map(|i| i.guilt)
+            .collect();
+        assert_eq!(values.len(), 5);
+        assert_eq!(readout(&stores), Some(0.75));
+        assert_eq!(outbox.max(), Some(0.75));
+        assert!(outbox.any_owed() && q.any_owed() && r.any_owed());
+    }
+
+    /// Rank orders: the same overdue draft reads less under a line the
+    /// owner put lower, and an unwatched store ranks below every line.
+    #[test]
+    fn a_lower_line_weighs_less_and_an_unwatched_store_ranks_below_every_line() {
+        let inv = inventory(
+            Some(vec![Waiter::new("d", ago(48))]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+        );
+        let top =
+            Charter::from_raw_lines(vec![line("replies", Some((SensorKind::OutboxAge, "24h")))])
+                .unwrap();
+        let second = Charter::from_raw_lines(vec![
+            line("first", None),
+            line("replies", Some((SensorKind::OutboxAge, "24h"))),
+        ])
+        .unwrap();
+        let g_top = guilt_of(&read_commitments(&inv, &top, now()), "d").unwrap();
+        let g_second = guilt_of(&read_commitments(&inv, &second, now()), "d").unwrap();
+        assert!((g_top - 0.5).abs() < 1e-6 && (g_second - 0.25).abs() < 1e-6);
+
+        // No line on the outbox: 48h is within the doctor's 48h — nothing.
+        // At four days, 48h past: a half, times the weight of a rank one
+        // past the two lines (a third).
+        let unwatched = Charter::from_raw_lines(vec![line("a", None), line("b", None)]).unwrap();
         assert_eq!(
-            anticipated_guilt(&backlog, Some(0.9), Utc::now()),
+            guilt_of(&read_commitments(&inv, &unwatched, now()), "d"),
             Some(0.0)
         );
-    }
-
-    #[test]
-    fn a_fresh_lone_commitment_under_no_pressure_reads_near_zero() {
-        let now = Utc::now();
-        let backlog = Backlog {
-            outbox: Some(depth(1, Some(&now.to_rfc3339()))),
-            ..readable_and_empty()
-        };
-        let g = anticipated_guilt(&backlog, Some(0.0), now).unwrap();
-        assert!(g < 0.1, "{g}");
-    }
-
-    #[test]
-    fn a_week_old_commitment_reads_half_of_maximal_on_the_age_term() {
-        let now = Utc::now();
-        let old = now - chrono::Duration::hours(AGE_HALF_AT_HOURS.round() as i64);
-        let backlog = Backlog {
-            questions: Some(depth(1, Some(&old.to_rfc3339()))),
-            ..readable_and_empty()
-        };
-        // Pressure known and zero, so age alone is what is being measured.
-        let g = anticipated_guilt(&backlog, Some(0.0), now).unwrap();
-        assert!((g - 0.5).abs() < 1e-3, "{g}");
-    }
-
-    /// The regression the midpoint exists for, taken from the live store on
-    /// 2026-08-28: four drafts eight days old plus three questions read
-    /// exactly `1.0` on the first run recorded under this sensor — the age
-    /// term clamped, the OR erased count and pressure, and the corpus was a
-    /// constant from its first row. Standing debt must *order* readings, not
-    /// pin them: past-the-midpoint debt reads high but below `1.0`, still
-    /// worsens as it ages, and still lets pressure move the reading.
-    #[test]
-    fn a_standing_week_old_backlog_does_not_pin_the_reading_at_a_constant() {
-        let now = Utc::now();
-        let eight_days = now - chrono::Duration::hours(24 * 8);
-        let two_days = now - chrono::Duration::hours(48);
-        let live_shape = Backlog {
-            outbox: Some(depth(4, Some(&eight_days.to_rfc3339()))),
-            questions: Some(depth(3, Some(&two_days.to_rfc3339()))),
-            ..readable_and_empty()
-        };
-        let g = anticipated_guilt(&live_shape, Some(0.06), now).unwrap();
-        assert!(g > 0.5, "eight-day-old debt should still read high: {g}");
-        assert!(g < 1.0 - 1e-3, "…but must not pin the reading: {g}");
-
-        // Variance survives in both remaining inputs.
-        let under_pressure = anticipated_guilt(&live_shape, Some(0.6), now).unwrap();
-        assert!(under_pressure > g, "{g} vs {under_pressure}");
-        let older = Backlog {
-            outbox: Some(depth(
-                4,
-                Some(&(now - chrono::Duration::hours(24 * 16)).to_rfc3339()),
-            )),
-            questions: Some(depth(3, Some(&two_days.to_rfc3339()))),
-            ..readable_and_empty()
-        };
-        let g_older = anticipated_guilt(&older, Some(0.06), now).unwrap();
-        assert!(
-            g_older > g,
-            "older debt must still read worse: {g} vs {g_older}"
+        let late = inventory(
+            Some(vec![Waiter::new("d", ago(96))]),
+            Some(Vec::new()),
+            Some(Vec::new()),
         );
+        let g = guilt_of(&read_commitments(&late, &unwatched, now()), "d").unwrap();
+        assert!((g - 0.5 / 3.0).abs() < 1e-6, "{g}");
+        // No charter at all: rank zero, the excess alone.
+        let none = guilt_of(&read_commitments(&late, &Charter::default(), now()), "d").unwrap();
+        assert!((none - 0.5).abs() < 1e-6, "{none}");
     }
 
+    /// Unknown is never zero: an unreadable store and an undated item each
+    /// make the readout unknown, while an empty store is a real zero and a
+    /// known overdue sibling is still owed.
     #[test]
-    fn a_two_day_old_commitment_does_not_saturate_the_age_term() {
-        // The gap a one-day horizon left open: `questions.rs` parks answers
-        // overnight by design, and a two-day-old one is not neglect. This
-        // must read as partial concern, not the maximum.
-        let now = Utc::now();
-        let two_days = now - chrono::Duration::hours(48);
-        let backlog = Backlog {
-            questions: Some(depth(1, Some(&two_days.to_rfc3339()))),
-            ..readable_and_empty()
-        };
-        let g = anticipated_guilt(&backlog, Some(0.0), now).unwrap();
-        assert!(g > 0.0 && g < 0.5, "{g}");
-    }
+    fn an_unreadable_store_or_an_undated_item_is_unknown_and_an_empty_store_is_zero() {
+        let charter = Charter::default();
+        let empty = inventory(Some(Vec::new()), Some(Vec::new()), Some(Vec::new()));
+        let stores = read_commitments(&empty, &charter, now());
+        assert_eq!(readout(&stores), Some(0.0), "nothing owed is a real zero");
 
-    #[test]
-    fn unknown_pressure_is_unknown_not_a_measured_zero() {
-        // A provider with no declared context_window reports `None` here —
-        // not "definitely idle" — and this function must not quietly treat
-        // it as the latter just because age and count are both known.
-        let now = Utc::now();
-        let old = now - chrono::Duration::hours(48);
-        let backlog = Backlog {
-            questions: Some(depth(1, Some(&old.to_rfc3339()))),
-            ..readable_and_empty()
-        };
-        assert_eq!(anticipated_guilt(&backlog, None, now), None);
-    }
+        let unread = inventory(Some(Vec::new()), None, Some(Vec::new()));
+        let stores = read_commitments(&unread, &charter, now());
+        assert_eq!(of(&stores, Store::Questions).waiting, None);
+        assert_eq!(readout(&stores), None);
 
-    #[test]
-    fn pressure_alone_can_saturate_the_reading_by_design() {
-        let now = Utc::now();
-        let recent = now - chrono::Duration::hours(1);
-        let backlog = Backlog {
-            frontdoor: Some(depth(1, Some(&recent.to_rfc3339()))),
-            ..readable_and_empty()
-        };
-        let low_pressure = anticipated_guilt(&backlog, Some(0.0), now).unwrap();
-        let high_pressure = anticipated_guilt(&backlog, Some(1.0), now).unwrap();
-        assert!(
-            high_pressure > low_pressure,
-            "{low_pressure} vs {high_pressure}"
+        let undated = inventory(
+            Some(vec![
+                Waiter::new("late", ago(200)),
+                Waiter::new("torn", "not-a-stamp"),
+            ]),
+            Some(Vec::new()),
+            Some(Vec::new()),
         );
-        // Full pressure alone still cannot be argued down by having barely
-        // any age at all — that is the OR shape working as documented, not
-        // an accident of the arithmetic.
-        assert!((high_pressure - 1.0).abs() < 1e-6, "{high_pressure}");
+        let stores = read_commitments(&undated, &charter, now());
+        let outbox = of(&stores, Store::Outbox);
+        assert_eq!(outbox.unknown, 1);
+        assert_eq!(outbox.items[0].id, "torn", "the unknown sorts first");
+        assert_eq!(outbox.items[0].guilt, None);
+        assert_eq!(outbox.max(), None);
+        assert_eq!(readout(&stores), None);
+        assert!(outbox.any_owed(), "the known overdue draft is still owed");
+        assert_eq!(readout(&[]), None, "no stores read is not zero");
     }
 
+    /// A queue of hundreds is recorded up to the cap, the largest kept.
     #[test]
-    fn several_waiting_items_raise_the_count_term_even_when_fresh() {
-        let now = Utc::now();
-        let one = Backlog {
-            outbox: Some(depth(1, Some(&now.to_rfc3339()))),
-            ..readable_and_empty()
-        };
-        let several = Backlog {
-            outbox: Some(depth(COUNT_HALF_AT, Some(&now.to_rfc3339()))),
-            ..readable_and_empty()
-        };
-        let g_one = anticipated_guilt(&one, Some(0.0), now).unwrap();
-        let g_several = anticipated_guilt(&several, Some(0.0), now).unwrap();
-        assert!(g_several > g_one, "{g_one} vs {g_several}");
+    fn the_record_keeps_the_largest_up_to_the_cap_and_counts_the_rest() {
+        let many: Vec<Waiter> = (0..100)
+            .map(|i| Waiter::new(format!("d{i:03}"), ago(i)))
+            .collect();
+        let inv = inventory(Some(many), Some(Vec::new()), Some(Vec::new()));
+        let stores = read_commitments(&inv, &Charter::default(), now());
+        let outbox = of(&stores, Store::Outbox);
+        assert_eq!(outbox.waiting, Some(100));
+        assert_eq!(outbox.items.len(), COMMITMENTS_RECORDED);
+        assert_eq!(outbox.items[0].id, "d099");
+        let full = item_guilt(Some(99 * 3_600), 48.0 * 3_600.0, 1.0).unwrap();
+        assert_eq!(outbox.max(), Some(full));
     }
 
+    /// A withdrawn line takes its store's commitments out of the run with
+    /// it; an unwatched store and a line still in front of the run stay.
     #[test]
-    fn the_oldest_across_stores_wins_not_the_first() {
-        let now = Utc::now();
-        let fresh_first = Backlog {
-            outbox: Some(depth(
-                1,
-                Some(&(now - chrono::Duration::hours(1)).to_rfc3339()),
-            )),
-            questions: Some(depth(
-                1,
-                Some(
-                    &(now - chrono::Duration::hours(AGE_HALF_AT_HOURS.round() as i64 * 2))
-                        .to_rfc3339(),
-                ),
-            )),
-            ..readable_and_empty()
+    fn a_withdrawn_lines_commitments_leave_the_run_with_it() {
+        let charter =
+            Charter::from_raw_lines(vec![line("replies", Some((SensorKind::OutboxAge, "24h")))])
+                .unwrap();
+        let inv = inventory(Some(Vec::new()), Some(Vec::new()), Some(Vec::new()));
+        let stores = read_commitments(&inv, &charter, now());
+        let reading = |withdrawn| crate::reading::LineReading {
+            line: "replies".into(),
+            kind: SensorKind::OutboxAge,
+            setpoint: "24h".into(),
+            reading: crate::reading::Reading::Nothing,
+            items: None,
+            delta: None,
+            withdrawn,
         };
-        let both_fresh = Backlog {
-            outbox: Some(depth(
-                1,
-                Some(&(now - chrono::Duration::hours(1)).to_rfc3339()),
-            )),
-            questions: Some(depth(
-                1,
-                Some(&(now - chrono::Duration::hours(1)).to_rfc3339()),
-            )),
-            ..readable_and_empty()
-        };
-        // The 1h row in the first store must not stand in for the two-week
-        // row behind it: the reading is driven by the oldest anywhere.
-        let g_old_behind = anticipated_guilt(&fresh_first, Some(0.0), now).unwrap();
-        let g_fresh = anticipated_guilt(&both_fresh, Some(0.0), now).unwrap();
-        assert!(g_old_behind > g_fresh, "{g_fresh} vs {g_old_behind}");
-        // Two midpoints old (age 2/3) OR two waiting items (count 1/3):
-        // 1 - (1/3)(2/3) = 7/9. Pinned so the arithmetic stays honest.
-        assert!((g_old_behind - 7.0 / 9.0).abs() < 1e-2, "{g_old_behind}");
-    }
-
-    #[test]
-    fn a_count_with_no_parseable_age_is_unknown_rather_than_fresh() {
-        let backlog = Backlog {
-            outbox: Some(depth(1, Some("not-a-timestamp"))),
-            ..readable_and_empty()
-        };
-        // Scoring this as age-zero would understate a real commitment this
-        // sensor simply failed to date.
-        assert_eq!(anticipated_guilt(&backlog, None, Utc::now()), None);
-    }
-
-    #[test]
-    fn one_undated_store_is_unknown_even_when_a_sibling_store_is_dated() {
-        // The gap the single-store version of this test above didn't cover:
-        // a second, readable store's real age must not stand in for the
-        // first store's unreadable one. The true oldest commitment could
-        // easily be the one this can't date at all.
-        let now = Utc::now();
-        let backlog = Backlog {
-            outbox: Some(depth(1, Some("not-a-timestamp"))),
-            questions: Some(depth(1, Some(&now.to_rfc3339()))),
-            ..readable_and_empty()
-        };
-        assert_eq!(anticipated_guilt(&backlog, Some(0.0), now), None);
-    }
-
-    #[test]
-    fn the_delta_comes_first_and_relief_is_a_share_of_what_was_waiting() {
-        // Cleared everything it inherited: no guilt, whatever the level.
-        assert_eq!(with_delta(Some(0.95), Some(-3), 3), Some(0.0));
-        assert_eq!(with_delta(Some(0.95), Some(-30), 30), Some(0.0));
-        // Cleared three of forty: nearly the level it inherited — a count
-        // pinned the reading to zero here before (found on review).
-        let three_of_forty = with_delta(Some(0.8), Some(-3), 40).unwrap();
-        assert!((0.7..0.8).contains(&three_of_forty), "{three_of_forty}");
-        let one_of_two = with_delta(Some(0.9), Some(-1), 2).unwrap();
-        assert!((0.44..0.46).contains(&one_of_two), "{one_of_two}");
-        // A negative delta against nothing waiting is an inconsistent pair
-        // of reads, treated as full relief rather than a division by zero.
-        assert_eq!(with_delta(Some(0.5), Some(-1), 0), Some(0.0));
-        // `Homeostat::finish`'s stated intent, asserted here rather than only
-        // in prose: a trigger that staged three replies is not guilty for it.
-        assert_eq!(with_delta(Some(0.6), Some(3), 5), Some(0.6));
-        assert_eq!(with_delta(Some(0.2), Some(1), 0), Some(0.2));
-        assert_eq!(with_delta(Some(0.4), Some(0), 4), Some(0.4));
+        let kept = in_run(Some(&stores), Some(&[reading(false)])).unwrap();
+        assert_eq!(kept.len(), 3);
+        let left = in_run(Some(&stores), Some(&[reading(true)])).unwrap();
         assert_eq!(
-            with_delta(Some(0.4), None, 4),
-            Some(0.4),
-            "no delta sensor: the level stands"
+            left.iter().map(|s| s.store).collect::<Vec<_>>(),
+            [Store::Questions, Store::Requests]
         );
-        assert_eq!(
-            with_delta(None, Some(-3), 3),
-            None,
-            "no level: nothing to scale"
-        );
-        assert_eq!(waiting(&Backlog::default()), 0);
+        assert_eq!(in_run(None, Some(&[reading(true)])), None);
     }
 
+    /// The record round-trips, and a store a later binary adds costs the
+    /// per-commitment record — `None`, unknown — never the row.
     #[test]
-    fn clearing_the_harnesss_own_queue_relieves_nothing_and_clearing_a_draft_relieves_its_share() {
-        let now = DateTime::parse_from_rfc3339("2026-09-02T12:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
-        let week_ago = "2026-08-26T12:00:00Z";
-        let before = Backlog {
-            outbox: Some(depth(2, Some(week_ago))),
-            questions: Some(depth(1, Some(week_ago))),
-            frontdoor: Some(depth(0, None)),
-            proposals: Some(depth(3, Some(week_ago))),
-            candidates: Some(depth(3, Some(week_ago))),
-        };
-        let level = anticipated_guilt(&before, Some(0.1), now).unwrap();
-        assert!(level > 0.5, "{level}");
-        // Three candidates and three proposals resolved, the owner's three
-        // commitments untouched: the level stands.
-        let mut harness_only = before.clone();
-        harness_only.proposals = Some(depth(0, None));
-        harness_only.candidates = Some(depth(0, None));
-        let fold = with_backlogs(&before, &harness_only, Some(0.1), now);
-        assert_eq!(fold.level, Some(level));
-        assert_eq!(fold.after_relief, Some(level));
-        assert_eq!(fold.delta.owner_facing_net(), Some(0));
-        // One of the owner's three cleared: a third of the level relieved.
-        let mut one_draft = before.clone();
-        one_draft.outbox = Some(depth(1, Some(week_ago)));
-        let relieved = with_backlogs(&before, &one_draft, Some(0.1), now)
-            .after_relief
-            .unwrap();
-        assert!(
-            (relieved - level * (2.0 / 3.0)).abs() < 1e-5,
-            "{relieved} vs {level}"
+    fn the_record_round_trips_and_an_unknown_store_loads_as_unknown() {
+        #[derive(Deserialize)]
+        struct Row {
+            #[serde(default, deserialize_with = "lenient")]
+            commitments: Option<Vec<StoreGuilt>>,
+        }
+        let inv = inventory(
+            Some(vec![Waiter::new("d", ago(30))]),
+            Some(Vec::new()),
+            Some(Vec::new()),
         );
-    }
-
-    /// An abandoned question is not relief (found on review): the fold
-    /// reads clearance, not the fall.
-    #[test]
-    fn a_give_up_brings_no_relief() {
-        let now = Utc::now();
-        let stamp = (now - chrono::Duration::hours(72)).to_rfc3339();
-        let before = Backlog {
-            outbox: Some(depth(0, None)),
-            questions: Some(depth(1, Some(&stamp))),
-            frontdoor: Some(depth(0, None)),
-            ..Default::default()
-        };
-        let mut abandoned = depth(0, None);
-        abandoned.given_up = 1;
-        let after = Backlog {
-            outbox: Some(depth(0, None)),
-            questions: Some(abandoned),
-            frontdoor: Some(depth(0, None)),
-            ..Default::default()
-        };
-        let fold = with_backlogs(&before, &after, Some(0.5), now);
-        assert!(fold.level.unwrap() > 0.0);
-        assert_eq!(fold.delta.owner_facing_net(), Some(-1));
-        assert_eq!(
-            fold.after_relief, fold.level,
-            "the fall was a give-up, not clearance"
-        );
-        // The same fall by an answer clears it.
-        let answered = Backlog {
-            questions: Some(depth(0, None)),
-            ..after.clone()
-        };
-        let fold = with_backlogs(&before, &answered, Some(0.5), now);
-        assert_eq!(fold.after_relief, Some(0.0));
+        let stores = read_commitments(&inv, &Charter::default(), now());
+        let json = serde_json::json!({ "commitments": stores }).to_string();
+        let row: Row = serde_json::from_str(&json).unwrap();
+        assert_eq!(row.commitments.as_deref(), Some(stores.as_slice()));
+        let later = json.replace("\"requests\"", "\"board\"");
+        assert_ne!(later, json);
+        let row: Row = serde_json::from_str(&later).unwrap();
+        assert_eq!(row.commitments, None);
+        let absent: Row = serde_json::from_str("{}").unwrap();
+        assert_eq!(absent.commitments, None);
     }
 }
