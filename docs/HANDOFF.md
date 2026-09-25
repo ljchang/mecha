@@ -40,8 +40,8 @@ day, then 2a-3 (#315). What each built is in HISTORY under 2026-09-24/25.
 the `CLAUDE.md` drift are at the top of *The goal system* below.
 The workspace on this branch merged with `0692dc79` (no code differs from
 `main`): `cargo test --workspace -q`, summed over its 32 `test result`
-lines, gives 3,136 passed, 0 failed, 4 ignored (3,145 at `6e6f03ba`, before
-2a-3 removed the retired appraiser's tests).
+lines, gives 3,136 passed, 0 failed, 4 ignored (3,145 at `6e6f03ba`; #313 and
+#315 changed the set since).
 
 **2026-09-24 — the outbox unclogged: a reply goes from its thread's account,
 and the web review reads as mail and sends in one press.** #272
