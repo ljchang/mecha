@@ -525,6 +525,7 @@ fn owner_evidence_preserves_plan_verification_and_expectations() {
                 None,
                 &Default::default(),
                 true,
+                None,
             );
             decision.with_owner_evidence(
                 &mecha_core::anticipation::BoundEvidence::new(e.clone()).unwrap(),

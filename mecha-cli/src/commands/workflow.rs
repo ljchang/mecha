@@ -54,6 +54,12 @@ pub enum Cmd {
         due: DateTime<Utc>,
         #[arg(long)]
         follow_up: DateTime<Utc>,
+        /// What the party expects, in your words.
+        #[arg(long)]
+        expectation: Option<String>,
+        /// What failing it would cost the party, as you judge it.
+        #[arg(long)]
+        consequence: Option<String>,
     },
     /// Add an artifact-content or confirmed-delivery completion check.
     Check {
@@ -322,6 +328,8 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             source,
             due,
             follow_up,
+            expectation,
+            consequence,
         } => serde_json::to_value(store.update(&id, |w| {
             ensure!(
                 !party.trim().is_empty() && !source.trim().is_empty(),
@@ -331,11 +339,21 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
                 follow_up <= due,
                 "follow-up must be no later than the commitment deadline"
             );
+            // The bound the owner-evidence commitment these fields came
+            // from has always had (`anticipation::Evidence::validate`).
+            for text in [&expectation, &consequence].into_iter().flatten() {
+                ensure!(
+                    !text.trim().is_empty() && text.len() <= 4096,
+                    "--expectation and --consequence must contain 1–4096 bytes"
+                );
+            }
             w.commitment = Some(Commitment {
                 party,
                 source,
                 due_at: due,
                 follow_up_at: follow_up,
+                expectation,
+                consequence,
             });
             w.record("commitment", serde_json::to_string(&w.commitment)?, now);
             Ok(())

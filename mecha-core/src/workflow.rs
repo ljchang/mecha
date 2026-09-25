@@ -38,6 +38,18 @@ pub struct Event {
     pub kind: String,
     pub detail: String,
 }
+/// A recorded commitment: who it is owed to, where it came from, and by
+/// when. **The one commitment record** (`docs/APPRAISAL-WIRING-DESIGN.md`
+/// S7, ruling R12, 1f): it carries what `anticipation::Commitment` held
+/// beside a draft's prediction — what the party expects and what failing it
+/// costs them — so an owner stating a commitment states it here whole. Only
+/// an owner command writes one (the module doc's rule, and §7.4's: an
+/// expectation is a recorded commitment, never a claimed one).
+///
+/// Both absorbed fields are optional on the wire, so a row written before
+/// them loads unchanged. `anticipation::Commitment` keeps its own shape on
+/// the predictions it is already recorded on; whether those records move
+/// onto this one is not decided here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Commitment {
     pub party: String,
@@ -45,6 +57,13 @@ pub struct Commitment {
     pub source: String,
     pub due_at: DateTime<Utc>,
     pub follow_up_at: DateTime<Utc>,
+    /// What the party expects, in the owner's words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expectation: Option<String>,
+    /// The adverse consequence to the party of failing it, as the owner
+    /// judges it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consequence: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workflow {
@@ -1269,6 +1288,8 @@ mod tests {
             source: "owner instruction".into(),
             follow_up_at: at("2026-09-08T20:00:00Z"),
             due_at: at("2026-09-10T12:00:00Z"),
+            expectation: None,
+            consequence: None,
         });
         let policy = AttentionPolicy {
             timezone: chrono_tz::America::New_York,
@@ -1423,6 +1444,45 @@ mod tests {
             }
         });
         assert_eq!(h.store().get("flow-one").unwrap().events.len(), 8);
+    }
+
+    /// The one commitment record (S7, R12) absorbed the anticipation
+    /// commitment's expectation and consequence; both commitment shapes
+    /// already on disk still load. A workflow row written before the fields
+    /// reads them as absent and writes back byte-identical, and a draft
+    /// prediction's `{beneficiary, expectation, consequence}` still loads
+    /// through the owner-evidence reader it was recorded under.
+    #[test]
+    fn both_recorded_commitment_shapes_still_load_and_the_absorbed_fields_round_trip() {
+        let old = r#"{"party":"the reading group","source":"owner instruction","due_at":"2026-09-10T12:00:00Z","follow_up_at":"2026-09-08T20:00:00Z"}"#;
+        let c: Commitment = serde_json::from_str(old).unwrap();
+        assert_eq!(
+            (c.expectation.as_deref(), c.consequence.as_deref()),
+            (None, None)
+        );
+        let rewritten: serde_json::Value = serde_json::to_value(&c).unwrap();
+        assert_eq!(
+            rewritten,
+            serde_json::from_str::<serde_json::Value>(old).unwrap()
+        );
+
+        let whole = Commitment {
+            expectation: Some("the agenda before Friday".into()),
+            consequence: Some("the group meets unprepared".into()),
+            ..c
+        };
+        let back: Commitment =
+            serde_json::from_str(&serde_json::to_string(&whole).unwrap()).unwrap();
+        assert_eq!(back.expectation, whole.expectation);
+        assert_eq!(back.consequence, whole.consequence);
+
+        let evidence: crate::anticipation::Evidence = serde_json::from_str(
+            r#"{"goal":"task:agenda","commitment":{"beneficiary":"the reading group","expectation":"the agenda before Friday","consequence":"the group meets unprepared"}}"#,
+        )
+        .unwrap();
+        let recorded = evidence.commitment.unwrap();
+        assert_eq!(recorded.beneficiary, "the reading group");
+        assert_eq!(recorded.expectation, "the agenda before Friday");
     }
 }
 
