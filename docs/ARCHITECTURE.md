@@ -391,7 +391,8 @@ matched strictly so no other text in a preview is taken for a path to fetch
 **The request is shaped like stable-diffusion.cpp's API, not ComfyUI's.**
 `Request` is prompt, size, steps, seed — model-agnostic — because that is the
 contract a second backend must meet, and ComfyUI's graphs change per model.
-The engine was chosen by measurement on 2026-09-25 (1024², 25 steps, cfg 1):
+The engine was chosen by measurement on 2026-09-25 (1024², cfg 1, **25 steps on
+both engines** — the shipped default is 40, which runs about 65–70 s warm):
 ComfyUI 42 s warm and 15 GB peak, spelling a sign right 3 of 3 times;
 stable-diffusion.cpp 71–80 s and 20–23 GB, right about half the time, and five
 days into its Qwen-Image 2.1 support. Its API is the better long-term fit and
