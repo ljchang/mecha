@@ -250,6 +250,16 @@ pub struct RunContext {
     ///
     /// [`Homeostat`]: crate::homeostat::Homeostat
     pub homeostat: Option<crate::homeostat::Homeostat>,
+    /// The situation this run started in (`APPRAISAL-WIRING-DESIGN.md` B1,
+    /// built as 1h) — assembled by the front-end before the run
+    /// ([`crate::brief::assemble_for_run`]) and **carried, never read**: the
+    /// loop copies it onto the outcome after every exit, beside the
+    /// homeostat, and no request is built from it. Phase 3 delivers it; until
+    /// then `provider/anthropic.rs`'s G4 scan fails if any of it reaches a
+    /// request. `None` on every context a front-end did not assemble one for
+    /// — `eval`, `batch` and the replay probes among them, on the homeostat's
+    /// rule.
+    pub brief: Option<Arc<crate::brief::SituationBrief>>,
     /// Compaction threshold for this run, overriding the agent's own.
     ///
     /// Here rather than only in `AgentConfig` for the same reason the budget
@@ -344,6 +354,7 @@ impl RunContext {
     pub fn new(tools: ToolCtx, approver: Arc<dyn Approver>) -> Self {
         RunContext {
             homeostat: None,
+            brief: None,
             tools: Arc::new(tools),
             approver,
             budget: Budget::default(),
@@ -1149,6 +1160,9 @@ pub struct RunOutcome {
     pub taint: Taint,
     /// Conditions the run happened under, when the caller asked for them.
     pub homeostat: Option<crate::homeostat::Homeostat>,
+    /// The situation brief the front-end assembled for this run, copied off
+    /// [`RunContext::brief`] — recorded, never sent.
+    pub brief: Option<crate::brief::SituationBrief>,
     pub stop_cause: StopCause,
     /// Cost of this run, when the provider has prices configured.
     pub cost_usd: Option<f64>,
@@ -1734,6 +1748,9 @@ impl Agent {
             .homeostat
             .clone()
             .map(|h| h.finish(&pressure, self.context_window));
+        // Carried, never read: the brief is assembled before the run and
+        // recorded after it, and nothing between builds a request from it.
+        outcome.brief = cx.brief.as_deref().cloned();
         Ok(outcome)
     }
 
@@ -2231,6 +2248,7 @@ impl Agent {
                 let mut outcome = RunOutcome {
                     duration_secs: None,
                     homeostat: None,
+                    brief: None,
                     context_overflows: 0,
                     boredom_notices: 0,
                     step_escalations_attempted: 0,
@@ -3411,6 +3429,7 @@ impl Agent {
             // positional `u32` immediately after `compactions`, where a
             // swapped pair of arguments compiles.
             homeostat: None,
+            brief: None,
             context_overflows: 0,
             boredom_notices: 0,
             step_escalations_attempted: 0,
@@ -3560,6 +3579,7 @@ impl Agent {
             blocked_sends,
             taint,
             homeostat: None,
+            brief: None,
             context_overflows: 0,
             boredom_notices: 0,
             step_escalations_attempted: 0,

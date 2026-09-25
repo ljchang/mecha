@@ -1025,7 +1025,18 @@ async fn run_agent(
     // systemd would SIGKILL it, losing the partial answer and the ledger row
     // that says what happened.
     let token = stop.map(CancellationToken::child_token).unwrap_or_default();
-    let cx = RunContext::clone(prepared.agent.context()).with_cancel(token.clone());
+    let mut cx = RunContext::clone(prepared.agent.context()).with_cancel(token.clone());
+    // The situation brief (B1, 1h), after the anchor is seeded: recorded on
+    // the run, delivered nowhere. The board is read here, by the harness,
+    // through this run's own surface — never by the model.
+    setup::brief_run(
+        &prepared.agent,
+        &prepared.config,
+        &prepared.provider_name,
+        &mut cx,
+        &convo,
+    )
+    .await;
     // The three ways a trigger run ends early say which they are: the
     // wall-clock limit and the daemon's own stop (a SIGTERM to the
     // scheduler, reaching this run through the child token above) are the

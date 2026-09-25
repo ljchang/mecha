@@ -693,6 +693,23 @@ impl TriggerStore {
         home.join(STORE_DIR).join(LOCKS_DIR)
     }
 
+    /// Where a trigger store rooted at `root` keeps its run markers,
+    /// without opening it — `open` creates the directory, and a reader
+    /// (the situation brief's) must not write a store into being.
+    pub fn locks_dir_at(root: &Path) -> PathBuf {
+        root.join(LOCKS_DIR)
+    }
+
+    /// Read one trigger's file from the store at `root`, without opening
+    /// the store (see [`locks_dir_at`](Self::locks_dir_at)).
+    pub fn read_at(root: &Path, name: &str) -> Result<Trigger> {
+        TriggerStore {
+            root: root.to_path_buf(),
+            charter: None,
+        }
+        .get(name)
+    }
+
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         crate::create_private_dir(&root).with_context(|| format!("creating {}", root.display()))?;

@@ -268,6 +268,7 @@ mod tests {
             goal_drift_writes: 0,
             goal_unnamed_writes: 0,
             homeostat: None,
+            brief: None,
             text: String::new(),
             stop_reason: mecha_core::message::StopReason::EndTurn,
             usage: mecha_core::Usage::default(),
