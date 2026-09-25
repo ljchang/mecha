@@ -378,7 +378,7 @@ mecha sessions appraise --days 30 --kind web --json
 | `graph_fact_rejections` | Always `null` for now: not readable from mecha. |
 | `tests_hidden`, `experiments_hidden` | Development data excluded from the population. |
 | `probe`, `appraiser` | Results of the optional paid passes, omitted when that pass did not run. |
-| `text_appraisals` | Counts from the [text-appraisal store](#text-appraisals): records, sessions, how many are `clean` and `not_clean`, claims kept and dropped by grounding (`dropped_by`, by reason), and whether the store was fully read. |
+| `text_appraisals` | Counts from the [text-appraisal store](#text-appraisals): records, sessions, how many are `clean` and `not_clean`, claims kept and dropped by grounding (`dropped_by`, by reason), records carrying an expected act (`with_expected_act`), judgment goals that did not resolve (`goals_unresolved`), and whether the store was fully read. |
 
 The signed errors, valence and label above are derived when read and never
 stored. This scan is per **session**, while `sessions health` reports per-run
@@ -392,8 +392,16 @@ what happened relative to what the run was for, why, whether it went well or
 badly for each goal it bore on, what to expect next time, and what your
 reactions suggest you want. There is no score in it, and an emotion word, if
 one appears, is part of the prose. They are kept in
-`~/.mecha/appraisals/appraisals.jsonl`. Nothing writes them yet: the store is
-built and the pass that fills it — the distiller, extended — is the next step.
+`~/.mecha/appraisals/appraisals.jsonl`, one per session, written by
+[`mecha distill`](/docs/features/memory/distillation#the-same-pass-writes-the-sessions-appraisal)
+in a follow-up question on the episode's own conversation, on the local model
+only. Nothing reads them yet except you.
+
+Beside the prose prediction, a record carries an **expected act**. This is
+what the appraiser expects you to do with this kind of output next time — one
+of `released_unchanged`, `edited`, `rejected`, `closed`, `reopened` or
+`no_act` — so that a prediction can later be checked against what you
+actually did, with no model deciding whether it came true.
 
 Three rules hold for every record:
 
@@ -407,12 +415,29 @@ Three rules hold for every record:
   be read.
 - **Only appraisals of clean sessions go further.** Learning, memory and rule
   tenure will read only appraisals of sessions with no third-party content.
-  The rest are stored for you to read and go nowhere else.
+  The rest are stored for you to read and go nowhere else. The one reader
+  today is the appraiser itself: a session's appraisal is shown up to three
+  earlier clean appraisals of the same situation and goal.
+- **A goal is named only if mecha holds it.** A judgment's goal must be a
+  charter line, a task or project on the board, a trigger or a front-door
+  request that exists. Anything else is recorded as no goal and counted.
 
 `mecha sessions appraise` prints the counts:
 
 ```text
   text appraisals on record: 2 over 2 session(s) · 1 clean · 1 not clean (the owner's surfaces only) · claims 2 kept, 2 dropped by grounding (no_such_referent 2)
+```
+
+Given a session id or a unique prefix, it prints that session's appraisal
+instead: the interpretation, its grounded claims, the prediction, the expected
+act and the lessons, under a label saying whether the appraisal is clean.
+`--text` prints every appraisal on record, newest first, and `--json` gives the
+records. Control characters are stripped from every field, because the prose is
+a model's reading of a session that may have held a stranger's text.
+
+```bash
+mecha sessions appraise 20260925T1131     # one session's appraisal
+mecha sessions appraise --text -n 5       # the five newest
 ```
 
 ### The finding: most runs had no label, and why the gate moved
