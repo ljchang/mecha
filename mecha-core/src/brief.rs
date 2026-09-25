@@ -34,10 +34,10 @@
 //! conversation as a tool result arms nothing. No prose from a board row
 //! enters the brief — not a task's name, not who it waits on — only ids the
 //! board minted, counts, statuses and dates. **With delivery on, those
-//! counts and ids do enter the conversation, as [`render`]'s words, and arm
-//! no taint** — nothing in them came from outside, but the private axis is
-//! an open question for the owner (`docs/ARCHITECTURE.md`, the brief's
-//! delivery bullet); the lever ships off until it is answered.
+//! counts and ids do enter the conversation, as [`render`]'s words, and so
+//! arm `private`** (R35, built as 3a-3) — what the board read would have
+//! armed had the model made it; nothing in them came from outside, so
+//! `untrusted` stays unarmed. `docs/TRIFECTA.md` has the row.
 //!
 //! Deferred, named: the owner's recent activity across surfaces (B1 names it,
 //! the 1h row does not), past appraisals of the same situation (I2, phase
