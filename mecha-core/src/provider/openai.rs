@@ -515,13 +515,20 @@ fn dropped_reasoning(produced_output: bool, reasoning: &str) -> Option<DroppedRe
 
 fn log_dropped_reasoning(produced_output: bool, reasoning: &str, finish: Option<&str>) {
     if let Some(d) = dropped_reasoning(produced_output, reasoning) {
+        // Content-free at the default level. An empty turn is in no
+        // transcript, so this line is the only default-level record that one
+        // happened — but the model's reasoning is conversation content, and
+        // the default level is journald's for every web, Slack and voice turn
+        // `serve` runs. The tail went with the whole trace to debug
+        // (INCOGNITO-DESIGN §9 step 0): the counts classify a silence, and
+        // neither the tail nor anything at warn explains one.
         tracing::warn!(
             reasoning_chars = d.chars,
             looks_like_tool_call = d.looks_like_tool_call,
             finish_reason = finish.unwrap_or("<absent>"),
-            tail = d.tail,
             "turn produced no output but the response carried reasoning_content"
         );
+        tracing::debug!(tail = d.tail, "the dropped reasoning's last characters");
         // The whole trace, at debug, because the tail is enough to classify a
         // silence and never enough to explain it. An empty turn is not in the
         // transcript at all — the loop nudges and continues before pushing the
@@ -844,6 +851,65 @@ mod tests {
     /// One SSE chunk carrying a delta for choice 0.
     fn chunk(delta: Value) -> Value {
         json!({"choices": [{"index": 0, "delta": delta}]})
+    }
+
+    /// Everything logged at or below `max`, rendered — a minimal subscriber,
+    /// because `tracing-subscriber` is not a dependency here and the property
+    /// is about what reaches the log, not what the code means to send.
+    fn logged_at(max: tracing::Level, f: impl FnOnce()) -> String {
+        use std::sync::{Arc, Mutex};
+        struct Record(Arc<Mutex<String>>, tracing::Level);
+        struct Fields<'a>(&'a mut String);
+        impl tracing::field::Visit for Fields<'_> {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.0.push_str(&format!("{}={:?} ", field.name(), value));
+            }
+        }
+        impl tracing::Subscriber for Record {
+            fn enabled(&self, meta: &tracing::Metadata<'_>) -> bool {
+                *meta.level() <= self.1
+            }
+            fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+            fn event(&self, event: &tracing::Event<'_>) {
+                let mut line = String::new();
+                event.record(&mut Fields(&mut line));
+                self.0.lock().unwrap().push_str(&line);
+                self.0.lock().unwrap().push('\n');
+            }
+            fn enter(&self, _: &tracing::span::Id) {}
+            fn exit(&self, _: &tracing::span::Id) {}
+        }
+        let out = Arc::new(Mutex::new(String::new()));
+        tracing::subscriber::with_default(Record(Arc::clone(&out), max), f);
+        let text = out.lock().unwrap().clone();
+        text
+    }
+
+    #[test]
+    fn dropped_reasoning_reaches_the_default_log_as_counts_only() {
+        // The default level is journald's for every turn `serve` runs; the
+        // model's reasoning is conversation content and must not land there.
+        let reasoning = format!("{} the secret is KUMQUAT-7731", "thinking ".repeat(20));
+        let at_warn = logged_at(tracing::Level::WARN, || {
+            log_dropped_reasoning(false, &reasoning, Some("stop"))
+        });
+        assert!(
+            at_warn.contains("reasoning_chars"),
+            "the empty turn is still recorded: {at_warn}"
+        );
+        assert!(
+            !at_warn.contains("KUMQUAT"),
+            "reasoning reached the default log: {at_warn}"
+        );
+        // Diagnosis still has it, one level down.
+        let at_debug = logged_at(tracing::Level::DEBUG, || {
+            log_dropped_reasoning(false, &reasoning, Some("stop"))
+        });
+        assert!(at_debug.contains("KUMQUAT"), "{at_debug}");
     }
 
     #[test]
