@@ -354,8 +354,10 @@ workspace**. Six decisions, each a bug if undone:
   and the prompt reaches it as a JSON string value. The tool is typed values
   in, bytes out.
 - **No egress, earned in code.** The schema has no destination and
-  `loopback_url` refuses any server that is not this machine, so the
-  `Capabilities::default()` declaration cannot be configured into a lie, and
+  `loopback_url` refuses any server that is not this machine, and the client
+  follows no redirect and uses no proxy — a 307 on `/prompt` would re-send the
+  prompt wherever it pointed — so the `Capabilities::default()` declaration
+  cannot be configured into a lie, and
   image generation keeps working in a conversation holding mail. `[image]` is
   stripped from project layers, loudly, like `[web]`: a cloned repository must
   not choose where model-written prompts go.

@@ -606,10 +606,21 @@ impl ImageGenerate {
         if !base.path().ends_with('/') {
             base.set_path(&format!("{}/", base.path()));
         }
+        // The vetted address is the only one this client may reach. A
+        // redirect would walk it elsewhere — a 307/308 on `/prompt` re-sends
+        // the body, prompt and all — while the tool goes on declaring no
+        // egress; an inherited proxy setting would route the loopback call
+        // through someone else. `fetch_vetted` treats a redirect as fatal for
+        // the same reason (found on review of #303).
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .build()
+            .context("building the image server's HTTP client")?;
         Ok(ImageGenerate {
             backend: Arc::new(ComfyUi {
                 base,
-                http: reqwest::Client::new(),
+                http,
                 poll: Duration::from_secs(1),
             }),
             cfg,
@@ -1292,6 +1303,50 @@ mod tests {
             seen.iter()
                 .any(|l| l.starts_with("POST /queue") && l.contains("job-1")),
             "the job was left on the server: {seen:?}"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_redirect_never_takes_a_prompt_off_the_vetted_address() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // Elsewhere: any connection here is the leak.
+        let elsewhere = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let away = elsewhere.local_addr().unwrap();
+        let reached = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&reached);
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = elsewhere.accept().await {
+                flag.store(true, Ordering::SeqCst);
+                let _ = sock
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}")
+                    .await;
+            }
+        });
+        // The configured server answers every request with a 307 there.
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let here = server.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = server.accept().await {
+                let mut buf = [0u8; 8192];
+                let _ = sock.read(&mut buf).await;
+                let reply = format!(
+                    "HTTP/1.1 307 Temporary Redirect\r\nlocation: http://{away}/prompt\r\n\
+                     content-length: 0\r\nconnection: close\r\n\r\n"
+                );
+                let _ = sock.write_all(reply.as_bytes()).await;
+            }
+        });
+        let dir = tempdir();
+        let out = tool(&format!("http://{here}"))
+            .call(json!({"prompt": "private words"}), &ctx(&dir))
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !reached.load(Ordering::SeqCst),
+            "the client followed a redirect off the loopback address it was vetted for"
         );
         std::fs::remove_dir_all(dir).ok();
     }
