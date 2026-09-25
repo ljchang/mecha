@@ -1675,6 +1675,9 @@ fn begin_turn(
     let mut cx = (**chat.agent.context()).clone();
     cx.tools = Arc::new(ToolCtx {
         workspace: ws.workspace.clone(),
+        // This session's own, inside its workspace: the agent's is shared by
+        // every session this process serves (`spill_within`).
+        spill_dir: Some(mecha_core::tool::spill_within(&ws.workspace)),
         // A spoken turn's staged drafts are reviewed by ear, and the model
         // must be told so rather than told about a command line — the
         // 2026-09-13 call, where it repeated the default sentence to a
