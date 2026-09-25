@@ -4761,6 +4761,64 @@ recorded clean taint and matching tools/workspace/surface. A startup snapshot
 examines at most 32 recent transcripts of at most 2 MB each and keeps 64 examples.
 It does not add unsolicited lesson delivery. Missing context is never a success.
 
+**A text appraisal is grounded before it is kept, carries its run's taint,
+and only the owner reads a tainted one** (`APPRAISAL-WIRING-DESIGN.md` I1,
+R18, R19; row 2a-1 — the store, whose producer is 2a-2). An appraisal is
+prose (R17): `appraisal_store::TextAppraisal` holds one bounded
+interpretation, good/bad per goal (`Bearing`, nothing finer — a magnitude is
+the number R17 took out), the claims it rests on, a prediction, goal
+hypotheses and lessons, in `~/.mecha/appraisals/appraisals.jsonl` (flock,
+append, `sync_data`). Four decisions, each a bug if undone:
+
+- **The write door grounds, and a caller cannot skip it.**
+  `AppraisalStore::record` takes a `Draft` and a `SessionEvidence`, never a
+  record; a claim is a statement, a `Pointer` and a quote, dereferenced by
+  `grounding::admit` (floor 12 characters, ceiling 300 — containment is not
+  an injection check) and dropped **before storage** when it fails, counted
+  by reason on `TextAppraisal::grounding`. A judgment's `because` is
+  renumbered to the claims kept, so support that was dropped is gone rather
+  than dangling. The cap (`MAX_CLAIMS`) is on grounded claims kept, applied
+  after grounding, so failures at the head of a draft are counted as
+  failures, not as crowding.
+- **The referents are what the run received, never what the agent said.**
+  `result:<tool_use_id>` is a call's result through `grounding::calls` —
+  first seen wins, a stale marker grounds nothing — and `turn:<n>` is the
+  owner's text in message `n` of `messages_ever` — exactly
+  `agent::owner_text`, the one definition the learning locators share, so a
+  quote the renderer shows is the string containment is checked against
+  (a second spelling joined blocks differently; found on review of #308).
+  The assistant's own words are not in the packet: a claim grounded in "I
+  sent it" would be certified by itself.
+- **Provenance is read, never supplied, and from one read.**
+  `SessionEvidence`'s fields are private and come off the transcript, read
+  **once** (`Session::parse` and `messages_ever` over the same bytes — two
+  reads of a session still being appended to are two snapshots, and
+  provenance from the first over referents from the second would stamp clean
+  a packet holding an untrusted result; found on review of #308), and there
+  is no constructor taking a caller's message list: the taint covering the last message,
+  `learning::classify_origin` over it (no checkpoint is unknown, unknown is
+  untrusted), the last goal anchor, and the last run record's situation
+  (`None` when none was recorded — never the standing empty scope). A
+  tainted run's appraisal is **written**, not refused as 1g's comparisons
+  are: it is the owner's to read.
+- **The clean door is a type.** `AppraisalStore::clean` returns
+  `appraisal_store::Clean`, whose constructor is private to the module and
+  admits a row only when its stored origin is clean *and* its stored taint is
+  recorded and untrusted-free — so a hand-edited row where the two disagree
+  is not served. Learning, retrieval, credit and tenure take `Clean`;
+  `for_owner` returns plain `TextAppraisal`s, which no such signature
+  accepts. The load fails closed: an origin word this build cannot read is
+  untrusted, a goal of an unknown kind is no goal, a pointer kind it cannot
+  read is kept verbatim (`Pointer::Unread`) and grounds nothing, a torn line
+  costs itself and is counted, an unreadable file is an error.
+
+The graph episode stays as it is (R25), pinned twice in `distill.rs`: the
+body pushed is the reply's `episode` verbatim with no appraisal field in the
+body or the meta, and `DISTILLER_SYSTEM`'s hash is fixed, so a change to
+what the graph extracts from is a ruling, not a test update. `sessions
+appraise` prints the store's counts — records, clean and not, claims kept
+and dropped by reason (`text_appraisals` in `--json`) — and never its prose.
+
 **Attribution follows the event.** `appraisal::attribute_events` uses the plan at
 the intervention or staging point and typed question/reflection links. Ambiguous
 aggregate counters remain unassigned instead of borrowing the final goal. A task
