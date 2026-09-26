@@ -229,9 +229,6 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -
         .await
         .with_context(|| format!("{base} is not a llama-server router (or is not up)"))?;
     let previous = router::resident(&list).map(str::to_string);
-    if previous.as_deref() == Some(model.as_str()) {
-        return report(cfg, &base, &model, 0.0, json);
-    }
 
     // R4: a preset whose temperature the config would override is refused.
     if let Some(m) = list.iter().find(|m| m.id == model) {
@@ -244,6 +241,12 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -
                 mismatches.join("\n  ")
             );
         }
+    }
+
+    // Already resident is success — after R4, so the model R4 refuses is
+    // refused whatever happens to be loaded (found on review).
+    if previous.as_deref() == Some(model.as_str()) {
+        return report(cfg, &base, &model, 0.0, json);
     }
 
     // R2: the resident model mid-reply is waited for, or — `--now` — cut off.

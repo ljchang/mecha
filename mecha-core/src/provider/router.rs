@@ -145,12 +145,14 @@ pub async fn models(base_url: &str) -> Option<Vec<RouterModel>> {
     if is_router(base_url).await != Some(true) {
         return None;
     }
-    let http = client(Duration::from_secs(2))?;
-    let body = http
-        .get(format!("{}/models", base(base_url)))
-        .send()
-        .await
-        .ok()?;
+    list_on(&client(Duration::from_secs(2))?, &base(base_url)).await
+}
+
+/// `GET /models` on a server already known to be a router, on a client the
+/// caller keeps — what the load and unload polls use, rather than paying a
+/// fresh client and a `/props` check every tick (found on review).
+async fn list_on(http: &reqwest::Client, b: &str) -> Option<Vec<RouterModel>> {
+    let body = http.get(format!("{b}/models")).send().await.ok()?;
     if !body.status().is_success() {
         return None;
     }
@@ -394,7 +396,7 @@ pub async fn unload(base_url: &str, model: &str, wait: Duration) -> Result<()> {
     }
     let deadline = tokio::time::Instant::now() + wait;
     loop {
-        let gone = models(&b)
+        let gone = list_on(&http, &b)
             .await
             .and_then(|l| l.into_iter().find(|m| m.id == model))
             .is_some_and(|m| !m.is_resident());
@@ -458,7 +460,7 @@ pub async fn load(base_url: &str, model: &str, wait: Duration) -> Result<()> {
     let deadline = started_at + wait;
     let mut started = false;
     loop {
-        if let Some(list) = models(&b).await {
+        if let Some(list) = list_on(&http, &b).await {
             if let Some(m) = list.iter().find(|m| m.id == model) {
                 match m.status.value.as_str() {
                     "loaded" | "sleeping" => return Ok(()),
@@ -746,6 +748,8 @@ mod tests {
             1,
             "one short of one slot, floored at one"
         );
+        // Leave the process-global snapshot as a process with no router has it.
+        observe(&Config::default(), false).await;
     }
 
     /// A process given `--model`/`--provider` does not follow, and its permit
@@ -763,6 +767,8 @@ mod tests {
             1,
             "seats still read off the resident model"
         );
+        // Leave the process-global snapshot as a process with no router has it.
+        observe(&Config::default(), false).await;
     }
 
     #[tokio::test]
