@@ -54,9 +54,9 @@ fixed in product code.
 2e-2, 2e-4b, 2e-4c and 2e-5's appraisal-weighted half are merged and
 installed, with 3a and 3a-3.**
 `APPRAISAL-WIRING-DESIGN.md` (#291) is the authority, with its rulings in
-§6 (R30–R38 of 2026-09-25, R39–R41 of 2026-09-26). What each row built is in
-HISTORY: phase 1, 2a-1 to 2a-3, 2b-1, 2c-1, 2c-2, 2d-1, 3a and 3a-3 under
-2026-09-24/25, and 2b-2, 2d-2, 2d-3, 2e-1, 2e-3, 2e-4a, 2e-5a–c, 2e-6 and 2f
+§6 (R30–R37 of 2026-09-25, R38 of 2026-09-25/26, R39–R41 of 2026-09-26).
+What each row built is in HISTORY: phase 1, 2a-1 to 2a-3, 2b-1, 2c-1,
+2c-2, 2d-1, 3a and 3a-3 under 2026-09-24/25, and 2b-2, 2d-2, 2d-3, 2e-1, 2e-3, 2e-4a, 2e-5a–c, 2e-6 and 2f
 (#322, #324, #327–#329, #332, #334–#336, #338) under 2026-09-25/26. `mecha`
 was last installed at 22:40Z from `b3135e1b`, `main`'s tip, and carries
 all of it (*Machine state, dated* below). Nothing that measures phase 2 has
@@ -3868,9 +3868,9 @@ the mechanism and every decision. What it left standing:
 **2026-09-26 — appraisal wiring: phase 1, 3a, 3a-3 and every phase-2 row
 but 2a-4, 2e-2, 2e-4b, 2e-4c and 2e-5's appraisal-weighted half are merged
 and installed.** The authority is `APPRAISAL-WIRING-DESIGN.md`: §3 holds
-the plan as pull requests with their order, and §6 the rulings, R30–R38 of
-2026-09-25 and R39–R41 of 2026-09-26. What each row built is in HISTORY
-under 2026-09-24/25 and 2026-09-25/26. Every catalogue entry phase 2 built
+the plan as pull requests with their order, and §6 the rulings: R30–R37
+of 2026-09-25, R38 of 2026-09-25/26 and R39–R41 of 2026-09-26. What each
+row built is in HISTORY under 2026-09-24/25 and 2026-09-25/26. Every catalogue entry phase 2 built
 ends with a *built* paragraph naming what its PR left, and those are not
 repeated here. Of phase 1's, four (S5, S7, B1 and G4) do the same; S1, S8,
 S3 and O4 carry none, so what 1a, 1b, 1d and 1g deferred is in their PR
