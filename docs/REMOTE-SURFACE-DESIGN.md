@@ -594,7 +594,9 @@ and the paths are this machine's.
 4. *Built:* `mecha model list|use`. Owed: the TUI's `/model` calling it.
 5. The chip's picker and load state.
 6. Retire the drop-in swap and the single-model scripts, moving their
-   comments' reasoning into `LLAMA-SERVER.md`. They stay until the router
+   comments' reasoning into `LLAMA-SERVER.md`, and change `CLAUDE.md`'s
+   "`scripts/start-moe-mtp.sh` is the authority on the flags" to
+   `start-router.sh`. They stay until the router
    has run production for a while, because they are the rollback.
 
 ### Deploying step 1

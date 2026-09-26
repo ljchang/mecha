@@ -403,10 +403,14 @@ pub async fn unload(base_url: &str, model: &str, wait: Duration) -> Result<()> {
     }
     let deadline = tokio::time::Instant::now() + wait;
     loop {
-        let gone = list_on(&http, &b)
-            .await
-            .and_then(|l| l.into_iter().find(|m| m.id == model))
-            .is_some_and(|m| !m.is_resident());
+        // Gone is a list that answered and does not hold it resident —
+        // absent counts, should a router ever drop unloaded entries (this one
+        // keeps them listed). No answer is not gone.
+        let gone = list_on(&http, &b).await.is_some_and(|l| {
+            l.iter()
+                .find(|m| m.id == model)
+                .is_none_or(|m| !m.is_resident())
+        });
         if gone {
             return Ok(());
         }

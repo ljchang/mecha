@@ -174,12 +174,23 @@ if [ "$role" = router ]; then
     get "$BASE/models"
     bounce_skip "$BASE/models"
     [ "$GOT_CODE" = 503 ] && stuck_skip "$BASE/models says the router is still starting"
+    if [ "$GOT_RC" -ne 0 ] || [ "$GOT_CODE" != 200 ]; then
+        echo "model-idle: $BASE/models answered HTTP $GOT_CODE (curl $GOT_RC) — failing so mecha doctor sees it"
+        exit 255
+    fi
     # One line: "<status> <url-to-read>", "none", "many", or nothing on an
-    # answer this cannot read.
+    # answer this cannot read. **"none" is a claim of idleness, so it is only
+    # made from a list this fully understands** (found on review): no list,
+    # an empty one, or a status value it does not know is unreadable, never
+    # "nothing loaded" — the same rule as a renamed `is_processing` below.
     state="$(printf '%s' "$GOT_BODY" | BASE="$BASE" python3 -c '
 import json, os, sys, urllib.parse
-r = [m for m in json.load(sys.stdin).get("data", [])
-     if m.get("status", {}).get("value") in ("loaded", "loading", "sleeping")]
+data = json.load(sys.stdin).get("data")
+known = {"unloaded", "loading", "loaded", "sleeping", "downloading"}
+if not isinstance(data, list) or not data or any(
+        m.get("status", {}).get("value") not in known for m in data):
+    raise SystemExit(2)
+r = [m for m in data if m["status"]["value"] in ("loaded", "loading", "sleeping")]
 if not r:
     print("none")
 elif len(r) > 1:
