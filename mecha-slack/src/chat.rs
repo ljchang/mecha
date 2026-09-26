@@ -6,14 +6,18 @@
 //! same thing: start and stop are Tier 2 while append is Tier 4, which is
 //! Slack expecting many appends per stream.
 //!
-//! **Unfurling is off on everything this module posts, and there is no
-//! parameter to turn it on.** Slack's own security guidance names unfurling as
-//! the step that issues "the immediate, unauthorized HTTP request that would
-//! complete the data exfiltration" — a model-emitted URL becomes an outbound
-//! GET that no tool call ever made and no interlock ever saw. It is the same
-//! reasoning that makes `http_fetch` a send sink despite being read-only, and
-//! making it a function of the transport rather than an argument is what stops
-//! it being forgotten at one call site.
+//! **Unfurling is off on every message this module posts or edits, and there
+//! is no parameter to turn it on.** Slack's own security guidance names
+//! unfurling as the step that issues "the immediate, unauthorized HTTP request
+//! that would complete the data exfiltration" — a model-emitted URL becomes an
+//! outbound GET that no tool call ever made and no interlock ever saw. It is
+//! the same reasoning that makes `http_fetch` a send sink despite being
+//! read-only, and making it a function of the transport rather than an
+//! argument is what stops it being forgotten at one call site.
+//!
+//! **The streaming trio does not set it yet**, and streaming carries a run's
+//! prose. Whether Slack unfurls a streamed message is unverified, so for
+//! streams this is an open gap, not a kept guarantee.
 
 use serde_json::{json, Value};
 
