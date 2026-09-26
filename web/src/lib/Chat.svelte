@@ -556,6 +556,14 @@
     affect = null;
     valence = null;
     sawAffectThisRun = false;
+    // Leaving an incognito chat by any door but End: what was typed or
+    // attached there must not follow you into a chat that is recorded, where
+    // pressing send would write it into a transcript (review of #326). An
+    // ordinary chat's unsent text still travels, as it always has.
+    if (incognito) {
+      draft = '';
+      attachments = [];
+    }
     incognito = false;
     gone = null;
   }
@@ -1002,13 +1010,17 @@
   async function uploadPicked(e) {
     const files = [...(e.target.files ?? [])];
     e.target.value = '';
+    const sessionKey = key;
     for (const f of files) {
       uploading = true;
       try {
         const q = new URLSearchParams({ name: f.name });
-        const res = await fetch(`/api/chat/${key}/upload?${q}`, { method: 'POST', body: f });
+        const res = await fetch(`/api/chat/${sessionKey}/upload?${q}`, { method: 'POST', body: f });
         if (res.status === 410) {
-          closeIncognito('closed');
+          // Only if it is still the chat on screen, as `send` checks: a
+          // switch mid-upload must not strand an ordinary chat on the gone
+          // screen (review of #326).
+          if (sessionKey === key) closeIncognito('closed');
           return;
         }
         if (!res.ok) throw new Error((await res.text()).trim());
