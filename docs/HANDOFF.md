@@ -29,7 +29,12 @@ arcs are in HISTORY under 2026-09-25 and 2026-09-25/26. `image_generate`
 side (#321) and page (#326) are merged and installed at `720feb27`
 (*Machine state* below). What remains, in the design's order (§9): step 4,
 ComfyUI's temp-file cleanup, until which `image_generate` stays withheld
-from an incognito chat (R6); and step 7, unrecorded reads in mecha-graph
+from an incognito chat (R6); step 6's remaining legs — the canary test
+(`an_incognito_chat_leaves_no_trace_and_an_ordinary_one_does`) drives text
+and an upload and scans the mecha home and the runtime directory, but §8
+also asks for an image prompt against a fake image server, a `$TMPDIR` scan
+and captured stderr at the default level, which ride with step 4; and step
+7, unrecorded reads in mecha-graph
 (another repository), until which the graph stays withheld — every graph
 read logs its query text. Three minors from #326's last pass, for the next
 incognito PR: the banner says "after 30 minutes idle" where an open tab now
