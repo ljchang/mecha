@@ -765,11 +765,13 @@ pub enum Seats {
     },
 }
 
-pub fn seats_under(home: &Path) -> Seats {
-    let pool = crate::permit::Permits::new(
-        crate::permit::dir_under(home),
-        crate::permit::DEFAULT_BACKGROUND_PERMITS,
-    );
+/// The background pool under `home`, read against `capacity` — passed in
+/// rather than looked up, so this stays a function of its arguments: the
+/// live capacity comes from the router snapshot, which is process-global,
+/// and a test reading it would see whichever router test ran last (found on
+/// review).
+pub fn seats_under(home: &Path, capacity: usize) -> Seats {
+    let pool = crate::permit::Permits::new(crate::permit::dir_under(home), capacity);
     match pool.read_live() {
         Ok(read) => {
             let mut holders: Vec<String> =
@@ -912,12 +914,30 @@ pub fn slots_of(status: u16, body: &str) -> Slots {
     }
 }
 
+/// Where a run's model is served, for the `/slots` read.
+#[derive(Debug, Clone)]
+pub struct LocalServer {
+    pub base_url: String,
+    /// The run's model. A router (`provider::router`) answers `/slots` only
+    /// for a named model; a single-model server ignores the parameter.
+    pub model: Option<String>,
+}
+
 /// One `GET /slots` against a local server, bounded by [`SLOTS_TIMEOUT`].
-pub async fn read_slots(base_url: &str) -> Slots {
+///
+/// Naming a model always says `autoload=false`: against a router, a reading
+/// that loads the model it reads would swap out the one the owner picked. A
+/// model that is not resident answers 400, read as unread — the run is about
+/// to load it, so no slot of it is ours to count yet.
+pub async fn read_slots(base_url: &str, model: Option<&str>) -> Slots {
     let url = format!(
         "{}/slots",
         base_url.trim_end_matches('/').trim_end_matches("/v1")
     );
+    let query: Vec<(&str, &str)> = match model {
+        Some(m) => vec![("model", m), ("autoload", "false")],
+        None => Vec::new(),
+    };
     let http = match reqwest::Client::builder().timeout(SLOTS_TIMEOUT).build() {
         Ok(h) => h,
         Err(e) => {
@@ -926,7 +946,7 @@ pub async fn read_slots(base_url: &str) -> Slots {
             }
         }
     };
-    match http.get(&url).send().await {
+    match http.get(&url).query(&query).send().await {
         Err(e) => Slots::Unread {
             why: format!("/slots: {e}"),
         },
@@ -1124,9 +1144,9 @@ pub struct Inputs<'a> {
 
 /// The slot reading for a provider: `/slots` when it is a local
 /// llama-server (its base URL), [`Slots::NotLocal`] otherwise.
-pub async fn slots_for(local_server: Option<&str>) -> Slots {
+pub async fn slots_for(local_server: Option<&LocalServer>) -> Slots {
     match local_server {
-        Some(url) => read_slots(url).await,
+        Some(l) => read_slots(&l.base_url, l.model.as_deref()).await,
         None => Slots::NotLocal,
     }
 }
@@ -1166,7 +1186,10 @@ pub fn assemble(inputs: Inputs<'_>) -> SituationBrief {
         board: Some(board_of(board_ref, own_task)),
         commitments: Some(commitments_of(homeostat)),
         time: Some(local_time(now, zone, policy)),
-        seats: Some(seats_under(home)),
+        seats: Some(seats_under(
+            home,
+            crate::provider::router::background_seats(crate::permit::DEFAULT_BACKGROUND_PERMITS),
+        )),
         runs: Some(runs_under(home, triggers_ref, anchor)),
         slots: Some(slots),
         voice: Some(VoicePresence::under(home).read(now)),
@@ -2391,7 +2414,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            seats_under(&home),
+            seats_under(&home, crate::permit::DEFAULT_BACKGROUND_PERMITS),
             Seats::Read {
                 capacity: 3,
                 held: 1,
@@ -2437,7 +2460,7 @@ mod tests {
             "not json",
         )
         .unwrap();
-        let seats = seats_under(&home);
+        let seats = seats_under(&home, crate::permit::DEFAULT_BACKGROUND_PERMITS);
         assert!(
             matches!(
                 seats,
@@ -2480,7 +2503,10 @@ mod tests {
         // A pool that is a file, not a directory, cannot be read.
         let torn = scratch("seats-torn");
         std::fs::write(crate::permit::dir_under(&torn), "not a dir").unwrap();
-        assert!(matches!(seats_under(&torn), Seats::Unread { .. }));
+        assert!(matches!(
+            seats_under(&torn, crate::permit::DEFAULT_BACKGROUND_PERMITS),
+            Seats::Unread { .. }
+        ));
         std::fs::write(crate::runmarker::task_dir_under(&torn), "not a dir").unwrap();
         assert!(matches!(
             runs_under(&torn, Err("no store"), None),
@@ -2491,7 +2517,10 @@ mod tests {
         ));
         // And a fresh install: no directory is no holders, never unread.
         let fresh = scratch("seats-fresh");
-        assert!(matches!(seats_under(&fresh), Seats::Read { held: 0, .. }));
+        assert!(matches!(
+            seats_under(&fresh, crate::permit::DEFAULT_BACKGROUND_PERMITS),
+            Seats::Read { held: 0, .. }
+        ));
     }
 
     /// `/slots` read as `model-idle.sh` reads it: a renamed field, an empty
@@ -2542,7 +2571,7 @@ mod tests {
             .unwrap();
             head
         });
-        let slots = read_slots(&format!("http://{addr}/v1")).await;
+        let slots = read_slots(&format!("http://{addr}/v1"), None).await;
         assert_eq!(slots, Slots::Read { total: 3, busy: 1 });
         assert!(
             server.await.unwrap().starts_with("GET /slots "),
@@ -2553,9 +2582,45 @@ mod tests {
         let port = closed.local_addr().unwrap().port();
         drop(closed);
         assert!(matches!(
-            read_slots(&format!("http://127.0.0.1:{port}")).await,
+            read_slots(&format!("http://127.0.0.1:{port}"), None).await,
             Slots::Unread { .. }
         ));
+    }
+
+    /// A named model is read with `autoload=false`, or against a router the
+    /// reading would load the model it reads and swap out the owner's pick.
+    /// A single-model server ignores both parameters — measured on the live
+    /// llama-server (`c841aee`, 2026-09-26): `/slots?model=nonsense&autoload=false`
+    /// answers 200 with its slots — so the same 200 must still parse here.
+    #[tokio::test]
+    async fn a_named_model_is_read_without_being_loaded() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let n = s.read(&mut buf).await.unwrap();
+            let head = String::from_utf8_lossy(&buf[..n]).to_string();
+            let body = r#"[{"is_processing":true}]"#;
+            s.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+            head
+        });
+        let slots = read_slots(&format!("http://{addr}"), Some("gemma-4-26b-a4b")).await;
+        assert_eq!(slots, Slots::Read { total: 1, busy: 1 });
+        let head = server.await.unwrap();
+        assert!(
+            head.starts_with("GET /slots?model=gemma-4-26b-a4b&autoload=false "),
+            "{head}"
+        );
     }
 
     #[test]
