@@ -206,8 +206,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // records both — `load` and `run_configs` each parsed the whole
         // file, twice per session on the nightly's hot path (found on
         // review).
-        let t = match Session::read(path) {
-            Ok(t) => t,
+        // The text is kept: D3 places a correction against everything the
+        // run had read, which a compaction since may have dropped from the
+        // loaded list (`Session::messages_ever_before`), and the second view
+        // must be of the same bytes.
+        let read = std::fs::read_to_string(path)
+            .map_err(anyhow::Error::from)
+            .and_then(|text| Session::parse(path, &text).map(|t| (text, t)));
+        let (text, t) = match read {
+            Ok(read) => read,
             Err(e) => {
                 // A transcript that does not load is not this command's bug to
                 // fix; skip it *without* marking it mined, so a later mecha
@@ -295,13 +302,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     // code over the recorded results, whatever the taint:
                     // nothing it reads reaches a model or a rule.
                     if mecha_core::attribution::in_scope(&r.domain, &r.trigger) {
+                        let ever = ever_before(&text, &convo.messages, intervention.at);
                         r.attribution = Some(mecha_core::attribution::decide(
                             &answer,
                             &intervention.text,
-                            &mecha_core::attribution::Given::before(
-                                &convo.messages,
-                                intervention.at,
-                            ),
+                            &given_in(ever.as_deref()),
                         ));
                     }
                     r.goals = if intervention.trigger == Trigger::Mismatch {
@@ -852,6 +857,29 @@ fn rejection_intervention(item: &mecha_core::outbox::OutboxItem) -> Option<Inter
         tools_before: vec![item.tool.clone()],
         tools_after: Vec::new(),
     })
+}
+
+/// What the run had been given before the correction at `at` of the loaded
+/// list: everything recorded before that message, compacted since or not —
+/// `thin_old_results` truncates a result in place, so the loaded list can
+/// hold the right value in full and the wrong one cut off, which reads as
+/// a behaviour error over what was a data error (found on review of #332).
+/// A correction that cannot be placed in the record is unreadable.
+fn ever_before(
+    text: &str,
+    messages: &[mecha_core::message::Message],
+    at: usize,
+) -> Option<Vec<mecha_core::message::Message>> {
+    messages
+        .get(at)
+        .and_then(|m| Session::messages_ever_before(text, m))
+}
+
+fn given_in(ever: Option<&[mecha_core::message::Message]>) -> mecha_core::attribution::Given<'_> {
+    match ever {
+        Some(ever) => mecha_core::attribution::Given::before(ever, ever.len()),
+        None => mecha_core::attribution::Given::unreadable(),
+    }
 }
 
 /// What a rejected draft's run had been given when it staged the draft:
@@ -1680,5 +1708,110 @@ mod tests {
             before,
             "free the second time"
         );
+    }
+
+    /// A correction is placed against everything the run had read, not the
+    /// list a compaction left (review of #332). `thin_old_results` cuts an
+    /// old result in place with no stale marker, so against the loaded list
+    /// the wrong value is gone from the result that carried it while the
+    /// right one rides in full in a newer result: a data error read as the
+    /// agent's. A correction the record holds twice cannot be placed, and one
+    /// an extension grew afterwards still is.
+    #[test]
+    fn a_correction_is_placed_against_what_the_run_read_before_compaction() {
+        use mecha_core::attribution::{decide, Answer, Basis, Class, Fact};
+        use mecha_core::message::{Block, Message};
+        let root = scratch("reflect-attribution-thinned");
+        std::fs::create_dir_all(&root).unwrap();
+        let s = session_in(&root, "/w", None);
+        let call = |id: &str, name: &str| {
+            Message::assistant(vec![Block::ToolUse {
+                id: id.into(),
+                name: name.into(),
+                input: serde_json::json!({"name": "Dana Whitfield"}),
+            }])
+        };
+        let result = |id: &str, content: &str| {
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: id.into(),
+                content: content.into(),
+                is_error: false,
+            }])
+        };
+        let long = format!(
+            "Dana Whitfield. {} employer: Northwind Labs.",
+            "x ".repeat(400)
+        );
+        let thinned = format!("{}{}", &long[..200], mecha_core::compact::TRUNCATION_MARKER);
+        let correction = "No, she moved to Lakeside Institute.";
+        let head = vec![
+            Message::user("Where does Dana work?"),
+            call("t1", "kg_entity"),
+            result("t1", &long),
+            call("t2", "kg_search"),
+            result("t2", "Lakeside Institute: new staff this spring."),
+            Message::assistant(vec![Block::text("Dana works at Northwind Labs.")]),
+        ];
+        for m in &head {
+            s.append(&Record::Message(m.clone())).unwrap();
+        }
+        let mut rewritten = head.clone();
+        rewritten[2] = result("t1", &thinned);
+        s.append(&Record::Rewrite {
+            messages: rewritten,
+        })
+        .unwrap();
+        s.append(&Record::Message(Message::user(correction)))
+            .unwrap();
+
+        let answer = Answer::Fact(Fact {
+            wrong: "Northwind Labs".into(),
+            right: Some("Lakeside Institute".into()),
+        });
+        let text = std::fs::read_to_string(&s.path).unwrap();
+        let t = Session::parse(&s.path, &text).unwrap();
+        let at = t.convo.messages.len() - 1;
+        assert!(!t.convo.messages[2].text().contains("Northwind"), "thinned");
+        let a = decide(
+            &answer,
+            correction,
+            &given_in(ever_before(&text, &t.convo.messages, at).as_deref()),
+        );
+        assert_eq!((a.class, a.basis), (Class::Data, Basis::WrongGiven));
+        assert_eq!(a.source.unwrap().call, "t1");
+
+        // Grown by an extension after it was recorded: still the one record.
+        s.append(&Record::Extend {
+            index: at,
+            blocks: vec![Block::text("(calendar reference)")],
+        })
+        .unwrap();
+        let text = std::fs::read_to_string(&s.path).unwrap();
+        let t = Session::parse(&s.path, &text).unwrap();
+        assert_eq!(t.convo.messages[at].content.len(), 2, "extended");
+        let a = decide(
+            &answer,
+            correction,
+            &given_in(ever_before(&text, &t.convo.messages, at).as_deref()),
+        );
+        assert_eq!((a.class, a.basis), (Class::Data, Basis::WrongGiven));
+
+        // Said twice, word for word: which one is this is not placeable.
+        s.append(&Record::Message(Message::assistant(vec![Block::text(
+            "Noted.",
+        )])))
+        .unwrap();
+        s.append(&Record::Message(Message::user(correction)))
+            .unwrap();
+        let text = std::fs::read_to_string(&s.path).unwrap();
+        let t = Session::parse(&s.path, &text).unwrap();
+        let at = t.convo.messages.len() - 1;
+        let a = decide(
+            &answer,
+            correction,
+            &given_in(ever_before(&text, &t.convo.messages, at).as_deref()),
+        );
+        assert_eq!((a.class, a.basis), (Class::Unknown, Basis::NoRecord));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
