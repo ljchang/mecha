@@ -19,7 +19,16 @@ use std::path::Path;
 /// no session were a test.
 pub fn derive(dir: &Path, sources: &Sources<'_>) -> Successes {
     match SessionIndex::load(dir) {
-        Ok(index) => success::derive(sources, &index),
+        Ok(index) => {
+            let mut set = success::derive(sources, &index);
+            // A header that did not read is a session this read cannot
+            // place — possibly a smoke test, counted here as not one — so
+            // the set is short, by name, as for every other store.
+            if index.skipped > 0 {
+                set.unreadable.push("session store");
+            }
+            set
+        }
         Err(_) => {
             let mut set = success::derive(sources, &NoSessions);
             set.unreadable.push("session store");
@@ -162,9 +171,14 @@ pub fn run(dir: &Path, json: bool, exemplars: bool, limit: Option<usize>) -> Res
     let stores = mecha_core::appraisal::Stores::load();
     let mut set = derive(dir, &Sources::of(&stores));
     // Newest first, like every other listing here.
-    set.standing.sort_by_key(|s| std::cmp::Reverse(s.at));
-    set.withdrawn.sort_by_key(|w| std::cmp::Reverse(w.at));
-    set.exemplars.sort_by_key(|e| std::cmp::Reverse(e.sent_at));
+    // Undated rows last: `None < Some`, so a bare `Reverse` put them first,
+    // where `-n` let them crowd out the newest (found on review).
+    set.standing
+        .sort_by_key(|s| (s.at.is_none(), std::cmp::Reverse(s.at)));
+    set.withdrawn
+        .sort_by_key(|w| (w.at.is_none(), std::cmp::Reverse(w.at)));
+    set.exemplars
+        .sort_by_key(|e| (e.sent_at.is_none(), std::cmp::Reverse(e.sent_at)));
     // The counts are the whole set's; `-n` caps only the listings.
     let summary = line(&set);
     let mut listed = full_json(&set, exemplars);
@@ -172,8 +186,9 @@ pub fn run(dir: &Path, json: bool, exemplars: bool, limit: Option<usize>) -> Res
         set.standing.truncate(n);
         set.withdrawn.truncate(n);
         set.exemplars.truncate(n);
+        set.unknown.truncate(n);
         let capped = full_json(&set, exemplars);
-        for key in ["successes", "withdrawals"] {
+        for key in ["successes", "withdrawals", "unknowns"] {
             listed[key] = capped[key].clone();
         }
         if exemplars {
@@ -270,6 +285,18 @@ mod tests {
         assert!(l.contains("served to no run"), "{l}");
         assert_eq!(summary_json(&set)["exemplars"]["served"], false);
         assert_eq!(summary_json(&set)["partial"], true);
+    }
+
+    /// A transcript whose header does not read is a short session store —
+    /// it may have been a smoke test this read counts as not one.
+    #[test]
+    fn a_torn_transcript_makes_the_set_partial() {
+        let dir = std::env::temp_dir().join(format!("mecha-torn-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("s-torn.jsonl"), "{\"record\":\"me").unwrap();
+        let set = derive(&dir, &Sources::default());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(set.unreadable.contains(&"session store"), "{set:?}");
     }
 
     /// A session store that cannot be listed is a short read, not a store

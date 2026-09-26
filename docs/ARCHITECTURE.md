@@ -4600,8 +4600,10 @@ Decisions, each a bug if undone:
   (read from the store that owns it), applied to the positive half.
 - **Unknown is never a success.** A closure whose `actor` this build cannot
   read, an answered question whose session is not in the store or whose
-  outcome cannot be read: each is listed as unknown, with why, and counted in
-  no standing total. An answered question whose session did not complete is
+  outcome cannot be read — including an outcome whose `stop_cause` is absent,
+  which `lenient_stop_cause` makes of a variant this build cannot name, and
+  which is unknown, never "did not finish" (found on review): each is listed
+  as unknown, with why, and counted in no standing total. An answered question whose session did not complete is
   neither: asking was not shown to be right, as the appraisal reads it.
 - **Owner acts only, never self-judged success.** No appraisal's `good`, no
   model's account and no counter enters the set; the one harness fact read is
@@ -4609,9 +4611,12 @@ Decisions, each a bug if undone:
 - **Tests are hidden, not counted.** A success whose every named session is
   one `runlog::Scan::admits` refuses (smoke-test, experiment) is counted as
   hidden; one that names no session is kept, since a missing session id is
-  not evidence of a test. A session store that cannot be listed makes the
-  set partial by name (`session store`), like a short outbox, closure,
-  workflow or question store.
+  not evidence of a test. A session store that cannot be listed, **or
+  holds one transcript whose header does not read**, makes the set partial
+  by name (`session store`), like a short outbox, closure, workflow or
+  question store: a torn header is `Missing`, so a torn smoke-test session's
+  success would otherwise stand as real with nothing saying the read was
+  short (`SessionIndex::skipped`, found on review).
 - **The exemplar is the draft, verbatim, and served to no run.** Each
   standing draft sent unchanged carries a writing exemplar: its tool, the
   arguments that went out, a `Situation` keyed on the drafting tool alone (as
