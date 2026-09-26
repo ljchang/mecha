@@ -1160,6 +1160,21 @@ impl AppraisalStore {
             .map(|r| r.id))
     }
 
+    /// The sessions with an appraisal on record, clean or not — ids only,
+    /// so a reader that must count a withheld appraisal (row 2e-1's
+    /// "clean for one source only") never holds its text. And how many
+    /// lines were skipped: a torn line names no session.
+    pub fn sessions_on_record(&self) -> Result<(std::collections::BTreeSet<String>, usize)> {
+        let (rows, skipped) = self.for_owner()?;
+        Ok((
+            rows.into_iter()
+                .map(|r| r.session_id)
+                .filter(|s| !s.trim().is_empty())
+                .collect(),
+            skipped,
+        ))
+    }
+
     /// Every record, oldest first, and how many lines were skipped — **for
     /// the owner's surfaces only**. A missing file is an empty store; a file
     /// that cannot be read is an `Err`.

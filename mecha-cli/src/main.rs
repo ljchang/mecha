@@ -8,6 +8,7 @@ mod editor;
 mod exe;
 mod harness_probe;
 mod interrupt;
+mod lesson_pass;
 mod logs;
 mod pointwise_pass;
 mod probe;

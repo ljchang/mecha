@@ -709,6 +709,34 @@ pub(crate) fn comparisons_line(on_record: &OnRecord) -> String {
     }
 }
 
+/// What the lesson-source report reads (row 2e-1): `Ok(None)` when there is
+/// nothing to report, `Err` when a store could not be read.
+type LessonsOnRecord = std::result::Result<Option<mecha_core::lesson_source::Report>, String>;
+
+fn lesson_sources_json(on_record: &LessonsOnRecord) -> serde_json::Value {
+    match on_record {
+        Err(e) => serde_json::json!({"read": false, "error": e}),
+        Ok(None) => lesson_sources_json(&Ok(Some(mecha_core::lesson_source::Report::default()))),
+        Ok(Some(report)) => {
+            let mut v = crate::lesson_pass::report_json(report);
+            if let Some(o) = v.as_object_mut() {
+                o.insert("read".into(), serde_json::json!(true));
+            }
+            v
+        }
+    }
+}
+
+fn lesson_sources_lines(on_record: &LessonsOnRecord) -> Vec<String> {
+    match on_record {
+        Err(e) => vec![format!(
+            "lessons by source: a store could not be read ({e})"
+        )],
+        Ok(None) => vec!["lessons by source: no reflection on record".into()],
+        Ok(Some(report)) => crate::lesson_pass::report_lines(report),
+    }
+}
+
 /// What the text-appraisal store holds (row 2a-1): `Ok(None)` when there is
 /// no store yet, `Err` when it could not be read. Counts only — the owner's
 /// door reads the prose, and this readout prints none of it.
@@ -1517,6 +1545,9 @@ async fn appraise(
     let stored = comparisons_on_record();
     // The text-appraisal store (row 2a-1), counted the same way.
     let text_appraisals = text_appraisals_on_record();
+    // Lessons by source (row 2e-1): read from the learning, appraisal and
+    // comparison stores — free, so it is read every time.
+    let lesson_sources = crate::lesson_pass::on_record();
 
     if json {
         println!(
@@ -1582,6 +1613,11 @@ async fn appraise(
                 "probe": probe.then(|| probe_json(tally, budget)),
                 "comparisons": comparisons_json(&stored),
                 "text_appraisals": text_appraisals_json(&text_appraisals),
+                // Row 2e-1, R25's gate for 2a-4: each source's validation
+                // rate per intervention region, counts beneath; a rate is
+                // `null` over nothing decided, and an unreadable store is
+                // `read: false`, never an empty report.
+                "lesson_sources": lesson_sources_json(&lesson_sources),
                 // Anticipation's predictions scored (row 2b-1): store-wide,
                 // whatever `--days` narrowed the sessions to — a draft's
                 // outcome can arrive long after its session. Coverage
@@ -1672,6 +1708,10 @@ async fn appraise(
     // before the early return — an empty walk still has a store to report.
     println!("  {}\n", comparisons_line(&stored));
     println!("  {}\n", text_appraisals_line(&text_appraisals));
+    for line in lesson_sources_lines(&lesson_sources) {
+        println!("  {line}");
+    }
+    println!();
     println!("  {}\n", predictions_line(&calibration, outbox_unreadable));
     println!(
         "  {}\n",

@@ -74,6 +74,11 @@ pub enum Kind {
     PointEditedDraft,
     PointRejectedDraft,
     PointSurprise,
+    /// `mecha learn --compare-sources` (row 2e-1, R25): at an intervention
+    /// the reflector reflected on, the recorded prompt with no rules against
+    /// the same with the reflector's lesson and with the session appraisal's
+    /// lessons — shadow, measurement only (`lesson_source`).
+    LessonSource,
     /// A kind a newer build wrote (phases 3 and 5 add in-run and mid-run
     /// comparisons).
     #[default]
@@ -142,6 +147,12 @@ pub enum Role {
     /// it: a rule set (the learn gate), or a harness config change applied
     /// over the recorded config (R26's point-wise half, row 2d-2).
     Candidate,
+    /// The recorded prompt with no rules but the reflector's lesson for this
+    /// intervention, in the learned-rules frame (row 2e-1).
+    ReflectorLesson,
+    /// The recorded prompt with no rules but the lessons of the session's
+    /// clean text appraisal, in the same frame (row 2e-1).
+    AppraisalLesson,
     #[default]
     #[serde(other)]
     Unknown,
@@ -310,6 +321,9 @@ pub struct Pointers {
     /// The proposal the gate wrote about the candidate measured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposal_id: Option<String>,
+    /// The text appraisal whose lessons an arm carried (row 2e-1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appraisal_id: Option<String>,
     /// The recorded tool surface the replay was faithful to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools_hash: Option<String>,

@@ -407,7 +407,7 @@ pub fn point_comparison(
 
 /// Take a background seat, waiting up to [`SEAT_WAIT`]. `None` when the
 /// pool stayed full.
-async fn take_seat(
+pub(crate) async fn take_seat(
     pool: &mecha_core::permit::Permits,
     what: &str,
 ) -> Result<Option<mecha_core::permit::Held>> {
