@@ -309,6 +309,11 @@ impl ChatState {
             // goes now, and a run still finishing removes it again on its
             // way out (`begin_turn`'s hand-back).
             if let Some(room) = ws.session.room() {
+                // The same close as End's (`close_incognito_locked`), in the
+                // same order — plan, then room — so the two paths do not drift.
+                if let Some(todo) = &self.todo {
+                    todo.forget_in(&ws.workspace);
+                }
                 if let Err(e) = room.remove() {
                     tracing::warn!("an incognito room was not removed at shutdown: {e:#}");
                 }
@@ -361,8 +366,9 @@ impl ChatState {
                 .iter()
                 .map(|t| (t.name(), t.read_only())),
             &routed,
-            mecha_core::sandbox::Sandbox::new(self.config.sandbox.clone())
-                .writes_stay_in_workspace(),
+            super::incognito::shell_is_sealed(&mecha_core::sandbox::Sandbox::new(
+                self.config.sandbox.clone(),
+            )),
         );
         let (events, _) = broadcast::channel(512);
         let questions = super::present::Questions::default();
@@ -432,6 +438,18 @@ impl ChatState {
                 }
             }
         });
+    }
+
+    /// Mark an open incognito chat used now; `false` when it is not open.
+    pub(super) async fn room_touch(&self, key: &str) -> bool {
+        let sessions = self.sessions.lock().await;
+        match sessions.get(key).and_then(|ws| ws.session.room()) {
+            Some(room) => {
+                room.touch();
+                true
+            }
+            None => false,
+        }
     }
 
     /// The room of the open incognito chat under `key`, for a test to age.
@@ -537,8 +555,12 @@ pub(super) async fn attachment_workspace(
             .ok_or_else(|| Box::new((StatusCode::NOT_FOUND, "no such session\n").into_response()));
     }
     let session = ensure_session(chat, &mut sessions, key).map_err(|e| {
-        Box::new((StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response())
+        Box::new((super::incognito::status_of(&e), format!("{e:#}\n")).into_response())
     })?;
+    // An upload is use, as a turn is (the page's ping covers it too).
+    if let Some(room) = session.session.room() {
+        room.touch();
+    }
     Ok(session.workspace.clone())
 }
 
@@ -1255,10 +1277,9 @@ fn ensure_session_as<'a>(
         // An incognito chat is opened only through its own door, and one that
         // is not in the map has closed: re-creating it here would give it a
         // transcript under a key that promised it none.
-        anyhow::ensure!(
-            !super::incognito::is_incognito_key(key),
-            "that incognito chat has closed"
-        );
+        if super::incognito::is_incognito_key(key) {
+            return Err(super::incognito::Closed.into());
+        }
         // Picking one back up, or starting one. `Session::load` restores the
         // messages *and* the recorded taint, so a conversation that read a
         // hostile page before the restart still remembers after it.
@@ -1426,7 +1447,7 @@ pub async fn open_incognito(State(state): Chat) -> axum::response::Response {
 }
 
 /// POST /api/incognito/{key}/end — close an incognito chat now: the End
-/// button. 404 when it is not an open incognito chat.
+/// button. 410 when it is not an open incognito chat.
 pub async fn end_incognito(
     State(state): Chat,
     axum::extract::Path(key): axum::extract::Path<String>,
@@ -1441,7 +1462,30 @@ pub async fn end_incognito(
     if chat.close_incognito(&key).await {
         StatusCode::NO_CONTENT.into_response()
     } else {
-        (StatusCode::NOT_FOUND, "no such incognito chat\n").into_response()
+        // Gone, like every other door on a closed key (`incognito::Closed`).
+        (StatusCode::GONE, format!("{}\n", super::incognito::Closed)).into_response()
+    }
+}
+
+/// POST /api/incognito/{key}/alive — the page is open on this chat. An open
+/// page counts as use (owner's ruling, 2026-09-25): it pings while it is
+/// showing the chat, so reading or uploading is not reaped mid-use, and the
+/// idle clock runs only once the tab is closed or the phone sleeps. `410`
+/// once the chat has closed, which is how the page learns it did.
+pub async fn incognito_alive(
+    State(state): Chat,
+    axum::extract::Path(key): axum::extract::Path<String>,
+) -> axum::response::Response {
+    let chat = match chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    if !valid_key(&key) || !super::incognito::is_incognito_key(&key) {
+        return (StatusCode::BAD_REQUEST, "not an incognito chat\n").into_response();
+    }
+    match chat.room_touch(&key).await {
+        true => StatusCode::NO_CONTENT.into_response(),
+        false => (StatusCode::GONE, format!("{}\n", super::incognito::Closed)).into_response(),
     }
 }
 
@@ -1551,7 +1595,7 @@ pub async fn send(
     }
     let ws = match ensure_session(&chat, &mut sessions, &key) {
         Ok(ws) => ws,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
+        Err(e) => return (super::incognito::status_of(&e), format!("{e:#}\n")).into_response(),
     };
 
     // A run in flight: this is steering, folded into the tool-results turn by
@@ -2006,8 +2050,14 @@ fn begin_turn(
         // Either signal marks a task chat: `withheld` is the broader one (a
         // resumed delegation keeps it with `task: None`), and `task` is the
         // belt for a session created before its init was applied (review).
+        // Not for an incognito chat, whose `withheld` is the complement of an
+        // allowlist and names `kg_task_update` whenever the graph registers
+        // it bare — a proxy that read every incognito chat as a task chat
+        // (found on review of #321).
         run_posture: Some(web_posture(
-            ws.task.is_some() || ws.withheld.iter().any(|t| t == "kg_task_update"),
+            ws.task.is_some()
+                || (ws.session.room().is_none()
+                    && ws.withheld.iter().any(|t| t == "kg_task_update")),
             opts.approve_all,
             *ws.mode.lock().unwrap_or_else(|e| e.into_inner()),
             started_by_a_run(),
@@ -2016,6 +2066,8 @@ fn begin_turn(
         // is shared by every session this process serves (`for_session`).
         // An incognito chat's spill is the one beside its room's workspace,
         // in RAM, and goes with the room (`incognito::Room`).
+        // And its shells register in the room, not the mecha home.
+        shell_registry: ws.session.room().map(|room| room.shells.clone()),
         ..match ws.session.room() {
             Some(room) => chat
                 .agent
@@ -2768,7 +2820,7 @@ pub async fn set_mode(
     }
     let ws = match ensure_session(chat, &mut sessions, &key) {
         Ok(ws) => ws,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
+        Err(e) => return (super::incognito::status_of(&e), format!("{e:#}\n")).into_response(),
     };
     // A lock we could not take is a mode that did not change, so it must
     // not be announced as one — that is the staleness bug in miniature, and
@@ -3168,6 +3220,22 @@ pub async fn sessions(State(state): Chat) -> axum::response::Response {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_incognito_turn_registers_its_shells_in_the_room() {
+        // Reads the source, like the test below: the assignment is one field
+        // in front of a `..match` base, the easiest line in the turn to lose
+        // by folding the arms together, and losing it sends an incognito
+        // chat's shells back to `~/.mecha/runs/shells` with every behavioural
+        // test still green — a registration is removed when its command
+        // ends, so no scan after the turn could see it (review of #326).
+        let src = include_str!("chat.rs");
+        let code = src.split("#[cfg(test)]\nmod tests {").next().unwrap_or(src);
+        assert!(
+            code.contains("shell_registry: ws.session.room().map(|room| room.shells.clone()),"),
+            "a served turn no longer points an incognito chat's shells at its room"
+        );
+    }
+
     #[test]
     fn every_served_session_builds_its_turn_context_through_for_session() {
         // Reads the source because there is no reflective way to ask. The

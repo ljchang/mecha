@@ -316,6 +316,10 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
             "/api/incognito/{key}/end",
             axum::routing::post(chat::end_incognito),
         )
+        .route(
+            "/api/incognito/{key}/alive",
+            axum::routing::post(chat::incognito_alive),
+        )
         .route("/api/chat/{key}", get(chat::transcript).post(chat::open))
         .route("/api/chat/{key}/send", axum::routing::post(chat::send))
         .route("/api/chat/{key}/cancel", axum::routing::post(chat::cancel))
@@ -1894,8 +1898,9 @@ mod boundary_tests {
             ))
             .await
             .unwrap();
-        assert!(
-            !reopened.status().is_success(),
+        assert_eq!(
+            reopened.status(),
+            StatusCode::GONE,
             "a closed key does not reopen"
         );
         let revived = app
@@ -1903,8 +1908,9 @@ mod boundary_tests {
             .oneshot(post(&format!("/api/chat/{key}"), ""))
             .await
             .unwrap();
-        assert!(
-            !revived.status().is_success(),
+        assert_eq!(
+            revived.status(),
+            StatusCode::GONE,
             "nor through the ordinary door"
         );
 
@@ -1992,6 +1998,54 @@ mod boundary_tests {
     }
 
     #[tokio::test]
+    async fn an_open_page_keeps_the_chat_and_a_closed_chat_answers_gone() {
+        let _home = crate::testenv::HomeGuard::new("incognito-alive");
+        let Some(_runtime) = RuntimeDir::new() else {
+            return;
+        };
+        let chat = chat::test_chat_answering("noted", true);
+        let app = app(chat.clone());
+        let opened = app
+            .clone()
+            .oneshot(post("/api/incognito", ""))
+            .await
+            .unwrap();
+        let key = body(opened).await["key"].as_str().unwrap().to_string();
+        // Aged past the idle limit, then pinged by the open page: kept.
+        let room = chat.room_of(&key).await.unwrap();
+        room.backdate(incognito::IDLE + std::time::Duration::from_secs(60));
+        let alive = app
+            .clone()
+            .oneshot(post(&format!("/api/incognito/{key}/alive"), ""))
+            .await
+            .unwrap();
+        assert_eq!(alive.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            chat.reap_idle_incognito().await,
+            0,
+            "a pinged chat is in use"
+        );
+        // Ended: the ping says so, and so does every ordinary door.
+        app.clone()
+            .oneshot(post(&format!("/api/incognito/{key}/end"), ""))
+            .await
+            .unwrap();
+        for uri in [
+            format!("/api/incognito/{key}/alive"),
+            format!("/api/chat/{key}"),
+        ] {
+            let r = app.clone().oneshot(post(&uri, "")).await.unwrap();
+            assert_eq!(r.status(), StatusCode::GONE, "{uri}");
+        }
+        let ordinary = app
+            .clone()
+            .oneshot(post("/api/incognito/main/alive", ""))
+            .await
+            .unwrap();
+        assert_eq!(ordinary.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn end_is_only_for_an_open_incognito_chat() {
         let _home = crate::testenv::HomeGuard::new("incognito-end");
         let app = app(chat::test_chat());
@@ -2009,7 +2063,7 @@ mod boundary_tests {
             ))
             .await
             .unwrap();
-        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+        assert_eq!(unknown.status(), StatusCode::GONE);
     }
 
     #[tokio::test]
