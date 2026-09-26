@@ -306,16 +306,8 @@ fn report(cfg: &Config, base: &str, model: &str, secs: f64, json: bool) -> Resul
     let providers: Vec<String> = router::namers(cfg, base, model)
         .map(str::to_string)
         .collect();
-    // One entry is the working case; none or several means default runs keep
-    // the default and swap this back out — said in both outputs, because the
-    // chip reads the JSON (found on review).
-    let warning = (providers.len() != 1).then(|| {
-        format!(
-            "{} provider entries name {model} — default runs will keep the default provider \
-             and swap it back out; `mecha model list` shows which",
-            providers.len()
-        )
-    });
+    // The same rule `observe` warns with, not a re-derivation of it.
+    let warning = router::unfollowable(cfg, base, model);
     if json {
         println!(
             "{}",

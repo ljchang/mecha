@@ -187,6 +187,13 @@ The parts that bite hardest:
 - **Ask what is served (`GET /props` → `model_alias`), don't assert it.**
   llama-server ignores the request's `model` field, so naming one is not
   selecting it — only deciding what gets recorded.
+- **Router mode inverts that** (`scripts/start-router.sh`, built but not yet
+  installed — `REMOTE-SURFACE-DESIGN.md` §14, `LLAMA-SERVER.md` §Router
+  mode). One process serves several models and the request's `model`
+  *selects*: a `follow_loaded` provider takes whichever is loaded
+  (`provider::router`), every probe must name its model with
+  `autoload=false` or it loads it, and a bare `/props` is a placeholder
+  (`model_alias: "llama-server"`, `n_ctx: 0`).
 - **Throughput is wall clock.** The server times a request only while it is
   running, so summing its per-request rates hides queue wait and reads ~4× at
   `-np 1`, on the one configuration that cannot run anything concurrently.

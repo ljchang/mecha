@@ -247,7 +247,27 @@ pub async fn observe(cfg: &Config, follows: bool) -> Vec<String> {
     let mut seen = Vec::new();
     let mut unreadable = Vec::new();
     for b in followed_bases(cfg) {
-        if let Some(list) = models(&b).await {
+        // Silence is kept for "no router here" (not a router, or nothing
+        // listening). A router that *said* it is one and then gave no list
+        // is a finding: unseen, the default would stand and swap the pick
+        // out with nothing in the journal (found on review).
+        let listed = match is_router(&b).await {
+            Some(true) => {
+                match list_on(&client(Duration::from_secs(2)).unwrap_or_default(), &b).await {
+                    Some(list) => Some(list),
+                    None => {
+                        unreadable.push(format!(
+                            "the router at {b} did not answer /models with a model list, so which \
+                         model is loaded is unknown — runs use the default provider, which may \
+                         swap out the model that is loaded"
+                        ));
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+        if let Some(list) = listed {
             if !readable(&list) {
                 unreadable.push(format!(
                     "the router at {b} answered /models with a list this cannot read (empty, or \
@@ -257,6 +277,13 @@ pub async fn observe(cfg: &Config, follows: bool) -> Vec<String> {
                 continue;
             }
             let resident = resident(&list).map(str::to_string);
+            if resident.is_none() && list.iter().filter(|m| m.is_resident()).count() > 1 {
+                unreadable.push(format!(
+                    "the router at {b} has more than one model resident, so which one a run \
+                     follows would be a guess — runs use the default provider, which may swap \
+                     one of them out"
+                ));
+            }
             let slots = match &resident {
                 Some(m) => crate::provider::preflight::fetch(&b, Some(m))
                     .await
@@ -369,41 +396,40 @@ pub fn namers<'a>(cfg: &'a Config, b: &'a str, model: &'a str) -> impl Iterator<
 /// the default's model instead, and the router would swap it back — the owner
 /// loses the pick without being told why.
 fn orphans(cfg: &Config, seen: &[Seen]) -> Vec<String> {
-    let mut out = Vec::new();
-    // The default already naming the resident model is the working case,
-    // however many pinned aliases name it too: `followed` stands on it, and
-    // "leave one" would be wrong advice (found on review).
-    let default_names = |b: &str, model: &str| {
-        cfg.providers.get(&cfg.default_provider).is_some_and(|p| {
-            follows_here(p)
-                && p.base_url.as_deref().map(base).as_deref() == Some(b)
-                && p.model.as_deref() == Some(model)
-        })
-    };
-    for s in seen {
-        let Some(model) = s.resident.as_deref() else {
-            continue;
-        };
-        if default_names(&s.base_url, model) {
-            continue;
-        }
-        match namers(cfg, &s.base_url, model).count() {
-            1 => {}
-            0 => out.push(format!(
-                "the router at {} has {model:?} loaded, but no [providers.*] entry names it \
-                 with that base_url — runs will use the default provider and swap it back out. \
-                 Add an entry with model = {model:?}.",
-                s.base_url
-            )),
-            n => out.push(format!(
-                "the router at {} has {model:?} loaded, and {n} [providers.*] entries name it \
-                 — which one answered would be a guess, so runs keep the default provider. \
-                 Leave one.",
-                s.base_url
-            )),
-        }
+    seen.iter()
+        .filter_map(|s| unfollowable(cfg, &s.base_url, s.resident.as_deref()?))
+        .collect()
+}
+
+/// Why default runs would **not** follow `model` resident on the router at
+/// `b` — no entry names it, or several do — or `None` when they would. The
+/// one statement of the rule, read by `observe` and by `mecha model use`'s
+/// report, which had re-derived it and diverged (found on review).
+///
+/// The default already naming the resident model is the working case,
+/// however many pinned aliases name it too: `followed` stands on it, and
+/// "leave one" would be wrong advice.
+pub fn unfollowable(cfg: &Config, b: &str, model: &str) -> Option<String> {
+    let default_names = cfg.providers.get(&cfg.default_provider).is_some_and(|p| {
+        follows_here(p)
+            && p.base_url.as_deref().map(base).as_deref() == Some(b)
+            && p.model.as_deref() == Some(model)
+    });
+    if default_names {
+        return None;
     }
-    out
+    match namers(cfg, b, model).count() {
+        1 => None,
+        0 => Some(format!(
+            "the router at {b} has {model:?} loaded, but no [providers.*] entry names it with \
+             that base_url — runs will use the default provider and swap it back out. Add an \
+             entry with model = {model:?}."
+        )),
+        n => Some(format!(
+            "the router at {b} has {model:?} loaded, and {n} [providers.*] entries name it — \
+             which one answered would be a guess, so runs keep the default provider. Leave one."
+        )),
+    }
 }
 
 /// The temperature a model's preset starts its child with, off the router's
@@ -421,7 +447,8 @@ pub fn preset_temperature(m: &RouterModel) -> Option<f64> {
 /// its preset (owner's ruling R4, 2026-09-26: such a model is refused).
 ///
 /// Temperature because it is the one sampling value mecha sends on every
-/// request, so it silently overrides the preset — a model loaded under a
+/// request that changes the distribution (`seed` is sent too, but only picks
+/// a draw from it), so it silently overrides the preset — a model loaded under a
 /// config that disagrees with its tuning is un-tuned without a word. An entry
 /// with no `temperature` sends none, and the preset governs.
 pub fn sampling_mismatches(cfg: &Config, b: &str, m: &RouterModel) -> Vec<String> {
@@ -892,6 +919,31 @@ mod tests {
             "seats still read off the resident model"
         );
         // Leave the process-global snapshot as a process with no router has it.
+        observe(&Config::default(), false).await;
+    }
+
+    /// A router that says it is one and then gives no readable answer is a
+    /// finding, not "no router here"; so is a router with two resident.
+    #[tokio::test]
+    async fn a_router_it_cannot_read_is_warned_about_not_taken_for_absent() {
+        let _turn = SNAPSHOT_TESTS.lock().await;
+        let router = r#"{"role":"router","model_alias":"llama-server"}"#;
+        let (url, server) = stub(vec![router, "this is not a model list"]).await;
+        let w = observe(&config_at(&url), true).await;
+        server.await.unwrap();
+        assert!(
+            w.iter().any(|w| w.contains("did not answer /models")),
+            "{w:?}"
+        );
+
+        let two = r#"{"data":[{"id":"a","status":{"value":"loaded"}},{"id":"b","status":{"value":"loaded"}}]}"#;
+        let (url, server) = stub(vec![router, two]).await;
+        let w = observe(&config_at(&url), true).await;
+        server.await.unwrap();
+        assert!(
+            w.iter().any(|w| w.contains("more than one model resident")),
+            "{w:?}"
+        );
         observe(&Config::default(), false).await;
     }
 
