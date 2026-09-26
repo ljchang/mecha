@@ -324,16 +324,22 @@ impl Tally {
         let admission = crate::runlog::Scan::default();
         let mut unscanned = torn;
         for (meta, path) in listed.iter().filter(|(m, _)| admission.admits(m)) {
-            let carrying = match Session::run_configs_streaming(path) {
-                Ok(configs) => configs
-                    .iter()
-                    .any(|c| c.rule_ids.iter().any(|id| wanted.contains(id))),
+            let configs = match Session::run_configs_streaming(path) {
+                Ok(configs) => configs,
                 Err(_) => {
                     unscanned += 1;
                     continue;
                 }
             };
-            if !carrying {
+            // Every rule the run records name, kept: it is also what an
+            // unreadable session marks unknown below, off this one read
+            // rather than a second one that could fail and mark nothing
+            // (found on review of #338).
+            let named: BTreeSet<String> = configs
+                .iter()
+                .flat_map(|c| c.rule_ids.iter().cloned())
+                .collect();
+            if named.is_disjoint(wanted) {
                 continue;
             }
             match Session::read(path) {
@@ -356,10 +362,7 @@ impl Tally {
                 Err(_) => {
                     // Carried one of them, by its run records, and could
                     // not be read: every rule it named is unknown.
-                    let ids: BTreeSet<String> = Session::run_configs_streaming(path)
-                        .map(|cs| cs.into_iter().flat_map(|c| c.rule_ids).collect())
-                        .unwrap_or_default();
-                    out.add(&ids, SessionVerdicts::Unread, wanted);
+                    out.add(&named, SessionVerdicts::Unread, wanted);
                 }
             }
         }
@@ -431,10 +434,15 @@ impl Quiet {
                 reason: "no birth date on the rule to measure the window from".into(),
             },
             Some(b) if now - b < chrono::Duration::days(RECURRENCE_WINDOW_DAYS) => Quiet::TooNew,
-            Some(_) if rec.unreadable > 0 || rec.beyond_cap > 0 => Quiet::Unknown {
+            // The window's own unread sessions only: a transcript whose
+            // header never parsed has no date, so it is not known to be in
+            // the window, and counting it here would switch the report off
+            // for good over one torn file (found on review of #338). The
+            // roster says it in a caveat line instead.
+            Some(_) if rec.unreadable_in_window > 0 || rec.beyond_cap > 0 => Quiet::Unknown {
                 reason: format!(
                     "no run found in its region, but {} session(s) in the window were not read",
-                    rec.unreadable + rec.beyond_cap
+                    rec.unreadable_in_window + rec.beyond_cap
                 ),
             },
             Some(_) => Quiet::Quiet,
@@ -817,6 +825,7 @@ mod tests {
         ));
         let mut torn = rec.clone();
         torn.unreadable = 1;
+        torn.unreadable_in_window = 1;
         assert!(matches!(
             Quiet::of(&scoped("http_fetch", &old), Some(&torn), now),
             Quiet::Unknown { .. }
@@ -825,6 +834,14 @@ mod tests {
             Quiet::of(&scoped("shell", &old), Some(&torn), now),
             Quiet::Recurring { runs: 2 },
             "a match found is a match, whatever else was unread"
+        );
+        // A torn header has no date: it may lie anywhere, so it never
+        // makes the window unknown on its own.
+        let mut undated = rec.clone();
+        undated.unreadable = 1;
+        assert_eq!(
+            Quiet::of(&scoped("http_fetch", &old), Some(&undated), now),
+            Quiet::Quiet
         );
     }
 }

@@ -723,7 +723,10 @@ ported:
   recorded no outcome. A session store that cannot be listed makes every
   rule unknown.
 - **Cost.** The walk reads run records to find the sessions that carried a
-  wanted rule, and builds appraisals only for those. `propose-retirements`
+  wanted rule, and builds appraisals only for those. It is unbounded on
+  purpose, unlike 2e-6's windowed and capped walk: a cap would bias the
+  bound toward recent runs, and a cap honoured as "unread" would make every
+  rule unknown. `propose-retirements`
   walks for probationary rules only. `rules list` and `show` walk unless
   `--no-board`, the TUI's and the web's budget flag, under which both
   readings are "not read".
@@ -736,7 +739,10 @@ admission and the same 500-session walk, `Recurrence::runs`) was matched by:
 **QUIET**. It is matched with the loader's own `Situation::matches`, and a
 rule with no scope matches every run. It is never quiet while younger than
 the window. It is unknown when part of the window was unread or the rule
-has no birth date. Nothing is evicted, no slot changes, and nothing stops
+has no birth date. "Part of the window" counts only what is known to lie in
+it (`Recurrence::unreadable_in_window`): a transcript whose header never
+parsed has no date, so it gets a caveat line in the roster rather than
+switching the report off for good (found on review of #338). Nothing is evicted, no slot changes, and nothing stops
 loading: "the rarely-fired rule that must never expire" above stands as
 written.
 

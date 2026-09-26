@@ -377,6 +377,11 @@ pub struct Recurrence {
     /// Sessions in the window whose run record could not be read — counted,
     /// so a caller can say the counts are floors.
     pub unreadable: usize,
+    /// Of `unreadable`, the admitted sessions in the window whose run
+    /// record could not be read — the part known to lie in the window. A
+    /// transcript whose header does not parse has no date and is counted
+    /// in `unreadable` only.
+    pub unreadable_in_window: usize,
     /// Admitted sessions in the window past [`RECURRENCE_SCAN_CAP`], the
     /// oldest: not walked, so their regions' counts are floors too.
     pub beyond_cap: usize,
@@ -397,6 +402,7 @@ impl Recurrence {
         Recurrence {
             counts,
             unreadable: 0,
+            unreadable_in_window: 0,
             beyond_cap: 0,
             runs: Vec::new(),
         }
@@ -434,7 +440,10 @@ impl Recurrence {
                     }
                     out.runs.extend(run);
                 }
-                Err(_) => out.unreadable += 1,
+                Err(_) => {
+                    out.unreadable += 1;
+                    out.unreadable_in_window += 1;
+                }
             }
         }
         Ok(out)
