@@ -4580,6 +4580,84 @@ door above (`Kind::LessonSource`). Letting either source's lessons *learn* is
   source as it would be learned from, which is what R25 asks about; it is not
   a per-lesson attribution.
 
+### What went right, derived where it is recorded
+
+`APPRAISAL-WIRING-DESIGN.md` L2, row 2e-4a, ruled R40: `success.rs`. The
+learning store holds corrections only; an **owner-verified success** is the
+other half, and every kind is an act the owner already performs, in the
+store that owns it:
+
+- a model's message draft **sent unchanged** (`writing_outcome` is
+  `SentUnchanged` — a publish, a harness-authored item and an edited or
+  rejected draft are not);
+- a task closed **`done`** (1b's closure record) that no reopen undoes;
+- a workflow the owner **closed** (after its verification passed) that no
+  `workflow reopen` took back (`Workflow::owner_dispositions`);
+- a question the owner **answered**, whose session's last run then completed
+  (`Session::episode_stats`, the stop cause the appraisal's question arm
+  reads).
+
+Decisions, each a bug if undone:
+
+- **Derived on every read, never stored.** There is no success store and no
+  ledger of successes, so **a reopen withdraws a success by construction**:
+  the closure and the reopen whose `undoes` names it are read together and
+  the pair is reported withdrawn, never standing. A copied success would
+  outlive the owner taking it back. This is 1d's rule for every owner verdict
+  (read from the store that owns it), applied to the positive half.
+- **Unknown is never a success.** A closure whose `actor` this build cannot
+  read, an answered question whose session is not in the store or whose
+  outcome cannot be read — including an outcome whose `stop_cause` is absent,
+  which `lenient_stop_cause` makes of a variant this build cannot name, and
+  which is unknown, never "did not finish" (found on review): each is listed
+  as unknown, with why, and counted in no standing total. An answered question whose session did not complete is
+  neither: asking was not shown to be right, as the appraisal reads it.
+- **Owner acts only, never self-judged success.** No appraisal's `good`, no
+  model's account and no counter enters the set; the one harness fact read is
+  the recorded stop cause above.
+- **Tests are hidden, not counted — and a session that cannot be placed is
+  unknown.** A success whose every named session is one `runlog::Scan::admits`
+  refuses (smoke-test, experiment) is counted as hidden; one naming an
+  admitted session stands; one that names no session is kept, since an
+  absent session id is not evidence of a test. **One whose named sessions
+  are not in the store** (pruned, or a header that did not read) and none
+  admitted is unknown: whether it was a test cannot be read, and keeping it
+  failed open for drafts, closures and workflows (found on review).
+  `--include-tests` lifts the test admission on `sessions successes`, and
+  `sessions appraise` passes its own flag through, so one readout counts one
+  population (found on review: the successes line hid the tests every other
+  number on the page counted). A session store that cannot be listed, **or
+  holds one transcript whose header does not read**, makes the set partial
+  by name (`session store`), like a short outbox, closure, workflow or
+  question store: a torn header is `Missing`, so a torn smoke-test session's
+  success would otherwise stand as real with nothing saying the read was
+  short (`SessionIndex::skipped`, found on review).
+- **The exemplar is the draft, verbatim, and served to no run.** Each
+  standing draft sent unchanged carries a writing exemplar: its tool, the
+  arguments that went out, a `Situation` keyed on the drafting tool alone (as
+  an edit's lesson is — the item records no surface, and its `workspace` is
+  the drafting jail, which `reflect` never stamps as a key; built through
+  `Situation::of_run`, never a literal, so `known_workspace` stays the only
+  place a workspace key is made), and an
+  `Origin` from `learning::classify_origin` over the staging taint, so a
+  draft written with third-party text in context is `Untrusted`. No model
+  call. **Shadow**: the owner's readout is the only reader —
+  `mecha sessions successes` (`--exemplars` prints each verbatim through the
+  control-character filter every model-prose readout uses; `--json`) and one
+  line in `sessions appraise` (`successes` in `--json`, with
+  `exemplars.served: false`). A lever that serves exemplars to drafting runs
+  is deferred, and must arm `private_data` when it lands, as the brief does
+  (R35): an exemplar is sent mail. Only a `Clean` one could be served.
+- **One known softness.** `OutboxItem::taint` is `#[serde(default)]`, so an
+  item file with the field deleted by hand loads as clean. Every item the
+  outbox has written carries it (the field is as old as the store), and
+  `reflect`'s edit pass reads the same field on the same terms.
+
+Left for later rows: planning success examples and contrast evidence for the
+reflector (2e-4b); staged skill drafts (2e-4c, deferred by R40 until this set
+has been read on real data). Skills stay owner-authored: nothing here writes
+under `~/.mecha/skills/`.
+
 ## The goal system
 
 `docs/GOAL-SYSTEM-DESIGN.md` is the design and is deliberately not rewritten as
