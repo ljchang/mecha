@@ -43,7 +43,8 @@ MODEL="${LLAMA_MODEL:-$(served_model "$HOST")}" || {
 
 slots_configured() {
     served_props "$HOST" "$MODEL" 2>/dev/null \
-      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("total_slots","?"))' 2>/dev/null
+      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("total_slots","?"))' 2>/dev/null \
+      || echo "?"
 }
 
 # One request. Prints the server's reported generation rate.

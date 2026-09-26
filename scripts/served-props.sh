@@ -83,9 +83,16 @@ served_props() {
     fi
     props="$(curl -s -m 5 -w '\n%{http_code}' -G "$base/props" \
         --data-urlencode "model=$model" --data-urlencode "autoload=false")"
-    if [ "${props##*$'\n'}" != 200 ]; then
-        echo "served_props: the router at $base is not serving $model — \`mecha model use $model\` first" >&2
-        return 1
-    fi
+    case "${props##*$'\n'}" in
+        200) ;;
+        000)
+            echo "served_props: the router at $base did not answer" >&2
+            return 1
+            ;;
+        *)
+            echo "served_props: the router at $base is not serving $model — \`mecha model use $model\` first" >&2
+            return 1
+            ;;
+    esac
     printf '%s' "${props%$'\n'*}"
 }

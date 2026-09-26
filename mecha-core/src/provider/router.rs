@@ -995,6 +995,50 @@ mod tests {
         observe(&Config::default(), false).await;
     }
 
+    /// `load` stops at once on a status this build does not know, instead of
+    /// polling until `wait` runs out — the old behaviour this would pass on.
+    #[tokio::test]
+    async fn a_load_that_reports_an_unknown_status_fails_at_once() {
+        let router = r#"{"role":"router","model_alias":"llama-server"}"#;
+        let unloaded = r#"{"data":[{"id":"m","status":{"value":"unloaded"}}]}"#;
+        let renamed = r#"{"data":[{"id":"m","status":{"value":"resident"}}]}"#;
+        let (url, server) = stub(vec![router, unloaded, r#"{"success":true}"#, renamed]).await;
+        let started = std::time::Instant::now();
+        let err = load(&url, "m", Duration::from_secs(30)).await.unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(format!("{err:#}").contains("\"resident\""), "{err:#}");
+        let lines = server.await.unwrap();
+        assert_eq!(lines[2], "POST /models/load HTTP/1.1");
+    }
+
+    /// The boundary that arm sits on: `downloading` is a status this build
+    /// knows, so a load reporting it is waited for, not failed.
+    #[tokio::test]
+    async fn a_load_that_is_downloading_is_waited_for() {
+        let router = r#"{"role":"router","model_alias":"llama-server"}"#;
+        let unloaded = r#"{"data":[{"id":"m","status":{"value":"unloaded"}}]}"#;
+        let downloading = r#"{"data":[{"id":"m","status":{"value":"downloading"}}]}"#;
+        let (url, server) = stub(vec![
+            router,
+            unloaded,
+            r#"{"success":true}"#,
+            downloading,
+            downloading,
+            downloading,
+            downloading,
+        ])
+        .await;
+        let err = load(&url, "m", Duration::from_secs(1)).await.unwrap_err();
+        let said = format!("{err:#}");
+        assert!(said.contains("was not loaded after 1s"), "{said}");
+        assert!(!said.contains("does not know"), "{said}");
+        server.abort();
+    }
+
     #[tokio::test]
     async fn follow_loaded_off_machine_is_said_to_be_ignored() {
         let _turn = SNAPSHOT_TESTS.lock().await;
