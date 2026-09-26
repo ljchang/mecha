@@ -2260,10 +2260,9 @@ brief (which reads the board through the graph server) do not run.
 
 - **Its own door.** `POST /api/incognito` mints `incognito-<22 hex>`; the
   ordinary door refuses the prefix, so a closed incognito key can never come
-  back as a recorded chat, and answers a closed key `410 Gone`
-  (`incognito::Closed`) rather than a 500 the page would retry.
-  `POST /api/incognito/{key}/end` closes one; `…/alive` is the open page's
-  ping.
+  back as a recorded chat. `POST /api/incognito/{key}/end` closes one;
+  `…/alive` is the open page's ping. Every door answers a closed key
+  `410 Gone` (`incognito::Closed`) rather than a 500 the page would retry.
 - **Local only, refused rather than degraded.** The door opens only when the
   chat provider is a loopback server with no `fallbacks` — a `Failover`
   would re-send the conversation to a cloud provider on a transient local
@@ -2310,12 +2309,14 @@ brief (which reads the board through the graph server) do not run.
   rooms before the door opens, for a `serve` that died.
 - Every incognito route answers `Cache-Control: no-store`, and the page
   keeps nothing either: `web/test/no-storage.mjs` fails on any storage API in
-  `web/src`, and a generated picture is not a link in an incognito chat
+  `web/src` or any module it imports (`voice-core.js`'s own preference keys the
+  one argued allowance), and a generated picture is not a link in an incognito chat
   (opening it in a tab writes its address into the browser's history).
 - **The page** (`Chat.svelte`): a second new-chat button beside **+**, a banner
   that does not scroll away and carries the search notice, **End**, no voice
   call, and — on End or a `410` — a screen saying the chat is gone, with the
-  conversation dropped from the tab's memory too.
+  conversation dropped from the tab's memory too: the event stream closes,
+  and an event already in flight is dropped rather than drawn.
 
 The end-to-end test drives the real routes: a turn and an upload carrying a
 canary, a scan of the whole mecha home (nothing while open, nothing after),

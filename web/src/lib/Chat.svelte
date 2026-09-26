@@ -327,6 +327,10 @@
     // EventSource cannot set headers, and never needs to here.
     const source = new EventSource(`/api/chat/${sessionKey}/events`);
     source.onmessage = (raw) => {
+      // An incognito chat that has gone keeps nothing in this tab, and a run
+      // cancelled by End still streams its partial turn: dropped, not drawn
+      // (review of #326). The effect below closes the stream as well.
+      if (gone) return;
       const ev = JSON.parse(raw.data);
       switch (ev.type) {
         case 'delta':
@@ -589,6 +593,8 @@
       const data = await res.json();
       switchTo(data.key);
       incognito = true;
+      // `switchTo` returns early on the same key, and it is what clears this.
+      gone = null;
       queueMicrotask(() => inputEl?.focus());
     } catch (e) {
       pushEntry({ kind: 'notice', text: `incognito is unavailable: ${e?.message ?? e}` });
@@ -599,8 +605,8 @@
     if (!incognito || gone) return;
     try {
       const res = await fetch(`/api/incognito/${key}/end`, { method: 'POST' });
-      // 404 is "already closed" — the promise is kept either way.
-      if (!res.ok && res.status !== 404) {
+      // 410 is "already closed" — the promise is kept either way.
+      if (!res.ok && res.status !== 410) {
         throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
       }
       closeIncognito('ended');
@@ -737,6 +743,9 @@
   // conversation, so switching is just pointing the rendering elsewhere.
   $effect(() => {
     const sessionKey = key;
+    // Read here so the stream closes when an incognito chat goes — its
+    // cleanup below runs — and is not reopened for a chat that is over.
+    if (gone) return;
     const controller = new AbortController();
     let source;
     let retry;

@@ -2063,7 +2063,7 @@ mod boundary_tests {
             ))
             .await
             .unwrap();
-        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+        assert_eq!(unknown.status(), StatusCode::GONE);
     }
 
     #[tokio::test]
