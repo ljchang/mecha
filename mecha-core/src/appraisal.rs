@@ -1135,6 +1135,7 @@ impl Chartered {
 /// **Only the replay draw reads through this today.** `sessions appraise`,
 /// `distill` and `tasks set` each carry their own copy of the assembly; they
 /// could migrate, and the reason they have not is scope, not a difference.
+#[derive(Default)]
 pub struct Stores {
     pub drafts: Vec<crate::outbox::OutboxItem>,
     pub outbox_unreadable: bool,
@@ -1178,6 +1179,24 @@ pub fn load_workflows() -> (Vec<crate::workflow::Workflow>, bool) {
 }
 
 impl Stores {
+    /// The stores that did not load, by name — each one makes every
+    /// appraisal built over them partial, as `SessionRecords::short` reads
+    /// the same seven flags.
+    pub fn unreadable(&self) -> Vec<&'static str> {
+        [
+            ("outbox", self.outbox_unreadable),
+            ("question store", self.questions_unreadable),
+            ("front door", self.frontdoor_unreadable),
+            ("learning store", self.learning_unreadable),
+            ("charter", self.charter_unreadable),
+            ("closure store", self.closures_unreadable),
+            ("workflow store", self.workflows_unreadable),
+        ]
+        .into_iter()
+        .filter_map(|(name, unreadable)| unreadable.then_some(name))
+        .collect()
+    }
+
     /// Read the default stores under the mecha home.
     pub fn load() -> Stores {
         let (charter, charter_unreadable) = load_charter();

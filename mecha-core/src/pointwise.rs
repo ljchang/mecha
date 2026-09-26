@@ -382,7 +382,7 @@ pub fn draw<T>(mut items: Vec<T>, seed: u64, point: impl Fn(&T) -> &Point) -> Ve
 /// [`draw`], then stably re-ordered by the replay priority of each point's
 /// session (`replay_priority::order_by_priority`) — so the points of the
 /// sessions carrying the most regret are compared first, and among equal
-/// priorities the seed still decides. A session `priority` has nothing for
+/// priorities the seed still decides. A session missing from `priorities`
 /// has every factor unknown.
 ///
 /// **Never the harness candidate's draw.** `compare_candidate`'s points are
