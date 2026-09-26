@@ -434,7 +434,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         .collect();
     // Read only when there is a choice to make: `learn-live.sh` runs this
     // on every session close, and a pass with one batch at the floor needs
-    // no corpus walk. Batches below the floor wait whatever their priority.
+    // no corpus walk. Batches below the floor wait whatever their priority:
+    // they are sorted too (unread, so first among the waiting lines), which
+    // moves only where their "waiting for more" line prints.
     if candidates.iter().filter(|b| b.2.len() >= args.min).count() > 1 {
         let sessions_dir = mecha_core::session::Session::default_dir()?;
         let ranker = mecha_core::replay_priority::Ranker::load(&sessions_dir, chrono::Utc::now());

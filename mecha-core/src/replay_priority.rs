@@ -460,6 +460,23 @@ impl Recurrence {
 
 // ─── The ranker ────────────────────────────────────────────────────────
 
+/// One caveat per appraisal store that did not load. Any one of them makes
+/// every appraisal partial and so every session's owner verdicts unknown —
+/// the charter was the only one said, and a torn outbox line took the
+/// verdicts out of every priority with nothing printed (found on review).
+fn store_caveats(stores: &Stores) -> Vec<String> {
+    stores
+        .unreadable()
+        .into_iter()
+        .map(|name| {
+            format!(
+                "the {name} could not be read: every appraisal is partial, so every \
+                 session's owner verdicts are unknown"
+            )
+        })
+        .collect()
+}
+
 /// Everything a priority is read from, loaded once per pass.
 pub struct Ranker {
     now: DateTime<Utc>,
@@ -529,13 +546,7 @@ impl Ranker {
                 None
             }
         };
-        if stores.charter_unreadable {
-            caveats.push(
-                "the charter could not be read: every appraisal is partial, so every \
-                 session's owner verdicts are unknown"
-                    .into(),
-            );
-        }
+        caveats.extend(store_caveats(&stores));
         Ranker::from_parts(now, stores, surprises, recurrence, history, caveats)
     }
 
@@ -929,5 +940,31 @@ mod tests {
         assert_eq!(r.unreadable, 1, "the listing dropped it without a word");
         assert!(r.counts.is_empty());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn every_store_that_makes_an_appraisal_partial_is_named() {
+        assert!(store_caveats(&Stores::default()).is_empty());
+        let torn_outbox = Stores {
+            outbox_unreadable: true,
+            ..Stores::default()
+        };
+        let said = store_caveats(&torn_outbox);
+        assert_eq!(said.len(), 1);
+        assert!(
+            said[0].starts_with("the outbox could not be read"),
+            "{said:?}"
+        );
+        let all = Stores {
+            outbox_unreadable: true,
+            questions_unreadable: true,
+            frontdoor_unreadable: true,
+            learning_unreadable: true,
+            charter_unreadable: true,
+            closures_unreadable: true,
+            workflows_unreadable: true,
+            ..Stores::default()
+        };
+        assert_eq!(store_caveats(&all).len(), 7);
     }
 }
