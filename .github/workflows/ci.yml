@@ -157,7 +157,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: python3 scripts/test_model_idle.py
-      # The router's model lookup, against caches of the shapes that broke it.
+
+  # The router's model lookup (scripts/start-router.sh), against caches of the
+  # shapes that broke it. Its own job for the reason above: a failure here must
+  # not read as the idle gate failing.
+  start-router:
+    name: router lookup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
       - run: python3 scripts/test_start_router.py
 
   # The integration tests skip themselves when a sandbox backend is missing, and

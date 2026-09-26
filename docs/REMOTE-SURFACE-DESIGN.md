@@ -622,8 +622,8 @@ qwen3.6-35b-a3b-uncensored` straight after installing.
 `95887577` in `~/llama.cpp-next`, a separate worktree so the running servers'
 libraries in `~/llama.cpp/build/bin` were never touched). It carries the
 router's own fixes after `c841aee` (an LRU hang, eviction races), the Gated
-DeltaNet normalisation fix and a GB10 decode path, measured at ~14% on
-Qwen3.8. Its `llama-server` has its own RUNPATH, so installing it is a
+DeltaNet normalisation fix and a GB10 decode path — Qwen3.8's Q4_K_M
+decoded 18.2 → 20.7 tok/s on it (+14%, same prompt, back to back). Its `llama-server` has its own RUNPATH, so installing it is a
 rename-swap of `~/.local/bin/llama-server`; the old build stays as the
 rollback. The embedder on :8081 moves to it at its next restart.
 
