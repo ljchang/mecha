@@ -322,7 +322,9 @@ pub const APPRAISAL_INTERPRETATION_CHARS: usize = 600;
 /// How many of one appraisal's lessons ride, and how much of each.
 pub const APPRAISAL_LESSONS_SHOWN: usize = 2;
 pub const APPRAISAL_LESSON_CHARS: usize = 240;
-/// How long one "good for <goal>" may run.
+/// How many of one appraisal's per-goal bearings ride, and how long one
+/// "good for <goal>" may run.
+pub const APPRAISAL_JUDGED_SHOWN: usize = 4;
 pub const APPRAISAL_JUDGED_CHARS: usize = 120;
 
 /// One clean appraisal as the brief carries it: the appraiser's own words,
@@ -394,7 +396,12 @@ impl AppraisalNote {
                 ))
             })
             .collect();
-        if more_lessons {
+        // Counted on the read side too, like the lessons: the ledger is a
+        // wire format, and a row with more judgments than this build's
+        // writer would keep must not ride in full (found on review of #329).
+        let more_judged = judged.len() > APPRAISAL_JUDGED_SHOWN;
+        let judged: Vec<String> = judged.into_iter().take(APPRAISAL_JUDGED_SHOWN).collect();
+        if more_lessons || more_judged {
             clipped = true;
         }
         AppraisalNote {
@@ -1929,11 +1936,15 @@ rationale: the threshold is too low";
                 pointer: crate::appraisal_store::Pointer::Turn(0),
                 quote: "Rowan Vale's appointment is on Thursday".into(),
             }];
-            r.judgments = vec![crate::appraisal_store::Judgment {
-                goal: Some(crate::goal::GoalRef::Task("t1".into())),
-                bearing: Bearing::Bad,
-                because: vec![0],
-            }];
+            // More than the writer's cap, as a hand-edited or newer row
+            // could carry: the reader re-applies its own bound.
+            r.judgments = (0..crate::appraisal_store::MAX_JUDGMENTS + 1)
+                .map(|k| crate::appraisal_store::Judgment {
+                    goal: Some(crate::goal::GoalRef::Task(format!("t{k}x"))),
+                    bearing: Bearing::Bad,
+                    because: vec![0],
+                })
+                .collect();
             rows.push(r);
             episodes.push(id);
         }
@@ -1947,17 +1958,34 @@ rationale: the threshold is too low";
         let brief = e.brief();
         assert!(brief.contains("3 further clean appraisal(s)"), "{brief}");
         assert!(brief.contains("(cut to fit this brief)"), "{brief}");
-        assert!(brief.contains("judged: bad for task:t1"), "{brief}");
+        assert!(brief.contains("judged: bad for task:t0x; "), "{brief}");
+        assert!(
+            !brief.contains("task:t4x"),
+            "four bearings at most: {brief}"
+        );
         assert!(
             !brief.contains("Rowan Vale"),
             "a quote is the run's content: {brief}"
         );
         assert!(!brief.contains("lesson-three"), "two lessons at most");
         let section = &brief[brief.find("what the appraiser wrote").unwrap()..];
-        let most = APPRAISALS_IN_BRIEF
-            * (APPRAISAL_INTERPRETATION_CHARS
-                + APPRAISAL_LESSONS_SHOWN * APPRAISAL_LESSON_CHARS
-                + 200);
+        // Every field's bound, with a fixed allowance for each line's own
+        // words (the session line, `judged:`, `lesson:`, the cut mark) and
+        // the section header — the figure the docs quote.
+        let per_note = APPRAISAL_INTERPRETATION_CHARS
+            + APPRAISAL_LESSONS_SHOWN * (APPRAISAL_LESSON_CHARS + 12)
+            + APPRAISAL_JUDGED_SHOWN * (APPRAISAL_JUDGED_CHARS + 2)
+            + 120;
+        let most = APPRAISALS_IN_BRIEF * per_note + 500;
+        assert!(most <= 11_000, "the documented ceiling: {most}");
+        for note in &e.appraisals {
+            assert!(
+                note.render().chars().count() <= per_note,
+                "{}",
+                note.render()
+            );
+            assert_eq!(note.judged.len(), APPRAISAL_JUDGED_SHOWN);
+        }
         assert!(
             section.chars().count() < most,
             "{} chars",

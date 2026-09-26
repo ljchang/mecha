@@ -3667,8 +3667,10 @@ Two rules are structural rather than instructed:
     lessons). It never carries a claim's quote, which is the appraised run's
     content, and never a number (R21).
   - It is bounded: 6 notes, newest first, one per session; interpretation
-    cut at 600 characters, and at most 2 lessons of 240. That is about 9,000
-    characters in all. A cut is flagged, notes past the cap are counted, and
+    cut at 600 characters, at most 2 lessons of 240, and at most 4 per-goal
+    bearings of 120 (each re-bounded on read: the ledger is a wire format).
+    That is at most about 1,700 characters a note and under 11,000 in all
+    (about 2.8k tokens). A cut is flagged, notes past the cap are counted, and
     an unreadable store, or unparseable lines of one, are said. Every piece is
     flattened to one line first, so a note cannot emit a line that reads as
     the brief's own findings.
