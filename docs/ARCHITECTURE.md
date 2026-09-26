@@ -6021,7 +6021,9 @@ comparison over a chosen set**, with the design written before the run.
   `rules propose-retirements --apply` (the one brake on rules that go
   live as they are derived; a loop without it flatters the learn arm),
   `harness ruminate`, **the nightly's own order and argv**
-  (`scripts/ruminate.sh`): validate is the held-out measurement and
+  (`scripts/ruminate.sh`, less the two shadow measurement passes it runs
+  last — `sessions compare` and `learn --compare-sources` change nothing the
+  next run carries, so an arm would buy only wall clock): validate is the held-out measurement and
   learn marks reflections processed, so learn first would grade the
   rules on their own training data and measure a loop that does not
   ship (the first cut did; found on review) — as child `mecha` verbs
