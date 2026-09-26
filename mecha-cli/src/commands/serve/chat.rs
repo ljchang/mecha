@@ -2175,7 +2175,8 @@ fn begin_turn(
     let outbox_root = chat.outbox_root.clone();
     // The situation brief's inputs that live on the shared state (B1, 1h):
     // taken here, used inside the run's task below.
-    let local_server = crate::setup::local_server_for_brief(&chat.config, &chat.provider_name);
+    let local_server =
+        crate::setup::local_server_for_brief(&chat.config, &chat.provider_name, &chat.model);
     let sampled = chat.agent.context().homeostat.is_some();
 
     let agent = Arc::clone(&chat.agent);

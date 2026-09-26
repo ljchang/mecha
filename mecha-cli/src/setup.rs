@@ -1810,14 +1810,17 @@ pub const BRIEF_BOARD_TIMEOUT_INTERACTIVE: std::time::Duration = std::time::Dura
 pub fn local_server_for_brief(
     config: &mecha_core::config::Config,
     provider: &str,
+    model: &str,
 ) -> Option<mecha_core::brief::LocalServer> {
     let (_, pcfg) = config.provider(Some(provider)).ok()?;
     if pcfg.kind != "local" {
         return None;
     }
+    // The run's model, not the entry's: under `--model` they differ, and a
+    // router answers `/slots` for the model named (found on review).
     Some(mecha_core::brief::LocalServer {
         base_url: pcfg.base_url.clone()?,
-        model: pcfg.model.clone(),
+        model: Some(model.to_string()),
     })
 }
 
@@ -1838,7 +1841,7 @@ pub async fn brief_run(
     convo: &mecha_core::agent::Conversation,
     deadline: std::time::Duration,
 ) {
-    let local = local_server_for_brief(config, provider);
+    let local = local_server_for_brief(config, provider, agent.model());
     // The two reads that wait on another process, taken together.
     let (board, slots) = tokio::join!(
         read_board_for_brief(agent.registry(), &cx.tools, deadline),

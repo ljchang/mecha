@@ -50,6 +50,10 @@ ROUTERS = {
 }
 # A router whose /props is still loading.
 ROUTERS["/r-503props"] = ([{"id": "m", "status": {"value": "loaded"}}], IDLE_SLOT)
+# /models answers this cannot read: each must fail, never read as "nothing loaded".
+ROUTERS["/r-renamed"] = ([{"id": "m", "status": {"value": "resident"}}], IDLE_SLOT)
+ROUTERS["/r-nomodels"] = ([], IDLE_SLOT)
+ROUTERS["/r-500models"] = ([{"id": "m", "status": {"value": "unloaded"}}], IDLE_SLOT)
 # Reads that outlast the script's 5 s budget: a router mid-restart.
 HANGS = {"/r-hangprops/props", "/r-hangmodels/models"}
 SEEN = []  # every path the stub was asked for, in order
@@ -66,6 +70,8 @@ def routed(path):
         if rest.path == "/props":
             # The placeholder a bare /props really answers on a router.
             return 200, {"role": "router", "model_alias": "llama-server"}
+        if rest.path == "/models" and prefix == "/r-500models":
+            return 500, {"error": {"message": "internal"}}
         if rest.path == "/models":
             return 200, {"data": models, "object": "list"}
         if rest.path == "/slots":
@@ -284,6 +290,12 @@ class ModelIdle(unittest.TestCase):
         code, said = self.run_check(f"{self.base}/r-hangmodels/slots")
         self.assertEqual(code, 1)
         self.assertIn("too busy to answer", said)
+
+    def test_a_models_list_it_cannot_read_fails_rather_than_reading_idle(self):
+        # A renamed status, an empty list, a 500: "none" would run the sweep.
+        for route in ["/r-renamed", "/r-nomodels", "/r-500models"]:
+            with self.subTest(route=route):
+                self.assertEqual(self.run_check(f"{self.base}{route}/slots")[0], 255)
 
     def test_two_resident_models_fail_at_once(self):
         self.assertEqual(self.run_check(f"{self.base}/r-many/slots")[0], 255)
