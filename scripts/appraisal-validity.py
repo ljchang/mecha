@@ -339,12 +339,39 @@ def write_scratch_config(home, base_url, model):
 
 def served_model(base_url):
     """Ask the server what it serves (`/props` → `model_alias`); llama-server
-    ignores the request's `model` field, so asserting one would be a guess."""
+    ignores the request's `model` field, so asserting one would be a guess.
+
+    Behind a router (REMOTE-SURFACE-DESIGN §14) a bare `/props` is a
+    placeholder — `model_alias: "llama-server"`, which the router then refuses
+    as a model name — so the answer is the one resident model, read from
+    `/models` only when every status in it is one this knows (the same rule
+    as `scripts/served-props.sh` and `provider::router::readable`)."""
     import urllib.request
 
+    # The server root, as the Rust side and served-props.sh take it: a `/v1`
+    # spelling would otherwise ask `/v1/props`, which llama-server does not serve.
+    base_url = base_url.rstrip("/").removesuffix("/v1").rstrip("/")
     try:
         with urllib.request.urlopen(f"{base_url}/props", timeout=5) as r:
-            alias = json.load(r).get("model_alias")
+            props = json.load(r)
+        if props.get("role") == "router":
+            with urllib.request.urlopen(f"{base_url}/models", timeout=5) as r:
+                data = json.load(r).get("data")
+            known = {"unloaded", "loading", "loaded", "sleeping", "downloading"}
+            if not isinstance(data, list) or not data or any(
+                m.get("status", {}).get("value") not in known for m in data
+            ):
+                sys.exit(f"{base_url}/models is not a list this can read; --appraise will not guess a model")
+            resident = [
+                m["id"] for m in data if m["status"]["value"] in ("loaded", "loading", "sleeping")
+            ]
+            if len(resident) != 1:
+                sys.exit(
+                    f"the router at {base_url} has {len(resident)} models loaded; "
+                    "`mecha model use` one before --appraise"
+                )
+            return resident[0]
+        alias = props.get("model_alias")
     except Exception as e:  # noqa: BLE001 — any failure is "not reachable"
         sys.exit(f"--appraise needs a reachable local server at {base_url}: {e}")
     # `model_alias` is optional on the wire; a run recorded against `None`
