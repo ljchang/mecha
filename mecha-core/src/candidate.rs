@@ -99,13 +99,15 @@ impl Metric {
     /// exists today. PER samples by |TD error| because a surprising transition
     /// carries the most information; here the same argument is made with
     /// headroom, because the appraisal record that would supply a goal error
-    /// was not built when this was. It is now, and its first consumer here
-    /// is a *tiebreak*, not a replacement: `harness_probe::draw_episodes`
-    /// orders equal headroom by the highest-ranked charter line a signed
-    /// error names (`GOAL-SYSTEM-DESIGN.md` §11.1), and |goal error| as a
-    /// priority in its own right is still to come — a run can be
-    /// uninformative about a metric and still be the most instructive thing
-    /// that happened all week.
+    /// was not built when this was. It is now, and since row 2e-6 headroom
+    /// is the *gate* of the selection's order rather than its ranking:
+    /// `harness_probe::selection_order` puts every episode with headroom
+    /// above zero — one that can discriminate — ahead of every one without,
+    /// and among them orders by the replay priority
+    /// (`mecha_core::replay_priority`: |signed error| on the owner's
+    /// verdicts, weighted by charter rank, × how often the situation
+    /// recurs × age decay) — a run can be uninformative about a metric's
+    /// size and still be the most instructive thing that happened all week.
     ///
     /// **It is only ever a priority, never a score.** Drawing the *selection*
     /// slice this way is safe precisely because selection only picks; the

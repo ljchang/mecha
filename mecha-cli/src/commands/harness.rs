@@ -149,6 +149,11 @@ async fn ruminate(
         seed_of(&id),
         from_workspace.as_deref(),
     )?;
+    // What the replay priority could not read — each an unknown factor on
+    // every episode's priority, said rather than read as zero (row 2e-6).
+    for caveat in &pool.caveats {
+        eprintln!("replay priority: {caveat}");
+    }
     let evidence = with_draw_appraisals(
         evidence_for(&model, &slice, harness_history().unwrap_or_default(), &cfg),
         &pool.remainder(),

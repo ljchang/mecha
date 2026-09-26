@@ -459,7 +459,26 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
         let chosen: std::collections::BTreeSet<String> =
             reflexions.iter().map(|r| r.id.clone()).collect();
-        for (r, why) in cover_selection(&surface.flat, &tallies, &pool, &chosen, args.cover) {
+        // The budget is spent in replay-priority order (row 2e-6); read only
+        // when there is a pool to order.
+        let priorities = if pool.len() > 1 {
+            let ranker =
+                mecha_core::replay_priority::Ranker::load(&sessions_dir, chrono::Utc::now());
+            for caveat in ranker.caveats() {
+                eprintln!("replay priority: {caveat}");
+            }
+            ranker.of_sessions(&sessions_dir, pool.iter().map(|r| r.session_id.as_str()))
+        } else {
+            BTreeMap::new()
+        };
+        for (r, why) in cover_selection(
+            &surface.flat,
+            &tallies,
+            &pool,
+            &chosen,
+            args.cover,
+            &priorities,
+        ) {
             covering.insert(r.id.clone(), why);
             reflexions.push(r);
         }
@@ -817,14 +836,16 @@ fn attempt_key(
 
 /// Reflections to add to a pass so every (rule, support region) pair the
 /// ledger has never graded gets exercised: up to `per_pair` replayable
-/// reflections whose recorded window is inside the region, in id order,
-/// skipping any already in the pass. A rule's regions are its `support`
+/// reflections whose recorded window is inside the region, in
+/// replay-priority order (row 2e-6) and then id order, skipping any
+/// already in the pass. A rule's regions are its `support`
 /// when it has any — each sub-region it was seen in, which after a widening
 /// is each sub-region it widened over — and otherwise its scope alone.
 /// Returns each reflection with the pair it covers, for the report.
 ///
 /// Deterministic on purpose, like `hold_out`: a coverage set that moved
-/// between nights would grade a moving target. Reflections the learn pass
+/// between nights would grade a moving target — it moves now only as the
+/// priorities do, which is the owner's acts arriving and sessions ageing. Reflections the learn pass
 /// already consumed are eligible — the question is whether the rule holds
 /// *here*, and a region with nothing unprocessed in it would otherwise
 /// stay ungraded forever — and the caller says so beside the row.
@@ -834,11 +855,23 @@ fn cover_selection(
     pool: &[Reflexion],
     already: &std::collections::BTreeSet<String>,
     per_pair: usize,
+    priorities: &BTreeMap<String, mecha_core::replay_priority::Priority>,
 ) -> Vec<(Reflexion, String)> {
     let mut taken: std::collections::BTreeSet<String> = already.clone();
     let mut out = Vec::new();
     let mut pool: Vec<&Reflexion> = pool.iter().collect();
-    pool.sort_by(|a, b| a.id.cmp(&b.id));
+    // The replay-priority order (row 2e-6), the one the harness selection
+    // and `learn`'s batches use: the budget per pair goes to the
+    // reflection whose session carries the most regret first, the id
+    // breaking ties as the whole order once did. A session with no
+    // priority has every factor unknown.
+    let unread = mecha_core::replay_priority::Priority::unread();
+    mecha_core::replay_priority::sort_by_priority(&mut pool, |r| {
+        (
+            priorities.get(&r.session_id).unwrap_or(&unread),
+            r.id.as_str(),
+        )
+    });
     // One probe's row charges every rule its window exercises, so a pick
     // made for one pair covers every other (rule, region) that window is
     // inside — counted here before it is graded, or twelve standing rules
@@ -1152,7 +1185,7 @@ mod tests {
         ];
         let already: std::collections::BTreeSet<String> = ["a-fetch".to_string()].into();
 
-        let out = cover_selection(&flat, &tallies, &pool, &already, 1);
+        let out = cover_selection(&flat, &tallies, &pool, &already, 1, &Default::default());
         let picked: Vec<(&str, &str)> = out
             .iter()
             .map(|(r, why)| (r.id.as_str(), why.as_str()))
@@ -1168,7 +1201,14 @@ mod tests {
         );
         // The budget is per pair: two per pair takes the standing-domain
         // reflection too, and still nothing from the graded shell region.
-        let out = cover_selection(&flat, &tallies, &pool, &Default::default(), 2);
+        let out = cover_selection(
+            &flat,
+            &tallies,
+            &pool,
+            &Default::default(),
+            2,
+            &Default::default(),
+        );
         let ids: Vec<&str> = out.iter().map(|(r, _)| r.id.as_str()).collect();
         assert_eq!(ids, vec!["a-fetch", "b-fetch", "d-write"]);
         assert!(
@@ -1178,7 +1218,14 @@ mod tests {
         assert!(!ids.contains(&"e-none"), "outside every region");
         // Alone, the standing rule does buy one — the credit needs a pick.
         let alone = vec![("behavior".to_string(), rule("Standing.", Some("r-std")))];
-        let out = cover_selection(&alone, &tallies, &pool, &Default::default(), 1);
+        let out = cover_selection(
+            &alone,
+            &tallies,
+            &pool,
+            &Default::default(),
+            1,
+            &Default::default(),
+        );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0.id, "a-fetch");
         // A window whose last tool is a front-end tool has no focus: its
@@ -1191,8 +1238,23 @@ mod tests {
         };
         let only = vec![("behavior".to_string(), shell_rule)];
         let asked = vec![refl("f-ask", &["shell", "ask_user"], false)];
-        assert!(cover_selection(&only, &tallies, &asked, &Default::default(), 1).is_empty());
-        let out = cover_selection(&only, &tallies, &pool, &Default::default(), 1);
+        assert!(cover_selection(
+            &only,
+            &tallies,
+            &asked,
+            &Default::default(),
+            1,
+            &Default::default()
+        )
+        .is_empty());
+        let out = cover_selection(
+            &only,
+            &tallies,
+            &pool,
+            &Default::default(),
+            1,
+            &Default::default(),
+        );
         assert_eq!(out[0].0.id, "c-shell");
         // A rule's own source reflection is passed over for that rule — a
         // probe replaying the correction it was distilled from grades
@@ -1212,7 +1274,15 @@ mod tests {
         ];
         let shell_only = vec![refl("c-shell", &["shell"], false)];
         assert!(
-            cover_selection(&two, &tallies, &shell_only, &Default::default(), 1).is_empty(),
+            cover_selection(
+                &two,
+                &tallies,
+                &shell_only,
+                &Default::default(),
+                1,
+                &Default::default()
+            )
+            .is_empty(),
             "a reflection any carried rule was distilled from is never a cover pick — the \
              row would charge that rule too"
         );
@@ -1220,16 +1290,113 @@ mod tests {
             refl("c-shell", &["shell"], false),
             refl("g-shell", &["shell", "fs_read"], false),
         ];
-        let out = cover_selection(&two, &tallies, &unrelated, &Default::default(), 1);
+        let out = cover_selection(
+            &two,
+            &tallies,
+            &unrelated,
+            &Default::default(),
+            1,
+            &Default::default(),
+        );
         let picks: Vec<(&str, &str)> = out
             .iter()
             .map(|(r, why)| (r.id.as_str(), why.as_str()))
             .collect();
         assert_eq!(picks, vec![("g-shell", "rule r-sh in shell")]);
         assert!(
-            cover_selection(&flat, &tallies, &pool, &Default::default(), 0).is_empty(),
+            cover_selection(
+                &flat,
+                &tallies,
+                &pool,
+                &Default::default(),
+                0,
+                &Default::default()
+            )
+            .is_empty(),
             "a zero budget adds nothing"
         );
+    }
+
+    /// Row 2e-6: **`learn`'s batches and the validation budget use the same
+    /// order** — the replay priority's. Two shell reflections whose ids sort
+    /// cold-first, from a session with an owner's verdict and one with
+    /// nothing: coverage spends its one slot on the hot one, and `learn`
+    /// argues the hot one's batch first, although both old orders (the id;
+    /// domain then region) put the cold one first.
+    #[test]
+    fn learn_batches_and_the_validation_budget_share_the_priority_order() {
+        use mecha_core::replay_priority::{Inputs, Priority};
+        let p = |owner_gain: f64| {
+            Priority::of(&Inputs {
+                owner_gain: Some(owner_gain),
+                charter_read: true,
+                surprises: Some(0),
+                recurrence: Some(1),
+                age_days: 0.0,
+                hopeless: Some(false),
+            })
+        };
+        let priorities: BTreeMap<String, Priority> = [
+            ("ses-cold".to_string(), p(0.0)),
+            ("ses-hot".to_string(), p(1.0)),
+        ]
+        .into();
+        let refl = |id: &str, session: &str, domain: &str| Reflexion {
+            id: id.into(),
+            session_id: session.into(),
+            domain: domain.into(),
+            situation: Some(Situation::recorded(
+                &["shell".to_string()],
+                "steer",
+                None,
+                None,
+            )),
+            ..reflexion("steer text", Origin::Clean)
+        };
+        let shell_rule = Rule {
+            scope: Some(Situation::of_run(&["shell".to_string()], None)),
+            ..rule("Shell.", Some("r-sh"))
+        };
+        let flat = vec![("behavior".to_string(), shell_rule)];
+        let pool = vec![
+            refl("a-cold", "ses-cold", "behavior"),
+            refl("b-hot", "ses-hot", "behavior"),
+        ];
+        let out = cover_selection(
+            &flat,
+            &Default::default(),
+            &pool,
+            &Default::default(),
+            1,
+            &priorities,
+        );
+        assert_eq!(out[0].0.session_id, "ses-hot");
+        // Without priorities, the id order the budget used to spend in.
+        let out = cover_selection(
+            &flat,
+            &Default::default(),
+            &pool,
+            &Default::default(),
+            1,
+            &Default::default(),
+        );
+        assert_eq!(out[0].0.session_id, "ses-cold");
+
+        let region = Situation::of_run(&["shell".to_string()], None);
+        let mut batches = vec![
+            (
+                "behavior".to_string(),
+                region.clone(),
+                vec![refl("a-cold", "ses-cold", "behavior")],
+            ),
+            (
+                "writing".to_string(),
+                region,
+                vec![refl("b-hot", "ses-hot", "writing")],
+            ),
+        ];
+        super::super::learn::order_batches(&mut batches, &priorities);
+        assert_eq!(batches[0].2[0].session_id, "ses-hot");
     }
 
     #[test]

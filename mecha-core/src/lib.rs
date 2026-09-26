@@ -100,6 +100,7 @@ pub mod quarantine;
 pub mod questions;
 pub mod reading;
 pub mod replay;
+pub mod replay_priority;
 pub mod replay_run;
 pub mod runlog;
 pub mod runmarker;

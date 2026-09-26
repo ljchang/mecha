@@ -363,7 +363,7 @@ with a `mecha exp` arm against EXPERIMENT-DESIGN §15's appraisal-off preset
 | **2e-3** | **Attribute a correction by what the run was given** — mecha-graph's D3 contract ported: data error, behaviour error or gap from `grounding::calls`; a behaviour rule mined only from a behaviour error; a gap a retrieval target. | L7, here §5 | 1d | fixture corrections of each class are routed to their class; no behaviour rule is mined from a data error or a gap |
 | **2e-4** | **Learn from what went right**: owner-verified positives (sent unchanged, answered, `done` and not reopened) as writing exemplars, planning success examples and contrast evidence; a staged skill draft after k successes in one region, proposed only. | L2 | 1d | a draft sent unchanged is mined as an exemplar; a success the owner later reopens is withdrawn; no skill is written without the owner |
 | **2e-5** | **Goal-stamped reflections and per-line tenure**: the anchor as the second source of `Reflexion::goals`; tenure by the Wilson lower bound of the owner-accept rate on the line's owner-verdict channels (`ladder.rs` ported); dormancy for a region that stops recurring (`decay.rs`). Appraisal-weighted tenure only behind R20's guard — the owner's verdict overrides, grounded claims from clean runs only — and as a measured lever against owner-only tenure, with a revert, before it is on. | L3, R20, here §5 | 1a, 1d; the appraisal-weighted half 2a-2 | a rule's tenure moves on owner verdicts by the bound, not a streak; an owner verdict overrides an appraisal's bad; the lever reverts |
-| **2e-6** | **Replay priority is gain × need**: \|signed error\| on owner-verdict channels × charter rank × how often the `Situation` region recurs (the Selector's demand term) × age decay; the hopeless demoted; the holdout still drawn uniformly first; the same order for `learn`'s batches and the validation budget; 2b-2's misses raise it. | L1, here §5 | 1g; 2b-2 for the surprise term | the uniform holdout is unchanged by the ranking; a recurring region outranks a one-off of equal error |
+| **2e-6** | **Replay priority is gain × need**: \|signed error\| on owner-verdict channels × charter rank × how often the `Situation` region recurs (the Selector's demand term) × age decay; the hopeless demoted; the holdout still drawn uniformly first; the same order for `learn`'s batches and the validation budget; 2b-2's misses raise it. | L1, here §5 | 1g; 2b-2 for the surprise term | the uniform holdout is unchanged by the ranking; a recurring region outranks a one-off of equal error — *built; see L1: the Selector's `ln(1 + touches)` ported as the need term, over runs matched in the region* |
 | **2f** | **The diagnostician reads clean appraisals** of the episodes its draw selected, beside its counters, through `Clean` only; `carries_over` covers their text as a source; `candidate::judge` still decides. *Built as 2f, under R38: the draw's first phase (pool and uniform holdout) precedes the diagnosis, and the appraisals are the remainder's, never the holdout's.* | L8, R38 | 2a-2 | a tainted appraisal never reaches `diagnose::Evidence`; a proposal lifting a run of words from an appraisal is refused — *built; see L8* |
 
 **Parallel now**, on phase 1 alone: 2a-1, 2b-1, 2c-1, 2d-1, 2e-3, 2e-4,
@@ -1566,6 +1566,42 @@ any candidate winning are demoted — §9.2's "skip the hopeless". The holdout i
 drawn uniformly first, exactly as now. The same priority orders `learn`'s
 batches and the validation budget, so regret is reflected on first.
 
+*2e-6 built* (`mecha_core::replay_priority`; ARCHITECTURE "Replay
+priority" holds the invariants). Per recorded session:
+
+- **Priority = gain × need × decay.** Gain is Σ |sign| over the errors
+  that record an owner act (`GoalError::is_owner_verdict`: R16's channels,
+  decided by the pointer — never a counter, a sensor or a model's
+  judgment), each × `1 + 1/(1 + rank)` for the charter line it names on a
+  clean-origin record, plus 1.0 per clean miss of the session's appraisal
+  in 2b-2's `scores.jsonl`. Need is `ln(1 + n)`, n the admitted runs of the
+  last 30 days matched in the session's region. Decay halves every 14 days.
+- **What was ported from the Selector** (here §5, R14): mecha-graph's gossip
+  Selector (`mecha-graph-core/src/probe.rs`, `probe_targets`) scores a
+  target `ln(1 + touches) · gaps`, with `touches` from `retrieval_touch` —
+  what retrieval actually served — multiplicative so that demand gates the
+  score. Ported as the *need* term: `touches` becomes the runs matched in
+  the session's `Situation` region (`Situation::region_key`, the key I2
+  compares on), and the ledger's rule that a probe's own reads are not
+  demand (`ledger.rs`) becomes the corpus admission, so test and experiment
+  sessions do not recur. Not ported: the gap term (L1's gain replaces it)
+  and cold sampling (an experiment mode there, and no draw here needs it).
+- **Unknown is never zero and never a free pass.** A factor that cannot be
+  read is named; such an episode ranks after every fully known positive
+  priority and before every known zero, fewer unknowns first.
+- **The hopeless**: in a measured selection slice on 3 distinct nights
+  since anything last won on it (a candidate that selected it accepted, by
+  the gate or the owner; or a comparison preferring a candidate arm on its
+  session) — ranked last.
+- **In the harness selection headroom gates and the priority orders**: an
+  episode with no headroom on the predicted metric can only tie, so every
+  episode with headroom ranks first, then the priority, then §11.1's
+  charter rank, then the id. The holdout is drawn first from ids alone and
+  is unchanged (`the_uniform_holdout_is_unchanged_by_the_ranking`).
+- **`learn`'s batches** rank by their best session's priority before the
+  one-proposal-per-domain brake; **`validate --cover`** spends its per-pair
+  budget in the same order. One function, `replay_priority::order_by_priority`.
+
 #### L8. The diagnostician reads appraisals
 
 `diagnose::Evidence` — the brief the nightly harness diagnostician proposes
@@ -1589,9 +1625,12 @@ the metric the proposal names. So the draw is split, on one seed
   read about.
 - **After the proposal**, the selection is ranked from that same remainder
   by headroom, exactly as before. The split changes nothing about what is
-  measured: `the_split_draw_is_the_single_phase_draw` holds the two-phase
-  draw against the old single-phase body, verbatim, over every metric and
-  several seeds, sizes and holdout rates, element for element and in order.
+  measured: the test held the two-phase draw against the old single-phase
+  body, verbatim, over every metric and several seeds, sizes and holdout
+  rates, element for element and in order. Since 2e-6 (L1) the selection is
+  ranked by replay priority among the episodes with headroom, and the test
+  (`the_split_draw_holds_the_single_phase_holdout_under_the_ranking`) holds
+  the holdout alone to that pre-priority body.
 - **What rides** (`diagnose::AppraisalNote`, built only from `&Clean`): the
   interpretation, good/bad per goal as words, and the lessons — never a
   claim's quote, which is the run's content, and no number (R21). At most
