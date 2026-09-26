@@ -255,6 +255,15 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -
     let list = router::models(&base)
         .await
         .with_context(|| format!("{base} is not a llama-server router (or is not up)"))?;
+    // What is loaded now, only from a list this reads: on an unreadable one
+    // `previous` would be `None`, and both rulings that depend on it — R2's
+    // `--now` and R1's rollback — would silently not happen (found on review).
+    anyhow::ensure!(
+        router::readable(&list),
+        "the router at {base} answered /models with a list this build cannot read (empty, or \
+         a status it does not know), so what is loaded now is unknown — refusing to switch \
+         without it; `mecha model list` shows what it sees"
+    );
     let previous = router::resident(&list).map(str::to_string);
 
     // R4: a preset whose temperature the config would override is refused.

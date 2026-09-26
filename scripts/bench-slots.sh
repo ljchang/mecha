@@ -42,7 +42,7 @@ MODEL="${LLAMA_MODEL:-$(served_model "$HOST")}" || {
 }
 
 slots_configured() {
-    served_props "$HOST" "$MODEL" 2>/dev/null \
+    served_props "$HOST" "$MODEL" \
       | python3 -c 'import json,sys; print(json.load(sys.stdin).get("total_slots","?"))' 2>/dev/null \
       || echo "?"
 }
