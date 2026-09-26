@@ -679,6 +679,13 @@ pub struct ToolCtx {
     /// outside the workspace — `shell` refuses one inside, or a command could
     /// edit its own entry.
     pub shell_registry: Option<PathBuf>,
+    /// A file `image_generate` appends each job's id and every server-side
+    /// file name to *before* the server has them, so whoever holds it can
+    /// take them all back after this process is gone
+    /// (`imagegen::forget_trail`). An incognito chat's, in its room, outside
+    /// the jail. `None` records nothing; the tool still deletes what it can
+    /// when a job ends.
+    pub image_trail: Option<PathBuf>,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -861,6 +868,7 @@ impl Default for ToolCtx {
             step_checks: None,
             run_posture: None,
             shell_registry: None,
+            image_trail: None,
         }
     }
 }
