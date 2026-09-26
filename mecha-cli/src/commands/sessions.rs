@@ -720,7 +720,8 @@ fn lesson_sources_json(on_record: &LessonsOnRecord) -> serde_json::Value {
         Ok(Some(report)) => {
             let mut v = crate::lesson_pass::report_json(report);
             if let Some(o) = v.as_object_mut() {
-                o.insert("read".into(), serde_json::json!(true));
+                // Fully read only when no store skipped a line.
+                o.insert("read".into(), serde_json::json!(report.skipped_lines == 0));
             }
             v
         }
@@ -2530,6 +2531,27 @@ mod probe_readout_tests {
             c.materialized_rate = Some(0.5);
         }
         assert!(predictions_line(&some, false).contains("concern materialised 50%"));
+    }
+
+    /// The lesson-source readout (row 2e-1): a torn line in any store it
+    /// reads makes it `read: false` and says the counts are floors;
+    /// unreadable is not empty.
+    #[test]
+    fn the_lesson_source_readout_is_not_complete_over_a_torn_line() {
+        use super::{lesson_sources_json, lesson_sources_lines};
+        use mecha_core::lesson_source::Report;
+        let whole = Ok(Some(Report::default()));
+        assert_eq!(lesson_sources_json(&whole)["read"], true);
+        let torn = Ok(Some(Report {
+            skipped_lines: 2,
+            ..Report::default()
+        }));
+        assert_eq!(lesson_sources_json(&torn)["read"], false);
+        assert_eq!(lesson_sources_json(&torn)["skipped_lines"], 2);
+        assert!(lesson_sources_lines(&torn).join("\n").contains("floors"));
+        let unreadable = Err("permission denied".to_string());
+        assert_eq!(lesson_sources_json(&unreadable)["read"], false);
+        assert!(lesson_sources_lines(&unreadable)[0].contains("could not be read"));
     }
 
     /// The text-appraisal readout: unreadable is not empty, no store yet is

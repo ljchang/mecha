@@ -320,6 +320,12 @@ pub struct Report {
     /// since comparisons are comparable only within one.
     pub other_models: usize,
     pub regions: Vec<RegionReport>,
+    /// Torn lines skipped in the three stores the report reads —
+    /// reflections, appraisals, comparisons. Set by the caller that read
+    /// them; nonzero makes every count a floor, and can move an exclusion
+    /// (a torn appraisal line reads as `NoAppraisal`), so a reader must not
+    /// call the report complete.
+    pub skipped_lines: usize,
 }
 
 impl Report {
@@ -489,6 +495,7 @@ pub fn report(
         model,
         other_models,
         regions: regions.into_values().collect(),
+        skipped_lines: 0,
     }
 }
 

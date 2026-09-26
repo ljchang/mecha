@@ -102,17 +102,14 @@ fn read_sources() -> Result<Read> {
             .context("reading the reflections")?,
         None => (Vec::new(), 0),
     };
-    let (clean, on_record, appraisals_skipped) =
+    let (clean, on_record) =
         match mecha_core::appraisal_store::AppraisalStore::open_existing_default() {
-            Some(store) => {
-                let clean = store.clean().context("reading the text appraisals")?;
-                let (ids, skipped) = store
-                    .sessions_on_record()
-                    .context("reading the text appraisals")?;
-                (clean, ids, skipped)
-            }
+            Some(store) => store
+                .clean_with_sessions()
+                .context("reading the text appraisals")?,
             None => Default::default(),
         };
+    let appraisals_skipped = clean.skipped;
     Ok(Read {
         reflections,
         reflections_skipped,
@@ -319,13 +316,15 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
 
     // Re-read from the stores: the report is what they hold, never this
     // pass's memory.
-    let report = lesson_source::report(
+    let (after, after_skipped) = store.comparisons_counting()?;
+    let mut report = lesson_source::report(
         &read.reflections,
         &sources,
-        &store.comparisons()?,
+        &after,
         Some(&model),
         Some(&unavailable),
     );
+    report.skipped_lines = read.reflections_skipped + read.appraisals_skipped + after_skipped;
     if opts.json {
         println!(
             "{}",
@@ -429,7 +428,25 @@ pub(crate) fn report_lines(report: &Report) -> Vec<String> {
             String::new()
         }
     )];
+    if report.skipped_lines > 0 {
+        out.push(format!(
+            "  ({} unreadable line(s) skipped across the reflection, appraisal and comparison stores, so these are floors, and a torn appraisal line reads as \"no appraisal\")",
+            report.skipped_lines
+        ));
+    }
+    // A region where nothing is eligible has only exclusions to say, and a
+    // store of followups would print a block of zeros per region: those are
+    // folded into one line below (`--json` keeps every region).
+    let mut quiet = 0usize;
+    let mut quiet_excluded: BTreeMap<Exclusion, usize> = BTreeMap::new();
     for r in &report.regions {
+        if r.eligible == 0 && r.unavailable.unwrap_or(0) == 0 {
+            quiet += 1;
+            for (why, n) in &r.excluded {
+                *quiet_excluded.entry(*why).or_default() += n;
+            }
+            continue;
+        }
         out.push(format!(
             "  {}{}",
             r.describe,
@@ -475,6 +492,20 @@ pub(crate) fn report_lines(report: &Report) -> Vec<String> {
             }
         ));
     }
+    if quiet > 0 {
+        let excluded: Vec<String> = quiet_excluded
+            .iter()
+            .map(|(why, n)| format!("{n} {}", exclusion_words(*why)))
+            .collect();
+        out.push(format!(
+            "  {quiet} region(s) with no eligible intervention · excluded: {}",
+            if excluded.is_empty() {
+                "none".into()
+            } else {
+                excluded.join(" · ")
+            }
+        ));
+    }
     out
 }
 
@@ -512,19 +543,15 @@ pub(crate) fn report_json(report: &Report) -> serde_json::Value {
 /// `Err` when a store could not be read — a finding, not an empty report.
 pub(crate) fn on_record() -> std::result::Result<Option<Report>, String> {
     let read = read_sources().map_err(|e| format!("{e:#}"))?;
-    let rows = match ComparisonStore::open_existing_default() {
-        Some(store) => store.comparisons().map_err(|e| format!("{e:#}"))?,
-        None => Vec::new(),
+    let (rows, rows_skipped) = match ComparisonStore::open_existing_default() {
+        Some(store) => store.comparisons_counting().map_err(|e| format!("{e:#}"))?,
+        None => (Vec::new(), 0),
     };
     if read.reflections.is_empty() && !rows.iter().any(|c| c.kind == Kind::LessonSource) {
         return Ok(None);
     }
     let sources = Sources::new(&read.clean, read.on_record.clone());
-    Ok(Some(lesson_source::report(
-        &read.reflections,
-        &sources,
-        &rows,
-        None,
-        None,
-    )))
+    let mut report = lesson_source::report(&read.reflections, &sources, &rows, None, None);
+    report.skipped_lines = read.reflections_skipped + read.appraisals_skipped + rows_skipped;
+    Ok(Some(report))
 }

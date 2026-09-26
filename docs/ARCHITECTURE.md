@@ -4194,7 +4194,7 @@ door above (`Kind::LessonSource`). Letting either source's lessons *learn* is
   edited lesson is the owner's, and `provenance()` promotes it to clean,
   which would credit the reflector with the owner's words. The appraisal's
   lessons come only through `AppraisalStore::clean` (R19); whether a withheld
-  one exists is asked of `sessions_on_record`, ids only, so its text is never
+  one exists is asked of `clean_with_sessions` (one read of the ledger), ids only, so its text is never
   held. An intervention clean for one source and not the other is excluded
   as `CleanForReflectorOnly` / `CleanForAppraisalOnly`, apart from
   `CleanForNeither` and `NoAppraisal`. The store's own door is then asked
@@ -4219,7 +4219,8 @@ door above (`Kind::LessonSource`). Letting either source's lessons *learn* is
   since nothing keeps it) and excluded by reason. A rate over nothing is
   `None`. `sessions appraise` prints the same report every call
   (`lesson_sources` in `--json`), for the model of the newest lesson
-  comparison, counting rows under other models apart.
+  comparison, counting rows under other models apart; in text, regions with
+  nothing eligible fold into one line of exclusions (`--json` keeps each).
 - **Its limit, named:** the appraisal writes up to three lessons per session
   and the reflector one per intervention, so the appraisal's arm carries the
   session's whole set at each of that session's interventions. That is each
