@@ -40,7 +40,17 @@
 //! words are not a referent: everything a model says about its own work is
 //! hearsay, and a claim grounded in the assistant's "I sent it" would be
 //! certified by the thing it claims. A pointer kind this build cannot read
-//! is kept verbatim ([`Pointer::Unread`]) and grounds nothing.
+//! is kept verbatim ([`Pointer::Unread`]) and grounds nothing, and a
+//! comparison (`comparison:<id>`) is not something the run received either.
+//!
+//! **The losing arm teaches** (O3, row 2d-3). A decided point-wise
+//! comparison's losing arm is written into its session's appraisal as a
+//! [`Counterfactual`] — a side record in `counterfactuals.jsonl`, joined by
+//! the appraisal's id, so the appraisal itself is never rewritten. Its text
+//! is the harness's, rendered from the comparison's typed record; it rests on
+//! the comparison by [`Pointer::Comparison`], dereferenced through
+//! [`crate::grounding::admit`]; and it carries the appraisal's provenance.
+//! The clean door does not serve it.
 //!
 //! **Provenance is read, never supplied** (R18). The record carries the taint
 //! covering the session's last message and the [`Origin`] classified from
@@ -103,7 +113,8 @@ pub const MAX_LESSONS: usize = 3;
 // ─── Pointers and claims ────────────────────────────────────────────────────
 
 /// What a factual claim rests on, spelled as the referent's id in the
-/// grounding packet: `result:<tool_use_id>` or `turn:<n>`.
+/// grounding packet: `result:<tool_use_id>`, `turn:<n>` or
+/// `comparison:<id>`.
 ///
 /// A flat string on the wire for `GoalRef`'s reason — the model writes it,
 /// and one string is harder to get wrong than an object. Reading one back
@@ -116,6 +127,12 @@ pub enum Pointer {
     Result(String),
     /// The owner's text in message `n` of `messages_ever`.
     Turn(usize),
+    /// A stored comparison, by its id in `comparisons.jsonl` (row 2d-3,
+    /// O3). Not something the run received, so it never grounds an
+    /// appraiser's claim (dropped as `comparison_pointer`); it is what a
+    /// [`Counterfactual`] rests on, dereferenced into the comparison store
+    /// through [`crate::grounding::admit`] ([`Counterfactual::dereference`]).
+    Comparison(String),
     /// A spelling this build cannot read — a newer kind, or junk.
     Unread(String),
 }
@@ -125,6 +142,9 @@ impl Pointer {
         let s = s.trim();
         match s.split_once(':') {
             Some(("result", id)) if !id.trim().is_empty() => Pointer::Result(id.trim().to_string()),
+            Some(("comparison", id)) if !id.trim().is_empty() => {
+                Pointer::Comparison(id.trim().to_string())
+            }
             Some(("turn", n)) => match n.trim().parse::<usize>() {
                 Ok(n) => Pointer::Turn(n),
                 Err(_) => Pointer::Unread(s.to_string()),
@@ -139,6 +159,7 @@ impl std::fmt::Display for Pointer {
         match self {
             Pointer::Result(id) => write!(f, "result:{id}"),
             Pointer::Turn(n) => write!(f, "turn:{n}"),
+            Pointer::Comparison(id) => write!(f, "comparison:{id}"),
             Pointer::Unread(raw) => f.write_str(raw),
         }
     }
@@ -724,8 +745,14 @@ impl TextAppraisal {
 /// Dereference one claim, or say why not.
 fn ground(claim: &Claim, packet: &[crate::grounding::Evidence]) -> Result<(), String> {
     let name = |r: crate::grounding::Refusal| crate::appraisal::enum_name(&r);
-    if matches!(claim.pointer, Pointer::Unread(_)) {
-        return Err("unknown_pointer".into());
+    match claim.pointer {
+        Pointer::Unread(_) => return Err("unknown_pointer".into()),
+        // A comparison is the harness's record of a replay made after the
+        // run, not something the run received: the packet holds none, and
+        // an appraiser citing one is counted apart from a pointer that
+        // names nothing (row 2d-3). Only the losing-arm pass writes one.
+        Pointer::Comparison(_) => return Err("comparison_pointer".into()),
+        Pointer::Result(_) | Pointer::Turn(_) => {}
     }
     if claim.statement.trim().chars().count() > STATEMENT_MAX_CHARS {
         return Err("statement_too_long".into());
@@ -1250,6 +1277,11 @@ pub struct Summary {
     pub with_expected_act: usize,
     /// Judgment goals that did not resolve, across records.
     pub goals_unresolved: usize,
+    /// Counterfactual reflections on record (row 2d-3), and of them those
+    /// on an appraisal that is not clean — set by
+    /// [`Summary::with_counterfactuals`], zero until then.
+    pub counterfactuals: usize,
+    pub counterfactuals_not_clean: usize,
 }
 
 impl Summary {
@@ -1285,6 +1317,13 @@ impl Summary {
         }
         s.sessions = sessions.len();
         s
+    }
+
+    /// The side ledger's reflections, counted beside the appraisals.
+    pub fn with_counterfactuals(mut self, rows: &[Counterfactual]) -> Summary {
+        self.counterfactuals = rows.len();
+        self.counterfactuals_not_clean = rows.iter().filter(|r| !r.is_clean()).count();
+        self
     }
 }
 
@@ -1853,6 +1892,524 @@ impl AppraisalStore {
         }
         s.hit_rate = (s.scored > 0).then(|| s.hits as f64 / s.scored as f64);
         Ok(s)
+    }
+}
+
+// ─── The losing arm teaches (O3; row 2d-3) ─────────────────────────────────
+
+/// A point-wise comparison's confirmed losing outcome, written into its
+/// session's appraisal as **counterfactual reflection** (O3): at this point
+/// of the session, this policy did what the owner refused and that one did
+/// what the owner chose, as a structural validator read the owner's recorded
+/// verdict.
+///
+/// **A side record, joined to the appraisal by id** —
+/// `counterfactuals.jsonl` beside `appraisals.jsonl`, the shape
+/// `scores.jsonl` took for 2b-2. The appraisal is one record per session and
+/// is never rewritten; an amendment row in `appraisals.jsonl` would load in
+/// every earlier build as a second appraisal of the session (its reader
+/// defaults every field but `id` and `at`), and that build's
+/// `on_record` would then refuse the real one as `AlreadyOnRecord`. A
+/// separate ledger is invisible to them.
+///
+/// **Harness-authored, never model prose.** Every word of `reflection` is
+/// rendered by [`reflection_text`] from the comparison's typed record —
+/// its kind, validator, arms and pointers, which hold closed sets and ids
+/// only — so nothing a model wrote, and none of the owner's text, can ride
+/// in it.
+///
+/// **It inherits the appraisal's provenance.** `origin` and `taint` are the
+/// appraisal's, copied when written, so a reflection on a tainted session's
+/// appraisal is as tainted as the appraisal. The clean door
+/// ([`AppraisalStore::clean`]) does not serve these records at all: a
+/// future reader takes one only beside a [`Clean`] appraisal, by the same
+/// predicate ([`Self::is_clean`]).
+///
+/// **It rests on the comparison, by pointer.** `comparison` is a
+/// [`Pointer::Comparison`]; `quote` is the comparison's verdict line as
+/// [`comparison_referent`] renders it, and [`Self::dereference`] admits the
+/// record into the comparison store through [`crate::grounding::admit`] —
+/// asked before it is written, and again by every reader, since the
+/// comparison store it points into is a different file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Counterfactual {
+    pub id: String,
+    pub at: DateTime<Utc>,
+    /// The appraisal it is part of.
+    #[serde(default)]
+    pub appraisal_id: String,
+    #[serde(default)]
+    pub session_id: String,
+    /// The comparison it rests on. A pointer this build cannot read loads
+    /// as [`Pointer::Unread`] and dereferences nothing.
+    #[serde(default = "no_pointer", deserialize_with = "de_pointer")]
+    pub comparison: Pointer,
+    #[serde(default)]
+    pub kind: crate::comparison::Kind,
+    #[serde(default)]
+    pub validator: crate::comparison::Validator,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_index: Option<usize>,
+    /// The harness candidate a `candidate` arm carried (2d-2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal_id: Option<String>,
+    /// The arms the validator failed — the losing outcome.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lost: Vec<crate::comparison::Arm>,
+    /// The arms it passed, which make the loss a loss.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub won: Vec<crate::comparison::Arm>,
+    /// The span of the comparison's referent the reflection rests on.
+    #[serde(default)]
+    pub quote: String,
+    /// The reflection, rendered by the harness from the fields above.
+    #[serde(default)]
+    pub reflection: String,
+    /// The appraisal's, copied at write. Unreadable or absent is untrusted.
+    #[serde(default = "untrusted", deserialize_with = "de_origin")]
+    pub origin: Origin,
+    #[serde(default)]
+    pub taint: Option<Taint>,
+}
+
+fn no_pointer() -> Pointer {
+    Pointer::Unread(String::new())
+}
+
+/// A pointer from the file, failing soft: a non-string is unread, never a
+/// failed row.
+fn de_pointer<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Pointer, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(match v.as_str() {
+        Some(s) => Pointer::parse(s),
+        None => Pointer::Unread(v.to_string()),
+    })
+}
+
+impl Counterfactual {
+    /// [`TextAppraisal::is_clean`]'s predicate over the copied provenance.
+    pub fn is_clean(&self) -> bool {
+        self.origin == Origin::Clean && matches!(self.taint, Some(t) if !t.untrusted)
+    }
+
+    /// Dereference the record into `packet` — [`comparison_referents`] of
+    /// the comparison store as it stands: the pointer must name a stored
+    /// comparison, and the quote must be a literal span of it. `Err` names
+    /// why not, by [`crate::grounding::Refusal`]'s wire name, or
+    /// `unknown_pointer` / `not_a_comparison` / `quote_too_long`.
+    pub fn dereference(&self, packet: &[crate::grounding::Evidence]) -> Result<(), String> {
+        let name = |r: crate::grounding::Refusal| crate::appraisal::enum_name(&r);
+        match &self.comparison {
+            Pointer::Comparison(_) => {}
+            Pointer::Unread(_) => return Err("unknown_pointer".into()),
+            Pointer::Result(_) | Pointer::Turn(_) => return Err("not_a_comparison".into()),
+        }
+        if self.quote.trim().chars().count() > QUOTE_MAX_CHARS {
+            return Err(name(crate::grounding::Refusal::QuoteTooLong));
+        }
+        let id = self.comparison.to_string();
+        crate::grounding::admit(
+            &crate::grounding::Claim {
+                statement: &self.reflection,
+                id: &id,
+                quote: &self.quote,
+            },
+            packet,
+            QUOTE_MIN_CHARS,
+        )
+        .map(|_| ())
+        .map_err(name)
+    }
+}
+
+/// What a comparison says, as a counterfactual rests on it: a header naming
+/// the point and the validator, then the verdict line — every word a closed
+/// set's wire name, an id or a count.
+pub fn comparison_referent(c: &crate::comparison::Comparison) -> crate::grounding::Evidence {
+    use crate::appraisal::enum_name;
+    let at = |n: Option<usize>| n.map_or_else(|| "-".to_string(), |n| n.to_string());
+    crate::grounding::Evidence {
+        id: Pointer::Comparison(c.id.clone()).to_string(),
+        source: "comparison".into(),
+        text: format!(
+            "{} · session {} · message {} · call {} · validator {}\n{}",
+            enum_name(&c.kind),
+            c.pointers.session_id,
+            at(c.pointers.message_index),
+            at(c.pointers.call_index),
+            enum_name(&c.validator),
+            verdict_line(c)
+        ),
+    }
+}
+
+/// Every comparison as a referent, in store order — first seen wins in
+/// [`crate::grounding::admit`], so a duplicated id resolves to its first
+/// row.
+pub fn comparison_referents(
+    rows: &[crate::comparison::Comparison],
+) -> Vec<crate::grounding::Evidence> {
+    rows.iter().map(comparison_referent).collect()
+}
+
+/// The verdict and each arm's role, policy and outcome, on one line — the
+/// span a counterfactual quotes.
+fn verdict_line(c: &crate::comparison::Comparison) -> String {
+    use crate::appraisal::enum_name;
+    let arms: Vec<String> = c
+        .arms
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            format!(
+                "arm {} {} {} {}",
+                i + 1,
+                enum_name(&a.role),
+                policy_short(a.policy.as_deref()),
+                enum_name(&a.outcome)
+            )
+        })
+        .collect();
+    format!("verdict {}: {}", enum_name(&c.verdict), arms.join(" · "))
+}
+
+/// A rules hash as a reader can tell two apart; unknown is said.
+fn policy_short(policy: Option<&str>) -> String {
+    match policy {
+        Some(p) if !p.trim().is_empty() => p.chars().take(12).collect(),
+        _ => "unknown".into(),
+    }
+}
+
+/// Why a comparison teaches nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NotTaught {
+    /// Not a point-wise comparison (O1): a steer probe, a validation pair,
+    /// a gate pair, a lesson-source measurement (row 2e-1), or a kind this
+    /// build cannot read.
+    OtherKind,
+    /// Inconclusive, unposed, or a verdict this build cannot read: nothing
+    /// was decided (R27 — never judged instead).
+    Undecided,
+    /// Decided with every arm alike: no arm lost.
+    Tied,
+    /// Separated by a validator that is not structural — a model judge —
+    /// or one this build cannot read. Never a confirmed outcome (R27).
+    NotStructural,
+    /// The stored verdict disagrees with the arms beside it, or the row has
+    /// no id to point at: a hand edit or a torn field, never taught.
+    Inconsistent,
+}
+
+/// The losing and winning arms of a decided point-wise comparison.
+fn losing_arms(
+    c: &crate::comparison::Comparison,
+) -> std::result::Result<(Vec<crate::comparison::Arm>, Vec<crate::comparison::Arm>), NotTaught> {
+    use crate::comparison::{Outcome, Verdict};
+    if kind_phrase(c.kind).is_none() {
+        return Err(NotTaught::OtherKind);
+    }
+    match c.verdict {
+        Verdict::Separated => {}
+        Verdict::Tied => return Err(NotTaught::Tied),
+        Verdict::Inconclusive | Verdict::Unknown => return Err(NotTaught::Undecided),
+    }
+    // Derived again rather than believed: `Verdict::of` is the one
+    // function a stored verdict came from, so a row where they disagree was
+    // not written by it.
+    if Verdict::of(&c.arms) != (Verdict::Separated, c.preferred.clone()) || c.id.trim().is_empty() {
+        return Err(NotTaught::Inconsistent);
+    }
+    if outcome_phrase(c.validator, Outcome::Fail).is_none() {
+        return Err(NotTaught::NotStructural);
+    }
+    let by = |o: Outcome| -> Vec<crate::comparison::Arm> {
+        c.arms.iter().filter(|a| a.outcome == o).cloned().collect()
+    };
+    Ok((by(Outcome::Fail), by(Outcome::Pass)))
+}
+
+/// The point, in words; `None` for a kind that is not point-wise.
+fn kind_phrase(kind: crate::comparison::Kind) -> Option<&'static str> {
+    use crate::comparison::Kind;
+    Some(match kind {
+        Kind::PointSteer => "the owner's steer",
+        Kind::PointDenial => "the owner's refusal of a call",
+        Kind::PointEditedDraft => "a draft the owner rewrote before sending",
+        Kind::PointRejectedDraft => "a draft the owner rejected",
+        Kind::PointCheck => "a failed check",
+        Kind::PointSurprise => "a surprise",
+        // A lesson-source comparison (row 2e-1) is a measurement of the
+        // learners, shadow by ruling: its losing arm carries a lesson, and
+        // writing that into an appraisal would feed one source's words back
+        // into the other's input. Never taught.
+        Kind::SteerProbe | Kind::Validation | Kind::Gate | Kind::LessonSource | Kind::Unknown => {
+            return None
+        }
+    })
+}
+
+/// What an arm did, as the validator reads a pass or a fail; `None` for a
+/// validator that decides nothing structurally.
+fn outcome_phrase(
+    validator: crate::comparison::Validator,
+    outcome: crate::comparison::Outcome,
+) -> Option<&'static str> {
+    use crate::comparison::{Outcome, Validator};
+    let pass = match outcome {
+        Outcome::Pass => true,
+        Outcome::Fail => false,
+        Outcome::Inconclusive | Outcome::Unknown => return None,
+    };
+    Some(match (validator, pass) {
+        (Validator::StructuralSteer, true) => "went, unsteered, where the owner steered the run",
+        (Validator::StructuralSteer, false) => {
+            "did not go, unsteered, where the owner steered the run"
+        }
+        (Validator::StructuralDenial, true) => "did not make the call the owner refused",
+        (Validator::StructuralDenial, false) => "made the call the owner refused again",
+        (Validator::ReleasedDraft, true) => "drafted the text the owner released",
+        (Validator::ReleasedDraft, false) => "drafted the text the owner rewrote",
+        (Validator::RejectedDraft, true) => "ended without drafting",
+        (Validator::RejectedDraft, false) => "drafted the text the owner rejected",
+        (Validator::ArtifactGold, true) => "met the owner's pinned gold",
+        (Validator::ArtifactGold, false) => "missed the owner's pinned gold",
+        (Validator::Judge | Validator::Unposed | Validator::Unknown, _) => return None,
+    })
+}
+
+/// The policy an arm ran, in words, with its rules hash.
+fn role_phrase(arm: &crate::comparison::Arm, proposal: Option<&str>) -> String {
+    use crate::comparison::Role;
+    let role = match arm.role {
+        Role::Recorded => "the run as recorded".to_string(),
+        Role::WithoutIntervention => "the policy the run ran under".to_string(),
+        Role::RulesFree => "no rules".to_string(),
+        Role::Rules => "today's deployed rules".to_string(),
+        Role::Candidate => match proposal {
+            Some(p) if !p.trim().is_empty() => format!("harness candidate {p}"),
+            _ => "a harness candidate".to_string(),
+        },
+        Role::ReflectorLesson => "the reflector's lesson alone".to_string(),
+        Role::AppraisalLesson => "the appraisal's lessons alone".to_string(),
+        Role::Unknown => "a policy this build cannot name".to_string(),
+    };
+    // `Arm::no_block`: recorded and empty, a different fact from unknown.
+    if arm.policy == crate::comparison::Arm::no_block() {
+        return format!("{role} (no rules block)");
+    }
+    format!("{role} (rules {})", policy_short(arm.policy.as_deref()))
+}
+
+/// The reflection's text, from the comparison's typed record alone — the
+/// one place its words come from.
+fn reflection_text(
+    c: &crate::comparison::Comparison,
+    lost: &[crate::comparison::Arm],
+    won: &[crate::comparison::Arm],
+) -> String {
+    let proposal = c.pointers.proposal_id.as_deref();
+    let clause = |a: &crate::comparison::Arm| {
+        format!(
+            "under {}, the arm {}",
+            role_phrase(a, proposal),
+            outcome_phrase(c.validator, a.outcome).unwrap_or("did something this build cannot say")
+        )
+    };
+    let list =
+        |arms: &[crate::comparison::Arm]| arms.iter().map(clause).collect::<Vec<_>>().join("; ");
+    let at = match (c.pointers.message_index, c.pointers.call_index) {
+        (Some(m), Some(k)) => format!("message {m}, call {k}"),
+        (Some(m), None) => format!("message {m}"),
+        (None, Some(k)) => format!("call {k}"),
+        (None, None) => "no recorded position".to_string(),
+    };
+    format!(
+        "Counterfactual at {} ({at}). Lost: {}. Won: {}. Decided by the {} validator against \
+         the owner's recorded verdict; comparison {}.",
+        kind_phrase(c.kind).unwrap_or("a point this build cannot name"),
+        list(lost),
+        list(won),
+        crate::appraisal::enum_name(&c.validator),
+        c.id
+    )
+}
+
+/// What one teaching pass did — every comparison read is counted once.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Taught {
+    /// Reflections written this pass.
+    pub written: usize,
+    /// Of those, on an appraisal that is not clean: the owner's to read.
+    pub written_not_clean: usize,
+    /// Comparisons already taught.
+    pub already: usize,
+    /// Decided comparisons whose session has no appraisal on record yet — a
+    /// later pass teaches them once it has one.
+    pub awaiting_appraisal: usize,
+    /// Point-wise comparisons that decided nothing: inconclusive, unposed,
+    /// or a verdict this build cannot read. They write nothing.
+    pub undecided: usize,
+    /// Decided with every arm alike: no loser to teach.
+    pub tied: usize,
+    /// Separated by a validator that is not structural. Never taught (R27).
+    pub not_structural: usize,
+    /// A stored verdict that disagrees with its arms, or a row with no id.
+    pub inconsistent: usize,
+    /// Decided, but naming no session to join.
+    pub no_session: usize,
+    /// Comparisons that are not point-wise.
+    pub other_kinds: usize,
+    /// Reflections refused by the dereference, by reason.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub refused: BTreeMap<String, usize>,
+    /// Appraisal lines that could not be read — each may have been the
+    /// appraisal a waiting comparison needs, so `awaiting_appraisal` is a
+    /// ceiling when this is not zero.
+    pub appraisals_unreadable: usize,
+    /// Reflection lines that could not be read.
+    pub counterfactuals_unreadable: usize,
+}
+
+impl AppraisalStore {
+    fn counterfactuals_ledger(&self) -> PathBuf {
+        self.root.join("counterfactuals.jsonl")
+    }
+
+    /// Every counterfactual reflection, oldest first, and how many lines
+    /// were skipped — **for the owner's surfaces**, as [`Self::for_owner`]
+    /// is. A missing file is none; one that cannot be read is an `Err`.
+    pub fn counterfactuals(&self) -> Result<(Vec<Counterfactual>, usize)> {
+        let path = self.counterfactuals_ledger();
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), 0)),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        let mut out = Vec::new();
+        let mut skipped = 0usize;
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            match serde_json::from_str(line) {
+                Ok(c) => out.push(c),
+                Err(e) => {
+                    skipped += 1;
+                    tracing::warn!("skipping unreadable counterfactual row: {e}");
+                }
+            }
+        }
+        Ok((out, skipped))
+    }
+
+    /// Write each decided point-wise comparison's losing arm into its
+    /// session's appraisal — once per comparison, under the store's lock,
+    /// with no model call. What `mecha distill` runs each writing pass,
+    /// after the appraisals and the scores.
+    ///
+    /// A comparison teaches only when it is point-wise, `Separated` by a
+    /// structural validator (R27), consistent with its own arms, names a
+    /// session with an appraisal on record, and dereferences. Everything
+    /// else writes nothing and is counted in [`Taught`] by why.
+    pub fn teach(&self, comparisons: &[crate::comparison::Comparison]) -> Result<Taught> {
+        use std::io::Write;
+        let _lock = self.lock()?;
+        let (appraisals, appraisals_unreadable) = self.for_owner()?;
+        let (existing, counterfactuals_unreadable) = self.counterfactuals()?;
+        let packet = comparison_referents(comparisons);
+        let mut taught: std::collections::BTreeSet<String> = existing
+            .iter()
+            .filter_map(|r| match &r.comparison {
+                Pointer::Comparison(id) => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut t = Taught {
+            appraisals_unreadable,
+            counterfactuals_unreadable,
+            ..Taught::default()
+        };
+        let mut lines = String::new();
+        for c in comparisons {
+            let (lost, won) = match losing_arms(c) {
+                Ok(arms) => arms,
+                Err(NotTaught::OtherKind) => {
+                    t.other_kinds += 1;
+                    continue;
+                }
+                Err(NotTaught::Undecided) => {
+                    t.undecided += 1;
+                    continue;
+                }
+                Err(NotTaught::Tied) => {
+                    t.tied += 1;
+                    continue;
+                }
+                Err(NotTaught::NotStructural) => {
+                    t.not_structural += 1;
+                    continue;
+                }
+                Err(NotTaught::Inconsistent) => {
+                    t.inconsistent += 1;
+                    continue;
+                }
+            };
+            let session = c.pointers.session_id.trim();
+            if session.is_empty() {
+                t.no_session += 1;
+                continue;
+            }
+            if taught.contains(&c.id) {
+                t.already += 1;
+                continue;
+            }
+            let Some(appraisal) = appraisals.iter().find(|a| a.session_id == session) else {
+                t.awaiting_appraisal += 1;
+                continue;
+            };
+            let record = Counterfactual {
+                id: format!("cfr-{}", uuid::Uuid::new_v4()),
+                at: Utc::now(),
+                appraisal_id: appraisal.id.clone(),
+                session_id: appraisal.session_id.clone(),
+                comparison: Pointer::Comparison(c.id.clone()),
+                kind: c.kind,
+                validator: c.validator,
+                message_index: c.pointers.message_index,
+                call_index: c.pointers.call_index,
+                proposal_id: c.pointers.proposal_id.clone(),
+                quote: verdict_line(c),
+                reflection: reflection_text(c, &lost, &won),
+                lost,
+                won,
+                origin: appraisal.origin,
+                taint: appraisal.taint,
+            };
+            if let Err(why) = record.dereference(&packet) {
+                *t.refused.entry(why).or_default() += 1;
+                continue;
+            }
+            taught.insert(c.id.clone());
+            lines.push_str(&serde_json::to_string(&record)?);
+            lines.push('\n');
+            t.written += 1;
+            if !record.is_clean() {
+                t.written_not_clean += 1;
+            }
+        }
+        if !lines.is_empty() {
+            let path = self.counterfactuals_ledger();
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .with_context(|| format!("opening {}", path.display()))?;
+            file.write_all(lines.as_bytes())
+                .with_context(|| format!("writing {}", path.display()))?;
+            file.sync_data()
+                .with_context(|| format!("syncing {}", path.display()))?;
+        }
+        Ok(t)
     }
 }
 
@@ -3434,5 +3991,389 @@ mod tests {
         for s in ["result:a:b", "turn:0", "closure:c-1"] {
             assert_eq!(Pointer::parse(s).to_string(), s);
         }
+    }
+
+    // ─── The losing arm teaches (row 2d-3) ──────────────────────────────
+
+    use crate::comparison::{Arm, Comparison, Kind, Outcome, Pointers, Role, Validator, Verdict};
+
+    /// Appraisal rows written as the store writes them, one per session.
+    fn appraised(tag: &str, rows: &[TextAppraisal]) -> (PathBuf, AppraisalStore) {
+        let root = temp_root(tag);
+        let store = AppraisalStore::open(&root).unwrap();
+        let text: String = rows
+            .iter()
+            .map(|r| serde_json::to_string(r).unwrap() + "\n")
+            .collect();
+        std::fs::write(store.ledger(), text).unwrap();
+        (root, store)
+    }
+
+    fn row(session: &str, clean: bool) -> TextAppraisal {
+        test_row(
+            session,
+            &Situation::of_run(&["mail_draft".to_string()], None),
+            clean,
+            "2026-09-24T00:00:00Z",
+        )
+    }
+
+    /// A point-wise comparison at message 4, call 1 of `session`, over
+    /// `arms`, its verdict derived as the store's writers derive it.
+    fn point(session: &str, kind: Kind, validator: Validator, arms: Vec<Arm>) -> Comparison {
+        Comparison::new(
+            kind,
+            None,
+            None,
+            None,
+            arms,
+            validator,
+            Pointers {
+                session_id: session.into(),
+                message_index: Some(4),
+                call_index: Some(1),
+                ..Pointers::default()
+            },
+            "local-model",
+        )
+    }
+
+    const RULES: &str = "a1b2c3d4e5f60718";
+
+    /// 2d-1's rejected-draft point as the fixture model left it: today's
+    /// rules drafted the rejected mail again, no rules held it.
+    fn rejected_draft(session: &str) -> Comparison {
+        point(
+            session,
+            Kind::PointRejectedDraft,
+            Validator::RejectedDraft,
+            vec![
+                Arm::new(Role::Rules, Some(RULES.into()), Outcome::Fail),
+                Arm::new(Role::RulesFree, Arm::no_block(), Outcome::Pass),
+            ],
+        )
+    }
+
+    /// The acceptance: a decided comparison's loser appears on the
+    /// session's appraisal, pointing at its comparison — read back through
+    /// a fresh handle, in words the harness wrote from the typed record.
+    #[test]
+    fn a_decided_loser_appears_on_the_sessions_appraisal_pointing_at_its_comparison() {
+        let (root, store) = appraised("teach", &[row("s-dana", true), row("s-idris", true)]);
+        let cmp = rejected_draft("s-dana");
+        let clean_before = store.clean().unwrap();
+
+        let t = store.teach(std::slice::from_ref(&cmp)).unwrap();
+        assert_eq!((t.written, t.written_not_clean, t.already), (1, 0, 0));
+
+        let again = AppraisalStore::open(&root).unwrap();
+        let (rows, skipped) = again.counterfactuals().unwrap();
+        assert_eq!((rows.len(), skipped), (1, 0));
+        let r = &rows[0];
+        assert_eq!(r.appraisal_id, "apr-s-dana", "on that session's appraisal");
+        assert_eq!(r.session_id, "s-dana");
+        assert_eq!(r.comparison, Pointer::Comparison(cmp.id.clone()));
+        assert_eq!(r.comparison.to_string(), format!("comparison:{}", cmp.id));
+        assert_eq!(
+            (r.kind, r.validator, r.message_index, r.call_index),
+            (
+                Kind::PointRejectedDraft,
+                Validator::RejectedDraft,
+                Some(4),
+                Some(1)
+            )
+        );
+        assert_eq!(r.lost, vec![cmp.arms[0].clone()], "the losing arm");
+        assert_eq!(r.won, vec![cmp.arms[1].clone()]);
+        // Every word is the harness's, from closed sets and ids.
+        assert_eq!(
+            r.reflection,
+            format!(
+                "Counterfactual at a draft the owner rejected (message 4, call 1). Lost: under \
+                 today's deployed rules (rules a1b2c3d4e5f6), the arm drafted the text the owner \
+                 rejected. Won: under no rules (no rules block), the arm ended without drafting. \
+                 Decided by the rejected-draft validator against the owner's recorded verdict; \
+                 comparison {}.",
+                cmp.id
+            )
+        );
+        assert!(r.is_clean(), "a clean appraisal's reflection is clean");
+        // It rests on the comparison: it dereferences into the store it
+        // points at, and into nothing else.
+        assert_eq!(
+            r.dereference(&comparison_referents(std::slice::from_ref(&cmp))),
+            Ok(())
+        );
+        assert_eq!(
+            r.dereference(&comparison_referents(&[rejected_draft("s-dana")])),
+            Err("no_such_referent".into()),
+            "another comparison of the same point is not this one"
+        );
+        // The appraisal itself is untouched, and the clean door serves
+        // exactly what it served before.
+        assert_eq!(again.clean().unwrap(), clean_before);
+        assert_eq!(again.for_owner().unwrap().0.len(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An undecided comparison writes nothing — inconclusive, unposed, or a
+    /// verdict this build cannot read — and neither does a tie, a judge's
+    /// separation, a hand-edited verdict, or a comparison that is not
+    /// point-wise. Each is counted by why.
+    #[test]
+    fn an_undecided_comparison_writes_nothing() {
+        let (root, store) = appraised("undecided", &[row("s-dana", true)]);
+        let inconclusive = point(
+            "s-dana",
+            Kind::PointEditedDraft,
+            Validator::ReleasedDraft,
+            vec![
+                Arm::new(Role::Rules, Some(RULES.into()), Outcome::Fail),
+                Arm::new(Role::RulesFree, Arm::no_block(), Outcome::Inconclusive),
+            ],
+        );
+        assert_eq!(inconclusive.verdict, Verdict::Inconclusive);
+        let unposed = point("s-dana", Kind::PointSurprise, Validator::Unposed, vec![]);
+        let mut unreadable = rejected_draft("s-dana");
+        unreadable.verdict = Verdict::Unknown;
+        let tied = point(
+            "s-dana",
+            Kind::PointDenial,
+            Validator::StructuralDenial,
+            vec![
+                Arm::new(Role::Rules, Some(RULES.into()), Outcome::Fail),
+                Arm::new(Role::RulesFree, Arm::no_block(), Outcome::Fail),
+            ],
+        );
+        let judged = point(
+            "s-dana",
+            Kind::PointSteer,
+            Validator::Judge,
+            rejected_draft("s-dana").arms,
+        );
+        let mut edited = tied.clone();
+        edited.verdict = Verdict::Separated;
+        edited.preferred = vec![0];
+        let not_pointwise = point(
+            "s-dana",
+            Kind::Validation,
+            Validator::StructuralSteer,
+            rejected_draft("s-dana").arms,
+        );
+        // A decided lesson-source measurement (row 2e-1): shadow, so its
+        // losing arm, a learner's lesson, is never written back into an
+        // appraisal, where it would feed the next appraiser.
+        let lesson_source = point(
+            "s-dana",
+            Kind::LessonSource,
+            Validator::StructuralDenial,
+            vec![
+                Arm::new(Role::RulesFree, Arm::no_block(), Outcome::Fail),
+                Arm::new(Role::ReflectorLesson, Some(RULES.into()), Outcome::Pass),
+                Arm::new(Role::AppraisalLesson, Some("other".into()), Outcome::Fail),
+            ],
+        );
+        assert_eq!(lesson_source.verdict, Verdict::Separated);
+        let t = store
+            .teach(&[
+                inconclusive,
+                unposed,
+                unreadable,
+                tied,
+                judged,
+                edited,
+                not_pointwise,
+                lesson_source,
+            ])
+            .unwrap();
+        assert_eq!(t.written, 0);
+        assert_eq!(
+            (
+                t.undecided,
+                t.tied,
+                t.not_structural,
+                t.inconsistent,
+                t.other_kinds
+            ),
+            (3, 1, 1, 1, 2)
+        );
+        assert!(
+            !store.counterfactuals_ledger().exists(),
+            "nothing was written, not even an empty file"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A tainted session's appraisal stays tainted: its reflection is
+    /// written for the owner, carries the appraisal's provenance, and the
+    /// clean door withholds exactly what it withheld before.
+    #[test]
+    fn a_tainted_sessions_reflection_stays_tainted() {
+        let (root, store) = appraised("tainted", &[row("s-mara", false)]);
+        let before = store.clean().unwrap();
+        assert_eq!((before.appraisals.len(), before.withheld), (0, 1));
+
+        let t = store.teach(&[rejected_draft("s-mara")]).unwrap();
+        assert_eq!((t.written, t.written_not_clean), (1, 1));
+        let (rows, _) = store.counterfactuals().unwrap();
+        assert_eq!(rows[0].origin, Origin::Untrusted);
+        assert_eq!(
+            rows[0].taint,
+            Some(Taint {
+                private: true,
+                untrusted: true
+            })
+        );
+        assert!(!rows[0].is_clean());
+        assert_eq!(
+            store.clean().unwrap(),
+            before,
+            "the clean door is unchanged"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A re-run teaches nothing twice — across passes and within one — and
+    /// a comparison whose session is not yet appraised waits for it rather
+    /// than being lost.
+    #[test]
+    fn a_rerun_does_not_duplicate_and_a_later_appraisal_is_taught_then() {
+        let (root, store) = appraised("rerun", &[row("s-dana", true)]);
+        let early = rejected_draft("s-dana");
+        let waiting = rejected_draft("s-idris");
+
+        let t = store
+            .teach(&[early.clone(), early.clone(), waiting.clone()])
+            .unwrap();
+        assert_eq!((t.written, t.already, t.awaiting_appraisal), (1, 1, 1));
+
+        let t = store.teach(&[early.clone(), waiting.clone()]).unwrap();
+        assert_eq!((t.written, t.already, t.awaiting_appraisal), (0, 1, 1));
+
+        // The appraisal lands later; the next pass teaches it.
+        let mut ledger = std::fs::read_to_string(store.ledger()).unwrap();
+        ledger.push_str(&(serde_json::to_string(&row("s-idris", true)).unwrap() + "\n"));
+        std::fs::write(store.ledger(), ledger).unwrap();
+        let t = store.teach(&[early.clone(), waiting.clone()]).unwrap();
+        assert_eq!((t.written, t.already, t.awaiting_appraisal), (1, 1, 0));
+        let t = store.teach(&[early, waiting]).unwrap();
+        assert_eq!((t.written, t.already), (0, 2));
+
+        let (rows, _) = store.counterfactuals().unwrap();
+        let sessions: Vec<&str> = rows.iter().map(|r| r.session_id.as_str()).collect();
+        assert_eq!(sessions, ["s-dana", "s-idris"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A reflection that does not dereference is refused and counted: a
+    /// verdict line past the quote ceiling is not a span the check will
+    /// certify, however many arms a later phase drives.
+    #[test]
+    fn a_reflection_that_does_not_dereference_is_refused_and_counted() {
+        let (root, store) = appraised("refused", &[row("s-dana", true)]);
+        let mut arms: Vec<Arm> = (0..8)
+            .map(|i| Arm::new(Role::Rules, Some(format!("{i:0>16}")), Outcome::Fail))
+            .collect();
+        arms.push(Arm::new(Role::RulesFree, Arm::no_block(), Outcome::Pass));
+        let wide = point(
+            "s-dana",
+            Kind::PointRejectedDraft,
+            Validator::RejectedDraft,
+            arms,
+        );
+        let t = store.teach(&[wide]).unwrap();
+        assert_eq!(t.written, 0);
+        assert_eq!(t.refused.get("quote_too_long"), Some(&1));
+        assert!(!store.counterfactuals_ledger().exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The side ledger is a wire format: a newer kind, validator, role,
+    /// origin or pointer kind degrades rather than failing the row, a
+    /// sparse row is unknown and never clean, and a torn line costs itself.
+    #[test]
+    fn a_counterfactual_and_its_pointer_load_leniently() {
+        let root = temp_root("cfr-wire");
+        let store = AppraisalStore::open(&root).unwrap();
+        std::fs::write(
+            store.counterfactuals_ledger(),
+            r#"{"id":"cfr-future","at":"2026-09-25T00:00:00Z","appraisal_id":"apr-1","session_id":"s1","comparison":"experiment:x-1","kind":"point-mid-run","validator":"oracle","lost":[{"role":"dreamer","outcome":"fail"}],"origin":"clean-verified","taint":{"private":false,"untrusted":false},"reflection":"r","mood":"later"}
+{"id":"cfr-sparse","at":"2026-09-25T00:00:00Z"}
+{"id":"cfr-number","at":"2026-09-25T00:00:00Z","comparison":7}
+{"id":"cfr-torn","at":"2026-09-25T00:00:00Z","compar
+"#,
+        )
+        .unwrap();
+        let (rows, skipped) = store.counterfactuals().unwrap();
+        assert_eq!((rows.len(), skipped), (3, 1));
+        let future = &rows[0];
+        assert_eq!(future.kind, Kind::Unknown);
+        assert_eq!(future.validator, Validator::Unknown);
+        assert_eq!(future.lost[0].role, Role::Unknown);
+        assert_eq!(
+            future.origin,
+            Origin::Untrusted,
+            "an unread origin is not clean"
+        );
+        assert!(!future.is_clean());
+        assert_eq!(future.comparison, Pointer::Unread("experiment:x-1".into()));
+        assert_eq!(
+            future.dereference(&[]),
+            Err("unknown_pointer".into()),
+            "a pointer this build cannot read dereferences nothing"
+        );
+        let back: Counterfactual =
+            serde_json::from_str(&serde_json::to_string(future).unwrap()).unwrap();
+        assert_eq!(
+            back.comparison.to_string(),
+            "experiment:x-1",
+            "and round-trips"
+        );
+        let sparse = &rows[1];
+        assert_eq!(
+            (sparse.origin, sparse.taint, &sparse.comparison),
+            (Origin::Untrusted, None, &Pointer::Unread(String::new()))
+        );
+        assert!(!sparse.is_clean());
+        assert_eq!(rows[2].comparison, Pointer::Unread("7".into()));
+        // The new pointer kind, on its own.
+        assert_eq!(
+            Pointer::parse(" comparison:cmp-1 "),
+            Pointer::Comparison("cmp-1".into())
+        );
+        assert_eq!(
+            Pointer::parse("comparison:"),
+            Pointer::Unread("comparison:".into())
+        );
+        assert_eq!(
+            Pointer::parse("comparison:cmp-1").to_string(),
+            "comparison:cmp-1"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An appraiser that cites a comparison is not citing what the run
+    /// received: the claim is dropped before storage and counted by its own
+    /// reason, apart from a pointer that names nothing.
+    #[test]
+    fn an_appraisers_claim_citing_a_comparison_is_dropped_and_counted() {
+        let root = temp_root("cite-cmp");
+        let path = session(&root.join("sessions"), clean_taint());
+        let evidence = SessionEvidence::read(&path).unwrap();
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        let mut d = draft();
+        d.claims.push(claim(
+            "Without the rules the run would not have drafted",
+            "comparison:cmp-1",
+            "verdict separated: arm 1",
+        ));
+        let Recorded::Written { grounding, .. } =
+            store.record(&evidence, d, "local-model", &known()).unwrap()
+        else {
+            panic!("written");
+        };
+        assert_eq!((grounding.offered, grounding.dropped), (3, 1));
+        assert_eq!(grounding.dropped_by.get("comparison_pointer"), Some(&1));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
