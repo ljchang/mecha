@@ -55,6 +55,8 @@ tower-http = { version = "0.7", features = ["fs"] }
 # owner guard instead of a CORS-only endpoint. Same workspace version the
 # other crates already carry.
 reqwest.workspace = true
+# Incognito session keys (`serve::incognito::new_key`): random, never reused.
+uuid.workspace = true
 
 [dev-dependencies]
 # `oneshot` on the serve router — auth is tested without binding a port.

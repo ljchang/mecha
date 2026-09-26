@@ -709,6 +709,35 @@ pub(crate) fn comparisons_line(on_record: &OnRecord) -> String {
     }
 }
 
+/// What the lesson-source report reads (row 2e-1): `Ok(None)` when there is
+/// nothing to report, `Err` when a store could not be read.
+type LessonsOnRecord = std::result::Result<Option<mecha_core::lesson_source::Report>, String>;
+
+fn lesson_sources_json(on_record: &LessonsOnRecord) -> serde_json::Value {
+    match on_record {
+        Err(e) => serde_json::json!({"read": false, "error": e}),
+        Ok(None) => lesson_sources_json(&Ok(Some(mecha_core::lesson_source::Report::default()))),
+        Ok(Some(report)) => {
+            let mut v = crate::lesson_pass::report_json(report);
+            if let Some(o) = v.as_object_mut() {
+                // Fully read only when no store skipped a line.
+                o.insert("read".into(), serde_json::json!(report.skipped_lines == 0));
+            }
+            v
+        }
+    }
+}
+
+fn lesson_sources_lines(on_record: &LessonsOnRecord) -> Vec<String> {
+    match on_record {
+        Err(e) => vec![format!(
+            "lessons by source: a store could not be read ({e})"
+        )],
+        Ok(None) => vec!["lessons by source: no reflection on record".into()],
+        Ok(Some(report)) => crate::lesson_pass::report_lines(report),
+    }
+}
+
 /// What the text-appraisal store holds (row 2a-1): `Ok(None)` when there is
 /// no store yet, `Err` when it could not be read. Counts only — the owner's
 /// door reads the prose, and this readout prints none of it.
@@ -719,10 +748,14 @@ fn text_appraisals_on_record() -> AppraisalsOnRecord {
     let Some(store) = mecha_core::appraisal_store::AppraisalStore::open_existing_default() else {
         return Ok(None);
     };
-    store
-        .for_owner()
-        .map(|(rows, skipped)| Some((mecha_core::appraisal_store::Summary::of(&rows), skipped)))
-        .map_err(|e| format!("{e:#}"))
+    let (rows, skipped) = store.for_owner().map_err(|e| format!("{e:#}"))?;
+    // Row 2d-3's side ledger, counted beside them. Its torn lines join the
+    // appraisals' in `skipped`: either makes these counts floors.
+    let (reflections, torn) = store.counterfactuals().map_err(|e| format!("{e:#}"))?;
+    Ok(Some((
+        mecha_core::appraisal_store::Summary::of(&rows).with_counterfactuals(&reflections),
+        skipped + torn,
+    )))
 }
 
 fn text_appraisals_json(on_record: &AppraisalsOnRecord) -> serde_json::Value {
@@ -777,6 +810,13 @@ fn text_appraisals_line(on_record: &AppraisalsOnRecord) -> String {
                     format!(" · {} clipped by a bound", s.clipped)
                 } else {
                     String::new()
+                } + &if s.counterfactuals > 0 {
+                    format!(
+                        " · {} counterfactual reflection(s) from losing arms ({} not clean)",
+                        s.counterfactuals, s.counterfactuals_not_clean
+                    )
+                } else {
+                    String::new()
                 },
                 if *skipped > 0 {
                     format!(" · {skipped} unreadable line(s) skipped, so these are floors")
@@ -795,8 +835,8 @@ fn text_appraisals_line(on_record: &AppraisalsOnRecord) -> String {
 /// is an error, never "none on record".
 fn text_appraisal_readout(session: Option<&str>, limit: Option<usize>, json: bool) -> Result<()> {
     use mecha_core::appraisal_store::AppraisalStore;
-    let rows = match AppraisalStore::open_existing_default() {
-        None => Vec::new(),
+    let (rows, reflections) = match AppraisalStore::open_existing_default() {
+        None => (Vec::new(), Vec::new()),
         Some(store) => {
             let (rows, skipped) = store
                 .for_owner()
@@ -804,8 +844,41 @@ fn text_appraisal_readout(session: Option<&str>, limit: Option<usize>, json: boo
             if skipped > 0 {
                 eprintln!("mecha: {skipped} unreadable appraisal line(s) skipped");
             }
-            rows
+            // Row 2d-3: the losing arms written into these appraisals.
+            let (reflections, skipped) = store
+                .counterfactuals()
+                .context("the appraisals' counterfactual reflections could not be read")?;
+            if skipped > 0 {
+                eprintln!("mecha: {skipped} unreadable counterfactual reflection line(s) skipped");
+            }
+            (rows, reflections)
         }
+    };
+    // What each reflection points into, read now: a reflection whose
+    // comparison is gone, or no longer says what it quoted, is marked.
+    let packet = if reflections.is_empty() {
+        Ok(Vec::new())
+    } else {
+        match mecha_core::comparison::ComparisonStore::open_existing_default() {
+            None => Ok(Vec::new()),
+            Some(s) => s
+                .comparisons()
+                .map(|rows| mecha_core::appraisal_store::comparison_referents(&rows))
+                .map_err(|e| format!("{e:#}")),
+        }
+    };
+    let reflections_of = |r: &mecha_core::appraisal_store::TextAppraisal| -> Vec<Reflection> {
+        reflections
+            .iter()
+            .filter(|c| c.appraisal_id == r.id)
+            .map(|c| Reflection {
+                record: c,
+                dereferences: match &packet {
+                    Ok(p) => c.dereference(p),
+                    Err(e) => Err(format!("the comparison store could not be read ({e})")),
+                },
+            })
+            .collect()
     };
     let mut rows: Vec<_> = match session {
         Some(prefix) => {
@@ -836,6 +909,24 @@ fn text_appraisal_readout(session: Option<&str>, limit: Option<usize>, json: boo
                 let mut v = serde_json::to_value(r).unwrap_or_default();
                 if let Some(m) = v.as_object_mut() {
                     m.insert("clean".into(), serde_json::json!(r.is_clean()));
+                    let counterfactuals: Vec<serde_json::Value> = reflections_of(r)
+                        .iter()
+                        .map(|c| {
+                            let mut v = serde_json::to_value(c.record).unwrap_or_default();
+                            if let Some(m) = v.as_object_mut() {
+                                m.insert("clean".into(), serde_json::json!(c.record.is_clean()));
+                                m.insert(
+                                    "dereferences".into(),
+                                    serde_json::json!(c.dereferences.is_ok()),
+                                );
+                                if let Err(why) = &c.dereferences {
+                                    m.insert("dereference_refused".into(), serde_json::json!(why));
+                                }
+                            }
+                            v
+                        })
+                        .collect();
+                    m.insert("counterfactuals".into(), serde_json::json!(counterfactuals));
                 }
                 v
             })
@@ -855,8 +946,47 @@ fn text_appraisal_readout(session: Option<&str>, limit: Option<usize>, json: boo
             println!();
         }
         print!("{}", render_text_appraisal(r));
+        for c in reflections_of(r) {
+            print!("{}", render_counterfactual(&c));
+        }
     }
     Ok(())
+}
+
+/// A counterfactual reflection on an appraisal, and whether it still
+/// dereferences into the comparison store (row 2d-3).
+struct Reflection<'a> {
+    record: &'a mecha_core::appraisal_store::Counterfactual,
+    dereferences: std::result::Result<(), String>,
+}
+
+/// One reflection for a terminal, under the appraisal it belongs to: the
+/// pointer and whether it dereferences, then the harness's text, fenced and
+/// stripped as the appraisal's prose is — the text is the harness's, but its
+/// ids come from files a hand could have edited.
+fn render_counterfactual(c: &Reflection<'_>) -> String {
+    use crate::logs::strip_ansi_and_controls as clean;
+    let r = c.record;
+    let rests = match &c.dereferences {
+        Ok(()) => "dereferences".to_string(),
+        Err(why) => format!("DOES NOT DEREFERENCE ({})", clean(why)),
+    };
+    let label = if r.is_clean() {
+        "clean"
+    } else {
+        "NOT CLEAN — the appraisal's provenance; the owner's to read"
+    };
+    format!(
+        "counterfactual reflection {} · {} · {rests} · {label}\n{}\n",
+        clean(&r.id),
+        clean(&r.comparison.to_string()),
+        r.reflection
+            .trim()
+            .split('\n')
+            .map(|l| format!("  │ {}", clean(l)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
 }
 
 /// One text appraisal for a terminal, every field from the record passed
@@ -980,6 +1110,103 @@ fn render_text_appraisal(r: &mecha_core::appraisal_store::TextAppraisal) -> Stri
     out
 }
 
+/// The `--json` predictions block (row 2b-1): the calibration as it is,
+/// plus whether the outbox was fully read — a short read makes every count
+/// a floor, which is a different fact from a store with fewer drafts.
+fn predictions_json(
+    calibration: &mecha_core::anticipation::Calibration,
+    outbox_unreadable: bool,
+) -> serde_json::Value {
+    let mut o = serde_json::to_value(calibration).unwrap_or_default();
+    if let Some(m) = o.as_object_mut() {
+        m.insert("read".into(), serde_json::json!(!outbox_unreadable));
+    }
+    o
+}
+
+/// One line for the table: coverage first, and a rate only where there are
+/// points — "no outcome recorded yet" is coverage, never a calibration of
+/// zero.
+fn predictions_line(
+    calibration: &mecha_core::anticipation::Calibration,
+    outbox_unreadable: bool,
+) -> String {
+    let t = &calibration.total;
+    if t.predictions == 0 && calibration.unreadable == 0 {
+        return format!(
+            "anticipation's predictions: none on record{}{}",
+            if calibration.harness_placeholders > 0 {
+                format!(
+                    " ({} staging placeholder(s) with no owner evidence, which forecast nothing)",
+                    calibration.harness_placeholders
+                )
+            } else {
+                String::new()
+            },
+            if outbox_unreadable {
+                " (the outbox could not be fully read, so this is a floor)"
+            } else {
+                ""
+            }
+        );
+    }
+    let per: Vec<String> = calibration
+        .by_response
+        .iter()
+        .filter(|(_, c)| c.predictions > 0)
+        .map(|(name, c)| match c.materialized_rate {
+            Some(rate) => format!(
+                "{name} {}/{} scored, concern materialised {:.0}%",
+                c.scored,
+                c.predictions,
+                rate * 100.0
+            ),
+            None => format!("{name} {}/{} scored, no rate", c.scored, c.predictions),
+        })
+        .collect();
+    let u = &t.unscored;
+    format!(
+        "anticipation's predictions: {} scored of {} ({}) · not yet a point: {} awaiting the \
+         owner's outcome, {} not sent, {} delivery unknown, {} clean but delivery unconfirmed, \
+         {} changed, {} reassessed, {} abandoned, {} unsupported{}{}",
+        t.scored,
+        t.predictions,
+        if per.is_empty() {
+            "none".into()
+        } else {
+            per.join(" · ")
+        },
+        u.awaiting_feedback,
+        u.pending,
+        u.delivery_unknown,
+        u.delivery_unconfirmed,
+        u.changed,
+        u.reassessed,
+        u.abandoned,
+        u.unsupported,
+        if calibration.unreadable > 0 {
+            format!(
+                " · {} unreadable prediction record(s)",
+                calibration.unreadable
+            )
+        } else {
+            String::new()
+        } + &if calibration.harness_placeholders > 0 {
+            format!(
+                " · {} staging placeholder(s) with no owner evidence, in no count",
+                calibration.harness_placeholders
+            )
+        } else {
+            String::new()
+        },
+        if outbox_unreadable {
+            " · the outbox could not be fully read, so these are floors"
+        } else {
+            ""
+        }
+    )
+}
+
 /// The `--json` probe block.
 ///
 /// Rendered from `Tally` itself rather than a hand-listed set of keys: a
@@ -1056,6 +1283,9 @@ async fn appraise(
             },
         };
 
+    // Anticipation's calibration (row 2b-1), over every draft read.
+    let calibration = mecha_core::anticipation::Calibration::of(&drafts);
+
     // The three commitment stores (`docs/APPRAISAL-RESEARCH.md` §3.4, §3.6),
     // read once for the whole walk and filtered per session inside
     // `of_session`. Best-effort like the outbox: a store that cannot be read
@@ -1099,6 +1329,36 @@ async fn appraise(
     // the same terms: unreadable costs the channel and says so.
     let (closures, closures_unreadable) = appraisal::load_closures();
     let (workflows, workflows_unreadable) = appraisal::load_workflows();
+    // The appraisals' own predictions (row 2b-2), read-only: what the
+    // ledger has scored, and for the rest whether the window is open or the
+    // answer unknown. `mecha distill` writes the scores; this never does.
+    let expectations: std::result::Result<
+        Option<mecha_core::appraisal_store::ScoreSummary>,
+        String,
+    > = match mecha_core::appraisal_store::AppraisalStore::open_existing_default() {
+        None => Ok(None),
+        Some(store) => store
+            .score_summary(
+                &mecha_core::appraisal_store::OwnerActs {
+                    drafts: &drafts,
+                    outbox_unreadable,
+                    closures: &closures,
+                    closures_unreadable,
+                    workflows: &workflows,
+                    workflows_unreadable,
+                    charter: charter.as_ref(),
+                    charter_unreadable,
+                    // The readout reads no board: a task output's window is
+                    // its due date, so it waits for distill's read and is
+                    // counted as such, not as unknown.
+                    board: mecha_core::appraisal_store::BoardRead::NotRead,
+                    zone: None,
+                },
+                chrono::Utc::now(),
+            )
+            .map(Some)
+            .map_err(|e| format!("{e:#}")),
+    };
 
     // Walked here rather than through `runlog::Corpus`, and the difference is
     // the unit: that reader yields one row per **run**, which is right for
@@ -1387,6 +1647,9 @@ async fn appraise(
     let stored = comparisons_on_record();
     // The text-appraisal store (row 2a-1), counted the same way.
     let text_appraisals = text_appraisals_on_record();
+    // Lessons by source (row 2e-1): read from the learning, appraisal and
+    // comparison stores — free, so it is read every time.
+    let lesson_sources = crate::lesson_pass::on_record();
 
     if json {
         println!(
@@ -1452,6 +1715,29 @@ async fn appraise(
                 "probe": probe.then(|| probe_json(tally, budget)),
                 "comparisons": comparisons_json(&stored),
                 "text_appraisals": text_appraisals_json(&text_appraisals),
+                // Row 2e-1, R25's gate for 2a-4: each source's validation
+                // rate per intervention region, counts beneath; a rate is
+                // `null` over nothing decided, and an unreadable store is
+                // `read: false`, never an empty report.
+                "lesson_sources": lesson_sources_json(&lesson_sources),
+                // Anticipation's predictions scored (row 2b-1): store-wide,
+                // whatever `--days` narrowed the sessions to — a draft's
+                // outcome can arrive long after its session. Coverage
+                // always; a rate is `null` over no points.
+                "predictions": predictions_json(&calibration, outbox_unreadable),
+                // Row 2b-2: `null` rate over no scores; `read: false` when
+                // the store could not be read, never an empty summary.
+                "expectations": match &expectations {
+                    Ok(summary) => {
+                        let mut o = serde_json::to_value(summary.clone().unwrap_or_default())
+                            .unwrap_or_default();
+                        if let Some(m) = o.as_object_mut() {
+                            m.insert("read".into(), serde_json::json!(true));
+                        }
+                        o
+                    }
+                    Err(e) => serde_json::json!({"read": false, "error": e}),
+                },
                 // Same "absent, not zero" rule as `probe`: whether the flag
                 // ran at all is a different fact from what it found.
                 // Retired in row 2a-3: always null now — the pass cannot
@@ -1524,6 +1810,19 @@ async fn appraise(
     // before the early return — an empty walk still has a store to report.
     println!("  {}\n", comparisons_line(&stored));
     println!("  {}\n", text_appraisals_line(&text_appraisals));
+    for line in lesson_sources_lines(&lesson_sources) {
+        println!("  {line}");
+    }
+    println!();
+    println!("  {}\n", predictions_line(&calibration, outbox_unreadable));
+    println!(
+        "  {}\n",
+        match &expectations {
+            Ok(Some(s)) => crate::commands::distill::expectations_line(s),
+            Ok(None) => "appraisals' predictions: no text appraisal on record".into(),
+            Err(e) => format!("appraisals' predictions: the store could not be read ({e})"),
+        }
+    );
     if appraisals.is_empty() {
         return Ok(());
     }
@@ -2304,6 +2603,102 @@ mod probe_readout_tests {
                 "an unfenced line: {l:?}\n{out}"
             );
         }
+    }
+
+    /// The predictions line (row 2b-1) prints a rate only where there are
+    /// points, says "none on record" for an empty store, and marks a short
+    /// read of the outbox as floors.
+    #[test]
+    fn the_predictions_line_never_prints_a_rate_over_nothing() {
+        use super::predictions_line;
+        use mecha_core::anticipation::Calibration;
+        let empty = Calibration::of(&[]);
+        assert_eq!(
+            predictions_line(&empty, false),
+            "anticipation's predictions: none on record"
+        );
+        assert!(predictions_line(&empty, true).contains("floor"));
+        let mut some = Calibration::of(&[]);
+        some.total.predictions = 3;
+        if let Some(c) = some.by_response.get_mut("verify") {
+            c.predictions = 3;
+        }
+        let line = predictions_line(&some, false);
+        assert!(line.contains("verify 0/3 scored, no rate"), "{line}");
+        assert!(!line.contains('%'), "{line}");
+        if let Some(c) = some.by_response.get_mut("verify") {
+            c.scored = 2;
+            c.materialized = 1;
+            c.materialized_rate = Some(0.5);
+        }
+        assert!(predictions_line(&some, false).contains("concern materialised 50%"));
+    }
+
+    /// The lesson-source readout (row 2e-1): a torn line in any store it
+    /// reads makes it `read: false` and says the counts are floors;
+    /// unreadable is not empty.
+    #[test]
+    fn the_lesson_source_readout_is_not_complete_over_a_torn_line() {
+        use super::{lesson_sources_json, lesson_sources_lines};
+        use mecha_core::lesson_source::Report;
+        let whole = Ok(Some(Report::default()));
+        assert_eq!(lesson_sources_json(&whole)["read"], true);
+        let torn = Ok(Some(Report {
+            skipped_lines: 2,
+            ..Report::default()
+        }));
+        assert_eq!(lesson_sources_json(&torn)["read"], false);
+        assert_eq!(lesson_sources_json(&torn)["skipped_lines"], 2);
+        assert!(lesson_sources_lines(&torn).join("\n").contains("floors"));
+        let unreadable = Err("permission denied".to_string());
+        assert_eq!(lesson_sources_json(&unreadable)["read"], false);
+        assert!(lesson_sources_lines(&unreadable)[0].contains("could not be read"));
+    }
+
+    /// A counterfactual reflection prints fenced and stripped under its
+    /// appraisal, says whether it still dereferences, and carries the
+    /// appraisal's label — a hand-edited id cannot print a header of its own.
+    #[test]
+    fn a_counterfactual_reflection_prints_fenced_with_its_dereference() {
+        let record: mecha_core::appraisal_store::Counterfactual =
+            serde_json::from_value(serde_json::json!({
+                "id": "cfr-1\u{1b}[2J",
+                "at": "2026-09-25T00:00:00Z",
+                "appraisal_id": "apr-1",
+                "session_id": "s1",
+                "comparison": "comparison:cmp-9",
+                "reflection": "Counterfactual at a draft the owner rejected.\n\
+                               counterfactual reflection cfr-2 · clean",
+                "origin": "untrusted",
+                "taint": {"private": true, "untrusted": true},
+            }))
+            .unwrap();
+        let gone = super::render_counterfactual(&super::Reflection {
+            record: &record,
+            dereferences: Err("no_such_referent".into()),
+        });
+        assert!(
+            gone.starts_with(
+                "counterfactual reflection cfr-1 · comparison:cmp-9 · DOES NOT DEREFERENCE \
+                 (no_such_referent) · NOT CLEAN"
+            ),
+            "{gone}"
+        );
+        assert!(!gone.contains('\u{1b}'));
+        for line in gone.lines().skip(1) {
+            assert!(
+                line.starts_with("  │ "),
+                "every line of text is fenced: {gone}"
+            );
+        }
+        let held = super::render_counterfactual(&super::Reflection {
+            record: &record,
+            dereferences: Ok(()),
+        });
+        assert!(
+            held.contains("· comparison:cmp-9 · dereferences · NOT CLEAN"),
+            "{held}"
+        );
     }
 
     /// The text-appraisal readout: unreadable is not empty, no store yet is

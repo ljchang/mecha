@@ -40,7 +40,17 @@
 //! words are not a referent: everything a model says about its own work is
 //! hearsay, and a claim grounded in the assistant's "I sent it" would be
 //! certified by the thing it claims. A pointer kind this build cannot read
-//! is kept verbatim ([`Pointer::Unread`]) and grounds nothing.
+//! is kept verbatim ([`Pointer::Unread`]) and grounds nothing, and a
+//! comparison (`comparison:<id>`) is not something the run received either.
+//!
+//! **The losing arm teaches** (O3, row 2d-3). A decided point-wise
+//! comparison's losing arm is written into its session's appraisal as a
+//! [`Counterfactual`] — a side record in `counterfactuals.jsonl`, joined by
+//! the appraisal's id, so the appraisal itself is never rewritten. Its text
+//! is the harness's, rendered from the comparison's typed record; it rests on
+//! the comparison by [`Pointer::Comparison`], dereferenced through
+//! [`crate::grounding::admit`]; and it carries the appraisal's provenance.
+//! The clean door does not serve it.
 //!
 //! **Provenance is read, never supplied** (R18). The record carries the taint
 //! covering the session's last message and the [`Origin`] classified from
@@ -103,7 +113,8 @@ pub const MAX_LESSONS: usize = 3;
 // ─── Pointers and claims ────────────────────────────────────────────────────
 
 /// What a factual claim rests on, spelled as the referent's id in the
-/// grounding packet: `result:<tool_use_id>` or `turn:<n>`.
+/// grounding packet: `result:<tool_use_id>`, `turn:<n>` or
+/// `comparison:<id>`.
 ///
 /// A flat string on the wire for `GoalRef`'s reason — the model writes it,
 /// and one string is harder to get wrong than an object. Reading one back
@@ -116,6 +127,12 @@ pub enum Pointer {
     Result(String),
     /// The owner's text in message `n` of `messages_ever`.
     Turn(usize),
+    /// A stored comparison, by its id in `comparisons.jsonl` (row 2d-3,
+    /// O3). Not something the run received, so it never grounds an
+    /// appraiser's claim (dropped as `comparison_pointer`); it is what a
+    /// [`Counterfactual`] rests on, dereferenced into the comparison store
+    /// through [`crate::grounding::admit`] ([`Counterfactual::dereference`]).
+    Comparison(String),
     /// A spelling this build cannot read — a newer kind, or junk.
     Unread(String),
 }
@@ -125,6 +142,9 @@ impl Pointer {
         let s = s.trim();
         match s.split_once(':') {
             Some(("result", id)) if !id.trim().is_empty() => Pointer::Result(id.trim().to_string()),
+            Some(("comparison", id)) if !id.trim().is_empty() => {
+                Pointer::Comparison(id.trim().to_string())
+            }
             Some(("turn", n)) => match n.trim().parse::<usize>() {
                 Ok(n) => Pointer::Turn(n),
                 Err(_) => Pointer::Unread(s.to_string()),
@@ -139,6 +159,7 @@ impl std::fmt::Display for Pointer {
         match self {
             Pointer::Result(id) => write!(f, "result:{id}"),
             Pointer::Turn(n) => write!(f, "turn:{n}"),
+            Pointer::Comparison(id) => write!(f, "comparison:{id}"),
             Pointer::Unread(raw) => f.write_str(raw),
         }
     }
@@ -313,6 +334,10 @@ pub struct SessionEvidence {
     anchor: Option<GoalRef>,
     situation: Option<Situation>,
     packet: Vec<crate::grounding::Evidence>,
+    /// When the transcript was last written, taken as the read happened —
+    /// the session's end as appraised (R37's window opens here). `None`
+    /// where the file system could not say.
+    ended_at: Option<DateTime<Utc>>,
 }
 
 impl SessionEvidence {
@@ -343,9 +368,16 @@ impl SessionEvidence {
     ) -> Result<(crate::session::Transcript, SessionEvidence)> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        // After the read, so it is no earlier than the last append the read
+        // saw: an append-only transcript's last write is the session's end.
+        let ended_at = std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .map(DateTime::<Utc>::from);
         let transcript = crate::session::Session::parse(path, &text)?;
         let ever = crate::session::Session::messages_ever(&text);
-        let evidence = SessionEvidence::of(&transcript, &ever);
+        let mut evidence = SessionEvidence::of(&transcript, &ever);
+        evidence.ended_at = ended_at;
         Ok((transcript, evidence))
     }
 
@@ -374,6 +406,7 @@ impl SessionEvidence {
             anchor: transcript.convo.goal_anchor.clone(),
             situation,
             packet: packet(ever),
+            ended_at: None,
         }
     }
 
@@ -536,6 +569,12 @@ pub struct TextAppraisal {
     /// dropped and counted in `grounding`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub clipped: bool,
+    /// When the appraised session ended — the transcript's last write as
+    /// the appraiser read it. R37's no-act window opens here. Absent on a
+    /// row written before the field; a reader then falls back to `at`,
+    /// which is later, so the window can only close later, never early.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_ended_at: Option<DateTime<Utc>>,
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -698,6 +737,7 @@ impl TextAppraisal {
             lessons,
             goals_unresolved,
             clipped,
+            session_ended_at: evidence.ended_at,
         })
     }
 }
@@ -705,8 +745,14 @@ impl TextAppraisal {
 /// Dereference one claim, or say why not.
 fn ground(claim: &Claim, packet: &[crate::grounding::Evidence]) -> Result<(), String> {
     let name = |r: crate::grounding::Refusal| crate::appraisal::enum_name(&r);
-    if matches!(claim.pointer, Pointer::Unread(_)) {
-        return Err("unknown_pointer".into());
+    match claim.pointer {
+        Pointer::Unread(_) => return Err("unknown_pointer".into()),
+        // A comparison is the harness's record of a replay made after the
+        // run, not something the run received: the packet holds none, and
+        // an appraiser citing one is counted apart from a pointer that
+        // names nothing (row 2d-3). Only the losing-arm pass writes one.
+        Pointer::Comparison(_) => return Err("comparison_pointer".into()),
+        Pointer::Result(_) | Pointer::Turn(_) => {}
     }
     if claim.statement.trim().chars().count() > STATEMENT_MAX_CHARS {
         return Err("statement_too_long".into());
@@ -815,25 +861,189 @@ impl CleanRead {
     /// this build cannot name (`GoalKey::Unread`, `surface_unread`) — kept
     /// verbatim in the key, and still never equal to anything.
     pub fn same_situation_and_goal(&self, evidence: &SessionEvidence, n: usize) -> Vec<&Clean> {
-        fn keyed(s: Option<&Situation>) -> Option<String> {
-            let s = s?;
-            let unnamed = s.surface_unread.is_some()
-                || matches!(s.goal, Some(crate::situation::GoalKey::Unread(_)));
-            (!unnamed).then(|| s.key())
-        }
-        let Some(here) = keyed(evidence.situation.as_ref()) else {
-            return Vec::new();
+        self.keyed_as(
+            evidence.situation.as_ref(),
+            Some(evidence.session_id.as_str()),
+            n,
+        )
+    }
+
+    fn keyed_as(&self, here: Option<&Situation>, not: Option<&str>, n: usize) -> Vec<&Clean> {
+        newest_keyed(self.appraisals.iter(), here, not, n)
+    }
+}
+
+/// The region key a record is compared on, or `None` where it cannot be
+/// keyed: an unknown situation, or a surface or goal this build cannot name.
+fn region_key(s: Option<&Situation>) -> Option<String> {
+    let s = s?;
+    let unnamed =
+        s.surface_unread.is_some() || matches!(s.goal, Some(crate::situation::GoalKey::Unread(_)));
+    (!unnamed).then(|| s.key())
+}
+
+/// The newest `n` of `rows` whose region key is `here`'s, never session
+/// `not`'s. One selection for the appraiser's door and the run's.
+fn newest_keyed<'a>(
+    rows: impl Iterator<Item = &'a Clean>,
+    here: Option<&Situation>,
+    not: Option<&str>,
+    n: usize,
+) -> Vec<&'a Clean> {
+    let Some(here) = region_key(here) else {
+        return Vec::new();
+    };
+    let mut out: Vec<&Clean> = rows
+        .filter(|c| not.is_none_or(|id| c.session_id != id))
+        .filter(|c| region_key(c.situation.as_ref()).as_ref() == Some(&here))
+        .collect();
+    out.sort_by_key(|c| std::cmp::Reverse(c.at));
+    out.truncate(n);
+    out
+}
+
+/// What `goal_context` may serve a run (I2, built as 2c-2): up to
+/// [`PAST_SHOWN`] clean appraisals of the situation the run's rules block
+/// was matched against, the goal included. Only a [`Clean`] is held, so a
+/// tainted appraisal cannot be served whatever the caller loaded.
+///
+/// **Selected in two steps**, because the tool set a run records is not the
+/// one its block was matched against: a front-end takes tools off the
+/// registry after `setup::build` (`tasks work` and a question continuation
+/// withhold `kg_task_update`), and the run record — which a later appraisal
+/// of this run is keyed on — reads the registry as it is when the run
+/// starts. So `select` keeps the clean records that agree on every key but
+/// the tools, and [`Self::for_registry`], called by the loop at run start
+/// with the registry it actually carries, picks the newest that agree on
+/// the tools too. Without the second step a delegated task's retrieval
+/// never matched a past run of the same task (found building it).
+///
+/// No session is excluded, unlike the appraiser's door: a fresh run has no
+/// appraisal of its own, and a resumed session appraised earlier may be
+/// served its own, which is of the same situation and goal by construction.
+#[derive(Debug, Clone, Default)]
+pub struct PastAppraisals {
+    goal: Option<GoalRef>,
+    run: Situation,
+    pool: Vec<Clean>,
+    served: Vec<Clean>,
+    unread: Option<String>,
+}
+
+impl PastAppraisals {
+    /// The clean records toward `run` on every key but the tools, and the
+    /// first selection against `run`'s own tools.
+    pub fn select(read: CleanRead, run: &Situation) -> PastAppraisals {
+        let untooled = |s: &Situation| Situation {
+            tools: Vec::new(),
+            ..s.clone()
         };
-        let mut out: Vec<&Clean> = self
+        let here = region_key(Some(&untooled(run)));
+        let pool: Vec<Clean> = read
             .appraisals
-            .iter()
-            .filter(|c| c.session_id != evidence.session_id)
-            .filter(|c| keyed(c.situation.as_ref()).as_ref() == Some(&here))
+            .into_iter()
+            .filter(|c| {
+                here.is_some() && region_key(c.situation.as_ref().map(untooled).as_ref()) == here
+            })
             .collect();
-        out.sort_by_key(|c| std::cmp::Reverse(c.at));
-        out.truncate(n);
+        let mut out = PastAppraisals {
+            goal: run
+                .goal
+                .as_ref()
+                .and_then(crate::situation::GoalKey::named)
+                .cloned(),
+            run: run.clone(),
+            pool,
+            served: Vec::new(),
+            unread: None,
+        };
+        let tools = run.tools.clone();
+        out.for_registry(&tools);
         out
     }
+
+    /// The store could not be read: nothing is served, and the answer says
+    /// why rather than reading as "no past appraisal".
+    pub fn unread(why: String, run: &Situation) -> PastAppraisals {
+        PastAppraisals {
+            goal: run
+                .goal
+                .as_ref()
+                .and_then(crate::situation::GoalKey::named)
+                .cloned(),
+            run: run.clone(),
+            unread: Some(why),
+            ..PastAppraisals::default()
+        }
+    }
+
+    /// Re-select against the tools the run carries — the registry the run
+    /// record will name.
+    pub fn for_registry(&mut self, tools: &[String]) {
+        let run = Situation {
+            tools: tools.to_vec(),
+            ..self.run.clone()
+        };
+        self.served = newest_keyed(self.pool.iter(), Some(&run), None, PAST_SHOWN)
+            .into_iter()
+            .cloned()
+            .collect();
+    }
+
+    /// The goal the selection is toward — the run's matched goal. Served
+    /// only to a request toward it.
+    pub fn goal(&self) -> Option<&GoalRef> {
+        self.goal.as_ref()
+    }
+
+    pub fn served(&self) -> &[Clean] {
+        &self.served
+    }
+
+    pub fn unread_reason(&self) -> Option<&str> {
+        self.unread.as_deref()
+    }
+}
+
+/// A [`CleanRead`] of `rows` through the same admission the store's door
+/// uses ([`Clean::admit`]) — for a test in another module that needs a
+/// `Clean`, which it cannot otherwise build. A tainted row is withheld here
+/// exactly as `AppraisalStore::clean` withholds it.
+#[cfg(test)]
+pub(crate) fn clean_read_of(rows: Vec<TextAppraisal>) -> CleanRead {
+    let mut read = CleanRead::default();
+    for row in rows {
+        match Clean::admit(row) {
+            Some(c) => read.appraisals.push(c),
+            None => read.withheld += 1,
+        }
+    }
+    read
+}
+
+/// A stored appraisal of session `session` in `situation`, clean or
+/// tainted — the shape `AppraisalStore::record` writes, for other modules'
+/// tests.
+#[cfg(test)]
+pub(crate) fn test_row(
+    session: &str,
+    situation: &Situation,
+    clean: bool,
+    at: &str,
+) -> TextAppraisal {
+    serde_json::from_value(serde_json::json!({
+        "id": format!("apr-{session}"),
+        "at": at,
+        "session_id": session,
+        "origin": if clean { "clean" } else { "untrusted" },
+        "taint": {"private": true, "untrusted": !clean},
+        "situation": situation,
+        "model": "local-model",
+        "interpretation": format!("In {session} the owner wanted the date quoted from the mail."),
+        "prediction": "Next time the owner will want the date confirmed.",
+        "lessons": ["Quote the date from the mail when passing it on."],
+    }))
+    .unwrap()
 }
 
 // ─── The store ──────────────────────────────────────────────────────────────
@@ -977,6 +1187,29 @@ impl AppraisalStore {
             .map(|r| r.id))
     }
 
+    /// The clean door's read and the sessions with an appraisal on record,
+    /// clean or not, from **one** read of the ledger — ids only for the
+    /// second, so a reader that must count a withheld appraisal (row
+    /// 2e-1's "clean for one source only") never holds its text.
+    pub fn clean_with_sessions(&self) -> Result<(CleanRead, std::collections::BTreeSet<String>)> {
+        let (rows, skipped) = self.for_owner()?;
+        let mut read = CleanRead {
+            skipped,
+            ..CleanRead::default()
+        };
+        let mut sessions = std::collections::BTreeSet::new();
+        for row in rows {
+            if !row.session_id.trim().is_empty() {
+                sessions.insert(row.session_id.clone());
+            }
+            match Clean::admit(row) {
+                Some(clean) => read.appraisals.push(clean),
+                None => read.withheld += 1,
+            }
+        }
+        Ok((read, sessions))
+    }
+
     /// Every record, oldest first, and how many lines were skipped — **for
     /// the owner's surfaces only**. A missing file is an empty store; a file
     /// that cannot be read is an `Err`.
@@ -1044,6 +1277,11 @@ pub struct Summary {
     pub with_expected_act: usize,
     /// Judgment goals that did not resolve, across records.
     pub goals_unresolved: usize,
+    /// Counterfactual reflections on record (row 2d-3), and of them those
+    /// on an appraisal that is not clean — set by
+    /// [`Summary::with_counterfactuals`], zero until then.
+    pub counterfactuals: usize,
+    pub counterfactuals_not_clean: usize,
 }
 
 impl Summary {
@@ -1079,6 +1317,1099 @@ impl Summary {
         }
         s.sessions = sessions.len();
         s
+    }
+
+    /// The side ledger's reflections, counted beside the appraisals.
+    pub fn with_counterfactuals(mut self, rows: &[Counterfactual]) -> Summary {
+        self.counterfactuals = rows.len();
+        self.counterfactuals_not_clean = rows.iter().filter(|r| !r.is_clean()).count();
+        self
+    }
+}
+
+// ─── The appraisal's own prediction, scored (X5, R33, R37; row 2b-2) ──────
+
+/// The window before "no act" becomes the act that happened, for an output
+/// with no store patience to take — a chat answer, a run that staged
+/// nothing, a **workflow** the session worked (the workflow store carries
+/// no `doctor::Patience`; kept at the constant for now, the owner's ruling
+/// of 2026-09-25), and a **task with no due date**. R37: "the doctor's
+/// constant", confirmed by the owner as the outbox's 48h. A task *with* a
+/// due date takes its window from the date instead (R37 refined; see
+/// [`observe`]).
+pub const NO_STORE_PATIENCE_HOURS: i64 = 48;
+
+/// What the owner did with a session's output, as the stores that record
+/// the owner's acts say — read by the harness, never by a model.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ObservedAct {
+    /// The owner's first act on the output within the window.
+    Act { act: ExpectedAct, at: DateTime<Utc> },
+    /// The window closed with no act: "no act" is the act that happened
+    /// (R37).
+    NoAct { window_closed_at: DateTime<Utc> },
+    /// The window is still open and no act has arrived.
+    Pending { closes_at: DateTime<Utc> },
+    /// The output is a task and this caller did not read the board, so its
+    /// due date — the window — is not known here. Not unknown: `mecha
+    /// distill` reads the board and scores it. Nothing is written.
+    NeedsBoard,
+    /// Something the answer depends on could not be read — an act store,
+    /// the charter the patience comes from, a timestamp. **Never "no
+    /// act"**: an act the harness could not see is not an act that did not
+    /// happen.
+    Unknown { why: String },
+}
+
+/// The stores the owner's acts on a session's output live in, as a caller
+/// read them. A flag set means that store is unknown rather than empty.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OwnerActs<'a> {
+    /// Every outbox item; filtered to the session inside.
+    pub drafts: &'a [crate::outbox::OutboxItem],
+    pub outbox_unreadable: bool,
+    /// The closure store's standing transitions.
+    pub closures: &'a [crate::closure::Transition],
+    pub closures_unreadable: bool,
+    pub workflows: &'a [crate::workflow::Workflow],
+    pub workflows_unreadable: bool,
+    /// The charter, for the patience of the outbox's line.
+    pub charter: Option<&'a crate::charter::Charter>,
+    pub charter_unreadable: bool,
+    /// The board (`kg_task_list` with closed rows), read by the harness —
+    /// where a task output's due date comes from (R37 refined).
+    pub board: BoardRead<'a>,
+    /// The owner's zone (`[agent] timezone`), for a due *date*: "by the
+    /// due date" is through the end of that day where the owner is. `None`
+    /// reads the day in UTC, the machine's zone.
+    pub zone: Option<chrono_tz::Tz>,
+}
+
+/// The board as a caller has it.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum BoardRead<'a> {
+    /// This caller did not read it (the read-only readout has no graph
+    /// connection).
+    #[default]
+    NotRead,
+    /// The read failed or the answer was not a board: unknown.
+    Unreadable,
+    /// The answer, `{"items": [...], "truncated": ...}`.
+    Read(&'a serde_json::Value),
+}
+
+/// When a task's no-act window closes: its `due_at` from the board, as the
+/// instant the due day ends where the owner is (or the stated instant, if
+/// the row carries a time). `Ok(None)` is a task with no due date — the
+/// constant applies. `Err` is unknown: an unreadable board, a row the board
+/// does not have, or a date that will not parse.
+fn task_due(
+    task: &str,
+    board: &BoardRead<'_>,
+    zone: Option<chrono_tz::Tz>,
+) -> std::result::Result<Option<DateTime<Utc>>, String> {
+    let board = match board {
+        BoardRead::NotRead => return Err("not read".into()),
+        BoardRead::Unreadable => return Err("the board could not be read".into()),
+        BoardRead::Read(v) => v,
+    };
+    let Some(rows) = board["items"].as_array() else {
+        return Err("the board's answer carried no task list".into());
+    };
+    let Some(row) = rows.iter().find(|r| r["id"].as_str() == Some(task)) else {
+        return Err(format!("the board has no row for task {task}"));
+    };
+    let raw = match &row["due_at"] {
+        serde_json::Value::Null => return Ok(None),
+        serde_json::Value::String(s) if s.trim().is_empty() => return Ok(None),
+        serde_json::Value::String(s) => s.trim().to_string(),
+        _ => return Err(format!("task {task}'s due date is not a date")),
+    };
+    if let Ok(at) = DateTime::parse_from_rfc3339(&raw) {
+        return Ok(Some(at.with_timezone(&Utc)));
+    }
+    let day = raw
+        .get(..10)
+        .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+        .ok_or_else(|| format!("task {task}'s due date {raw:?} will not parse"))?;
+    let next = day
+        .succ_opt()
+        .ok_or_else(|| format!("task {task}'s due date is out of range"))?
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight exists");
+    let Some(tz) = zone else {
+        return Ok(Some(next.and_utc()));
+    };
+    // A midnight that never happened (a zone that springs forward at 24:00)
+    // walks forward to the first minute that exists — `cron::resolve`'s rule
+    // for a gap: the owner's day did end, a little later on the clock
+    // (found on review of #324). An ambiguous one takes the earlier, as
+    // there.
+    (0..=24 * 60)
+        .find_map(|m| {
+            (next + chrono::Duration::minutes(m))
+                .and_local_timezone(tz)
+                .earliest()
+        })
+        .map(|t| Some(t.with_timezone(&Utc)))
+        .ok_or_else(|| format!("task {task}'s due day has no end in the owner's zone"))
+}
+
+/// The doctor's constant for an output waiting on the owner — read from
+/// `doctor::Patience` with no charter, so "the doctor's constant" (R37) is
+/// true by construction rather than by a second literal.
+/// [`NO_STORE_PATIENCE_HOURS`] names the same number for readers, and a
+/// test holds the two together.
+fn doctors_constant() -> chrono::Duration {
+    crate::doctor::Patience::for_store(None, crate::charter::SensorKind::OutboxAge)
+        .map(|p| p.after)
+        .unwrap_or_else(|| chrono::Duration::hours(NO_STORE_PATIENCE_HOURS))
+}
+
+/// The outbox's patience for a session that staged drafts: the charter
+/// line watching the outbox, else the doctor's constant. `Err` when the
+/// charter cannot be read.
+fn outbox_patience(acts: &OwnerActs<'_>) -> std::result::Result<chrono::Duration, String> {
+    if acts.charter_unreadable {
+        return Err("the charter could not be read, so the outbox's patience is unknown".into());
+    }
+    crate::doctor::Patience::for_store(acts.charter, crate::charter::SensorKind::OutboxAge)
+        .map(|p| p.after)
+        .ok_or_else(|| "the outbox has no patience".into())
+}
+
+/// The owner's act on `session_id`'s output, within R37's window opened at
+/// `ended_at`, as of `now`.
+///
+/// The acts, R16's set (R33): a model-authored draft released unchanged or
+/// after the owner's edit, or rejected; a task the session worked closed or
+/// reopened by the owner (the closure record's `sessions`); a workflow that
+/// tracked the session closed, reopened or cancelled — a cancel is the
+/// owner declining the work, read as `rejected`. **The first act by time
+/// is the act**: the owner's first reaction to the output, whatever came
+/// after it. An act after the window closed is not the act (R37: only an
+/// act that arrives before the window closes).
+pub fn observe(
+    session_id: &str,
+    anchor: Option<&GoalRef>,
+    ended_at: DateTime<Utc>,
+    acts: &OwnerActs<'_>,
+    now: DateTime<Utc>,
+) -> ObservedAct {
+    let unknown = |why: &str| ObservedAct::Unknown {
+        why: why.to_string(),
+    };
+    // A row naming no session has no output to read an act off: "nothing
+    // matched" would read as the owner doing nothing.
+    if session_id.trim().is_empty() {
+        return unknown("the appraisal names no session");
+    }
+    if acts.outbox_unreadable {
+        return unknown("the outbox could not be fully read");
+    }
+    if acts.closures_unreadable {
+        return unknown("the closure store could not be fully read");
+    }
+    if acts.workflows_unreadable {
+        return unknown("the workflow store could not be read");
+    }
+    // The session's drafts, every author but the harness's own cards: a
+    // draft whose author word this build cannot read is still this
+    // session's output waiting in the outbox (the window), and still may
+    // carry the owner's act (below).
+    let drafts: Vec<&crate::outbox::OutboxItem> = acts
+        .drafts
+        .iter()
+        .filter(|d| d.session_id.as_deref() == Some(session_id))
+        .filter(|d| d.author() != crate::outbox::Author::Harness)
+        .collect();
+    let owners = |c: &&crate::closure::Transition| {
+        c.sessions.iter().any(|s| s == session_id)
+            && matches!(
+                c.actor,
+                crate::closure::Actor::Owner | crate::closure::Actor::OwnerApproved
+            )
+    };
+    // The output's window first (R37, refined by the owner 2026-09-25): a
+    // session that staged drafts waits in the outbox, its patience. Else a
+    // task the session worked — its anchor, else the task an owner's closure
+    // naming the session moved — runs to the task's due date where the
+    // board row has one, else the constant. A workflow, or nothing, is the
+    // constant. Before the acts, so a record the window has already passed
+    // cannot make the answer unknown (found on review of #324).
+    let task = match anchor {
+        Some(GoalRef::Task(id)) => Some(id.clone()),
+        _ => acts.closures.iter().find(owners).map(|c| c.task.clone()),
+    };
+    let constant = ended_at + doctors_constant();
+    let closes_at = if !drafts.is_empty() {
+        match outbox_patience(acts) {
+            Ok(p) => ended_at + p,
+            Err(why) => return ObservedAct::Unknown { why },
+        }
+    } else if let Some(task) = task {
+        match task_due(&task, &acts.board, acts.zone) {
+            // A due date still ahead at the session's end is the window.
+            Ok(Some(due)) if due > ended_at => due,
+            // Already past when the session ended (or none): the output is
+            // still waiting on the owner's reaction, and closing the window
+            // at once would score every overdue task's review as "no act"
+            // whatever the owner then did — the constant instead.
+            Ok(_) => constant,
+            Err(_) if matches!(acts.board, BoardRead::NotRead) => return ObservedAct::NeedsBoard,
+            Err(why) => return ObservedAct::Unknown { why },
+        }
+    } else {
+        constant
+    };
+
+    // Readable acts, and the times of acts seen but not read — a draft by an
+    // author or with a status word this build cannot read, a closure whose
+    // move it cannot read. An unread act decides nothing unless it could be
+    // *the* act: inside the window, and no later than the first readable one
+    // (found on review of #324).
+    let mut seen: Vec<(DateTime<Utc>, ExpectedAct)> = Vec::new();
+    let mut unread: Vec<DateTime<Utc>> = Vec::new();
+    for d in &drafts {
+        if d.status == "pending" {
+            continue;
+        }
+        // Resolved, but no readable time: it cannot be placed inside or
+        // outside the window, or before or after any other act.
+        let Some(at) = d
+            .resolved_at
+            .as_deref()
+            .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+            .map(|t| t.with_timezone(&Utc))
+        else {
+            return unknown("a resolved draft carries no readable time");
+        };
+        let model = d.author() == crate::outbox::Author::Model;
+        match (model, d.status.as_str()) {
+            (true, "sent") if d.edited() => seen.push((at, ExpectedAct::Edited)),
+            (true, "sent") => seen.push((at, ExpectedAct::ReleasedUnchanged)),
+            (true, "rejected") => seen.push((at, ExpectedAct::Rejected)),
+            // An author or a status word this build cannot read: an act was
+            // taken, and which one is not known.
+            _ => unread.push(at),
+        }
+    }
+    // An actor this build cannot read is not taken as the owner's hand: the
+    // act is not established to be the owner's, the direction `observe`
+    // fails closed toward everywhere.
+    for c in acts.closures.iter().filter(owners) {
+        match c.kind {
+            crate::closure::Move::Close => seen.push((c.at, ExpectedAct::Closed)),
+            crate::closure::Move::Reopen => seen.push((c.at, ExpectedAct::Reopened)),
+            crate::closure::Move::Unknown => unread.push(c.at),
+        }
+    }
+    for w in acts.workflows {
+        for d in w.owner_dispositions() {
+            if d.session.as_deref() != Some(session_id) {
+                continue;
+            }
+            match d.kind {
+                crate::workflow::Disposition::Closed => seen.push((d.at, ExpectedAct::Closed)),
+                crate::workflow::Disposition::Cancelled => seen.push((d.at, ExpectedAct::Rejected)),
+            }
+            if let Some(at) = d.reopened_at {
+                seen.push((at, ExpectedAct::Reopened));
+            }
+        }
+    }
+    seen.sort_by_key(|(at, _)| *at);
+    let first = seen.iter().find(|(at, _)| *at <= closes_at).cloned();
+    // An act seen and not read that could be the first act — inside the
+    // window, and no later than the first readable act — makes the answer
+    // unknown, never "no act" and never the readable act after it (R37).
+    if unread
+        .iter()
+        .any(|t| *t <= closes_at && first.as_ref().is_none_or(|(f, _)| t <= f))
+    {
+        return unknown(
+            "an owner act on this session's output is recorded in a form this build cannot read",
+        );
+    }
+    if let Some((at, act)) = first {
+        return ObservedAct::Act { act, at };
+    }
+    if now >= closes_at {
+        ObservedAct::NoAct {
+            window_closed_at: closes_at,
+        }
+    } else {
+        ObservedAct::Pending { closes_at }
+    }
+}
+
+/// One appraisal's prediction, scored: its expected act against the act
+/// that happened. Written once per appraisal, when the act resolves, and
+/// never rewritten — a later charter edit that moves the patience does not
+/// re-score what was scored.
+///
+/// **A miss is a surprise** (X5): recorded here, as `surprise`, for 2e-6's
+/// replay priority and 2d-1's surprise decision points to read. Nothing
+/// ranks on it yet.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Score {
+    pub id: String,
+    pub scored_at: DateTime<Utc>,
+    #[serde(default)]
+    pub appraisal_id: String,
+    #[serde(default)]
+    pub session_id: String,
+    /// The appraisal's `expected_act` (R33).
+    #[serde(deserialize_with = "de_act")]
+    pub expected: ExpectedAct,
+    /// What happened: an act from R16's set, or `no_act` once the window
+    /// closed (R37).
+    #[serde(deserialize_with = "de_act")]
+    pub actual: ExpectedAct,
+    /// When the act happened; `None` for `no_act`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acted_at: Option<DateTime<Utc>>,
+    /// When the window closed, or would have.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_closed_at: Option<DateTime<Utc>>,
+    /// Derived: `expected == actual`. Stored so a reader never re-derives
+    /// it differently.
+    #[serde(default)]
+    pub hit: bool,
+    /// Derived: a miss. The surprise X5 names.
+    #[serde(default)]
+    pub surprise: bool,
+    /// Whether the appraisal scored is served by the clean door — a reader
+    /// that acts (replay priority, 2e-6) must take only clean ones.
+    #[serde(default)]
+    pub clean: bool,
+    /// The appraisal's situation and anchor, so a reader can find "the same
+    /// situation and goal" without joining back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub situation: Option<Situation>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::goal::de_lenient"
+    )]
+    pub anchor: Option<GoalRef>,
+}
+
+/// An act word from the file, failing soft to `unknown`.
+fn de_act<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ExpectedAct, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(v).unwrap_or(ExpectedAct::Unknown))
+}
+
+/// What scoring one appraisal found.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Scored {
+    /// Scored and written.
+    Written(Box<Score>),
+    /// Already scored; nothing written.
+    AlreadyScored,
+    /// The appraisal predicted no act structurally: nothing to score.
+    NoExpectation,
+    /// The window is open and nothing has happened yet.
+    Pending { closes_at: DateTime<Utc> },
+    /// The answer could not be read; nothing written.
+    Unknown { why: String },
+    /// A task output, and the board was not read by this caller.
+    NeedsBoard,
+}
+
+/// Coverage of the appraisals' predictions: how many are scored, how many
+/// wait, and a hit rate only over scores that exist.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ScoreSummary {
+    pub appraisals: usize,
+    /// Appraisals carrying a readable expected act.
+    pub with_expectation: usize,
+    pub scored: usize,
+    pub hits: usize,
+    /// Misses — surprises.
+    pub surprises: usize,
+    /// Of the surprises, those on clean appraisals.
+    pub clean_surprises: usize,
+    /// Expectations whose window is still open and no act has arrived.
+    pub pending: usize,
+    /// Expectations that have resolved — an act, or the window closed —
+    /// and are not yet written: the next `mecha distill` pass scores them.
+    pub resolved_unwritten: usize,
+    /// Expectations whose answer could not be read.
+    pub unknown: usize,
+    /// Task outputs this reader could not window, because it read no board
+    /// — the read-only readout; `mecha distill` reads it and scores them.
+    pub board_not_read: usize,
+    /// `hits / scored`; `None` over no scores.
+    pub hit_rate: Option<f64>,
+    /// Score lines that could not be read.
+    pub skipped: usize,
+    /// Appraisal lines that could not be read — each may have carried an
+    /// expectation, so every count above is a floor when this is not zero.
+    pub appraisals_unreadable: usize,
+}
+
+impl AppraisalStore {
+    fn scores_ledger(&self) -> PathBuf {
+        self.root.join("scores.jsonl")
+    }
+
+    /// Every score, oldest first, and how many lines were skipped. A
+    /// missing file is no scores; one that cannot be read is an `Err`.
+    pub fn scores(&self) -> Result<(Vec<Score>, usize)> {
+        let path = self.scores_ledger();
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), 0)),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        let mut out = Vec::new();
+        let mut skipped = 0usize;
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            match serde_json::from_str(line) {
+                Ok(s) => out.push(s),
+                Err(_) => skipped += 1,
+            }
+        }
+        Ok((out, skipped))
+    }
+
+    /// Score one appraisal against what the owner did, and write the score
+    /// if the act has resolved — once per appraisal, checked under the
+    /// store's lock. Pending and unknown write nothing.
+    pub fn score(
+        &self,
+        appraisal: &TextAppraisal,
+        acts: &OwnerActs<'_>,
+        now: DateTime<Utc>,
+    ) -> Result<Scored> {
+        let Some(expected) = appraisal
+            .expected_act
+            .filter(|a| *a != ExpectedAct::Unknown)
+        else {
+            return Ok(Scored::NoExpectation);
+        };
+        let ended_at = appraisal.session_ended_at.unwrap_or(appraisal.at);
+        let (actual, acted_at, window_closed_at) = match observe(
+            &appraisal.session_id,
+            appraisal.anchor.as_ref(),
+            ended_at,
+            acts,
+            now,
+        ) {
+            ObservedAct::Act { act, at } => (act, Some(at), None),
+            ObservedAct::NoAct { window_closed_at } => {
+                (ExpectedAct::NoAct, None, Some(window_closed_at))
+            }
+            ObservedAct::Pending { closes_at } => return Ok(Scored::Pending { closes_at }),
+            ObservedAct::Unknown { why } => return Ok(Scored::Unknown { why }),
+            ObservedAct::NeedsBoard => return Ok(Scored::NeedsBoard),
+        };
+        let hit = expected == actual;
+        let score = Score {
+            id: format!("scr-{}", uuid::Uuid::new_v4()),
+            scored_at: now,
+            appraisal_id: appraisal.id.clone(),
+            session_id: appraisal.session_id.clone(),
+            expected,
+            actual,
+            acted_at,
+            window_closed_at,
+            hit,
+            surprise: !hit,
+            clean: appraisal.is_clean(),
+            situation: appraisal.situation.clone(),
+            anchor: appraisal.anchor.clone(),
+        };
+        use std::io::Write;
+        let _lock = self.lock()?;
+        let (existing, _) = self.scores()?;
+        if existing.iter().any(|s| s.appraisal_id == appraisal.id) {
+            return Ok(Scored::AlreadyScored);
+        }
+        let path = self.scores_ledger();
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        let mut line = serde_json::to_string(&score)?;
+        line.push('\n');
+        file.write_all(line.as_bytes())
+            .with_context(|| format!("writing {}", path.display()))?;
+        file.sync_data()
+            .with_context(|| format!("syncing {}", path.display()))?;
+        Ok(Scored::Written(Box::new(score)))
+    }
+
+    /// Score every appraisal whose act has resolved and is not yet scored —
+    /// what `mecha distill` runs each pass, no model call. Returns the
+    /// coverage after the pass.
+    pub fn score_due(&self, acts: &OwnerActs<'_>, now: DateTime<Utc>) -> Result<ScoreSummary> {
+        let (rows, _) = self.for_owner()?;
+        for row in &rows {
+            self.score(row, acts, now)?;
+        }
+        self.score_summary(acts, now)
+    }
+
+    /// Coverage, read-only: the ledger's scores, and for every expectation
+    /// not yet scored, whether its window is open or its answer unknown.
+    pub fn score_summary(&self, acts: &OwnerActs<'_>, now: DateTime<Utc>) -> Result<ScoreSummary> {
+        let (rows, appraisals_unreadable) = self.for_owner()?;
+        let (scores, skipped) = self.scores()?;
+        let mut s = ScoreSummary {
+            appraisals: rows.len(),
+            skipped,
+            appraisals_unreadable,
+            ..ScoreSummary::default()
+        };
+        for row in &rows {
+            if !row.expected_act.is_some_and(|a| a != ExpectedAct::Unknown) {
+                continue;
+            }
+            s.with_expectation += 1;
+            if let Some(score) = scores.iter().find(|x| x.appraisal_id == row.id) {
+                s.scored += 1;
+                if score.hit {
+                    s.hits += 1;
+                } else {
+                    s.surprises += 1;
+                    if score.clean {
+                        s.clean_surprises += 1;
+                    }
+                }
+                continue;
+            }
+            let ended_at = row.session_ended_at.unwrap_or(row.at);
+            match observe(&row.session_id, row.anchor.as_ref(), ended_at, acts, now) {
+                ObservedAct::Unknown { .. } => s.unknown += 1,
+                ObservedAct::NeedsBoard => s.board_not_read += 1,
+                ObservedAct::Pending { .. } => s.pending += 1,
+                ObservedAct::Act { .. } | ObservedAct::NoAct { .. } => s.resolved_unwritten += 1,
+            }
+        }
+        s.hit_rate = (s.scored > 0).then(|| s.hits as f64 / s.scored as f64);
+        Ok(s)
+    }
+}
+
+// ─── The losing arm teaches (O3; row 2d-3) ─────────────────────────────────
+
+/// A point-wise comparison's confirmed losing outcome, written into its
+/// session's appraisal as **counterfactual reflection** (O3): at this point
+/// of the session, this policy did what the owner refused and that one did
+/// what the owner chose, as a structural validator read the owner's recorded
+/// verdict.
+///
+/// **A side record, joined to the appraisal by id** —
+/// `counterfactuals.jsonl` beside `appraisals.jsonl`, the shape
+/// `scores.jsonl` took for 2b-2. The appraisal is one record per session and
+/// is never rewritten; an amendment row in `appraisals.jsonl` would load in
+/// every earlier build as a second appraisal of the session (its reader
+/// defaults every field but `id` and `at`), and that build's
+/// `on_record` would then refuse the real one as `AlreadyOnRecord`. A
+/// separate ledger is invisible to them.
+///
+/// **Harness-authored, never model prose.** Every word of `reflection` is
+/// rendered by [`reflection_text`] from the comparison's typed record —
+/// its kind, validator, arms and pointers, which hold closed sets and ids
+/// only — so nothing a model wrote, and none of the owner's text, can ride
+/// in it.
+///
+/// **It inherits the appraisal's provenance.** `origin` and `taint` are the
+/// appraisal's, copied when written, so a reflection on a tainted session's
+/// appraisal is as tainted as the appraisal. The clean door
+/// ([`AppraisalStore::clean`]) does not serve these records at all: a
+/// future reader takes one only beside a [`Clean`] appraisal, by the same
+/// predicate ([`Self::is_clean`]).
+///
+/// **It rests on the comparison, by pointer.** `comparison` is a
+/// [`Pointer::Comparison`]; `quote` is the comparison's verdict line as
+/// [`comparison_referent`] renders it, and [`Self::dereference`] admits the
+/// record into the comparison store through [`crate::grounding::admit`] —
+/// asked before it is written, and again by every reader, since the
+/// comparison store it points into is a different file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Counterfactual {
+    pub id: String,
+    pub at: DateTime<Utc>,
+    /// The appraisal it is part of.
+    #[serde(default)]
+    pub appraisal_id: String,
+    #[serde(default)]
+    pub session_id: String,
+    /// The comparison it rests on. A pointer this build cannot read loads
+    /// as [`Pointer::Unread`] and dereferences nothing.
+    #[serde(default = "no_pointer", deserialize_with = "de_pointer")]
+    pub comparison: Pointer,
+    #[serde(default)]
+    pub kind: crate::comparison::Kind,
+    #[serde(default)]
+    pub validator: crate::comparison::Validator,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_index: Option<usize>,
+    /// The harness candidate a `candidate` arm carried (2d-2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal_id: Option<String>,
+    /// The arms the validator failed — the losing outcome.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lost: Vec<crate::comparison::Arm>,
+    /// The arms it passed, which make the loss a loss.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub won: Vec<crate::comparison::Arm>,
+    /// The span of the comparison's referent the reflection rests on.
+    #[serde(default)]
+    pub quote: String,
+    /// The reflection, rendered by the harness from the fields above.
+    #[serde(default)]
+    pub reflection: String,
+    /// The appraisal's, copied at write. Unreadable or absent is untrusted.
+    #[serde(default = "untrusted", deserialize_with = "de_origin")]
+    pub origin: Origin,
+    #[serde(default)]
+    pub taint: Option<Taint>,
+}
+
+fn no_pointer() -> Pointer {
+    Pointer::Unread(String::new())
+}
+
+/// A pointer from the file, failing soft: a non-string is unread, never a
+/// failed row.
+fn de_pointer<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Pointer, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(match v.as_str() {
+        Some(s) => Pointer::parse(s),
+        None => Pointer::Unread(v.to_string()),
+    })
+}
+
+impl Counterfactual {
+    /// [`TextAppraisal::is_clean`]'s predicate over the copied provenance.
+    pub fn is_clean(&self) -> bool {
+        self.origin == Origin::Clean && matches!(self.taint, Some(t) if !t.untrusted)
+    }
+
+    /// Dereference the record into `packet` — [`comparison_referents`] of
+    /// the comparison store as it stands: the pointer must name a stored
+    /// comparison, and the quote must be a literal span of it. `Err` names
+    /// why not, by [`crate::grounding::Refusal`]'s wire name, or
+    /// `unknown_pointer` / `not_a_comparison` / `quote_too_long`.
+    pub fn dereference(&self, packet: &[crate::grounding::Evidence]) -> Result<(), String> {
+        let name = |r: crate::grounding::Refusal| crate::appraisal::enum_name(&r);
+        match &self.comparison {
+            Pointer::Comparison(_) => {}
+            Pointer::Unread(_) => return Err("unknown_pointer".into()),
+            Pointer::Result(_) | Pointer::Turn(_) => return Err("not_a_comparison".into()),
+        }
+        if self.quote.trim().chars().count() > QUOTE_MAX_CHARS {
+            return Err(name(crate::grounding::Refusal::QuoteTooLong));
+        }
+        let id = self.comparison.to_string();
+        crate::grounding::admit(
+            &crate::grounding::Claim {
+                statement: &self.reflection,
+                id: &id,
+                quote: &self.quote,
+            },
+            packet,
+            QUOTE_MIN_CHARS,
+        )
+        .map(|_| ())
+        .map_err(name)
+    }
+}
+
+/// What a comparison says, as a counterfactual rests on it: a header naming
+/// the point and the validator, then the verdict line — every word a closed
+/// set's wire name, an id or a count.
+pub fn comparison_referent(c: &crate::comparison::Comparison) -> crate::grounding::Evidence {
+    use crate::appraisal::enum_name;
+    let at = |n: Option<usize>| n.map_or_else(|| "-".to_string(), |n| n.to_string());
+    crate::grounding::Evidence {
+        id: Pointer::Comparison(c.id.clone()).to_string(),
+        source: "comparison".into(),
+        text: format!(
+            "{} · session {} · message {} · call {} · validator {}\n{}",
+            enum_name(&c.kind),
+            c.pointers.session_id,
+            at(c.pointers.message_index),
+            at(c.pointers.call_index),
+            enum_name(&c.validator),
+            verdict_line(c)
+        ),
+    }
+}
+
+/// Every comparison as a referent, in store order — first seen wins in
+/// [`crate::grounding::admit`], so a duplicated id resolves to its first
+/// row.
+pub fn comparison_referents(
+    rows: &[crate::comparison::Comparison],
+) -> Vec<crate::grounding::Evidence> {
+    rows.iter().map(comparison_referent).collect()
+}
+
+/// The verdict and each arm's role, policy and outcome, on one line — the
+/// span a counterfactual quotes.
+fn verdict_line(c: &crate::comparison::Comparison) -> String {
+    use crate::appraisal::enum_name;
+    let arms: Vec<String> = c
+        .arms
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            format!(
+                "arm {} {} {} {}",
+                i + 1,
+                enum_name(&a.role),
+                policy_short(a.policy.as_deref()),
+                enum_name(&a.outcome)
+            )
+        })
+        .collect();
+    format!("verdict {}: {}", enum_name(&c.verdict), arms.join(" · "))
+}
+
+/// A rules hash as a reader can tell two apart; unknown is said.
+fn policy_short(policy: Option<&str>) -> String {
+    match policy {
+        Some(p) if !p.trim().is_empty() => p.chars().take(12).collect(),
+        _ => "unknown".into(),
+    }
+}
+
+/// Why a comparison teaches nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NotTaught {
+    /// Not a point-wise comparison (O1): a steer probe, a validation pair,
+    /// a gate pair, a lesson-source measurement (row 2e-1), or a kind this
+    /// build cannot read.
+    OtherKind,
+    /// Inconclusive, unposed, or a verdict this build cannot read: nothing
+    /// was decided (R27 — never judged instead).
+    Undecided,
+    /// Decided with every arm alike: no arm lost.
+    Tied,
+    /// Separated by a validator that is not structural — a model judge —
+    /// or one this build cannot read. Never a confirmed outcome (R27).
+    NotStructural,
+    /// The stored verdict disagrees with the arms beside it, or the row has
+    /// no id to point at: a hand edit or a torn field, never taught.
+    Inconsistent,
+}
+
+/// The losing and winning arms of a decided point-wise comparison.
+fn losing_arms(
+    c: &crate::comparison::Comparison,
+) -> std::result::Result<(Vec<crate::comparison::Arm>, Vec<crate::comparison::Arm>), NotTaught> {
+    use crate::comparison::{Outcome, Verdict};
+    if kind_phrase(c.kind).is_none() {
+        return Err(NotTaught::OtherKind);
+    }
+    match c.verdict {
+        Verdict::Separated => {}
+        Verdict::Tied => return Err(NotTaught::Tied),
+        Verdict::Inconclusive | Verdict::Unknown => return Err(NotTaught::Undecided),
+    }
+    // Derived again rather than believed: `Verdict::of` is the one
+    // function a stored verdict came from, so a row where they disagree was
+    // not written by it.
+    if Verdict::of(&c.arms) != (Verdict::Separated, c.preferred.clone()) || c.id.trim().is_empty() {
+        return Err(NotTaught::Inconsistent);
+    }
+    if outcome_phrase(c.validator, Outcome::Fail).is_none() {
+        return Err(NotTaught::NotStructural);
+    }
+    let by = |o: Outcome| -> Vec<crate::comparison::Arm> {
+        c.arms.iter().filter(|a| a.outcome == o).cloned().collect()
+    };
+    Ok((by(Outcome::Fail), by(Outcome::Pass)))
+}
+
+/// The point, in words; `None` for a kind that is not point-wise.
+fn kind_phrase(kind: crate::comparison::Kind) -> Option<&'static str> {
+    use crate::comparison::Kind;
+    Some(match kind {
+        Kind::PointSteer => "the owner's steer",
+        Kind::PointDenial => "the owner's refusal of a call",
+        Kind::PointEditedDraft => "a draft the owner rewrote before sending",
+        Kind::PointRejectedDraft => "a draft the owner rejected",
+        Kind::PointCheck => "a failed check",
+        Kind::PointSurprise => "a surprise",
+        // A lesson-source comparison (row 2e-1) is a measurement of the
+        // learners, shadow by ruling: its losing arm carries a lesson, and
+        // writing that into an appraisal would feed one source's words back
+        // into the other's input. Never taught.
+        Kind::SteerProbe | Kind::Validation | Kind::Gate | Kind::LessonSource | Kind::Unknown => {
+            return None
+        }
+    })
+}
+
+/// What an arm did, as the validator reads a pass or a fail; `None` for a
+/// validator that decides nothing structurally.
+fn outcome_phrase(
+    validator: crate::comparison::Validator,
+    outcome: crate::comparison::Outcome,
+) -> Option<&'static str> {
+    use crate::comparison::{Outcome, Validator};
+    let pass = match outcome {
+        Outcome::Pass => true,
+        Outcome::Fail => false,
+        Outcome::Inconclusive | Outcome::Unknown => return None,
+    };
+    Some(match (validator, pass) {
+        (Validator::StructuralSteer, true) => "went, unsteered, where the owner steered the run",
+        (Validator::StructuralSteer, false) => {
+            "did not go, unsteered, where the owner steered the run"
+        }
+        (Validator::StructuralDenial, true) => "did not make the call the owner refused",
+        (Validator::StructuralDenial, false) => "made the call the owner refused again",
+        (Validator::ReleasedDraft, true) => "drafted the text the owner released",
+        (Validator::ReleasedDraft, false) => "drafted the text the owner rewrote",
+        (Validator::RejectedDraft, true) => "ended without drafting",
+        (Validator::RejectedDraft, false) => "drafted the text the owner rejected",
+        (Validator::ArtifactGold, true) => "met the owner's pinned gold",
+        (Validator::ArtifactGold, false) => "missed the owner's pinned gold",
+        (Validator::Judge | Validator::Unposed | Validator::Unknown, _) => return None,
+    })
+}
+
+/// The policy an arm ran, in words, with its rules hash.
+fn role_phrase(arm: &crate::comparison::Arm, proposal: Option<&str>) -> String {
+    use crate::comparison::Role;
+    let role = match arm.role {
+        Role::Recorded => "the run as recorded".to_string(),
+        Role::WithoutIntervention => "the policy the run ran under".to_string(),
+        Role::RulesFree => "no rules".to_string(),
+        Role::Rules => "today's deployed rules".to_string(),
+        Role::Candidate => match proposal {
+            Some(p) if !p.trim().is_empty() => format!("harness candidate {p}"),
+            _ => "a harness candidate".to_string(),
+        },
+        Role::ReflectorLesson => "the reflector's lesson alone".to_string(),
+        Role::AppraisalLesson => "the appraisal's lessons alone".to_string(),
+        Role::Unknown => "a policy this build cannot name".to_string(),
+    };
+    // `Arm::no_block`: recorded and empty, a different fact from unknown.
+    if arm.policy == crate::comparison::Arm::no_block() {
+        return format!("{role} (no rules block)");
+    }
+    format!("{role} (rules {})", policy_short(arm.policy.as_deref()))
+}
+
+/// The reflection's text, from the comparison's typed record alone — the
+/// one place its words come from.
+fn reflection_text(
+    c: &crate::comparison::Comparison,
+    lost: &[crate::comparison::Arm],
+    won: &[crate::comparison::Arm],
+) -> String {
+    let proposal = c.pointers.proposal_id.as_deref();
+    let clause = |a: &crate::comparison::Arm| {
+        format!(
+            "under {}, the arm {}",
+            role_phrase(a, proposal),
+            outcome_phrase(c.validator, a.outcome).unwrap_or("did something this build cannot say")
+        )
+    };
+    let list =
+        |arms: &[crate::comparison::Arm]| arms.iter().map(clause).collect::<Vec<_>>().join("; ");
+    let at = match (c.pointers.message_index, c.pointers.call_index) {
+        (Some(m), Some(k)) => format!("message {m}, call {k}"),
+        (Some(m), None) => format!("message {m}"),
+        (None, Some(k)) => format!("call {k}"),
+        (None, None) => "no recorded position".to_string(),
+    };
+    format!(
+        "Counterfactual at {} ({at}). Lost: {}. Won: {}. Decided by the {} validator against \
+         the owner's recorded verdict; comparison {}.",
+        kind_phrase(c.kind).unwrap_or("a point this build cannot name"),
+        list(lost),
+        list(won),
+        crate::appraisal::enum_name(&c.validator),
+        c.id
+    )
+}
+
+/// What one teaching pass did — every comparison read is counted once.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Taught {
+    /// Reflections written this pass.
+    pub written: usize,
+    /// Of those, on an appraisal that is not clean: the owner's to read.
+    pub written_not_clean: usize,
+    /// Comparisons already taught.
+    pub already: usize,
+    /// Decided comparisons whose session has no appraisal on record yet — a
+    /// later pass teaches them once it has one.
+    pub awaiting_appraisal: usize,
+    /// Point-wise comparisons that decided nothing: inconclusive, unposed,
+    /// or a verdict this build cannot read. They write nothing.
+    pub undecided: usize,
+    /// Decided with every arm alike: no loser to teach.
+    pub tied: usize,
+    /// Separated by a validator that is not structural. Never taught (R27).
+    pub not_structural: usize,
+    /// A stored verdict that disagrees with its arms, or a row with no id.
+    pub inconsistent: usize,
+    /// Decided, but naming no session to join.
+    pub no_session: usize,
+    /// Comparisons that are not point-wise.
+    pub other_kinds: usize,
+    /// Reflections refused by the dereference, by reason.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub refused: BTreeMap<String, usize>,
+    /// Appraisal lines that could not be read — each may have been the
+    /// appraisal a waiting comparison needs, so `awaiting_appraisal` is a
+    /// ceiling when this is not zero.
+    pub appraisals_unreadable: usize,
+    /// Reflection lines that could not be read.
+    pub counterfactuals_unreadable: usize,
+}
+
+impl AppraisalStore {
+    fn counterfactuals_ledger(&self) -> PathBuf {
+        self.root.join("counterfactuals.jsonl")
+    }
+
+    /// Every counterfactual reflection, oldest first, and how many lines
+    /// were skipped — **for the owner's surfaces**, as [`Self::for_owner`]
+    /// is. A missing file is none; one that cannot be read is an `Err`.
+    pub fn counterfactuals(&self) -> Result<(Vec<Counterfactual>, usize)> {
+        let path = self.counterfactuals_ledger();
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), 0)),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        let mut out = Vec::new();
+        let mut skipped = 0usize;
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            match serde_json::from_str(line) {
+                Ok(c) => out.push(c),
+                Err(e) => {
+                    skipped += 1;
+                    tracing::warn!("skipping unreadable counterfactual row: {e}");
+                }
+            }
+        }
+        Ok((out, skipped))
+    }
+
+    /// Write each decided point-wise comparison's losing arm into its
+    /// session's appraisal — once per comparison, under the store's lock,
+    /// with no model call. What `mecha distill` runs each writing pass,
+    /// after the appraisals and the scores.
+    ///
+    /// A comparison teaches only when it is point-wise, `Separated` by a
+    /// structural validator (R27), consistent with its own arms, names a
+    /// session with an appraisal on record, and dereferences. Everything
+    /// else writes nothing and is counted in [`Taught`] by why.
+    pub fn teach(&self, comparisons: &[crate::comparison::Comparison]) -> Result<Taught> {
+        use std::io::Write;
+        let _lock = self.lock()?;
+        let (appraisals, appraisals_unreadable) = self.for_owner()?;
+        let (existing, counterfactuals_unreadable) = self.counterfactuals()?;
+        let packet = comparison_referents(comparisons);
+        let mut taught: std::collections::BTreeSet<String> = existing
+            .iter()
+            .filter_map(|r| match &r.comparison {
+                Pointer::Comparison(id) => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut t = Taught {
+            appraisals_unreadable,
+            counterfactuals_unreadable,
+            ..Taught::default()
+        };
+        let mut lines = String::new();
+        for c in comparisons {
+            let (lost, won) = match losing_arms(c) {
+                Ok(arms) => arms,
+                Err(NotTaught::OtherKind) => {
+                    t.other_kinds += 1;
+                    continue;
+                }
+                Err(NotTaught::Undecided) => {
+                    t.undecided += 1;
+                    continue;
+                }
+                Err(NotTaught::Tied) => {
+                    t.tied += 1;
+                    continue;
+                }
+                Err(NotTaught::NotStructural) => {
+                    t.not_structural += 1;
+                    continue;
+                }
+                Err(NotTaught::Inconsistent) => {
+                    t.inconsistent += 1;
+                    continue;
+                }
+            };
+            let session = c.pointers.session_id.trim();
+            if session.is_empty() {
+                t.no_session += 1;
+                continue;
+            }
+            if taught.contains(&c.id) {
+                t.already += 1;
+                continue;
+            }
+            let Some(appraisal) = appraisals.iter().find(|a| a.session_id == session) else {
+                t.awaiting_appraisal += 1;
+                continue;
+            };
+            let record = Counterfactual {
+                id: format!("cfr-{}", uuid::Uuid::new_v4()),
+                at: Utc::now(),
+                appraisal_id: appraisal.id.clone(),
+                session_id: appraisal.session_id.clone(),
+                comparison: Pointer::Comparison(c.id.clone()),
+                kind: c.kind,
+                validator: c.validator,
+                message_index: c.pointers.message_index,
+                call_index: c.pointers.call_index,
+                proposal_id: c.pointers.proposal_id.clone(),
+                quote: verdict_line(c),
+                reflection: reflection_text(c, &lost, &won),
+                lost,
+                won,
+                origin: appraisal.origin,
+                taint: appraisal.taint,
+            };
+            if let Err(why) = record.dereference(&packet) {
+                *t.refused.entry(why).or_default() += 1;
+                continue;
+            }
+            taught.insert(c.id.clone());
+            lines.push_str(&serde_json::to_string(&record)?);
+            lines.push('\n');
+            t.written += 1;
+            if !record.is_clean() {
+                t.written_not_clean += 1;
+            }
+        }
+        if !lines.is_empty() {
+            let path = self.counterfactuals_ledger();
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .with_context(|| format!("opening {}", path.display()))?;
+            file.write_all(lines.as_bytes())
+                .with_context(|| format!("writing {}", path.display()))?;
+            file.sync_data()
+                .with_context(|| format!("syncing {}", path.display()))?;
+        }
+        Ok(t)
     }
 }
 
@@ -1807,6 +3138,64 @@ mod tests {
         e
     }
 
+    /// I2 (2c-2): what a run is served is keyed like the appraiser's door,
+    /// clean only, and on the tool set the run record will name — the
+    /// registry after a front-end withheld a tool, not the one the block was
+    /// matched against. A tainted appraisal of the very same situation is
+    /// never served; another goal's never is; and a delegated task whose
+    /// block saw `kg_task_update` still finds its past runs, which recorded
+    /// the registry without it. Fails on a selection keyed on the build's
+    /// registry, which served the task nothing.
+    #[test]
+    fn a_run_is_served_clean_appraisals_of_its_recorded_situation_and_goal() {
+        use crate::situation::GoalKey;
+        let toward = |g: &str, tools: &[&str]| {
+            Situation::of_run(
+                &tools.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
+                Some(Path::new("/project")),
+            )
+            .on(Some(SessionKind::Task))
+            .toward(Some(GoalKey::Named(g.parse().unwrap())))
+        };
+        let recorded = toward("task:t-budget", &["mail_search"]);
+        let read = clean_read_of(vec![
+            test_row("s-old", &recorded, true, "2026-09-20T00:00:00Z"),
+            test_row("s-new", &recorded, true, "2026-09-22T00:00:00Z"),
+            test_row("s-tainted", &recorded, false, "2026-09-23T00:00:00Z"),
+            test_row(
+                "s-other-goal",
+                &toward("task:t-other", &["mail_search"]),
+                true,
+                "2026-09-24T00:00:00Z",
+            ),
+        ]);
+        assert_eq!(read.withheld, 1, "the tainted row never becomes a Clean");
+        // The block was matched with `kg_task_update` registered; the run
+        // record, and so every past appraisal, names the registry without it.
+        let built = toward("task:t-budget", &["kg_task_update", "mail_search"]);
+        let mut past = PastAppraisals::select(read, &built);
+        assert!(
+            past.served().is_empty(),
+            "keyed on the build's registry: nothing"
+        );
+        past.for_registry(&["mail_search".to_string()]);
+        let got: Vec<&str> = past
+            .served()
+            .iter()
+            .map(|c| c.session_id.as_str())
+            .collect();
+        assert_eq!(
+            got,
+            vec!["s-new", "s-old"],
+            "newest first, clean, same goal"
+        );
+        assert_eq!(past.goal(), Some(&GoalRef::Task("t-budget".into())));
+        assert!(past.unread_reason().is_none());
+        let unread = PastAppraisals::unread("permission denied".into(), &built);
+        assert!(unread.served().is_empty());
+        assert_eq!(unread.unread_reason(), Some("permission denied"));
+    }
+
     /// The past an appraiser is shown: clean appraisals of the same
     /// situation and goal key — newest first, at most `n`, never the
     /// session's own, never a tainted one (the type cannot hold it). The
@@ -1862,6 +3251,736 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // --- the appraisal's own prediction, scored (row 2b-2) ---
+
+    /// A model-authored draft staged in `session`, then set to `status` at
+    /// `resolved_at` — the shape the outbox store keeps.
+    fn draft_of(
+        root: &Path,
+        session: &str,
+        status: &str,
+        resolved_at: Option<DateTime<Utc>>,
+    ) -> crate::outbox::OutboxItem {
+        let store =
+            crate::outbox::OutboxStore::open(root.join(format!("outbox-{}", uuid::Uuid::new_v4())))
+                .unwrap();
+        let mut item = store
+            .stage(
+                "mail_send",
+                crate::outbox::OutboxKind::Message,
+                json!({"to": "idris.vale@example.org", "body": "The review is Thursday."}),
+                Taint::default(),
+                crate::outbox::Provenance {
+                    anticipation: None,
+                    filled_defaults: Vec::new(),
+                    session_id: Some(session.to_string()),
+                    workspace: None,
+                    call_id: None,
+                },
+            )
+            .unwrap();
+        item.status = status.to_string();
+        item.resolved_at = resolved_at.map(|t| t.to_rfc3339());
+        item
+    }
+
+    fn acts<'a>(drafts: &'a [crate::outbox::OutboxItem]) -> OwnerActs<'a> {
+        OwnerActs {
+            drafts,
+            ..OwnerActs::default()
+        }
+    }
+
+    /// R37's boundary: "no act" becomes the act that happened only once the
+    /// output's store patience has elapsed from the session's end — the
+    /// doctor's constant, or the charter line watching the outbox. An act
+    /// before the window closes is the act; one after it is not.
+    #[test]
+    fn no_act_resolves_only_after_the_outputs_patience_from_the_sessions_end() {
+        let root = temp_root("window");
+        let end: DateTime<Utc> = "2026-09-20T12:00:00Z".parse().unwrap();
+        let second = chrono::Duration::seconds(1);
+        let pending = [draft_of(&root, "s-1", "pending", None)];
+        let hours = |h: i64| chrono::Duration::hours(h);
+
+        // The doctor's constant for the outbox, 48h.
+        let at = |now| observe("s-1", None, end, &acts(&pending), now);
+        assert_eq!(
+            at(end + hours(48) - second),
+            ObservedAct::Pending {
+                closes_at: end + hours(48)
+            },
+            "just before the window closes: still waiting"
+        );
+        assert_eq!(
+            at(end + hours(48) + second),
+            ObservedAct::NoAct {
+                window_closed_at: end + hours(48)
+            },
+            "just after: no act is the act"
+        );
+
+        // The owner's own line on the outbox moves the window.
+        let charter = crate::charter::Charter::parse(
+            "[[line]]\nid = \"replies\"\ntext = \"Answer the people waiting on me.\"\n\
+             [line.sensor]\nkind = \"outbox_age\"\nsetpoint = \"24h\"\n",
+        )
+        .unwrap();
+        let owned = OwnerActs {
+            charter: Some(&charter),
+            ..acts(&pending)
+        };
+        assert!(matches!(
+            observe("s-1", None, end, &owned, end + hours(24) - second),
+            ObservedAct::Pending { .. }
+        ));
+        assert!(matches!(
+            observe("s-1", None, end, &owned, end + hours(24) + second),
+            ObservedAct::NoAct { .. }
+        ));
+
+        // An act inside the window is the act, whenever it is read.
+        let rejected = [draft_of(&root, "s-1", "rejected", Some(end + hours(47)))];
+        assert_eq!(
+            observe("s-1", None, end, &acts(&rejected), end + hours(100)),
+            ObservedAct::Act {
+                act: ExpectedAct::Rejected,
+                at: end + hours(47)
+            }
+        );
+        // One after it is not: the window closed on no act.
+        let late = [draft_of(&root, "s-1", "sent", Some(end + hours(49)))];
+        assert_eq!(
+            observe("s-1", None, end, &acts(&late), end + hours(100)),
+            ObservedAct::NoAct {
+                window_closed_at: end + hours(48)
+            }
+        );
+        // Another session's draft is not this session's act; with no draft
+        // of its own the output has no store, and the constant applies.
+        assert!(matches!(
+            observe("s-2", None, end, &acts(&rejected), end + hours(47)),
+            ObservedAct::Pending { .. }
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An owner closure of `task` naming session `session`, at `at`.
+    fn closure(task: &str, session: &str, at: DateTime<Utc>) -> crate::closure::Transition {
+        crate::closure::Transition {
+            at,
+            ..serde_json::from_value(json!({
+                "id": format!("cl-{task}-{session}"), "task": task, "from": "next",
+                "to": "done", "move": "close", "actor": "owner", "surface": "cli",
+                "sessions": [session], "at": "2026-09-20T12:00:00Z"
+            }))
+            .unwrap()
+        }
+    }
+
+    /// R37 refined by the owner (2026-09-25): a task output's no-act window
+    /// runs from the session's end to the task's `due_at` on the board. A
+    /// closure by the due date is the act; one after it is not. An undated
+    /// task keeps the constant; a date already past at the session's end
+    /// falls back to the constant; an unreadable board or an unparseable
+    /// date is unknown, never the constant; a caller that read no board
+    /// defers to one that does.
+    #[test]
+    fn a_task_outputs_window_runs_to_its_due_date() {
+        let end: DateTime<Utc> = "2026-09-20T12:00:00Z".parse().unwrap();
+        let second = chrono::Duration::seconds(1);
+        let hours = |h: i64| chrono::Duration::hours(h);
+        let task = GoalRef::Task("task-1".into());
+        let board = |due: serde_json::Value| json!({"items": [{"id": "task-1", "status": "done", "due_at": due}]});
+        let look = |closures: &[crate::closure::Transition],
+                    board: BoardRead<'_>,
+                    zone: Option<chrono_tz::Tz>,
+                    now: DateTime<Utc>| {
+            observe(
+                "s-3",
+                Some(&task),
+                end,
+                &OwnerActs {
+                    closures,
+                    board,
+                    zone,
+                    ..OwnerActs::default()
+                },
+                now,
+            )
+        };
+
+        // Due at an instant four days out: the window closes there, not at
+        // the 48h constant.
+        let due = end + hours(96);
+        let dated = board(json!(due.to_rfc3339()));
+        assert_eq!(
+            look(&[], BoardRead::Read(&dated), None, end + hours(49)),
+            ObservedAct::Pending { closes_at: due },
+            "past the constant, still inside the due date"
+        );
+        assert_eq!(
+            look(
+                &[closure("task-1", "s-3", due - second)],
+                BoardRead::Read(&dated),
+                None,
+                due + hours(1)
+            ),
+            ObservedAct::Act {
+                act: ExpectedAct::Closed,
+                at: due - second
+            },
+            "a closure just before the due date is the act"
+        );
+        assert_eq!(
+            look(
+                &[closure("task-1", "s-3", due + second)],
+                BoardRead::Read(&dated),
+                None,
+                due + hours(1)
+            ),
+            ObservedAct::NoAct {
+                window_closed_at: due
+            },
+            "a closure just after it is not"
+        );
+
+        // A due *date* is the end of that day where the owner is.
+        let day = board(json!("2026-09-22"));
+        let ny: chrono_tz::Tz = "America/New_York".parse().unwrap();
+        let end_of_day_ny: DateTime<Utc> = "2026-09-23T04:00:00Z".parse().unwrap();
+        assert_eq!(
+            look(&[], BoardRead::Read(&day), Some(ny), end + hours(1)),
+            ObservedAct::Pending {
+                closes_at: end_of_day_ny
+            }
+        );
+        let end_of_day_utc: DateTime<Utc> = "2026-09-23T00:00:00Z".parse().unwrap();
+        assert_eq!(
+            look(&[], BoardRead::Read(&day), None, end + hours(1)),
+            ObservedAct::Pending {
+                closes_at: end_of_day_utc
+            }
+        );
+
+        // An undated task keeps the constant: a closure at 47h is the act,
+        // one at 49h is not.
+        let undated = board(serde_json::Value::Null);
+        assert_eq!(
+            look(
+                &[closure("task-1", "s-3", end + hours(47))],
+                BoardRead::Read(&undated),
+                None,
+                end + hours(100)
+            ),
+            ObservedAct::Act {
+                act: ExpectedAct::Closed,
+                at: end + hours(47)
+            }
+        );
+        assert!(matches!(
+            look(
+                &[closure("task-1", "s-3", end + hours(49))],
+                BoardRead::Read(&undated),
+                None,
+                end + hours(100)
+            ),
+            ObservedAct::NoAct { .. }
+        ));
+
+        // A due date already past when the session ended: the constant.
+        let overdue = board(json!((end - hours(24)).to_rfc3339()));
+        assert_eq!(
+            look(&[], BoardRead::Read(&overdue), None, end + hours(1)),
+            ObservedAct::Pending {
+                closes_at: end + hours(NO_STORE_PATIENCE_HOURS)
+            }
+        );
+
+        // Unknown, never the constant: an unreadable board, a date that will
+        // not parse, a board with no row for the task.
+        let long_after = end + hours(24 * 30);
+        let torn = board(json!("next Tuesday"));
+        let elsewhere = json!({"items": [{"id": "task-9"}]});
+        for (what, b) in [
+            ("an unreadable board", BoardRead::Unreadable),
+            ("an unparseable due date", BoardRead::Read(&torn)),
+            (
+                "a board with no row for the task",
+                BoardRead::Read(&elsewhere),
+            ),
+        ] {
+            assert!(
+                matches!(look(&[], b, None, long_after), ObservedAct::Unknown { .. }),
+                "{what}"
+            );
+        }
+        // A due date whose next midnight never happens (Santiago springs
+        // forward at 24:00 on 2026-09-06) walks forward to the first minute
+        // that exists, rather than losing the row to unknown.
+        let santiago: chrono_tz::Tz = "America/Santiago".parse().unwrap();
+        let gap_day = board(json!("2026-09-05"));
+        let early_end: DateTime<Utc> = "2026-09-01T12:00:00Z".parse().unwrap();
+        let gap = observe(
+            "s-3",
+            Some(&task),
+            early_end,
+            &OwnerActs {
+                board: BoardRead::Read(&gap_day),
+                zone: Some(santiago),
+                ..OwnerActs::default()
+            },
+            early_end + hours(1),
+        );
+        let first_minute: DateTime<Utc> = "2026-09-06T04:00:00Z".parse().unwrap();
+        assert_eq!(
+            gap,
+            ObservedAct::Pending {
+                closes_at: first_minute
+            },
+            "the day's end is 01:00 local, the first minute that exists"
+        );
+
+        // A reader that read no board defers — neither unknown nor windowed.
+        assert_eq!(
+            look(&[], BoardRead::NotRead, None, long_after),
+            ObservedAct::NeedsBoard
+        );
+
+        // The task is found through a closure naming the session when the
+        // session carries no task anchor.
+        let via_closure = observe(
+            "s-4",
+            None,
+            end,
+            &OwnerActs {
+                closures: &[closure("task-1", "s-4", due - second)],
+                board: BoardRead::Read(&dated),
+                ..OwnerActs::default()
+            },
+            due + hours(1),
+        );
+        assert!(matches!(
+            via_closure,
+            ObservedAct::Act {
+                act: ExpectedAct::Closed,
+                ..
+            }
+        ));
+    }
+
+    /// An act store that could not be read, or a patience that could not
+    /// be, is unknown — never "no act", however long ago the session ended.
+    #[test]
+    fn an_unreadable_store_or_patience_is_unknown_never_no_act() {
+        let root = temp_root("unknown");
+        let end: DateTime<Utc> = "2026-09-01T12:00:00Z".parse().unwrap();
+        let long_after = end + chrono::Duration::days(30);
+        let pending = [draft_of(&root, "s-1", "pending", None)];
+        for (what, a) in [
+            (
+                "outbox",
+                OwnerActs {
+                    outbox_unreadable: true,
+                    ..acts(&pending)
+                },
+            ),
+            (
+                "closures",
+                OwnerActs {
+                    closures_unreadable: true,
+                    ..acts(&pending)
+                },
+            ),
+            (
+                "workflows",
+                OwnerActs {
+                    workflows_unreadable: true,
+                    ..acts(&pending)
+                },
+            ),
+            (
+                "charter, so the outbox's patience",
+                OwnerActs {
+                    charter_unreadable: true,
+                    ..acts(&pending)
+                },
+            ),
+        ] {
+            assert!(
+                matches!(
+                    observe("s-1", None, end, &a, long_after),
+                    ObservedAct::Unknown { .. }
+                ),
+                "{what}"
+            );
+        }
+        // A closure naming this session, by the owner, whose move a newer
+        // build wrote: an act seen and not read — unknown, never no act.
+        let future: crate::closure::Transition = serde_json::from_value(json!({
+            "id": "cl-9", "task": "task-1", "to": "archived", "move": "archive",
+            "actor": "owner", "surface": "cli", "sessions": ["s-1"],
+            "at": "2026-09-02T12:00:00Z"
+        }))
+        .unwrap();
+        // The closure names task-1, so the output is that task; the board has
+        // it undated, so the window is the constant and the closure is inside.
+        let undated = json!({"items": [{"id": "task-1", "status": "done"}]});
+        assert!(matches!(
+            observe(
+                "s-1",
+                None,
+                end,
+                &OwnerActs {
+                    closures: std::slice::from_ref(&future),
+                    board: BoardRead::Read(&undated),
+                    ..OwnerActs::default()
+                },
+                long_after
+            ),
+            ObservedAct::Unknown { .. }
+        ));
+        // The same unreadable closure *after* the window is not the act
+        // whichever way it went, so it cannot hold back a readable answer:
+        // a draft rejected inside the window is still the act.
+        let late_future = crate::closure::Transition {
+            at: end + chrono::Duration::days(90),
+            ..future.clone()
+        };
+        let rejected = [draft_of(
+            &root,
+            "s-1",
+            "rejected",
+            Some(end + chrono::Duration::hours(1)),
+        )];
+        assert!(matches!(
+            observe(
+                "s-1",
+                None,
+                end,
+                &OwnerActs {
+                    closures: std::slice::from_ref(&late_future),
+                    ..acts(&rejected)
+                },
+                long_after
+            ),
+            ObservedAct::Act {
+                act: ExpectedAct::Rejected,
+                ..
+            }
+        ));
+        // An unread closure after a readable act inside the window cannot be
+        // the first act: the readable one stands.
+        let mid_future = crate::closure::Transition {
+            at: end + chrono::Duration::hours(40),
+            ..future.clone()
+        };
+        let undated_board = json!({"items": [{"id": "task-1", "status": "done"}]});
+        assert!(matches!(
+            observe(
+                "s-1",
+                None,
+                end,
+                &OwnerActs {
+                    closures: std::slice::from_ref(&mid_future),
+                    board: BoardRead::Read(&undated_board),
+                    ..acts(&rejected)
+                },
+                long_after
+            ),
+            ObservedAct::Act {
+                act: ExpectedAct::Rejected,
+                ..
+            }
+        ));
+        // A draft of this session whose author word, or status word, this
+        // build cannot read, resolved inside the window with nothing readable
+        // before it: unknown, never "no act".
+        let mut foreign = draft_of(
+            &root,
+            "s-1",
+            "rejected",
+            Some(end + chrono::Duration::hours(2)),
+        );
+        foreign.author = "a-newer-author".into();
+        let mut withdrawn = draft_of(
+            &root,
+            "s-1",
+            "withdrawn",
+            Some(end + chrono::Duration::hours(2)),
+        );
+        withdrawn.author = "model".into();
+        for (what, d) in [("author", foreign.clone()), ("status", withdrawn)] {
+            assert!(
+                matches!(
+                    observe(
+                        "s-1",
+                        None,
+                        end,
+                        &acts(std::slice::from_ref(&d)),
+                        long_after
+                    ),
+                    ObservedAct::Unknown { .. }
+                ),
+                "an unreadable {what}"
+            );
+        }
+        // After a readable act it cannot be the first: the readable one stands.
+        let both = [rejected[0].clone(), foreign];
+        assert!(matches!(
+            observe("s-1", None, end, &acts(&both), long_after),
+            ObservedAct::Act {
+                act: ExpectedAct::Rejected,
+                ..
+            }
+        ));
+        // A row naming no session has no output to read.
+        assert!(matches!(
+            observe("", None, end, &OwnerActs::default(), long_after),
+            ObservedAct::Unknown { .. }
+        ));
+        // A resolved draft with no readable time cannot be placed in the
+        // window either.
+        let untimed = [draft_of(&root, "s-1", "sent", None)];
+        assert!(matches!(
+            observe("s-1", None, end, &acts(&untimed), long_after),
+            ObservedAct::Unknown { .. }
+        ));
+        // With no draft there is no store, so an unreadable charter does
+        // not stand between the constant and the answer.
+        assert!(matches!(
+            observe(
+                "s-1",
+                None,
+                end,
+                &OwnerActs {
+                    charter_unreadable: true,
+                    ..OwnerActs::default()
+                },
+                long_after
+            ),
+            ObservedAct::NoAct { .. }
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Row 2b-2's acceptance: a pair of sessions scores a hit and a miss on
+    /// `expected_act` against the recorded act, the miss is recorded as a
+    /// surprise, each score is written once, and coverage has no rate over
+    /// nothing. No model decides a score (R27).
+    #[test]
+    fn a_hit_and_a_surprise_are_scored_once_and_coverage_has_no_rate_over_nothing() {
+        let root = temp_root("scores");
+        let dir = root.join("sessions");
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+
+        // Nothing on record: coverage, no rate.
+        let empty = store
+            .score_summary(&OwnerActs::default(), Utc::now())
+            .unwrap();
+        assert_eq!((empty.appraisals, empty.scored), (0, 0));
+        assert_eq!(empty.hit_rate, None);
+
+        // Two sessions: one expected to draw no act, one expected to be
+        // released unchanged — and the owner rejects its draft.
+        let quiet = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        let busy = SessionEvidence::read(&session(&dir, tainted())).unwrap();
+        store
+            .record(
+                &quiet,
+                Draft {
+                    expected_act: Some(ExpectedAct::NoAct),
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        store
+            .record(
+                &busy,
+                Draft {
+                    expected_act: Some(ExpectedAct::ReleasedUnchanged),
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        // A third appraisal names no act: nothing to score.
+        let silent = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        store
+            .record(
+                &silent,
+                Draft {
+                    expected_act: None,
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let rows = store.for_owner().unwrap().0;
+        assert!(
+            rows.iter().all(|r| r.session_ended_at.is_some()),
+            "the session's end is recorded with the appraisal"
+        );
+        let rejected_at = Utc::now() + chrono::Duration::hours(1);
+        let drafts = [draft_of(
+            &root,
+            busy.session_id(),
+            "rejected",
+            Some(rejected_at),
+        )];
+        // Both sessions are anchored to `t-budget`; the board has it with no
+        // due date, so the quiet one's window is the constant (R37 refined).
+        let tasks = json!({"items": [{"id": "t-budget", "status": "next"}]});
+        let owner = OwnerActs {
+            board: BoardRead::Read(&tasks),
+            ..acts(&drafts)
+        };
+
+        // Read-only before any pass: the rejection has already happened, so
+        // that one is resolved-but-unwritten, not waiting.
+        let before = store
+            .score_summary(&owner, Utc::now() + chrono::Duration::hours(2))
+            .unwrap();
+        assert_eq!(
+            (before.scored, before.resolved_unwritten, before.pending),
+            (0, 1, 1)
+        );
+
+        // Before the quiet session's window closes: one scored, one waiting.
+        let early = store
+            .score_due(&owner, Utc::now() + chrono::Duration::hours(2))
+            .unwrap();
+        assert_eq!(
+            (early.with_expectation, early.scored, early.pending),
+            (2, 1, 1)
+        );
+        assert_eq!((early.hits, early.surprises), (0, 1));
+        assert_eq!(early.hit_rate, Some(0.0));
+
+        // After it: the no-act prediction is a hit.
+        let later = Utc::now() + chrono::Duration::hours(72);
+        let done = store.score_due(&owner, later).unwrap();
+        assert_eq!(
+            (done.scored, done.hits, done.surprises, done.pending),
+            (2, 1, 1, 0)
+        );
+        assert_eq!(done.hit_rate, Some(0.5));
+        assert_eq!(
+            done.clean_surprises, 0,
+            "the surprise is on the tainted appraisal"
+        );
+
+        let (scores, skipped) = store.scores().unwrap();
+        assert_eq!((scores.len(), skipped), (2, 0));
+        let miss = scores
+            .iter()
+            .find(|s| s.session_id == busy.session_id())
+            .unwrap();
+        assert_eq!(
+            (
+                miss.expected,
+                miss.actual,
+                miss.hit,
+                miss.surprise,
+                miss.clean
+            ),
+            (
+                ExpectedAct::ReleasedUnchanged,
+                ExpectedAct::Rejected,
+                false,
+                true,
+                false
+            )
+        );
+        assert!(miss.acted_at.is_some());
+        let hit = scores
+            .iter()
+            .find(|s| s.session_id == quiet.session_id())
+            .unwrap();
+        assert_eq!(
+            (hit.actual, hit.hit, hit.surprise, hit.clean),
+            (ExpectedAct::NoAct, true, false, true)
+        );
+        assert!(hit.window_closed_at.is_some());
+
+        // Scored once: a second pass writes nothing more.
+        store.score_due(&owner, later).unwrap();
+        assert_eq!(store.scores().unwrap().0.len(), 2);
+        let busy_row = rows
+            .iter()
+            .find(|r| r.session_id == busy.session_id())
+            .unwrap();
+        assert_eq!(
+            store.score(busy_row, &owner, later).unwrap(),
+            Scored::AlreadyScored
+        );
+
+        // An unreadable act store scores nothing and says unknown.
+        let fresh = AppraisalStore::open(root.join("appraisals-2")).unwrap();
+        fresh
+            .record(
+                &quiet,
+                Draft {
+                    expected_act: Some(ExpectedAct::NoAct),
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let blind = OwnerActs {
+            outbox_unreadable: true,
+            ..OwnerActs::default()
+        };
+        let s = fresh.score_due(&blind, later).unwrap();
+        assert_eq!((s.scored, s.unknown, s.hit_rate), (0, 1, None));
+        assert!(fresh.scores().unwrap().0.is_empty());
+
+        // An appraisal line that cannot be read is counted, never silently
+        // out of the denominator.
+        let mut ledger = std::fs::read_to_string(fresh.ledger()).unwrap();
+        ledger.push_str("{\"id\":\"apr-torn\",\"expected_act\n");
+        std::fs::write(fresh.ledger(), ledger).unwrap();
+        let s = fresh.score_summary(&blind, later).unwrap();
+        assert_eq!(s.appraisals_unreadable, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// "The doctor's constant" (R37) is the doctor's: the named constant a
+    /// reader sees and the patience the doctor applies to an outbox with no
+    /// charter line cannot disagree.
+    #[test]
+    fn the_no_store_constant_is_the_doctors() {
+        assert_eq!(
+            doctors_constant(),
+            chrono::Duration::hours(NO_STORE_PATIENCE_HOURS)
+        );
+    }
+
+    /// The score ledger is a wire format: an act word this build cannot
+    /// read loads as `unknown`, and a torn line costs only itself.
+    #[test]
+    fn the_score_ledger_loads_leniently() {
+        let root = temp_root("score-wire");
+        let store = AppraisalStore::open(&root).unwrap();
+        std::fs::write(
+            store.scores_ledger(),
+            "{\"id\":\"scr-1\",\"scored_at\":\"2026-09-25T00:00:00Z\",\"appraisal_id\":\"apr-1\",\
+             \"expected\":\"sulked\",\"actual\":\"no_act\",\"hit\":false,\"surprise\":true}\n\
+             {\"id\":\"scr-torn\",\"scored_at\n",
+        )
+        .unwrap();
+        let (scores, skipped) = store.scores().unwrap();
+        assert_eq!((scores.len(), skipped), (1, 1));
+        assert_eq!(scores[0].expected, ExpectedAct::Unknown);
+        assert_eq!(scores[0].actual, ExpectedAct::NoAct);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_pointer_parses_leniently_and_round_trips() {
         assert_eq!(Pointer::parse(" result:t1 "), Pointer::Result("t1".into()));
@@ -1872,5 +3991,389 @@ mod tests {
         for s in ["result:a:b", "turn:0", "closure:c-1"] {
             assert_eq!(Pointer::parse(s).to_string(), s);
         }
+    }
+
+    // ─── The losing arm teaches (row 2d-3) ──────────────────────────────
+
+    use crate::comparison::{Arm, Comparison, Kind, Outcome, Pointers, Role, Validator, Verdict};
+
+    /// Appraisal rows written as the store writes them, one per session.
+    fn appraised(tag: &str, rows: &[TextAppraisal]) -> (PathBuf, AppraisalStore) {
+        let root = temp_root(tag);
+        let store = AppraisalStore::open(&root).unwrap();
+        let text: String = rows
+            .iter()
+            .map(|r| serde_json::to_string(r).unwrap() + "\n")
+            .collect();
+        std::fs::write(store.ledger(), text).unwrap();
+        (root, store)
+    }
+
+    fn row(session: &str, clean: bool) -> TextAppraisal {
+        test_row(
+            session,
+            &Situation::of_run(&["mail_draft".to_string()], None),
+            clean,
+            "2026-09-24T00:00:00Z",
+        )
+    }
+
+    /// A point-wise comparison at message 4, call 1 of `session`, over
+    /// `arms`, its verdict derived as the store's writers derive it.
+    fn point(session: &str, kind: Kind, validator: Validator, arms: Vec<Arm>) -> Comparison {
+        Comparison::new(
+            kind,
+            None,
+            None,
+            None,
+            arms,
+            validator,
+            Pointers {
+                session_id: session.into(),
+                message_index: Some(4),
+                call_index: Some(1),
+                ..Pointers::default()
+            },
+            "local-model",
+        )
+    }
+
+    const RULES: &str = "a1b2c3d4e5f60718";
+
+    /// 2d-1's rejected-draft point as the fixture model left it: today's
+    /// rules drafted the rejected mail again, no rules held it.
+    fn rejected_draft(session: &str) -> Comparison {
+        point(
+            session,
+            Kind::PointRejectedDraft,
+            Validator::RejectedDraft,
+            vec![
+                Arm::new(Role::Rules, Some(RULES.into()), Outcome::Fail),
+                Arm::new(Role::RulesFree, Arm::no_block(), Outcome::Pass),
+            ],
+        )
+    }
+
+    /// The acceptance: a decided comparison's loser appears on the
+    /// session's appraisal, pointing at its comparison — read back through
+    /// a fresh handle, in words the harness wrote from the typed record.
+    #[test]
+    fn a_decided_loser_appears_on_the_sessions_appraisal_pointing_at_its_comparison() {
+        let (root, store) = appraised("teach", &[row("s-dana", true), row("s-idris", true)]);
+        let cmp = rejected_draft("s-dana");
+        let clean_before = store.clean().unwrap();
+
+        let t = store.teach(std::slice::from_ref(&cmp)).unwrap();
+        assert_eq!((t.written, t.written_not_clean, t.already), (1, 0, 0));
+
+        let again = AppraisalStore::open(&root).unwrap();
+        let (rows, skipped) = again.counterfactuals().unwrap();
+        assert_eq!((rows.len(), skipped), (1, 0));
+        let r = &rows[0];
+        assert_eq!(r.appraisal_id, "apr-s-dana", "on that session's appraisal");
+        assert_eq!(r.session_id, "s-dana");
+        assert_eq!(r.comparison, Pointer::Comparison(cmp.id.clone()));
+        assert_eq!(r.comparison.to_string(), format!("comparison:{}", cmp.id));
+        assert_eq!(
+            (r.kind, r.validator, r.message_index, r.call_index),
+            (
+                Kind::PointRejectedDraft,
+                Validator::RejectedDraft,
+                Some(4),
+                Some(1)
+            )
+        );
+        assert_eq!(r.lost, vec![cmp.arms[0].clone()], "the losing arm");
+        assert_eq!(r.won, vec![cmp.arms[1].clone()]);
+        // Every word is the harness's, from closed sets and ids.
+        assert_eq!(
+            r.reflection,
+            format!(
+                "Counterfactual at a draft the owner rejected (message 4, call 1). Lost: under \
+                 today's deployed rules (rules a1b2c3d4e5f6), the arm drafted the text the owner \
+                 rejected. Won: under no rules (no rules block), the arm ended without drafting. \
+                 Decided by the rejected-draft validator against the owner's recorded verdict; \
+                 comparison {}.",
+                cmp.id
+            )
+        );
+        assert!(r.is_clean(), "a clean appraisal's reflection is clean");
+        // It rests on the comparison: it dereferences into the store it
+        // points at, and into nothing else.
+        assert_eq!(
+            r.dereference(&comparison_referents(std::slice::from_ref(&cmp))),
+            Ok(())
+        );
+        assert_eq!(
+            r.dereference(&comparison_referents(&[rejected_draft("s-dana")])),
+            Err("no_such_referent".into()),
+            "another comparison of the same point is not this one"
+        );
+        // The appraisal itself is untouched, and the clean door serves
+        // exactly what it served before.
+        assert_eq!(again.clean().unwrap(), clean_before);
+        assert_eq!(again.for_owner().unwrap().0.len(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An undecided comparison writes nothing — inconclusive, unposed, or a
+    /// verdict this build cannot read — and neither does a tie, a judge's
+    /// separation, a hand-edited verdict, or a comparison that is not
+    /// point-wise. Each is counted by why.
+    #[test]
+    fn an_undecided_comparison_writes_nothing() {
+        let (root, store) = appraised("undecided", &[row("s-dana", true)]);
+        let inconclusive = point(
+            "s-dana",
+            Kind::PointEditedDraft,
+            Validator::ReleasedDraft,
+            vec![
+                Arm::new(Role::Rules, Some(RULES.into()), Outcome::Fail),
+                Arm::new(Role::RulesFree, Arm::no_block(), Outcome::Inconclusive),
+            ],
+        );
+        assert_eq!(inconclusive.verdict, Verdict::Inconclusive);
+        let unposed = point("s-dana", Kind::PointSurprise, Validator::Unposed, vec![]);
+        let mut unreadable = rejected_draft("s-dana");
+        unreadable.verdict = Verdict::Unknown;
+        let tied = point(
+            "s-dana",
+            Kind::PointDenial,
+            Validator::StructuralDenial,
+            vec![
+                Arm::new(Role::Rules, Some(RULES.into()), Outcome::Fail),
+                Arm::new(Role::RulesFree, Arm::no_block(), Outcome::Fail),
+            ],
+        );
+        let judged = point(
+            "s-dana",
+            Kind::PointSteer,
+            Validator::Judge,
+            rejected_draft("s-dana").arms,
+        );
+        let mut edited = tied.clone();
+        edited.verdict = Verdict::Separated;
+        edited.preferred = vec![0];
+        let not_pointwise = point(
+            "s-dana",
+            Kind::Validation,
+            Validator::StructuralSteer,
+            rejected_draft("s-dana").arms,
+        );
+        // A decided lesson-source measurement (row 2e-1): shadow, so its
+        // losing arm, a learner's lesson, is never written back into an
+        // appraisal, where it would feed the next appraiser.
+        let lesson_source = point(
+            "s-dana",
+            Kind::LessonSource,
+            Validator::StructuralDenial,
+            vec![
+                Arm::new(Role::RulesFree, Arm::no_block(), Outcome::Fail),
+                Arm::new(Role::ReflectorLesson, Some(RULES.into()), Outcome::Pass),
+                Arm::new(Role::AppraisalLesson, Some("other".into()), Outcome::Fail),
+            ],
+        );
+        assert_eq!(lesson_source.verdict, Verdict::Separated);
+        let t = store
+            .teach(&[
+                inconclusive,
+                unposed,
+                unreadable,
+                tied,
+                judged,
+                edited,
+                not_pointwise,
+                lesson_source,
+            ])
+            .unwrap();
+        assert_eq!(t.written, 0);
+        assert_eq!(
+            (
+                t.undecided,
+                t.tied,
+                t.not_structural,
+                t.inconsistent,
+                t.other_kinds
+            ),
+            (3, 1, 1, 1, 2)
+        );
+        assert!(
+            !store.counterfactuals_ledger().exists(),
+            "nothing was written, not even an empty file"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A tainted session's appraisal stays tainted: its reflection is
+    /// written for the owner, carries the appraisal's provenance, and the
+    /// clean door withholds exactly what it withheld before.
+    #[test]
+    fn a_tainted_sessions_reflection_stays_tainted() {
+        let (root, store) = appraised("tainted", &[row("s-mara", false)]);
+        let before = store.clean().unwrap();
+        assert_eq!((before.appraisals.len(), before.withheld), (0, 1));
+
+        let t = store.teach(&[rejected_draft("s-mara")]).unwrap();
+        assert_eq!((t.written, t.written_not_clean), (1, 1));
+        let (rows, _) = store.counterfactuals().unwrap();
+        assert_eq!(rows[0].origin, Origin::Untrusted);
+        assert_eq!(
+            rows[0].taint,
+            Some(Taint {
+                private: true,
+                untrusted: true
+            })
+        );
+        assert!(!rows[0].is_clean());
+        assert_eq!(
+            store.clean().unwrap(),
+            before,
+            "the clean door is unchanged"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A re-run teaches nothing twice — across passes and within one — and
+    /// a comparison whose session is not yet appraised waits for it rather
+    /// than being lost.
+    #[test]
+    fn a_rerun_does_not_duplicate_and_a_later_appraisal_is_taught_then() {
+        let (root, store) = appraised("rerun", &[row("s-dana", true)]);
+        let early = rejected_draft("s-dana");
+        let waiting = rejected_draft("s-idris");
+
+        let t = store
+            .teach(&[early.clone(), early.clone(), waiting.clone()])
+            .unwrap();
+        assert_eq!((t.written, t.already, t.awaiting_appraisal), (1, 1, 1));
+
+        let t = store.teach(&[early.clone(), waiting.clone()]).unwrap();
+        assert_eq!((t.written, t.already, t.awaiting_appraisal), (0, 1, 1));
+
+        // The appraisal lands later; the next pass teaches it.
+        let mut ledger = std::fs::read_to_string(store.ledger()).unwrap();
+        ledger.push_str(&(serde_json::to_string(&row("s-idris", true)).unwrap() + "\n"));
+        std::fs::write(store.ledger(), ledger).unwrap();
+        let t = store.teach(&[early.clone(), waiting.clone()]).unwrap();
+        assert_eq!((t.written, t.already, t.awaiting_appraisal), (1, 1, 0));
+        let t = store.teach(&[early, waiting]).unwrap();
+        assert_eq!((t.written, t.already), (0, 2));
+
+        let (rows, _) = store.counterfactuals().unwrap();
+        let sessions: Vec<&str> = rows.iter().map(|r| r.session_id.as_str()).collect();
+        assert_eq!(sessions, ["s-dana", "s-idris"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A reflection that does not dereference is refused and counted: a
+    /// verdict line past the quote ceiling is not a span the check will
+    /// certify, however many arms a later phase drives.
+    #[test]
+    fn a_reflection_that_does_not_dereference_is_refused_and_counted() {
+        let (root, store) = appraised("refused", &[row("s-dana", true)]);
+        let mut arms: Vec<Arm> = (0..8)
+            .map(|i| Arm::new(Role::Rules, Some(format!("{i:0>16}")), Outcome::Fail))
+            .collect();
+        arms.push(Arm::new(Role::RulesFree, Arm::no_block(), Outcome::Pass));
+        let wide = point(
+            "s-dana",
+            Kind::PointRejectedDraft,
+            Validator::RejectedDraft,
+            arms,
+        );
+        let t = store.teach(&[wide]).unwrap();
+        assert_eq!(t.written, 0);
+        assert_eq!(t.refused.get("quote_too_long"), Some(&1));
+        assert!(!store.counterfactuals_ledger().exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The side ledger is a wire format: a newer kind, validator, role,
+    /// origin or pointer kind degrades rather than failing the row, a
+    /// sparse row is unknown and never clean, and a torn line costs itself.
+    #[test]
+    fn a_counterfactual_and_its_pointer_load_leniently() {
+        let root = temp_root("cfr-wire");
+        let store = AppraisalStore::open(&root).unwrap();
+        std::fs::write(
+            store.counterfactuals_ledger(),
+            r#"{"id":"cfr-future","at":"2026-09-25T00:00:00Z","appraisal_id":"apr-1","session_id":"s1","comparison":"experiment:x-1","kind":"point-mid-run","validator":"oracle","lost":[{"role":"dreamer","outcome":"fail"}],"origin":"clean-verified","taint":{"private":false,"untrusted":false},"reflection":"r","mood":"later"}
+{"id":"cfr-sparse","at":"2026-09-25T00:00:00Z"}
+{"id":"cfr-number","at":"2026-09-25T00:00:00Z","comparison":7}
+{"id":"cfr-torn","at":"2026-09-25T00:00:00Z","compar
+"#,
+        )
+        .unwrap();
+        let (rows, skipped) = store.counterfactuals().unwrap();
+        assert_eq!((rows.len(), skipped), (3, 1));
+        let future = &rows[0];
+        assert_eq!(future.kind, Kind::Unknown);
+        assert_eq!(future.validator, Validator::Unknown);
+        assert_eq!(future.lost[0].role, Role::Unknown);
+        assert_eq!(
+            future.origin,
+            Origin::Untrusted,
+            "an unread origin is not clean"
+        );
+        assert!(!future.is_clean());
+        assert_eq!(future.comparison, Pointer::Unread("experiment:x-1".into()));
+        assert_eq!(
+            future.dereference(&[]),
+            Err("unknown_pointer".into()),
+            "a pointer this build cannot read dereferences nothing"
+        );
+        let back: Counterfactual =
+            serde_json::from_str(&serde_json::to_string(future).unwrap()).unwrap();
+        assert_eq!(
+            back.comparison.to_string(),
+            "experiment:x-1",
+            "and round-trips"
+        );
+        let sparse = &rows[1];
+        assert_eq!(
+            (sparse.origin, sparse.taint, &sparse.comparison),
+            (Origin::Untrusted, None, &Pointer::Unread(String::new()))
+        );
+        assert!(!sparse.is_clean());
+        assert_eq!(rows[2].comparison, Pointer::Unread("7".into()));
+        // The new pointer kind, on its own.
+        assert_eq!(
+            Pointer::parse(" comparison:cmp-1 "),
+            Pointer::Comparison("cmp-1".into())
+        );
+        assert_eq!(
+            Pointer::parse("comparison:"),
+            Pointer::Unread("comparison:".into())
+        );
+        assert_eq!(
+            Pointer::parse("comparison:cmp-1").to_string(),
+            "comparison:cmp-1"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An appraiser that cites a comparison is not citing what the run
+    /// received: the claim is dropped before storage and counted by its own
+    /// reason, apart from a pointer that names nothing.
+    #[test]
+    fn an_appraisers_claim_citing_a_comparison_is_dropped_and_counted() {
+        let root = temp_root("cite-cmp");
+        let path = session(&root.join("sessions"), clean_taint());
+        let evidence = SessionEvidence::read(&path).unwrap();
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        let mut d = draft();
+        d.claims.push(claim(
+            "Without the rules the run would not have drafted",
+            "comparison:cmp-1",
+            "verdict separated: arm 1",
+        ));
+        let Recorded::Written { grounding, .. } =
+            store.record(&evidence, d, "local-model", &known()).unwrap()
+        else {
+            panic!("written");
+        };
+        assert_eq!((grounding.offered, grounding.dropped), (3, 1));
+        assert_eq!(grounding.dropped_by.get("comparison_pointer"), Some(&1));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -650,6 +650,13 @@ pub struct ToolCtx {
     pub goal_guidance: bool,
     pub goal_lessons: Vec<crate::planning::Lesson>,
     pub goal_examples: Vec<crate::planning::Example>,
+    /// Past clean appraisals of this run's situation and goal, for
+    /// `goal_context` to serve on demand (I2, built as 2c-2). `None` is the
+    /// lever off (`Lever::PastAppraisals`), and the tool's answer is then
+    /// the bytes it was before the lever existed. Only a
+    /// [`crate::appraisal_store::Clean`] can be held here, so a tainted
+    /// appraisal cannot be served whatever the caller loaded.
+    pub goal_appraisals: Option<crate::appraisal_store::PastAppraisals>,
     pub step_checks: Option<std::sync::Arc<std::sync::Mutex<Vec<crate::step::CheckRequest>>>>,
     /// Whether a person is in this run's conversation, stamped by the
     /// front-end (`setup::posture_for`). The `shell` tool registers every
@@ -658,6 +665,20 @@ pub struct ToolCtx {
     /// to make; it is also stamped as `closure::POSTURE_ENV`, now advisory.
     /// `None` registers and stamps as `unknown`, which refuses.
     pub run_posture: Option<crate::closure::RunPosture>,
+    /// Where `shell` registers its commands *instead of* the guard homes
+    /// (`shell_registry::write_roots`). `None`, the default, is the guard
+    /// homes, which is what `mecha tasks set` reads. `Some` is an incognito
+    /// chat's room, so nothing the chat does touches the mecha home, not even
+    /// a pid for as long as a command runs (owner's ruling, 2026-09-25). A
+    /// registration there is invisible to the closure check, so a command
+    /// that clears `MECHA_RUN_POSTURE` would be taken for the owner — safe
+    /// only because an incognito chat is offered `shell` solely in a sandbox
+    /// that reads nothing outside its jail, writes nothing outside it and
+    /// reaches no network (`incognito::shell_is_sealed` in mecha-cli), so the
+    /// command cannot reach the board by any route. It must name a directory
+    /// outside the workspace — `shell` refuses one inside, or a command could
+    /// edit its own entry.
+    pub shell_registry: Option<PathBuf>,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -836,8 +857,10 @@ impl Default for ToolCtx {
             goal_guidance: false,
             goal_lessons: Vec::new(),
             goal_examples: Vec::new(),
+            goal_appraisals: None,
             step_checks: None,
             run_posture: None,
+            shell_registry: None,
         }
     }
 }
@@ -957,6 +980,20 @@ impl ToolCtx {
     pub fn for_session(&self, workspace: PathBuf) -> ToolCtx {
         ToolCtx {
             spill_dir: session_spill_dir(&workspace).or_else(fresh_spill_dir),
+            workspace,
+            ..self.clone()
+        }
+    }
+
+    /// [`ToolCtx::for_session`] with the spill directory named by the caller,
+    /// for a session whose spills must live somewhere in particular — an
+    /// incognito chat's, beside its workspace in RAM, where nothing outlives
+    /// the room. The caller owns keeping `spill` outside `workspace`: the
+    /// jail's spill exception is only as safe as the model's inability to
+    /// write there ([`session_spill_dir`]'s doc).
+    pub fn for_session_in(&self, workspace: PathBuf, spill: PathBuf) -> ToolCtx {
+        ToolCtx {
+            spill_dir: Some(spill),
             workspace,
             ..self.clone()
         }

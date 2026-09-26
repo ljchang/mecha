@@ -119,8 +119,9 @@ impl OverrideKey {
 /// — it ran only under `mecha sessions appraise --appraise`, never inside a
 /// run — and it no longer runs at all (retired in row 2a-3), so there is
 /// nothing for a per-run lever to remove;
-/// and `sensors_in_brief` is a *stage* lever (a `ruminate` input), recorded
-/// on a trial's manifest rather than on a run, and waits for that store.
+/// and `sensors_in_brief` and `appraisals_in_brief` are *stage* levers
+/// (`ruminate` inputs), recorded on a trial's manifest rather than on a run,
+/// and wait for that store.
 ///
 /// Serialised by name — the same names [`Lever::as_str`] answers — because
 /// the record is an append-only wire format: a reader that meets a name it
@@ -194,6 +195,12 @@ pub enum Lever {
     /// what `mecha exp` compares before anything turns it on by default.
     /// Recording is not levered.
     SituationBrief,
+    /// `[agent] past_appraisals` unset or `false`, or `--no-past-appraisals`:
+    /// `goal_context` serves no past appraisal (`APPRAISAL-WIRING-DESIGN.md`
+    /// I2, built as 2c-2). Ships off for the reason [`Lever::SituationBrief`]
+    /// does — retrieved memory can cost more than it returns, so the arms
+    /// are measured before it is on. Nothing reaches the prefix either way.
+    PastAppraisals,
 }
 
 impl Lever {
@@ -207,7 +214,7 @@ impl Lever {
     /// on review). The test `all_names_every_variant_serde_knows` closes
     /// it from the derive: serde's unknown-variant error lists every
     /// variant, and the test asserts this array covers that list.
-    pub const ALL: [Lever; 18] = [
+    pub const ALL: [Lever; 19] = [
         Lever::Mcp,
         Lever::LearnedRules,
         Lever::Hooks,
@@ -226,6 +233,7 @@ impl Lever {
         Lever::PredictiveCompaction,
         Lever::CarriedState,
         Lever::SituationBrief,
+        Lever::PastAppraisals,
     ];
 
     pub fn parse(name: &str) -> Option<Lever> {
@@ -252,6 +260,7 @@ impl Lever {
             Lever::PredictiveCompaction => "predictive_compaction",
             Lever::CarriedState => "carried_state",
             Lever::SituationBrief => "situation_brief",
+            Lever::PastAppraisals => "past_appraisals",
         }
     }
 
@@ -557,6 +566,36 @@ pub struct Measurement {
     /// Sessions that could not be replayed at all (unreadable, no recorded
     /// calls, tool surface moved). Never evidence for either arm.
     pub skipped: usize,
+    /// The point-wise half of R26 (as R36 refines it): what the candidate
+    /// did at the owner's own decision points, and whether that or the
+    /// numbers alone decided. `None` on a record from before the field —
+    /// unknown, never "numeric only".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pointwise: Option<PointwiseEvidence>,
+}
+
+/// A candidate's point-wise comparison, kept on its measurement.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PointwiseEvidence {
+    #[serde(default)]
+    pub tally: crate::candidate::PointwiseTally,
+    /// What decided the verdict the measurement records. Defaulted: a
+    /// record missing it reads `Unknown` rather than failing the whole
+    /// measurement.
+    #[serde(default)]
+    pub basis: crate::candidate::Basis,
+    /// Why no point was compared, when none was — the provider is not on
+    /// this machine (R29), or the corpus holds no point this pass could
+    /// drive. A pass that ran nothing is undecided, never evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_run: Option<String>,
+    /// The comparison-store rows this measurement drove or reused, by id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comparisons: Vec<String>,
+    /// The outbox could not be fully read, so draft points may be missing
+    /// from the pool the tally was drawn from.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outbox_unreadable: bool,
 }
 
 /// Which arm of a paired replay left the recording.
@@ -704,6 +743,7 @@ impl Measurement {
             replay_caveats,
             divergence_detail,
             skipped,
+            pointwise: None,
         }
     }
 }
@@ -981,6 +1021,53 @@ mod tests {
             .is_ok());
     }
 
+    /// A measurement's point-wise evidence round-trips; a record from
+    /// before R36 reads `None` — unknown, never "numeric only" — and a basis
+    /// a newer build wrote reads `Unknown` without failing the record.
+    #[test]
+    fn a_measurements_point_wise_evidence_is_a_lenient_wire_format() {
+        use crate::candidate::{Basis, PointwiseTally};
+        let evidence = super::PointwiseEvidence {
+            tally: PointwiseTally {
+                decided: 5,
+                candidate_only: 3,
+                baseline_only: 1,
+                undecided: 2,
+                lost_baseline: 0,
+                lost_candidate: 1,
+            },
+            basis: Basis::Pointwise,
+            not_run: None,
+            comparisons: vec!["cmp-1".into()],
+            outbox_unreadable: false,
+        };
+        let wire = serde_json::to_value(&evidence).unwrap();
+        assert_eq!(
+            serde_json::from_value::<super::PointwiseEvidence>(wire).unwrap(),
+            evidence
+        );
+        let old = serde_json::json!({
+            "measured_at": "2026-09-01T00:00:00Z", "model": "m", "disposition": "accept",
+            "reason": "", "selection": {"wins": 1, "losses": 0, "ties": 0},
+            "holdout": {"wins": 1, "losses": 0, "ties": 0}, "work_baseline": 3,
+            "work_candidate": 3, "episodes": [], "diverged": [], "skipped": 0
+        });
+        let m: super::Measurement = serde_json::from_value(old.clone()).unwrap();
+        assert!(m.pointwise.is_none());
+        let mut newer = old;
+        newer["pointwise"] = serde_json::json!({"basis": "by_oracle", "tally": {}});
+        let m: super::Measurement = serde_json::from_value(newer.clone()).unwrap();
+        assert_eq!(m.pointwise.unwrap().basis, Basis::Unknown);
+        let mut sparse = newer;
+        sparse["pointwise"] = serde_json::json!({});
+        let m: super::Measurement = serde_json::from_value(sparse).unwrap();
+        assert_eq!(
+            m.pointwise.unwrap().basis,
+            Basis::Unknown,
+            "a missing basis degrades, never fails the record"
+        );
+    }
+
     /// `ranked` is on the wire beside `seed` and `holdout_episodes`, and a
     /// record from before it reads unknown, never zero.
     #[test]
@@ -992,6 +1079,7 @@ mod tests {
             holdout: Tally::default(),
             work_baseline: 3,
             work_candidate: 3,
+            guard: crate::candidate::Guard::Held,
         };
         let m = super::Measurement::record(
             &judgement,
@@ -1100,7 +1188,8 @@ mod tests {
                 | Lever::CompactValidate
                 | Lever::PredictiveCompaction
                 | Lever::CarriedState
-                | Lever::SituationBrief => {}
+                | Lever::SituationBrief
+                | Lever::PastAppraisals => {}
             }
         }
         let mut seen = std::collections::BTreeSet::new();

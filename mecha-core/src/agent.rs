@@ -563,12 +563,20 @@ impl Taint {
     /// the transcript, so a conversation resumed with a brief in it — a
     /// session recorded before the ruling, or one whose taint record was
     /// torn — arms too. User-role text only, the only slot the fold writes.
+    ///
+    /// **And a diagnostician's brief carrying clean appraisals** (R38, row
+    /// 2f): a clean run's appraisal can speak of the owner's files. The
+    /// section sits mid-brief, so it is matched anywhere in the text by its
+    /// stem (`diagnose::APPRAISAL_STEM`); over-matching a user who types the
+    /// phrase only arms more, which is the safe direction.
     pub fn arm_for_content(&mut self, messages: &[Message]) {
         if messages.iter().any(|m| {
             m.content.iter().any(|b| match b {
                 Block::Image { .. } => true,
                 Block::Text { text } => {
-                    m.role == Role::User && text.trim_start().starts_with(crate::brief::BRIEF_STEM)
+                    m.role == Role::User
+                        && (text.trim_start().starts_with(crate::brief::BRIEF_STEM)
+                            || text.contains(crate::diagnose::APPRAISAL_STEM))
                 }
                 _ => false,
             })
@@ -1790,6 +1798,14 @@ impl Agent {
                 .step_checks
                 .then(|| Arc::new(std::sync::Mutex::new(Vec::new())));
             tools.step_counts = Some(Arc::new(crate::tool::StepCounts::default()));
+            // Past appraisals are keyed on the tool set the run record will
+            // name — this registry, after whatever a front-end withheld
+            // since the block was rendered (`PastAppraisals::for_registry`).
+            if let Some(past) = tools.goal_appraisals.as_mut() {
+                let names: Vec<String> =
+                    self.registry.iter().map(|t| t.name().to_string()).collect();
+                past.for_registry(&names);
+            }
             // Fresh counters, the caller's anchor: a question resume seeds
             // the goal the owner just answered, and it must reach this run
             // and no other on the same agent.
@@ -5450,6 +5466,104 @@ mod tests {
         }
     }
 
+    /// I2 (2c-2): past appraisals are served on demand through the
+    /// `goal_context` result and never pushed — the prefix (tools and
+    /// system) is the same bytes with the lever on and off, and no request
+    /// carries an appraisal until the model asks. The loop re-selects on the
+    /// registry the run carries. Fails if the lever touched the prefix or
+    /// pushed the text.
+    #[tokio::test]
+    async fn past_appraisals_reach_a_run_only_through_goal_context_and_never_the_prefix() {
+        let ask = || {
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "g1".into(),
+                        name: "goal_context".into(),
+                        input: json!({"serves": "task:t-budget"}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ]
+        };
+        // Recorded with the tool set this registry carries.
+        let run = crate::situation::Situation::of_run(&["goal_context".into()], None).toward(Some(
+            crate::situation::GoalKey::Named("task:t-budget".parse().unwrap()),
+        ));
+        let mut seen_by_lever = Vec::new();
+        for lever in [false, true] {
+            let (agent, provider) = agent_with_tools(
+                ask(),
+                vec![Arc::new(crate::tool::goal_context::GoalContext)],
+                PermissionMode::Allow,
+            );
+            let mut cx = (**agent.context()).clone();
+            let mut tools = (*cx.tools).clone();
+            if lever {
+                // Selected against a registry the front-end has since
+                // narrowed: the loop's re-selection finds the record.
+                let built = crate::situation::Situation {
+                    tools: vec!["goal_context".into(), "kg_task_update".into()],
+                    ..run.clone()
+                };
+                tools.goal_appraisals = Some(crate::appraisal_store::PastAppraisals::select(
+                    crate::appraisal_store::clean_read_of(vec![
+                        crate::appraisal_store::test_row(
+                            "s-past",
+                            &run,
+                            true,
+                            "2026-09-22T00:00:00Z",
+                        ),
+                        crate::appraisal_store::test_row(
+                            "s-tainted",
+                            &run,
+                            false,
+                            "2026-09-23T00:00:00Z",
+                        ),
+                    ]),
+                    &built,
+                ));
+            }
+            cx.tools = Arc::new(tools);
+            let mut convo = Conversation::user("pick up the budget task");
+            agent.run_in(&cx, &mut convo, None).await.unwrap();
+            let seen = provider.seen.lock().unwrap().clone();
+            assert_eq!(seen.len(), 2);
+            let first_text = serde_json::to_string(&seen[0].messages).unwrap();
+            assert!(!first_text.contains("date quoted"), "never pushed");
+            seen_by_lever.push(seen);
+        }
+        let (off, on) = (&seen_by_lever[0], &seen_by_lever[1]);
+        for i in 0..2 {
+            assert_eq!(
+                serde_json::to_string(&off[i].tools).unwrap(),
+                serde_json::to_string(&on[i].tools).unwrap(),
+                "the tool list is the same bytes with the lever on and off"
+            );
+            assert_eq!(off[i].system, on[i].system, "and so is the system prompt");
+        }
+        let result = |reqs: &Vec<CompletionRequest>| -> String {
+            reqs[1]
+                .messages
+                .iter()
+                .flat_map(|m| m.content.iter())
+                .find_map(|b| match b {
+                    Block::ToolResult { content, .. } => Some(content.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert!(!result(off).contains("past_appraisals"));
+        let served = result(on);
+        assert!(served.contains("date quoted"), "{served}");
+        assert!(served.contains("s-past"));
+        assert!(
+            !served.contains("s-tainted"),
+            "a tainted appraisal is never served"
+        );
+    }
+
     /// A long-lived conversation (a web chat) is handed a fresh brief each
     /// turn: the same situation is said once, and a changed one is a new
     /// block in the turn it changed on, the old one left where it was — so
@@ -6593,6 +6707,99 @@ mod tests {
             .find(|c| c.name == "send")
             .unwrap();
         assert!(send.denied, "the send should be recorded as denied");
+    }
+
+    /// Row 2f (R38): a diagnostician's brief carrying a clean appraisal
+    /// opens its conversation private, so once it reads one outside page
+    /// the interlock refuses a model-chosen send — through the loop, not
+    /// only on the flag. Without the appraisal the same script sends, which
+    /// is the non-vacuous half (`SendTool` panics if it runs, so the control
+    /// swaps in one that records the call).
+    #[tokio::test]
+    async fn a_diagnostician_brief_carrying_an_appraisal_is_refused_a_send_after_a_fetch() {
+        let script = || {
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "b".into(),
+                        name: "fetch_page".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "c".into(),
+                        name: "send".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("stopped")], StopReason::EndTurn),
+            ]
+        };
+        let situation = crate::situation::Situation::default();
+        let read = crate::appraisal_store::clean_read_of(vec![crate::appraisal_store::test_row(
+            "s-1",
+            &situation,
+            true,
+            "2026-09-20T00:00:00Z",
+        )]);
+        let briefed = crate::diagnose::Evidence::default().with_appraisals(&read, &["s-1".into()]);
+        assert!(!briefed.appraisals.is_empty());
+
+        let (mut agent, _) = agent_with(script(), PermissionMode::Allow);
+        agent.registry.insert(Arc::new(UntrustedTool));
+        agent.registry.insert(Arc::new(SendTool)); // panics if it ever runs
+        agent.ctx_mut().security.trifecta = TrifectaPolicy::Block;
+        let mut convo = briefed.conversation("diagnose");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(outcome.blocked_sends, 1);
+        assert!(outcome.taint.private && outcome.taint.untrusted);
+
+        // And built by hand from the rendered brief — the construction
+        // `run_diagnostician` had before 2f: the loop arms it off the
+        // transcript at run start (found on review of #329).
+        let (mut agent, _) = agent_with(script(), PermissionMode::Allow);
+        agent.registry.insert(Arc::new(UntrustedTool));
+        agent.registry.insert(Arc::new(SendTool)); // panics if it ever runs
+        agent.ctx_mut().security.trifecta = TrifectaPolicy::Block;
+        let mut convo = Conversation::user(format!("{}\n---\ndiagnose", briefed.brief()));
+        assert!(!convo.taint.private);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(outcome.blocked_sends, 1);
+
+        struct CountingSend(Arc<std::sync::atomic::AtomicUsize>);
+        #[async_trait]
+        impl Tool for CountingSend {
+            fn name(&self) -> &str {
+                "send"
+            }
+            fn description(&self) -> &str {
+                "sends"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn capabilities(&self) -> crate::tool::Capabilities {
+                crate::tool::Capabilities::default().sends()
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(ToolOutput::ok("sent"))
+            }
+        }
+        let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (mut agent, _) = agent_with(script(), PermissionMode::Allow);
+        agent.registry.insert(Arc::new(UntrustedTool));
+        agent
+            .registry
+            .insert(Arc::new(CountingSend(Arc::clone(&sent))));
+        agent.ctx_mut().security.trifecta = TrifectaPolicy::Block;
+        let mut convo = crate::diagnose::Evidence::default().conversation("diagnose");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(outcome.blocked_sends, 0);
+        assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     /// Run one armed send against a registry holding [`SendTool`] plus

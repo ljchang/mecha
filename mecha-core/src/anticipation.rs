@@ -510,6 +510,214 @@ impl BoundEvidence {
     }
 }
 
+// ─── Calibration: every resolved prediction scored (X5, row 2b-1) ──────────
+
+impl Response {
+    /// Every variant. A readout lists them by wire name, not in this order;
+    /// `every_kind_and_response_is_in_all` keeps the list complete.
+    pub const ALL: [Response; 4] = [
+        Response::Proceed,
+        Response::Verify,
+        Response::Clarify,
+        Response::Replan,
+    ];
+}
+
+impl Kind {
+    /// Every variant. A readout lists them by wire name, not in this order;
+    /// `every_kind_and_response_is_in_all` keeps the list complete.
+    pub const ALL: [Kind; 6] = [
+        Kind::Guilt,
+        Kind::Embarrassment,
+        Kind::Regret,
+        Kind::Disappointment,
+        Kind::Anxiety,
+        Kind::Curiosity,
+    ];
+}
+
+/// Why a prediction is not a calibration point — each [`Resolution`] short
+/// of an observation, and one more: a clean outcome on a draft whose
+/// delivery was never confirmed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Unscored {
+    /// The draft has not gone out.
+    pub pending: usize,
+    /// Gone out, and the owner has recorded no outcome yet.
+    pub awaiting_feedback: usize,
+    /// A release whose delivery is still unknown.
+    pub delivery_unknown: usize,
+    /// The owner said nothing went wrong, but no delivery was ever
+    /// confirmed — by the tool's acknowledgement or by `outbox reconcile` —
+    /// so "it went out clean" is not established (X5: "a delivery positive
+    /// is scored only after `outbox reconcile` has confirmed delivery").
+    pub delivery_unconfirmed: usize,
+    /// The draft changed after the prediction: it described another action.
+    pub changed: usize,
+    /// A later prediction replaced this one before release.
+    pub reassessed: usize,
+    /// The draft was rejected: an abandoned action is not a false forecast.
+    pub abandoned: usize,
+    /// The draft carries evidence this build cannot read.
+    pub unsupported: usize,
+}
+
+/// Which [`Unscored`] counter a prediction that is not a point goes to.
+type Why = fn(&mut Unscored);
+
+/// One kind's calibration points and the predictions that are not yet one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct Calibrated {
+    /// Predictions of this kind the store holds.
+    pub predictions: usize,
+    /// Predictions an outcome resolved: calibration points.
+    pub scored: usize,
+    /// Of those, the concern materialised — the owner recorded an exposed
+    /// error, a harm, or a missed expectation.
+    pub materialized: usize,
+    /// Of those, the owner recorded no issue, on a confirmed delivery.
+    pub clean: usize,
+    /// `materialized / scored`, and **`None` when nothing was scored** — a
+    /// rate over nothing is not a calibration figure, and coverage is what
+    /// a store with no outcomes has to report.
+    pub materialized_rate: Option<f64>,
+    pub unscored: Unscored,
+}
+
+impl Calibrated {
+    fn add(&mut self, point: Option<bool>, why: Option<Why>) {
+        self.predictions += 1;
+        match point {
+            Some(true) => {
+                self.scored += 1;
+                self.materialized += 1;
+            }
+            Some(false) => {
+                self.scored += 1;
+                self.clean += 1;
+            }
+            None => {
+                if let Some(bump) = why {
+                    bump(&mut self.unscored);
+                }
+            }
+        }
+        self.materialized_rate =
+            (self.scored > 0).then(|| self.materialized as f64 / self.scored as f64);
+    }
+}
+
+/// Every prediction in the outbox, scored where an outcome resolves it:
+/// per response the assessment chose (did `proceed` drafts go out clean,
+/// did `verify` drafts that skipped the check go badly) and per concern
+/// kind it named. Coverage always; a rate only over points that exist.
+///
+/// **A point is the owner's recorded outcome, never a model's view.** The
+/// prediction must be the one the draft was released under
+/// (`OutboxItem::prediction_resolution` is `Observed`), the outcome the
+/// active one for it, and a clean outcome counts only on a confirmed
+/// delivery ([`crate::outbox::OutboxItem::delivery_confirmed`]). A concern
+/// that materialised needs no such check: the owner saw the harm.
+///
+/// **Only an owner-evidenced prediction is a forecast.** Staging records a
+/// `Source::Harness` prediction on every model-authored message, built from
+/// empty evidence when the run was given none: it always reads `clarify`
+/// and names no concern, so it encodes nothing about the draft. Counted in
+/// [`Calibration::harness_placeholders`] and in no row — pooled with the
+/// owner's assessments it doubled the coverage denominator, and a draft
+/// released without `outbox anticipate` scored its placeholder as a
+/// `clarify` point (found on review of #319).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Calibration {
+    /// Keyed by the response's wire name; every response is present, so a
+    /// response nothing chose reads as zero predictions, not as missing.
+    pub by_response: std::collections::BTreeMap<String, Calibrated>,
+    /// Keyed by the concern kind's wire name; a prediction naming several
+    /// kinds counts toward each. Every kind is present.
+    pub by_kind: std::collections::BTreeMap<String, Calibrated>,
+    /// Every readable prediction, once.
+    pub total: Calibrated,
+    /// Prediction records this build cannot read — in no count above.
+    pub unreadable: usize,
+    /// The harness's staging placeholders (`Source::Harness`) — in no count
+    /// above: not a forecast anyone made.
+    pub harness_placeholders: usize,
+}
+
+impl Calibration {
+    pub fn of<'a>(items: impl IntoIterator<Item = &'a crate::outbox::OutboxItem>) -> Calibration {
+        use crate::appraisal::enum_name as name;
+        let mut out = Calibration {
+            by_response: Response::ALL
+                .iter()
+                .map(|r| (name(r), Calibrated::default()))
+                .collect(),
+            by_kind: Kind::ALL
+                .iter()
+                .map(|k| (name(k), Calibrated::default()))
+                .collect(),
+            ..Calibration::default()
+        };
+        for item in items {
+            for record in &item.predictions {
+                let Some(p) = record.known() else {
+                    out.unreadable += 1;
+                    continue;
+                };
+                if p.source == Source::Harness {
+                    out.harness_placeholders += 1;
+                    continue;
+                }
+                let (point, why) = score(item, p);
+                out.total.add(point, why);
+                if let Some(t) = out.by_response.get_mut(&name(&p.assessment.response)) {
+                    t.add(point, why);
+                }
+                let mut kinds = p.assessment.kinds.clone();
+                kinds.sort_by_key(name);
+                kinds.dedup();
+                for k in kinds {
+                    if let Some(t) = out.by_kind.get_mut(&name(&k)) {
+                        t.add(point, why);
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// One prediction: `Some(true)` the concern materialised, `Some(false)` it
+/// went out clean, `None` not a point — with the counter that says why.
+fn score(item: &crate::outbox::OutboxItem, p: &Prediction) -> (Option<bool>, Option<Why>) {
+    let not = |f: Why| (None, Some(f));
+    match item.prediction_resolution(p) {
+        Resolution::Observed => {}
+        Resolution::Pending => return not(|u| u.pending += 1),
+        Resolution::AwaitingFeedback => return not(|u| u.awaiting_feedback += 1),
+        Resolution::DeliveryUnknown => return not(|u| u.delivery_unknown += 1),
+        Resolution::Changed => return not(|u| u.changed += 1),
+        Resolution::Reassessed => return not(|u| u.reassessed += 1),
+        Resolution::Abandoned => return not(|u| u.abandoned += 1),
+        Resolution::Unsupported => return not(|u| u.unsupported += 1),
+    }
+    let Some(outcome) = item
+        .active_outcomes()
+        .into_iter()
+        .find(|o| o.observation.prediction_id == p.id)
+    else {
+        return not(|u| u.awaiting_feedback += 1);
+    };
+    match outcome.observation.verdict {
+        Verdict::ErrorExposed | Verdict::Harm | Verdict::ExpectationMissed => (Some(true), None),
+        Verdict::NoIssue if item.delivery_confirmed() => (Some(false), None),
+        Verdict::NoIssue => not(|u| u.delivery_unconfirmed += 1),
+        // `active_outcomes` never returns a withdrawal; if it ever did, it
+        // resolves nothing.
+        Verdict::Withdrawn => not(|u| u.awaiting_feedback += 1),
+    }
+}
+
 fn strict_goal<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> std::result::Result<Option<GoalRef>, D::Error> {
@@ -521,6 +729,37 @@ fn strict_goal<'de, D: serde::Deserializer<'de>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A variant added to `Kind` or `Response` but not to its `ALL` would be
+    /// counted in the calibration's total and in no row, silently: the
+    /// exhaustive matches make a new variant a compile error here, where
+    /// the author then adds it to `ALL`, and the checks catch a duplicate
+    /// (review of #319, after `Lever::ALL`'s own guard).
+    #[test]
+    fn every_kind_and_response_is_in_all() {
+        for k in Kind::ALL {
+            match k {
+                Kind::Guilt
+                | Kind::Embarrassment
+                | Kind::Regret
+                | Kind::Disappointment
+                | Kind::Anxiety
+                | Kind::Curiosity => {}
+            }
+        }
+        for r in Response::ALL {
+            match r {
+                Response::Proceed | Response::Verify | Response::Clarify | Response::Replan => {}
+            }
+        }
+        let kinds: std::collections::BTreeSet<_> =
+            Kind::ALL.iter().map(crate::appraisal::enum_name).collect();
+        let responses: std::collections::BTreeSet<_> = Response::ALL
+            .iter()
+            .map(crate::appraisal::enum_name)
+            .collect();
+        assert_eq!((kinds.len(), responses.len()), (6, 4), "no duplicates");
+    }
     fn evidence() -> Evidence {
         Evidence {
             goal: Some(GoalRef::Task("meeting".into())),

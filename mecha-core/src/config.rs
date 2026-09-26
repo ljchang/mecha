@@ -604,6 +604,14 @@ pub struct AgentConfig {
     /// is the whole ablation. The counters stay: this removes the sensors,
     /// never the record.
     pub sensors_in_brief: bool,
+    /// Hand the diagnostician the clean appraisals of the episodes its
+    /// candidate may be selected from (`diagnose::Evidence::with_appraisals`,
+    /// row 2f of `APPRAISAL-WIRING-DESIGN.md`) — the pool minus the uniform
+    /// holdout, never the holdout. On by default; off is a *stage* lever for
+    /// a lifetime experiment (`appraisals_in_brief`), the appraisal-off
+    /// preset's reach into `harness ruminate`. Off withholds the section by
+    /// omission: the brief reads less, never something else.
+    pub appraisals_in_brief: bool,
     /// Deliver the situation brief a front-end assembled
     /// (`brief::SituationBrief`, recorded on every run that has one) into the
     /// run's first user turn, as words and bands (`brief::render`), in the
@@ -613,6 +621,14 @@ pub struct AgentConfig {
     /// `mecha exp` (`Lever::SituationBrief`) before it ships on. Off leaves
     /// the recording exactly as it was.
     pub situation_brief: bool,
+    /// Serve up to three past **clean** appraisals of the run's situation
+    /// and goal through `goal_context`, on demand — never pushed, never the
+    /// prefix (`APPRAISAL-WIRING-DESIGN.md` I2, built as 2c-2). **Off by
+    /// default**: retrieved memory can cost more than it returns, so it is
+    /// the lever stage of the design's "shadow, then measure, then arm"
+    /// (§1, decision 7), measured with and without by `mecha exp`
+    /// (`Lever::PastAppraisals`) before it ships on.
+    pub past_appraisals: bool,
 }
 
 impl Default for AgentConfig {
@@ -644,7 +660,9 @@ impl Default for AgentConfig {
             predictive_compaction: true,
             carried_state: true,
             sensors_in_brief: true,
+            appraisals_in_brief: true,
             situation_brief: false,
+            past_appraisals: false,
         }
     }
 }
@@ -1666,7 +1684,9 @@ struct AgentLayer {
     predictive_compaction: Option<bool>,
     carried_state: Option<bool>,
     sensors_in_brief: Option<bool>,
+    appraisals_in_brief: Option<bool>,
     situation_brief: Option<bool>,
+    past_appraisals: Option<bool>,
     timezone: Option<String>,
 }
 
@@ -1780,8 +1800,14 @@ impl ConfigLayer {
             if let Some(v) = a.sensors_in_brief {
                 t.sensors_in_brief = v;
             }
+            if let Some(v) = a.appraisals_in_brief {
+                t.appraisals_in_brief = v;
+            }
             if let Some(v) = a.situation_brief {
                 t.situation_brief = v;
+            }
+            if let Some(v) = a.past_appraisals {
+                t.past_appraisals = v;
             }
             if a.timezone.is_some() {
                 t.timezone = a.timezone;

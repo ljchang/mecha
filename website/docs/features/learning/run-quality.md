@@ -186,10 +186,19 @@ Two rules are structural rather than instructed:
 - **The brief is built from counters, not content.** `Evidence` holds numbers
   and doctor's findings — machine-authored text, written by this program. There
   is deliberately no field for a transcript excerpt and no argument that adds
-  one.
+  one. The one kind of prose it admits is a **clean text appraisal**: mecha's
+  own interpretation of a session that read no third-party content. The
+  nightly pass shows the diagnostician the appraisals of the sessions its
+  candidate may be selected from, but never those of the held-out sessions
+  that confirm a change. It shows at most six, cut short and marked where
+  cut, with no quote from the session and no number. A brief that carries one
+  counts as private data in the diagnostician's conversation, so after it
+  reads one outside page it can search the web but not fetch from it.
+  `mecha diagnose` run by hand shows no appraisals.
 - **The proposal never quotes its evidence.** The diagnostician runs read-only
   with the web tools and may read the source and these docs; a proposal that
-  reproduces **eight consecutive words** from anything it read is refused. An
+  reproduces **eight consecutive words** from anything it read — an appraisal
+  in its brief included — is refused. An
   instruction lifted from a page cannot survive that; a conclusion drawn from
   one can. Eight because shorter runs collide on ordinary technical prose, and a
   check that fires on honest proposals gets turned off and protects nothing.
@@ -283,6 +292,39 @@ The verdict is one of three: **accept** (measurement carried it), **propose**
 (measured well, but the class requires a person or the evidence is thin), or
 **reject** (measured badly, or a guardrail moved).
 
+### The owner's own decisions decide; the numbers guard
+
+A config candidate that `mecha harness ruminate` measures is also compared at
+up to eight of your own recorded decision points — a steer, a denial, a draft
+you rewrote or rejected ([`mecha sessions compare`](/docs/features/learning#mecha-sessions-compare--policies-at-the-moments-you-decided)
+explains the points and how each is graded). At each, the recorded run is
+replayed a few turns from the point twice: under the config it had, and with
+the candidate's change applied. The two readings combine:
+
+| the point-wise comparison | the numbers | verdict |
+|---|---|---|
+| decides **for** the change (at least 4 decided points, more where only the change did what you decided) | nothing got worse | **accept** — if the kind of change may be accepted by measurement at all |
+| decides for the change | something got worse | **reject** |
+| decides for the change | a cost appeared from nothing, or too few episodes to tell | **propose** — you decide |
+| decides **against** the change | anything | **reject** |
+| does not decide | anything | the numeric verdict above, unchanged, and recorded as numeric only |
+
+"Nothing got worse" is its own test, apart from "the numbers won": work stayed
+above 75% of the baseline, the predicted cost was not worse, and no other cost
+rose past its ceiling. A change that merely did not beat the original has not
+made anything worse, so a point-wise win still carries it. The work floor is
+what stops the change that wins by doing less — a policy that simply stops
+before drafting wins every rejected-draft point, and attempts far less work
+everywhere else.
+
+Many config changes cannot show within a few turns (`max_turns`,
+`compact_at_tokens`), so their comparison does not decide and the numbers
+decide exactly as they always did. The same holds when the pass cannot run: a
+model not on this machine, no point to compare, or a check point that needs
+hooks, the outbox and messages switched off, which the nightly job does not
+do. `mecha harness show <id>` prints the point-wise line beside the tallies,
+including which of the two decided.
+
 ## Measuring a config change
 
 `mecha eval --ab-config KEY=VALUE` is the content-sensitive arm: the case set
@@ -327,6 +369,9 @@ sessions, and dispose of it through the gate — in one pass, on a timer.
 Replay spends its budget on the sessions where the predicted metric has the
 most room to move; when two are tied, the one whose signed errors touch a
 higher-ranked [charter](/docs/features/appraisal/charter) line goes first.
+The held-out sessions, drawn at random, are chosen **before** the diagnosis.
+The diagnostician reads the appraisals of the other sessions only, so a change
+is always confirmed on sessions its author never read about.
 
 ```bash
 mecha harness ruminate --sessions 16 --days 7   # the nightly pass

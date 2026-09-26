@@ -22,6 +22,60 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-26 — image generation shipped; incognito chat is live.** The
+arcs are in HISTORY under 2026-09-25 and 2026-09-25/26. `image_generate`
+(#303, #306) is merged and installed, and needs `comfyui.service`
+(*Standing machinery*). Incognito's design (#307), step 0 (#313), server
+side (#321) and page (#326) are merged and installed at `720feb27`
+(*Machine state* below). What remains, in the design's order (§9): step 4,
+ComfyUI's temp-file cleanup, until which `image_generate` stays withheld
+from an incognito chat (R6); step 6's remaining legs — the canary test
+(`an_incognito_chat_leaves_no_trace_and_an_ordinary_one_does`) drives text
+and an upload and scans the mecha home and the runtime directory, but §8
+also asks for an image prompt against a fake image server, a `$TMPDIR` scan
+and captured stderr at the default level, which ride with step 4; and step
+7, unrecorded reads in mecha-graph
+(another repository), until which the graph stays withheld — every graph
+read logs its query text. Three minors from #326's last pass, for the next
+incognito PR: the banner says "after 30 minutes idle" where an open tab now
+counts as use (it should say 30 minutes after the tab closes); `load()`'s
+GET answers 404 where the POST answers 410, so a chat reaped between the two
+shows an error strip instead of the gone screen; and focus is not restored
+when a new chat is opened from the gone screen. Parked for the owner: a reload
+banner for a phone holding a stale bundle after a deploy (a refresh fixed
+the one case seen); `mecha-core` pins `sha2 = "0.11"` in its own
+`Cargo.toml`, where a review minor would have it a workspace dependency;
+`comfyui.service` living only in `~/.config/systemd/user/`, where a review
+note suggests a copy in `scripts/` beside `start-moe-mtp.sh`; and a race between spawning a
+shell and registering it (`shell_registry::ShellRegistry`), seen as a flaky test and not
+fixed in product code.
+
+**2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2a-3, 2c-1, 2d-1,
+3a and 3a-3 merged and installed, with R34's readout; 2c-2 and 2b-1
+merged.** `APPRAISAL-WIRING-DESIGN.md` (#291) is the authority, with
+its rulings in §6. Phase 1's rows 1a–1i landed as #292–#294, #297–#302, #304
+and #305 (plus mecha-graph#21 for the graph TUI's half of 1c; #303 is
+`image_generate`, another lane's, not recorded here). The phase was meant to
+change nothing a run does, with three exceptions: 1b refuses a close from a
+run with nobody present; 1d stops curating a reflection from moving a run's
+valence; and 1e and 1f change what `planning::Decision::assess` reads for
+`ReviewCommitment`, which reaches a run only under `goal_guidance` (off by
+default). Phase 2's 2a-1 (#308), 2a-2 (#314), 2c-1 (#311) and 2d-1 (#312)
+and phase 3's 3a (#309, behind a lever that ships off) followed the same
+day, then 2a-3 (#315), R34's closed-goal readout (#317), 3a-3 (#316,
+R35's arming and the fold as an append), 2c-2 (#320) and 2b-1 (#319). What
+each built is in HISTORY under 2026-09-24/25. `mecha` was reinstalled at
+21:01Z and carries all of it but 2c-2 and 2b-1: #316's and #317's literals
+are in the binary, and the build is reported as `04b89ea0` (*Machine
+state, dated* below). Six owner rulings of 2026-09-25 are rows R30–R35 of the design's
+§6. What is open, the follow-ups owed, the minors banked for the owner and
+the `CLAUDE.md` drift are at the top of *The goal system* below.
+The workspace on this branch merged with `8c0f5a9d` (no code differs from
+`main`): `cargo test --workspace -q`, summed over its 33 `test result`
+lines, gives 3,157 passed, 0 failed, 4 ignored (3,145 at `6e6f03ba`, 3,136
+at `0692dc79`, 3,142 at `8b0acbe8`, 3,149 at `3f494340`, 3,152 at
+`6f8e69ca`; #313, #315, #316, #317, #319 and #320 changed the set).
+
 **2026-09-24 — the outbox unclogged: a reply goes from its thread's account,
 and the web review reads as mail and sends in one press.** #272
 (`97188f8b`). Six staged replies named no `account`; mecha-mail refused each
@@ -300,8 +354,10 @@ until reproduction is implemented. Confirmed-goal planning and inline message
 drafts accept owner evidence; `outbox anticipate`
 can enable exact-draft guidance, and `outbox outcome` links delivered outcomes.
 Source and implementation evidence are recorded in HISTORY under this date.
-The older aggregate `Homeostat::anticipated_guilt` is still a separate sensor;
-its lack of a behavioral consumer does not mean the new mechanism is absent.
+Since 1f (#302, 2026-09-25), `Homeostat::anticipated_guilt` is only a readout,
+the maximum of the per-commitment guilt (`guilt::read_commitments`), and that
+per-commitment value is what `planning::Decision::assess` reads for
+`ReviewCommitment`; the scalar itself still has no behavioural consumer.
 
 Remaining work for this slice: reconstruct evidence in replay/probes before
 forecast grading; measure whether guidance improves task outcomes; add general
@@ -1512,6 +1568,19 @@ is exactly the set holding a long-lived process.
   `--aged` before 07:00 or the briefing pastes a clap usage error into
   itself** — caught on the day by running the hook rather than reading it. And
   `llama-local.service` is new (below). A fresh clone has neither.
+- **ComfyUI is `comfyui.service`** (systemd user, enabled, since
+  2026-09-25 17:48Z), and the unit exists in no repository:
+  `~/.config/systemd/user/comfyui.service` runs the venv's python on
+  `main.py --listen 127.0.0.1 --port 8188 --temp-directory
+  %t/comfyui-temp`, with `Restart=on-failure` (a `kill -9` was back in
+  about 15 s). The temp directory is on tmpfs on purpose: uploaded
+  reference photos and previews land there, never on the SSD, and a reboot
+  clears them — incognito's step 4 builds on it. `[image] url` in
+  `~/.mecha/config.toml` points at it; with the unit down, `image_generate`
+  fails and nothing else notices. A generation holds 12–15 GB of the same
+  unified memory llama-server uses, so read `MemAvailable` first; the tool
+  asks the server to unload after `[image] unload_after_secs` (default 600),
+  so the weights are not held for the life of the unit.
 - **The local model server is `llama-local.service`** (systemd user, enabled,
   `scripts/start-moe-mtp.sh`, qwen3.6-35b-a3b on 127.0.0.1:8080). **It became a
   unit on 2026-08-19 and the reason generalises.** Before that it was only ever
@@ -2645,6 +2714,110 @@ serve` serves) and restarted the voice worker. Still behind: Claude Code
 sessions started before 03:10Z hold the old `graph` MCP child until
 restarted.
 
+**Installed from main, 2026-09-25 ~16:41Z: appraisal-wiring phase 1
+(verified 17:58Z by asking the artifacts; `mecha` and the web dist were
+replaced at 18:02Z, next entry).** `~/.cargo/bin/mecha` was
+`6a26f7ab`, the #305 merge: `strings ~/.cargo/bin/mecha | grep -c` printed 1
+for #305's `no run in this corpus recorded one` and for #300's
+`slack_action_task_drop`, and 0 for #308's `text appraisals on record` and
+#303's `image_generate`, both merged later. `~/.mecha/web/dist` was rebuilt
+at 16:41Z with `index-BnMA0qiq.js`, which contained #304's `no deadline
+stated`. `mecha-graph` and `mecha-graph-mcp` (14:36Z) are mecha-graph
+`ecf067c8`, the #21 merge and that repo's `main` tip (`strings` finds
+`close_through` in both), and the nightly's
+`~/Github/mecha-graph/target/release/mecha-graph` was rebuilt with them.
+**One edit no repository records:** `~/.mecha-graph/config.toml` gained
+`[board] close_through = "~/.cargo/bin/mecha"` (an absolute path, so the
+TUI's `PATH` cannot decide it; mecha-graph expands the `~`), which is what
+turns on the graph TUI's closure through mecha. Removing that table returns
+the TUI to its direct write. `mecha-slack`, `-triggers`, `-drain` and
+`-serve` were restarted at 16:41:35Z; the voice worker was not (11:31:38Z).
+mecha-mail and mecha-docs are unchanged since 03:03Z. `sessions health
+--days 1` at 17:58Z read one real run on this build, briefed with all nine
+fields known and unanchored, which is too few to read phase 1's *done when*
+against.
+
+**Reinstalled from main, 2026-09-25 18:02Z, by the image-generation lane
+(verified 18:07Z by asking the artifacts).** `~/.cargo/bin/mecha` (18:02:37Z)
+is `b1820b5d`, the #306 merge, so it carries phase 1 and **2a-1 (#308)**:
+`git merge-base --is-ancestor e35bb081 b1820b5d` exits 0, and `strings
+~/.cargo/bin/mecha | grep -c` prints 1 for `appraisals.jsonl` and 2 for
+`text appraisals on record`. `~/.mecha/web/dist` was rebuilt at 18:02:48Z
+with `index-Cq2ArbMx.js`. `mecha-slack`, `-triggers`, `-drain` and `-serve`
+were restarted at 18:03:09Z. **A constraint every later install must
+respect:** at 18:03Z the same lane added an `[image]`
+table to `~/.mecha/config.toml` (the previous file is
+`config.toml.bak-pre-image-2026-09-25`), and `ConfigLayer` is
+`#[serde(deny_unknown_fields)]`, so any `mecha` built before #303
+(`image` joined `ConfigLayer` in `01c22936`) refuses that config at startup.
+Rolling `mecha` back past #303 means restoring that backup, or deleting the
+table, first. The image arc itself is that lane's to record.
+
+**Reinstalled from main, 2026-09-25 19:49Z: 2a-2, 2c-1, 2d-1 and 3a
+(verified 19:59Z by asking the artifacts).** `~/.cargo/bin/mecha`
+(19:49:05Z) is `6e6f03ba`, the #309 merge and `main`'s tip: `strings
+~/.cargo/bin/mecha | grep -c` prints 1 for #312's `point-steer`, 1 for
+#309's `no-situation-brief`, 7 for #314's `expected_act` and 3 for #311's
+`rules_goal`, each a literal no earlier build carries. The web dist was
+not rebuilt and still holds `index-Cq2ArbMx.js` (18:02:48Z). `mecha-slack`,
+`-triggers`, `-drain` and `-serve` show `ActiveEnterTimestamp` 19:49:06Z;
+the voice worker still 11:31:38Z. What starts happening on this build: the `session_end` hook
+(`nohup mecha distill -p local … &`, already detached as 2a-2 requires) and
+the nightly `"$MECHA" distill -p "$PROVIDER"` in `scripts/ruminate.sh` now also write a text appraisal per
+session when the provider is `kind = "local"` (R29), about a minute of a
+seat each. `[agent] situation_brief` is unset
+in `~/.mecha/config.toml`, so the brief is recorded but not delivered.
+
+**Reinstalled from main, 2026-09-25 20:37Z, by the image-generation lane:
+2a-3 and #313 (verified 20:49Z by asking the artifacts).**
+`~/.cargo/bin/mecha` (20:37:04Z) is `0692dc79`, the #315 merge: `strings
+~/.cargo/bin/mecha | grep -c` prints 1 for #315's `is retired (row 2a-3)`,
+and still 7 for `expected_act` and 1 for `point-steer`. `mecha-slack`,
+`-triggers`, `-drain` and `-serve` show `ActiveEnterTimestamp` 20:37:15Z;
+the web dist still holds `index-Cq2ArbMx.js`. **Merged and not installed:**
+#317 (R34's closed-goal readout, `8b0acbe8`, merged 20:44Z); its
+`widens only when the lesson is` literal prints 0.
+
+**Reinstalled again, 2026-09-25 21:01Z, by a lane this handoff did not
+see: #316 and #317 (verified 21:33Z and 21:42Z by asking the artifacts).**
+`~/.cargo/bin/mecha` (21:01:09Z) carries both: `strings ~/.cargo/bin/mecha
+| grep -c` prints 3 for #317's `widens only when the lesson is` and 1 for
+#316's `skipping an extension of a message this transcript`. The
+coordinating session reports it as a build of `04b89ea0` (the #316 merge);
+#318, merged after, is docs only, so no literal can tell the two apart, and
+the binary's mtime (21:01:09Z) is earlier than the ~21:20Z it reported. `mecha-slack`,
+`-triggers`, `-drain` and `-serve` show `ActiveEnterTimestamp` 21:01:10Z;
+the voice worker still 11:31:38Z, and the web dist still holds
+`index-Cq2ArbMx.js`. **Merged and not installed:** 2c-2 (#320, `6f8e69ca`,
+merged 21:36Z; `strings ~/.cargo/bin/mecha | grep -c past_appraisals`
+prints 0) and 2b-1 (#319, `8c0f5a9d`, merged 21:46Z).
+
+**Installed from main, 2026-09-25 23:44Z, by the appraisal lane: `be373132`,
+carrying #321 (reported by that lane, not re-measured here).** It reported
+`cargo install --path mecha-cli` from the main checkout at that SHA, the four
+long-running units restarted at about 23:44Z, and `strings
+~/.cargo/bin/mecha | grep -cF` printing 1 for #321's `that incognito chat
+has closed`, 1 for #324's `scores.jsonl` and 1 for #322's `numeric_only`,
+each 0 before. The web dist was not rebuilt.
+
+**Installed from main, 2026-09-26 01:14Z, by the incognito lane: `720feb27`
+(#326, the incognito page, with #327 and #328) — verified 01:15Z by asking
+the artifacts.** Built with `cargo install --path mecha-cli --locked
+--force` from a clean detached `origin/main` checkout. `strings
+~/.cargo/bin/mecha | grep -cF` prints 1 for #326's `the shell registry is
+inside the workspace`, 1 for #321's `that incognito chat has closed`, 1 for
+#328's `counterfactuals.jsonl` and 6 for #327's `lesson_sources` (the last
+two the appraisal lane's probes, which it re-ran and confirmed). `mecha-slack`,
+`-triggers`, `-drain` and `-serve` show `ActiveEnterTimestamp` 01:14:29Z,
+and `mecha-serve`'s `/proc/<pid>/exe` is the current binary. `~/.mecha/web/dist`
+was rebuilt from the same checkout as `index-B-0Enqti.js`; the `:8443` door
+serves it, and `/voice-uplink-transform.js` answers `200 text/javascript`.
+mecha-mail, the voice worker and the config were not touched. A live check
+through the door: `POST /api/incognito` opened a chat that read back
+`incognito: true`, `read_only`, on `qwen3.6-35b-a3b`, with
+`cache-control: no-store` and its room on tmpfs; `/alive` answered 204,
+`/end` 204, a reopen 410, and the room was gone.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -3660,6 +3833,143 @@ the mechanism and every decision. What it left standing:
 
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
+**2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2a-3, 2c-1, 2d-1,
+3a and 3a-3 shipped and are installed, with R34's readout (#317); 2c-2
+(#320) and 2b-1 (#319) are merged, not installed.** The authority is `APPRAISAL-WIRING-DESIGN.md`:
+§3 holds the plan as pull requests with their order, and §6 the rulings,
+including R30–R35 of 2026-09-25. What each row built is in HISTORY under
+2026-09-24/25. Four of the catalogue entries phase 1 built (S5, S7, B1 and
+G4) end with a *Built as* paragraph naming what that PR deferred, and those
+deferrals are not repeated here; S1, S8, S3 and O4 carry none, so what 1a,
+1b, 1d and 1g deferred is in their PR bodies (#292, #293 and #294, #299,
+#298), save 1d's graph channel below. What is open:
+
+- **In flight: 2d-2 and 2b-2.** 2d-2 is R26's acceptance combination;
+  the owner ruled a refinement, R36, on 2026-09-25, and the 2d-2 lane is
+  adding its §6 row (point-wise for with no numeric regression accepts,
+  point-wise against rejects, and undecided falls back to today's numeric
+  gate, recorded as numeric-only). 2b-2 scores R33's `expected_act`; the
+  owner ruled R37 the same day, which the 2b-2 lane is adding: a "no act"
+  resolves once the output's store patience
+  (`doctor::Patience::for_store`) has elapsed since the appraised session
+  ended. Past those, the design's §3 order: 2d-3, 2e-1 and 2f after 2a-2;
+  2e-3, 2e-4 and 2e-6 on phase 1 alone.
+- **2c-2's measured run is owed** (#320). `Lever::PastAppraisals` ships
+  off, and the design asks for a `mecha exp` arm against a control at
+  matched budget before it goes on, since retrieved memory can cost more
+  than it returns.
+- **`Anger` has no live producer since 2a-3 (#315), for the owner.** Its
+  one source was the retired counts-only appraiser's `other`/`world`
+  verdict. `label_of` still derives it, so records written before the
+  retirement read as `Anger`, but no new run can earn it; a new producer
+  would need a new signal row (`Affect::reachable_today` and its doc
+  comment say the same).
+- **The brief's lever** (3a, #309; off in the live config):
+  - R35's arming and 3a-3's fold-as-append are built (#316, HISTORY), so
+    turning the lever on is now the experiment arms' measurement (§1
+    decision 7), not an unbuilt safeguard.
+  - **3a-2 (M5), a re-delegated task's previous attempts, is still owed.**
+    No record lists them, and a reopen's reason needs an authorship rule
+    first (the design's M5 entry).
+- **2d-1's pass is not in the nightly job.** `mecha sessions compare` runs
+  only by hand; adding `"$MECHA" sessions compare -p "$PROVIDER"` to
+  `scripts/ruminate.sh` after `validate` is the owner's deploy decision
+  (`grep -c compare scripts/ruminate.sh` prints 0). Owner-bound check points
+  run a whole artifact repeat per arm, and `ProbePrep::unrunnable_under`
+  refuses one unless hooks, the outbox and messages are off
+  (`--no-hooks`, `--no-outbox`, messages off), so under the default config
+  they never run — the same gap as `mecha validate`'s mismatch probes.
+- **2a-2's seat time: watch the tail.** Measured on 8 copied real sessions
+  (#314): follow-ups of 19.8 to 137.2 s, median about 64 s, against 272 s
+  for all 8 episode calls, so distilling a session holds a seat about three
+  times as long. Generation is bounded only by `LOCAL_MAX_TOKENS`. Read the
+  per-session seat times `mecha distill` prints after a few nightly runs.
+- **Phase 1's *done when* is unmeasured.** It asks for at least 60% of long
+  real runs anchored, verdicts per week by channel, readings that vary run
+  to run, a closure from every surface in `sessions appraise`, and a recorded
+  brief complete on a sample. Read `sessions health` and `sessions appraise`
+  after some days on a build carrying phase 1 (installed since 16:41Z); at
+  17:58Z one real run had been recorded on one.
+- **1d's graph channel is unreadable from mecha.** Rejected graph facts
+  from `agent:mecha` episodes (L7's input) need a read-only mecha-graph verb
+  that returns rejected candidates with their origin episode, or the review
+  queue ported per the design's §5. `sessions appraise` reports
+  `graph_fact_rejections: null`; ARCHITECTURE's goal-system section says
+  why.
+- **Minors banked across the arc, for the owner to weigh.** Each was
+  re-checked against `f2efa162` and again after merging `6e6f03ba`; 2a-2
+  (#314) closed one more, `Judgment::because` being uncapped.
+  - *Closure (1b, 1b-2, 1c).*
+    - The web board's `POST /api/tasks/set` (`serve::board::task_set`)
+      does not pass `--only-open`, so a stale web card has none of the
+      store-state guard Slack and the graph TUI have.
+    - In `tasks set`, `settle_uncertain` runs before `only_if_open`, so a
+      call the guard refuses can still append a `Confirmed` or `Aborted`
+      line settling an earlier uncertain move. ARCHITECTURE's Slack closure
+      bullet and SLACK-ACTIONS-DESIGN §5 now say so; whether the order
+      should change is the open part.
+    - Two doc comments still name the removed `is_fresh_closure` as if it
+      existed: one in `closure.rs` near `classify`, and one in
+      `closure_guard.rs`.
+    - No doctor check reads the shell registry (`runs/shells`) itself;
+      `check_shell_confinement` only reports a sandbox that mounts the guard
+      directories.
+    - `Shell::call`'s three fail-closed refusals (no registry to register
+      in; a registry that cannot be opened; an entry that cannot be
+      written) have no test.
+    - `live_run_pids` reads the trigger store named by the closing
+      process's own `MECHA_TRIGGERS_DIR`, so a trigger store outside every
+      guard home (as `mecha exp` trials use) drops out of rule 1's marker
+      read if the command changes the variable. The guard homes' own locks
+      are always read, and the shell registry still refuses a delegated
+      shell.
+  - *Readings (1e).*
+    - `runlog::Corpus::anchored_by_kind`'s doc comment sits on top of
+      `reading_variation`'s, so rustdoc gives both paragraphs to
+      `reading_variation` and none to `anchored_by_kind`.
+    - `doctor::check_sensor_saturation` goes through `reading::saturated`,
+      which reads at most `SATURATION_ROWS_MAX` (30) rows. That cap bounds
+      a run's own read, and the doctor inherits it although it already
+      holds the whole corpus.
+    - `BacklogDelta::owner_facing_net` and `owner_facing_cleared` have no
+      caller outside tests except each other (`owner_facing_cleared` calls
+      `owner_facing_net`).
+  - *The brief (1h).*
+    - `brief::assemble_for_run` does its synchronous file reads (the
+      charter, permits, run markers, the trigger file, `attention.toml`,
+      the voice stamp) on `serve`'s async worker, not in `spawn_blocking`.
+    - A board read that hits `BRIEF_BOARD_TIMEOUT_INTERACTIVE` drops the
+      call future, and `McpClient::request` removes its pending entry only
+      on its own timeout, so the entry waits until the server answers.
+    - A web turn spends up to about 2s (the joined deadline) on brief reads
+      before the model is called.
+  - *Commitments (1f-2).*
+    - `anticipation::RecordedCommitment` is `#[serde(untagged)]`, so a
+      misspelt key in owner evidence reports "did not match any variant"
+      rather than naming the unknown field.
+    - `mecha run --appraisal-evidence` checks that a record's `source` is
+      the goal pointer in `Evidence::into_record`, which is reached through
+      `Agent::set_appraisal_evidence` after `setup::prepare` has started
+      the MCP servers, not with the other evidence checks before it.
+- **`CLAUDE.md` has drifted, and editing it is the owner's call.**
+  - The goal-system headline says the homeostat and `anticipated_guilt` are
+    sensors whose only reader is the diagnostician's brief. Since 1e and 1f,
+    the homeostat's in-run readings and per-commitment guilt reach
+    `planning::Decision::assess` (`ToolCtx::goal_readings`,
+    `ToolCtx::goal_commitments`) for `ReviewCommitment`, and 1h's brief
+    reads the homeostat. Only the `anticipated_guilt` scalar is still read
+    by the diagnostician alone. "Nothing narrows a run" still holds, since
+    the decision is guidance and `goal_guidance` gates it. The module map's
+    `guilt.rs` line ("folded from *recorded* commitments") predates guilt
+    per commitment.
+  - The module map lacks the arc's seven new modules: `appraisal_store.rs`,
+    `brief.rs`, `closure.rs`, `comparison.rs`, `curation.rs`,
+    `pointwise.rs` and `shell_registry.rs`. Checked with `for f in $(ls mecha-core/src/*.rs |
+    xargs -n1 basename); do grep -qE "^$f\b" CLAUDE.md || printf '%s ' $f;
+    done`, which also lists `anticipation.rs`, `date_context.rs`,
+    `fixture_check.rs`, `lib.rs`, `surface.rs`, `text.rs`, `title.rs` and
+    `workflow.rs`, all older than the arc.
+
 **2026-09-07 — the project tier (§17.7 item 5) and the goal pointer
 (item 8) shipped and are deployed; the shape is in HISTORY under this
 date.** What is still open from that arc: an end-to-end test of the
@@ -3972,7 +4282,8 @@ and the homeostat's aggregate into `diagnose::Evidence` shipped as designed,
 and anticipated guilt (`mecha-core/src/guilt.rs`) shipped **as a recorded
 sensor only** — `Homeostat::anticipated_guilt`, with no behavioural consumer,
 on the same observation-first precedent the appraiser above and boredom both
-used. Rung 10 landed ahead of rung 8 in build order on purpose: the charter
+used (superseded by 1f, #302: guilt is now per commitment and read by
+`planning::Decision::assess`, and the scalar is their maximum). Rung 10 landed ahead of rung 8 in build order on purpose: the charter
 and the guilt sensor depend on neither the probe nor the label (see the
 corrected caution below). Everything through rung 6 has no model in it, which
 is §14's ordering and not a coincidence — the appraiser was the first thing
@@ -4035,18 +4346,19 @@ argument was wrong. Two pieces:
   never `dropped`** (`worth_a_follow_up`) — found in review after the first
   cut gated on the label alone, which put a "Revisit" task back on the board
   for a run the owner had explicitly walked away from. §5.4's own framing is
-  "the owner took it *anyway*"; a drop is the owner not taking it. **Two
-  limitations are disclosed on `appraise_closure` itself, not fixed, and
-  worth carrying here too**: the stderr readout reaches only someone who
-  typed `mecha tasks set` into a terminal, because every non-terminal caller
-  of `set` — `tui::self_cli`, `serve::review::verb`, Slack's Done tap —
-  discards stderr on success; the trigger covers all four surfaces, the
-  readout doesn't. And staging is not atomic — two closures of the same task
-  landing together (a Slack tap and a TUI keypress within the same
-  `is_fresh_closure` window) can both stage a follow-up, which is a
-  different bug from the retry-duplication one review caught and fixed
-  below; this one is a known, bounded gap (an extra advisory board item,
-  never a lost or corrupted task), not yet closed.
+  "the owner took it *anyway*"; a drop is the owner not taking it.
+  **Updated 2026-09-25 by appraisal-wiring 1b–1c** (HISTORY, 2026-09-24/25):
+  `is_fresh_closure` is gone (`closure::classify` decides a move from the
+  row read before it); a run with nobody present is refused rather than
+  appraised, whatever route it takes (`closure::decide`, the shell registry);
+  the graph TUI closes through `tasks set` when `[board] close_through` is
+  set; and the readout no longer depends on stderr, because the web board
+  (`serve::board::closure_readout`), the TUI and Slack read it back from the
+  closure record. **One limitation carried from the original entry is not
+  re-verified since**: two closures of the same task landing together can
+  both stage a follow-up (an extra advisory board item, never a lost task);
+  Slack's `--only-open` now refuses the second of two taps, but a TUI
+  keypress and a Slack tap that both read the row open were not tested.
 - **§6.2, the readout surfaces.** `mecha_core::appraisal::live` is a new
   per-*run* sibling to `of_session` (which is per-*session*, for §5.4), and
   scopes interventions to one run's own message range (`run_started_at`)

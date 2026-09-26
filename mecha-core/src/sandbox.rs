@@ -189,6 +189,18 @@ impl Sandbox {
         }
     }
 
+    /// Does everything a confined command writes land in the workspace?
+    ///
+    /// `bwrap` gives a private tmpfs `/tmp`, and `docker --rm` discards the
+    /// container's own filesystem, so under either the only write that
+    /// outlives the command is to the workspace — unless `writable` names
+    /// more. Unconfined, a command writes anywhere you can; `landlock` shares
+    /// the host's `/tmp`. A caller that must account for every file a run
+    /// leaves behind (an incognito chat) asks this before offering `shell`.
+    pub fn writes_stay_in_workspace(&self) -> bool {
+        matches!(self.cfg.kind, Backend::Bwrap | Backend::Docker) && self.cfg.writable.is_empty()
+    }
+
     /// Can a confined command read data outside the workspace?
     ///
     /// Unconfined it reads your whole home directory. Confined it sees the
@@ -984,6 +996,21 @@ mod tests {
         // Nothing is confined, so every capability `shell` declares still holds.
         assert!(sandbox.can_reach_network());
         assert!(sandbox.reaches_beyond_workspace());
+    }
+
+    #[test]
+    fn only_a_private_filesystem_keeps_writes_in_the_workspace() {
+        assert!(Sandbox::new(cfg(Backend::Bwrap)).writes_stay_in_workspace());
+        assert!(Sandbox::new(cfg(Backend::Docker)).writes_stay_in_workspace());
+        // Unconfined writes go anywhere; landlock shares the host's /tmp.
+        assert!(!Sandbox::new(cfg(Backend::None)).writes_stay_in_workspace());
+        assert!(!Sandbox::new(cfg(Backend::Landlock)).writes_stay_in_workspace());
+        // An extra writable path is somewhere else a write can land.
+        let widened = Sandbox::new(SandboxConfig {
+            writable: vec!["/var/cache/x".into()],
+            ..cfg(Backend::Bwrap)
+        });
+        assert!(!widened.writes_stay_in_workspace());
     }
 
     #[test]

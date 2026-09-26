@@ -935,6 +935,9 @@ pub enum StageLever {
     /// `rules propose-retirements --apply`; see `Schedule::retire`.
     Retire,
     SensorsInBrief,
+    /// `[agent] appraisals_in_brief` in the trial home's config — the clean
+    /// appraisals' entry into the diagnostician's brief (row 2f).
+    AppraisalsInBrief,
     /// Not a lever: the principal's call at a position, on the same ledger
     /// so `stage_health` and the judge's hold read it like a stage — a
     /// principal that failed to act is a treatment not known to have
@@ -950,13 +953,14 @@ pub enum StageLever {
 }
 
 impl StageLever {
-    pub const ALL: [StageLever; 6] = [
+    pub const ALL: [StageLever; 7] = [
         StageLever::Reflect,
         StageLever::Learn,
         StageLever::Validate,
         StageLever::Ruminate,
         StageLever::Retire,
         StageLever::SensorsInBrief,
+        StageLever::AppraisalsInBrief,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -968,6 +972,7 @@ impl StageLever {
             StageLever::Retire => "retire",
             StageLever::Principal => "principal",
             StageLever::SensorsInBrief => "sensors_in_brief",
+            StageLever::AppraisalsInBrief => "appraisals_in_brief",
             StageLever::Unknown => "unknown",
         }
     }
@@ -997,7 +1002,10 @@ impl StageLever {
             StageLever::Validate => Some(&["validate", "--unprocessed-only"]),
             StageLever::Ruminate => Some(&["harness", "ruminate"]),
             StageLever::Retire => Some(&["rules", "propose-retirements", "--apply"]),
-            StageLever::SensorsInBrief | StageLever::Principal | StageLever::Unknown => None,
+            StageLever::SensorsInBrief
+            | StageLever::AppraisalsInBrief
+            | StageLever::Principal
+            | StageLever::Unknown => None,
         }
     }
 }
@@ -2013,6 +2021,7 @@ fn config_switch(lever: Lever) -> Option<fn(&mut crate::config::Config) -> &mut 
         Lever::PredictiveCompaction => Some(|c| &mut c.agent.predictive_compaction),
         Lever::CarriedState => Some(|c| &mut c.agent.carried_state),
         Lever::SituationBrief => Some(|c| &mut c.agent.situation_brief),
+        Lever::PastAppraisals => Some(|c| &mut c.agent.past_appraisals),
         Lever::Messages => Some(|c| &mut c.messages.enabled),
         Lever::Mcp
         | Lever::LearnedRules
@@ -3083,6 +3092,7 @@ pub fn child_invocation(
             Lever::PredictiveCompaction => config.agent.predictive_compaction = false,
             Lever::CarriedState => config.agent.carried_state = false,
             Lever::SituationBrief => config.agent.situation_brief = false,
+            Lever::PastAppraisals => config.agent.past_appraisals = false,
             Lever::Messages => {
                 config.messages.enabled = false;
                 flags.push("--no-messages".into());
@@ -3102,10 +3112,14 @@ pub fn child_invocation(
         let change = crate::harness::parse_change(spec)?;
         change.apply_to_agent(&mut config.agent)?;
     }
-    // The one stage lever that is a config switch rather than a verb: it
-    // rides in the trial home's config, where `harness ruminate` reads it.
-    if arm.resolve_stages()?.contains(&StageLever::SensorsInBrief) {
+    // The two stage levers that are config switches rather than verbs: they
+    // ride in the trial home's config, where `harness ruminate` reads them.
+    let stages = arm.resolve_stages()?;
+    if stages.contains(&StageLever::SensorsInBrief) {
         config.agent.sensors_in_brief = false;
+    }
+    if stages.contains(&StageLever::AppraisalsInBrief) {
+        config.agent.appraisals_in_brief = false;
     }
     Ok(ChildInvocation {
         config,
@@ -3208,13 +3222,16 @@ pub fn fold_home_overrides(
 const SEEDED_FROM: &str = ".seeded-from";
 
 /// The stores a lever left *on* reads: the learning store (rules and
-/// reflections), the skills directory, the charter. A fresh trial home has
+/// reflections), the skills directory, the charter, and the appraisal store
+/// `goal_context` serves past clean appraisals from (`Lever::PastAppraisals`,
+/// 2c-2) — without which that lever's arm and its control would be one
+/// condition under two names. A fresh trial home has
 /// none, so `full` would have meant "the machine's `[agent]` switches and
 /// nothing else" (found on review). Seeded once, when the arm's home is
 /// first created, from the experiment's environment directory
 /// (`trial_env`) — never written back, and since 2026-09-23 never the real
 /// home, whose copy carried the operator's world in with it.
-pub const SEEDED: [&str; 3] = ["learning", "skills", "charter.toml"];
+pub const SEEDED: [&str; 4] = ["learning", "skills", "charter.toml", "appraisals"];
 
 pub fn seed_home(real: &Path, home: &Path) -> Result<()> {
     for name in SEEDED {
@@ -3767,8 +3784,13 @@ rationale = "no notice, fewer turns"
         .unwrap();
         std::fs::write(real.join("charter.toml"), b"[[line]]\n").unwrap();
         std::fs::write(real.join("config.toml"), b"default_provider = \"x\"\n").unwrap();
+        // The appraisal store `past_appraisals` reads (2c-2): without it the
+        // lever's arm and the control are one condition.
+        std::fs::create_dir_all(real.join("appraisals")).unwrap();
+        std::fs::write(real.join("appraisals").join("appraisals.jsonl"), b"{}\n").unwrap();
         let home = root.join("home");
         seed_home(&real, &home).unwrap();
+        assert!(home.join("appraisals").join("appraisals.jsonl").is_file());
         assert!(home.join("learning").join("rules.jsonl").is_file());
         assert!(home
             .join("skills")
@@ -3939,6 +3961,7 @@ rationale = "no notice, fewer turns"
         real.agent.predictive_compaction = false;
         real.agent.carried_state = false;
         real.agent.situation_brief = false;
+        real.agent.past_appraisals = false;
         real.messages.enabled = false;
         let names = [
             "step_escalation",
@@ -3949,6 +3972,7 @@ rationale = "no notice, fewer turns"
             "predictive_compaction",
             "carried_state",
             "situation_brief",
+            "past_appraisals",
             "messages",
         ];
         let arm = Arm {
@@ -3965,6 +3989,7 @@ rationale = "no notice, fewer turns"
         assert!(c.agent.predictive_compaction);
         assert!(c.agent.carried_state);
         assert!(c.agent.situation_brief);
+        assert!(c.agent.past_appraisals);
         assert!(c.messages.enabled);
 
         // Unnamed switches still inherit the operator's value.
@@ -5269,6 +5294,28 @@ rationale = "r"
         let child = child_invocation(&real, &arm, None).unwrap();
         assert!(!child.config.agent.sensors_in_brief);
         assert!(child.flags.is_empty(), "a switch, not a flag");
+    }
+
+    /// Row 2f's lever: the appraisal-off preset reaches `harness ruminate`
+    /// through the trial home's config, and it withholds only the
+    /// appraisals — the sensors stay.
+    #[test]
+    fn appraisals_in_brief_off_rides_in_the_childs_config() {
+        let real = crate::config::Config::default();
+        let mut arm = Arm::default();
+        assert!(
+            child_invocation(&real, &arm, None)
+                .unwrap()
+                .config
+                .agent
+                .appraisals_in_brief
+        );
+        arm.stages_off = vec!["appraisals_in_brief".into()];
+        let child = child_invocation(&real, &arm, None).unwrap();
+        assert!(!child.config.agent.appraisals_in_brief);
+        assert!(child.config.agent.sensors_in_brief);
+        assert!(child.flags.is_empty(), "a switch, not a flag");
+        assert_eq!(StageLever::AppraisalsInBrief.argv(), None);
     }
 
     /// The gate over arm sets: each treatment arm paired with the control by

@@ -836,6 +836,23 @@ pub async fn drive_arm_within(
     system: String,
     horizon: Option<u32>,
 ) -> Result<Result<ProbeVerdict, String>> {
+    drive_arm_under(prepared, provider_cfg, model, prep, system, horizon, None).await
+}
+
+/// [`drive_arm_within`] under a harness candidate's config change, applied
+/// over the recorded config the arm otherwise replays under — the candidate
+/// arm of R26's point-wise comparison (row 2d-2). The horizon still binds
+/// after the change: a `max_turns` candidate above it cannot lengthen a
+/// trace arm, so it ties at every point and the numbers decide (R36).
+pub async fn drive_arm_under(
+    prepared: &Prepared,
+    provider_cfg: &ProviderConfig,
+    model: &str,
+    prep: &ProbePrep,
+    system: String,
+    horizon: Option<u32>,
+    change: Option<&mecha_core::harness::ConfigChange>,
+) -> Result<Result<ProbeVerdict, String>> {
     let recorded = &prep.recorded;
     if let ProbeMethod::Artifact {
         case,
@@ -868,6 +885,11 @@ pub async fn drive_arm_within(
             .levers_off
             .as_ref()
             .is_some_and(|off| off.contains(&mecha_core::harness::Lever::StepChecks));
+        if let Some(change) = change {
+            if let Err(e) = change.apply_to_agent(&mut cfg) {
+                return Ok(Err(format!("the change does not apply: {e:#}")));
+            }
+        }
         let mut provider_cfg = provider_cfg.clone();
         provider_cfg.seed = recorded.seed;
         provider_cfg.temperature = recorded.temperature;
@@ -902,7 +924,7 @@ pub async fn drive_arm_within(
         ));
     };
     Ok(
-        continuation(prepared, provider_cfg, model, prep, system, horizon)
+        continuation(prepared, provider_cfg, model, prep, system, horizon, change)
             .await?
             .map(|report| {
                 let result = verdict(&report, point);
@@ -911,6 +933,17 @@ pub async fn drive_arm_within(
                 result
             }),
     )
+}
+
+/// The turn ceiling an arm runs under: the config's own, capped by the
+/// horizon when there is one. A config that kept no ceiling (`0`) gets the
+/// horizon, never zero turns.
+fn within_horizon(max_turns: u32, horizon: Option<u32>) -> u32 {
+    match horizon {
+        Some(h) if max_turns > 0 => max_turns.min(h),
+        Some(h) => h,
+        None => max_turns,
+    }
 }
 
 /// Non-executing continuation used by both trace and followup probes.
@@ -922,7 +955,7 @@ pub async fn drive_continuation(
     prep: &ProbePrep,
     system: String,
 ) -> Result<Result<mecha_core::replay_run::ReplayReport, String>> {
-    continuation(prepared, provider_cfg, model, prep, system, None).await
+    continuation(prepared, provider_cfg, model, prep, system, None, None).await
 }
 
 async fn continuation(
@@ -932,6 +965,7 @@ async fn continuation(
     prep: &ProbePrep,
     system: String,
     horizon: Option<u32>,
+    change: Option<&mecha_core::harness::ConfigChange>,
 ) -> Result<Result<mecha_core::replay_run::ReplayReport, String>> {
     let recorded = &prep.recorded;
     let (trajectory, branch) = match &prep.method {
@@ -978,15 +1012,18 @@ async fn continuation(
     agent_cfg.thinking = recorded.thinking;
     agent_cfg.cache_prompt = recorded.cache_prompt;
     agent_cfg.max_tokens = recorded.max_tokens;
-    agent_cfg.max_turns = match horizon {
-        Some(h) if recorded.max_turns > 0 => recorded.max_turns.min(h),
-        // A recording that kept no ceiling gets the horizon, not zero turns.
-        Some(h) => h,
-        None => recorded.max_turns,
-    };
+    agent_cfg.max_turns = recorded.max_turns;
     agent_cfg.max_output_tokens = recorded.max_output_tokens;
     agent_cfg.max_cost_usd = recorded.max_cost_usd;
     agent_cfg.compact_at_tokens = recorded.compact_at_tokens;
+    // A candidate's change lands over the recording, as the whole-session
+    // arm applies it; the horizon then binds whatever the change said.
+    if let Some(change) = change {
+        if let Err(e) = change.apply_to_agent(&mut agent_cfg) {
+            return Ok(Err(format!("the change does not apply: {e:#}")));
+        }
+    }
+    agent_cfg.max_turns = within_horizon(agent_cfg.max_turns, horizon);
     agent_cfg.compact_keep_recent = recorded.compact_keep_recent;
 
     let mut tool_ctx = mecha_core::tool::ToolCtx {
@@ -998,6 +1035,9 @@ async fn continuation(
         tool_ctx.workspace = std::env::temp_dir();
     }
 
+    // The threshold the arm's own config carries — the recording's, or a
+    // `compact_at_tokens` candidate's — as the whole-session arm reads it.
+    let compact_at = agent_cfg.compact_at_tokens;
     let agent = Agent::new(
         mecha_core::provider::build(provider_cfg)?,
         registry,
@@ -1009,7 +1049,7 @@ async fn continuation(
     .with_clock(mecha_core::clock::for_replay(recorded.clock));
     let cx = RunContext::new(tool_ctx, approver)
         .with_cancel(cancel)
-        .with_compact_at(recorded.compact_at_tokens);
+        .with_compact_at(compact_at);
     match drive_branch(
         &agent,
         &cx,
@@ -1149,6 +1189,36 @@ pub fn compare(
             *unchanged += 1;
             Some("unchanged (both fail)")
         }
+    }
+}
+
+#[cfg(test)]
+mod horizon_tests {
+    use super::within_horizon;
+
+    /// The horizon caps the config's ceiling — the recording's, or a
+    /// candidate's `max_turns` applied over it — and a config that kept no
+    /// ceiling gets the horizon rather than zero turns (the one mapping no
+    /// test exercised, found on review of #312).
+    #[test]
+    fn the_horizon_caps_the_ceiling_and_never_makes_it_zero() {
+        assert_eq!(
+            within_horizon(40, Some(4)),
+            4,
+            "a candidate's 40 cannot lengthen an arm"
+        );
+        assert_eq!(within_horizon(2, Some(4)), 2, "a lower ceiling still binds");
+        assert_eq!(
+            within_horizon(0, Some(4)),
+            4,
+            "no ceiling is the horizon, not zero"
+        );
+        assert_eq!(within_horizon(40, None), 40, "no horizon, the config's own");
+        assert_eq!(
+            within_horizon(0, None),
+            0,
+            "unchanged for every other caller"
+        );
     }
 }
 

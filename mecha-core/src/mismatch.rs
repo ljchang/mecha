@@ -410,6 +410,13 @@ pub async fn drive(
     // without one (`validate_transcript`), and its role has no prompt that
     // would say what the block is.
     cx.brief = None;
+    // And no past appraisal (2c-2), for the same reason: the recording's
+    // `goal_context` answers carried none the repeat could reproduce.
+    if cx.tools.goal_appraisals.is_some() {
+        let mut tools = (*cx.tools).clone();
+        tools.goal_appraisals = None;
+        cx.tools = Arc::new(tools);
+    }
     cx.outbox = None;
     cx.mailbox = None;
     cx.queued_input = None;
