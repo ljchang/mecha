@@ -774,15 +774,30 @@ pub struct ServedSuccesses {
     pool: SuccessExamples,
     run: crate::situation::Situation,
     served: Vec<Example>,
+    /// Re-read the owning stores at each run start ([`Self::select`]).
+    live: bool,
 }
 
 impl ServedSuccesses {
+    /// A pool read from the default stores: every run start re-reads the
+    /// closure and workflow stores and drops what has been taken back
+    /// ([`Self::at_run_start`]).
     pub fn select(pool: SuccessExamples, run: &crate::situation::Situation) -> ServedSuccesses {
+        ServedSuccesses {
+            live: true,
+            ..Self::fixed(pool, run)
+        }
+    }
+
+    /// A pool that is not re-read at run start — a test's, which must not
+    /// read the operator's stores. Still re-keyed on the registry.
+    pub fn fixed(pool: SuccessExamples, run: &crate::situation::Situation) -> ServedSuccesses {
         let served = pool.for_run(run);
         ServedSuccesses {
             pool,
             run: run.clone(),
             served,
+            live: false,
         }
     }
 
@@ -790,6 +805,65 @@ impl ServedSuccesses {
     /// surface and goal, these tools.
     pub fn for_registry(&mut self, tools: &[String]) {
         self.run.tools = tools.to_vec();
+        self.served = self.pool.for_run(&self.run);
+    }
+
+    /// What the loop calls at every run start: drop what the owner has
+    /// taken back since the pool was read, from the closure and workflow
+    /// stores as they stand now, then re-key on the registry. The pool is
+    /// read once per `setup::build`, and `chat`, the TUI, `serve` and Slack
+    /// drive many runs off one build — a reopen on Tuesday must withdraw an
+    /// example a process read on Monday, or the answer's "has not reopened
+    /// it" is false (found on review of #342). A success verified since the
+    /// read is missed until the next build — a miss, never a retraction
+    /// ignored.
+    pub fn at_run_start(&mut self, tools: &[String]) {
+        if self.live {
+            let (closures, closures_unreadable) = crate::appraisal::load_closures();
+            let (workflows, workflows_unreadable) = crate::appraisal::load_workflows();
+            self.restand(&crate::success::Sources {
+                closures: &closures,
+                closures_unreadable,
+                workflows: &workflows,
+                workflows_unreadable,
+                ..Default::default()
+            });
+        }
+        self.for_registry(tools);
+    }
+
+    /// Keep only the examples whose act still stands in `now` — derived by
+    /// `success::derive` itself, so withdrawal means here what it means
+    /// everywhere. Only a closure or a workflow close can be taken back; a
+    /// draft sent and a question answered cannot, and stay. A store that
+    /// cannot be read now withdraws every example of its kind: whether the
+    /// act still stands is unknown, and unknown is never served.
+    pub fn restand(&mut self, now: &crate::success::Sources<'_>) {
+        use crate::success::{Act, Seen, SessionFacts};
+        // Placement was settled when the pool was read; this read asks only
+        // whether the act stands.
+        struct Placed;
+        impl SessionFacts for Placed {
+            fn seen(&self, _: &str) -> Seen {
+                Seen::Admitted
+            }
+            fn completed(&self, _: &str) -> Option<bool> {
+                None
+            }
+        }
+        let set = crate::success::derive(now, &Placed);
+        let standing: std::collections::HashSet<String> =
+            set.standing.iter().map(|s| s.act.pointer()).collect();
+        self.pool.examples.retain(|e| match &e.example.owner_act {
+            Some(act @ Act::TaskDone { .. }) => {
+                !now.closures_unreadable && standing.contains(&act.pointer())
+            }
+            Some(act @ Act::WorkflowClosed { .. }) => {
+                !now.workflows_unreadable && standing.contains(&act.pointer())
+            }
+            Some(Act::SentUnchanged { .. } | Act::QuestionAnswered { .. }) => true,
+            None => false,
+        });
         self.served = self.pool.for_run(&self.run);
     }
 
@@ -836,7 +910,8 @@ pub(crate) fn test_success(
 /// success first; a session lends once per goal.
 ///
 /// Read from the transcripts on every call and never stored: the success
-/// set is derived at read time (R40), and so is what it lends.
+/// set is derived at read time (R40), and so is what it lends. A caller that
+/// holds the result across runs re-checks it ([`ServedSuccesses::at_run_start`]).
 pub fn success_examples(
     set: &crate::success::Successes,
     sessions: &crate::success::SessionIndex,
@@ -1221,6 +1296,49 @@ mod success_example_tests {
         let withdrawn = lent(dir, &[close("c1", "s-dana"), reopen("r1", "c1")]);
         assert!(withdrawn.examples.is_empty(), "{withdrawn:?}");
         assert!(withdrawn.for_run(&run_in(dir)).is_empty());
+    }
+
+    /// One build drives many runs in `chat`, the TUI, `serve` and Slack, so
+    /// a reopen after the pool was read must withdraw its example at the
+    /// next run start — and a closure store that cannot be read then
+    /// withdraws every closure's example, since whether it stands is
+    /// unknown; an answered question cannot be taken back and stays (found
+    /// on review of #342: the pool was read once per process).
+    #[test]
+    fn a_reopen_after_the_pool_was_read_withdraws_its_example_at_the_next_run() {
+        let root = crate::mismatch::Workspace::new().unwrap();
+        let dir = root.path();
+        session(dir, "s-dana", Shape::Clean);
+        let mut pool = lent(dir, &[close("c1", "s-dana")]);
+        let mut answered = pool.examples[0].clone();
+        answered.example.source = "s-asked".into();
+        answered.example.owner_act = Some(crate::success::Act::QuestionAnswered {
+            question: "q1".into(),
+        });
+        pool.examples.push(answered);
+        let run = run_in(dir);
+        let sources = |closures: &[Transition], unreadable| {
+            let mut s = ServedSuccesses::fixed(pool.clone(), &run);
+            s.restand(&Sources {
+                closures,
+                closures_unreadable: unreadable,
+                ..Default::default()
+            });
+            s.served()
+                .iter()
+                .map(|e| e.source.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            sources(&[close("c1", "s-dana")], false),
+            vec!["s-dana", "s-asked"],
+            "not vacuous: still standing, both served"
+        );
+        assert_eq!(
+            sources(&[close("c1", "s-dana"), reopen("r1", "c1")], false),
+            vec!["s-asked"]
+        );
+        assert_eq!(sources(&[close("c1", "s-dana")], true), vec!["s-asked"]);
     }
 
     /// A compacted session lends its whole trace, not the tail the

@@ -42,9 +42,9 @@
 //! **Planning success examples ride on it too, behind a lever that ships
 //! off** (row 2e-4b-1): a standing success toward a goal lends each of its
 //! clean, scoped sessions to `planning::success_examples`, whose step is the
-//! session's tool sequence (R40) — read from the transcript at run start,
-//! never copied out of it, so a reopen withdraws the example with the
-//! success.
+//! session's tool sequence (R40) — read from the transcript when a run is built,
+//! never copied into a store, and re-checked against the closure and workflow
+//! stores at every run start, so a reopen withdraws the example with the success.
 //!
 //! What this leaves for later rows: contrast evidence for the reflector
 //! (2e-4b-2, waiting on what "the same region" means between a correction

@@ -1808,9 +1808,11 @@ impl Agent {
                     past.for_registry(&names);
                 }
                 // And success examples (2e-4b-1), on the same registry, for
-                // the same reason (found on review of #342).
+                // the same reason — and less what the owner has reopened
+                // since the pool was read, since one build drives many runs
+                // (both found on review of #342).
                 if let Some(successes) = tools.success_examples.as_mut() {
-                    successes.for_registry(&names);
+                    successes.at_run_start(&names);
                 }
             }
             // Fresh counters, the caller's anchor: a question resume seeds
@@ -5629,7 +5631,7 @@ mod tests {
                     withheld: Vec::new(),
                 };
                 let built = crate::situation::Situation::of_run(&["kg_task_update".into()], None);
-                let served = crate::planning::ServedSuccesses::select(pool, &built);
+                let served = crate::planning::ServedSuccesses::fixed(pool, &built);
                 assert_eq!(
                     served
                         .served()

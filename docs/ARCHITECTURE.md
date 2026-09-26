@@ -4740,12 +4740,18 @@ data). Skills stay owner-authored: nothing here writes under
 which **ships off**. `planning::examples` was gated on a passed declared
 check, which almost never happens; a verified success is the other source.
 
-- **Derived from the success set, never stored.** Each run start with the
+- **Derived from the success set, never stored.** `setup::build` with the
   lever on reads the four owning stores (`success::Owned`, not the whole
   `appraisal::Stores`), the session headers and up to 32 transcripts, newest
   success first, at most 64 examples. Only `standing` successes lend, so **a
   reopen withdraws the example by construction**, as it withdraws the
-  success.
+  success — and since `chat`, the TUI, `serve` and Slack drive many runs off
+  one build, **every run start** re-reads the closure and workflow stores
+  and drops each example whose act no longer stands, by `success::derive`'s
+  own reading (`ServedSuccesses::at_run_start` → `restand`); a store that
+  cannot be read then withdraws every example of its kind, since whether it
+  stands is unknown (found on review of #342). A success verified after the
+  build is missed until the next one — a miss, never a retraction ignored.
 - **The step is the session's tool sequence** (R40: 4 of 79 long runs wrote a
   plan): registry names in call order, the harness's own calls left out, a
   consecutive repeat folded to `name ×n`, the first 24 spelled out and the
