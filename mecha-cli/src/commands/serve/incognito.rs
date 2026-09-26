@@ -76,10 +76,8 @@ pub const READABLE_SERVER: &str = "mail";
 /// not allowed. `tools` is the registry as `(name, read_only)`; `routed` the
 /// outbox's routed names, which stage a draft in every permission mode and
 /// so are withheld even when read-only. `shell_confined` is
-/// [`Sandbox::writes_stay_in_workspace`](mecha_core::sandbox::Sandbox::writes_stay_in_workspace):
-/// `fs_*` are jailed to the room by `ToolCtx::resolve`, but `shell` only by
-/// the sandbox, and a command that can write outside the room leaves a trace
-/// `Room::remove` never sees (found on review of #321).
+/// [`shell_is_sealed`]: `fs_*` are jailed to the room by `ToolCtx::resolve`,
+/// but `shell` only by the sandbox.
 pub fn withheld<'a>(
     tools: impl IntoIterator<Item = (&'a str, bool)>,
     routed: &[String],
@@ -99,6 +97,52 @@ pub fn withheld<'a>(
         })
         .map(|(name, _)| name.to_string())
         .collect()
+}
+
+/// Whether `shell` may be offered in an incognito chat: a sandbox that keeps
+/// every write in the room, reads nothing outside it, and reaches no network.
+///
+/// Each clause closes a different route. **Writes**: a command that can write
+/// outside the room leaves a trace `Room::remove` never sees — so not `none`,
+/// not `landlock` (the host's `/tmp` is shared), and no extra `writable` path
+/// (found on review of #321). **Reads and network**: an incognito chat's
+/// commands register in the room, not the guard homes
+/// (`ToolCtx::shell_registry`), so the closure check reads them as
+/// unregistered, and a command that clears `MECHA_RUN_POSTURE` would be taken
+/// for the owner. That is harmless only if the command cannot reach the board
+/// at all — and the board is written through the graph server, found from the
+/// mecha home's config, not through a file the jail would stop. With nothing
+/// readable outside the jail there is no config naming a server and no store
+/// to open; with no network there is nothing to call (found on review of
+/// #326, which caught the argument resting on writes alone).
+pub fn shell_is_sealed(sandbox: &mecha_core::sandbox::Sandbox) -> bool {
+    sandbox.writes_stay_in_workspace()
+        && !sandbox.reaches_beyond_workspace()
+        && !sandbox.can_reach_network()
+}
+
+/// An incognito key that is not open: ended, reaped, or never opened. A
+/// type, so the web handlers can answer `410 Gone` — the page's cue to say
+/// the chat has ended — rather than a 500 it would retry.
+#[derive(Debug)]
+pub struct Closed;
+
+impl std::fmt::Display for Closed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("that incognito chat has closed")
+    }
+}
+
+impl std::error::Error for Closed {}
+
+/// The status for a failure to open or reach a chat: `410` for a closed
+/// incognito chat, `500` for anything else.
+pub fn status_of(e: &anyhow::Error) -> axum::http::StatusCode {
+    if e.downcast_ref::<Closed>().is_some() {
+        axum::http::StatusCode::GONE
+    } else {
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    }
 }
 
 /// Whether the configured hooks allow an incognito chat. None of them runs
@@ -245,6 +289,11 @@ pub struct Room {
     pub root: PathBuf,
     /// The jail: `<root>/<key>`, so its directory name is the session key.
     pub workspace: PathBuf,
+    /// Where `shell` registers the commands this chat runs
+    /// (`ToolCtx::shell_registry`): in the room, beside the jail and never
+    /// inside it, so a command cannot edit its own entry and nothing about
+    /// it reaches the mecha home (owner's ruling, 2026-09-25).
+    pub shells: PathBuf,
     /// Beside the jail, never in it.
     pub spill: PathBuf,
     last_active: std::sync::Mutex<Instant>,
@@ -275,6 +324,7 @@ impl Room {
         }
         Ok(Room {
             key: key.to_string(),
+            shells: root.join("shells"),
             root,
             workspace,
             spill,
@@ -427,6 +477,35 @@ mod tests {
     }
 
     #[test]
+    fn shell_is_offered_only_in_a_sealed_sandbox() {
+        use mecha_core::sandbox::{Backend, Sandbox, SandboxConfig};
+        let cfg = |kind| SandboxConfig {
+            kind,
+            ..SandboxConfig::default()
+        };
+        assert!(shell_is_sealed(&Sandbox::new(cfg(Backend::Bwrap))));
+        assert!(shell_is_sealed(&Sandbox::new(cfg(Backend::Docker))));
+        assert!(!shell_is_sealed(&Sandbox::new(cfg(Backend::None))));
+        assert!(!shell_is_sealed(&Sandbox::new(cfg(Backend::Landlock))));
+        for widened in [
+            SandboxConfig {
+                network: true,
+                ..cfg(Backend::Bwrap)
+            },
+            SandboxConfig {
+                readable: vec!["/home/someone/.mecha".into()],
+                ..cfg(Backend::Bwrap)
+            },
+            SandboxConfig {
+                writable: vec!["/var/cache/x".into()],
+                ..cfg(Backend::Bwrap)
+            },
+        ] {
+            assert!(!shell_is_sealed(&Sandbox::new(widened)));
+        }
+    }
+
+    #[test]
     fn a_pre_tool_hook_refuses_the_door_and_an_observer_does_not() {
         use mecha_core::config::{Config, HookConfig};
         let mut config = Config::default();
@@ -492,6 +571,10 @@ mod tests {
         assert!(
             !room.spill.starts_with(&room.workspace),
             "the spill is beside the jail"
+        );
+        assert!(
+            room.shells.starts_with(&room.root) && !room.shells.starts_with(&room.workspace),
+            "the shell registry is in the room and outside the jail"
         );
         #[cfg(unix)]
         {

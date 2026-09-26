@@ -578,7 +578,21 @@ impl Tool for Shell {
         // Under every guard home (`shell_registry::write_roots`), so a harness
         // that itself runs under a `MECHA_HOME` is still found by a command
         // that redirects again (review of #294).
-        let registries = match crate::shell_registry::write_roots().and_then(|roots| {
+        // An incognito chat names its own root instead (`ToolCtx::shell_registry`).
+        let roots = match &ctx.shell_registry {
+            // Outside the jail, or a command could edit its own entry
+            // (`ToolCtx::shell_registry`'s contract) — refused in every build,
+            // since a guard that cannot hold must stop the run.
+            Some(root) if root.starts_with(&ctx.workspace) => {
+                return Ok(ToolOutput::err(
+                    "refusing to run: the shell registry is inside the workspace, so a \
+                     command could edit its own entry. Nothing was executed.",
+                ))
+            }
+            Some(root) => Ok(vec![root.clone()]),
+            None => crate::shell_registry::write_roots(),
+        };
+        let registries = match roots.and_then(|roots| {
             roots
                 .into_iter()
                 .map(crate::shell_registry::ShellRegistry::open)
@@ -1189,6 +1203,64 @@ mod tests {
             !root.join(format!("{pid}.json")).exists(),
             "the registration is removed when the command is done"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A context that names its own registry root (an incognito room's) is
+    /// registered there and only there: the default root never sees the pid.
+    #[tokio::test]
+    async fn a_named_registry_root_replaces_the_guard_homes() {
+        let base = std::env::temp_dir().join(format!("mecha-shellroot-{}", uuid::Uuid::new_v4()));
+        let (dir, own) = (base.join("ws"), base.join("shells"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let default = crate::shell_registry::ShellRegistry::default_root().unwrap();
+        let shell = shell_with(Backend::None, false);
+        let ctx = ToolCtx {
+            workspace: dir.clone(),
+            run_posture: Some(crate::closure::RunPosture::Interactive),
+            shell_registry: Some(own.clone()),
+            ..ToolCtx::default()
+        };
+        let read_own = serde_json::json!({
+            "command": format!(
+                "f='{}'/$$.json; i=0; \
+                 while [ ! -f \"$f\" ] && [ $i -lt 40 ]; do sleep 0.05; i=$((i+1)); done; \
+                 cat \"$f\"; if [ -f '{}'/$$.json ]; then echo LEAKED; fi",
+                own.display(),
+                default.display()
+            )
+        });
+        let out = shell.call(read_own, &ctx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("\"posture\":\"interactive\""),
+            "{}",
+            out.content
+        );
+        assert!(!out.content.contains("LEAKED"), "{}", out.content);
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[tokio::test]
+    async fn a_registry_root_inside_the_workspace_is_refused() {
+        let dir = std::env::temp_dir().join(format!("mecha-shellin-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shell = shell_with(Backend::None, false);
+        let ctx = ToolCtx {
+            workspace: dir.clone(),
+            shell_registry: Some(dir.join("shells")),
+            ..ToolCtx::default()
+        };
+        let out = shell
+            .call(serde_json::json!({"command": "touch ran"}), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("inside the workspace"),
+            "{}",
+            out.content
+        );
+        assert!(!dir.join("ran").exists(), "nothing was executed");
         std::fs::remove_dir_all(&dir).ok();
     }
 
