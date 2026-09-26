@@ -216,9 +216,9 @@ Allowed:
 - `web_search` / `web_open` / `http_fetch` (R4);
 - `image_generate` (§6.3);
 - the builtins, with `fs_*` and `shell` jailed to the tmpfs folder and still
-  subject to the chat's read-only / ask / allow toggle — `shell` only where
-  the sandbox keeps its writes there (`bwrap` or `docker`, no extra
-  `writable` paths); elsewhere it is withheld.
+  subject to the chat's read-only / ask / allow toggle — `shell` only in a
+  sealed sandbox (`bwrap` or `docker`, no extra `writable` or `readable`
+  path, no network); elsewhere it is withheld.
 
 Everything else is withheld — which today means outbox-routed tools, every
 MCP tool without `readOnlyHint`, the graph's tools (reads included, until §5.2

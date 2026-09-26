@@ -2281,15 +2281,16 @@ brief (which reads the board through the graph server) do not run.
   nobody's chat. The jail is `<room>/<key>`: `WebAsker`
   routes an `ask_user` card by the jail's directory name, which must be the
   session key.
-- **`shell` only where the sandbox keeps its writes in the room.** `fs_*` are
-  jailed by `ToolCtx::resolve`; `shell` only by the sandbox, and
-  `Sandbox::writes_stay_in_workspace` is true for `bwrap` and `docker` with no
-  extra `writable` paths — not for `none`, and not for `landlock`, which
-  shares the host's `/tmp`. Elsewhere `shell` is withheld with the rest.
-  Where it runs, it registers in the room (`<room>/shells`,
-  `ToolCtx::shell_registry`), not the mecha home: invisible to the closure
-  check, which is safe only because a command that can write nothing
-  outside its jail cannot write the board either.
+- **`shell` only in a sealed sandbox** (`incognito::shell_is_sealed`): `bwrap`
+  or `docker`, no extra `writable` or `readable` path, no network. `fs_*` are
+  jailed by `ToolCtx::resolve`; `shell` only by the sandbox. Writes: `none`
+  and `landlock` (shared `/tmp`) could leave what `Room::remove` never sees.
+  Reads and network: where it runs, `shell` registers in the room
+  (`<room>/shells`, `ToolCtx::shell_registry`), not the mecha home, so the
+  closure check reads its commands as unregistered and one that clears
+  `MECHA_RUN_POSTURE` would pass as the owner — harmless only because the
+  board is reached through the graph server, which a command that can read
+  no config and call no network cannot find. Elsewhere `shell` is withheld.
 - **A deny-gate hook refuses the door** (`pre_tool`, `pre_task_close`). No hook runs in an incognito chat
   (a hook's log is a trace); an observer is simply not run, but a deny gate
   skipped would widen the chat past what the owner allowed, so its presence

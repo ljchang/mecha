@@ -580,15 +580,16 @@ impl Tool for Shell {
         // that redirects again (review of #294).
         // An incognito chat names its own root instead (`ToolCtx::shell_registry`).
         let roots = match &ctx.shell_registry {
-            Some(root) => {
-                // Outside the jail, or a command could edit its own entry
-                // (`ToolCtx::shell_registry`'s contract, made structural).
-                debug_assert!(
-                    !root.starts_with(&ctx.workspace),
-                    "a shell registry inside the workspace lets a command edit its own entry"
-                );
-                Ok(vec![root.clone()])
+            // Outside the jail, or a command could edit its own entry
+            // (`ToolCtx::shell_registry`'s contract) — refused in every build,
+            // since a guard that cannot hold must stop the run.
+            Some(root) if root.starts_with(&ctx.workspace) => {
+                return Ok(ToolOutput::err(
+                    "refusing to run: the shell registry is inside the workspace, so a \
+                     command could edit its own entry. Nothing was executed.",
+                ))
             }
+            Some(root) => Ok(vec![root.clone()]),
             None => crate::shell_registry::write_roots(),
         };
         let registries = match roots.and_then(|roots| {
@@ -1238,6 +1239,29 @@ mod tests {
         );
         assert!(!out.content.contains("LEAKED"), "{}", out.content);
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[tokio::test]
+    async fn a_registry_root_inside_the_workspace_is_refused() {
+        let dir = std::env::temp_dir().join(format!("mecha-shellin-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shell = shell_with(Backend::None, false);
+        let ctx = ToolCtx {
+            workspace: dir.clone(),
+            shell_registry: Some(dir.join("shells")),
+            ..ToolCtx::default()
+        };
+        let out = shell
+            .call(serde_json::json!({"command": "touch ran"}), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("inside the workspace"),
+            "{}",
+            out.content
+        );
+        assert!(!dir.join("ran").exists(), "nothing was executed");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
