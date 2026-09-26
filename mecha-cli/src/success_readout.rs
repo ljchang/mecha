@@ -189,6 +189,7 @@ pub fn examples_json(lent: &SuccessExamples) -> serde_json::Value {
     serde_json::json!({
         "served_by_default": false,
         "count": lent.examples.len(),
+        "withheld_count": lent.withheld.len(),
         "items": lent.examples.iter().map(|e| serde_json::json!({
             "goal": e.example.goal.to_string(),
             "session": e.example.source,
@@ -285,16 +286,24 @@ pub fn run(dir: &Path, show: Show) -> Result<()> {
             listed["exemplars"]["items"] = capped["exemplars"]["items"].clone();
         }
     }
-    let lent = lent.map(|mut lent| {
+    // The counts are the whole set's here too; `-n` caps only the listings
+    // (found on review of #342: the count was the capped length).
+    let lent = lent.map(|whole| {
+        let mut capped = whole.clone();
         if let Some(n) = limit {
-            lent.examples.truncate(n);
-            lent.withheld.truncate(n);
+            capped.examples.truncate(n);
+            capped.withheld.truncate(n);
         }
-        lent
+        let mut json = examples_json(&whole);
+        let listed = examples_json(&capped);
+        json["items"] = listed["items"].clone();
+        json["withheld"] = listed["withheld"].clone();
+        (capped, json)
     });
-    if let Some(lent) = &lent {
-        listed["planning_examples"] = examples_json(lent);
+    if let Some((_, json)) = &lent {
+        listed["planning_examples"] = json.clone();
     }
+    let lent = lent.map(|(capped, _)| capped);
     if json {
         println!("{}", serde_json::to_string_pretty(&listed)?);
         return Ok(());

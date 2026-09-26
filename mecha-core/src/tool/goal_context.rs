@@ -325,7 +325,7 @@ mod tests {
             withheld: Vec::new(),
         };
         let run = crate::situation::Situation::of_run(&["goal_context".into()], None);
-        ctx.success_examples = Some(crate::planning::ServedSuccesses::select(pool, &run));
+        ctx.success_examples = Some(crate::planning::ServedSuccesses::fixed(pool, &run));
         let v = ask(&ctx, "task:t-budget").await;
         let served = v["examples"].as_array().unwrap();
         assert_eq!(served.len(), 2);
