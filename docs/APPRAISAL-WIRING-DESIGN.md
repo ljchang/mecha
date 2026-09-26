@@ -1519,8 +1519,9 @@ same decided interventions.
   appraisal lessons reach `learn`.
 - **Left:** the measurement on real sessions (on this install at most about
   14% of real runs are clean, and fewer carry a steer or a denial, so the
-  decided set will be small — a nightly line accumulates it; wiring it into
-  the nightly is a deploy change, not made here); the appraisal's arm
+  decided set will be small — the nightly line accumulates it, in
+  `scripts/ruminate.sh` since 2026-09-26; its arms run to the recording's own
+  turn limit, so it is the unbounded half of the nightly's wall clock); the appraisal's arm
   carries the session's whole lesson set (up to three) where the
   reflector's carries one, which is each source as it would be learned
   from, not a per-lesson attribution.
