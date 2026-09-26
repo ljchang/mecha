@@ -618,6 +618,20 @@ stay up through the 2026-09-26/27 night's ruminate (03:30Z) and mail
 classify (05:31Z): install after those, or run `mecha model use
 qwen3.6-35b-a3b-uncensored` straight after installing.
 
+**Install the new llama.cpp build with the router** (built 2026-09-26 at
+`95887577` in `~/llama.cpp-next`, a separate worktree so the running servers'
+libraries in `~/llama.cpp/build/bin` were never touched). It carries the
+router's own fixes after `c841aee` (an LRU hang, eviction races), the Gated
+DeltaNet normalisation fix and a GB10 decode path — Qwen3.8's Q4_K_M
+decoded 18.2 → 20.7 tok/s on it (+14%, same prompt, back to back). Its `llama-server` has its own RUNPATH, so installing it is a
+rename-swap of `~/.local/bin/llama-server`; the old build stays as the
+rollback. The embedder on :8081 moves to it at its next restart.
+
+**Three Qwen3.8 entries go in the config beside the others** — all on
+:8080, `context_window = 262144`, `vision = true`, `temperature = 1.0` (R4:
+it must equal the preset's): `qwen3.8-27b`, `qwen3.8-27b-uncensored`
+(HauhauCS) and `qwen3.8-27b-abliterated` (huihui).
+
 The config gains `follow_loaded`, and `ProviderConfig` denies unknown
 fields, so **the binary goes in before the config edit** — an older binary
 refuses a config naming it, the way `[image]` did. Then: every chat model
