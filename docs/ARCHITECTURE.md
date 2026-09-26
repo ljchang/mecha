@@ -710,17 +710,24 @@ ported:
   - Its 0.15 generation gate stops a class being produced, which for a rule
     would be leaving the prompt, and R41 rules that nothing leaves the prompt
     on the bound.
-- **What tenure changes.** A tenured rule is released from probation in the
-  retirement scan (`release_probation_when_owner_tenures`, beside
-  `release_probation_when_measured_clean`, never instead). It then answers
-  to the ordinary threshold of 3 rather than 2. `mecha rules` shows it as
+- **What tenure changes.** In each retirement scan a tenured rule's
+  probation is released (`release_probation_when_owner_tenures`, beside
+  `release_probation_when_measured_clean`, never instead), so it answers to
+  the ordinary threshold of 3 rather than 2. Like the ledger's release this
+  is in memory, per pass: the file keeps the mark, and the owner's record is
+  re-read next pass, so the roster says "the ordinary leash", never
+  "released" (found on review of #338). `mecha rules` shows it as
   tenured. A low bound demotes nothing, and retirement stays on attributed
   regressions alone.
 - **Unknown is never clean.** A session that carried the rule and could not
   be read in full makes its tenure unknown, whatever the rest would say.
   "Not read in full" means the transcript is unreadable, an appraisal store
-  is missing (the appraisal is partial), or a session staged drafts and
-  recorded no outcome. A session store that cannot be listed makes every
+  is missing (the appraisal is partial), a session staged drafts and
+  recorded no outcome, or a summarising compaction cut turns out of it. The
+  last is the sharp one, found on review of #338: every turn-cited verdict
+  is a reject and the accepts come from stores keyed by session, so a
+  compacted session read as it stands loses only rejects and raises the
+  bound. A session store that cannot be listed makes every
   rule unknown.
 - **Cost.** The walk reads run records to find the sessions that carried a
   wanted rule, and builds appraisals only for those. It is unbounded on
