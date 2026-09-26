@@ -251,21 +251,21 @@ pub async fn observe(cfg: &Config, follows: bool) -> Vec<String> {
         // listening). A router that *said* it is one and then gave no list
         // is a finding: unseen, the default would stand and swap the pick
         // out with nothing in the journal (found on review).
-        let listed = match is_router(&b).await {
-            Some(true) => {
-                match list_on(&client(Duration::from_secs(2)).unwrap_or_default(), &b).await {
-                    Some(list) => Some(list),
-                    None => {
-                        unreadable.push(format!(
-                            "the router at {b} did not answer /models with a model list, so which \
-                         model is loaded is unknown — runs use the default provider, which may \
-                         swap out the model that is loaded"
-                        ));
-                        None
-                    }
-                }
+        let listed = if is_router(&b).await == Some(true) {
+            let list = match client(Duration::from_secs(2)) {
+                Some(http) => list_on(&http, &b).await,
+                None => None,
+            };
+            if list.is_none() {
+                unreadable.push(format!(
+                    "the router at {b} did not answer /models with a model list, so which \
+                     model is loaded is unknown — runs use the default provider, which may \
+                     swap out the model that is loaded"
+                ));
             }
-            _ => None,
+            list
+        } else {
+            None
         };
         if let Some(list) = listed {
             if !readable(&list) {
@@ -283,6 +283,17 @@ pub async fn observe(cfg: &Config, follows: bool) -> Vec<String> {
                      follows would be a guess — runs use the default provider, which may swap \
                      one of them out"
                 ));
+            }
+            // R4 wherever a model became resident — `load-on-startup`, a
+            // `--model` run's autoload, a default run after a restart — not
+            // only through `mecha model use`. A warning here: the model is
+            // already loaded, and refusing it would refuse nothing (found on
+            // review).
+            if let Some(m) = resident
+                .as_deref()
+                .and_then(|r| list.iter().find(|m| m.id == r))
+            {
+                unreadable.extend(sampling_mismatches(cfg, &b, m));
             }
             let slots = match &resident {
                 Some(m) => crate::provider::preflight::fetch(&b, Some(m))
@@ -498,10 +509,13 @@ pub async fn unload(base_url: &str, model: &str, wait: Duration) -> Result<()> {
         // Gone is a list that answered and does not hold it resident —
         // absent counts, should a router ever drop unloaded entries (this one
         // keeps them listed). No answer is not gone.
+        // Readable first: an empty or unknown-status list is not "gone"
+        // either (the module's rule, found on review).
         let gone = list_on(&http, &b).await.is_some_and(|l| {
-            l.iter()
-                .find(|m| m.id == model)
-                .is_none_or(|m| !m.is_resident())
+            readable(&l)
+                && l.iter()
+                    .find(|m| m.id == model)
+                    .is_none_or(|m| !m.is_resident())
         });
         if gone {
             return Ok(());
@@ -942,6 +956,30 @@ mod tests {
         server.await.unwrap();
         assert!(
             w.iter().any(|w| w.contains("more than one model resident")),
+            "{w:?}"
+        );
+        observe(&Config::default(), false).await;
+    }
+
+    /// R4 is read wherever a model became resident, not only by `use`.
+    #[tokio::test]
+    async fn a_resident_model_whose_preset_disagrees_with_config_is_warned_about() {
+        let _turn = SNAPSHOT_TESTS.lock().await;
+        let listing = r#"{"data":[{"id":"gemma-4-26b-a4b","status":{"value":"loaded","args":["llama-server","--temperature","1.0"]}}]}"#;
+        let (url, server) = stub(vec![
+            GEMMA_RESIDENT[0],
+            listing,
+            GEMMA_RESIDENT[2],
+            GEMMA_RESIDENT[3],
+        ])
+        .await;
+        let mut c = config_at(&url);
+        c.providers.get_mut("gemma26").unwrap().temperature = Some(0.6);
+        let w = observe(&c, true).await;
+        server.await.unwrap();
+        assert!(
+            w.iter()
+                .any(|w| w.contains("[providers.gemma26] temperature = 0.6")),
             "{w:?}"
         );
         observe(&Config::default(), false).await;

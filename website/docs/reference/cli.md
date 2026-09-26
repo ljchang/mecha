@@ -1777,7 +1777,10 @@ mecha model [list|use] [ARGS] [--json]
 Behind a router, `--model` on any command selects as well as names: `mecha run
 --model qwen3.8-27b "…"` loads that model, evicting the one that was loaded,
 and every later default run then follows it — a one-off flag changes the pick.
-`mecha model use` is the deliberate way to do the same.
+`mecha model use` is the deliberate way to do the same. Prefer naming the
+sibling entry (`-p gemma26`) to a bare `--model <id>`: the entry brings that
+model's `context_window`, temperature and prices, where `--model` keeps the
+default entry's and the startup check will warn about the mismatch.
 
 `use` refuses a model whose preset temperature disagrees with its provider
 entry, because mecha sends `temperature` on every request and would silently
