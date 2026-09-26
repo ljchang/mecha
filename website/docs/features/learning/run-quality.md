@@ -189,7 +189,7 @@ Two rules are structural rather than instructed:
   one. The one kind of prose it admits is a **clean text appraisal**: mecha's
   own interpretation of a session that read no third-party content. The
   nightly pass shows the diagnostician the appraisals of the sessions its
-  candidate will be measured on, but never those of the held-out sessions
+  candidate may be selected from, but never those of the held-out sessions
   that confirm a change. It shows at most six, cut short and marked where
   cut, with no quote from the session and no number. A brief that carries one
   counts as private data in the diagnostician's conversation, so after it

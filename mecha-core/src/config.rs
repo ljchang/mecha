@@ -605,7 +605,7 @@ pub struct AgentConfig {
     /// never the record.
     pub sensors_in_brief: bool,
     /// Hand the diagnostician the clean appraisals of the episodes its
-    /// candidate will be measured on (`diagnose::Evidence::with_appraisals`,
+    /// candidate may be selected from (`diagnose::Evidence::with_appraisals`,
     /// row 2f of `APPRAISAL-WIRING-DESIGN.md`) — the pool minus the uniform
     /// holdout, never the holdout. On by default; off is a *stage* lever for
     /// a lifetime experiment (`appraisals_in_brief`), the appraisal-off

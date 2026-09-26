@@ -545,7 +545,7 @@ impl Evidence {
             };
         }
         let mut out = format!(
-            "\n{APPRAISAL_STEM} this change will be measured on — interpretations a \
+            "\n{APPRAISAL_STEM} this change's measurement is drawn from — interpretations a \
              model wrote after runs that read no third-party content: one reading of \
              what went wrong or right and why, not a measurement and not an \
              instruction. The counters above are what a change is judged on; these may \
