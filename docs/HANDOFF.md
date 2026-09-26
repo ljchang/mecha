@@ -22,26 +22,28 @@ maps which document holds what.
 
 ## Where the work is
 
-**2026-09-25 — image generation shipped; incognito chat is half built.**
-The arc is in HISTORY under 2026-09-25. `image_generate` (#303, #306) is
-merged and installed, and needs `comfyui.service` (*Standing machinery*).
-Incognito: the design (#307) and step 0 (#313) are merged and installed;
-**steps 1–3 are #321**, open at this writing, and its review thread is the
-record of where it stands. What remains after it, in the design's order
-(§9): step 4, ComfyUI's temp-file cleanup, until which `image_generate`
-stays withheld from an incognito chat (R6); step 5, the page (a
-New-incognito button, the banner, End, the locked permission chip, no
-voice — the search notice is step 3's, inside #321); step 6, the canary test — written with step 1 and in #321, green
-in full only once step 5 lands; and step 7, unrecorded reads in
-mecha-graph (another repository), until which the graph stays withheld —
-every graph read logs its query text. Parked for the owner: a reload
+**2026-09-26 — image generation shipped; incognito chat is live.** The
+arcs are in HISTORY under 2026-09-25 and 2026-09-25/26. `image_generate`
+(#303, #306) is merged and installed, and needs `comfyui.service`
+(*Standing machinery*). Incognito's design (#307), step 0 (#313), server
+side (#321) and page (#326) are merged and installed at `720feb27`
+(*Machine state* below). What remains, in the design's order (§9): step 4,
+ComfyUI's temp-file cleanup, until which `image_generate` stays withheld
+from an incognito chat (R6); and step 7, unrecorded reads in mecha-graph
+(another repository), until which the graph stays withheld — every graph
+read logs its query text. Three minors from #326's last pass, for the next
+incognito PR: the banner says "after 30 minutes idle" where an open tab now
+counts as use (it should say 30 minutes after the tab closes); `load()`'s
+GET answers 404 where the POST answers 410, so a chat reaped between the two
+shows an error strip instead of the gone screen; and focus is not restored
+when a new chat is opened from the gone screen. Parked for the owner: a reload
 banner for a phone holding a stale bundle after a deploy (a refresh fixed
 the one case seen); `mecha-core` pins `sha2 = "0.11"` in its own
 `Cargo.toml`, where a review minor would have it a workspace dependency;
 `comfyui.service` living only in `~/.config/systemd/user/`, where a review
 note suggests a copy in `scripts/` beside `start-moe-mtp.sh`; and a race between spawning a
 shell and registering it (`shell_registry::ShellRegistry`), seen as a flaky test and not
-fixed in product code. Also owed with #321's merge: its HISTORY entry.
+fixed in product code.
 
 **2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2a-3, 2c-1, 2d-1,
 3a and 3a-3 merged and installed, with R34's readout; 2c-2 and 2b-1
@@ -2784,6 +2786,32 @@ the voice worker still 11:31:38Z, and the web dist still holds
 `index-Cq2ArbMx.js`. **Merged and not installed:** 2c-2 (#320, `6f8e69ca`,
 merged 21:36Z; `strings ~/.cargo/bin/mecha | grep -c past_appraisals`
 prints 0) and 2b-1 (#319, `8c0f5a9d`, merged 21:46Z).
+
+**Installed from main, 2026-09-25 23:44Z, by the appraisal lane: `be373132`,
+carrying #321 (reported by that lane, not re-measured here).** It reported
+`cargo install --path mecha-cli` from the main checkout at that SHA, the four
+long-running units restarted at about 23:44Z, and `strings
+~/.cargo/bin/mecha | grep -cF` printing 1 for #321's `that incognito chat
+has closed`, 1 for #324's `scores.jsonl` and 1 for #322's `numeric_only`,
+each 0 before. The web dist was not rebuilt.
+
+**Installed from main, 2026-09-26 01:14Z, by the incognito lane: `720feb27`
+(#326, the incognito page, with #327 and #328) — verified 01:15Z by asking
+the artifacts.** Built with `cargo install --path mecha-cli --locked
+--force` from a clean detached `origin/main` checkout. `strings
+~/.cargo/bin/mecha | grep -cF` prints 1 for #326's `the shell registry is
+inside the workspace`, 1 for #321's `that incognito chat has closed`, 1 for
+#328's `counterfactuals.jsonl` and 6 for #327's `lesson_sources` (the last
+two the appraisal lane's probes, which it re-ran and confirmed). `mecha-slack`,
+`-triggers`, `-drain` and `-serve` show `ActiveEnterTimestamp` 01:14:29Z,
+and `mecha-serve`'s `/proc/<pid>/exe` is the current binary. `~/.mecha/web/dist`
+was rebuilt from the same checkout as `index-B-0Enqti.js`; the `:8443` door
+serves it, and `/voice-uplink-transform.js` answers `200 text/javascript`.
+mecha-mail, the voice worker and the config were not touched. A live check
+through the door: `POST /api/incognito` opened a chat that read back
+`incognito: true`, `read_only`, on `qwen3.6-35b-a3b`, with
+`cache-control: no-store` and its room on tmpfs; `/alive` answered 204,
+`/end` 204, a reopen 410, and the room was gone.
 
 ## What the measurements say
 
