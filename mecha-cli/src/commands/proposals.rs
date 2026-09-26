@@ -411,6 +411,7 @@ mod tests {
             dropped_reason: None,
             situation: None,
             situation_recomputed_at: None,
+            attribution: None,
         }
     }
 
