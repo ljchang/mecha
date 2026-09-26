@@ -889,7 +889,8 @@ The same pass also writes the session's **text appraisal**, in a follow-up
 turn on the episode call's own conversation. It runs on the local model only
 and in shadow; an appraisal that fails never touches the episode's push or
 its ledger. The invariants are in the goal-system section's text-appraisal
-paragraph.
+paragraph. After it, each pass writes decided comparisons' losing arms into
+their sessions' appraisals ("The losing arm teaches", with no model call).
 
 The distiller also reports **corrections** — moments the user said the graph
 holds something wrong — as `meta.corrections`, `[{wrong, right?, about?,
@@ -4125,7 +4126,8 @@ through the store above (a `point-*` `Kind` per point kind).
   then the rest of the pass deferred and counted — never the owner's
   reserved seat. **Local model only** (R29): `pointwise::on_this_machine`
   refuses a provider whose endpoint is not loopback before anything is read.
-- Not here: writing a losing arm into the session's appraisal (2d-3, O3).
+- A decided point's losing arm is written into the session's appraisal by
+  `mecha distill`, not here — see "The losing arm teaches" below.
 
 ### A candidate is accepted point-wise, guarded by the numbers
 
@@ -4195,6 +4197,59 @@ auto-accepts) now asks two questions of a config candidate, and
   is undecided — the numbers decide as they always did. The "do nothing"
   policy that wins every rejected-draft point is what the guard exists
   for: it wins point-wise by attempting less, and `WORK_FLOOR` refuses it.
+
+### The losing arm teaches
+
+`APPRAISAL-WIRING-DESIGN.md` O3, row 2d-3. A decided point-wise
+comparison's losing arm is written into its session's text appraisal as
+**counterfactual reflection** (`appraisal_store::Counterfactual`), by
+`AppraisalStore::teach`, which `mecha distill` runs on every writing pass
+after the appraisals and the scores — no model call, and quiet nights
+included, because a comparison is drawn from a session *after* it was
+distilled. Five decisions, each a bug if undone:
+
+- **A side record, never a rewrite.** Reflections go to
+  `~/.mecha/appraisals/counterfactuals.jsonl`, joined to the appraisal by
+  `appraisal_id` — `scores.jsonl`'s shape. The appraisal stays one record
+  per session, untouched. An amendment row in `appraisals.jsonl` was the
+  alternative, and it would load in every earlier build as a *second*
+  appraisal of the session (that reader defaults every field but `id` and
+  `at`), whose `on_record` would then refuse the real one as
+  `AlreadyOnRecord`. One reflection per comparison id, checked under the
+  store's lock; a comparison whose session has no appraisal yet waits
+  (`awaiting_appraisal`) and is taught by the pass after the appraisal
+  lands.
+- **Only a structural decision teaches** (R27). The comparison must be
+  point-wise (a `point-*` kind), `Separated`, by a structural validator
+  (`StructuralSteer`, `StructuralDenial`, `ReleasedDraft`, `RejectedDraft`,
+  `ArtifactGold` — never `Judge`, `Unposed` or an unread one), and its
+  stored verdict must equal `Verdict::of` over its arms, derived again
+  rather than believed. Inconclusive, unposed, an unread verdict and a tie
+  write nothing; each is counted by why (`Taught`), and a tie is kept apart
+  from undecided — it decided, and no arm lost.
+- **The text is the harness's.** `reflection` is rendered by one function
+  from the comparison's typed record — its kind, validator, arms (role,
+  rules hash, outcome) and pointers — which holds closed sets and ids
+  only, so neither a model's words nor the owner's can ride in it. Steer
+  probes, validation and gate pairs are 1g's, not O1's, and teach nothing.
+- **It rests on its comparison, by a pointer that dereferences.**
+  `Pointer::Comparison` (`comparison:<id>`) is the new pointer kind — an
+  earlier build reads it as `Pointer::Unread`, verbatim. The record quotes
+  the comparison's verdict line (`comparison_referent`: every arm's role,
+  rules hash and outcome) and `Counterfactual::dereference` admits it into
+  the comparison store through `grounding::admit` — before it is written
+  (a refusal is counted, nothing written) and again by the owner's readout,
+  which marks one whose comparison is gone. An appraiser's own claim citing
+  a comparison is dropped as `comparison_pointer`: a comparison is not
+  something the run received.
+- **It inherits the appraisal's provenance, and the clean door is
+  unchanged.** `origin` and `taint` are copied from the appraisal, so a
+  tainted session's reflection is as tainted as its appraisal
+  (`written_not_clean`); `is_clean` is the appraisal's predicate. The clean
+  door (`AppraisalStore::clean`, `Clean`) does not serve reflections at all:
+  today only the owner reads them (`sessions appraise <session>`, and
+  `counterfactuals` per record in `--json`, each with `dereferences`). A
+  later reader takes one only beside a `Clean` appraisal.
 
 ## The goal system
 

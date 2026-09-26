@@ -467,6 +467,11 @@ Only clean sessions are drawn, as for learning; each point holds one of the
 background model seats while its arms run, and the pass refuses a provider
 that is not on this machine.
 
+When a point is decided, the policy that lost is not thrown away: the next
+`mecha distill` adds it to the session's appraisal as a [counterfactual
+reflection](/docs/features/appraisal/reference#what-a-losing-arm-taught),
+pointing at the comparison.
+
 ## `mecha rules` — tallies, retirement, restore
 
 ```bash

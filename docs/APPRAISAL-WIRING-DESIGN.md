@@ -357,7 +357,7 @@ with a `mecha exp` arm against EXPERIMENT-DESIGN §15's appraisal-off preset
 | **2c-2** | **Past clean appraisals retrieved.** `goal_context` serves up to three clean appraisals of the same situation and goal, on demand, never pushed — through `Clean` only. Measured against a control at matched budget, since retrieved memory can cost more than it returns. *Built as 2c-2 (2026-09-25): `Lever::PastAppraisals`, shipping off; the measured run is owed.* | I2 | 2a-2, 2c-1 | a clean appraisal of a matching session is served and a tainted one never is; the lever's arm runs against the control |
 | **2d-1** | **Point-wise comparison at informative decision points.** At a steer, a denial, a failed check, an edited or rejected draft, a surprise: `probe::drive_arm` runs K policies a short horizon from the point, and the owner's recorded verdict decides (new: a branch's draft against the released text). Each writes a 1g `Comparison` of a new kind. Points drawn uniformly until 2e-6 ranks them. **Built as 2d-1** — `mecha sessions compare`; see O1 for what was built and what it left. | O1, R26, R27 | 1g | fixture points of each kind leave comparisons a second read returns; a point whose verdict no structural validator can pose is inconclusive, never judged |
 | **2d-2** | **The acceptance combination** (R26): a harness candidate is accepted when the point-wise comparison decides for it and the whole-session numeric comparison shows no regression, `WORK_FLOOR` intact. **Built as 2d-2**, with R36's completion: point-wise against rejects, and point-wise undecided leaves the numeric verdict unchanged. | O1, R26 | 2d-1 | a candidate that wins point-wise and regresses the floor is rejected; one that wins point-wise and holds is accepted |
-| **2d-3** | **The losing arm teaches.** A comparison's confirmed losing outcome is written into that session's appraisal as counterfactual reflection — a new pointer kind naming the comparison, which 2a-1's `Pointer::Unread` already round-trips. | O3 | 2a-2, 2d-1 | a decided comparison's loser appears on the session's appraisal, pointing at its comparison; an undecided one writes nothing |
+| **2d-3** | **The losing arm teaches.** A comparison's confirmed losing outcome is written into that session's appraisal as counterfactual reflection — a new pointer kind naming the comparison, which 2a-1's `Pointer::Unread` already round-trips. | O3 | 2a-2, 2d-1 | a decided comparison's loser appears on the session's appraisal, pointing at its comparison; an undecided one writes nothing — *built; see O3* |
 | **2e-1** | **The reflector's lessons against the appraisal's**, on the same interventions, by the validation probes already built — shadow, measurement only. R25's gate for 2a-4. | L2, R25 | 2a-2 | a report per intervention region: validation rate of each source's lessons, with the counts beneath it |
 | **2e-2** | **`learn` fed clean appraisals** — lessons and interpretations as material, successes included, through `Clean` only; a stage lever with `stages_off` against reflector-only learning. | L2, R19 | 2e-1 | a tainted appraisal's lesson never reaches a batch (a test on the type); the lever's arm runs |
 | **2e-3** | **Attribute a correction by what the run was given** — mecha-graph's D3 contract ported: data error, behaviour error or gap from `grounding::calls`; a behaviour rule mined only from a behaviour error; a gap a retrieval target. | L7, here §5 | 1d | fixture corrections of each class are routed to their class; no behaviour rule is mined from a data error or a gap |
@@ -1404,8 +1404,8 @@ inconclusive, nothing driven, never judged. K ≤ 3 policies (the recorded
 prompt, today's deployed rules for the situation, none), four turns from
 the point, one background seat per point, eight driven points a pass by
 default, local model only (R29). Left for later: the candidate arm and the
-acceptance rule (2d-2), the losing arm into the appraisal (2d-3, O3), ranked
-points (2e-6), surprise sources beyond forecast misses (2b-1's resolved
+acceptance rule (2d-2, since built), the losing arm into the appraisal (2d-3,
+O3, since built), ranked points (2e-6), surprise sources beyond forecast misses (2b-1's resolved
 predictions, 2b-2's scored appraisal predictions), and the nightly wiring —
 a line in `scripts/ruminate.sh`, a deploy change offered rather than made.
 
@@ -1427,6 +1427,40 @@ asking before staging would have produced the draft the owner released" — is
 written into that session's appraisal (I1) as counterfactual reflection. This
 is §5.3's self-authored steer with the replay's verdict attached, and the
 "keep the reflection" half of rollback-and-reflect (arXiv 2609.18304).
+
+*Built as 2d-3* (ARCHITECTURE "The losing arm teaches" holds the
+invariants). `AppraisalStore::teach`, run by `mecha distill` on every
+writing pass with no model call, writes each decided point-wise comparison's
+losing arm as an `appraisal_store::Counterfactual`:
+
+- **Where it goes.** A side ledger, `counterfactuals.jsonl` beside
+  `appraisals.jsonl`, joined by the appraisal's id — the shape 2b-2's
+  `scores.jsonl` took. The appraisal record is never rewritten, and one
+  appraisal per session holds. An amendment row in `appraisals.jsonl` was
+  the other option; it would load in every earlier build as a second
+  appraisal of the session and make that build refuse the real one as
+  already on record.
+- **What decides.** Only a `Separated` point-wise comparison, by a
+  structural validator, whose stored verdict `Verdict::of` re-derives from
+  its arms (R27). An inconclusive, unposed or tied comparison writes
+  nothing, and each is counted by why. A comparison of a session not yet
+  appraised waits for the pass after its appraisal.
+- **The words.** Harness-authored from the comparison's typed record —
+  kind, validator, each arm's role, rules hash and outcome, the point's
+  position and id — never model prose and never the owner's text.
+- **The pointer.** `comparison:<id>` (`Pointer::Comparison`; older builds
+  keep it as `Pointer::Unread`). The record quotes the comparison's verdict
+  line and is admitted into the comparison store by `grounding::admit`
+  before it is written, and checked again when the owner reads it. An
+  appraiser's claim citing a comparison is dropped as `comparison_pointer`.
+- **Provenance.** The appraisal's origin and taint, copied, so a tainted
+  session's reflection is tainted. The clean door does not serve
+  reflections; only the owner's readout does (`sessions appraise
+  <session>`), in shadow like 2a-2.
+
+Left for later: a reader — `learn` (2e-2) and the diagnostician (2f) would
+take a reflection only beside a `Clean` appraisal — and the steer probes'
+own verdicts (1g's `steer-probe` kind), which this row does not teach.
 
 #### L2. Learn from what went right
 
