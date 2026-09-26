@@ -206,8 +206,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // records both — `load` and `run_configs` each parsed the whole
         // file, twice per session on the nightly's hot path (found on
         // review).
-        let t = match Session::read(path) {
-            Ok(t) => t,
+        // The text is kept: D3 places a correction against everything the
+        // run had read, which a compaction since may have dropped from the
+        // loaded list (`Session::messages_ever_before`), and the second view
+        // must be of the same bytes.
+        let read = std::fs::read_to_string(path)
+            .map_err(anyhow::Error::from)
+            .and_then(|text| Session::parse(path, &text).map(|t| (text, t)));
+        let (text, t) = match read {
+            Ok(read) => read,
             Err(e) => {
                 // A transcript that does not load is not this command's bug to
                 // fix; skip it *without* marking it mined, so a later mecha
@@ -286,8 +293,22 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 continue;
             }
             match reflector.reflect(&input).await {
-                Ok(Some(mut r)) => {
+                Ok(Some((mut r, answer))) => {
                     r.session_id = meta.id.clone();
+                    // D3 (row 2e-3): data error, behaviour error or gap, by
+                    // what the run had been given when the owner stepped in
+                    // — decided here, from the transcript, never by the
+                    // reflector, which only copied the spans. Deterministic
+                    // code over the recorded results, whatever the taint:
+                    // nothing it reads reaches a model or a rule.
+                    if mecha_core::attribution::in_scope(&r.domain, &r.trigger) {
+                        let ever = ever_before(&text, &convo.messages, intervention.at);
+                        r.attribution = Some(mecha_core::attribution::decide(
+                            &answer,
+                            &intervention.text,
+                            &given_in(ever.as_deref()),
+                        ));
+                    }
                     r.goals = if intervention.trigger == Trigger::Mismatch {
                         serde_json::from_str::<mecha_core::planning::StepFeedback>(
                             &intervention.context,
@@ -426,7 +447,24 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let reflector = reflector.as_ref().expect("built unless dry-run");
         match reflector.reflect(&input).await {
             Ok(reflected) => {
-                if let Some(mut r) = reflected {
+                if let Some((mut r, answer)) = reflected {
+                    // A rejection is a correction D3 attributes; what the
+                    // run was given is the staging session's results before
+                    // the staging call, and what it said includes the draft.
+                    // A session that cannot be read, or a staging call it
+                    // does not carry, places no fact — never a gap.
+                    if let (Some(reason), true) = (
+                        item.rejection_reason(),
+                        mecha_core::attribution::in_scope(&r.domain, &r.trigger),
+                    ) {
+                        let messages =
+                            mecha_core::outbox_source::messages_for_item(item, &sessions_dir);
+                        r.attribution = Some(mecha_core::attribution::decide(
+                            &answer,
+                            reason,
+                            &given_at_staging(item, &messages),
+                        ));
+                    }
                     // The drafting session, when the front-end knew it — the
                     // same lineage a behavior reflection carries.
                     r.session_id = item.session_id.clone().unwrap_or_default();
@@ -821,6 +859,48 @@ fn rejection_intervention(item: &mecha_core::outbox::OutboxItem) -> Option<Inter
     })
 }
 
+/// What the run had been given before the correction at `at` of the loaded
+/// list: everything recorded before that message, compacted since or not —
+/// `thin_old_results` truncates a result in place, so the loaded list can
+/// hold the right value in full and the wrong one cut off, which reads as
+/// a behaviour error over what was a data error (found on review of #332).
+/// A correction that cannot be placed in the record is unreadable.
+fn ever_before(
+    text: &str,
+    messages: &[mecha_core::message::Message],
+    at: usize,
+) -> Option<Vec<mecha_core::message::Message>> {
+    messages
+        .get(at)
+        .and_then(|m| Session::messages_ever_before(text, m))
+}
+
+fn given_in(ever: Option<&[mecha_core::message::Message]>) -> mecha_core::attribution::Given<'_> {
+    match ever {
+        Some(ever) => mecha_core::attribution::Given::before(ever, ever.len()),
+        None => mecha_core::attribution::Given::unreadable(),
+    }
+}
+
+/// What a rejected draft's run had been given when it staged the draft:
+/// the staging session's calls before the staging message, and — among
+/// what the run said — the draft itself, which rides in the staging call.
+/// A session that could not be read (no messages) or that does not carry
+/// the staging call is unreadable: D3 places no fact against it.
+fn given_at_staging<'a>(
+    item: &mecha_core::outbox::OutboxItem,
+    messages: &'a [mecha_core::message::Message],
+) -> mecha_core::attribution::Given<'a> {
+    match mecha_core::outbox_source::staged_in(item, messages) {
+        Some(at) => {
+            let mut given = mecha_core::attribution::Given::before(messages, at);
+            given.said.push(item.args_before.to_string());
+            given
+        }
+        None => mecha_core::attribution::Given::unreadable(),
+    }
+}
+
 /// Frame one edited-then-sent outbox item as an intervention for the
 /// writing-domain reflector: the draft is the context, the diff is what the
 /// user did, the sent version is the aftermath.
@@ -1028,6 +1108,94 @@ mod tests {
         }))
         .unwrap();
         s
+    }
+
+    /// A rejected draft is a correction D3 attributes (row 2e-3), against
+    /// what the staging run had read before it staged: the calls before the
+    /// staging message, never the staging call or anything after it. The
+    /// wrong value in a result the run read is a data error pointing at that
+    /// read; the same draft from a run that read neither value is a gap; and
+    /// a staging session that cannot be read places no fact at all.
+    #[test]
+    fn a_rejected_draft_is_attributed_by_what_the_staging_run_had_read() {
+        use mecha_core::agent::Taint;
+        use mecha_core::attribution::{decide, Answer, Basis, Class, Fact};
+        use mecha_core::message::{Block, Message};
+        use mecha_core::outbox::{OutboxKind, OutboxStore, Provenance};
+        let root = scratch("reflect-reject-attribution");
+        let store = OutboxStore::open(&root).unwrap();
+        let draft = serde_json::json!({
+            "to": "sam@example.edu",
+            "body": "Dana is at Northwind Labs, so write to her there."
+        });
+        let staged = store
+            .stage(
+                "mail_send",
+                OutboxKind::Message,
+                draft.clone(),
+                Taint::default(),
+                Provenance {
+                    session_id: Some("20260926T090000-ada".into()),
+                    call_id: Some("s1".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let item = store
+            .resolve(
+                &staged.id,
+                "rejected",
+                Some("She moved to Lakeside Institute in March.".into()),
+            )
+            .unwrap();
+        let reason = item.rejection_reason().unwrap().to_string();
+        let transcript = |read: &str| {
+            vec![
+                Message::user("Tell Sam where Dana works now."),
+                Message::assistant(vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "kg_entity".into(),
+                    input: serde_json::json!({"name": "Dana Whitfield"}),
+                }]),
+                Message::tool_results(vec![Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: read.into(),
+                    is_error: false,
+                }]),
+                Message::assistant(vec![Block::ToolUse {
+                    id: "s1".into(),
+                    name: "mail_send".into(),
+                    input: draft.clone(),
+                }]),
+                // After the staging call: never what the draft was written from.
+                Message::tool_results(vec![Block::ToolResult {
+                    tool_use_id: "s1".into(),
+                    content: "Drafted, not sent. Lakeside Institute".into(),
+                    is_error: false,
+                }]),
+            ]
+        };
+        let answer = Answer::Fact(Fact {
+            wrong: "Northwind Labs".into(),
+            right: Some("Lakeside Institute".into()),
+        });
+
+        let read_wrong = transcript("Dana Whitfield — employer: Northwind Labs.");
+        let a = decide(&answer, &reason, &given_at_staging(&item, &read_wrong));
+        assert_eq!((a.class, a.basis), (Class::Data, Basis::WrongGiven));
+        assert_eq!(a.source.unwrap().call, "t1");
+
+        let read_nothing = transcript("Dana Whitfield — no employer on record.");
+        let a = decide(&answer, &reason, &given_at_staging(&item, &read_nothing));
+        assert_eq!(
+            (a.class, a.basis),
+            (Class::Gap, Basis::NeitherGiven),
+            "the wrong value is grounded in the draft; the staging result is not given"
+        );
+
+        let a = decide(&answer, &reason, &given_at_staging(&item, &[]));
+        assert_eq!((a.class, a.basis), (Class::Unknown, Basis::NoRecord));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// R16a: a draft the owner rejected with a reason reaches the reflector
@@ -1281,6 +1449,7 @@ mod tests {
                     ws.map(Path::new),
                 )),
                 situation_recomputed_at: None,
+                attribution: None,
             };
             store.append_reflexion(&r).unwrap();
         };
@@ -1327,6 +1496,7 @@ mod tests {
                     serde_json::from_str(r#"{"tools":["shell"],"surface":"copilot"}"#).unwrap(),
                 ),
                 situation_recomputed_at: None,
+                attribution: None,
             })
             .unwrap();
         assert_eq!(
@@ -1370,6 +1540,7 @@ mod tests {
                     None,
                 )),
                 situation_recomputed_at: None,
+                attribution: None,
             })
             .unwrap();
         let (listed, unreadable) = Session::list_counting(&sessions).unwrap();
@@ -1453,6 +1624,7 @@ mod tests {
                     serde_json::from_str(r#"{"tools":["shell"],"surface":"copilot"}"#).unwrap(),
                 ),
                 situation_recomputed_at: None,
+                attribution: None,
             })
             .unwrap();
         let (listed, unreadable) = Session::list_counting(&sessions).unwrap();
@@ -1509,6 +1681,7 @@ mod tests {
                     serde_json::from_str(r#"{"tools":["shell"],"surface":"copilot"}"#).unwrap(),
                 ),
                 situation_recomputed_at: None,
+                attribution: None,
             })
             .unwrap();
         let (listed, unreadable) = Session::list_counting(&sessions).unwrap();
@@ -1535,5 +1708,110 @@ mod tests {
             before,
             "free the second time"
         );
+    }
+
+    /// A correction is placed against everything the run had read, not the
+    /// list a compaction left (review of #332). `thin_old_results` cuts an
+    /// old result in place with no stale marker, so against the loaded list
+    /// the wrong value is gone from the result that carried it while the
+    /// right one rides in full in a newer result: a data error read as the
+    /// agent's. A correction the record holds twice cannot be placed, and one
+    /// an extension grew afterwards still is.
+    #[test]
+    fn a_correction_is_placed_against_what_the_run_read_before_compaction() {
+        use mecha_core::attribution::{decide, Answer, Basis, Class, Fact};
+        use mecha_core::message::{Block, Message};
+        let root = scratch("reflect-attribution-thinned");
+        std::fs::create_dir_all(&root).unwrap();
+        let s = session_in(&root, "/w", None);
+        let call = |id: &str, name: &str| {
+            Message::assistant(vec![Block::ToolUse {
+                id: id.into(),
+                name: name.into(),
+                input: serde_json::json!({"name": "Dana Whitfield"}),
+            }])
+        };
+        let result = |id: &str, content: &str| {
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: id.into(),
+                content: content.into(),
+                is_error: false,
+            }])
+        };
+        let long = format!(
+            "Dana Whitfield. {} employer: Northwind Labs.",
+            "x ".repeat(400)
+        );
+        let thinned = format!("{}{}", &long[..200], mecha_core::compact::TRUNCATION_MARKER);
+        let correction = "No, she moved to Lakeside Institute.";
+        let head = vec![
+            Message::user("Where does Dana work?"),
+            call("t1", "kg_entity"),
+            result("t1", &long),
+            call("t2", "kg_search"),
+            result("t2", "Lakeside Institute: new staff this spring."),
+            Message::assistant(vec![Block::text("Dana works at Northwind Labs.")]),
+        ];
+        for m in &head {
+            s.append(&Record::Message(m.clone())).unwrap();
+        }
+        let mut rewritten = head.clone();
+        rewritten[2] = result("t1", &thinned);
+        s.append(&Record::Rewrite {
+            messages: rewritten,
+        })
+        .unwrap();
+        s.append(&Record::Message(Message::user(correction)))
+            .unwrap();
+
+        let answer = Answer::Fact(Fact {
+            wrong: "Northwind Labs".into(),
+            right: Some("Lakeside Institute".into()),
+        });
+        let text = std::fs::read_to_string(&s.path).unwrap();
+        let t = Session::parse(&s.path, &text).unwrap();
+        let at = t.convo.messages.len() - 1;
+        assert!(!t.convo.messages[2].text().contains("Northwind"), "thinned");
+        let a = decide(
+            &answer,
+            correction,
+            &given_in(ever_before(&text, &t.convo.messages, at).as_deref()),
+        );
+        assert_eq!((a.class, a.basis), (Class::Data, Basis::WrongGiven));
+        assert_eq!(a.source.unwrap().call, "t1");
+
+        // Grown by an extension after it was recorded: still the one record.
+        s.append(&Record::Extend {
+            index: at,
+            blocks: vec![Block::text("(calendar reference)")],
+        })
+        .unwrap();
+        let text = std::fs::read_to_string(&s.path).unwrap();
+        let t = Session::parse(&s.path, &text).unwrap();
+        assert_eq!(t.convo.messages[at].content.len(), 2, "extended");
+        let a = decide(
+            &answer,
+            correction,
+            &given_in(ever_before(&text, &t.convo.messages, at).as_deref()),
+        );
+        assert_eq!((a.class, a.basis), (Class::Data, Basis::WrongGiven));
+
+        // Said twice, word for word: which one is this is not placeable.
+        s.append(&Record::Message(Message::assistant(vec![Block::text(
+            "Noted.",
+        )])))
+        .unwrap();
+        s.append(&Record::Message(Message::user(correction)))
+            .unwrap();
+        let text = std::fs::read_to_string(&s.path).unwrap();
+        let t = Session::parse(&s.path, &text).unwrap();
+        let at = t.convo.messages.len() - 1;
+        let a = decide(
+            &answer,
+            correction,
+            &given_in(ever_before(&text, &t.convo.messages, at).as_deref()),
+        );
+        assert_eq!((a.class, a.basis), (Class::Unknown, Basis::NoRecord));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

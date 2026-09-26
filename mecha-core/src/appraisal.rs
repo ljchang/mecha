@@ -1009,6 +1009,83 @@ pub fn charter_rank(appraisal: &Appraisal, charter: &crate::charter::Charter) ->
         .min()
 }
 
+impl GoalError {
+    /// Whether this error records an act the owner performed — the
+    /// owner-verdict channels (R16 and §17.2's "channels immune to reward
+    /// hacking by construction"): a steer, a denial or a stop
+    /// (`Intervention` at a turn), what the owner did with a draft (`Edit`),
+    /// and on the commitment channel an outcome the owner recorded, a
+    /// question answered or abandoned, a front-door request closed, a board
+    /// task closed or reopened, and a workflow closed, cancelled, reopened
+    /// or failing the owner's `verify` (R16b–e).
+    ///
+    /// **Never a counter, a sensor or a model's reading**: a ceiling is
+    /// `Agency::Owner` on the counter channel and still not a verdict, a
+    /// follow-up the reflector *judged* a correction (`Cite::Reflexion`) is
+    /// a model's call, and the retired appraiser's error is the model's own
+    /// account. Decided by the pointer, not by `agency`, because R16e's
+    /// failed verify is mecha's agency and still the owner's act.
+    pub fn is_owner_verdict(&self) -> bool {
+        matches!(
+            (self.channel, &self.cite),
+            (Channel::Intervention, Cite::Turn(_))
+                | (Channel::Edit, Cite::Draft(_))
+                | (
+                    Channel::Commitment,
+                    Cite::Outcome { .. }
+                        | Cite::Question(_)
+                        | Cite::Request(_)
+                        | Cite::TaskClosure { .. }
+                        | Cite::TaskReopen { .. }
+                        | Cite::Workflow { .. },
+                )
+        )
+    }
+}
+
+/// The charter weight of a signed error: `1 + 1/(1 + rank)` for the
+/// highest-ranked line it names — the top line doubles it, the second
+/// weighs 1.5, the fifth 1.2 — and 1 for an error naming no line the
+/// charter holds. Never below 1, so a rank only ever raises a priority and
+/// an unranked owner verdict still counts in full.
+pub fn charter_weight(e: &GoalError, charter: &crate::charter::Charter) -> f64 {
+    e.goal
+        .iter()
+        .chain(&e.related)
+        .filter_map(|g| match g {
+            GoalRef::Charter(id) => charter.rank_of(id),
+            _ => None,
+        })
+        .min()
+        .map_or(1.0, |rank| 1.0 + 1.0 / (1.0 + rank as f64))
+}
+
+/// L1's *gain* from the owner's verdicts (row 2e-6): Σ |sign| over the
+/// errors that record an owner act ([`GoalError::is_owner_verdict`]), each
+/// weighted by the charter line it names ([`charter_weight`]).
+///
+/// **Only a clean-origin record is weighted**, on [`charter_rank`]'s
+/// reasoning: the goal on an error may be the session's own `serves:`
+/// string, the charter's ids are in that session's prompt, and this gain
+/// decides membership of the slice the gate reads. A tainted record's owner
+/// verdicts still count, unweighted — the owner's act is the owner's
+/// whatever the run read — and `charter: None` weighs everything 1.
+pub fn owner_verdict_gain(appraisal: &Appraisal, charter: Option<&crate::charter::Charter>) -> f64 {
+    let clean = appraisal.origin == crate::learning::Origin::Clean;
+    appraisal
+        .errors
+        .iter()
+        .filter(|e| e.sign != 0.0 && e.is_owner_verdict())
+        .map(|e| {
+            let w = match charter {
+                Some(c) if clean => charter_weight(e, c),
+                _ => 1.0,
+            };
+            f64::from(e.sign.abs()) * w
+        })
+        .sum()
+}
+
 /// What [`Stores::load_if_chartered`] found, three ways: the charter could
 /// not be read (the tiebreak cannot run — unknown, never zero); it has no
 /// line to rank against (the tiebreak has nothing to decide — a true zero,
@@ -1058,6 +1135,7 @@ impl Chartered {
 /// **Only the replay draw reads through this today.** `sessions appraise`,
 /// `distill` and `tasks set` each carry their own copy of the assembly; they
 /// could migrate, and the reason they have not is scope, not a difference.
+#[derive(Default)]
 pub struct Stores {
     pub drafts: Vec<crate::outbox::OutboxItem>,
     pub outbox_unreadable: bool,
@@ -1101,6 +1179,24 @@ pub fn load_workflows() -> (Vec<crate::workflow::Workflow>, bool) {
 }
 
 impl Stores {
+    /// The stores that did not load, by name — each one makes every
+    /// appraisal built over them partial, as `SessionRecords::short` reads
+    /// the same seven flags.
+    pub fn unreadable(&self) -> Vec<&'static str> {
+        [
+            ("outbox", self.outbox_unreadable),
+            ("question store", self.questions_unreadable),
+            ("front door", self.frontdoor_unreadable),
+            ("learning store", self.learning_unreadable),
+            ("charter", self.charter_unreadable),
+            ("closure store", self.closures_unreadable),
+            ("workflow store", self.workflows_unreadable),
+        ]
+        .into_iter()
+        .filter_map(|(name, unreadable)| unreadable.then_some(name))
+        .collect()
+    }
+
     /// Read the default stores under the mecha home.
     pub fn load() -> Stores {
         let (charter, charter_unreadable) = load_charter();
@@ -4427,6 +4523,77 @@ text = "Tell me the truth early."
             "2026-09-04T00:00:00Z".into(),
         );
         assert_eq!(a.goals, vec![task]);
+    }
+
+    /// Row 2e-6's gain reads only the owner's acts: a steer, a draft's fate,
+    /// a reopen and a failed `verify` count, weighted by the charter line
+    /// they name on a clean record; a counter (even a ceiling, the owner's
+    /// own number), a reflector-judged correction and a zero sign do not;
+    /// and a tainted record's verdicts count unweighted.
+    #[test]
+    fn the_owner_verdict_gain_reads_owner_acts_only_weighted_by_the_charter() {
+        let charter = crate::charter::Charter::parse(
+            "[[line]]\nid = \"top\"\ntext = \"First.\"\n\n[[line]]\nid = \"second\"\ntext = \"Then.\"\n",
+        )
+        .unwrap();
+        let e = |channel: Channel, cite: Cite, sign: f32, goal: Option<&str>| GoalError {
+            related: Vec::new(),
+            goal: goal.map(|g| GoalRef::Charter(g.into())),
+            channel,
+            sign,
+            agency: Agency::Owner,
+            visible: false,
+            controllable: None,
+            cite,
+        };
+        let verdicts = [
+            e(Channel::Intervention, Cite::Turn(3), -1.0, Some("top")),
+            e(Channel::Edit, Cite::Draft("d".into()), 1.0, None),
+            e(
+                Channel::Commitment,
+                Cite::TaskReopen {
+                    task: "t".into(),
+                    reopen: "r".into(),
+                },
+                -1.0,
+                Some("second"),
+            ),
+            e(
+                Channel::Commitment,
+                Cite::Workflow {
+                    workflow: "w".into(),
+                    act: WorkflowAct::VerifyFailed,
+                },
+                -1.0,
+                None,
+            ),
+        ];
+        let not_verdicts = [
+            e(
+                Channel::Counter,
+                Cite::Counter("stop_cause".into()),
+                -0.5,
+                Some("top"),
+            ),
+            e(
+                Channel::Intervention,
+                Cite::Reflexion("rx".into()),
+                -1.0,
+                None,
+            ),
+            e(Channel::Edit, Cite::Draft("zero".into()), 0.0, Some("top")),
+        ];
+        assert!(verdicts.iter().all(GoalError::is_owner_verdict));
+        assert!(!not_verdicts[..2].iter().any(GoalError::is_owner_verdict));
+        let mut a = appraisal(verdicts.iter().chain(&not_verdicts).cloned().collect());
+        // top ×2, draft ×1, second ×1.5, verify ×1.
+        assert_eq!(
+            owner_verdict_gain(&a, Some(&charter)),
+            2.0 + 1.0 + 1.5 + 1.0
+        );
+        assert_eq!(owner_verdict_gain(&a, None), 4.0);
+        a.origin = crate::learning::Origin::Untrusted;
+        assert_eq!(owner_verdict_gain(&a, Some(&charter)), 4.0, "unweighted");
     }
 
     /// §11.1's consumer for rank: the smallest line index any signed error

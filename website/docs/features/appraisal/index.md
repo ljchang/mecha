@@ -137,12 +137,12 @@ small, reviewable choice:
 | TUI, web, Slack, voice | Show the label and valence after a run; voice shifts its delivery slightly on the next turn. |
 | Task closure | Prints a reading when you close a task and may stage one follow-up task for you to accept. |
 | Project closure | Prints a reading across a project's tasks when you close its last one. |
-| Nightly replay | Breaks ties between equally informative sessions by the rank of the charter line their errors touched. |
+| Nightly replay and learning | Orders which past sessions are replayed, learned from and re-validated first: your verdicts on a run, weighted by your charter, times how often that situation comes up, fading with age. |
 | Distillation | Puts the label, the signed errors and the goal pointers on each episode sent to the graph. Nothing on the graph side reads them yet. |
 
 **No reader changes what mecha does during a run.** The appraisal does not yet
-steer a plan, choose what to verify, decide when to ask you something, order
-the nightly learning, or pick which memories to load. The planning advice
+steer a plan, choose what to verify, decide when to ask you something, or pick
+which memories to load. It orders the nightly learning, and only its order. The planning advice
 described on [plan steps](/docs/features/appraisal/plan-steps) is the one
 exception, and it is off by default. [`docs/APPRAISAL-WIRING-DESIGN.md`](https://github.com/ljchang/mecha/blob/main/docs/APPRAISAL-WIRING-DESIGN.md)
 is the proposal for connecting it, with the measurement each step needs first.
@@ -401,21 +401,39 @@ self-assessment is primed to agree with.
 ### 6. Picking which past run to replay tonight
 
 The nightly [harness self-improvement loop](/docs/features/learning/run-quality)
-re-runs recorded sessions to test proposed configuration changes. The
-replay budget is limited. When two candidate sessions have the same room to
-improve, the one whose signed error touches a **higher-ranked charter line**
-is replayed first.
+re-runs recorded sessions to test proposed configuration changes, and the
+nightly learner and validator work through past corrections. Each has a
+limited budget, and all three spend it in one order, the **replay priority**:
 
-**Without appraisal:** ties break arbitrarily, so the replay budget is as
-likely to go to a run about something you ranked fifth as one about
-something you ranked first.
+- **What you said about the run.** Only your own acts count: a steer, a
+  denial, a draft you rejected or edited or sent unchanged, a task you
+  reopened. A counter the agent tripped on its own does not. An act on a
+  run that served a higher-ranked charter line counts for more.
+- **Whether the appraisal was surprised.** When mecha predicted what you would
+  do with a run's output and you did something else, that run rises.
+- **How often the situation comes up.** A situation you are in every week
+  outranks a one-off with the same verdict.
+- **How recent it is.** Priority halves every two weeks.
+
+Some sessions have been replayed on three nights with nothing learned from
+them. They go to the back. A factor mecha cannot read, such as a score file
+with a torn line, is reported. That session ranks below every session whose
+priority is fully known, and above every session with nothing to learn from.
+
+The sessions that *confirm* a change are drawn at random before any of this
+is read, so the ranking can choose what is examined but never what counts
+as proof.
+
+**Without appraisal:** the budget goes wherever a cost counter is highest.
+That can be a noisy run nobody cared about, while the draft you rejected
+yesterday waits.
 
 ## Compared with a harness that only counts costs
 
 | Question | Typical harness | mecha with appraisal |
 |---|---|---|
 | Can a run be recorded as going *well*? | No. Tokens, turns and errors only get smaller. | Yes. A draft sent unchanged is `+1.0`, and an answered question is `+0.5`. |
-| Which failures matter most? | All are equal. | Ranked by the charter line they touch, in your order. |
+| Which failures matter most? | All are equal. | Your verdicts first, weighted by the charter line they touch, in your order, and by how often the situation recurs. |
 | Was a correction the agent's fault? | Unknowable, or assumed. | Recorded as yours until a replay shows otherwise. |
 | Work cut off, but accepted anyway? | Lost. | One follow-up staged for you to accept. |
 | A run that went well *and* badly? | Averaged toward zero. | Both sums shown. |

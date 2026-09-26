@@ -122,6 +122,7 @@ const config: Config = {
           {from: '/docs/graph/overview', to: '/docs/features/memory/graph'},
           {from: '/docs/graph/self-improvement', to: '/docs/features/memory/graph/self-improvement'},
           {from: '/docs/graph/tui', to: '/docs/features/memory/graph/tui'},
+          {from: '/docs/principles', to: '/docs/intro'},
         ],
       },
     ],

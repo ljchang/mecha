@@ -202,14 +202,22 @@ pub fn messages_for_item(item: &OutboxItem, sessions_dir: &Path) -> Vec<Message>
 /// staging call this walk cannot find (a draft no tool call produced, or
 /// one staged before `call_id` whose arguments the loop has since pinned).
 pub fn serves_at_staging(item: &OutboxItem, messages: &[Message]) -> Option<crate::goal::GoalRef> {
-    let staged_in = messages.iter().position(|m| {
+    let staged_in = staged_in(item, messages)?;
+    crate::tool::todo::TodoTool::plan_from_transcript(&messages[..=staged_in]).and_then(|p| p.goal)
+}
+
+/// The index of the assistant message carrying the call that staged
+/// `item`, by [`is_staging_call`]'s id-then-content rule; `None` when no
+/// message carries it. Everything before this message is what the draft
+/// could have been written from.
+pub fn staged_in(item: &OutboxItem, messages: &[Message]) -> Option<usize> {
+    messages.iter().position(|m| {
         m.role == Role::Assistant
             && m.content.iter().any(|b| match b {
                 Block::ToolUse { id, name, input } => is_staging_call(item, id, name, input),
                 _ => false,
             })
-    })?;
-    crate::tool::todo::TodoTool::plan_from_transcript(&messages[..=staged_in]).and_then(|p| p.goal)
+    })
 }
 
 /// Is this `tool_use` the call that staged `item`?

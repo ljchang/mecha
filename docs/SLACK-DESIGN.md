@@ -391,7 +391,9 @@ which is the factory's half of the split, and which the outbox's existing
 
 **`unfurl_links: false` and `unfurl_media: false` on everything the model
 authors.** A model-emitted URL that unfurls is an outbound GET no tool call ever
-made and the interlock never sees.
+made and the interlock never sees. As built, posts and edits keep this and the
+streaming calls do not yet; `ARCHITECTURE.md`'s mecha-slack section tracks the
+gap.
 
 ### In (phase 1 — no core change)
 
