@@ -4749,7 +4749,11 @@ check, which almost never happens; a verified success is the other source.
 - **The step is the session's tool sequence** (R40: 4 of 79 long runs wrote a
   plan): registry names in call order, the harness's own calls left out, a
   consecutive repeat folded to `name ×n`, the first 24 spelled out and the
-  rest counted (`planning::tool_sequence`). Never an argument, never prose:
+  rest counted (`planning::tool_sequence`), over **every message the session
+  ever held** (`Session::messages_ever`, off the same bytes the transcript
+  is parsed from) — the loaded list is what survived a compaction, and a
+  long session's tail served as its whole trace overstated it (found on
+  review of #342). Never an argument, never prose:
   a key a model can author is a key an injection can set, and the same holds
   for what rides into a later run.
 - **Who lends.** A standing success toward a goal (`Success::goal`: a
@@ -4767,9 +4771,17 @@ check, which almost never happens; a verified success is the other source.
 - **Served only in the session's situation.** `SuccessExamples::for_run`
   keeps an example when **every** run of its session scopes onto the asking
   run (`Situation::matches`, the rules block's own match), keyed as past
-  appraisals are, on what the run record keeps (`RulesCarried`'s workspace,
-  surface and goal). With learned rules off the record names no workspace,
-  so no success example matches — as with past appraisals.
+  appraisals are, on what the run record keeps: `RulesCarried`'s workspace,
+  surface and goal, and **the registry the run starts with**. The whole
+  pool rides in `ToolCtx::success_examples` (`planning::ServedSuccesses`)
+  and the loop re-keys it beside `PastAppraisals::for_registry`, because
+  `tasks work` and `questions answer` withhold `kg_task_update` and insert
+  `ask_user` after `setup::build`, and a subset match on the build's
+  registry both withheld the example a re-delegated question's run is in
+  the situation of and served one it is not (found on review of #342).
+  With learned rules off the record names no workspace, so no success
+  example matches — as with past appraisals. The isolated artifact probe
+  (`mismatch::drive`) clears it beside `goal_appraisals`.
 - **Goal-keyed, and so narrow.** A success is keyed to a board task, and an
   example serves only a run toward that task: a re-delegation of a task
   whose question the owner answered, or a run toward a task a workflow

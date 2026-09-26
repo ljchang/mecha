@@ -412,9 +412,14 @@ pub async fn drive(
     cx.brief = None;
     // And no past appraisal (2c-2), for the same reason: the recording's
     // `goal_context` answers carried none the repeat could reproduce.
-    if cx.tools.goal_appraisals.is_some() {
+    // And no success example (2e-4b-1): the recording's answers carried
+    // none, and one could name a held-out session. The probe's registry
+    // admits no `goal_context` today; cleared structurally anyway, since
+    // the next payload on `ToolCtx` reads this block as the pattern.
+    if cx.tools.goal_appraisals.is_some() || cx.tools.success_examples.is_some() {
         let mut tools = (*cx.tools).clone();
         tools.goal_appraisals = None;
+        tools.success_examples = None;
         cx.tools = Arc::new(tools);
     }
     cx.outbox = None;

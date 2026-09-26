@@ -683,10 +683,12 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // Planning success examples for `goal_context` to serve on demand
     // (L2, 2e-4b-1, R40), behind `Lever::SuccessExamples` — never the
     // prefix. Keyed as past appraisals are, on what the run record will
-    // keep. Ahead of the declared-check examples: an owner's act is the
-    // stronger evidence, and with the lever off the list is what it was.
-    // Private by the tool that serves them (`goal_context` is `private`),
-    // which is R35's arming: a verified session is the owner's work.
+    // keep: the whole pool rides, and the loop re-keys it on the registry
+    // the run starts with (`ServedSuccesses::for_registry`), since a
+    // front-end may withhold or insert a tool after this point (found on
+    // review of #342). Served ahead of the declared-check examples: an
+    // owner's act is the stronger evidence. Private by the tool that serves
+    // them (`goal_context` is `private`), which is R35's arming.
     if agent_cfg.success_examples {
         let run = mecha_core::situation::Situation::of_run(
             &registry
@@ -698,9 +700,10 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         .on(rules.surface)
         .toward(rules.goal.clone());
         if let Ok(dir) = mecha_core::session::Session::default_dir() {
-            let mut served = mecha_core::planning::success_examples_at(&dir).for_run(&run);
-            served.append(&mut ctx.goal_examples);
-            ctx.goal_examples = served;
+            ctx.success_examples = Some(mecha_core::planning::ServedSuccesses::select(
+                mecha_core::planning::success_examples_at(&dir),
+                &run,
+            ));
         }
     }
 

@@ -760,6 +760,72 @@ impl SuccessExamples {
     }
 }
 
+/// The success examples one run holds: the whole pool, the run's situation
+/// as rendered, and the examples served in it. Kept whole rather than
+/// resolved at build, because the registry the run record names is the one
+/// the run *starts* with — `tasks work` and `questions answer` withhold
+/// `kg_task_update` and insert `ask_user` after `setup::build` — and
+/// `Situation::matches` is a subset test on tools, so keying on the build's
+/// registry both withholds an example the run is in the situation of and
+/// serves one it is not (found on review of #342). The loop re-keys it
+/// with [`Self::for_registry`], beside `PastAppraisals::for_registry`.
+#[derive(Debug, Clone, Default)]
+pub struct ServedSuccesses {
+    pool: SuccessExamples,
+    run: crate::situation::Situation,
+    served: Vec<Example>,
+}
+
+impl ServedSuccesses {
+    pub fn select(pool: SuccessExamples, run: &crate::situation::Situation) -> ServedSuccesses {
+        let served = pool.for_run(run);
+        ServedSuccesses {
+            pool,
+            run: run.clone(),
+            served,
+        }
+    }
+
+    /// Re-key on the registry the run starts with: the same workspace,
+    /// surface and goal, these tools.
+    pub fn for_registry(&mut self, tools: &[String]) {
+        self.run.tools = tools.to_vec();
+        self.served = self.pool.for_run(&self.run);
+    }
+
+    pub fn served(&self) -> &[Example] {
+        &self.served
+    }
+}
+
+/// A success example toward `goal` whose one run was matched on `tools`
+/// and nothing else — for tests of what serves and re-keys it.
+#[cfg(test)]
+pub(crate) fn test_success(
+    goal: &str,
+    step: &str,
+    session: &str,
+    tools: &[&str],
+) -> SuccessExample {
+    SuccessExample {
+        example: Example {
+            goal: goal.parse().unwrap(),
+            step: step.into(),
+            expected: None,
+            source: session.into(),
+            owner_act: Some(crate::success::Act::TaskDone {
+                task: goal.trim_start_matches("task:").into(),
+                closure: "c1".into(),
+            }),
+        },
+        scopes: vec![crate::situation::Situation::of_run(
+            &tools.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
+            None,
+        )],
+        at: None,
+    }
+}
+
 /// The planning examples a success set lends (row 2e-4b-1, R40). For each
 /// **standing** success toward a goal — a withdrawn one is not in
 /// `standing`, so a reopened task lends nothing, by construction — each
@@ -793,23 +859,42 @@ pub fn success_examples(
         }
         for id in &success.sessions {
             let mut withhold = |why| out.withheld.push((pointer.clone(), Some(id.clone()), why));
-            if !lent.insert((id.clone(), goal.to_string())) {
-                continue;
-            }
+            // The window before the dedup, so a pair past the window is
+            // said for every success naming it, never consumed quietly.
             if read >= SUCCESS_SESSIONS_READ || out.examples.len() >= SUCCESS_EXAMPLES_KEPT {
                 withhold(Withheld::BeyondWindow);
+                continue;
+            }
+            if !lent.insert((id.clone(), goal.to_string())) {
                 continue;
             }
             let Some(path) = sessions.admitted_path(id) else {
                 withhold(Withheld::NotAdmitted);
                 continue;
             };
-            if !std::fs::metadata(path).is_ok_and(|m| m.len() <= SUCCESS_TRANSCRIPT_BYTES) {
-                withhold(Withheld::TooLarge);
-                continue;
+            match std::fs::metadata(path) {
+                Ok(m) if m.len() <= SUCCESS_TRANSCRIPT_BYTES => {}
+                Ok(_) => {
+                    withhold(Withheld::TooLarge);
+                    continue;
+                }
+                // Gone since the index walked it: unread, not large (found
+                // on review of #342).
+                Err(_) => {
+                    withhold(Withheld::Unread);
+                    continue;
+                }
             }
             read += 1;
-            let Ok(t) = crate::session::Session::read(path) else {
+            // One read of the file for both views: the loaded list for the
+            // taint and the run records, and every message the session ever
+            // held for its sequence — the loaded list is what survived a
+            // compaction, and a long verified session's trace would be its
+            // tail served as the whole (found on review of #342).
+            let parsed = std::fs::read_to_string(path)
+                .map_err(anyhow::Error::from)
+                .and_then(|text| crate::session::Session::parse(path, &text).map(|t| (text, t)));
+            let Ok((text, t)) = parsed else {
                 withhold(Withheld::Unread);
                 continue;
             };
@@ -846,7 +931,7 @@ pub fn success_examples(
                 withhold(Withheld::Unscoped);
                 continue;
             };
-            let Some(step) = tool_sequence(&t.convo.messages) else {
+            let Some(step) = tool_sequence(&crate::session::Session::messages_ever(&text)) else {
                 withhold(Withheld::NoToolCalls);
                 continue;
             };
@@ -986,6 +1071,7 @@ mod success_example_tests {
         Unscoped,
         NoTools,
         Test,
+        Compacted,
     }
 
     fn call(id: &str, name: &str) -> Message {
@@ -1044,6 +1130,16 @@ mod success_example_tests {
             }),
         ];
         records.extend(messages.into_iter().map(Record::Message));
+        if shape == Shape::Compacted {
+            // A compaction that kept a summary and the last answer: the
+            // loaded list holds no tool call at all.
+            records.push(Record::Rewrite {
+                messages: vec![
+                    Message::user("Summary: the report was drafted and built."),
+                    Message::assistant(vec![Block::text("Done.")]),
+                ],
+            });
+        }
         if shape != Shape::NoTaintRecord {
             records.push(Record::Taint(Taint {
                 private: true,
@@ -1125,6 +1221,20 @@ mod success_example_tests {
         let withdrawn = lent(dir, &[close("c1", "s-dana"), reopen("r1", "c1")]);
         assert!(withdrawn.examples.is_empty(), "{withdrawn:?}");
         assert!(withdrawn.for_run(&run_in(dir)).is_empty());
+    }
+
+    /// A compacted session lends its whole trace, not the tail the
+    /// compaction left in the loaded list — here a tail with no call at
+    /// all, which read as "no tool calls" (found on review of #342).
+    #[test]
+    fn a_compacted_session_lends_every_call_it_made() {
+        let root = crate::mismatch::Workspace::new().unwrap();
+        let dir = root.path();
+        session(dir, "s-long", Shape::Compacted);
+        let out = lent(dir, &[close("c1", "s-long")]);
+        let served = out.for_run(&run_in(dir));
+        assert_eq!(served.len(), 1, "{:?}", out.withheld);
+        assert_eq!(served[0].step, "fs_read → shell ×2 → fs_write");
     }
 
     /// Only a clean, admitted, scoped session that called a tool lends one;

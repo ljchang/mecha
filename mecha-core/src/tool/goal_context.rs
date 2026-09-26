@@ -64,7 +64,10 @@ impl Tool for GoalContext {
             .take(4)
             .map(|l| json!({"source":l.source,"lesson":crate::step::ellipsize(&l.text, 800)}))
             .collect();
-        let examples: Vec<Value> = ctx.goal_examples.iter().filter(|e| Some(&e.goal) == goal.as_ref()).take(2)
+        // Success examples first (2e-4b-1): an owner's act is the stronger
+        // evidence. With the lever off there are none, and the list is the
+        // declared-check examples as it always was.
+        let examples: Vec<Value> = ctx.success_examples.iter().flat_map(|s| s.served()).chain(&ctx.goal_examples).filter(|e| Some(&e.goal) == goal.as_ref()).take(2)
             .map(|e| match &e.owner_act {
                 None => json!({"session":e.source,"step":crate::step::ellipsize(&e.step,400),"expected":e.expected.as_ref().map(|s| crate::step::ellipsize(s,400)),"evidence":"declared check passed at that time"}),
                 Some(act) => success_example(&e.source, &e.step, act),
@@ -312,17 +315,17 @@ mod tests {
             "a declared-check example is the bytes it always was"
         );
 
-        let success = crate::planning::Example {
-            goal: "task:t-budget".parse().unwrap(),
-            step: "fs_read → shell ×2 → fs_write".into(),
-            expected: None,
-            source: "s-dana".into(),
-            owner_act: Some(crate::success::Act::TaskDone {
-                task: "t-budget".into(),
-                closure: "c1".into(),
-            }),
+        let pool = crate::planning::SuccessExamples {
+            examples: vec![crate::planning::test_success(
+                "task:t-budget",
+                "fs_read → shell ×2 → fs_write",
+                "s-dana",
+                &["goal_context"],
+            )],
+            withheld: Vec::new(),
         };
-        ctx.goal_examples = vec![success, check_example("task:t-budget")];
+        let run = crate::situation::Situation::of_run(&["goal_context".into()], None);
+        ctx.success_examples = Some(crate::planning::ServedSuccesses::select(pool, &run));
         let v = ask(&ctx, "task:t-budget").await;
         let served = v["examples"].as_array().unwrap();
         assert_eq!(served.len(), 2);

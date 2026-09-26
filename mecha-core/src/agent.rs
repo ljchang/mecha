@@ -1801,10 +1801,17 @@ impl Agent {
             // Past appraisals are keyed on the tool set the run record will
             // name — this registry, after whatever a front-end withheld
             // since the block was rendered (`PastAppraisals::for_registry`).
-            if let Some(past) = tools.goal_appraisals.as_mut() {
+            if tools.goal_appraisals.is_some() || tools.success_examples.is_some() {
                 let names: Vec<String> =
                     self.registry.iter().map(|t| t.name().to_string()).collect();
-                past.for_registry(&names);
+                if let Some(past) = tools.goal_appraisals.as_mut() {
+                    past.for_registry(&names);
+                }
+                // And success examples (2e-4b-1), on the same registry, for
+                // the same reason (found on review of #342).
+                if let Some(successes) = tools.success_examples.as_mut() {
+                    successes.for_registry(&names);
+                }
             }
             // Fresh counters, the caller's anchor: a question resume seeds
             // the goal the owner just answered, and it must reach this run
@@ -5568,8 +5575,10 @@ mod tests {
     /// the `goal_context` result — the prefix is the same bytes with the
     /// lever on and off, the first request carries none of it — and the
     /// call that serves it arms `private`, which is R35's arming for the
-    /// owner's own work. Fails if the lever touched the prefix, pushed the
-    /// sequence, or served it from a tool that does not arm.
+    /// owner's own work. The set is re-keyed on the registry the run starts
+    /// with, as past appraisals are. Fails if the lever touched the prefix,
+    /// pushed the sequence, served it from a tool that does not arm, or kept
+    /// the build's selection (found on review of #342).
     #[tokio::test]
     async fn success_examples_reach_a_run_only_through_goal_context_and_arm_private() {
         let ask = || {
@@ -5595,16 +5604,42 @@ mod tests {
             let mut cx = (**agent.context()).clone();
             let mut tools = (*cx.tools).clone();
             if lever {
-                tools.goal_examples = vec![crate::planning::Example {
-                    goal: "task:task-northwind-report".parse().unwrap(),
-                    step: "fs_read → shell ×2 → fs_write".into(),
-                    expected: None,
-                    source: "s-dana".into(),
-                    owner_act: Some(crate::success::Act::TaskDone {
-                        task: "task-northwind-report".into(),
-                        closure: "c1".into(),
-                    }),
-                }];
+                // Selected against the registry as rendered, before the
+                // front-end changed it (found on review of #342): there
+                // `kg_task_update` was registered and `goal_context` not
+                // yet, so the build served the example the run is *not* in
+                // the situation of and withheld the one it is. The loop
+                // re-keys on the registry the run starts with.
+                let goal = "task:task-northwind-report";
+                let pool = crate::planning::SuccessExamples {
+                    examples: vec![
+                        crate::planning::test_success(
+                            goal,
+                            "fs_read → shell ×2 → fs_write",
+                            "s-dana",
+                            &["goal_context"],
+                        ),
+                        crate::planning::test_success(
+                            goal,
+                            "kg_task_update → mail_send",
+                            "s-chat",
+                            &["kg_task_update"],
+                        ),
+                    ],
+                    withheld: Vec::new(),
+                };
+                let built = crate::situation::Situation::of_run(&["kg_task_update".into()], None);
+                let served = crate::planning::ServedSuccesses::select(pool, &built);
+                assert_eq!(
+                    served
+                        .served()
+                        .iter()
+                        .map(|e| e.source.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["s-chat"],
+                    "not vacuous: the build's registry picks the other one"
+                );
+                tools.success_examples = Some(served);
             }
             cx.tools = Arc::new(tools);
             let mut convo = Conversation::user("pick up the Northwind Labs report");
@@ -5640,6 +5675,10 @@ mod tests {
         let served = result(on);
         assert!(served.contains("fs_read → shell ×2 → fs_write"), "{served}");
         assert!(served.contains("closure:c1"));
+        assert!(
+            !served.contains("s-chat"),
+            "keyed on the registry the run started with, not the build's"
+        );
     }
 
     /// A long-lived conversation (a web chat) is handed a fresh brief each
