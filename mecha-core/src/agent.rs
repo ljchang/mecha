@@ -563,12 +563,20 @@ impl Taint {
     /// the transcript, so a conversation resumed with a brief in it — a
     /// session recorded before the ruling, or one whose taint record was
     /// torn — arms too. User-role text only, the only slot the fold writes.
+    ///
+    /// **And a diagnostician's brief carrying clean appraisals** (R38, row
+    /// 2f): a clean run's appraisal can speak of the owner's files. The
+    /// section sits mid-brief, so it is matched anywhere in the text by its
+    /// stem (`diagnose::APPRAISAL_STEM`); over-matching a user who types the
+    /// phrase only arms more, which is the safe direction.
     pub fn arm_for_content(&mut self, messages: &[Message]) {
         if messages.iter().any(|m| {
             m.content.iter().any(|b| match b {
                 Block::Image { .. } => true,
                 Block::Text { text } => {
-                    m.role == Role::User && text.trim_start().starts_with(crate::brief::BRIEF_STEM)
+                    m.role == Role::User
+                        && (text.trim_start().starts_with(crate::brief::BRIEF_STEM)
+                            || text.contains(crate::diagnose::APPRAISAL_STEM))
                 }
                 _ => false,
             })
@@ -6748,6 +6756,18 @@ mod tests {
         let outcome = agent.run(&mut convo, None).await.unwrap();
         assert_eq!(outcome.blocked_sends, 1);
         assert!(outcome.taint.private && outcome.taint.untrusted);
+
+        // And built by hand from the rendered brief — the construction
+        // `run_diagnostician` had before 2f: the loop arms it off the
+        // transcript at run start (found on review of #329).
+        let (mut agent, _) = agent_with(script(), PermissionMode::Allow);
+        agent.registry.insert(Arc::new(UntrustedTool));
+        agent.registry.insert(Arc::new(SendTool)); // panics if it ever runs
+        agent.ctx_mut().security.trifecta = TrifectaPolicy::Block;
+        let mut convo = Conversation::user(format!("{}\n---\ndiagnose", briefed.brief()));
+        assert!(!convo.taint.private);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(outcome.blocked_sends, 1);
 
         struct CountingSend(Arc<std::sync::atomic::AtomicUsize>);
         #[async_trait]

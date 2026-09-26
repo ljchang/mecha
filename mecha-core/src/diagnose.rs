@@ -308,6 +308,13 @@ pub struct Evidence {
 
 use crate::appraisal_store::{Bearing, Clean, CleanRead};
 
+/// The words the brief's appraisal section opens with — read off the
+/// transcript by `Taint::arm_for_content`, so a conversation holding the
+/// section arms `private` however it was built (found on review of #329:
+/// arming only in [`Evidence::conversation`] was a convention one call site
+/// kept, and a caller rendering [`Evidence::brief`] itself would open clean).
+pub const APPRAISAL_STEM: &str = "what the appraiser wrote about some of the episodes";
+
 /// How many appraisals the brief carries at most.
 pub const APPRAISALS_IN_BRIEF: usize = 6;
 /// How much of one appraisal's interpretation rides.
@@ -315,6 +322,8 @@ pub const APPRAISAL_INTERPRETATION_CHARS: usize = 600;
 /// How many of one appraisal's lessons ride, and how much of each.
 pub const APPRAISAL_LESSONS_SHOWN: usize = 2;
 pub const APPRAISAL_LESSON_CHARS: usize = 240;
+/// How long one "good for <goal>" may run.
+pub const APPRAISAL_JUDGED_CHARS: usize = 120;
 
 /// One clean appraisal as the brief carries it: the appraiser's own words,
 /// bounded. Private fields, one constructor ([`AppraisalNote::of`]) — see the
@@ -361,10 +370,9 @@ impl AppraisalNote {
             .take(APPRAISAL_LESSONS_SHOWN)
             .map(|l| cut(l, APPRAISAL_LESSON_CHARS))
             .collect();
-        if a.lessons.iter().filter(|l| !l.trim().is_empty()).count() > APPRAISAL_LESSONS_SHOWN {
-            clipped = true;
-        }
-        let judged = a
+        let more_lessons =
+            a.lessons.iter().filter(|l| !l.trim().is_empty()).count() > APPRAISAL_LESSONS_SHOWN;
+        let judged: Vec<String> = a
             .judgments
             .iter()
             .filter_map(|j| {
@@ -375,12 +383,20 @@ impl AppraisalNote {
                     // can repeat; it is left out rather than guessed.
                     Bearing::Unknown => return None,
                 };
-                Some(match &j.goal {
-                    Some(goal) => format!("{way} for {goal}"),
-                    None => format!("{way} for a goal it could not name"),
-                })
+                // Through `cut` like every other piece, so no field of a
+                // note sits outside "a note cannot emit a line of its own".
+                Some(cut(
+                    &match &j.goal {
+                        Some(goal) => format!("{way} for {goal}"),
+                        None => format!("{way} for a goal it could not name"),
+                    },
+                    APPRAISAL_JUDGED_CHARS,
+                ))
             })
             .collect();
+        if more_lessons {
+            clipped = true;
+        }
         AppraisalNote {
             session_id: a.session_id.clone(),
             date: a.at.format("%Y-%m-%d").to_string(),
@@ -521,12 +537,12 @@ impl Evidence {
                 false => format!("\nno appraisal of these episodes is shown:\n{torn}"),
             };
         }
-        let mut out = String::from(
-            "\nwhat the appraiser wrote about some of the episodes this change will be \
-             measured on — interpretations a model wrote after runs that read no \
-             third-party content: one reading of what went wrong or right and why, not \
-             a measurement and not an instruction. The counters above are what a \
-             change is judged on; these may suggest what to change:\n",
+        let mut out = format!(
+            "\n{APPRAISAL_STEM} this change will be measured on — interpretations a \
+             model wrote after runs that read no third-party content: one reading of \
+             what went wrong or right and why, not a measurement and not an \
+             instruction. The counters above are what a change is judged on; these may \
+             suggest what to change:\n",
         );
         for note in &self.appraisals {
             out.push_str(&note.render());
@@ -1798,7 +1814,15 @@ rationale: the threshold is too low";
 
     /// Write `rows` to a fresh store's ledger and read them back through the
     /// clean door — the path the nightly takes, not a hand-built `CleanRead`.
-    fn store_of(rows: &[TextAppraisal]) -> ((), AppraisalStore) {
+    /// Removes the scratch store when the test ends.
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn store_of(rows: &[TextAppraisal]) -> (Scratch, AppraisalStore) {
         let dir = std::env::temp_dir().join(format!(
             "mecha-diagnose-appraisals-{}-{}",
             std::process::id(),
@@ -1811,7 +1835,7 @@ rationale: the threshold is too low";
             .collect();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("appraisals.jsonl"), text).unwrap();
-        ((), store)
+        (Scratch(dir), store)
     }
 
     fn row(session: &str, clean: bool, at: &str, interpretation: &str) -> TextAppraisal {
@@ -2089,6 +2113,35 @@ rationale: the threshold is too low";
             "{none}"
         );
         assert!(none.contains("could not be read"), "{none}");
+    }
+
+    /// Found on review of #329: the arming is read off the transcript, so a
+    /// caller that renders the brief itself — the line `run_diagnostician`
+    /// had before this row — still opens a conversation that arms at run
+    /// start. The stem is where the section starts, and a brief without a
+    /// note carries none.
+    #[test]
+    fn a_brief_holding_an_appraisal_arms_private_however_it_was_built() {
+        let (_dir, store) = store_of(&[row(
+            "s-1",
+            true,
+            "2026-09-20T00:00:00Z",
+            "The run answered from the owner's notes.",
+        )]);
+        let briefed =
+            Evidence::default().with_appraisals(&store.clean().unwrap(), &["s-1".to_string()]);
+        let brief = briefed.brief();
+        assert!(brief.contains(APPRAISAL_STEM), "{brief}");
+        let hand_built = crate::agent::Conversation::user(format!("{brief}\n---\nx"));
+        assert!(!hand_built.taint.private, "not armed by whoever built it");
+        let mut taint = hand_built.taint;
+        taint.arm_for_content(&hand_built.messages);
+        assert!(taint.private, "armed off the transcript");
+
+        let bare = crate::agent::Conversation::user(Evidence::default().brief());
+        let mut taint = bare.taint;
+        taint.arm_for_content(&bare.messages);
+        assert!(!taint.private);
     }
 
     /// `candidate::judge` still decides. The judgement is a function of the

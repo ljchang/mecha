@@ -1605,7 +1605,8 @@ the metric the proposal names. So the draw is split, on one seed
   checker.
 - **Private.** A clean run may have read the owner's files, and its
   appraisal can say so, so a brief carrying one opens the diagnostician's
-  conversation with `private` taint (`Evidence::conversation`): after its
+  conversation with `private` taint (`Evidence::conversation`, and off the
+  transcript by `diagnose::APPRAISAL_STEM` in `Taint::arm_for_content`): after its
   first fetched page the interlock refuses `http_fetch`, and research
   continues on blind `web_search` only (R38; `TRIFECTA.md`).
 - **The gate is untouched.** `judge_drawn` and `combine` read replay pairs

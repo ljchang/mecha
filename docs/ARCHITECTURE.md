@@ -3673,7 +3673,9 @@ Two rules are structural rather than instructed:
     flattened to one line first, so a note cannot emit a line that reads as
     the brief's own findings.
   - **A brief carrying a note opens the conversation `private`**
-    (`Evidence::conversation`), fail-closed: a clean run may have read the
+    (`Evidence::conversation`), and `Taint::arm_for_content` re-arms it off the
+    transcript by the section's stem (`diagnose::APPRAISAL_STEM`) at every run
+    start, so a caller rendering the brief itself cannot open it clean. Fail-closed: a clean run may have read the
     owner's files, and its appraisal can say so. On those nights the
     diagnostician's first fetched page arms the interlock, and it researches
     on blind `web_search` only (the owner's ruling; `TRIFECTA.md`).
