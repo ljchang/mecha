@@ -27,6 +27,7 @@ use mecha_core::candidate::Metric;
 use mecha_core::config::{PermissionMode, ProviderConfig};
 use mecha_core::harness::ConfigChange;
 use mecha_core::replay::{extract, Trajectory};
+use mecha_core::replay_priority::{Priority, Ranker};
 use mecha_core::replay_run::{drive, replay_registry_reporting, OnDivergence};
 use mecha_core::session::{RunConfig, RunStats, Session, SessionMeta};
 use std::path::{Path, PathBuf};
@@ -52,6 +53,10 @@ pub struct EpisodePrep {
     /// holds. Computed off the same read as the trajectory, for the same
     /// reason `episode` is.
     charter_rank: Option<usize>,
+    /// The session's replay priority (row 2e-6, `mecha_core::replay_priority`)
+    /// — what orders the selection among the episodes that can
+    /// discriminate. `None` for a caller that is not drawing.
+    priority: Option<Priority>,
     /// The compromise this replay is making, when it is making one — today,
     /// a session attached several times (a resume, or a mid-session
     /// `/provider`/`/mode` switch) replayed under its first config.
@@ -75,10 +80,7 @@ pub struct EpisodePrep {
 pub fn prepare_episode(
     path: &Path,
     id: &str,
-    appraise: Option<(
-        &mecha_core::appraisal::Stores,
-        chrono::DateTime<chrono::Utc>,
-    )>,
+    ranker: Option<&Ranker>,
 ) -> Result<Result<EpisodePrep, String>> {
     // One read. This runs over the whole pool — four times the wanted episode
     // count — every nightly, and `load` + `run_configs` + `episode_stats` were
@@ -124,23 +126,25 @@ pub fn prepare_episode(
             read.configs.len()
         )
     });
-    // The rank rides on the appraisal the sessions readout would build for
-    // this transcript, from the stores the caller loaded once: the plan's
-    // `serves:` and the sensored-line attribution both land a charter line
-    // on the errors, and `charter_rank` reads the highest. Only a charter
-    // with lines can rank anything, so an empty one skips the appraisal.
-    let charter_rank = appraise.and_then(|(stores, created_at)| {
-        let charter = stores.charter.as_ref().filter(|c| !c.is_empty())?;
-        let drafts = stores.drafts_of(id);
-        let built = mecha_core::appraisal::for_transcript(
-            &read,
-            id,
-            created_at.to_rfc3339(),
-            stores.records(&drafts),
-            None,
-        )?;
-        mecha_core::appraisal::charter_rank(&built.appraisal, charter)
-    });
+    // The priority and the rank both ride on the appraisal the sessions
+    // readout would build for this transcript, from the stores the ranker
+    // loaded once for the pass — built once here, off the same read: the
+    // plan's `serves:` and the sensored-line attribution both land a
+    // charter line on the errors, and `charter_rank` reads the highest.
+    let (priority, charter_rank) = match ranker {
+        None => (None, None),
+        Some(ranker) => {
+            let (priority, built) = ranker.of_transcript(&read);
+            let rank = ranker
+                .stores()
+                .charter
+                .as_ref()
+                .filter(|c| !c.is_empty())
+                .zip(built.as_ref())
+                .and_then(|(charter, a)| mecha_core::appraisal::charter_rank(a, charter));
+            (Some(priority), rank)
+        }
+    };
     Ok(Ok(EpisodePrep {
         id: id.to_string(),
         trajectory,
@@ -148,30 +152,35 @@ pub fn prepare_episode(
         episode: read.episode,
         config_caveat,
         charter_rank,
+        priority,
     }))
 }
 
-/// The selection's order, over (headroom, charter rank, id): what can
-/// discriminate first; among equals, the episode whose signed error names
-/// the higher-ranked charter line (`GOAL-SYSTEM-DESIGN.md` §11.1 — a signed
-/// error against the top line replays before one against the fifth), with
-/// an unranked episode after every ranked one; then the id, so the order is
-/// total and the seed is not a lie. Pure, because the old order — headroom
-/// then id — and this one agree on every episode but the tied ones, which
-/// is exactly the case a test has to construct.
+/// The selection's order (row 2e-6): **what can discriminate first** — an
+/// episode with headroom on the predicted metric ahead of one with none,
+/// which can only tie or worsen and so cannot show a candidate winning —
+/// then **the replay priority** (`replay_priority::order_by_priority`: gain
+/// × need × decay, an unknown factor after every known positive priority,
+/// a known zero after that, the hopeless last), then the highest charter
+/// line a signed error names (§11.1's tiebreak, an unranked episode after
+/// every ranked one), then the id, so the order is total and the seed is
+/// not a lie. Headroom's *size* no longer orders: among episodes that can
+/// discriminate, the priority decides (L1: "|goal error| as a priority in
+/// its own right").
 pub fn selection_order(
-    a: (f64, Option<usize>, &str),
-    b: (f64, Option<usize>, &str),
+    a: (f64, &Priority, Option<usize>, &str),
+    b: (f64, &Priority, Option<usize>, &str),
 ) -> std::cmp::Ordering {
-    b.0.partial_cmp(&a.0)
-        .unwrap_or(std::cmp::Ordering::Equal)
-        .then_with(|| match (a.1, b.1) {
+    (b.0 > 0.0)
+        .cmp(&(a.0 > 0.0))
+        .then_with(|| mecha_core::replay_priority::order_by_priority(a.1, b.1))
+        .then_with(|| match (a.2, b.2) {
             (Some(x), Some(y)) => x.cmp(&y),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => std::cmp::Ordering::Equal,
         })
-        .then_with(|| a.2.cmp(b.2))
+        .then_with(|| a.3.cmp(b.3))
 }
 
 /// Newest-first replayable episodes for one model, up to `want`, from the
@@ -179,7 +188,8 @@ pub fn selection_order(
 /// looked at and skipped.
 /// The two slices a candidate is judged on, drawn separately on purpose.
 pub struct Draw {
-    /// Drawn by [`Metric::headroom`]: the episodes that can discriminate.
+    /// Drawn by [`selection_order`]: the episodes that can discriminate on
+    /// the metric ([`Metric::headroom`] above zero), in replay-priority order.
     pub selection: Vec<EpisodePrep>,
     /// Drawn uniformly from the same eligible pool, and drawn **first**.
     pub holdout: Vec<EpisodePrep>,
@@ -261,12 +271,15 @@ pub fn draw_episodes(
 /// holdout is fixed before the diagnosis and is **never** in the remainder,
 /// so the slice that confirms a change is one its author never read about.
 ///
-/// Nothing about what is measured moves: the pool, the holdout and the
-/// selection are exactly what the single-phase draw produced for the same
-/// seed and store — the holdout never read the metric, and the selection's
-/// order is computed from the same headroom, rank and id
-/// (`the_split_draw_is_the_single_phase_draw` holds the two against each
-/// other).
+/// The split moved nothing about what is measured: the pool and the holdout
+/// are exactly what the single-phase draw produced for the same seed and
+/// store, since the holdout reads neither the metric nor any priority. The
+/// selection is drawn from the same remainder at the same size; since row
+/// 2e-6 its order is [`selection_order`]'s — the replay priority among the
+/// episodes that can discriminate — where it was headroom's
+/// (`the_split_draw_holds_the_single_phase_holdout_under_the_ranking` holds
+/// the holdout against the pre-priority single-phase draw, element for
+/// element).
 pub struct Pool {
     /// Drawn uniformly, in pool order — as the single-phase draw left it.
     holdout: Vec<EpisodePrep>,
@@ -278,6 +291,9 @@ pub struct Pool {
     /// The charter did not load, so the tiebreak cannot run —
     /// [`Draw::ranked`]'s `None`.
     charter_unreadable: bool,
+    /// What the ranker could not read — each an unknown factor on every
+    /// priority — for the caller to print beside the draw.
+    pub caveats: Vec<String>,
 }
 
 impl Pool {
@@ -294,9 +310,11 @@ impl Pool {
         self.holdout.iter().map(|p| p.id.clone()).collect()
     }
 
-    /// The second phase: rank the remainder by what can discriminate for
-    /// `metric` — and among equals, by the charter line the record names
-    /// (§11.1's tiebreak) — and keep the selection's share.
+    /// The second phase: rank the remainder by [`selection_order`] — what
+    /// can discriminate for `metric` first, then the replay priority, then
+    /// the charter line the record names (§11.1's tiebreak) — and keep the
+    /// selection's share. The holdout was fixed by the first phase and is
+    /// handed on untouched.
     pub fn select(self, metric: Metric) -> Draw {
         // Headroom off *every* outcome the session recorded, folded.
         // `last_outcome` describes how the session ended, and an episode
@@ -324,10 +342,23 @@ impl Pool {
                 (p, headroom)
             })
             .collect();
+        // An episode prepared without a ranker has every factor unknown —
+        // never the case in a draw, whose pool is always ranked.
+        let unread = Priority::unread();
         rest.sort_by(|a, b| {
             selection_order(
-                (a.1, a.0.charter_rank, &a.0.id),
-                (b.1, b.0.charter_rank, &b.0.id),
+                (
+                    a.1,
+                    a.0.priority.as_ref().unwrap_or(&unread),
+                    a.0.charter_rank,
+                    &a.0.id,
+                ),
+                (
+                    b.1,
+                    b.0.priority.as_ref().unwrap_or(&unread),
+                    b.0.charter_rank,
+                    &b.0.id,
+                ),
             )
         });
         rest.truncate(self.selection_n);
@@ -385,12 +416,12 @@ pub fn draw_pool(
         workspace: workspace.map(std::path::Path::to_path_buf),
         ..Default::default()
     };
-    // The stores an appraisal reads, once for the whole pool — four store
-    // reads per draw rather than per episode, and none at all without a
-    // charter, since only a charter with lines can rank anything. Only the
-    // charter rank comes of it here; see `EpisodePrep::charter_rank`.
-    let chartered = mecha_core::appraisal::Stores::load_if_chartered();
-    let stores = chartered.stores();
+    // Everything a priority is read from, once for the whole pool: the
+    // stores an appraisal reads, the score ledger, the harness and
+    // comparison stores, and one walk of the recent corpus for recurrence
+    // (`replay_priority::Ranker`). Loaded before the holdout is drawn and
+    // never read by it: the holdout below takes ids alone.
+    let ranker = Ranker::load(sessions_dir, chrono::Utc::now());
     for (meta, path) in listed {
         if pool.len() >= pool_size {
             break;
@@ -418,7 +449,7 @@ pub fn draw_pool(
         if !admission.admits(&meta) {
             continue;
         }
-        match prepare_episode(&path, &meta.id, stores.map(|s| (s, meta.created_at)))? {
+        match prepare_episode(&path, &meta.id, Some(&ranker))? {
             Ok(prep) => pool.push(prep),
             Err(_) => skipped += 1,
         }
@@ -443,7 +474,8 @@ pub fn draw_pool(
         selection_n,
         seed,
         skipped,
-        charter_unreadable: matches!(chartered, mecha_core::appraisal::Chartered::Unreadable),
+        charter_unreadable: ranker.stores().charter_unreadable,
+        caveats: ranker.caveats().to_vec(),
     })
 }
 /// What one arm of one episode produced.
@@ -796,22 +828,52 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// The tiebreak alone, on tuples: equal headroom orders by rank, an
-    /// unranked episode after every ranked one, and the id last — and
-    /// headroom still outranks rank, so the tiebreak never promotes an
-    /// uninformative episode over an informative one.
+    /// The order alone, on tuples (row 2e-6): an episode that can
+    /// discriminate outranks one that cannot, whatever their priorities;
+    /// among those that can, the priority decides and headroom's size does
+    /// not; equal priority orders by charter rank, an unranked episode
+    /// after every ranked one, and the id last.
     #[test]
-    fn ties_in_headroom_break_on_the_charter_rank_then_the_id() {
+    fn the_selection_orders_by_headroom_then_priority_then_rank_then_id() {
+        use mecha_core::replay_priority::Inputs;
         use std::cmp::Ordering::*;
-        assert_eq!(selection_order((1.0, None, "z"), (0.5, Some(0), "a")), Less);
+        let p = |owner_gain: f64| {
+            Priority::of(&Inputs {
+                owner_gain: Some(owner_gain),
+                charter_read: true,
+                surprises: Some(0),
+                recurrence: Some(1),
+                age_days: 0.0,
+                hopeless: Some(false),
+            })
+        };
+        let (high, low) = (p(3.0), p(1.0));
+        // Headroom gates: no priority promotes an episode that can only tie.
         assert_eq!(
-            selection_order((0.5, Some(0), "z"), (0.5, Some(1), "a")),
+            selection_order((0.1, &low, None, "z"), (0.0, &high, Some(0), "a")),
             Less
         );
-        assert_eq!(selection_order((0.5, Some(3), "z"), (0.5, None, "a")), Less);
-        assert_eq!(selection_order((0.5, None, "a"), (0.5, None, "b")), Less);
+        // Among the informative, the priority decides, not headroom's size —
+        // the old order put the 9.0 first.
         assert_eq!(
-            selection_order((0.5, Some(2), "a"), (0.5, Some(2), "a")),
+            selection_order((0.5, &high, None, "z"), (9.0, &low, Some(0), "a")),
+            Less
+        );
+        // Equal priority: the charter rank, then the id.
+        assert_eq!(
+            selection_order((0.5, &low, Some(0), "z"), (0.5, &low, Some(1), "a")),
+            Less
+        );
+        assert_eq!(
+            selection_order((0.5, &low, Some(3), "z"), (0.5, &low, None, "a")),
+            Less
+        );
+        assert_eq!(
+            selection_order((0.5, &low, None, "a"), (0.5, &low, None, "b")),
+            Less
+        );
+        assert_eq!(
+            selection_order((0.5, &low, Some(2), "a"), (0.7, &low, Some(2), "a")),
             Equal
         );
     }
@@ -1077,7 +1139,13 @@ mod tests {
     // ── The split draw (row 2f, R38) ────────────────────────────────────
 
     /// The single-phase draw as it stood before row 2f split it, verbatim
-    /// but for its name — the reference the split is held against.
+    /// but for its name — the reference the split is held against — and
+    /// before row 2e-6 ranked the selection by replay priority: its
+    /// selection is ordered by headroom, then the charter rank, then the id,
+    /// as it was (`pre_priority_order`, the old `selection_order` verbatim).
+    /// Two edits, both forced: `prepare_episode` now takes the pass's
+    /// `Ranker`, which reads the charter rank off the same appraisal the old
+    /// `Stores` argument did; and that old order is inlined.
     #[allow(clippy::too_many_arguments)]
     fn single_phase_reference(
         sessions_dir: &Path,
@@ -1106,7 +1174,7 @@ mod tests {
         // charter, since only a charter with lines can rank anything. Only the
         // charter rank comes of it here; see `EpisodePrep::charter_rank`.
         let chartered = mecha_core::appraisal::Stores::load_if_chartered();
-        let stores = chartered.stores();
+        let ranker = Ranker::load(sessions_dir, chrono::Utc::now());
         for (meta, path) in listed {
             if pool.len() >= pool_size {
                 break;
@@ -1134,7 +1202,7 @@ mod tests {
             if !admission.admits(&meta) {
                 continue;
             }
-            match prepare_episode(&path, &meta.id, stores.map(|s| (s, meta.created_at)))? {
+            match prepare_episode(&path, &meta.id, Some(&ranker))? {
                 Ok(prep) => {
                     // Headroom off *every* outcome the session recorded, folded.
                     // `last_outcome` describes how the session ended, and an
@@ -1178,8 +1246,19 @@ mod tests {
 
         // Then the selection, by what can discriminate — and among equals, by
         // the charter line the record names (§11.1's tiebreak).
+        let pre_priority_order = |a: (f64, Option<usize>, &str), b: (f64, Option<usize>, &str)| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| match (a.1, b.1) {
+                    (Some(x), Some(y)) => x.cmp(&y),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                })
+                .then_with(|| a.2.cmp(b.2))
+        };
         rest.sort_by(|a, b| {
-            selection_order(
+            pre_priority_order(
                 (a.1, a.0.charter_rank, &a.0.id),
                 (b.1, b.0.charter_rank, &b.0.id),
             )
@@ -1208,15 +1287,38 @@ mod tests {
         })
     }
 
-    /// The owner's condition on the split (R38): it changes nothing about
-    /// what gets measured. Over one store, for every metric, several seeds,
-    /// sizes and holdout rates — the store holding a charter, so ranks are
-    /// in play — the two-phase draw's holdout and selection are the
-    /// single-phase draw's, element for element and in order, and so are the
-    /// seed, the skips and the ranked count. And the remainder the
-    /// diagnostician reads is exactly the pool minus that holdout.
+    /// Write clean surprises for `sessions` into the home's score ledger —
+    /// the 2b-2 record the replay priority reads.
+    fn surprise(home: &Path, sessions: &[&str]) {
+        let dir = home.join("appraisals");
+        std::fs::create_dir_all(&dir).unwrap();
+        let lines: Vec<String> = sessions
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "id": format!("scr-{s}"), "scored_at": "2026-01-02T00:00:00Z",
+                    "appraisal_id": format!("apr-{s}"), "session_id": s,
+                    "expected": "released_unchanged", "actual": "rejected",
+                    "hit": false, "surprise": true, "clean": true,
+                })
+                .to_string()
+            })
+            .collect();
+        std::fs::write(dir.join("scores.jsonl"), lines.join("\n") + "\n").unwrap();
+    }
+
+    /// The owner's condition on the split (R38), and 2e-6's on the ranking:
+    /// neither changes the holdout. Over one store, for every metric, several
+    /// seeds, sizes and holdout rates — the store holding a charter and a
+    /// score ledger, so ranks and priorities are both in play — the
+    /// two-phase draw's holdout is the single-phase, pre-priority draw's,
+    /// element for element and in order, and so are the seed and the skips.
+    /// The selection is drawn from exactly the pool minus that holdout, at
+    /// the size it always was; its order is the priority's, which is the
+    /// change — so on some draws it differs from the old one, or the
+    /// ranking did nothing and this test proves less than it says.
     #[test]
-    fn the_split_draw_is_the_single_phase_draw() {
+    fn the_split_draw_holds_the_single_phase_holdout_under_the_ranking() {
         mecha_core::session::ignore_kind_env_for_tests();
         let home = crate::testenv::HomeGuard::new("probe-split");
         std::fs::write(
@@ -1234,6 +1336,14 @@ mod tests {
             };
             fixture_session(&dir, &format!("20260101T0000{i:02}-s{i:02}"), i, serves);
         }
+        surprise(
+            &home.dir,
+            &[
+                "20260101T000003-s03",
+                "20260101T000008-s08",
+                "20260101T000013-s13",
+            ],
+        );
         let fingerprint = |preps: &[EpisodePrep]| -> Vec<String> {
             preps
                 .iter()
@@ -1248,7 +1358,10 @@ mod tests {
                 })
                 .collect()
         };
+        let ids =
+            |preps: &[EpisodePrep]| -> Vec<String> { preps.iter().map(|p| p.id.clone()).collect() };
         let mut compared = 0;
+        let mut reordered = 0;
         for metric in Metric::ALL {
             for seed in [0u64, 7, 11, 0xdead_beef] {
                 for (want, holdout_in) in [(4usize, 3u64), (6, 2), (16, 3)] {
@@ -1261,29 +1374,120 @@ mod tests {
                     let new = pool.select(metric);
                     let at = format!("{metric:?} seed {seed} want {want}/{holdout_in}");
                     assert_eq!(fingerprint(&new.holdout), fingerprint(&old.holdout), "{at}");
-                    assert_eq!(
-                        fingerprint(&new.selection),
-                        fingerprint(&old.selection),
-                        "{at}"
-                    );
-                    assert_eq!(
-                        (new.seed, new.skipped, new.ranked),
-                        (old.seed, old.skipped, old.ranked),
-                        "{at}"
-                    );
+                    assert_eq!((new.seed, new.skipped), (old.seed, old.skipped), "{at}");
+                    assert_eq!(new.selection.len(), old.selection.len(), "{at}");
                     assert!(!old.holdout.is_empty() && !old.selection.is_empty(), "{at}");
                     // The remainder: the selection is drawn from it, and no
-                    // held-out episode is in it.
+                    // held-out episode is in it — the same remainder the old
+                    // selection was drawn from.
                     assert!(remainder.iter().all(|id| !held.contains(id)), "{at}");
                     assert!(
-                        new.selection.iter().all(|p| remainder.contains(&p.id)),
+                        new.selection.iter().all(|p| remainder.contains(&p.id))
+                            && old.selection.iter().all(|p| remainder.contains(&p.id)),
                         "{at}"
                     );
+                    if ids(&new.selection) != ids(&old.selection) {
+                        reordered += 1;
+                    }
                     compared += 1;
                 }
             }
         }
         assert_eq!(compared, Metric::ALL.len() * 4 * 3);
+        assert!(reordered > 0, "the ranking never changed a selection");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Row 2e-6's acceptance line: **the uniform holdout is unchanged by the
+    /// ranking.** One store, one seed, drawn twice — before and after the
+    /// owner's acts give three sessions a surprise. The holdout is the same,
+    /// element for element; the selection is not, and the surprised sessions
+    /// the remainder holds lead it. Fails on the old order, which read no
+    /// surprise and drew the same selection both times.
+    #[test]
+    fn the_uniform_holdout_is_unchanged_by_the_ranking() {
+        mecha_core::session::ignore_kind_env_for_tests();
+        let home = crate::testenv::HomeGuard::new("probe-holdout-fixed");
+        let dir = home.dir.join("sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..16u32 {
+            fixture_session(&dir, &format!("20260101T0000{i:02}-h{i:02}"), i, None);
+        }
+        let ids =
+            |preps: &[EpisodePrep]| -> Vec<String> { preps.iter().map(|p| p.id.clone()).collect() };
+        let before = draw_pool(&dir, "m", 8, 2, 42, None)
+            .unwrap()
+            .select(Metric::Turns);
+        // Surprise the three latest ids of the remainder — last among the
+        // known zeros, and outside a four-episode selection, so the new
+        // order must move them in.
+        let pool = draw_pool(&dir, "m", 8, 2, 42, None).unwrap();
+        let mut remainder = pool.remainder();
+        remainder.sort();
+        let surprised: Vec<&str> = remainder
+            .iter()
+            .rev()
+            .take(3)
+            .rev()
+            .map(String::as_str)
+            .collect();
+        surprise(&home.dir, &surprised);
+        let after = draw_pool(&dir, "m", 8, 2, 42, None)
+            .unwrap()
+            .select(Metric::Turns);
+        assert_eq!(ids(&after.holdout), ids(&before.holdout));
+        assert_ne!(ids(&after.selection), ids(&before.selection));
+        let lead: Vec<&str> = after
+            .selection
+            .iter()
+            .take(3)
+            .map(|p| p.id.as_str())
+            .collect();
+        let mut lead_sorted = lead.clone();
+        lead_sorted.sort();
+        assert_eq!(lead_sorted, surprised, "the surprised lead the selection");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A score ledger with a line that does not parse could have held any
+    /// session's surprise, so the factor is unknown on every priority — not
+    /// zero, which here would have been a known zero for every fixture (no
+    /// owner verdict) — and the draw says so.
+    #[test]
+    fn an_unreadable_score_ledger_is_unknown_on_every_priority_not_zero() {
+        use mecha_core::replay_priority::Factor;
+        mecha_core::session::ignore_kind_env_for_tests();
+        let home = crate::testenv::HomeGuard::new("probe-unknown");
+        let dir = home.dir.join("sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..4u32 {
+            fixture_session(&dir, &format!("20260101T0000{i:02}-u{i:02}"), i, None);
+        }
+        let known = draw_pool(&dir, "m", 4, 2, 1, None)
+            .unwrap()
+            .select(Metric::Turns);
+        assert!(known.selection.iter().chain(&known.holdout).all(|p| p
+            .priority
+            .as_ref()
+            .unwrap()
+            .known_zero));
+        std::fs::create_dir_all(home.dir.join("appraisals")).unwrap();
+        std::fs::write(home.dir.join("appraisals/scores.jsonl"), "{torn\n").unwrap();
+        let pool = draw_pool(&dir, "m", 4, 2, 1, None).unwrap();
+        assert!(
+            pool.caveats.iter().any(|c| c.contains("surprises unknown")),
+            "{:?}",
+            pool.caveats
+        );
+        let d = pool.select(Metric::Turns);
+        for p in d.selection.iter().chain(&d.holdout) {
+            let priority = p.priority.as_ref().unwrap();
+            assert!(
+                priority.unknown.contains(&Factor::Surprises),
+                "{priority:?}"
+            );
+            assert!(!priority.known_zero, "{priority:?}");
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 

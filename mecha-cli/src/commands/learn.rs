@@ -202,6 +202,44 @@ fn stamp_probation(
     mecha_core::learning::release_probation_when_measured_clean(rules, tallies);
 }
 
+/// One situation batch of one domain: the domain, the region its
+/// reflections share, and the reflections.
+type Batch = (
+    String,
+    mecha_core::situation::Situation,
+    Vec<mecha_core::learning::Reflexion>,
+);
+
+/// Put the pass's batches in replay-priority order (row 2e-6): each batch
+/// ranks as the highest priority among its reflections' sessions, by the
+/// one order (`replay_priority::sort_by_priority`) the harness selection
+/// and `validate`'s coverage budget also use. A session with no priority
+/// in `priorities` — not found, not read — has every factor unknown. Equal
+/// priorities keep the order the batches arrived in (domain, then region),
+/// which is the order they were argued in before.
+pub(crate) fn order_batches(
+    batches: &mut Vec<Batch>,
+    priorities: &BTreeMap<String, mecha_core::replay_priority::Priority>,
+) {
+    use mecha_core::replay_priority::{order_by_priority, sort_by_priority, Priority};
+    let unread = Priority::unread();
+    let mut keyed: Vec<(Priority, String, Batch)> = batches
+        .drain(..)
+        .enumerate()
+        .map(|(i, b)| {
+            let best =
+                b.2.iter()
+                    .map(|r| priorities.get(&r.session_id).unwrap_or(&unread))
+                    .min_by(|x, y| order_by_priority(x, y))
+                    .unwrap_or(&unread)
+                    .clone();
+            (best, format!("{i:08}"), b)
+        })
+        .collect();
+    sort_by_priority(&mut keyed, |(p, i, _)| (p, i.as_str()));
+    batches.extend(keyed.into_iter().map(|(_, _, b)| b));
+}
+
 /// Which reflection ids this pass leaves alone, given a holdout fraction.
 ///
 /// Deterministic by construction: sort by id, then take every k-th. A random
@@ -382,77 +420,106 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // region sits at one or two reflections is visible in the summary
     // rather than quiet.
     let mut waiting = 0usize;
-    for (domain, reflexions) in &by_domain {
-        for (region, reflexions) in batches_by_region(reflexions.clone()) {
-            let reflexions = &reflexions;
-            // The floor is per batch as well as per domain: the learner call
-            // moved inside the batch, and a domain floor alone let three
-            // reflections on three tools pass `--min 3` as three
-            // single-incident learner calls, each minting a scoped rule (and
-            // under `--auto` a probe pair) from one event — the permissive
-            // failure, found on review. A small region waits, unprocessed,
-            // until its own pool reaches the floor; the standing batch
-            // usually gets there first.
-            if reflexions.len() < args.min {
-                waiting += 1;
-                println!(
-                    "{domain} [{}]: {} reflection(s), below --min {}; waiting for more in \
-                     this situation",
-                    region.describe(),
-                    reflexions.len(),
-                    args.min
-                );
-                continue;
-            }
-            // One pending proposal per domain. Each batch proposes a
-            // whole-domain set from the same base, so two pending rows for a
-            // domain are alternatives: accepting one moves the rules under
-            // the other, and `accept`'s only way past that is `--force`, the
-            // lossy path. The later batches wait, unprocessed, behind the
-            // review (`--auto` resolves at birth and never parks here).
-            if (args.propose || args.auto) && already_argued(&proposals, domain, reflexions) {
-                println!(
-                    "{domain} [{}]: this exact batch of {} reflection(s) was already argued \
-                     (see `mecha proposals`); waiting for new reflections",
-                    region.describe(),
-                    reflexions.len()
-                );
-                continue;
-            }
-            if args.propose && !args.auto {
-                // Pending in the store, or admitted earlier in this very
-                // pass: every admitted batch under `--propose` writes a
-                // proposal, so the second of a domain would be the
-                // alternative this check exists to prevent. After the
-                // argued brake, not before: a batch the brake turns away
-                // must not claim the slot, or a `rejected_by_gate` batch
-                // (whose reflections stay unprocessed, so the brake stays
-                // true) starves every other region of its domain for good
-                // (found on review).
-                let pending = proposals
-                    .iter()
-                    .any(|p| p.domain == *domain && p.status == "pending")
-                    || !proposing.insert(domain.clone());
-                if pending {
-                    println!(
-                        "{domain} [{}]: a proposal for this domain is pending review; this \
-                         batch waits behind it (`mecha proposals`)",
-                        region.describe()
-                    );
-                    continue;
-                }
-            }
-            // A batch identical to one some proposal already argued — most
-            // likely a gate rejection whose reflections rightly returned to the
-            // pool — is not argued again until the pool changes. Without this,
-            // an unchanged pool means a fresh near-identical proposal (and its
-            // probe cost) every night. `--auto` needs the brake most: its
-            // `rejected_by_gate` arm leaves the reflections unprocessed, and
-            // `learn-live.sh` runs per *session*, so an unguarded identical
-            // batch re-pays a learner call plus a probe pair per steer/denial on
-            // every session close until the pool changes.
-            batches.push((domain.clone(), region, reflexions.clone()));
+    // Every situation batch of every domain, then in replay-priority order
+    // (row 2e-6, L1: "regret is reflected on first") — before the brakes
+    // below, because the order decides which batch of a domain claims the
+    // one proposal slot under `--propose`.
+    let mut candidates: Vec<Batch> = by_domain
+        .iter()
+        .flat_map(|(domain, reflexions)| {
+            batches_by_region(reflexions.clone())
+                .into_iter()
+                .map(move |(region, rs)| (domain.clone(), region, rs))
+        })
+        .collect();
+    // Read only when there is a choice to make: `learn-live.sh` runs this
+    // on every session close, and a pass with one batch at the floor needs
+    // no corpus walk. Batches below the floor wait whatever their priority.
+    if candidates.iter().filter(|b| b.2.len() >= args.min).count() > 1 {
+        let sessions_dir = mecha_core::session::Session::default_dir()?;
+        let ranker = mecha_core::replay_priority::Ranker::load(&sessions_dir, chrono::Utc::now());
+        for caveat in ranker.caveats() {
+            eprintln!("replay priority: {caveat}");
         }
+        let priorities = ranker.of_sessions(
+            &sessions_dir,
+            candidates
+                .iter()
+                .filter(|b| b.2.len() >= args.min)
+                .flat_map(|(_, _, rs)| rs.iter().map(|r| r.session_id.as_str())),
+        );
+        order_batches(&mut candidates, &priorities);
+    }
+    for (domain, region, reflexions) in candidates {
+        let domain = &domain;
+        let reflexions = &reflexions;
+        // The floor is per batch as well as per domain: the learner call
+        // moved inside the batch, and a domain floor alone let three
+        // reflections on three tools pass `--min 3` as three
+        // single-incident learner calls, each minting a scoped rule (and
+        // under `--auto` a probe pair) from one event — the permissive
+        // failure, found on review. A small region waits, unprocessed,
+        // until its own pool reaches the floor; the standing batch
+        // usually gets there first.
+        if reflexions.len() < args.min {
+            waiting += 1;
+            println!(
+                "{domain} [{}]: {} reflection(s), below --min {}; waiting for more in \
+                     this situation",
+                region.describe(),
+                reflexions.len(),
+                args.min
+            );
+            continue;
+        }
+        // One pending proposal per domain. Each batch proposes a
+        // whole-domain set from the same base, so two pending rows for a
+        // domain are alternatives: accepting one moves the rules under
+        // the other, and `accept`'s only way past that is `--force`, the
+        // lossy path. The later batches wait, unprocessed, behind the
+        // review (`--auto` resolves at birth and never parks here).
+        if (args.propose || args.auto) && already_argued(&proposals, domain, reflexions) {
+            println!(
+                "{domain} [{}]: this exact batch of {} reflection(s) was already argued \
+                     (see `mecha proposals`); waiting for new reflections",
+                region.describe(),
+                reflexions.len()
+            );
+            continue;
+        }
+        if args.propose && !args.auto {
+            // Pending in the store, or admitted earlier in this very
+            // pass: every admitted batch under `--propose` writes a
+            // proposal, so the second of a domain would be the
+            // alternative this check exists to prevent. After the
+            // argued brake, not before: a batch the brake turns away
+            // must not claim the slot, or a `rejected_by_gate` batch
+            // (whose reflections stay unprocessed, so the brake stays
+            // true) starves every other region of its domain for good
+            // (found on review).
+            let pending = proposals
+                .iter()
+                .any(|p| p.domain == *domain && p.status == "pending")
+                || !proposing.insert(domain.clone());
+            if pending {
+                println!(
+                    "{domain} [{}]: a proposal for this domain is pending review; this \
+                         batch waits behind it (`mecha proposals`)",
+                    region.describe()
+                );
+                continue;
+            }
+        }
+        // A batch identical to one some proposal already argued — most
+        // likely a gate rejection whose reflections rightly returned to the
+        // pool — is not argued again until the pool changes. Without this,
+        // an unchanged pool means a fresh near-identical proposal (and its
+        // probe cost) every night. `--auto` needs the brake most: its
+        // `rejected_by_gate` arm leaves the reflections unprocessed, and
+        // `learn-live.sh` runs per *session*, so an unguarded identical
+        // batch re-pays a learner call plus a probe pair per steer/denial on
+        // every session close until the pool changes.
+        batches.push((domain.clone(), region, reflexions.clone()));
     }
 
     if waiting > 0 {

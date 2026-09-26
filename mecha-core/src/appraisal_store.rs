@@ -394,11 +394,7 @@ impl SessionEvidence {
         // goal (I2) has the key the block was matched toward — `None` when
         // no config was recorded: unknown, never the empty-keyed scope,
         // which is standing and would match every run.
-        let situation = transcript.configs.last().map(|c| {
-            Situation::of_run(&c.tools, c.rules_workspace.as_deref())
-                .on(c.rules_surface)
-                .toward(c.rules_goal.clone())
-        });
+        let situation = transcript.configs.last().map(Situation::of_record);
         SessionEvidence {
             session_id: transcript.meta.id.clone(),
             taint,
@@ -876,10 +872,7 @@ impl CleanRead {
 /// The region key a record is compared on, or `None` where it cannot be
 /// keyed: an unknown situation, or a surface or goal this build cannot name.
 fn region_key(s: Option<&Situation>) -> Option<String> {
-    let s = s?;
-    let unnamed =
-        s.surface_unread.is_some() || matches!(s.goal, Some(crate::situation::GoalKey::Unread(_)));
-    (!unnamed).then(|| s.key())
+    s?.region_key()
 }
 
 /// The newest `n` of `rows` whose region key is `here`'s, never session
