@@ -452,6 +452,12 @@ Measured on 2026-09-26 against `c841aee`, unless a bullet names another build:
   that pair is the build's +14%; the 21.1 above is the same file on the
   new build through a router, a separate run.
   The router serves the UD-Q4_K_XL and both uncensored builds.
+- **`reasoning-preserve` is pinned in every Qwen preset**, because the new
+  build flipped its default (#28174: "template default" → enabled) and the
+  templates disagree about what unset means. Qwen3.6:
+  `preserve_thinking is defined and preserve_thinking is true` — drop unless
+  told. Qwen3.8 (all three builds): `is undefined or … is true` — keep unless
+  told. Read out of each GGUF's header. Owner's ruling: keep.
 - **Sampling is per model, in its preset.** Gemma runs on llama-server's
   defaults; the Qwens carry their model cards' values. Nothing sampling-shaped
   goes in `[*]`, or it silently retunes Gemma.

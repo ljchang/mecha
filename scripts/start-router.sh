@@ -74,10 +74,10 @@ hub_pair() {
 # 2026-08-14) only in the older one. The draft head is the exception, paired
 # by hub_pair, because a draft from another revision mis-drafts silently.
 hub_mmproj() {
-  local found
-  found=$(hub_file "$1" mmproj-BF16.gguf)
-  [ -n "$found" ] || found=$(hub_file "$1" mmproj-F16.gguf)
-  [ -n "$found" ] && { echo "$found"; return 0; }
+  local d
+  while IFS= read -r d; do
+    mmproj_in "$d" && return 0
+  done < <(ls -dt "$HUB"/models--"$1"/snapshots/*/ 2>/dev/null)
   # The newest snapshot is where the fetch line it prints should write; a
   # caller only gets here after finding the weights, so there is one.
   mmproj_or_die "$(ls -dt "$HUB/models--$1"/snapshots/*/ 2>/dev/null | head -1 || true)" "${1/--//}"
@@ -89,8 +89,20 @@ warn() { echo "$(basename "$0"): $*" >&2; }
 # line would silently retune it.
 qwen_sampling() {
   printf '%s\n' "temp = $1" "top-p = 0.95" "top-k = 20" "min-p = 0.0" \
-    "presence-penalty = 0.0" "repeat-penalty = 1.0" "reasoning-budget = 4096"
+    "presence-penalty = 0.0" "repeat-penalty = 1.0" "reasoning-budget = 4096" \
+    "reasoning-preserve = true"
 }
+# **reasoning-preserve is set, never left to the build** (owner's ruling,
+# 2026-09-26). It decides whether earlier turns' thinking stays in the prompt,
+# and llama.cpp flipped its default under us: at c841aee it deferred to the
+# template, from #28174 on it is enabled. Qwen3.6's template drops old thinking
+# unless told otherwise (`preserve_thinking is defined and … true`), so the
+# flip would have changed production's prompts silently at the install; the
+# Qwen3.8 templates keep it by default (`is undefined or … true`), so this
+# changes nothing there. Kept: mecha sends reasoning_content back, and keeping
+# it makes each prompt a prefix of the next — the cached prefix survives a new
+# user turn instead of re-reading from the first dropped block — at the cost
+# of context that fills sooner. Gemma's template has no such rule.
 
 printf '%s\n' "version = 1" "" "[*]" "n-gpu-layers = 999" "jinja = true" >"$OUT"
 

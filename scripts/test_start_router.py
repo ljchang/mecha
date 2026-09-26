@@ -129,6 +129,13 @@ class StartRouter(unittest.TestCase):
         self.assertIn("skipping qwen3.8-27b", err)
         self.assertNotIn("serving the withdrawn", err)
 
+    def test_production_pins_reasoning_preserve_rather_than_inherit_the_builds_default(self):
+        # llama.cpp flipped this default (#28174); Qwen3.6's template drops
+        # old thinking unless told, so leaving it unset changed production.
+        self.cache.production()
+        _, _, err, ini = self.run_script()
+        self.assertEqual(self.section(ini, "qwen3.6-35b-a3b").get("reasoning-preserve"), "true", err)
+
     def test_the_newest_copy_of_a_file_wins(self):
         self.cache.production()
         self.cache.put(Q38, "a", "Qwen3.8-27B-UD-Q4_K_XL.gguf", age=500)
@@ -205,6 +212,7 @@ class StartRouter(unittest.TestCase):
             self.assertTrue(preset.get("mmproj", "").endswith(proj), (name, preset))
             self.assertEqual(preset.get("spec-type"), "draft-mtp", name)
             self.assertEqual(preset.get("temp"), "1.0", name)
+            self.assertEqual(preset.get("reasoning-preserve"), "true", name)
 
 if __name__ == "__main__":
     unittest.main()
