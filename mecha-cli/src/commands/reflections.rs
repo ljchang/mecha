@@ -105,10 +105,22 @@ pub async fn execute(args: Args) -> Result<()> {
         Cmd::Restore { id } => {
             let _lock = store.lock()?;
             let r = store.restore_reflexion(&id)?;
-            println!("restored {} — learnable: {}", r.id, yes_no(r.learnable()));
+            println!("restored {} — learnable: {}", r.id, yes_no(admitted(&r)));
             Ok(())
         }
     }
+}
+
+/// **The whole of `learn`'s gate**, which is what `learnable` means on every
+/// surface here: the provenance half (`Reflexion::learnable`) and D3's
+/// attribution half (`Reflexion::attribution_admits`, row 2e-3). The field
+/// named for the gate must be the gate, or a script filtering on it counts a
+/// data error `learn` will never mine (found on review); the provenance half
+/// rides beside it as `provenance_admits`. A processed reflection already
+/// passed the gate it met, which for one consumed before attribution existed
+/// was provenance alone: the same reading [`blocked_because`] gives it.
+fn admitted(r: &Reflexion) -> bool {
+    r.learnable() && (r.is_processed || r.attribution_admits())
 }
 
 fn yes_no(b: bool) -> &'static str {
@@ -134,14 +146,57 @@ fn blocked_because(r: &Reflexion) -> Option<String> {
         });
     }
     match r.provenance() {
-        Origin::Clean => None,
+        Origin::Clean => {}
         Origin::Derived => {
-            Some("mecha's own words — nothing can grade it (edit to adopt it)".into())
+            return Some("mecha's own words — nothing can grade it (edit to adopt it)".into())
         }
-        Origin::Untrusted => Some(
-            "third-party content was in context when it was mined (edit to make it yours)".into(),
+        Origin::Untrusted => {
+            return Some(
+                "third-party content was in context when it was mined (edit to make it yours)"
+                    .into(),
+            )
+        }
+    }
+    // D3's half of the gate (row 2e-3): each class says what happens to it
+    // instead, because each calls for something different from the owner.
+    // Not said of a processed reflection: one consumed before attribution
+    // existed already became a rule, and "never a rule" would be untrue.
+    if r.is_processed {
+        return None;
+    }
+    use mecha_core::attribution::Class;
+    match (r.attribution_withholds()?, &r.attribution) {
+        (Class::Data, _) => Some(
+            "a data error — the run used what it was given; the source is repaired, never a \
+             rule (edit to make it yours)"
+                .into(),
+        ),
+        (Class::Gap, _) => Some(
+            "a gap — the run was given neither value; a retrieval target, never a rule \
+             (edit to make it yours)"
+                .into(),
+        ),
+        (_, None) => Some(
+            "mined before corrections were attributed — unknown, never a rule (edit to make \
+             it yours)"
+                .into(),
+        ),
+        (_, Some(_)) => Some(
+            "the correction could not be placed — unknown, never a rule (edit to make it \
+             yours)"
+                .into(),
         ),
     }
+}
+
+/// The attribution as a reader sees it: the class, and the class's basis.
+fn attribution_words(r: &Reflexion) -> Option<String> {
+    let a = r.attribution.as_ref()?;
+    let basis = serde_json::to_value(a.basis)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
+    Some(format!("{} ({basis})", a.class.as_str()))
 }
 
 fn list(store: &LearningStore, domain: Option<&str>, all: bool, as_json: bool) -> Result<()> {
@@ -162,7 +217,13 @@ fn list(store: &LearningStore, domain: Option<&str>, all: bool, as_json: bool) -
                     "trigger": r.trigger,
                     "title": r.reflexion_text,
                     "origin": format!("{:?}", r.provenance()).to_lowercase(),
-                    "learnable": r.learnable(),
+                    // The whole gate; its provenance half beside it.
+                    "learnable": admitted(r),
+                    "provenance_admits": r.learnable(),
+                    // The class alone, under a name that says so: `show --json`
+                    // carries the whole `attribution` object, and one key must
+                    // not mean two shapes (found on review).
+                    "attribution_class": r.attribution.as_ref().map(|a| a.class.as_str()),
                     "blocked": blocked_because(r),
                     "edited": r.edited_at.is_some(),
                     "dropped": r.dropped_at.is_some(),
@@ -181,7 +242,7 @@ fn list(store: &LearningStore, domain: Option<&str>, all: bool, as_json: bool) -
         return Ok(());
     }
 
-    let learnable = rows.iter().filter(|r| r.learnable()).count();
+    let learnable = rows.iter().filter(|r| admitted(r)).count();
     println!(
         "{} reflection(s) · {learnable} can become rules\n",
         rows.len()
@@ -228,7 +289,8 @@ fn detail_payload(r: &Reflexion) -> Result<serde_json::Value> {
             "provenance".into(),
             serde_json::json!(format!("{:?}", r.provenance()).to_lowercase()),
         );
-        map.insert("learnable".into(), serde_json::json!(r.learnable()));
+        map.insert("learnable".into(), serde_json::json!(admitted(r)));
+        map.insert("provenance_admits".into(), serde_json::json!(r.learnable()));
         map.insert("blocked".into(), serde_json::json!(blocked_because(r)));
     }
     Ok(value)
@@ -278,8 +340,21 @@ fn show(store: &LearningStore, id: &str, as_json: bool) -> Result<()> {
         "provenance {:?} · evidence {:?} · learnable {}",
         r.provenance(),
         r.evidence,
-        yes_no(r.learnable())
+        yes_no(admitted(&r))
     );
+    if let Some(a) = &r.attribution {
+        let mut line = format!("attribution: {}", attribution_words(&r).unwrap_or_default());
+        if let Some(f) = &a.fact {
+            line.push_str(&format!(" · wrong \"{}\"", f.wrong));
+            if let Some(right) = &f.right {
+                line.push_str(&format!(" → right \"{right}\""));
+            }
+        }
+        if let Some(src) = &a.source {
+            line.push_str(&format!(" · from {} ({})", src.tool, src.call));
+        }
+        println!("{line}");
+    }
     if let Some(why) = blocked_because(&r) {
         println!("  └ {why}");
     }
@@ -336,6 +411,7 @@ fn first_line(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mecha_core::attribution::{Attribution, Basis};
     use mecha_core::learning::{Evidence, Trigger};
 
     fn r(origin: Origin) -> Reflexion {
@@ -360,7 +436,61 @@ mod tests {
             dropped_reason: None,
             situation: None,
             situation_recomputed_at: None,
+            // A steer attributed to the agent: the one class `learn` mines.
+            attribution: Some(Attribution::new(Basis::NoFact, None, None)),
         }
+    }
+
+    /// Each class D3 holds back says what happens to it instead, and an
+    /// unattributed one says why it is unknown — never a bare "excluded".
+    #[test]
+    fn each_attribution_that_is_withheld_says_which_and_what_to_do() {
+        let with = |basis| {
+            let mut x = r(Origin::Clean);
+            x.attribution = Some(Attribution::new(basis, None, None));
+            blocked_because(&x).unwrap()
+        };
+        assert!(with(Basis::WrongGiven).starts_with("a data error"));
+        assert!(with(Basis::NeitherGiven).starts_with("a gap"));
+        assert!(with(Basis::Ungrounded).contains("could not be placed"));
+        let mut before = r(Origin::Clean);
+        before.attribution = None;
+        let why = blocked_because(&before).unwrap();
+        assert!(why.contains("before corrections were attributed"), "{why}");
+        // A reflection consumed before attribution already became a rule.
+        before.is_processed = true;
+        assert_eq!(blocked_because(&before), None);
+        // An owner's edit makes the lesson theirs, whatever its class.
+        let mut edited = r(Origin::Clean);
+        edited.attribution = Some(Attribution::new(Basis::WrongGiven, None, None));
+        edited.edited_at = Some("2026-09-26T00:00:00Z".into());
+        assert_eq!(blocked_because(&edited), None);
+    }
+
+    /// `learnable` on every surface is the whole gate, never its provenance
+    /// half: a data error passes provenance and is never mined, and a field
+    /// saying `true` for it would be counted by any script filtering on it
+    /// (found on review). The half rides beside it, named for what it is.
+    #[test]
+    fn learnable_is_the_whole_gate_and_its_provenance_half_is_named_apart() {
+        let mut data = r(Origin::Clean);
+        data.attribution = Some(Attribution::new(Basis::WrongGiven, None, None));
+        assert!(data.learnable(), "the provenance half admits it");
+        let payload = detail_payload(&data).unwrap();
+        assert_eq!(payload["learnable"], false);
+        assert_eq!(payload["provenance_admits"], true);
+        assert_eq!(payload["attribution"]["class"], "data");
+
+        let behaviour = detail_payload(&r(Origin::Clean)).unwrap();
+        assert_eq!(behaviour["learnable"], true);
+
+        // Consumed before attribution existed: it passed the gate it met.
+        let mut consumed = r(Origin::Clean);
+        consumed.attribution = None;
+        consumed.is_processed = true;
+        assert!(admitted(&consumed));
+        consumed.is_processed = false;
+        assert!(!admitted(&consumed));
     }
 
     /// Four ways to be refused, four different things for the owner to do. A

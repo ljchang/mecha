@@ -105,6 +105,37 @@ using. The `/learning` modal in the TUI drives exactly them, alongside
 the same two panes, the same verbs as child processes, so no surface can do
 something to the store that the command line cannot.
 
+### Whose mistake was it?
+
+Not every correction is a lesson about how mecha behaves. If you say "no,
+Dana moved to Lakeside Institute" and the knowledge graph mecha read still
+listed her old employer, mecha did the right thing with wrong data. A rule
+telling it to behave differently would teach it nothing true. So each
+correction is placed by **what the run had actually read** before you stepped
+in:
+
+| What the run had read | Class | What happens |
+|---|---|---|
+| the wrong value | **data error** | the source is repaired, never a rule |
+| the right value, and not the wrong one | **behaviour error** | a lesson `mecha learn` may mine |
+| neither | **gap**, nobody's fault | recorded as something to look up, never a rule |
+
+The reflector only copies the two values, word for word, out of your
+correction. The class is decided by looking them up in the tool results the
+run received, never by a model. A value that is not really in your words, or
+not in anything the run said or read, makes the correction **unknown**. So
+does a reflection recorded before this existed. Unknown corrections are
+counted and never mined. A correction about *how* the work was done ("don't
+run that", "shorter, please") names no fact, and is a behaviour lesson as
+before.
+
+`mecha learn` prints how many reflections it held back under each class, and
+`mecha reflections` says why for each one. Editing a lesson into your own
+words admits it whatever its class, the same way an edit rescues a lesson
+held back for provenance. This is the agent's half of the knowledge graph's
+error contract. The graph's half, superseding the wrong fact, runs when the
+session is [distilled](/docs/features/memory/distillation).
+
 ## `mecha learn` — reflections become rules
 
 Consolidation groups reflections by domain and situation, then rewrites the

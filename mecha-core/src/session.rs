@@ -1987,6 +1987,48 @@ impl Session {
         all
     }
 
+    /// [`Session::messages_ever`] as it stood when `target` was recorded:
+    /// what the conversation had held before it, including whatever a later
+    /// compaction dropped, evicted or thinned. `target` is a message of the
+    /// loaded list; the record it came from is the one `message` record equal
+    /// to it, or to it less blocks an extension folded in afterwards.
+    ///
+    /// `None` unless exactly one record is: a repeated message (two "no"s)
+    /// or one a rewrite changed since cannot be placed, and a caller must
+    /// treat that as unreadable rather than cut at a guess — a cut too early
+    /// hides what the run had read, which is the fail-open direction for D3.
+    pub fn messages_ever_before(transcript: &str, target: &Message) -> Option<Vec<Message>> {
+        let recorded_as = |m: &Message| {
+            !m.content.is_empty()
+                && m.content.len() <= target.content.len()
+                && *m
+                    == Message {
+                        content: target.content[..m.content.len()].to_vec(),
+                        ..target.clone()
+                    }
+        };
+        let mut offset = 0usize;
+        let mut found = None;
+        for line in transcript.split_inclusive('\n') {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                if let Some(Record::Message(m)) = serde_json::from_str::<Record>(trimmed)
+                    .ok()
+                    .or_else(|| lenient_record(trimmed))
+                {
+                    if recorded_as(&m) {
+                        if found.is_some() {
+                            return None;
+                        }
+                        found = Some(offset);
+                    }
+                }
+            }
+            offset += line.len();
+        }
+        found.map(|at| Session::messages_ever(&transcript[..at]))
+    }
+
     /// The taint checkpoints of a transcript, positioned against its messages.
     ///
     /// Every front-end appends a `Record::Taint` checkpoint *after* the

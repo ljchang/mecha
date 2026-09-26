@@ -360,7 +360,7 @@ with a `mecha exp` arm against EXPERIMENT-DESIGN §15's appraisal-off preset
 | **2d-3** | **The losing arm teaches.** A comparison's confirmed losing outcome is written into that session's appraisal as counterfactual reflection — a new pointer kind naming the comparison, which 2a-1's `Pointer::Unread` already round-trips. | O3 | 2a-2, 2d-1 | a decided comparison's loser appears on the session's appraisal, pointing at its comparison; an undecided one writes nothing — *built; see O3* |
 | **2e-1** | **The reflector's lessons against the appraisal's**, on the same interventions, by the validation probes already built — shadow, measurement only. R25's gate for 2a-4. **Built as 2e-1** — `mecha learn --compare-sources`; see L2 for what was built and what it left. | L2, R25 | 2a-2 | a report per intervention region: validation rate of each source's lessons, with the counts beneath it — *built; the measurement on real sessions is owed, and it is R25's gate: 2a-4 waits on the appraisal's rate being no worse than the reflector's over the same decided interventions* |
 | **2e-2** | **`learn` fed clean appraisals** — lessons and interpretations as material, successes included, through `Clean` only; a stage lever with `stages_off` against reflector-only learning. | L2, R19 | 2e-1 | a tainted appraisal's lesson never reaches a batch (a test on the type); the lever's arm runs |
-| **2e-3** | **Attribute a correction by what the run was given** — mecha-graph's D3 contract ported: data error, behaviour error or gap from `grounding::calls`; a behaviour rule mined only from a behaviour error; a gap a retrieval target. | L7, here §5 | 1d | fixture corrections of each class are routed to their class; no behaviour rule is mined from a data error or a gap |
+| **2e-3** | **Attribute a correction by what the run was given** — mecha-graph's D3 contract ported: data error, behaviour error or gap from `grounding::calls`; a behaviour rule mined only from a behaviour error; a gap a retrieval target. | L7, here §5 | 1d | fixture corrections of each class are routed to their class; no behaviour rule is mined from a data error or a gap — *built; see L7* |
 | **2e-4** | **Learn from what went right**: owner-verified positives (sent unchanged, answered, `done` and not reopened) as writing exemplars, planning success examples and contrast evidence; a staged skill draft after k successes in one region, proposed only. | L2 | 1d | a draft sent unchanged is mined as an exemplar; a success the owner later reopens is withdrawn; no skill is written without the owner |
 | **2e-5** | **Goal-stamped reflections and per-line tenure**: the anchor as the second source of `Reflexion::goals`; tenure by the Wilson lower bound of the owner-accept rate on the line's owner-verdict channels (`ladder.rs` ported); dormancy for a region that stops recurring (`decay.rs`). Appraisal-weighted tenure only behind R20's guard — the owner's verdict overrides, grounded claims from clean runs only — and as a measured lever against owner-only tenure, with a revert, before it is on. | L3, R20, here §5 | 1a, 1d; the appraisal-weighted half 2a-2 | a rule's tenure moves on owner verdicts by the bound, not a streak; an owner verdict overrides an appraisal's bad; the lever reverts |
 | **2e-6** | **Replay priority is gain × need**: \|signed error\| on owner-verdict channels × charter rank × how often the `Situation` region recurs (the Selector's demand term) × age decay; the hopeless demoted; the holdout still drawn uniformly first; the same order for `learn`'s batches and the validation budget; 2b-2's misses raise it. | L1, here §5 | 1g; 2b-2 for the surprise term | the uniform holdout is unchanged by the ranking; a recurring region outranks a one-off of equal error |
@@ -466,7 +466,7 @@ Inventory §5 has the overlap table.
 | phase | what it ports |
 |---|---|
 | 1 | the board's closure path, onto the one closure event (S8) |
-| 2 | the D3 correction contract; the ladder's Wilson-bound tenure; decay as rule dormancy; the Selector's demand term as L1's *need* |
+| 2 | the D3 correction contract (*ported as 2e-3*); the ladder's Wilson-bound tenure; decay as rule dormancy; the Selector's demand term as L1's *need* |
 | 3 | `verify.rs` folded into `grounding.rs` — one grounding primitive |
 | 4 | review-on-use's verdict queue as the shape of `mecha review` |
 | 5 | pack flags (contradicted / denied / stale) as evidence for the brief and the markers |
@@ -1536,6 +1536,46 @@ graph's supersede-and-negate path already exists); a gap is its own class —
 nobody's fault, and a retrieval target rather than a lesson. This is the
 same agency question the appraisal asks, answered from evidence the run
 already recorded (`grounding.rs`'s `calls`).
+
+*2e-3 built: a correction is attributed by what the run was given*
+(`attribution.rs`; ARCHITECTURE's *A behaviour rule is mined only from a
+behaviour error* holds the invariants). **What was ported from D3**
+(`mecha-graph` `docs/PLAN.md` §D3, graph half `corrections.rs`):
+
+- the three-row table and its order. Both values given is still a data error.
+- the verdict as a lookup against the pack, never a judgement. The pack is
+  `grounding::calls` over the messages before the correction.
+- the split of consumers: the distiller still ships every clean correction
+  to the graph, and the reflector's lesson reaches `learn` only on a
+  behaviour error.
+
+**What changed, and why.**
+
+- **The spans come from the reflector.** D3's correction content is the
+  distiller's `{wrong, right}`, but the distiller's prompt is pinned (R32)
+  and its corrections are per session, not per intervention. The reflector
+  copies the spans and never names the class.
+- **Spans are grounded before they decide** (`grounding::holds`). A
+  paraphrase would read as absent, and absence decides a gap.
+- **A correction with no fact at issue is behaviour.** It is outside D3's
+  table, and was mined before.
+
+**Where each class lands.**
+
+- behaviour goes to `learn`.
+- data is recorded on the reflection with its source call. Its repair is
+  the graph's existing path when the source is the graph.
+- a gap is recorded on the reflection with the fact it lacked. No
+  retrieval-target store exists, and none was invented.
+- unknown is counted and never mined. That covers every reflection mined
+  before 2e-3, and an owner's edit admits it.
+
+**Not built:**
+
+- a home for gaps. The graph's `query_log` gap queue has no write verb from
+  mecha.
+- the graph review rejections 1d left unread.
+- attribution of the appraisal's lessons, which 2e-2 will feed to `learn`.
 
 #### L3. Goal-stamped reflections and per-line tenure
 
