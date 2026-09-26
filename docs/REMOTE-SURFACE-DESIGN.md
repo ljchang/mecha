@@ -423,8 +423,8 @@ arm went live that way on 2026-09-26: one server restart at 12:41Z and four
 service restarts at 12:46Z.
 
 **D12 — one chat model resident, loaded when the owner picks another, and
-every run uses whichever is loaded.** *Proposed; awaiting the owner's
-ruling.*
+every run uses whichever is loaded.** Ruled by the owner 2026-09-26,
+together with the measurement question below.
 
 ### The server: router mode
 
@@ -447,6 +447,12 @@ request by its `model` field. What follows was read in
 - **A swap measured about 9 s warm:** the uncensored arm's 20 GB file,
   already in the page cache, from process start at 12:41:35 to "model
   loaded" at 12:41:44. A cold load from disk has not been measured.
+- **Stopping the router stops its children.** On SIGINT (the unit's
+  `KillSignal`) its `clean_up` calls `server_models::unload_all`, which
+  sends each child an exit command over stdin and waits for it. A child
+  that hangs is force-terminated after `stop-timeout` (10 s by default),
+  and systemd's default `KillMode=control-group` backstops the whole
+  group. Confirmed as a fact at `c841aee`, not relied on as an assumption.
 - **The embedding server stays out of the router.** It keeps its own
   process on :8081 (`LLAMA-SERVER.md` §Two servers). An embedding request
   must never be able to evict the chat model, or the other way round.
@@ -483,12 +489,14 @@ router is `/props`' rule applied to choosing.
   owner switches to Y keeps naming X, so its next request waits for Y to
   go idle and then swaps X back. The owner's next turn swaps again. This
   costs at most one extra pair of swaps per run, and it is accepted.
-- **The cost is to measurement.** Nightly passes (learn, validate,
-  ruminate, appraisal) then run on whichever model is loaded. The per-run
-  `model` in the record keeps the corpus honest, but a nightly comparison
-  can mix models. Deferring measurement passes while the loaded model is
-  not `default_provider`'s is the likely fix, and `scripts/model-idle.sh`
-  is already the gate where that check would sit. Not in v1.
+- **Nightly passes run on whatever is loaded, and the record says which**
+  (owner's ruling, 2026-09-26). Learn, validate, ruminate and appraisal are
+  not deferred or skipped on a non-production model. The per-run `model`
+  in the session record is what makes that safe: a reader comparing runs
+  slices by the model that answered, instead of the scheduler keeping
+  models apart. That makes the recorded `model` load-bearing for every
+  corpus reader. It must be the resolved provider's alias, never
+  `default_provider`'s.
 
 ### Who may switch
 
@@ -548,10 +556,6 @@ setting.) The chip reads the router's `GET /models/sse` stream, so
 
 ### Open
 
-- Measurement passes on a non-production model: defer, skip, or run and
-  let the record say which model answered.
-- Whether stopping the router with `KillSignal=SIGINT` stops its children
-  cleanly, or leaves one holding memory.
 - Cold-load time, measured after a page-cache drop.
 - Whether the scripts or the ini are the authority on flags. Today
   `start-moe-mtp.sh` is, and both kept side by side is how two copies
