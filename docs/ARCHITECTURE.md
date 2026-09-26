@@ -5636,14 +5636,22 @@ It does not add unsolicited lesson delivery. Missing context is never a success.
 `Reflexion::goals` is what a lesson bears on, and the join `goal_lessons`
 serves through; it had one source, the plan at the intervention, and was
 empty on every reflection once the model stopped planning. The second source
-is the anchor the run covering the intervention recorded
-(`Transcript::anchor_covering`, off that run's `RunStats::goal_anchor`), taken
-only where the plan and the question in force name none, since evidence local
-to the moment is the more specific. Three things it is not. It is **not the
+is the anchor in force at the intervention (`Transcript::anchor_covering`),
+taken only where the plan and the question in force name none, since evidence
+local to the moment is the more specific. What the record holds is the anchor
+each run *ended on*: `record_run` writes a `GoalAnchor` after every run's
+messages, a failed run's included (the task and trigger front-ends record no
+outcome for a run that errored, so the outcome list cannot say which run a
+message belongs to — found on review of #335), and the parse places each
+record among the messages and repairs it by the outcomes' `Rewrite` rule. An
+answered `ask_user` carrying a goal pointer moves the anchor mid-run, and the
+record has no finer grain, so a run holding such a call after the message (or
+in the turn the message answers) stamps none: the anchor may postdate the
+intervention, and one before it is `goal_at`'s to name. It is **not the
 session's last anchor**: a conversation re-anchored by an answer or a
-hand-over carries each run's own, and a message no recorded outcome covers
-(an errored run, one in flight, a head a summarising compaction removed)
-stamps none rather than a later anchor read back onto it. It is **not the
+hand-over carries each run's own, and a message no record covers (a run in
+flight, a head a summarising compaction removed) stamps none rather than a
+later anchor read back onto it. It is **not the
 situation's goal key**, which stays `rules_goal` — what the rules block was
 matched toward — so where a hand-over resumes an older anchor the two differ
 on purpose, one saying what the lesson served and the other where it loads.

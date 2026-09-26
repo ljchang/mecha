@@ -537,8 +537,10 @@ fn matched_keys_of(path: &Path) -> std::result::Result<Vec<ReconciledKeys>, Stri
 ///    or the step goals on the intervention message's planning metadata,
 ///    else the plan or question in force there (`appraisal::goal_at`).
 ///    Evidence local to the moment, so it wins where it names one.
-/// 2. **The conversation's anchor** (S1), which the run covering the
-///    intervention recorded (`Transcript::anchor_covering`): a task run's
+/// 2. **The conversation's anchor** (S1) in force at the intervention
+///    (`Transcript::anchor_covering`: what the run holding it ended on,
+///    and none where a question answered later in that run could have
+///    moved it after the intervention): a task run's
 ///    `task:<id>`, a trigger run's `trigger:<name>`, a front-door drain's
 ///    `request:<id>`, or a goal the owner confirmed. Only when the first
 ///    names none — which, since the model stopped planning, is every
@@ -1583,6 +1585,108 @@ mod tests {
             lessons.iter().map(|l| &l.goal).collect::<Vec<_>>(),
             vec![&task],
             "{lessons:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The two ways the anchor a run *ended on* can differ from the one in
+    /// force at an intervention (review of #335). A run that errored
+    /// records its anchor and no outcome, and its messages take its own
+    /// anchor, never the next run's; and a run whose anchor an answered
+    /// `ask_user` could have moved after the intervention stamps none.
+    #[test]
+    fn the_anchor_is_the_one_in_force_at_the_intervention_or_none() {
+        use mecha_core::goal::GoalRef;
+        use mecha_core::learning::Trigger;
+        use mecha_core::message::{Block, Message};
+        use mecha_core::session::RunStats;
+        let dir = scratch("mecha-reflect-anchor-bounds");
+        let first: GoalRef = "task:t-northwind-audit".parse().unwrap();
+        let second: GoalRef = "task:t-lakeside-budget".parse().unwrap();
+        let at = |at: usize| Intervention {
+            trigger: Trigger::Denial,
+            context: String::new(),
+            text: String::new(),
+            aftermath: String::new(),
+            at,
+            tools_before: Vec::new(),
+            tools_after: Vec::new(),
+        };
+        let text = |t: &str| Message::assistant(vec![Block::Text { text: t.into() }]);
+
+        // Run one errors: its messages and its anchor are recorded, no
+        // outcome (`tasks work`, a trigger run). Run two succeeds.
+        let s = session_on(&dir, "/jail", None, Some(SessionKind::Task), None);
+        s.append(&Record::Message(Message::user("audit Northwind")))
+            .unwrap();
+        s.append(&Record::GoalAnchor {
+            goal: Some(first.clone()),
+        })
+        .unwrap();
+        s.append(&Record::Message(Message::user("try again")))
+            .unwrap();
+        s.append(&Record::Message(text("done"))).unwrap();
+        s.append(&Record::GoalAnchor {
+            goal: Some(second.clone()),
+        })
+        .unwrap();
+        s.append(&Record::Outcome(RunStats {
+            goal_anchor: Some(second.clone()),
+            ..Default::default()
+        }))
+        .unwrap();
+        let t = Session::read(&s.path).unwrap();
+        assert_eq!(goals_for(&t, &at(0)), vec![first.clone()], "its own run's");
+        assert_eq!(goals_for(&t, &at(1)), vec![second.clone()]);
+
+        // One run: a denial at 2, then a question carrying a goal pointer
+        // the owner answers at 4 — the recorded anchor may postdate 2.
+        let s = session_on(&dir, "/jail", None, Some(SessionKind::Task), None);
+        let shell = Block::ToolUse {
+            id: "c1".into(),
+            name: "shell".into(),
+            input: serde_json::json!({"command": "ls"}),
+        };
+        let ask = Block::ToolUse {
+            id: "c2".into(),
+            name: "ask_user".into(),
+            input: serde_json::json!({
+                "question": "Is this the Lakeside budget?",
+                "goal": "Prepare the Lakeside budget for sam@example.edu",
+                "serves": second.to_string(),
+            }),
+        };
+        for m in [
+            Message::user("prepare it"),
+            Message::assistant(vec![shell]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "c1".into(),
+                content: "Denied by the user: not that".into(),
+                is_error: true,
+            }]),
+            Message::assistant(vec![ask]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "c2".into(),
+                content: "yes".into(),
+                is_error: false,
+            }]),
+            text("on it"),
+        ] {
+            s.append(&Record::Message(m)).unwrap();
+        }
+        s.append(&Record::GoalAnchor {
+            goal: Some(second.clone()),
+        })
+        .unwrap();
+        s.append(&Record::Outcome(RunStats {
+            goal_anchor: Some(second.clone()),
+            ..Default::default()
+        }))
+        .unwrap();
+        let t = Session::read(&s.path).unwrap();
+        assert!(
+            goals_for(&t, &at(2)).is_empty(),
+            "an anchor the owner may have set after the denial is not stamped on it"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
