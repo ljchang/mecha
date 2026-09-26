@@ -589,6 +589,40 @@ applies it directly and resolves superseded proposals. Probation ends only
 when graded evidence clears its recorded convictions, not merely because a
 probe ran.
 
+### Where a rule stands with you, and whether its situation still comes up
+
+`mecha rules` also prints, under each active learned rule, one line with two
+readings:
+
+```
+      owner: tenured: 41 of 51 owner verdict(s) accepted, lower bound 0.68 · region: 6 run(s) in its region in the last 30 days
+```
+
+**Owner tenure** counts your verdicts on the runs that carried the rule: a draft
+you sent unchanged, answered or closed counts for it; a draft you edited or
+rejected, a steer, a denial or a stop, a reopen counts against it. Nothing a
+model says about its own work counts, and neither does a smoke test or an
+experiment trial. The reading is the lower end of a 95% confidence interval on
+your accept rate (the Wilson bound), so a short record is not a perfect one:
+
+- **not enough owner verdicts** below 20 of them. There is no bound yet, and nothing is decided.
+- **tenured** when the bound reaches 0.65. A rule applied on probation is released
+  from it and answers to the ordinary retirement threshold of 3.
+- **not tenured** when the bound falls short. This demotes nothing.
+- **unknown** when a session that carried the rule could not be read in full.
+  That session might hold the rejections.
+
+Tenure never takes a rule out of your prompt and never keeps one in. Retirement
+still comes only from measured regressions in the validation ledger.
+
+**Region** says how many recent runs (the last 30 days) the rule's scope
+matched. A rule older than that window that matched none is marked **QUIET**,
+and the roster counts those rules at the end. That line is a report: a quiet
+rule keeps loading and keeps its place, for the reason below. `--json` carries
+both readings as `owner` and `quiet`. `--no-board` (the TUI and web settings
+path) skips the session walk behind them, and they read `null`, which means
+"not read", not "none".
+
 **Retirement is a flag, never a deletion.** `Rule::active()` is
 `enabled && retired_at.is_none()`, so the stronger claim wins even if `enabled`
 was left true by a hand edit. The retired rule stays in the file, and the learner
@@ -643,6 +677,8 @@ not reacquire them:
 
 Measured harm drives automatic retirement or narrowing. The owner can also
 retire or restore a rule explicitly; age and usage alone do not remove one.
+A quiet region is reported in `mecha rules` for you to read, and it changes
+nothing.
 
 ## `mecha eval --ab-rules` — the coarse complement
 

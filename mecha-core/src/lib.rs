@@ -115,6 +115,7 @@ pub mod skill;
 pub mod step;
 pub mod subagent;
 pub mod surface;
+pub mod tenure;
 pub(crate) mod text;
 pub mod title;
 pub mod tool;
