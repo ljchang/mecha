@@ -232,13 +232,19 @@ pub trait SessionFacts {
 /// corpus reader applies.
 pub struct SessionIndex {
     by_id: HashMap<String, (bool, PathBuf)>,
+    /// Transcripts whose header could not be read (`list_counting`'s
+    /// count). Each is `Missing` to [`SessionFacts::seen`] — a torn
+    /// smoke-test session reads as not a test — so a non-zero count makes
+    /// the set partial: the store is short, not whole (found on review).
+    pub skipped: usize,
 }
 
 impl SessionIndex {
     pub fn load(dir: &Path) -> anyhow::Result<SessionIndex> {
         let scan = crate::runlog::Scan::default();
-        let (listed, _) = crate::session::Session::list_counting(dir)?;
+        let (listed, skipped) = crate::session::Session::list_counting(dir)?;
         Ok(SessionIndex {
+            skipped,
             by_id: listed
                 .into_iter()
                 .map(|(meta, path)| {
@@ -262,11 +268,14 @@ impl SessionFacts for SessionIndex {
     fn completed(&self, id: &str) -> Option<bool> {
         let (_, path) = self.by_id.get(id)?;
         // The folded episode's stop cause, which `RunStats::merge` takes
-        // from the last run — what the appraisal's question arm reads.
-        crate::session::Session::episode_stats(path)
+        // from the last run — what the appraisal's question arm reads. An
+        // absent cause is unknown — `lenient_stop_cause` degrades a variant
+        // this build cannot name to it, and an outcome from before the
+        // field has none — never "did not finish" (found on review).
+        let stats = crate::session::Session::episode_stats(path)
             .ok()
-            .flatten()
-            .map(|s| s.stop_cause == Some(crate::agent::StopCause::Completed))
+            .flatten()?;
+        Some(stats.stop_cause? == crate::agent::StopCause::Completed)
     }
 }
 
@@ -786,6 +795,17 @@ mod tests {
         );
         write("s-parked", SessionKind::Chat, &[StopCause::Interrupted]);
         write("s-silent", SessionKind::Chat, &[]);
+        // An outcome whose stop cause this build cannot name: the lenient
+        // read makes it absent, which is unknown, not "did not finish".
+        write("s-newer", SessionKind::Chat, &[]);
+        let newer = root.path().join("s-newer.jsonl");
+        let mut text = std::fs::read_to_string(&newer).unwrap();
+        text.push('\n');
+        // `Record` is internally tagged, so the cause sits beside the tag.
+        let mut outcome = serde_json::to_value(Record::Outcome(RunStats::default())).unwrap();
+        outcome["stop_cause"] = json!("a_cause_from_a_newer_build");
+        text.push_str(&outcome.to_string());
+        std::fs::write(&newer, text).unwrap();
         write("s-smoke", SessionKind::Test, &[StopCause::Completed]);
         let index = SessionIndex::load(root.path()).unwrap();
         assert_eq!(index.seen("s-resumed"), Seen::Admitted);
@@ -794,6 +814,11 @@ mod tests {
         assert_eq!(index.completed("s-resumed"), Some(true));
         assert_eq!(index.completed("s-parked"), Some(false));
         assert_eq!(index.completed("s-silent"), None);
+        assert_eq!(index.completed("s-newer"), None);
+        assert_eq!(index.skipped, 0);
+        // A transcript whose header does not read is counted, not forgotten.
+        std::fs::write(root.path().join("s-torn.jsonl"), "{\"kind\":\"me").unwrap();
+        assert_eq!(SessionIndex::load(root.path()).unwrap().skipped, 1);
         assert_eq!(index.completed("s-gone"), None);
     }
 
