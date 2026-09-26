@@ -78,9 +78,10 @@
 }
 
 .plate {
-  margin: 0;
-  /* Poster's own knobs: the edge in the title block's rule colour, square
-     where the plate meets the block, and no drop shadow falling onto it. */
+  /* Poster's own knobs: flush against the title block, the edge in the
+     block's rule colour, square where they meet, and no drop shadow falling
+     onto it. */
+  --poster-margin: 0;
   --poster-edge: var(--sheet-rule);
   --poster-radius: 4px 4px 0 0;
   --poster-shadow: none;
