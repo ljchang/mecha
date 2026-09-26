@@ -580,7 +580,15 @@ impl Tool for Shell {
         // that redirects again (review of #294).
         // An incognito chat names its own root instead (`ToolCtx::shell_registry`).
         let roots = match &ctx.shell_registry {
-            Some(root) => Ok(vec![root.clone()]),
+            Some(root) => {
+                // Outside the jail, or a command could edit its own entry
+                // (`ToolCtx::shell_registry`'s contract, made structural).
+                debug_assert!(
+                    !root.starts_with(&ctx.workspace),
+                    "a shell registry inside the workspace lets a command edit its own entry"
+                );
+                Ok(vec![root.clone()])
+            }
             None => crate::shell_registry::write_roots(),
         };
         let registries = match roots.and_then(|roots| {

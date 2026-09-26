@@ -10,7 +10,9 @@
 // from `web/src/main.js`, because `Chat.svelte` imports
 // `scripts/voice/voice-core.js`, and a directory walk of `web/src` alone
 // passed green over the one file that does call `localStorage` (review of
-// #326).
+// #326). Relative imports only: a bare-specifier dependency (`svelte`,
+// `@fontsource/*`) is not walked, so a package that touched storage would
+// pass — none does today, and adding one is the moment to extend this.
 //
 // **The one allowance, argued here rather than hidden.** `voice-core.js`
 // keeps the owner's voice preferences (a voice name, a speed, a cached voice

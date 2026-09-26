@@ -30,12 +30,14 @@ const switchToSrc = readOut('  function switchTo(k) {');
 function page(start) {
   return new Function(
     'start',
-    `let { key, draft, attachments, incognito, gone } = start;
+    `'use strict';
+     let { key, draft, attachments, incognito, gone } = start;
+     let todo = ['[~] plan the thing'];
      let entries = ['x'], streaming = 'y', usage = 1, taint = 1;
      let affect = 1, valence = 1, sawAffectThisRun = true;
      const receivedInputs = new Set(), inputDelivery = new Map();
      ${switchToSrc}
-     return { switchTo, now: () => ({ key, draft, attachments, incognito, gone }) };`,
+     return { switchTo, now: () => ({ key, draft, attachments, incognito, gone, todo }) };`,
   )(start);
 }
 
@@ -58,6 +60,7 @@ function is(actual, expected, what) {
   p.switchTo('main');
   const s = p.now();
   is([s.key, s.draft, s.attachments, s.incognito], ['main', '', [], false], 'leaving incognito clears the composer');
+  is(s.todo, [], "and the incognito chat's plan");
 }
 {
   const p = page({ key: 'main', draft: 'half a thought', attachments: ['inbox/a.pdf'], incognito: false, gone: null });
